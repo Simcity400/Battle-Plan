@@ -527,7 +527,7 @@ class DescheduledRecordTests(unittest.TestCase):
                     "reason": "each domain below carries its own ruling",
                     "decided_on": "2026-08-03",
                     "decided_by": "owner",
-                    "authority": "PROJECT.md",
+                    "authority": "README.md",
                 },
             },
         }

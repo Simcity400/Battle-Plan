@@ -3,7 +3,7 @@
   Run one OpenCode job non-interactively and return its reply, session id and exit code.
 
 .DESCRIPTION
-  Mirrors the Codex reviewer call shape used in AGENTS.md: one fresh session per job,
+  Mirrors the Codex reviewer call shape: one fresh session per job,
   the prompt fed on stdin, the reply read from a file (never from stdout), and the
   session id persisted the moment it appears so a hard kill still leaves a resumable
   handle. Pass -SessionId to continue an existing session instead of starting a new one.

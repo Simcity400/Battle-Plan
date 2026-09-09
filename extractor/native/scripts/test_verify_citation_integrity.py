@@ -175,7 +175,7 @@ class CitationIntegrityTests(unittest.TestCase):
     def test_evidence_directories_are_not_scanned(self) -> None:
         """kills: scanning `runs/`.
 
-        `extractor/native/runs/` is append-only by AGENTS.md.  A gate that
+        `extractor/native/runs/` is an append-only evidence tree.  A gate that
         demanded its citations resolve would be demanding that completed run
         records be rewritten.
         """

@@ -430,7 +430,7 @@ try {
     # destroy the engine sample that was already taken. An earlier revision of
     # this lane threw on a failed counter query, which would have aborted the
     # graded capture over a number nothing gates on -- Codex round 2 finding 3,
-    # against PROJECT.md's partial-observation rule. So each query below is
+    # against README.md's partial-observation rule. So each query below is
     # contained, its values are $null when it fails, and the CAUSE is named on
     # the row. Never a zero: a reader believes a zero.
     $availableParallelism = [int][Environment]::ProcessorCount

@@ -88,27 +88,27 @@ def central_run(directory, revision):
 # These rows map contract areas to their owning executable checks. Presence of
 # source is deliberately separate from runtime acceptance; no fabricated PASS.
 CONTRACT_ROWS = [
-    ("passive_recording", "Recording and coverage", "vanilla-capture",
+    ("passive_recording", "Recording", "vanilla-capture",
      "extractor/native/scripts/Test-PassiveCapturePolicy.ps1",
      "powershell.exe -NoProfile -File extractor/native/scripts/Test-PassiveCapturePolicy.ps1",
      "Current vanilla capture: complete scheduled observations or exact typed gaps, tick/hour attribution, restored hooks and unloaded collector."),
-    ("automatic_lifecycle", "Time and identity", "vanilla-capture",
+    ("automatic_lifecycle", "Files", "vanilla-capture",
      "extractor/native/recorder_host/src/auto_attach.rs",
      None,
      "Parent-brokered current-artifact app-first/game-first, simultaneous games, relaunch, identity change and rollback/branch receipts."),
-    ("container_open", "Format and content", "portable-adversarial",
+    ("container_open", "Files", "portable-adversarial",
      "replay_interface/native/replay_app/src/main.rs",
      '& "$InstalledRoot/Battle Plan.exe" --validate-recording "$Recording"',
      "Owning container adversarial checks and an actual current-artifact .battleplan open receipt."),
-    ("content_admission", "Format and content", "content-admission",
+    ("content_admission", "Files", "content-admission",
      "replay_interface/native/replay_app/src/content_authority_report.rs",
      '& "$InstalledRoot/Battle Plan.exe" --report-content-authority "$Recording" --report-out "$Scratch/content.json" --config "$Profile" --non-interactive',
      "Current vanilla effective VFS/DLC/profile identity, relocation and precise refusal evidence from the content owner."),
-    ("map_ui_reconstruction", "Reconstruction and truth", "existing UI/model lanes",
+    ("map_ui_reconstruction", "Playback", "existing UI/model lanes",
      "replay_interface/native/replay_app/src/main.rs",
      '& "$InstalledRoot/Battle Plan.exe" --recording "$Recording" --config "$Profile" --non-interactive --dump-frame "$Scratch/frame.bmp" --dump-nth-hour 0',
      "Current recording open/render and faithful scene/UI evidence, including unavailable values and presentation/seek continuity; an image alone does not prove fidelity."),
-    ("recording_reach", "Recording and coverage", "vanilla-capture",
+    ("recording_reach", "Recording", "vanilla-capture",
      "replay_interface/native/replay_app/src/recording_reach.rs",
      '& "$InstalledRoot/Battle Plan.exe" --report-recording-reach "$Recording" --report-out "$Scratch/reach.json" --report-hours all',
      "Actual current-recording coverage report; exact gaps cannot be inferred from a successful process exit."),
@@ -197,11 +197,11 @@ def main():
     rows = []
     for key, section, owner, source, command, missing in CONTRACT_ROWS:
         path = root / source
-        rows.append(dict(id=key, requirement=f"PROJECT.md#{section}", owner=owner,
+        rows.append(dict(id=key, requirement=f"README.md#{section}", owner=owner,
                          source=reference(path) if path.is_file() else {"path": source, "missing": True},
                          status="missing_runtime_proof", command=command, needed=missing))
     central = [central_run(path, revision) for path in args.central_run]
-    rows.insert(0, dict(id="central_release", requirement="PROJECT.md#Release", owner="orchestrator",
+    rows.insert(0, dict(id="central_release", requirement="README.md#Release", owner="orchestrator",
                        status="current_run_verified" if not dirty and any(r["status"] == "current_run_verified" for r in central) else "missing_current_proof",
                        command='powershell.exe -NoProfile -ExecutionPolicy Bypass -File extractor/native/scripts/Invoke-Validation.ps1 -Mode ReleaseManual -AllowReleaseManual -C07GameRoot "$GameRoot"',
                        needed="Unfiltered central release of both native workspaces after final integration; no direct/filtered/plan-only substitute.", evidence=central))

@@ -26,7 +26,7 @@ $validationPath = Join-Path $scriptDir 'ProductionCapture.Validation.ps1'
 $sinkReconciliationPath = Join-Path $scriptDir 'verify_sink_reconciliation.py'
 # Neutral, shared build machinery; see Invoke-ReleaseManual.ps1.
 $attestationPath = Join-Path $repoRoot 'portable_replay\native\scripts\ProductionArtifact.Attestation.ps1'
-$projectPath = Join-Path $repoRoot 'PROJECT.md'
+$projectPath = Join-Path $repoRoot 'README.md'
 $lifecyclePath = Join-Path $scriptDir 'PassiveCapture.Lifecycle.ps1'
 $hostCargoPath = Join-Path $repoRoot 'extractor\native\recorder_host\Cargo.toml'
 $hostMainPath = Join-Path $repoRoot 'extractor\native\recorder_host\src\main.rs'
@@ -904,15 +904,15 @@ function Test-ProjectPassiveRecordingContract {
     # These are the current independent recording and injection requirements,
     # not isolated keywords which unrelated prose could accidentally satisfy.
     return (
-        $lines -ccontains '- Recording never pauses, changes speed or simulation, drives UI/input/focus, or depends on player selection. No freeze snapshots, synchronous in-hook capture, commit stalls, or writer locks. Maximum speed and auto-pause are normal play.' -and
-        $lines -ccontains '- Injection only observes. Hooks require proof that sampling cannot obtain the value, use the single audited primitive, and are registered, justified, bounded, and restored byte-for-byte, including bootstrap hooks. Descheduled domains install no detours.'
+        $lines -ccontains '- Recording never pauses, slows, or controls the game. It never drives the UI, input, or focus, never freezes the game to take a snapshot, and never makes the game wait on the recorder. Running at maximum speed and auto-pausing are normal play.' -and
+        $lines -ccontains '- The collector only reads. Hooking the game is a last resort, used only when plain reading cannot get a value, and every hook is registered, bounded, and restored byte-for-byte on exit, including bootstrap hooks.'
     )
 }
 
-# PROJECT.md owns the durable passive-recording boundary. Pin its independent
+# README.md owns the durable passive-recording boundary. Pin its independent
 # client-control and teardown clauses so deleting a retired design document
 # cannot weaken this closure test.
-Assert-ClosureCase 'PROJECT binds passive observation and restored hooks' (
+Assert-ClosureCase 'README binds passive observation and restored hooks' (
     (Test-ProjectPassiveRecordingContract -Text $project)
 )
 $cases++
@@ -921,12 +921,10 @@ $cases++
 # retained elsewhere in the document. Comments must not supply admission.
 $projectMutationFailures = @()
 foreach ($clause in @(
-    'never pauses', 'changes speed or simulation, ', 'drives UI/input/focus, ',
-    'depends on player selection', 'No freeze snapshots, ', 'synchronous in-hook capture, ',
-    'commit stalls, ', 'writer locks', 'Injection only observes. ',
-    'proof that sampling cannot obtain the value, ', 'single audited primitive',
-    'registered, justified, bounded, and ', 'restored byte-for-byte, including bootstrap hooks',
-    'Descheduled domains install no detours.'
+    'never pauses', 'slows, ', 'or controls the game', 'drives the UI, input, or focus',
+    'never freezes the game to take a snapshot', 'never makes the game wait on the recorder',
+    'The collector only reads. ', 'last resort', 'only when plain reading cannot get a value',
+    'registered, bounded, and ', 'restored byte-for-byte on exit, including bootstrap hooks'
 )) {
     $mutated = $project.Replace($clause, '') + "`n<!-- $clause -->"
     if ($mutated -ceq $project -or (Test-ProjectPassiveRecordingContract -Text $mutated)) {
@@ -934,7 +932,7 @@ foreach ($clause in @(
     }
 }
 $requiredBullets = @($project -split '\r?\n' | Where-Object {
-    $_.StartsWith('- Recording never pauses,') -or $_.StartsWith('- Injection only observes.')
+    $_.StartsWith('- Recording never pauses,') -or $_.StartsWith('- The collector only reads.')
 })
 if ($requiredBullets.Count -ne 2) { $projectMutationFailures += 'missing required bullets' }
 foreach ($bullet in $requiredBullets) {
@@ -944,7 +942,7 @@ foreach ($bullet in $requiredBullets) {
         }
     }
 }
-Assert-ClosureCase 'PROJECT passive contract rejects each actual clause withdrawal' (
+Assert-ClosureCase 'README passive contract rejects each actual clause withdrawal' (
     $projectMutationFailures.Count -eq 0
 )
 $cases++

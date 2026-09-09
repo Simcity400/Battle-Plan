@@ -19,7 +19,7 @@ resolve today are listed under ``items`` in
 ``citation_integrity_allowance.json`` with a reason.
 
 WHAT IS NOT SCANNED.  Evidence trees -- any ``runs/`` directory and any
-``re_evidence/`` directory.  AGENTS.md makes those append-only: a completed run
+``re_evidence/`` directory.  Those are append-only: a completed run
 records what was true when it ran, and a stale citation inside one is frozen
 history, not a defect.
 

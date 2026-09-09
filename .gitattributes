@@ -186,12 +186,12 @@ extractor/native/runs/rp_rc_predicate_tools/** text eol=lf
 extractor/native/runs/rv_d43_oil_current/** text eol=lf
 extractor/native/runs/rv_d43_oil_current/*.decompile.c -text
 
-# lane TA: hash-pinned Ghidra decompiles. AGENTS.md requires `text eol=lf` for
-# hash-pinned committed files; the SHA-256 in MEASUREMENT.md are the LF bytes.
+# lane TA: hash-pinned Ghidra decompiles. Hash-pinned committed files use
+# `text eol=lf`; the SHA-256 in MEASUREMENT.md are the LF bytes.
 extractor/native/runs/ta_market_trade/*.decompile.c text eol=lf
 
-# lane SR: hash-pinned Ghidra decompiles, TA's precedent. AGENTS.md requires
-# `text eol=lf` for hash-pinned committed files, so the decompiles are normalised
+# lane SR: hash-pinned Ghidra decompiles, TA's precedent. Hash-pinned committed
+# files use `text eol=lf`, so the decompiles are normalised
 # with everything else and MEASUREMENT.md pins BOTH digests: the export store's
 # raw bytes, which is what `ghidra_verify` agrees with, and the committed LF
 # bytes, which is what a checkout reproduces.

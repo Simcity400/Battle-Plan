@@ -918,7 +918,7 @@ pub fn is_optional_fail_closed_companion(id: CompactDomainId) -> bool {
 
 pub const DESCHEDULED_CAPTURE_DECISION_DATE: &str = "2026-08-03";
 
-pub const DESCHEDULED_CAPTURE_DECISION_REF: &str = "PROJECT.md";
+pub const DESCHEDULED_CAPTURE_DECISION_REF: &str = "README.md";
 
 /// The 2026-08-03 batch reason as originally written joined two independent
 /// claims: that the source is POV-local, and that the replay derives it from
@@ -2604,7 +2604,7 @@ mod tests {
             DESCHEDULED_CAPTURE_DECISION_DATE, "2026-08-03",
             "this constant is the MECHANISM's date, not every ruling's"
         );
-        assert_eq!(DESCHEDULED_CAPTURE_DECISION_REF, "PROJECT.md");
+        assert_eq!(DESCHEDULED_CAPTURE_DECISION_REF, "README.md");
     }
 
     #[test]

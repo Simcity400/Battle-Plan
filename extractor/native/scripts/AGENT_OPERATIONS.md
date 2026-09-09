@@ -1,6 +1,6 @@
 # Agent operations
 
-Procedural reference for `AGENTS.md`; `PROJECT.md` owns product requirements. Read only the relevant section.
+Procedural reference for agent work; `README.md` owns product requirements. Read only the relevant section.
 
 ## Validation and landing
 
