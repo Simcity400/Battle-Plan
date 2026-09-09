@@ -1,5 +1,9 @@
 [build]
 target-dir = ".cargo-target"
+rustc-wrapper = "sccache"
+
+[env]
+SCCACHE_DIR = { value = "C:\\sccache_cache", force = true }
 
 [profile.dev]
 debug = 0
