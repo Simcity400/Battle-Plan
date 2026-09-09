@@ -6,7 +6,6 @@ import shutil
 import tempfile
 import unittest
 import os
-import subprocess
 import uuid
 import external_module_evidence as e
 
@@ -155,9 +154,10 @@ class HeadlessIdentityTests(unittest.TestCase):
             "-log",str(job/"ghidra.log"),"-scriptlog",str(job/"script.log")]
         env=os.environ.copy();env.update(command["environment_overrides"])
         e.write_json(job/"command.json",{"argv":argv,"script":e.record(job/"scripts/ExternalModuleEvidence.java")})
-        with e.lease(root), (job/"console.log").open("wb") as console:
-            result=subprocess.run(argv,stdin=subprocess.DEVNULL,stdout=console,stderr=subprocess.STDOUT,
-                cwd=job,env=env,timeout=180,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+        with e.lease(root):
+            runner,_=e.process_runner(job)
+            result=runner.run_headless(argv,cwd=str(job),env=env,timeout_seconds=180,
+                console_path=job/"console.log",receipt_path=job/"process.json")
         log=(job/"console.log").read_text(errors="replace")
         self.assertIn(reason,log)
         self.assertFalse((job/"evidence").exists(),"negative guard emitted output")

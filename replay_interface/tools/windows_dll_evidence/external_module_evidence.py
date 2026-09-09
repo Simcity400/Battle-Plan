@@ -15,6 +15,7 @@ import ctypes as C
 from ctypes import wintypes as W
 import struct
 import pefile
+import importlib.util
 
 SOURCE = Path(__file__).resolve().parent
 DEFAULT_ROOT = Path("C:/Users/Example/AppData/Local/Temp/project-closeout-20260907/ui-native-control-policy/external-dll-capability/isolated")
@@ -52,6 +53,26 @@ def record(path):
 def write_json(path, value):
     with path.open("x",encoding="utf-8",newline="\n") as f:
         json.dump(value,f,indent=2);f.write("\n")
+
+def process_runner(job):
+    """Load the retained copy of the shared owned-child implementation."""
+    source=SOURCE.parent/"ghidra"/"headless_process.py"
+    source_record=record(source)
+    copied=job/source.name
+    shutil.copyfile(source,copied)
+    require(digest(copied)==source_record["sha256"],"process runner changed while copying")
+    spec=importlib.util.spec_from_file_location("external_owned_headless",copied)
+    runner=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    require(digest(copied)==source_record["sha256"],"process runner changed while loading")
+    return runner,[source_record,record(copied)]
+
+def verify_process(job, command):
+    process=json.loads((job/"process.json").read_text())
+    require(process["command"]==command["argv"] and process["state"]=="complete"
+            and process["assigned_before_resume"] and process["launcher_returncode"]==0
+            and process["job_after_drain"]["active_processes"]==0,
+            "owned headless process did not complete and drain")
 
 def identity(path, expected):
     require(path.is_file(),"missing module: "+str(path))
@@ -207,9 +228,11 @@ def verify_job(job, expected):
     fresh=verify_bundle(job,expected)
     for key,value in fresh.items():
         require(prior.get(key)==value,"accepted receipt changed: "+key)
-    for key,name in [("command","command.json"),("exit","exit.json"),("console","console.log")]:
+    for key,name in [("command","command.json"),("exit","exit.json"),("console","console.log"),
+                     ("process","process.json")]:
         require(prior[key]==record(job/name),"job custody changed: "+key)
     command=json.loads((job/"command.json").read_text())
+    verify_process(job,command)
     require(json.loads((job/"exit.json").read_text())["exit_code"]==0,"job exit not successful")
     for item in [command["script"],command["wrapper"],*command["toolchain"]]:
         require(record(Path(item["path"]))==item,"generating source/tool changed")
@@ -235,6 +258,7 @@ def execute(root, key, operation, rvas=(), size=16):
         script=SOURCE/"ExternalModuleEvidence.java"
         shutil.copyfile(script,scripts/script.name)
         shutil.copyfile(Path(__file__),job/Path(__file__).name)
+        runner,runner_records=process_runner(job)
         request={"schema":"external-windows-request-v1","identity":expected,"snapshot":str(snapshot),
                  "mode":mode,"depth":0,"targets":targets,"output":str(job/"evidence")}
         write_json(job/"request.json",request)
@@ -265,20 +289,22 @@ def execute(root, key, operation, rvas=(), size=16):
         tool_records=[record(p) for p in [JAVA,utility,GHIDRA/"Ghidra/Framework/SoftwareModeling/lib/SoftwareModeling.jar",
                       GHIDRA/"Ghidra/Features/Decompiler/lib/Decompiler.jar",
                       GHIDRA/"Ghidra/Features/Decompiler/os/win_x86_64/decompile.exe",
-                      GHIDRA/"Ghidra/Features/Base/lib/Base.jar",GHIDRA/"Ghidra/application.properties"]]
+                      GHIDRA/"Ghidra/Features/Base/lib/Base.jar",GHIDRA/"Ghidra/application.properties"]]+runner_records
         command={"argv":cmd,"environment_overrides":{k:env[k] for k in ["APPDATA","LOCALAPPDATA","TEMP","TMP"]},
                  "toolchain":tool_records,"script":record(scripts/script.name),"wrapper":record(job/Path(__file__).name)}
         write_json(job/"command.json",command)
         print(json.dumps({"job":str(job),"operation":operation}),flush=True)
-        with (job/"console.log").open("wb") as console:
-            completed=subprocess.run(cmd,stdin=subprocess.DEVNULL,stdout=console,stderr=subprocess.STDOUT,
-                                     env=env,cwd=job,timeout=900,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+        completed=runner.run_headless(cmd,env=env,cwd=str(job),timeout_seconds=900,
+                                     console_path=job/"console.log",receipt_path=job/"process.json")
         write_json(job/"exit.json",{"exit_code":completed.returncode})
         require(completed.returncode==0,"headless process failed: "+str(job))
+        verify_process(job,command)
+        for item in runner_records:
+            require(record(Path(item["path"]))==item,"process runner changed during job")
         require(digest(script)==command["script"]["sha256"],"script changed during job")
         verified=verify_bundle(job,expected)
         verified.update(command=record(job/"command.json"),exit=record(job/"exit.json"),
-                        console=record(job/"console.log"))
+                        console=record(job/"console.log"),process=record(job/"process.json"))
         write_json(job/"verification.json",verified)
         print(json.dumps({"status":"verified","job":str(job),**verified}),flush=True)
         return job

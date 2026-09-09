@@ -10,7 +10,8 @@ The tests use the pinned installed KERNEL32 file and temporary C: files.
 The default runtime root is the dedicated external-dll-capability/isolated scratch
 directory declared in the wrapper. It contains its own ownership marker, exclusive
 job lease, snapshots, per-module projects, JVM profile/temp files, and job bundles.
-No current broker code or registration is loaded or changed.
+The wrapper reuses the broker's Windows child-process ownership helper; it does
+not load the broker server or change its registration.
 
 From the repository root, invoke external_module_evidence.py with:
 - prepare kernel32
@@ -42,6 +43,16 @@ entry-to-slot control flow are separate claims: a code export is not a PE forwar
 The imports command checks both DLL paths/headers in the same helper process and
 compares the exported KERNEL32 entry instruction bytes with loaded memory, then
 records only the three named import slots and their exact KernelBase destinations.
+
+Each Java process starts suspended, enters its own Windows Job, and resumes only
+after ownership is established. The external root lease remains held until the
+Job reports zero active processes, on success, failure, or the 900 second execution
+timeout. Descendants surviving the launcher's bounded natural drain make the job
+fail and are terminated. Cleanup/query errors retain the lease and retry, so the
+execution timeout is not a hard wall-clock limit on cleanup. Only owned processes
+are affected. The retained helper copy and process receipt are part of new-job
+custody. Historical jobs remain verifiable with their original generating wrapper;
+their byte evidence does not acquire a descendant-cleanup claim from this change.
 
 Independent review of the final source and raw validation is required before relying
 on generated semantics. Byte custody alone does not prove any ctype or locale policy.
