@@ -1,2 +1,0 @@
-# Deliberately isolated from the Python 3.11 MCP environment.
-angr==9.3.2

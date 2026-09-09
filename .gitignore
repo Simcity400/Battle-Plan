@@ -1,192 +1,21 @@
-# Python
-__pycache__/
-*.pyc
-.pytest_cache/
-replay_interface/tools/ghidra/.smoke/
-replay_interface/tools/ghidra/ghidra_pool.local.json
-replay_interface/tools/ghidra/ghidra_pool.local.*.json
+# Build output
+/.cargo-target/
+/target/
+*.pdb
+*.obj
 
-# OS / editor cruft
+# Local configuration and captures
+/collector.json
+/viewer.json
+*.battleplan
+*.hoi4replay
+*.battleplan.tmp
+*.hoi4replay.tmp
+*.h4s
+*.hoi4
+
+# Editor and operating-system files
 Thumbs.db
 desktop.ini
 .DS_Store
 *.swp
-
-# Rust/Codex scratch output from repo-root commands
-/target/
-/target_*/
-/.cargo-target/
-/.cargo-target-*/
-/.cargo-timings/
-/.xui*-target/
-/.audit_targets/
-/replay_interface/native/target*/
-/replay_interface/re_evidence/**/.verify-target/
-/portable_replay/native/**/target/
-/extractor/native/.xui*_target/
-/extractor/native/scientists_live_lane/target_certification/debug/
-/extractor/native/scientists_live_lane/target_certification/release/
-/extractor/native/scientists_live_lane/target_certification/CACHEDIR.TAG
-/extractor/native/scientists_live_lane/target_certification/.rustc_info.json
-
-# backup assets (L7)
-*.old
-
-# --- Generated / heavy game assets (regenerable via extract.py; keep the source scripts) ---
-replay_interface/game_assets/assets/
-replay_interface/game_assets/gui/
-replay_interface/game_assets/sprites.json
-replay_interface/game_assets/portraits.json
-replay_interface/game_assets/*_report.json
-replay_interface/map_pipeline/assets/*.png
-
-# --- Generated outputs (melted saves, rendered snapshots) ---
-extractor/save_oracle/output*/
-replay_interface/replay/snapshots/
-
-# --- Native replay UI rendered PNGs (contain copyrighted game art; regenerable
-#     via the demo/app binaries) — never commit ---
-extractor/native/*/out/
-replay_interface/native/*/out/
-
-# Native collector/recorder proof outputs and ad hoc cargo target dirs.
-# runs/ evidence is TRACKED (lane deliverable; the blanket ignore silently
-# dropped whole evidence dirs from commits that reported success — recovered
-# 2026-08-28). Only the bulk measurement corpora below stay local.
-extractor/native/runs/batch1/
-extractor/native/runs/batch2/
-extractor/native/runs/batch3/
-extractor/native/runs/batch4/
-extractor/native/runs/crashrate/
-extractor/native/runs/d20_deepwar/
-extractor/native/runs/d20_real_dynamics/
-extractor/native/runs/d20_real_save/
-extractor/native/runs/d20_reference/
-extractor/native/runs/hookdose/
-extractor/native/runs/jl_render_purge/
-extractor/native/runs/live_unlock/
-extractor/native/runs/lq_teardown_census/
-extractor/native/runs/s0_census/
-extractor/native/runs/t51_pricing/
-extractor/native/runs/t53_live_proofs/
-extractor/native/runs/t54_live_proofs/
-extractor/native/runs/t55_attempt3_unsealed_modset_path/
-extractor/native/runs/**/.replay_decoder_artifacts-*/
-extractor/native/**/proofs/
-extractor/native/**/proof_current_head_*/
-extractor/native/**/proof_current*/
-extractor/native/target*/
-extractor/native/**/target/
-extractor/native/**/proof_out/
-replay_interface/native/**/proofs/
-replay_interface/native/target*/
-replay_interface/native/**/target/
-replay_interface/native/**/proof_out/
-*.pdb
-*.obj
-/.validation-*.log
-/myeasylog.log
-
-# --- Scratch / RE scan working dir (incl. crack_archive/: archived one-shot RE
-#     scratch scripts; may contain local machine/Ghidra paths -> never commit) ---
-re_scratch/
-/.re_scratch/
-re_scratch/crack_archive/
-.re_scratch/
-
-# --- Local memory-reader cracking/probe outputs ---
-# Scratch convention: one-off reverse-engineering probes and generated oracle
-# dumps under memory_reader/ use leading underscores or crack/scratch dirs.
-# Keep durable readers/manifests tracked under explicit non-underscore names.
-capture_perf_probe.py
-extractor/memory_reader/_*/
-extractor/memory_reader/_*.py
-extractor/memory_reader/_*.json
-extractor/memory_reader/_*.txt
-extractor/memory_reader/_*.out
-extractor/memory_reader/_*.err
-extractor/memory_reader/*.log
-extractor/memory_reader/*.ckpt
-extractor/memory_reader/focus_crack/
-extractor/memory_reader/re_scratch*
-extractor/memory_reader/**/_*.py
-extractor/memory_reader/**/_*.json
-extractor/memory_reader/**/*.out
-extractor/memory_reader/**/*.log
-extractor/memory_reader/**/*.err
-extractor/memory_reader/**/*.pkl
-
-# Codex/Claude local app state, never project source.
-.agents/
-.claude/
-.codex/
-
-# --- Internal review doc (not for the repo) ---
-CODE_REVIEW.md
-
-# --- Distributable recorder (PyInstaller) build outputs: the 19 MB one-file EXE
-#     + the build cache are regenerable via extractor/live_capture/recorder/build_recorder.py;
-#     never commit the binary/cache (only the spec + entrypoint + build script). ---
-dist/
-build_pyi/
-*.spec.bak
-# the recorder's machine-local capture store + finalized replays (run outputs)
-**/_recorder_store/
-*.battleplan
-*.hoi4replay
-*.battleplan.part/
-.re_scratch/
-scratch_re/
-scratch/
-# lane scratch: decompiled hoi4.exe evidence + local Ghidra project copies
-# (multi-GB). Never commit game code / binaries.
-scratchpad/
-**/scratchpad/
-ghidra_appdata/
-ghidra_localappdata/
-ghidra_project_copy/
-ghidra_scripts/
-
-# Test fixtures are the ONE sanctioned committed .battleplan population
-# (deterministic, seed-exact, ~732K total; real recordings stay ignored)
-!replay_interface/fixtures/**/*.battleplan
-*.hoi4replay
-
-# Codex/agent scratch dirs (recreated by tooling)
-.codex-temp/
-.codex_tmp/
-.tmp_targets/
-.audit_targets/
-
-# Reference-ledger output (regenerable: extractor/native/scripts/build_reference_ledger.py)
-extractor/coverage_audit/reference_ledger/reference_ledger.csv
-
-# Build, cache and profiling output (regenerable)
-.cargo-target/
-.cargo-timings/
-__pycache__/
-*.pyc
-*.pdb
-.merge-target/
-/.lane_tmp/
-
-# Per-lane evidence scratch (cargo logs, bench output, audit JSON). Lane
-# evidence belongs in the commit that cited it, not in the working tree: a
-# lane that needs to quote its own numbers cites the commit, not a path here.
-lane_*_analysis/
-/.lane_be/
-
-# Regenerable decoder checkpoints from captures - never evidence, exceed GitHub 100 MB (lane KS incident 2026-08-16)
-extractor/native/runs/**/.replay_decoder_artifacts-*/
-**/*.h4cp
-
-# Sealed replays are capture output, not evidence text (LQ pushed a 94 MB one; keep future ones out)
-extractor/native/runs/**/*.battleplan
-*.hoi4replay
-.t3-worktrees/
-.pnpm-store/
-.reference/
-captures/
-
-# machine-local lane-runner config (absolute user paths)
-/opencode.jsonc

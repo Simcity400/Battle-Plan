@@ -1,8 +1,0 @@
-[package]
-name = "d29_grammar"
-version = "0.1.0"
-edition = "2021"
-description = "D29's ship-row byte grammar: the header length, the fixed row length and its definition-string prefix, the payload version, and the four ship row flags. Shared by the recorder lane, the host's two consumers and the independent wire reference so they cannot drift on what a coded flag MEANS."
-
-# No dependencies. Byte boundaries and coded meanings only.
-[dependencies]

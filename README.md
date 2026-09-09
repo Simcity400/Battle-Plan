@@ -1,69 +1,43 @@
 # Battle Plan
 
-Battle Plan records a Hearts of Iron IV campaign while you play and lets you watch it back later. Playback is an interactive map with the game's own UI. You can scrub through time, move around the map, switch countries, and open panels the way you would in the game. It works for single-player and multiplayer, with any mods and DLC.
+Battle Plan records a Hearts of Iron IV campaign while you play and opens it later as an interactive map. The working foundation records the clock, campaign identity, countries and province ownership/control, with a save oracle, branch-aware playback, pan, zoom and headless image export. It supports the pinned Windows build, Operation Postern v1.19.2.0.a729, verified by executable hash.
 
-[AGENTS.md](AGENTS.md) governs agent work.
+[PLAN.md](PLAN.md) is the plan of record. Unit counters, battles, fronts, ships, air wings, the country panel and the generic table inspector are the next phase. Vanilla with all DLC is the first tested content set; mod testing follows. The planned portable ZIP contains `recorder.exe`, `viewer.exe`, `collector.dll` and this README, with checksums. Packaging is still pending.
 
-## How it works
+Build from source with the pinned Rust 1.96.0 toolchain, the Windows MSVC build tools, `lld-link` and `sccache`:
 
-1. Start the recorder, then play HOI4 normally. The recorder finds the game on its own. There is nothing to configure.
-2. A small collector inside the game reads world state once per game hour and hands it to the recorder.
-3. The recorder writes a `.battleplan` file. That file is the only thing the viewer needs.
-4. Open the file in the viewer. It loads the same installed content, mods, and DLC that were active and rebuilds the map and UI from the recorded state.
-
-```text
-hoi4.exe -> collector -> recorder -> .battleplan -> viewer
+```powershell
+cargo build --workspace --release
+.\.cargo-target\release\recorder.exe --out captures
 ```
 
-## Rules
+Keep `collector.dll` beside `recorder.exe`. Start the recorder, then play normally. It finds `hoi4.exe` and prints the Paradox user folder it selected; pass `--user-dir <directory>` to select another. Game exit finalizes the replay and resumes waiting for the next process. Ctrl+C detaches, finalizes and exits. `--once` stops after one process session.
 
-These rules always apply. Code, schemas, registries, tests, and evidence hold the details. No other document overrides them.
+```powershell
+.\.cargo-target\release\recorder.exe inspect <campaign.battleplan>
+.\.cargo-target\release\viewer.exe <campaign.battleplan>
+.\.cargo-target\release\viewer.exe --dump <campaign.battleplan> --hour <n> --branch <id> --out <frame.png>
+```
 
-### Recording
+On first run the viewer asks for the game and Paradox user folders and stores them beside the executable in `viewer.json`. It offers political and control maps, a session/branch picker and an hourly timeline. Windowed playback and headless export use the same wgpu renderer. An hour present on multiple branches requires a branch selection. Both executables provide `--help`.
 
-- Recording never pauses, slows, or controls the game. It never drives the UI, input, or focus, never freezes the game to take a snapshot, and never makes the game wait on the recorder. Running at maximum speed and auto-pausing are normal play.
-- The collector only reads. Hooking the game is a last resort, used only when plain reading cannot get a value, and every hook is registered, bounded, and restored byte-for-byte on exit, including bootstrap hooks.
-- An unsupported game version records nothing and says why. Adding support means updating the app, never guessing.
-- State is sampled once per game hour. Finer sampling needs evidence that it is worth it.
-- A capture failure costs only the affected period, never the whole recording. Anything missed becomes a named gap with its time range, what was missed, and why.
+The recording and playback rules are:
 
-### Truth
+- The recorder is passive: it never pauses, saves, sends input or drives the game. The collector reads game state through exactly one detour at the proven hourly boundary on the game thread, restored and verified on detach. Diffing, encoding and disk writes happen off the game thread. Two simultaneous game processes are unsupported and refused. An unsupported executable records nothing and says which build was required.
+- Record state, never pictures or invented data. Values retain the engine's representation and precision; rounding belongs to display. A failed read or dropped hour is named in the file, scoped to the affected table or hours. The viewer shows gaps and unavailable data without interpolation. Save comparisons establish captured-value correctness and print their limitations.
+- One `.battleplan` file links recorder and viewer. It stores content identity, including hashes and layer order, rather than game assets or machine paths. The viewer resolves content by id and verifies its bytes under the recorded, versioned coverage policy. Missing or mismatching content is refused. Unverified identity is refused unless `--allow-unverified-content` is explicit; that override keeps a visible warning and does not waive hash checks. The viewer never accesses live game memory.
+- Every game process starts a new branch. Within a process, a measured load signal or an unexplained hour discontinuity starts another. Parentage is probable or unknown. The current load timestamp has one-second resolution, so timestamp collisions remain a documented blind spot. A different campaign id creates a different replay file.
+- Data is exact; visuals use the game's files with our own compositing and side-by-side reference checks. The game's `.gui`/`.gfx` interface is a later phase. v1 is omniscient; country selection will choose whose numbers appear. Fog is later. Sound is dropped.
 
-- Never fake data. If a value was not captured, the replay says so. It never fills in a plausible guess, another country's view, historical data, or a visual approximation.
-- Record world state, not pictures. Screenshots, pixels, audio, and the player's own UI never go into the file.
+Measured goals are 16 ms per game hour, finalization within 30 seconds, and a campaign below 1 GB with a 50 MB goal. The accepted foundation session recorded 35,984 hours with total callback p95 **1.863 ms**, finalized in **9.666 seconds**, and produced **6,331,988 bytes**. After restart and forced-exit tests, the replay held 44,267 hours across three sessions and four branches in **7,892,420 bytes**. These measurements cover the foundation tables, not the eventual full table set or a full campaign. [PLAN.md section 9](PLAN.md#9-measurements) records the measurements, throughput comparisons and limitations; captures and `inspect` report costs and sizes.
 
-### Playback
+Local validation follows [PLAN.md section 5](PLAN.md#5-validation): workspace build, pure-function tests, strict Clippy and an oracle comparison against a fresh text save at the recorded hour. Set `save_as_binary=no` for the oracle; binary saves are refused.
 
-- Draw things exactly the way the game does, based on proven engine behavior. No hand-tuned constants or "close enough" shortcuts.
-- Panels, tooltips, and selection are rebuilt from recorded state. Where that is impossible, the viewer shows "unavailable" rather than a guess.
-- The replay can be viewed from any country's perspective.
-- Sound comes from proven game rules and recorded inputs. Otherwise it is silent and says so.
-- The windowed viewer, headless export, and benchmarks all render through the same code path.
+```powershell
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+.\.cargo-target\release\recorder.exe oracle <campaign.battleplan> <save.hoi4> --hour <n> --branch <id>
+```
 
-### Files
-
-- The `.battleplan` file is the only link between recorder and viewer. Format changes update every reader and writer together, with no compatibility shims left behind.
-- The viewer loads the exact base game, DLC, mods, and language that were active, in the same order. If any of it is missing or changed, the viewer refuses and says what is wrong.
-- On first run the viewer asks where the game and mods are. It never guesses.
-- The viewer never reads live game memory and never launches or injects HOI4.
-- Reloading a save or restarting the game stays in the same replay as a branch. Two games running at once are two replays.
-
-## Targets
-
-- Recording adds at most 16 ms per game hour, including the slowest 5% of hours.
-- A replay is ready to open within 30 seconds of the game ending.
-- A finished full campaign replay is under 1 GB. The goal is 50 MB.
-- The viewer holds 60 fps on average
-
-## Release
-
-One offline portable Windows ZIP: recorder, viewer, collector DLL, instructions, checksums. Unzip and run. No installer, updater, admin rights, or code signing.
-
-Claims about how the game engine works need exact-build Ghidra exports plus live or game-file evidence. See [engine evidence](extractor/native/scripts/AGENT_OPERATIONS.md#engine-evidence).
-
-## Where things are defined
-
-- [Domain registry](extractor/native/domain_registry.json): which pieces of game state get captured, and their status.
-- [UI dependencies](replay_interface/re_evidence/rendering_laws/XUI27/external_producer_dependencies.json): what each UI element needs from the recording and what it shows when that is missing.
-- [Map input ledger](replay_interface/re_evidence/rendering_laws/XMAP00/non_ui_visual_input_ledger_20260730.tsv): every non-UI visual input and how it is handled.
-- Evidence under `extractor/**/re_evidence/`, `extractor/native/runs/`, and `replay_interface/re_evidence/`: build identities and validation results.
+`tools/smoke.ps1` currently supplies explicit local game-driving and baseline actions. The complete end-to-end smoke command is pending Milestone 2.4 and reports that when invoked. [reference/01.md](reference/01.md) documents the first game/viewer screenshot pair. [crates/engine/PORTING.md](crates/engine/PORTING.md) indexes the harvested knowledge and the remaining table work.
