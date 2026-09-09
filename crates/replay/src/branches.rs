@@ -246,6 +246,36 @@ impl BranchTracker {
         self.last.map(|last| last.branch)
     }
 
+    /// Reattach to the same process after seeding its recovered history. This is
+    /// not a new process session; the next observation still checks load/discontinuity.
+    pub fn resume_session(
+        &mut self,
+        session: SessionId,
+        branch: BranchId,
+        hour: Hour,
+        load_signal: Option<i64>,
+    ) -> io::Result<()> {
+        if self.session.is_some() {
+            return Err(invalid("resume before beginning or observing a session"));
+        }
+        let history = self
+            .branches
+            .get(&branch)
+            .ok_or_else(|| invalid("unknown resumed branch"))?;
+        if history.start.session != session || history.recorded.last() != Some(&hour) {
+            return Err(invalid(
+                "resume does not identify that process's last recorded branch hour",
+            ));
+        }
+        self.session = Some(session);
+        self.last = Some(LastObservation {
+            branch,
+            hour,
+            load_signal,
+        });
+        Ok(())
+    }
+
     pub fn branch_start(&self, branch: BranchId) -> Option<&BranchStart> {
         self.branches.get(&branch).map(|history| &history.start)
     }
@@ -421,6 +451,35 @@ fn continues(previous: Hour, next: Hour, gaps: &[Gap]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reattaching_the_same_process_preserves_session_and_checks_for_reload() {
+        let start = BranchStart {
+            id: 4,
+            session: 8,
+            loaded_hour: Some(9),
+            first_hour: 10,
+            parent: Parentage::Unknown,
+            reason: BranchReason::SessionStart,
+        };
+        let mut tracker = BranchTracker::new();
+        tracker.seed_recorded_branch(start, [10, 11]).unwrap();
+        assert!(tracker.resume_session(9, 4, 11, Some(1)).is_err());
+        assert!(tracker.resume_session(8, 4, 10, Some(1)).is_err());
+        tracker.resume_session(8, 4, 11, Some(1)).unwrap();
+        let next = tracker.observe(Some(11), 12, Some(1), &[]).unwrap();
+        assert_eq!(next.branch, 4);
+        assert!(next.start.is_none());
+        tracker.record_hour(4, 12).unwrap();
+        let reload = tracker.observe(Some(10), 11, Some(2), &[]).unwrap();
+        assert_eq!(
+            reload.start.unwrap().parent,
+            Parentage::Probable {
+                branch: 4,
+                hour: 10
+            }
+        );
+    }
 
     fn sample(tracker: &mut BranchTracker, loaded: Hour, hour: Hour, signal: i64) -> Observation {
         let observed = tracker

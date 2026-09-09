@@ -1,10 +1,11 @@
 <#
 .SYNOPSIS
-Milestone 1.1 game input and screenshots for the sampling probe.
+Milestone 1.3 game input, screenshots, and passive free-run clock measurement.
 .DESCRIPTION
 The full product smoke check is not implemented yet. Run explicit actions to
-drive the game during the sampling proof. This script does not inject, read
-game memory, modify settings, or certify that a save finished loading.
+drive the game during local validation. Baseline verifies the pinned game build,
+then reads only its clock; it sends no input and does not inject.
+The script does not modify settings or certify that a save finished loading.
 
 Screenshot and click coordinates are relative to the outer game window.
 Console opens the console with the supplied key, types one line, presses Enter,
@@ -17,10 +18,12 @@ powershell -File tools/smoke.ps1 -Action Screenshot -Out captures\probe\menu.png
 powershell -File tools/smoke.ps1 -Action Key -Key Space
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Click -X 640 -Y 480
+.EXAMPLE
+powershell -File tools/smoke.ps1 -Action Baseline -Seconds 120 -Out captures\baseline
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Smoke', 'Launch', 'Screenshot', 'Key', 'Click', 'Text', 'Console')]
+    [ValidateSet('Smoke', 'Launch', 'Screenshot', 'Key', 'Click', 'Text', 'Console', 'Baseline')]
     [string]$Action = 'Smoke',
     [string]$GameExe = 'X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe',
     [string]$UserDirectory = 'C:\Users\Example\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV',
@@ -28,6 +31,7 @@ param(
     [switch]$ContinueLastSave,
     [string]$ExpectedSave,
     [string]$Out,
+    [ValidateRange(1, 2147483647)][int]$Seconds = 120,
     [ValidateSet('Space', 'Escape', 'Enter', 'Grave', 'Tab', 'Backspace', 'Delete',
         'Left', 'Right', 'Up', 'Down', 'Home', 'End', '1', '2', '3', '4', '5',
         'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12')]
@@ -41,7 +45,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($Action -eq 'Smoke') {
-    throw 'The full product smoke check awaits Milestone 2.4. Milestone 1.1 currently supports explicit Launch, Screenshot, Key, Click, Text, and Console actions only.'
+    throw 'The full product smoke check awaits Milestone 2.4. Milestone 1.3 supports explicit Launch, Screenshot, Key, Click, Text, Console, and Baseline actions only.'
 }
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw 'The game driver requires Windows and an interactive desktop.'
@@ -94,6 +98,204 @@ if ($gameProcesses.Count -ne 1) { throw 'Exactly one running hoi4.exe is require
 $game = $gameProcesses[0]
 if ($GameId -ne 0 -and $game.Id -ne $GameId) { throw "The running game has PID $($game.Id), not $GameId." }
 if ($game.Path -ine $gamePath) { throw "The running game executable differs from GameExe: $($game.Path)" }
+if ($Action -eq 'Baseline') {
+    if (-not [Environment]::Is64BitProcess) { throw 'Baseline requires 64-bit PowerShell.' }
+    $captureRoot = 'captures'
+    if (-not $Out) { throw 'Baseline requires -Out, an existing capture directory or a new .jsonl file in one.' }
+    $capturePath = [IO.Path]::GetFullPath($Out)
+    if (Test-Path -LiteralPath $capturePath -PathType Container) {
+        $capturePath = Join-Path $capturePath ('baseline-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + $game.Id + '.jsonl')
+    }
+    if (-not $capturePath.StartsWith($captureRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($capturePath) -ine '.jsonl') {
+        throw "Baseline output must be a JSONL file under $captureRoot."
+    }
+    if (-not (Test-Path -LiteralPath ([IO.Path]::GetDirectoryName($capturePath)) -PathType Container)) {
+        throw 'Create the baseline capture directory before starting the measurement.'
+    }
+    if (Test-Path -LiteralPath $capturePath) { throw "Baseline already exists: $capturePath" }
+    # engine::PINNED_BUILD, verified against the installed executable on 2026-09-09.
+    $wantedVersion = 'Operation Postern v1.19.2.0.a729'
+    $wantedSize = [int64]55680632
+    $wantedHash = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
+    $actualSize = (Get-Item -LiteralPath $gamePath).Length
+    $actualHash = (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash
+    if ($actualSize -ne $wantedSize -or $actualHash -ine $wantedHash) {
+        throw "Unsupported build: wanted $wantedVersion / $wantedSize bytes / $wantedHash; got $actualSize bytes / $actualHash."
+    }
+    if (@($game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) {
+        throw 'The free-run baseline requires collector.dll to be detached first.'
+    }
+    if (-not ('Hoi4ClockBaseline' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public sealed class Hoi4ClockBaseline : IDisposable {
+    public sealed class Clock {
+        public ulong game_state, play_time;
+        public long play_session_started_at;
+        public int hour, seed;
+        public bool Same(Clock other) {
+            return other != null && game_state == other.game_state && hour == other.hour &&
+                play_time == other.play_time && play_session_started_at == other.play_session_started_at && seed == other.seed;
+        }
+    }
+    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint process);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] bytes, UIntPtr size, out UIntPtr read);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")] static extern bool QueryPerformanceCounter(out long value);
+    [DllImport("kernel32.dll")] static extern bool QueryPerformanceFrequency(out long value);
+    readonly ulong image;
+    readonly byte[] bytes = new byte[8];
+    IntPtr process;
+    public readonly long Frequency;
+    public Hoi4ClockBaseline(uint processId, ulong imageBase) {
+        if (!QueryPerformanceFrequency(out Frequency) || Frequency <= 0)
+            throw new InvalidOperationException("QueryPerformanceFrequency failed.");
+        image = imageBase;
+        process = OpenProcess(0x10, false, processId); // PROCESS_VM_READ only; this helper never writes or injects.
+        if (process == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    public static long Qpc() {
+        long value;
+        if (!QueryPerformanceCounter(out value)) throw new InvalidOperationException("QueryPerformanceCounter failed.");
+        return value;
+    }
+    bool Read(ulong address, uint size) {
+        UIntPtr read;
+        return address > 0 && address <= long.MaxValue &&
+            ReadProcessMemory(process, new IntPtr((long)address), bytes, new UIntPtr(size), out read) && read.ToUInt64() == size;
+    }
+    Clock Once() {
+        // engine::cgame_state: confirmed CGameState singleton, native-width clock fields and load witness.
+        if (!Read(image + 0x3316e90, 8)) return null;
+        ulong state = BitConverter.ToUInt64(bytes, 0);
+        if (state == 0 || state > long.MaxValue - 0x800) return null;
+        var clock = new Clock();
+        clock.game_state = state;
+        if (!Read(state + 0x468, 4)) return null;
+        clock.hour = BitConverter.ToInt32(bytes, 0);
+        if (!Read(state + 0x490, 8)) return null;
+        clock.play_time = BitConverter.ToUInt64(bytes, 0);
+        if (!Read(state + 0x720, 4)) return null;
+        clock.seed = BitConverter.ToInt32(bytes, 0);
+        if (!Read(image + 0x3317048, 8)) return null;
+        clock.play_session_started_at = BitConverter.ToInt64(bytes, 0);
+        if (!Read(image + 0x3316e90, 8) || BitConverter.ToUInt64(bytes, 0) != state) return null;
+        return clock;
+    }
+    public Clock Sample() {
+        Clock first = Once(), second = Once();
+        return first != null && first.Same(second) ? second : null;
+    }
+    public void Dispose() {
+        if (process != IntPtr.Zero) { CloseHandle(process); process = IntPtr.Zero; }
+    }
+}
+'@
+    }
+    $reader = $null
+    $stream = $null
+    $writer = $null
+    $summary = $null
+    $stopReason = 'duration completed'
+    try {
+        $reader = [Hoi4ClockBaseline]::new([uint32]$game.Id, [uint64]$game.MainModule.BaseAddress.ToInt64())
+        $processStart = $game.StartTime.ToUniversalTime().ToFileTimeUtc()
+        $stream = [IO.File]::Open($capturePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        $writer = [IO.StreamWriter]::new($stream, [Text.UTF8Encoding]::new($false))
+        $writer.AutoFlush = $true
+        $qpcStart = [Hoi4ClockBaseline]::Qpc()
+        $lastFlush = $qpcStart
+        $lastProcessCheck = $qpcStart
+        $writer.WriteLine((@{ kind = 'baseline_start'; pid = $game.Id; process_start_time = $processStart;
+            qpc = $qpcStart; qpc_frequency = $reader.Frequency; requested_seconds = $Seconds; sample_interval_ms = 125;
+            exe_version = $wantedVersion; exe_size = $actualSize; exe_sha256 = $actualHash.ToLowerInvariant();
+            limitation = 'External clock observations measure free-run throughput only. Pointer, load timestamp, and seed are identity witnesses; campaign identity and table consistency are not verified. Forward jumps between samples may be normal progress or an undetected reload.' } | ConvertTo-Json -Compress))
+        Write-Host "Free-run baseline started for ${Seconds}s; no input is sent. Output: $capturePath"
+        $previous = $null
+        $previousQpc = [int64]0
+        $lastWitness = $null
+        $hours = [int64]0
+        $pairTicks = [int64]0
+        $pairs = [int64]0
+        $valid = [int64]0
+        $missing = [int64]0
+        $loadChanges = [int64]0
+        $witnessChanges = [int64]0
+        $discontinuities = [int64]0
+        $invalidQpc = [int64]0
+        while (([Hoi4ClockBaseline]::Qpc() - $qpcStart) / [double]$reader.Frequency -lt $Seconds) {
+            $game.Refresh()
+            if ($game.HasExited) { $stopReason = 'game exited'; break }
+            $clock = $reader.Sample()
+            $qpc = [Hoi4ClockBaseline]::Qpc()
+            $elapsed = ($qpc - $qpcStart) / [double]$reader.Frequency
+            $reason = $null
+            if ($null -eq $clock) {
+                $missing++
+                $previous = $null
+                $reason = 'clock unavailable or changed during external read'
+            } else {
+                $valid++
+                if ($null -ne $lastWitness) {
+                    if ($clock.play_session_started_at -ne $lastWitness.play_session_started_at) { $loadChanges++ }
+                    if ($clock.game_state -ne $lastWitness.game_state -or $clock.seed -ne $lastWitness.seed) { $witnessChanges++ }
+                    if ($clock.hour -lt $lastWitness.hour) { $discontinuities++ }
+                }
+                $lastWitness = $clock
+                if ($null -ne $previous) {
+                    $sameWitness = $clock.game_state -eq $previous.game_state -and
+                        $clock.play_session_started_at -eq $previous.play_session_started_at -and $clock.seed -eq $previous.seed
+                    $delta = [int64]$clock.hour - [int64]$previous.hour
+                    if ($qpc -le $previousQpc) { $invalidQpc++ }
+                    if ($sameWitness -and $delta -ge 0 -and $qpc -gt $previousQpc) {
+                        # Zero-hour pairs retain their elapsed time, so pauses reduce the measured rate.
+                        $hours += $delta
+                        $pairTicks += $qpc - $previousQpc
+                        $pairs++
+                    }
+                }
+                $previous = $clock
+                $previousQpc = $qpc
+            }
+            $writer.WriteLine((@{ kind = 'baseline_sample'; pid = $game.Id; qpc = $qpc; elapsed_s = $elapsed;
+                clock = $clock; unavailable_reason = $reason } | ConvertTo-Json -Compress -Depth 4))
+            if (($qpc - $lastFlush) / [double]$reader.Frequency -ge 5) { $stream.Flush($true); $lastFlush = $qpc }
+            if (($qpc - $lastProcessCheck) / [double]$reader.Frequency -ge 2) {
+                if (@(Get-Process -Name the game -ErrorAction SilentlyContinue).Count -gt 1) {
+                    $stopReason = 'second hoi4.exe process detected'
+                    break
+                }
+                if (@($game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) {
+                    $stopReason = 'collector.dll appeared during the free-run baseline'
+                    break
+                }
+                $lastProcessCheck = $qpc
+            }
+            Start-Sleep -Milliseconds 125
+        }
+        $pairSeconds = $pairTicks / [double]$reader.Frequency
+        $rate = if ($pairSeconds -gt 0) { $hours / $pairSeconds } else { $null }
+        $summary = [pscustomobject]@{ kind = 'baseline_summary'; pid = $game.Id; path = $capturePath;
+            hours = $hours; elapsed_s = $pairSeconds; hours_per_s = $rate; valid_samples = $valid; missing_samples = $missing;
+            continuous_pairs = $pairs; load_changes = $loadChanges; witness_changes = $witnessChanges;
+            backwards_discontinuities = $discontinuities; invalid_qpc_pairs = $invalidQpc;
+            observation_elapsed_s = ([Hoi4ClockBaseline]::Qpc() - $qpcStart) / [double]$reader.Frequency; stop_reason = $stopReason }
+        $writer.WriteLine(($summary | ConvertTo-Json -Compress))
+    } finally {
+        try { if ($null -ne $writer) { $writer.Flush() }; if ($null -ne $stream) { $stream.Flush($true) } }
+        finally {
+            if ($null -ne $writer) { $writer.Dispose() } elseif ($null -ne $stream) { $stream.Dispose() }
+            if ($null -ne $reader) { $reader.Dispose() }
+        }
+    }
+    $summary
+    if ($stopReason -eq 'second hoi4.exe process detected' -or $stopReason -eq 'collector.dll appeared during the free-run baseline') {
+        throw "Baseline stopped: $stopReason. Inspect the retained observations; this run is not an uninterrupted free-run baseline."
+    }
+    return
+}
 $game.Refresh()
 $window = $game.MainWindowHandle
 if ($window -eq [IntPtr]::Zero) { throw 'The game has no main window yet. Wait for it to open.' }

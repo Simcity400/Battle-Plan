@@ -1,10 +1,13 @@
-//! Milestone 1.1 sampling probe. No replay format or production collector yet.
+//! Hourly game-thread sampling with an independent recoverable spool writer.
 
 #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
 compile_error!("collector requires Windows x64 MSVC");
 
 mod hook;
-mod probe;
+mod roster;
+mod runtime;
+mod sampling;
+mod spooling;
 
 use std::ffi::c_void;
 use windows_sys::Win32::{
@@ -20,7 +23,7 @@ unsafe extern "system" fn DllMain(module: HINSTANCE, reason: u32, _: *mut c_void
             CreateThread(
                 std::ptr::null(),
                 0,
-                Some(probe::worker),
+                Some(runtime::worker),
                 module,
                 0,
                 std::ptr::null_mut(),

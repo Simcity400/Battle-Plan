@@ -10,7 +10,7 @@ use std::{
 
 use crate::{
     branches::{BranchStart, Gap},
-    codec::{Decoder, invalid},
+    codec::{Decoder, invalid, put_string},
     frame::Frame,
     identity::SessionStart,
 };
@@ -36,12 +36,31 @@ pub enum Record {
         hour: i32,
         load_signal: Option<i64>,
     },
+    /// A bounded callback loss log overflowed; no hour range is invented.
+    GapSummary {
+        session: u64,
+        dropped_frames: u64,
+        reason: String,
+    },
 }
 
 impl Record {
     /// Encode a payload; `encode_record` adds its length and checksum envelope.
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
         match self {
+            Self::GapSummary {
+                session,
+                dropped_frames,
+                reason,
+            } => {
+                if *dropped_frames == 0 || reason.trim().is_empty() {
+                    return Err(invalid("gap summary needs a count and reason"));
+                }
+                out.push(6);
+                out.extend_from_slice(&session.to_le_bytes());
+                out.extend_from_slice(&dropped_frames.to_le_bytes());
+                put_string(out, reason)?;
+            }
             Self::SessionStart(value) => {
                 out.push(0);
                 value.encode(out)?;
@@ -87,6 +106,19 @@ impl Record {
 
     pub fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
         Ok(match input.u8()? {
+            6 => {
+                let session = input.u64()?;
+                let dropped_frames = input.u64()?;
+                let reason = input.string()?;
+                if dropped_frames == 0 || reason.trim().is_empty() {
+                    return Err(invalid("gap summary needs a count and reason"));
+                }
+                Self::GapSummary {
+                    session,
+                    dropped_frames,
+                    reason,
+                }
+            }
             0 => Self::SessionStart(SessionStart::decode(input)?),
             1 => Self::BranchStart(BranchStart::decode(input)?),
             2 => Self::Frame(Frame::decode(input)?),
@@ -138,6 +170,7 @@ pub(crate) struct SegmentState {
     first_hour: Option<i32>,
     last_hour: Option<i32>,
     needs_keyframe: bool,
+    gap_before_keyframe: bool,
     detached: bool,
 }
 
@@ -161,8 +194,8 @@ impl SegmentState {
                 self.needs_keyframe = true;
             }
             Record::BranchStart(branch) => {
-                if self.branch.is_some() && self.needs_keyframe {
-                    return Err(invalid("branch has no initial keyframe"));
+                if self.branch.is_some() && self.needs_keyframe && !self.gap_before_keyframe {
+                    return Err(invalid("branch has no initial keyframe or explicit gap"));
                 }
                 self.require_session(branch.session)?;
                 if !self.branches.insert(branch.id) {
@@ -173,6 +206,7 @@ impl SegmentState {
                 self.first_hour = Some(branch.first_hour);
                 self.last_hour = None;
                 self.needs_keyframe = true;
+                self.gap_before_keyframe = false;
             }
             Record::Frame(frame) => {
                 if self.branch != Some(frame.branch) {
@@ -197,8 +231,16 @@ impl SegmentState {
                 if gap.first_hour > gap.last_hour || gap.reason.is_empty() {
                     return Err(invalid("invalid gap range or empty reason"));
                 }
+                if self.first_hour.is_some_and(|hour| gap.first_hour < hour) {
+                    return Err(invalid("gap precedes declared first branch hour"));
+                }
+                // Disk recovery may preserve only gaps for a branch before a load.
+                // Its first hour may already have a frame in an earlier segment.
+                self.gap_before_keyframe |= self.needs_keyframe;
             }
-            Record::ClockWitness { session, .. } => self.require_session(*session)?,
+            Record::ClockWitness { session, .. } | Record::GapSummary { session, .. } => {
+                self.require_session(*session)?
+            }
             Record::Detach { session, last_hour } => {
                 self.require_session(*session)?;
                 if self.needs_keyframe {
@@ -802,6 +844,174 @@ mod tests {
             shared.borrow_mut().fault = None;
             spool.start_segment(&[branch()], &frame(11, true)).unwrap();
             assert!(recover_prefix(&shared.borrow().files[&1]).damage.is_none());
+        }
+    }
+
+    #[test]
+    fn gap_only_context_requires_explicit_loss_and_never_replaces_a_keyframe() {
+        let mut state = SegmentState::default();
+        state.accept(&branch()).unwrap();
+        let mut next = match branch() {
+            Record::BranchStart(value) => value,
+            _ => unreachable!(),
+        };
+        next.id = 8;
+        next.loaded_hour = Some(99);
+        next.first_hour = 100;
+        next.reason = BranchReason::LoadSignal;
+        assert!(state.accept(&Record::BranchStart(next.clone())).is_err());
+        for (first_hour, last_hour, reason) in [(9, 10, "lost"), (11, 10, "lost"), (10, 10, "")] {
+            assert!(
+                state
+                    .accept(&Record::Gap(Gap {
+                        branch: 7,
+                        first_hour,
+                        last_hour,
+                        reason: reason.into(),
+                    }))
+                    .is_err()
+            );
+            assert!(state.accept(&Record::BranchStart(next.clone())).is_err());
+        }
+        state
+            .accept(&Record::Gap(Gap {
+                branch: 7,
+                first_hour: 10,
+                last_hour: 12,
+                reason: "spool I/O failure".into(),
+            }))
+            .unwrap();
+        state.accept(&Record::BranchStart(next.clone())).unwrap();
+        let mut dependent = frame(100, false);
+        dependent.branch = 8;
+        assert!(state.accept(&Record::Frame(dependent.clone())).is_err());
+        next.id = 9;
+        assert!(state.accept(&Record::BranchStart(next)).is_err());
+        assert!(
+            state
+                .accept(&Record::Detach {
+                    session: 3,
+                    last_hour: None,
+                })
+                .is_err()
+        );
+        dependent.keyframe = true;
+        state.accept(&Record::Frame(dependent)).unwrap();
+    }
+
+    #[test]
+    fn two_loads_during_disk_outage_preserve_fresh_and_resumed_branch_gaps() {
+        use crate::{
+            container::{Replay, SeekResult},
+            identity::{Identity, Verification},
+        };
+
+        for resumed in [false, true] {
+            let session = Record::SessionStart(SessionStart {
+                id: 3,
+                process_id: 12,
+                process_start_time: 34,
+                qpc_frequency: 10_000_000,
+                identity: Identity {
+                    game_version: "test".into(),
+                    exe_hash: [1; 32],
+                    exe_size: 1,
+                    vanilla_hash: [2; 32],
+                    dlc: Vec::new(),
+                    mods: Vec::new(),
+                    coverage_policy: 1,
+                    language: "l_english".into(),
+                    recorder_version: "test".into(),
+                    collector_hash: [3; 32],
+                    verification: Verification::Unchecked,
+                },
+            });
+            let start = |id, first_hour, reason| {
+                Record::BranchStart(BranchStart {
+                    id,
+                    session: 3,
+                    loaded_hour: Some(first_hour - 1),
+                    first_hour,
+                    parent: Parentage::Unknown,
+                    reason,
+                })
+            };
+            let lost = |branch, hour| {
+                Record::Gap(Gap {
+                    branch,
+                    first_hour: hour,
+                    last_hour: hour,
+                    reason: "spool I/O failure".into(),
+                })
+            };
+            let backend = MemoryBackend::default();
+            let shared = backend.0.clone();
+            let mut spool = SegmentedSpool::new(backend);
+            let context = [session.clone(), branch()];
+            let failed_hour = if resumed {
+                spool.start_segment(&context, &frame(10, true)).unwrap();
+                let length = shared.borrow().files[&0].len();
+                shared.borrow_mut().fault =
+                    Some(Fault::WriteAfter(length + RECORD_HEADER_BYTES + 5));
+                assert!(spool.append(&Record::Frame(frame(11, false))).is_err());
+                11
+            } else {
+                let length: usize = context
+                    .iter()
+                    .map(|record| encode_record(record).unwrap().len())
+                    .sum();
+                shared.borrow_mut().fault =
+                    Some(Fault::WriteAfter(length + RECORD_HEADER_BYTES + 5));
+                assert!(spool.start_segment(&context, &frame(10, true)).is_err());
+                10
+            };
+            let abandoned = shared.borrow().files[&0].clone();
+            let mut context = context.to_vec();
+            context.push(lost(7, failed_hour));
+            context.push(start(8, 100, BranchReason::LoadSignal));
+            let mut second = frame(100, true);
+            second.branch = 8;
+            shared.borrow_mut().fault = Some(Fault::Create);
+            assert!(spool.start_segment(&context, &second).is_err());
+            context.push(lost(8, 100));
+            context.push(start(9, 200, BranchReason::LoadSignal));
+            let mut third = frame(200, true);
+            third.branch = 9;
+            shared.borrow_mut().fault = None;
+            spool.start_segment(&context, &third).unwrap();
+            spool.finish_segment().unwrap();
+
+            assert_eq!(spool.next_segment_index(), 3);
+            assert_eq!(shared.borrow().files[&0], abandoned);
+            assert!(!shared.borrow().files.contains_key(&1));
+            let recovered = recover_prefix(&shared.borrow().files[&2]);
+            assert!(recovered.damage.is_none());
+            context.push(Record::Frame(third.clone()));
+            assert_eq!(recovered.records, context);
+            let earlier = recover_prefix(&abandoned);
+            let replay =
+                Replay::from_recovered(b"campaign".to_vec(), &[(0, earlier), (2, recovered)])
+                    .unwrap();
+            assert_eq!(
+                replay
+                    .branches
+                    .iter()
+                    .map(|branch| branch.id)
+                    .collect::<Vec<_>>(),
+                [7, 8, 9]
+            );
+            assert_eq!(replay.gaps.len(), 2);
+            for (branch, hour) in [(7, failed_hour), (8, 100)] {
+                assert!(
+                    matches!(replay.seek(branch, hour).unwrap(), SeekResult::Gap { reason, .. }
+                        if reason == "spool I/O failure")
+                );
+            }
+            assert!(matches!(replay.seek(9, 200).unwrap(), SeekResult::Frame(_)));
+            assert_eq!(replay.index.len(), 1 + usize::from(resumed));
+            if resumed {
+                assert!(matches!(replay.seek(7, 10).unwrap(), SeekResult::Frame(_)));
+            }
         }
     }
 

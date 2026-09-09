@@ -1,7 +1,7 @@
 //! Retour owns instruction relocation. The five-byte patch is published while
 //! existing process threads are suspended, without heap use in that interval.
-//! The candidate sites belong to the engine main thread; no thread is created
-//! to enter them. Live thread-id witnesses must confirm that static finding.
+//! The accepted full-tick site belongs to the engine main thread, confirmed by
+//! call-order inspection and thread-id witnesses in the sampling proof.
 
 use retour::RawDetour;
 use std::{ffi::c_void, io, mem::size_of, ops::Range, ptr};
@@ -122,10 +122,6 @@ impl Hook {
         ]
     }
 
-    pub fn enabled(&self) -> bool {
-        self.enabled
-    }
-
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         let mut threads = Threads::open()?;
         let mut previous = 0;
@@ -216,6 +212,12 @@ pub struct Threads {
 
 impl Threads {
     pub fn open() -> Result<Self, String> {
+        Self::open_excluding(0)
+    }
+
+    /// During callback quiescence the independently joined spool thread is allowed
+    /// to remain inside the DLL. It is joined before the final full-image check.
+    pub fn open_excluding(excluded_thread: u32) -> Result<Self, String> {
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
         if snapshot == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error().to_string());
@@ -230,6 +232,7 @@ impl Threads {
             while found != 0 {
                 if entry.th32OwnerProcessID == unsafe { GetCurrentProcessId() }
                     && entry.th32ThreadID != unsafe { GetCurrentThreadId() }
+                    && entry.th32ThreadID != excluded_thread
                 {
                     let handle = unsafe {
                         OpenThread(

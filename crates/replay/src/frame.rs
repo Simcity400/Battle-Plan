@@ -5,10 +5,7 @@ use crate::{
     codec::{Decoder, invalid, put_string},
     rows::{self, DeltaRow, Row, TableId},
 };
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-};
+use std::{collections::BTreeSet, io};
 
 pub const TABLE_COUNT: usize = 5;
 
@@ -95,6 +92,10 @@ fn validate_rows(table: TableId, rows: &[Row]) -> io::Result<()> {
 
 fn validate_complete(table: TableId, rows: &[Row], hour: Hour) -> io::Result<()> {
     validate_rows(table, rows)?;
+    validate_singleton(table, rows, hour)
+}
+
+fn validate_singleton(table: TableId, rows: &[Row], hour: Hour) -> io::Result<()> {
     if matches!(table, TableId::Clock | TableId::Campaign) && rows.len() != 1 {
         return Err(invalid(format!(
             "complete {table:?} table must contain exactly one row"
@@ -111,6 +112,14 @@ fn validate_complete(table: TableId, rows: &[Row], hour: Hour) -> io::Result<()>
 
 impl Frame {
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        self.encode_with_sizes(out).map(|_| ())
+    }
+
+    pub fn table_encoded_sizes(&self) -> io::Result<[usize; TABLE_COUNT]> {
+        self.encode_with_sizes(&mut Vec::new())
+    }
+
+    pub fn encode_with_sizes(&self, out: &mut Vec<u8>) -> io::Result<[usize; TABLE_COUNT]> {
         out.extend_from_slice(&self.branch.to_le_bytes());
         out.extend_from_slice(&self.hour.to_le_bytes());
         out.push(u8::from(self.keyframe));
@@ -120,7 +129,9 @@ impl Frame {
         }
         out.extend_from_slice(&self.metrics.pool_bytes.to_le_bytes());
         out.extend_from_slice(&self.metrics.dropped_frames.to_le_bytes());
+        let mut sizes = [0; TABLE_COUNT];
         for (table, update) in TableId::ALL.into_iter().zip(&self.tables) {
+            let table_start = out.len();
             if self.keyframe
                 && !matches!(
                     update,
@@ -172,8 +183,9 @@ impl Frame {
                     put_string(out, reason)?;
                 }
             }
+            sizes[table.index()] = out.len() - table_start;
         }
-        Ok(())
+        Ok(sizes)
     }
 
     pub fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
@@ -280,16 +292,19 @@ fn validate_delta(changed: &[DeltaRow], deleted: &[u32]) -> io::Result<()> {
     {
         return Err(invalid("delta keys must be unique and ascending"));
     }
-    if changed
-        .iter()
-        .any(|row| deleted.binary_search(&row.key).is_ok())
-    {
-        return Err(invalid("delta both changes and deletes a key"));
+    let mut deleted = deleted.iter().peekable();
+    for row in changed {
+        while deleted.peek().is_some_and(|key| **key < row.key) {
+            deleted.next();
+        }
+        if deleted.peek().is_some_and(|key| **key == row.key) {
+            return Err(invalid("delta both changes and deletes a key"));
+        }
     }
     Ok(())
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct Baselines {
     branch: Option<BranchId>,
     last_hour: Option<Hour>,
@@ -328,21 +343,31 @@ impl FrameEncoder {
                     {
                         None => TableUpdate::Snapshot(values.clone()),
                         Some((baseline, previous)) => {
-                            let old: BTreeMap<_, _> =
-                                previous.iter().map(|row| (row.key(), row)).collect();
-                            let now: BTreeMap<_, _> =
-                                values.iter().map(|row| (row.key(), row)).collect();
                             let mut changed = Vec::new();
+                            let mut deleted = Vec::new();
+                            let mut old = previous.iter().peekable();
+                            // Both walks are key-sorted. Merge once without allocating
+                            // a tree node for every unchanged province every hour.
                             for row in values {
-                                if let Some(delta) = row.delta(old.get(&row.key()).copied())? {
+                                while old
+                                    .peek()
+                                    .is_some_and(|previous| previous.key() < row.key())
+                                {
+                                    deleted.push(old.next().unwrap().key());
+                                }
+                                let baseline_row = if old
+                                    .peek()
+                                    .is_some_and(|previous| previous.key() == row.key())
+                                {
+                                    old.next()
+                                } else {
+                                    None
+                                };
+                                if let Some(delta) = row.delta(baseline_row)? {
                                     changed.push(delta);
                                 }
                             }
-                            let deleted: Vec<_> = old
-                                .keys()
-                                .filter(|key| !now.contains_key(key))
-                                .copied()
-                                .collect();
+                            deleted.extend(old.map(Row::key));
                             if changed.is_empty() && deleted.is_empty() {
                                 TableUpdate::Unchanged {
                                     baseline: *baseline,
@@ -391,23 +416,29 @@ impl FrameEncoder {
             metrics: source.metrics.clone(),
             tables: tables.try_into().unwrap(),
         };
-        let mut next = Baselines {
-            branch: Some(source.branch),
-            last_hour: Some(source.hour),
-            ..Default::default()
-        };
+        // All fallible validation and diffing has finished. An unchanged table
+        // keeps its rows and allocation; only its baseline hour advances.
         for (index, update) in frame.tables.iter().enumerate() {
-            if matches!(
-                update,
-                TableUpdate::Snapshot(_)
-                    | TableUpdate::Delta { .. }
-                    | TableUpdate::Unchanged { .. }
-            ) && let TableView::Complete(rows) = &source.tables[index]
-            {
-                next.tables[index] = Some((source.hour, rows.clone()));
+            match update {
+                TableUpdate::Unchanged { .. } => {
+                    self.state.tables[index]
+                        .as_mut()
+                        .expect("unchanged table has a validated baseline")
+                        .0 = source.hour;
+                }
+                TableUpdate::Snapshot(_) | TableUpdate::Delta { .. } => {
+                    let TableView::Complete(rows) = &source.tables[index] else {
+                        unreachable!("complete update came from complete source rows")
+                    };
+                    self.state.tables[index] = Some((source.hour, rows.clone()));
+                }
+                TableUpdate::Truncated { .. } | TableUpdate::Unavailable { .. } => {
+                    self.state.tables[index] = None;
+                }
             }
         }
-        self.state = next;
+        self.state.branch = Some(source.branch);
+        self.state.last_hour = Some(source.hour);
         if keyframe {
             self.keyframe_hour = Some(source.hour);
         }
@@ -430,25 +461,27 @@ impl FrameDecoder {
         {
             return Err(invalid("frame hour did not advance on its branch"));
         }
-        let mut next = if frame.keyframe || self.state.branch != Some(frame.branch) {
-            Baselines::default()
-        } else {
-            self.state.clone()
-        };
-        let mut tables = Vec::with_capacity(TABLE_COUNT);
-        for (table, update) in TableId::ALL.into_iter().zip(&frame.tables) {
-            if frame.keyframe
-                && !matches!(
+        // Reject frame-wide errors before moving any baseline. From here onward,
+        // a failed update clears only its table and becomes a named unavailable view.
+        if frame.keyframe
+            && frame.tables.iter().any(|update| {
+                !matches!(
                     update,
                     TableUpdate::Snapshot(_) | TableUpdate::Unavailable { .. }
                 )
-            {
-                return Err(invalid("keyframe contains a dependent or partial table"));
-            }
+            })
+        {
+            return Err(invalid("keyframe contains a dependent or partial table"));
+        }
+        if frame.keyframe || self.state.branch != Some(frame.branch) {
+            self.state = Baselines::default();
+        }
+        let tables = std::array::from_fn(|index| {
+            let table = TableId::ALL[index];
             let view = match apply_table(
                 table,
-                update,
-                next.tables[table.index()].as_ref(),
+                &frame.tables[index],
+                self.state.tables[index].take(),
                 frame.hour,
             ) {
                 Ok(view) => view,
@@ -456,19 +489,21 @@ impl FrameDecoder {
                     reason: error.to_string(),
                 },
             };
-            next.tables[table.index()] = match &view {
-                TableView::Complete(rows) => Some((frame.hour, rows.clone())),
-                _ => None,
-            };
-            tables.push(view);
-        }
-        next.branch = Some(frame.branch);
-        next.last_hour = Some(frame.hour);
-        self.state = next;
+            match view {
+                TableView::Complete(rows) => {
+                    let output = TableView::Complete(rows.clone());
+                    self.state.tables[index] = Some((frame.hour, rows));
+                    output
+                }
+                view => view,
+            }
+        });
+        self.state.branch = Some(frame.branch);
+        self.state.last_hour = Some(frame.hour);
         Ok(DecodedFrame {
             branch: frame.branch,
             hour: frame.hour,
-            tables: tables.try_into().unwrap(),
+            tables,
             metrics: frame.metrics.clone(),
         })
     }
@@ -477,7 +512,7 @@ impl FrameDecoder {
 fn apply_table(
     table: TableId,
     update: &TableUpdate,
-    previous: Option<&(Hour, Vec<Row>)>,
+    previous: Option<(Hour, Vec<Row>)>,
     hour: Hour,
 ) -> io::Result<TableView> {
     match update {
@@ -504,38 +539,53 @@ fn apply_table(
             })
         }
         TableUpdate::Delta { baseline, .. } | TableUpdate::Unchanged { baseline } => {
-            let Some((previous_hour, previous_rows)) =
+            let Some((_, previous_rows)) =
                 previous.filter(|(previous_hour, _)| previous_hour == baseline && *baseline < hour)
             else {
                 return Err(invalid(format!(
                     "missing table baseline at hour {baseline}"
                 )));
             };
-            let _ = previous_hour;
             if let TableUpdate::Delta {
                 changed, deleted, ..
             } = update
             {
                 validate_delta(changed, deleted)?;
-                let mut values: BTreeMap<_, _> = previous_rows
-                    .iter()
-                    .map(|row| (row.key(), row.clone()))
-                    .collect();
-                for key in deleted {
-                    if values.remove(key).is_none() {
+                let mut rows =
+                    Vec::with_capacity(previous_rows.len().saturating_sub(deleted.len()));
+                let mut changed = changed.iter().peekable();
+                let mut deleted = deleted.iter().peekable();
+                // Each ordered stream is consumed once. Existing rows move into
+                // the new baseline; only changed rows decode new field values.
+                for previous in previous_rows {
+                    let key = previous.key();
+                    if deleted.peek().is_some_and(|deleted| **deleted < key) {
                         return Err(invalid("delta deletes an absent key"));
                     }
+                    while changed.peek().is_some_and(|delta| delta.key < key) {
+                        rows.push(changed.next().unwrap().apply(table, None)?);
+                    }
+                    if deleted.peek().is_some_and(|deleted| **deleted == key) {
+                        deleted.next();
+                    } else if changed.peek().is_some_and(|delta| delta.key == key) {
+                        rows.push(changed.next().unwrap().apply(table, Some(&previous))?);
+                    } else {
+                        rows.push(previous);
+                    }
+                }
+                if deleted.next().is_some() {
+                    return Err(invalid("delta deletes an absent key"));
                 }
                 for delta in changed {
-                    let row = delta.apply(table, values.get(&delta.key))?;
-                    values.insert(delta.key, row);
+                    rows.push(delta.apply(table, None)?);
                 }
-                let rows: Vec<_> = values.into_values().collect();
                 validate_complete(table, &rows, hour)?;
                 Ok(TableView::Complete(rows))
             } else {
-                validate_complete(table, previous_rows, hour)?;
-                Ok(TableView::Complete(previous_rows.clone()))
+                // This private baseline already passed full row validation. Only
+                // the clock's relation to the new enclosing hour can have changed.
+                validate_singleton(table, &previous_rows, hour)?;
+                Ok(TableView::Complete(previous_rows))
             }
         }
     }
@@ -845,6 +895,38 @@ mod tests {
     }
 
     #[test]
+    fn sorted_delta_merge_handles_insertions_around_deleted_and_retained_rows() {
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        let mut first = source(1, 0);
+        first.tables[TableId::Provinces.index()] =
+            TableView::Complete(vec![province(2, 2), province(4, 4), province(6, 6)]);
+        decoder
+            .apply(&encoder.encode(&first, false).unwrap())
+            .unwrap();
+        let mut expected = source(1, 1);
+        expected.tables[TableId::Provinces.index()] = TableView::Complete(vec![
+            province(1, 1),
+            province(4, 99),
+            province(5, 5),
+            province(7, 7),
+        ]);
+        let frame = encoder.encode(&expected, false).unwrap();
+        let TableUpdate::Delta {
+            changed, deleted, ..
+        } = &frame.tables[TableId::Provinces.index()]
+        else {
+            panic!()
+        };
+        assert_eq!(
+            changed.iter().map(|row| row.key).collect::<Vec<_>>(),
+            [1, 4, 5, 7]
+        );
+        assert_eq!(deleted, &[2, 6]);
+        assert_eq!(decoder.apply(&wire(&frame)).unwrap(), expected);
+    }
+
+    #[test]
     fn invalid_delta_operations_do_not_damage_other_tables_or_retain_partial_rows() {
         let mut encoder = FrameEncoder::new();
         let first = encoder.encode(&source(1, 0), false).unwrap();
@@ -922,6 +1004,7 @@ mod tests {
         assert!(encoder.encode(&source(1, 0), false).is_err());
         assert!(decoder.apply(&initial).is_err());
         let mut invalid_source = source(1, 1);
+        change_country(&mut invalid_source, i64::MAX);
         invalid_source.tables[TableId::Provinces.index()] =
             TableView::Complete(vec![province(2, 2), province(1, 7)]);
         assert!(encoder.encode(&invalid_source, false).is_err());
@@ -935,6 +1018,10 @@ mod tests {
         invalid_keyframe.keyframe = true;
         assert!(invalid_keyframe.encode(&mut Vec::new()).is_err());
         assert!(decoder.apply(&invalid_keyframe).is_err());
+        let mut invalid_last_table = FrameEncoder::new().encode(&expected, false).unwrap();
+        invalid_last_table.tables[TableId::Provinces.index()] =
+            TableUpdate::Unchanged { baseline: 0 };
+        assert!(decoder.apply(&invalid_last_table).is_err());
         let mut bytes = Vec::new();
         valid.encode(&mut bytes).unwrap();
         bytes[12] = 1; // The keyframe byte follows the u64 branch and i32 hour.

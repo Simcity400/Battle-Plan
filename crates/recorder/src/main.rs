@@ -1,8 +1,9 @@
-mod probe;
+mod recording;
+mod replay_io;
 mod windows;
 
 fn main() -> std::process::ExitCode {
-    match probe::command(std::env::args_os().skip(1).collect()) {
+    match recording::command(std::env::args_os().skip(1).collect()) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");

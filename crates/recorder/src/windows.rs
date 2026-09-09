@@ -10,10 +10,7 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     System::{
-        Diagnostics::{
-            Debug::{ReadProcessMemory, WriteProcessMemory},
-            ToolHelp::*,
-        },
+        Diagnostics::{Debug::WriteProcessMemory, ToolHelp::*},
         LibraryLoader::*,
         Memory::*,
         Threading::*,
@@ -109,7 +106,6 @@ pub struct Process {
     pub handle: Handle,
     pub pid: u32,
     pub path: PathBuf,
-    pub base: usize,
     pub start_time: u64,
 }
 impl Process {
@@ -132,15 +128,6 @@ impl Process {
             return Err(io::Error::last_os_error().to_string());
         }
         let path = PathBuf::from(OsString::from_wide(&buffer[..len as usize]));
-        let base = modules(pid)?
-            .into_iter()
-            .find(|m| {
-                m.path
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("hoi4.exe"))
-            })
-            .ok_or("hoi4.exe module absent")?
-            .base;
         let mut times = [FILETIME::default(); 4];
         if unsafe {
             GetProcessTimes(
@@ -158,7 +145,6 @@ impl Process {
             handle,
             pid,
             path,
-            base,
             start_time: (u64::from(times[0].dwHighDateTime) << 32)
                 | u64::from(times[0].dwLowDateTime),
         })
@@ -175,7 +161,7 @@ impl Process {
         }))
     }
 
-    pub fn inject(&self, dll: &Path) -> Result<(), String> {
+    pub fn inject(&self, dll: &Path, cancelled: impl Fn() -> bool) -> Result<(), String> {
         let dll = dll.canonicalize().map_err(|e| e.to_string())?;
         let path = wide(dll.as_os_str());
         let bytes = path.len() * 2;
@@ -265,6 +251,9 @@ impl Process {
             may_free = false;
             let deadline = Instant::now() + Duration::from_secs(120);
             while !thread.signaled()? {
+                if cancelled() {
+                    return Err("injection cancelled; delayed collector will see the cancellation marker; remote argument retained until process exit".into());
+                }
                 if Instant::now() >= deadline {
                     return Err("LoadLibraryW timed out; its remote argument remains allocated until process exit".into());
                 }
@@ -288,26 +277,21 @@ impl Process {
     }
 }
 
-impl engine::Memory for Process {
-    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        let mut copied = 0;
-        unsafe {
-            ReadProcessMemory(
-                self.handle.0,
-                address as *const c_void,
-                destination.as_mut_ptr().cast(),
-                destination.len(),
-                &mut copied,
-            ) != 0
-                && copied == destination.len()
-        }
-    }
-}
-
 pub struct Event {
     pub handle: Handle,
 }
 impl Event {
+    pub fn open(name: &str) -> Result<Self, String> {
+        Ok(Self {
+            handle: Handle::new(unsafe {
+                OpenEventW(
+                    EVENT_MODIFY_STATE | SYNCHRONIZATION_SYNCHRONIZE,
+                    0,
+                    wide(OsStr::new(name)).as_ptr(),
+                )
+            })?,
+        })
+    }
     pub fn new(name: &str) -> Result<Self, String> {
         Ok(Self {
             handle: Handle::new(unsafe {

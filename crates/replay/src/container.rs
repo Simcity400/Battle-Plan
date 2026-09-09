@@ -11,7 +11,7 @@ use crate::{
     BranchId, FORMAT_VERSION, Hour, KEYFRAME_INTERVAL,
     branches::{BranchReason, BranchStart, Gap},
     codec::{Decoder, invalid, put_bytes, put_string},
-    frame::{DecodedFrame, Frame, FrameDecoder, TableView},
+    frame::{DecodedFrame, Frame, FrameDecoder, TABLE_COUNT, TableView},
     identity::{Identity, SessionStart, Verification},
     rows::{Row, TableId},
     spool::{Record, Recovery, SegmentState},
@@ -22,6 +22,9 @@ const TRAILER_MAGIC: &[u8; 4] = b"H4TR";
 const FOOTER_MAGIC: &[u8; 4] = b"H4FT";
 const FOOTER_SIZE: usize = 24;
 pub const MAX_BLOCK_RAW_BYTES: usize = 1 << 30;
+
+type FrameObserver<'a> =
+    dyn FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()> + 'a;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockIndex {
@@ -119,9 +122,9 @@ impl RawBlock {
             count: 0,
         }
     }
-    fn push(&mut self, frame: &Frame) -> io::Result<()> {
+    fn push(&mut self, frame: &Frame) -> io::Result<[usize; TABLE_COUNT]> {
         let mut payload = Vec::new();
-        frame.encode(&mut payload)?;
+        let sizes = frame.encode_with_sizes(&mut payload)?;
         put_bytes(&mut self.frames, &payload)?;
         if self.frames.len() > MAX_BLOCK_RAW_BYTES - 4 {
             return Err(invalid("replay block exceeds raw size limit"));
@@ -131,7 +134,7 @@ impl RawBlock {
             .checked_add(1)
             .ok_or_else(|| invalid("too many frames"))?;
         self.last_hour = frame.hour;
-        Ok(())
+        Ok(sizes)
     }
     fn raw(&self) -> Vec<u8> {
         let mut raw = Vec::with_capacity(self.frames.len() + 4);
@@ -151,12 +154,21 @@ struct Pending {
 
 impl Replay {
     pub fn from_records(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Self> {
+        let segments: Vec<_> = segments.iter().map(Vec::as_slice).collect();
+        Self::from_record_slices(campaign_id, &segments, &mut |_, _, _| Ok(()))
+    }
+
+    fn from_record_slices(
+        campaign_id: Vec<u8>,
+        segments: &[&[Record]],
+        observe: &mut FrameObserver<'_>,
+    ) -> io::Result<Self> {
         if campaign_id.is_empty() {
             return Err(invalid("empty campaign identity"));
         }
         let identity = segments
             .iter()
-            .flatten()
+            .flat_map(|segment| segment.iter())
             .find_map(|record| match record {
                 Record::SessionStart(session) => Some(session.identity.clone()),
                 _ => None,
@@ -170,7 +182,14 @@ impl Replay {
         let mut encoded_identity = Vec::new();
         identity.encode(&mut encoded_identity)?;
         put_bytes(&mut bytes, &encoded_identity)?;
-        let pending = collect(segments, &identity, &campaign_id, None, KEYFRAME_INTERVAL)?;
+        let pending = collect(
+            segments,
+            &identity,
+            &campaign_id,
+            None,
+            KEYFRAME_INTERVAL,
+            observe,
+        )?;
         let mut index = Vec::new();
         append_blocks(&mut bytes, &mut index, &pending.blocks)?;
         finish_file(
@@ -187,12 +206,22 @@ impl Replay {
 
     /// Existing compressed blocks and their original offsets are copied verbatim.
     pub fn append(&self, segments: &[Vec<Record>]) -> io::Result<Self> {
+        let segments: Vec<_> = segments.iter().map(Vec::as_slice).collect();
+        self.append_record_slices(&segments, &mut |_, _, _| Ok(()))
+    }
+
+    fn append_record_slices(
+        &self,
+        segments: &[&[Record]],
+        observe: &mut FrameObserver<'_>,
+    ) -> io::Result<Self> {
         let pending = collect(
             segments,
             &self.identity,
             &self.campaign_id,
             Some(self),
             self.keyframe_interval,
+            observe,
         )?;
         let mut bytes = self.bytes[..self.trailer_start].to_vec();
         let mut index = self.index.clone();
@@ -218,13 +247,34 @@ impl Replay {
     }
 
     pub fn from_recovered(campaign_id: Vec<u8>, segments: &[(u32, Recovery)]) -> io::Result<Self> {
+        Self::from_recovered_with(campaign_id, segments, |_, _, _| Ok(()))
+    }
+
+    /// Report each frame using its validated decoded view and the sizes produced
+    /// by the block encoder. Observation does not publish the file; callers must
+    /// report success only after the returned replay has been written atomically.
+    pub fn from_recovered_with(
+        campaign_id: Vec<u8>,
+        segments: &[(u32, Recovery)],
+        mut observe: impl FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()>,
+    ) -> io::Result<Self> {
         let records = ordered_records(segments)?;
-        Self::from_records(campaign_id, &records)?.add_recovery_notes(segments)
+        Self::from_record_slices(campaign_id, &records, &mut observe)?.add_recovery_notes(segments)
     }
 
     pub fn append_recovered(&self, segments: &[(u32, Recovery)]) -> io::Result<Self> {
+        self.append_recovered_with(segments, |_, _, _| Ok(()))
+    }
+
+    /// Observe only the new frames; existing compressed blocks are copied intact.
+    pub fn append_recovered_with(
+        &self,
+        segments: &[(u32, Recovery)],
+        mut observe: impl FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()>,
+    ) -> io::Result<Self> {
         let records = ordered_records(segments)?;
-        self.append(&records)?.add_recovery_notes(segments)
+        self.append_record_slices(&records, &mut observe)?
+            .add_recovery_notes(segments)
     }
 
     fn add_recovery_notes(mut self, segments: &[(u32, Recovery)]) -> io::Result<Self> {
@@ -267,6 +317,15 @@ impl Replay {
 
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Exact recoverable frame hours, never the index's range with holes filled.
+    pub fn recorded_hours(&self, branch: BranchId) -> io::Result<Vec<Hour>> {
+        let mut hours = Vec::new();
+        for block in self.index.iter().filter(|block| block.branch == branch) {
+            hours.extend(self.read_block(block)?.into_iter().map(|frame| frame.hour));
+        }
+        Ok(hours)
     }
 
     pub fn open(bytes: Vec<u8>) -> io::Result<Self> {
@@ -411,7 +470,8 @@ impl Replay {
         }
     }
 
-    fn read_block(&self, index: &BlockIndex) -> io::Result<Vec<Frame>> {
+    /// Decode one block for sequential playback, inspection, or history recovery.
+    pub fn read_block(&self, index: &BlockIndex) -> io::Result<Vec<Frame>> {
         if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
             return Err(invalid("block exceeds raw size limit"));
         }
@@ -754,7 +814,7 @@ fn validate_campaign(frame: &DecodedFrame, campaign_id: &[u8]) -> io::Result<()>
     Ok(())
 }
 
-fn ordered_records(segments: &[(u32, Recovery)]) -> io::Result<Vec<Vec<Record>>> {
+fn ordered_records(segments: &[(u32, Recovery)]) -> io::Result<Vec<&[Record]>> {
     let mut sorted: Vec<_> = segments.iter().collect();
     sorted.sort_unstable_by_key(|(number, _)| *number);
     if sorted.windows(2).any(|pair| pair[0].0 == pair[1].0) {
@@ -762,16 +822,17 @@ fn ordered_records(segments: &[(u32, Recovery)]) -> io::Result<Vec<Vec<Record>>>
     }
     Ok(sorted
         .into_iter()
-        .map(|(_, recovery)| recovery.records.clone())
+        .map(|(_, recovery)| recovery.records.as_slice())
         .collect())
 }
 
 fn collect(
-    segments: &[Vec<Record>],
+    segments: &[&[Record]],
     identity: &Identity,
     campaign_id: &[u8],
     existing: Option<&Replay>,
     interval: u32,
+    observe: &mut FrameObserver<'_>,
 ) -> io::Result<Pending> {
     identity.validate()?;
     let mut sessions: BTreeMap<_, _> = existing
@@ -811,7 +872,7 @@ fn collect(
         let mut needs_keyframe = true;
         let mut frame_decoder = FrameDecoder::new();
         let mut segment_state = SegmentState::default();
-        for record in segment {
+        for record in *segment {
             segment_state.accept(record)?;
             match record {
                 Record::SessionStart(session) => {
@@ -888,7 +949,8 @@ fn collect(
                     }
                     let decoded = frame_decoder.apply(frame)?;
                     validate_campaign(&decoded, campaign_id)?;
-                    block.push(frame)?;
+                    let sizes = block.push(frame)?;
+                    observe(frame, &decoded, sizes)?;
                     last_hours.insert(frame.branch, frame.hour);
                     needs_keyframe = false;
                 }
@@ -899,7 +961,9 @@ fn collect(
                     }
                     pending.gaps.push(gap.clone());
                 }
-                Record::Detach { session, .. } | Record::ClockWitness { session, .. } => {
+                Record::Detach { session, .. }
+                | Record::ClockWitness { session, .. }
+                | Record::GapSummary { session, .. } => {
                     if current_session != Some(*session) {
                         return Err(invalid("control has no matching session context"));
                     }
@@ -961,7 +1025,9 @@ fn validate_metadata(
     }
     for control in controls {
         match control {
-            Record::Detach { session, .. } | Record::ClockWitness { session, .. }
+            Record::Detach { session, .. }
+            | Record::ClockWitness { session, .. }
+            | Record::GapSummary { session, .. }
                 if session_ids.contains(session) => {}
             _ => return Err(invalid("invalid replay control or unknown session")),
         }
@@ -1328,6 +1394,78 @@ mod tests {
                 &[(2, recovery(first.clone())), (2, recovery(first))]
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn finalization_observer_sees_decoded_failures_and_identical_wire_sizes() {
+        let mut input = records(1, &[1, 2, 3]);
+        if let Record::Frame(frame) = &mut input[3] {
+            frame.tables[TableId::Provinces.index()] =
+                crate::frame::TableUpdate::Unchanged { baseline: 999 };
+        }
+        let segments = [(
+            0,
+            Recovery {
+                records: input,
+                valid_bytes: 0,
+                damage: None,
+            },
+        )];
+        let mut observed = Vec::new();
+        let replay =
+            Replay::from_recovered_with(CAMPAIGN.into(), &segments, |frame, decoded, sizes| {
+                assert_eq!(sizes, frame.table_encoded_sizes()?);
+                observed.push(decoded.clone());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            observed.iter().map(|frame| frame.hour).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert!(
+            matches!(&observed[1].tables[TableId::Provinces.index()], TableView::Unavailable { reason } if reason.contains("999"))
+        );
+        assert!(
+            matches!(&observed[2].tables[TableId::Provinces.index()], TableView::Unavailable { reason } if reason.contains("2"))
+        );
+        for frame in &observed {
+            assert!(
+                matches!(replay.seek(frame.branch, frame.hour).unwrap(), SeekResult::Frame(decoded) if *decoded == *frame)
+            );
+        }
+        assert_eq!(
+            replay.bytes(),
+            Replay::from_recovered(CAMPAIGN.into(), &segments)
+                .unwrap()
+                .bytes()
+        );
+
+        let next = [(
+            1,
+            Recovery {
+                records: records(2, &[4, 5]),
+                valid_bytes: 0,
+                damage: None,
+            },
+        )];
+        let mut appended_hours = Vec::new();
+        let appended = replay
+            .append_recovered_with(&next, |frame, _, _| {
+                appended_hours.push((frame.branch, frame.hour));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(appended_hours, [(2, 4), (2, 5)]);
+        assert_eq!(
+            appended.bytes(),
+            replay.append_recovered(&next).unwrap().bytes()
+        );
+        assert!(
+            replay
+                .append_recovered_with(&next, |_, _, _| Err(io::Error::other("report aborted")))
+                .is_err()
         );
     }
 
