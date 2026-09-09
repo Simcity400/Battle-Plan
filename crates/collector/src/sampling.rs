@@ -5,11 +5,12 @@ use crossbeam_queue::ArrayQueue;
 use engine::{
     ccountry,
     cgame_state::{self, Clock},
-    cprovince,
+    cprovince, cstate,
     memory::LiveMemory,
     msvc_string::Text,
     walk::Outcome,
 };
+use replay::frame::TABLE_COUNT;
 use std::{
     cell::UnsafeCell,
     mem::size_of,
@@ -93,13 +94,17 @@ pub struct Captured {
     pub clock_after: Option<Clock>,
     pub countries: Vec<ccountry::Row>,
     pub provinces: Vec<cprovince::Row>,
+    pub states: Vec<cstate::Row>,
+    states_second: Vec<cstate::Row>,
     pub links: Vec<ccountry::LinkRow>,
     links_second: Vec<ccountry::LinkRow>,
     pub countries_result: Outcome,
     pub provinces_result: Outcome,
+    pub states_result: Outcome,
+    pub states_mismatches: usize,
     pub links_result: Outcome,
     pub links_mismatches: usize,
-    pub table_ns: [u64; 5],
+    pub table_ns: [u64; TABLE_COUNT],
     pub total_ns: u64,
     pub qpc: i64,
     pub pool_bytes: u64,
@@ -118,13 +123,17 @@ impl Captured {
             clock_after: None,
             countries: vec![ccountry::Row::default(); 512],
             provinces: vec![cprovince::Row::default(); 20_000],
+            states: vec![cstate::Row::default(); 2048],
+            states_second: vec![cstate::Row::default(); 2048],
             links: vec![ccountry::LinkRow::default(); 1024],
             links_second: vec![ccountry::LinkRow::default(); 1024],
             countries_result: unavailable,
             provinces_result: unavailable,
+            states_result: unavailable,
+            states_mismatches: 0,
             links_result: unavailable,
             links_mismatches: 0,
-            table_ns: [0; 5],
+            table_ns: [0; TABLE_COUNT],
             total_ns: 0,
             qpc: 0,
             pool_bytes: 0,
@@ -137,12 +146,13 @@ impl Captured {
         size_of::<Self>()
             + self.countries.capacity() * size_of::<ccountry::Row>()
             + self.provinces.capacity() * size_of::<cprovince::Row>()
+            + (self.states.capacity() + self.states_second.capacity()) * size_of::<cstate::Row>()
             + (self.links.capacity() + self.links_second.capacity())
                 * size_of::<ccountry::LinkRow>()
     }
 
     /// Called only by the spool thread while it owns this buffer's queue index.
-    pub fn grow(&mut self, capacities: &mut [usize; 3]) {
+    pub fn grow(&mut self, capacities: &mut [usize; 4]) {
         fn resize<T: Default + Clone>(rows: &mut Vec<T>, outcome: Outcome, capacity: &mut usize) {
             if let Outcome::Truncated { len, unread_rows } = outcome {
                 *capacity = (*capacity).max(len.saturating_add(unread_rows as usize));
@@ -162,6 +172,11 @@ impl Captured {
             &mut capacities[1],
         );
         resize(&mut self.links, self.links_result, &mut capacities[2]);
+        resize(&mut self.states, self.states_result, &mut capacities[3]);
+        if self.states_second.len() < capacities[3] {
+            self.states_second
+                .resize(capacities[3], cstate::Row::default());
+        }
         if self.links_second.len() < capacities[2] {
             self.links_second
                 .resize(capacities[2], ccountry::LinkRow::default());
@@ -278,7 +293,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             let frame = unsafe { &mut *shared.frames[index].get() };
             frame.clock_entry = entry;
             frame.qpc = entered;
-            frame.table_ns = [0; 5];
+            frame.table_ns = [0; TABLE_COUNT];
             let before = qpc();
             frame.clock_before = cgame_state::read_clock(&memory, shared.base);
             let mut clock_ticks = entry_ticks + qpc() - before;
@@ -287,6 +302,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             };
             frame.countries_result = unavailable;
             frame.provinces_result = unavailable;
+            frame.states_result = unavailable;
+            frame.states_mismatches = 0;
             frame.links_result = unavailable;
             frame.links_mismatches = 0;
             if let Some(clock) = frame.clock_before {
@@ -314,6 +331,19 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 frame.provinces_result =
                     cprovince::walk(&memory, shared.base, state, &mut frame.provinces);
                 frame.table_ns[4] = shared.ns(qpc() - begin);
+                let begin = qpc();
+                frame.states_result = cstate::walk(&memory, shared.base, state, &mut frame.states);
+                let second = cstate::walk(&memory, shared.base, state, &mut frame.states_second);
+                frame.states_mismatches = if frame.states_result != second {
+                    1
+                } else {
+                    frame.states[..second.len()]
+                        .iter()
+                        .zip(&frame.states_second[..second.len()])
+                        .filter(|(a, b)| a != b)
+                        .count()
+                };
+                frame.table_ns[5] = shared.ns(qpc() - begin);
             }
             let after = qpc();
             frame.clock_after = cgame_state::read_clock(&memory, shared.base);

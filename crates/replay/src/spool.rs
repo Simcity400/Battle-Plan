@@ -15,7 +15,7 @@ use crate::{
     identity::SessionStart,
 };
 
-pub const RECORD_MAGIC: [u8; 4] = *b"H4S1";
+pub const RECORD_MAGIC: [u8; 4] = *b"H4S2";
 pub const RECORD_HEADER_BYTES: usize = 12;
 pub const MAX_RECORD_BYTES: usize = 128 * 1024 * 1024;
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
@@ -288,7 +288,11 @@ pub fn recover_prefix(bytes: &[u8]) -> Recovery {
                 return Err(invalid("truncated record header"));
             }
             if tail[..4] != RECORD_MAGIC {
-                return Err(invalid("invalid record magic"));
+                return Err(invalid(format!(
+                    "unsupported spool record magic {:?}; expected {:?}",
+                    String::from_utf8_lossy(&tail[..4]),
+                    String::from_utf8_lossy(&RECORD_MAGIC),
+                )));
             }
             let length = u32::from_le_bytes(tail[4..8].try_into().unwrap()) as usize;
             if length == 0 || length > MAX_RECORD_BYTES {
@@ -592,6 +596,18 @@ mod tests {
                 assert!(result.damage.is_some(), "cut {cut}");
             }
         }
+    }
+
+    #[test]
+    fn old_spool_magic_is_refused_before_decoding_any_records() {
+        let mut bytes = valid_segment();
+        bytes[..4].copy_from_slice(b"H4S1");
+        let recovered = recover_prefix(&bytes);
+        assert_eq!(recovered.valid_bytes, 0);
+        assert!(recovered.records.is_empty());
+        let reason = recovered.damage.unwrap();
+        assert!(reason.contains("unsupported spool record magic \"H4S1\""));
+        assert!(reason.contains("expected \"H4S2\""));
     }
 
     #[test]

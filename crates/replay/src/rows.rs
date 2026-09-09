@@ -12,15 +12,17 @@ pub enum TableId {
     Countries = 2,
     CountryLinks = 3,
     Provinces = 4,
+    States = 5,
 }
 
 impl TableId {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Clock,
         Self::Campaign,
         Self::Countries,
         Self::CountryLinks,
         Self::Provinces,
+        Self::States,
     ];
 
     pub const fn index(self) -> usize {
@@ -47,6 +49,7 @@ impl TableId {
             Self::Countries => &[U32, Bytes, Bytes, OptionalI64, I64, I64, I64, OptionalI64],
             Self::CountryLinks => &[U32],
             Self::Provinces => &[U32, U32, U32],
+            Self::States => &[U32, U32],
         }
     }
 
@@ -120,6 +123,15 @@ pub struct ProvinceRow {
     pub controller: u32,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct StateRow {
+    pub id: u32,
+    /// Raw country link id; zero is retained as read from the engine.
+    pub owner: u32,
+    /// Raw country link id; resolve through CountryLinks to a canonical slot.
+    pub controller: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     Clock(ClockRow),
@@ -127,6 +139,7 @@ pub enum Row {
     Country(CountryRow),
     CountryLink(CountryLinkRow),
     Province(ProvinceRow),
+    State(StateRow),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +158,7 @@ impl Row {
             Self::Country(_) => TableId::Countries,
             Self::CountryLink(_) => TableId::CountryLinks,
             Self::Province(_) => TableId::Provinces,
+            Self::State(_) => TableId::States,
         }
     }
 
@@ -154,6 +168,7 @@ impl Row {
             Self::Country(row) => row.id,
             Self::CountryLink(row) => row.id,
             Self::Province(row) => row.id,
+            Self::State(row) => row.id,
         }
     }
 
@@ -211,6 +226,7 @@ impl Row {
             ]),
             Self::CountryLink(row) => padded([U32(row.canonical_slot)]),
             Self::Province(row) => padded([U32(row.state), U32(row.owner), U32(row.controller)]),
+            Self::State(row) => padded([U32(row.owner), U32(row.controller)]),
         }
     }
 
@@ -271,6 +287,11 @@ impl Row {
                     controller,
                 })
             }
+            (TableId::States, [U32(owner), U32(controller), ..]) => Self::State(StateRow {
+                id: key,
+                owner,
+                controller,
+            }),
             _ => return Err(invalid("row fields do not match table schema")),
         })
     }
@@ -466,6 +487,11 @@ mod tests {
                 owner: 7,
                 controller: 2,
             }),
+            Row::State(StateRow {
+                id: u32::MAX,
+                owner: 0,
+                controller: u32::MAX,
+            }),
         ];
         for row in rows {
             let table = row.table();
@@ -502,6 +528,36 @@ mod tests {
         assert_eq!(bytes.len(), 4 + 1 + 8);
         assert_eq!(&bytes[..5], &[7, 0, 0, 0, 0x20]);
         assert_eq!(delta.apply(TableId::Countries, Some(&old)).unwrap(), new);
+    }
+
+    #[test]
+    fn state_masks_keep_owner_and_controller_as_independent_raw_references() {
+        let old = Row::State(StateRow {
+            id: 0x1234_5678,
+            owner: 7,
+            controller: 2,
+        });
+        assert_eq!(old.delta(Some(&old)).unwrap(), None);
+        for mask in 1..=TableId::States.full_mask() {
+            let new = Row::State(StateRow {
+                id: old.key(),
+                owner: if mask & 1 != 0 { 0 } else { 7 },
+                controller: if mask & 2 != 0 { u32::MAX } else { 2 },
+            });
+            let delta = new.delta(Some(&old)).unwrap().unwrap();
+            assert_eq!(delta.mask, mask);
+            let mut bytes = Vec::new();
+            encode_delta(TableId::States, &delta, &mut bytes).unwrap();
+            assert_eq!(bytes.len(), 4 + 1 + mask.count_ones() as usize * 4);
+            assert_eq!(&bytes[..4], &old.key().to_le_bytes());
+            let mut input = Decoder::new(&bytes);
+            let decoded = decode_delta(TableId::States, &mut input).unwrap();
+            input.finish().unwrap();
+            assert_eq!(decoded.apply(TableId::States, Some(&old)).unwrap(), new);
+            if mask != TableId::States.full_mask() {
+                assert!(decoded.apply(TableId::States, None).is_err());
+            }
+        }
     }
 
     #[test]

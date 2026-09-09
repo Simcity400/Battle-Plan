@@ -240,6 +240,7 @@ fn complete(frame: &DecodedFrame, table: TableId) -> io::Result<&[Row]> {
 struct Report {
     countries: usize,
     provinces: usize,
+    states: usize,
     scalar_checks: usize,
     differences: Vec<String>,
     limitations: BTreeMap<String, Vec<String>>,
@@ -287,8 +288,8 @@ impl Report {
 
     fn print(&self) {
         println!(
-            "Compared: {} provinces, {} countries, {} exact scalar values (/100000)",
-            self.provinces, self.countries, self.scalar_checks
+            "Compared: {} provinces, {} states, {} countries, {} exact scalar values (/100000)",
+            self.provinces, self.states, self.countries, self.scalar_checks
         );
         println!("Differences: {}", self.differences.len());
         for difference in self.differences.iter().take(100) {
@@ -336,7 +337,7 @@ fn compare(
     );
     report.limitation(
         "saves retain country tags but erase raw country-link and canonical-slot identities",
-        "countries / country links / province references",
+        "countries / country links / province and state references",
     );
     report.limitation("save serializer omits owner-equivalent and nonpositive controller references; these compare by resolved control", "provinces with no explicit saved controller");
     let mut by_tag = BTreeMap::new();
@@ -493,6 +494,48 @@ fn compare(
     for id in provinces.keys() {
         report.difference(format!("province {id}"), "present", "absent");
     }
+    let mut states = BTreeMap::new();
+    for row in complete(frame, TableId::States)? {
+        let Row::State(state) = row else {
+            return Err(invalid("non-state row in state table"));
+        };
+        if states.insert(state.id, state).is_some() {
+            return Err(invalid("duplicate state row"));
+        }
+    }
+    for expected in save.state_control(membership)? {
+        let Some(actual) = states.remove(&expected.id) else {
+            report.difference(format!("state {}", expected.id), "absent", "present");
+            continue;
+        };
+        report.states += 1;
+        let owner = country_tag(actual.owner, &links)?;
+        if owner != Some(expected.owner.as_slice()) {
+            report.difference(
+                format!("state {}.owner", expected.id),
+                tag_text(owner),
+                tag_text(Some(&expected.owner)),
+            );
+        }
+        // CState writer 1409d4040 emits zero controller when owner is positive;
+        // only raw or canonical equality permits omission. Never apply the
+        // province writer's zero-controller normalization to this table.
+        let controller = country_tag(actual.controller, &links)?;
+        if controller != Some(expected.controller.as_slice()) {
+            report.difference(
+                format!("state {}.controller", expected.id),
+                tag_text(controller),
+                tag_text(Some(&expected.controller)),
+            );
+        }
+    }
+    for id in states.keys() {
+        report.difference(format!("state {id}"), "present", "absent");
+    }
+    report.limitation(
+        "state serializer omits controllers equal to owner by raw or canonical country-link identity; omitted fields compare to the saved owner without accepting captured zero",
+        "states with no explicit saved controller",
+    );
     Ok(report)
 }
 
@@ -600,7 +643,7 @@ mod tests {
     use super::*;
     use replay::{
         frame::Metrics,
-        rows::{CampaignRow, ClockRow, CountryLinkRow, ProvinceRow},
+        rows::{CampaignRow, ClockRow, CountryLinkRow, ProvinceRow, StateRow},
     };
 
     fn fixture() -> (
@@ -663,6 +706,11 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                         controller: 101,
                     }),
                 ]),
+                TableView::Complete(vec![Row::State(StateRow {
+                    id: 1,
+                    owner: 102,
+                    controller: 101,
+                })]),
             ],
         };
         let membership = save::MapMembership {
@@ -677,8 +725,13 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         let report = compare(&frame, &save, &membership, &equipment).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(
-            (report.provinces, report.countries, report.scalar_checks),
-            (2, 1, 5)
+            (
+                report.provinces,
+                report.states,
+                report.countries,
+                report.scalar_checks
+            ),
+            (2, 1, 1, 5)
         );
         assert!(!report.limitations.is_empty());
     }
@@ -701,6 +754,123 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         }));
         let report = compare(&frame, &save, &membership, &equipment).unwrap();
         assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    }
+
+    #[test]
+    fn state_ownership_and_controller_differences_are_independent_of_provinces() {
+        let (mut frame, save, membership, equipment) = fixture();
+        let TableView::Complete(rows) = &mut frame.tables[TableId::States.index()] else {
+            unreachable!()
+        };
+        let Row::State(state) = &mut rows[0] else {
+            unreachable!()
+        };
+        state.owner = 0;
+        state.controller = 0;
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+        assert!(report.differences[0].starts_with("state 1.owner:"));
+        assert!(report.differences[1].starts_with("state 1.controller:"));
+        assert_eq!(report.provinces, 2);
+    }
+
+    #[test]
+    fn omitted_state_controller_does_not_accept_raw_zero_or_hide_missing_rows() {
+        let (mut frame, save, membership, equipment) = fixture();
+        let TableView::Complete(rows) = &mut frame.tables[TableId::States.index()] else {
+            unreachable!()
+        };
+        let Row::State(state) = &mut rows[0] else {
+            unreachable!()
+        };
+        state.controller = 0;
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].starts_with("state 1.controller:"));
+
+        frame.tables[TableId::States.index()] = TableView::Complete(vec![Row::State(StateRow {
+            id: 2,
+            owner: 101,
+            controller: 101,
+        })]);
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+        assert_eq!(report.states, 0);
+    }
+
+    #[test]
+    fn explicit_state_controller_is_compared_even_when_owner_and_provinces_match() {
+        let (mut frame, mut save, membership, equipment) = fixture();
+        let mut other = save.countries[b"GER".as_slice()].clone();
+        other.tag = b"D01".to_vec();
+        save.countries.insert(b"D01".to_vec(), other);
+        save.states.get_mut(&1).unwrap().controller = Some(b"D01".to_vec());
+        let TableView::Complete(rows) = &mut frame.tables[TableId::Countries.index()] else {
+            unreachable!()
+        };
+        let Row::Country(mut other) = rows[0].clone() else {
+            unreachable!()
+        };
+        other.id = 201;
+        other.canonical_slot = 8;
+        other.tag = b"D01".to_vec();
+        rows.push(Row::Country(other));
+        let TableView::Complete(rows) = &mut frame.tables[TableId::CountryLinks.index()] else {
+            unreachable!()
+        };
+        rows.push(Row::CountryLink(CountryLinkRow {
+            id: 201,
+            canonical_slot: 8,
+        }));
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].starts_with("state 1.controller:"));
+        let TableView::Complete(rows) = &mut frame.tables[TableId::States.index()] else {
+            unreachable!()
+        };
+        let Row::State(state) = &mut rows[0] else {
+            unreachable!()
+        };
+        state.controller = 201;
+        assert!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap()
+                .differences
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn invalid_incomplete_or_unresolvable_states_are_refused() {
+        let (frame, save, membership, equipment) = fixture();
+        for view in [
+            TableView::Unavailable {
+                reason: "state pointer unreadable".into(),
+            },
+            TableView::Truncated {
+                rows: Vec::new(),
+                missing: 1,
+            },
+            TableView::Complete(vec![Row::State(StateRow {
+                id: 1,
+                owner: 777,
+                controller: 101,
+            })]),
+            TableView::Complete(vec![Row::State(StateRow {
+                id: 1,
+                owner: 101,
+                controller: 777,
+            })]),
+            TableView::Complete(vec![
+                Row::State(StateRow::default()),
+                Row::State(StateRow::default()),
+            ]),
+            TableView::Complete(vec![Row::Province(ProvinceRow::default())]),
+        ] {
+            let mut invalid = frame.clone();
+            invalid.tables[TableId::States.index()] = view;
+            assert!(compare(&invalid, &save, &membership, &equipment).is_err());
+        }
     }
 
     #[test]

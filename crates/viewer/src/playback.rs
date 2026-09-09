@@ -284,7 +284,7 @@ mod tests {
         branches::{BranchReason, BranchStart, Gap},
         frame::{FrameEncoder, Metrics, TableUpdate},
         identity::{Identity, Roster, SessionStart, Verification},
-        rows::{CampaignRow, ClockRow, CountryRow, ProvinceRow},
+        rows::{CampaignRow, ClockRow, CountryRow, ProvinceRow, StateRow},
         spool::Record,
     };
 
@@ -341,6 +341,11 @@ mod tests {
                 TableView::Complete(vec![Row::Province(ProvinceRow {
                     id: 1,
                     state: 1,
+                    owner: 1,
+                    controller: 1,
+                })]),
+                TableView::Complete(vec![Row::State(StateRow {
+                    id: 1,
                     owner: 1,
                     controller: 1,
                 })]),

@@ -13,7 +13,9 @@ use crate::{
     container::{Replay, SeekResult},
     frame::{DecodedFrame, FrameEncoder, Metrics, TableUpdate, TableView},
     identity::{Identity, Roster, SessionStart, Verification},
-    rows::{CampaignRow, ClockRow, CountryLinkRow, CountryRow, ProvinceRow, Row, TableId},
+    rows::{
+        CampaignRow, ClockRow, CountryLinkRow, CountryRow, ProvinceRow, Row, StateRow, TableId,
+    },
     spool::{
         Record, Recovery, SegmentBackend, SegmentSink, SegmentedSpool, encode_record,
         recover_prefix,
@@ -189,6 +191,22 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             controller: 0,
         }));
     }
+    let mut states: Vec<_> = (0..=2)
+        .map(|id| {
+            Row::State(StateRow {
+                id,
+                owner: [2, 19][(index / 37 + id as usize) % 2],
+                controller: [0, 7, 19][(index / 5 + id as usize) % 3],
+            })
+        })
+        .collect();
+    if index % 17 < 5 {
+        states.push(Row::State(StateRow {
+            id: u32::MAX,
+            owner: 0,
+            controller: 0,
+        }));
+    }
     let mut tables = [
         TableView::Complete(vec![Row::Clock(ClockRow {
             hour,
@@ -202,14 +220,17 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         TableView::Complete(countries),
         TableView::Complete(links),
         TableView::Complete(provinces),
+        TableView::Complete(states),
     ];
     for table in [
         TableId::Countries,
         TableId::CountryLinks,
         TableId::Provinces,
+        TableId::States,
     ] {
         let draw = random(index, 91 + table.index() as u64);
-        let force_partial = matches!(index, 0 | 38 | 758 | 830) && table == TableId::Countries;
+        let force_partial = matches!(index, 0 | 38 | 758 | 830)
+            && matches!(table, TableId::Countries | TableId::States);
         if draw.is_multiple_of(47) || (index == 780 && table == TableId::Provinces) {
             tables[table.index()] = TableView::Unavailable {
                 reason: format!("synthetic pointer unavailable for {table:?} at {hour}"),
@@ -230,7 +251,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         tables,
         metrics: Metrics {
             total_ns: 100_000 + index as u64,
-            table_ns: [1, 2, 3, 4, 5],
+            table_ns: [1, 2, 3, 4, 5, 6],
             pool_bytes: 1 << 25,
             dropped_frames: (index / 61) as u64,
         },
@@ -258,6 +279,10 @@ struct Coverage {
     unavailable_tables: usize,
     truncated_tables: usize,
     partial_keyframes: usize,
+    state_delta_tables: usize,
+    state_unavailable_tables: usize,
+    state_truncated_tables: usize,
+    state_partial_keyframes: usize,
 }
 
 struct Campaign {
@@ -384,6 +409,7 @@ fn synthesize() -> Campaign {
                     changed, deleted, ..
                 } => {
                     coverage.delta_tables += 1;
+                    coverage.state_delta_tables += usize::from(table == TableId::States);
                     coverage.deletions += deleted.len();
                     coverage.insertions += changed
                         .iter()
@@ -391,8 +417,14 @@ fn synthesize() -> Campaign {
                         .count();
                 }
                 TableUpdate::Unchanged { .. } => coverage.unchanged_tables += 1,
-                TableUpdate::Unavailable { .. } => coverage.unavailable_tables += 1,
-                TableUpdate::Truncated { .. } => coverage.truncated_tables += 1,
+                TableUpdate::Unavailable { .. } => {
+                    coverage.unavailable_tables += 1;
+                    coverage.state_unavailable_tables += usize::from(table == TableId::States);
+                }
+                TableUpdate::Truncated { .. } => {
+                    coverage.truncated_tables += 1;
+                    coverage.state_truncated_tables += usize::from(table == TableId::States);
+                }
                 TableUpdate::Snapshot(_) => {}
             }
         }
@@ -446,9 +478,10 @@ fn synthesize() -> Campaign {
         tracker.record_hour(observed.branch, hour).unwrap();
         let mut direct = source;
         if keyframe {
-            for table in &mut direct.tables {
+            for (id, table) in TableId::ALL.into_iter().zip(&mut direct.tables) {
                 if let TableView::Truncated { missing, .. } = table {
                     coverage.partial_keyframes += 1;
+                    coverage.state_partial_keyframes += usize::from(id == TableId::States);
                     *table = TableView::Unavailable {
                         reason: format!("truncated at keyframe: {missing} rows not read"),
                     };
@@ -516,6 +549,7 @@ fn assert_aliases(frame: &DecodedFrame) {
         TableView::Complete(countries),
         TableView::Complete(links),
         TableView::Complete(provinces),
+        _,
     ] = &frame.tables
     else {
         return;
@@ -604,6 +638,9 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
     assert!(coverage.deletions > 100 && coverage.insertions > 100);
     assert!(coverage.unavailable_tables > 50 && coverage.truncated_tables > 50);
     assert!(coverage.partial_keyframes >= 3);
+    assert!(coverage.state_delta_tables > 100);
+    assert!(coverage.state_unavailable_tables > 0 && coverage.state_truncated_tables > 0);
+    assert!(coverage.state_partial_keyframes > 0);
 
     let first = Replay::from_recovered(CAMPAIGN.to_vec(), &campaign.segments[..2]).unwrap();
     assert_eq!(first.sessions.len(), 1);

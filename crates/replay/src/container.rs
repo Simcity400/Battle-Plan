@@ -350,8 +350,11 @@ impl Replay {
         }
         let mut header = Decoder::new(&bytes[..trailer_start]);
         expect_magic(&mut header, HEADER_MAGIC)?;
-        if header.u16()? != FORMAT_VERSION {
-            return Err(invalid("unsupported replay format version"));
+        let version = header.u16()?;
+        if version != FORMAT_VERSION {
+            return Err(invalid(format!(
+                "unsupported replay format version {version}; expected {FORMAT_VERSION}"
+            )));
         }
         let keyframe_interval = header.u32()?;
         if keyframe_interval != KEYFRAME_INTERVAL {
@@ -1155,6 +1158,7 @@ mod tests {
                 TableView::Complete(Vec::new()),
                 TableView::Complete(Vec::new()),
                 TableView::Complete(Vec::new()),
+                TableView::Complete(Vec::new()),
             ],
         }
     }
@@ -1245,6 +1249,15 @@ mod tests {
         }
         assert!(replay.append(&[wrong_content]).is_err());
         assert!(matches!(replay.seek(1, 1).unwrap(), SeekResult::Frame(_)));
+    }
+
+    #[test]
+    fn old_replay_version_is_refused_before_decoding_frames() {
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
+        let mut bytes = replay.bytes().to_vec();
+        bytes[4..6].copy_from_slice(&1_u16.to_le_bytes());
+        let error = Replay::open(bytes).err().unwrap().to_string();
+        assert_eq!(error, "unsupported replay format version 1; expected 2");
     }
 
     #[test]

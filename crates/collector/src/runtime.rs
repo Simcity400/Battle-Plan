@@ -490,7 +490,7 @@ fn spool_loop(
     status_path: &Path,
 ) -> Result<Option<String>, String> {
     let mut processor: Option<Processor> = None;
-    let mut capacities = [512, 20_000, 1024];
+    let mut capacities = [512, 20_000, 1024, 2048];
     let mut last_warning = None;
     let mut drain_result = Ok(());
     let mut startup_unknown = 0_u64;

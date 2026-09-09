@@ -7,7 +7,7 @@ use crate::{
 };
 use std::{collections::BTreeSet, io};
 
-pub const TABLE_COUNT: usize = 5;
+pub const TABLE_COUNT: usize = TableId::ALL.len();
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Metrics {
@@ -594,7 +594,7 @@ fn apply_table(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rows::{CampaignRow, ClockRow, CountryLinkRow, CountryRow, ProvinceRow};
+    use crate::rows::{CampaignRow, ClockRow, CountryLinkRow, CountryRow, ProvinceRow, StateRow};
 
     fn source(branch: BranchId, hour: Hour) -> DecodedFrame {
         DecodedFrame {
@@ -602,7 +602,7 @@ mod tests {
             hour,
             metrics: Metrics {
                 total_ns: 4_567_890,
-                table_ns: [100, 200, 300, 400, 500],
+                table_ns: [100, 200, 300, 400, 500, 600],
                 pool_bytes: 123_456,
                 dropped_frames: 2,
             },
@@ -632,6 +632,11 @@ mod tests {
                     canonical_slot: 1,
                 })]),
                 TableView::Complete(vec![province(1, 7), province(2, 2)]),
+                TableView::Complete(vec![Row::State(StateRow {
+                    id: 8,
+                    owner: 7,
+                    controller: 2,
+                })]),
             ],
         }
     }
@@ -761,6 +766,70 @@ mod tests {
             frame.tables[TableId::Provinces.index()],
             TableUpdate::Unchanged { baseline: 2 }
         );
+    }
+
+    #[test]
+    fn state_control_deltas_and_failures_keep_separate_baselines_from_provinces() {
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        let state_index = TableId::States.index();
+        for hour in 0..=6 {
+            let mut expected = source(1, hour);
+            if hour > 0 {
+                expected.tables[state_index] = TableView::Complete(vec![Row::State(StateRow {
+                    id: 8,
+                    owner: 0,
+                    controller: u32::MAX,
+                })]);
+            }
+            if hour == 2 {
+                expected.tables[state_index] = TableView::Unavailable {
+                    reason: "state table unreadable".into(),
+                };
+            } else if hour == 4 {
+                expected.tables[state_index] = TableView::Truncated {
+                    rows: vec![Row::State(StateRow {
+                        id: 8,
+                        owner: 0,
+                        controller: 2,
+                    })],
+                    missing: 10,
+                };
+            }
+            let frame = encoder.encode(&expected, false).unwrap();
+            match hour {
+                0 | 3 | 5 => assert!(matches!(
+                    frame.tables[state_index],
+                    TableUpdate::Snapshot(_)
+                )),
+                1 => {
+                    let TableUpdate::Delta {
+                        baseline,
+                        changed,
+                        deleted,
+                    } = &frame.tables[state_index]
+                    else {
+                        panic!("state ownership change did not produce a delta")
+                    };
+                    assert_eq!(*baseline, 0);
+                    assert_eq!(changed.len(), 1);
+                    assert_eq!(changed[0].mask, 3);
+                    assert!(deleted.is_empty());
+                }
+                6 => assert_eq!(
+                    frame.tables[state_index],
+                    TableUpdate::Unchanged { baseline: 5 }
+                ),
+                _ => {}
+            }
+            if hour > 0 {
+                assert_eq!(
+                    frame.tables[TableId::Provinces.index()],
+                    TableUpdate::Unchanged { baseline: hour - 1 }
+                );
+            }
+            assert_eq!(decoder.apply(&wire(&frame)).unwrap(), expected);
+        }
     }
 
     #[test]
@@ -1019,8 +1088,7 @@ mod tests {
         assert!(invalid_keyframe.encode(&mut Vec::new()).is_err());
         assert!(decoder.apply(&invalid_keyframe).is_err());
         let mut invalid_last_table = FrameEncoder::new().encode(&expected, false).unwrap();
-        invalid_last_table.tables[TableId::Provinces.index()] =
-            TableUpdate::Unchanged { baseline: 0 };
+        invalid_last_table.tables[TableId::States.index()] = TableUpdate::Unchanged { baseline: 0 };
         assert!(decoder.apply(&invalid_last_table).is_err());
         let mut bytes = Vec::new();
         valid.encode(&mut bytes).unwrap();

@@ -1,6 +1,7 @@
 use crate::{
     Config, Options, choose_initial,
     document::{Document, Palette},
+    inspector::Inspector,
     render::{Camera, MapRenderer},
 };
 use eframe::{egui, wgpu};
@@ -33,6 +34,7 @@ pub struct Viewer {
     playing: bool,
     speed: u32,
     last_step: Instant,
+    inspector: Inspector,
 }
 
 impl Viewer {
@@ -65,6 +67,7 @@ impl Viewer {
             playing: false,
             speed: 24,
             last_step: Instant::now(),
+            inspector: Inspector::default(),
         };
         if !viewer.settings
             && let Some(path) = viewer.options.replay.clone()
@@ -109,6 +112,7 @@ impl Viewer {
         self.camera = self.options.camera;
         self.camera_manual = self.options.camera.is_some();
         self.drag_origin = None;
+        self.inspector.reset();
     }
 
     fn poll(&mut self) {
@@ -513,6 +517,7 @@ impl eframe::App for Viewer {
                     self.camera = None;
                     self.camera_manual = false;
                 }
+                ui.toggle_value(&mut self.inspector.open, "Inspector");
                 ui.weak("Omniscient · Base country colors");
             });
             ui.add_space(5.0);
@@ -578,6 +583,7 @@ impl eframe::App for Viewer {
                     self.error = Some(error);
                 }
             });
+            self.inspector.show(ui.ctx(), document.playback.current());
             self.document = Some(document);
         } else {
             egui::CentralPanel::default().show(ui, |ui| {

@@ -180,6 +180,8 @@ pub struct Country {
 pub struct State {
     pub id: u32,
     pub owner: Option<Vec<u8>>,
+    /// The literal field only; absence is retained until its native save rule
+    /// is applied by state_control, independently of province control.
     pub controller: Option<Vec<u8>>,
 }
 
@@ -215,7 +217,61 @@ pub struct ProvinceControl {
     pub controller_explicit: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateControl {
+    pub id: u32,
+    pub owner: Vec<u8>,
+    pub controller: Vec<u8>,
+    pub controller_explicit: bool,
+}
+
 impl Save {
+    /// CState writer 1409d4040 omits controllers equal to a positive owner by
+    /// raw id or canonical link slot; post-load 1409cdf80 restores owner.
+    /// The writer emits zero controllers, unlike CProvince. A missing owner
+    /// is refused because that path omits both fields, losing controller data.
+    pub fn state_control(&self, membership: &MapMembership) -> io::Result<Vec<StateControl>> {
+        let state_ids = membership
+            .provinces
+            .values()
+            .flatten()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Some(id) = self.states.keys().find(|id| !state_ids.contains(id)) {
+            return Err(invalid(format!(
+                "save state {id} has no membership in the verified content"
+            )));
+        }
+        state_ids
+            .into_iter()
+            .map(|id| {
+                let state = self
+                    .states
+                    .get(&id)
+                    .ok_or_else(|| invalid(format!("save lacks state {id}")))?;
+                let owner = state
+                    .owner
+                    .as_ref()
+                    .ok_or_else(|| invalid(format!("save state {id} lacks its owner")))?;
+                let controller = state.controller.as_ref().unwrap_or(owner);
+                for tag in [owner, controller] {
+                    if !self.countries.contains_key(tag) {
+                        return Err(invalid(format!(
+                            "state {id} references unknown saved country {}",
+                            String::from_utf8_lossy(tag)
+                        )));
+                    }
+                }
+                Ok(StateControl {
+                    id,
+                    owner: owner.clone(),
+                    controller: controller.clone(),
+                    controller_explicit: state.controller.is_some(),
+                })
+            })
+            .collect()
+    }
+
     /// CProvince writer 140e6ca90 omits a controller equivalent to its state's
     /// owner; post-load 1409cdf80 fills omitted/nonpositive controls from that
     /// owner. A missing state or state-owner field cannot be filled this way.
@@ -929,6 +985,98 @@ equipments={convoy_1={id={id=1 type=70}} convoy_1={id={id=2 type=70}}}
                 .unwrap_err()
                 .to_string()
                 .contains("lacks state")
+        );
+    }
+
+    #[test]
+    fn state_control_has_its_own_explicit_and_owner_equivalent_save_rules() {
+        let save = parse(
+            br#"HOI4txt
+date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0
+countries={ GER={} D01={} }
+states={1={owner=GER controller=D01} 2={owner=GER}}
+provinces={3={controller=D01}}
+"#,
+        )
+        .unwrap();
+        let map = MapMembership {
+            provinces: BTreeMap::from([(0, None), (1, Some(1)), (2, Some(2)), (3, Some(2))]),
+        };
+        let states = save.state_control(&map).unwrap();
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[0].owner, b"GER");
+        assert_eq!(states[0].controller, b"D01");
+        assert!(states[0].controller_explicit);
+        assert_eq!(states[1].controller, b"GER");
+        assert!(!states[1].controller_explicit);
+        let provinces = save.province_control(&map).unwrap();
+        // A state's explicit controller does not replace province ownership
+        // or its independent sparse controller fields, and vice versa.
+        assert_eq!(provinces[0].controller.as_deref(), Some(b"GER".as_slice()));
+        assert_eq!(provinces[2].controller.as_deref(), Some(b"D01".as_slice()));
+    }
+
+    #[test]
+    fn state_comparison_refuses_missing_fields_unknown_tags_and_content_mismatch() {
+        let save = parse(
+            br#"HOI4txt
+date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0
+countries={ GER={} } states={1={owner=GER}} provinces={}
+"#,
+        )
+        .unwrap();
+        let map = MapMembership {
+            provinces: BTreeMap::from([(1, Some(1))]),
+        };
+        let mut missing = save.clone();
+        missing.states.clear();
+        assert!(
+            missing
+                .state_control(&map)
+                .unwrap_err()
+                .to_string()
+                .contains("lacks state 1")
+        );
+        let mut missing = save.clone();
+        missing.states.get_mut(&1).unwrap().owner = None;
+        assert!(
+            missing
+                .state_control(&map)
+                .unwrap_err()
+                .to_string()
+                .contains("lacks its owner")
+        );
+        for owner in [false, true] {
+            let mut unknown = save.clone();
+            let state = unknown.states.get_mut(&1).unwrap();
+            if owner {
+                state.owner = Some(b"UNKNOWN".to_vec());
+            } else {
+                state.controller = Some(b"UNKNOWN".to_vec());
+            }
+            assert!(
+                unknown
+                    .state_control(&map)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unknown saved country")
+            );
+        }
+        let mut unexpected = save;
+        unexpected.states.insert(
+            2,
+            State {
+                id: 2,
+                owner: Some(b"GER".to_vec()),
+                controller: None,
+            },
+        );
+        assert!(
+            unexpected
+                .state_control(&map)
+                .unwrap_err()
+                .to_string()
+                .contains("no membership")
         );
     }
 

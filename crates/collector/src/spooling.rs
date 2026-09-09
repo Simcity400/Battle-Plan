@@ -7,9 +7,11 @@ use replay::{
     branches::{BranchStart, BranchTracker, Gap},
     codec::invalid,
     container::{Replay, SeekResult},
-    frame::{DecodedFrame, FrameEncoder, Metrics, TableView},
+    frame::{DecodedFrame, FrameEncoder, Metrics, TABLE_COUNT, TableView},
     identity::SessionStart,
-    rows::{CampaignRow, ClockRow, CountryLinkRow, CountryRow, ProvinceRow, Row, TableId},
+    rows::{
+        CampaignRow, ClockRow, CountryLinkRow, CountryRow, ProvinceRow, Row, StateRow, TableId,
+    },
     spool::{FileBackend, Record, SegmentBackend, SegmentedSpool},
 };
 use serde_json::{Value, json};
@@ -405,10 +407,11 @@ struct Statistics {
     last_hour: Option<i32>,
     total_ns: u64,
     samples: Vec<u64>,
-    table_ns: [u64; 5],
+    table_ns: [u64; TABLE_COUNT],
     dropped_frames: u64,
     truncated_tables: usize,
     links_mismatches: u64,
+    states_mismatches: u64,
     pool_bytes: u64,
     previous: Option<(String, BranchId, i32, i64)>,
     interval_hours: u64,
@@ -583,10 +586,12 @@ impl Processor {
         stats.pool_bytes = captured.pool_bytes;
         stats.dropped_frames = captured.dropped_frames;
         stats.links_mismatches += captured.links_mismatches as u64;
+        stats.states_mismatches += captured.states_mismatches as u64;
         stats.truncated_tables = [
             captured.countries_result,
             captured.links_result,
             captured.provinces_result,
+            captured.states_result,
         ]
         .into_iter()
         .filter(|outcome| matches!(outcome, Outcome::Truncated { .. }))
@@ -684,6 +689,7 @@ impl Processor {
             },
             "spool_bytes": spool_bytes, "dropped_frames": stats.dropped_frames,
             "truncated_tables": stats.truncated_tables, "links_mismatches": stats.links_mismatches,
+            "states_mismatches": stats.states_mismatches,
             "pool_bytes": stats.pool_bytes, "write_errors": stats.errors, "last_error": stats.last_error,
             "unknown_losses_pending": self.unknown_pending,
             "spool_work": {
@@ -830,6 +836,17 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> DecodedFrame 
                     controller: province.controller,
                 })
             }),
+            if captured.states_mismatches != 0 {
+                unavailable("states changed during double read")
+            } else {
+                table(captured.states_result, &captured.states, |state| {
+                    Row::State(StateRow {
+                        id: state.id,
+                        owner: state.owner,
+                        controller: state.controller,
+                    })
+                })
+            },
         ]
     };
     DecodedFrame {
@@ -899,6 +916,7 @@ mod tests {
         captured.countries_result = Outcome::Rows { len: 0 };
         captured.links_result = Outcome::Rows { len: 0 };
         captured.provinces_result = Outcome::Rows { len: 0 };
+        captured.states_result = Outcome::Rows { len: 0 };
         captured
     }
 
@@ -929,6 +947,12 @@ mod tests {
             controller: 2,
         };
         captured.provinces_result = Outcome::Rows { len: 1 };
+        captured.states[0] = engine::cstate::Row {
+            id: 4,
+            owner: 7,
+            controller: u32::MAX,
+        };
+        captured.states_result = Outcome::Rows { len: 1 };
         let frame = decoded(&captured, clock(10), 1);
         assert_eq!(
             frame.tables[2],
@@ -967,6 +991,14 @@ mod tests {
             panic!()
         };
         assert_eq!(value.play_time, u64::MAX);
+        assert_eq!(
+            frame.tables[TableId::States.index()],
+            TableView::Complete(vec![Row::State(StateRow {
+                id: 4,
+                owner: 7,
+                controller: u32::MAX,
+            })])
+        );
     }
 
     #[test]
@@ -979,6 +1011,7 @@ mod tests {
             len: 0,
             unread_rows: 9,
         };
+        captured.states_mismatches = 1;
         let frame = decoded(&captured, clock(10), 1);
         assert_eq!(frame.tables[2], unavailable("country pointer unreadable"));
         assert_eq!(
@@ -989,6 +1022,10 @@ mod tests {
             }
         );
         assert_eq!(frame.tables[4], TableView::Complete(Vec::new()));
+        assert_eq!(
+            frame.tables[TableId::States.index()],
+            unavailable("states changed during double read")
+        );
         captured.clock_after = Some(clock(11));
         assert!(
             decoded(&captured, clock(10), 1)
