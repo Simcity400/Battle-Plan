@@ -3,7 +3,7 @@
 use crate::roster::Roster;
 use crossbeam_queue::ArrayQueue;
 use engine::{
-    ccountry,
+    carmy, ccountry,
     cgame_state::{self, Clock},
     cprovince, cstate,
     memory::LiveMemory,
@@ -96,12 +96,16 @@ pub struct Captured {
     pub provinces: Vec<cprovince::Row>,
     pub states: Vec<cstate::Row>,
     states_second: Vec<cstate::Row>,
+    pub divisions: Vec<carmy::Row>,
+    divisions_second: Vec<carmy::Row>,
     pub links: Vec<ccountry::LinkRow>,
     links_second: Vec<ccountry::LinkRow>,
     pub countries_result: Outcome,
     pub provinces_result: Outcome,
     pub states_result: Outcome,
     pub states_mismatches: usize,
+    pub divisions_result: Outcome,
+    pub divisions_mismatches: usize,
     pub links_result: Outcome,
     pub links_mismatches: usize,
     pub table_ns: [u64; TABLE_COUNT],
@@ -125,12 +129,16 @@ impl Captured {
             provinces: vec![cprovince::Row::default(); 20_000],
             states: vec![cstate::Row::default(); 2048],
             states_second: vec![cstate::Row::default(); 2048],
+            divisions: vec![carmy::Row::default(); 4096],
+            divisions_second: vec![carmy::Row::default(); 4096],
             links: vec![ccountry::LinkRow::default(); 1024],
             links_second: vec![ccountry::LinkRow::default(); 1024],
             countries_result: unavailable,
             provinces_result: unavailable,
             states_result: unavailable,
             states_mismatches: 0,
+            divisions_result: unavailable,
+            divisions_mismatches: 0,
             links_result: unavailable,
             links_mismatches: 0,
             table_ns: [0; TABLE_COUNT],
@@ -147,12 +155,14 @@ impl Captured {
             + self.countries.capacity() * size_of::<ccountry::Row>()
             + self.provinces.capacity() * size_of::<cprovince::Row>()
             + (self.states.capacity() + self.states_second.capacity()) * size_of::<cstate::Row>()
+            + (self.divisions.capacity() + self.divisions_second.capacity())
+                * size_of::<carmy::Row>()
             + (self.links.capacity() + self.links_second.capacity())
                 * size_of::<ccountry::LinkRow>()
     }
 
     /// Called only by the spool thread while it owns this buffer's queue index.
-    pub fn grow(&mut self, capacities: &mut [usize; 4]) {
+    pub fn grow(&mut self, capacities: &mut [usize; 5]) {
         fn resize<T: Default + Clone>(rows: &mut Vec<T>, outcome: Outcome, capacity: &mut usize) {
             if let Outcome::Truncated { len, unread_rows } = outcome {
                 *capacity = (*capacity).max(len.saturating_add(unread_rows as usize));
@@ -173,6 +183,15 @@ impl Captured {
         );
         resize(&mut self.links, self.links_result, &mut capacities[2]);
         resize(&mut self.states, self.states_result, &mut capacities[3]);
+        resize(
+            &mut self.divisions,
+            self.divisions_result,
+            &mut capacities[4],
+        );
+        if self.divisions_second.len() < capacities[4] {
+            self.divisions_second
+                .resize(capacities[4], carmy::Row::default());
+        }
         if self.states_second.len() < capacities[3] {
             self.states_second
                 .resize(capacities[3], cstate::Row::default());
@@ -304,6 +323,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             frame.provinces_result = unavailable;
             frame.states_result = unavailable;
             frame.states_mismatches = 0;
+            frame.divisions_result = unavailable;
+            frame.divisions_mismatches = 0;
             frame.links_result = unavailable;
             frame.links_mismatches = 0;
             if let Some(clock) = frame.clock_before {
@@ -344,6 +365,20 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .count()
                 };
                 frame.table_ns[5] = shared.ns(qpc() - begin);
+                let begin = qpc();
+                frame.divisions_result =
+                    carmy::walk(&memory, shared.base, state, &mut frame.divisions);
+                let second = carmy::walk(&memory, shared.base, state, &mut frame.divisions_second);
+                frame.divisions_mismatches = if frame.divisions_result != second {
+                    1
+                } else {
+                    frame.divisions[..second.len()]
+                        .iter()
+                        .zip(&frame.divisions_second[..second.len()])
+                        .filter(|(a, b)| a != b)
+                        .count()
+                };
+                frame.table_ns[6] = shared.ns(qpc() - begin);
             }
             let after = qpc();
             frame.clock_after = cgame_state::read_clock(&memory, shared.base);

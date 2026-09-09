@@ -284,7 +284,7 @@ mod tests {
         branches::{BranchReason, BranchStart, Gap},
         frame::{FrameEncoder, Metrics, TableUpdate},
         identity::{Identity, Roster, SessionStart, Verification},
-        rows::{CampaignRow, ClockRow, CountryRow, ProvinceRow, StateRow},
+        rows::{CampaignRow, ClockRow, CountryRow, DivisionRow, ProvinceRow, StateRow},
         spool::Record,
     };
 
@@ -348,6 +348,16 @@ mod tests {
                     id: 1,
                     owner: 1,
                     controller: 1,
+                })]),
+                TableView::Complete(vec![Row::Division(DivisionRow {
+                    id: (1_u64 << 32) | 4713,
+                    roster_owner: 1,
+                    logical_owner: 1,
+                    expeditionary_owner: 0,
+                    province: 1,
+                    template: (2_u64 << 32) | 52,
+                    hit_points: 26_429_000,
+                    organisation: 6_000_001,
                 })]),
             ],
         }

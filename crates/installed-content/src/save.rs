@@ -193,6 +193,23 @@ pub struct ProvinceOverride {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Division {
+    /// Native reference qword: type in the low u32, id in the high u32.
+    pub id: u64,
+    /// CCountry's enclosing units roster, independently of logical_country.
+    pub roster_owner: Vec<u8>,
+    pub logical_owner: Vec<u8>,
+    pub expeditionary_owner: Option<Vec<u8>>,
+    /// CUnit writer BF7010 omits location only when its pointer is null.
+    pub province: Option<u32>,
+    /// CArmy writer C80E00 emits the standard template, not fake intel, iff nonnull.
+    pub template: Option<u64>,
+    /// Saved strength is absolute current hit points in native /100000 units.
+    pub hit_points: Decimal,
+    pub organisation: Decimal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Save {
     pub date: GameDate,
     pub campaign_id: Vec<u8>,
@@ -202,6 +219,8 @@ pub struct Save {
     pub states: BTreeMap<u32, State>,
     /// Sparse: absent entries are not evidence of a missing engine province.
     pub provinces: BTreeMap<u32, ProvinceOverride>,
+    /// Full typed handles uniquely identify divisions across every country roster.
+    pub divisions: BTreeMap<u64, Division>,
     /// Saved (id, type) to equipment-definition key. Repeated definition names
     /// are normal; the typed engine ids uniquely identify each saved variant.
     pub equipment_definitions: BTreeMap<(u32, u32), Vec<u8>>,
@@ -433,6 +452,56 @@ fn parse_country(tag: &[u8], items: &[Item]) -> io::Result<Country> {
     })
 }
 
+fn typed_handle(value: &Value) -> io::Result<u64> {
+    let fields = block(value)?;
+    let id: u32 = integer(&required_bytes(fields, b"id")?)?;
+    let kind: u32 = integer(&required_bytes(fields, b"type")?)?;
+    let handle = (u64::from(id) << 32) | u64::from(kind);
+    if handle == 0 {
+        return Err(invalid(
+            "serialized division or template has a null typed handle; refusing to confuse an unregistered object with an omitted pointer",
+        ));
+    }
+    Ok(handle)
+}
+
+fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<Division> {
+    // CUnit and CSupplyConsumer each serialize the same CReferenceObject.
+    // Repeated equal id blocks are native output; conflicting ones are not.
+    let mut id = None;
+    for item in items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"id"))
+    {
+        let handle = typed_handle(&item.value)?;
+        if id.is_some_and(|id| id != handle) {
+            return Err(invalid("division has conflicting repeated typed ids"));
+        }
+        id = Some(handle);
+    }
+    let id = id.ok_or_else(|| invalid("division lacks its typed id"))?;
+    let province = bytes(items, b"location")?
+        .map(|value| integer::<u32>(&value))
+        .transpose()?;
+    if province == Some(0) {
+        return Err(invalid(
+            "division explicitly saves location zero; native null location must be omitted",
+        ));
+    }
+    Ok(Division {
+        id,
+        roster_owner: roster_owner.to_vec(),
+        logical_owner: required_bytes(items, b"logical_country")?,
+        expeditionary_owner: bytes(items, b"expeditionary_owner")?,
+        province,
+        template: field(items, b"division_template_id")?
+            .map(typed_handle)
+            .transpose()?,
+        hit_points: Decimal::parse(&required_bytes(items, b"strength")?)?,
+        organisation: Decimal::parse(&required_bytes(items, b"organisation")?)?,
+    })
+}
+
 /// Binary saves are refused before parsing. This never rounds a save decimal or
 /// fills a missing field with a historical or runtime default.
 pub fn parse(input: &[u8]) -> io::Result<Save> {
@@ -454,17 +523,39 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
     let version = required_bytes(items, b"version")?;
     let seed = integer(&required_bytes(items, b"game_unique_seed")?)?;
     let mut countries = BTreeMap::new();
+    let mut divisions = BTreeMap::new();
     for item in required_block(items, b"countries")? {
         let tag = item
             .key
             .as_deref()
             .filter(|tag| !tag.is_empty())
             .ok_or_else(|| invalid("country has no tag"))?;
-        let country = parse_country(tag, block(&item.value)?).map_err(|error| {
+        let country_items = block(&item.value)?;
+        let country = parse_country(tag, country_items).map_err(|error| {
             invalid(format!("country {}: {error}", String::from_utf8_lossy(tag)))
         })?;
         if countries.insert(tag.to_vec(), country).is_some() {
             return Err(invalid("duplicate country tag in save"));
+        }
+        // CCountry writer 14070c580 omits units when all three unit rosters
+        // are empty. Other unit kinds within a present block are separate tables.
+        if let Some(units) = field(country_items, b"units")? {
+            for item in block(units)?
+                .iter()
+                .filter(|item| item.key.as_deref() == Some(b"division"))
+            {
+                let division = parse_division(tag, block(&item.value)?).map_err(|error| {
+                    invalid(format!(
+                        "country {} division: {error}",
+                        String::from_utf8_lossy(tag)
+                    ))
+                })?;
+                if divisions.insert(division.id, division).is_some() {
+                    return Err(invalid(
+                        "duplicate full division handle across saved rosters",
+                    ));
+                }
+            }
         }
     }
     let mut states = BTreeMap::new();
@@ -537,6 +628,7 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
         countries,
         states,
         provinces,
+        divisions,
         equipment_definitions,
     })
 }
@@ -1077,6 +1169,125 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
                 .unwrap_err()
                 .to_string()
                 .contains("no membership")
+        );
+    }
+
+    fn division_save(units: &str) -> io::Result<Save> {
+        parse(format!(
+            "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 countries={{ SOV={{ units={{ {units} }} }} D01={{}} GER={{}} }} states={{}} provinces={{}}"
+        ).as_bytes())
+    }
+
+    #[test]
+    fn division_extract_preserves_full_handles_ownership_and_native_fixed_values() {
+        let save = division_save(
+            r#"
+division={
+ id={id=2147483649 type=4919} id={type=4919 id=2147483649}
+ logical_country=D01 expeditionary_owner=GER location=6906
+ division_template_id={id=4294967295 type=6000}
+ strength=90071992547.40993 organisation=-0.00001
+ equipment={ equipment={id={id=1 type=70} amount=100} }
+}
+division={
+ id={id=2147483649 type=4920} logical_country=SOV
+ strength=0 organisation=0
+}
+"#,
+        )
+        .unwrap();
+        let id = (2_147_483_649_u64 << 32) | 4919;
+        let division = &save.divisions[&id];
+        assert_eq!(save.divisions.len(), 2);
+        assert_eq!(division.id, id);
+        assert_eq!(division.roster_owner, b"SOV");
+        assert_eq!(division.logical_owner, b"D01");
+        assert_eq!(
+            division.expeditionary_owner.as_deref(),
+            Some(b"GER".as_slice())
+        );
+        assert_eq!(division.province, Some(6906));
+        assert_eq!(division.template, Some((u64::from(u32::MAX) << 32) | 6000));
+        assert_eq!(division.hit_points.raw, 9_007_199_254_740_993);
+        assert_eq!(division.organisation.raw, -1);
+        let without_optional = &save.divisions[&((2_147_483_649_u64 << 32) | 4920)];
+        assert_eq!(without_optional.province, None);
+        assert_eq!(without_optional.template, None);
+        assert_eq!(without_optional.expeditionary_owner, None);
+    }
+
+    #[test]
+    fn division_missing_required_values_and_conflicting_duplicates_are_refused() {
+        let valid = "division={id={id=1 type=51} logical_country=SOV strength=0 organisation=0}";
+        for fragment in [
+            valid.replace("id={id=1 type=51}", ""),
+            valid.replace("type=51", ""),
+            valid.replace("id=1", ""),
+            valid.replace("logical_country=SOV", ""),
+            valid.replace("strength=0", ""),
+            valid.replace("organisation=0", ""),
+            valid.replace("strength=0", "strength=0.000001"),
+            valid.replace("type=51", "type=4294967296"),
+            valid.replace(
+                "logical_country=SOV",
+                "logical_country=SOV logical_country=D01",
+            ),
+            valid.replace("organisation=0", "organisation=0 organisation=0"),
+            valid.replace(
+                "logical_country=SOV",
+                "id={id=2 type=51} logical_country=SOV",
+            ),
+            format!("{valid} {valid}"),
+        ] {
+            assert!(division_save(&fragment).is_err(), "{fragment}");
+        }
+    }
+
+    #[test]
+    fn division_explicit_invalid_optionals_are_not_treated_as_absent() {
+        let prefix = "division={id={id=1 type=51} logical_country=SOV strength=0 organisation=0 ";
+        for optional in [
+            "location=0",
+            "location=-1",
+            "location={}",
+            "location=1 location=1",
+            "division_template_id={}",
+            "division_template_id={id=2}",
+            "division_template_id={type=52}",
+            "division_template_id={id=0 type=0}",
+            "division_template_id=no",
+            "expeditionary_owner={}",
+        ] {
+            assert!(
+                division_save(&format!("{prefix}{optional}}}")).is_err(),
+                "{optional}"
+            );
+        }
+        assert!(
+            division_save(
+                "division={id={id=0 type=0} logical_country=SOV strength=0 organisation=0}"
+            )
+            .is_err()
+        );
+        for handle in ["id=0 type=51", "id=1 type=0"] {
+            let body = format!(
+                "division={{id={{{handle}}} logical_country=SOV strength=0 organisation=0 division_template_id={{{handle}}}}}"
+            );
+            assert!(division_save(&body).is_ok(), "{body}");
+        }
+    }
+
+    #[test]
+    fn duplicate_division_handle_in_another_country_roster_is_refused() {
+        let body = "division={id={id=1 type=51} logical_country=D01 strength=1 organisation=1}";
+        let text = format!(
+            "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 countries={{ SOV={{units={{{body}}}}} D01={{units={{{body}}}}} }} states={{}} provinces={{}}"
+        );
+        assert!(
+            parse(text.as_bytes())
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate full division handle")
         );
     }
 

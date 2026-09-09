@@ -13,16 +13,18 @@ pub enum TableId {
     CountryLinks = 3,
     Provinces = 4,
     States = 5,
+    Divisions = 6,
 }
 
 impl TableId {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Clock,
         Self::Campaign,
         Self::Countries,
         Self::CountryLinks,
         Self::Provinces,
         Self::States,
+        Self::Divisions,
     ];
 
     pub const fn index(self) -> usize {
@@ -31,6 +33,13 @@ impl TableId {
 
     pub const fn field_count(self) -> usize {
         self.schema().len()
+    }
+
+    pub const fn key_width(self) -> usize {
+        match self {
+            Self::Divisions => 8,
+            _ => 4,
+        }
     }
 
     pub const fn mask_width(self) -> usize {
@@ -50,14 +59,34 @@ impl TableId {
             Self::CountryLinks => &[U32],
             Self::Provinces => &[U32, U32, U32],
             Self::States => &[U32, U32],
+            Self::Divisions => &[U32, U32, U32, U32, U64, I64, I64],
         }
     }
 
-    fn check_key(self, key: u32) -> io::Result<()> {
+    pub(crate) fn check_key(self, key: u64) -> io::Result<()> {
+        if self.key_width() == 4 && u32::try_from(key).is_err() {
+            return Err(invalid(format!("{self:?} row key exceeds u32")));
+        }
         if matches!(self, Self::Clock | Self::Campaign) && key != 0 {
             return Err(invalid("singleton row key must be zero"));
         }
         Ok(())
+    }
+
+    pub(crate) fn encode_key(self, key: u64, output: &mut Vec<u8>) -> io::Result<()> {
+        self.check_key(key)?;
+        output.extend_from_slice(&key.to_le_bytes()[..self.key_width()]);
+        Ok(())
+    }
+
+    pub(crate) fn decode_key(self, decoder: &mut Decoder<'_>) -> io::Result<u64> {
+        let key = if self.key_width() == 8 {
+            decoder.u64()?
+        } else {
+            u64::from(decoder.u32()?)
+        };
+        self.check_key(key)?;
+        Ok(key)
     }
 
     fn check_mask(self, mask: u64) -> io::Result<()> {
@@ -132,6 +161,25 @@ pub struct StateRow {
     pub controller: u32,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DivisionRow {
+    /// Full native handle: type in the low 32 bits, id in the high 32 bits.
+    pub id: u64,
+    /// Raw country reference of the roster containing this division.
+    pub roster_owner: u32,
+    /// Raw CUnit owner reference.
+    pub logical_owner: u32,
+    /// Raw expeditionary-owner reference, including the engine's null value.
+    pub expeditionary_owner: u32,
+    pub province: u32,
+    /// Full native standard-template handle, with the same type/id packing as id.
+    pub template: u64,
+    /// Native signed fixed-point hit points, with denominator 100,000.
+    pub hit_points: i64,
+    /// Native signed fixed-point organisation, with denominator 100,000.
+    pub organisation: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     Clock(ClockRow),
@@ -140,11 +188,12 @@ pub enum Row {
     CountryLink(CountryLinkRow),
     Province(ProvinceRow),
     State(StateRow),
+    Division(DivisionRow),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeltaRow {
-    pub key: u32,
+    pub key: u64,
     pub mask: u64,
     /// Only the selected fields, in schema order and in native little-endian form.
     pub values: Vec<u8>,
@@ -159,16 +208,18 @@ impl Row {
             Self::CountryLink(_) => TableId::CountryLinks,
             Self::Province(_) => TableId::Provinces,
             Self::State(_) => TableId::States,
+            Self::Division(_) => TableId::Divisions,
         }
     }
 
-    pub const fn key(&self) -> u32 {
+    pub const fn key(&self) -> u64 {
         match self {
             Self::Clock(_) | Self::Campaign(_) => 0,
-            Self::Country(row) => row.id,
-            Self::CountryLink(row) => row.id,
-            Self::Province(row) => row.id,
-            Self::State(row) => row.id,
+            Self::Country(row) => row.id as u64,
+            Self::CountryLink(row) => row.id as u64,
+            Self::Province(row) => row.id as u64,
+            Self::State(row) => row.id as u64,
+            Self::Division(row) => row.id,
         }
     }
 
@@ -227,11 +278,21 @@ impl Row {
             Self::CountryLink(row) => padded([U32(row.canonical_slot)]),
             Self::Province(row) => padded([U32(row.state), U32(row.owner), U32(row.controller)]),
             Self::State(row) => padded([U32(row.owner), U32(row.controller)]),
+            Self::Division(row) => padded([
+                U32(row.roster_owner),
+                U32(row.logical_owner),
+                U32(row.expeditionary_owner),
+                U32(row.province),
+                U64(row.template),
+                I64(row.hit_points),
+                I64(row.organisation),
+            ]),
         }
     }
 
-    fn from_fields(table: TableId, key: u32, fields: [Field<'_>; MAX_FIELDS]) -> io::Result<Self> {
+    fn from_fields(table: TableId, key: u64, fields: [Field<'_>; MAX_FIELDS]) -> io::Result<Self> {
         use Field::*;
+        // Narrow table ids may be cast only after this check; division handles stay u64.
         table.check_key(key)?;
         Ok(match (table, fields) {
             (
@@ -263,7 +324,7 @@ impl Row {
                     OptionalI64(convoys_raw),
                 ],
             ) => Self::Country(CountryRow {
-                id: key,
+                id: key as u32,
                 canonical_slot,
                 tag: tag.to_vec(),
                 name: name.to_vec(),
@@ -275,22 +336,44 @@ impl Row {
             }),
             (TableId::CountryLinks, [U32(canonical_slot), ..]) => {
                 Self::CountryLink(CountryLinkRow {
-                    id: key,
+                    id: key as u32,
                     canonical_slot,
                 })
             }
             (TableId::Provinces, [U32(state), U32(owner), U32(controller), ..]) => {
                 Self::Province(ProvinceRow {
-                    id: key,
+                    id: key as u32,
                     state,
                     owner,
                     controller,
                 })
             }
             (TableId::States, [U32(owner), U32(controller), ..]) => Self::State(StateRow {
-                id: key,
+                id: key as u32,
                 owner,
                 controller,
+            }),
+            (
+                TableId::Divisions,
+                [
+                    U32(roster_owner),
+                    U32(logical_owner),
+                    U32(expeditionary_owner),
+                    U32(province),
+                    U64(template),
+                    I64(hit_points),
+                    I64(organisation),
+                    ..,
+                ],
+            ) => Self::Division(DivisionRow {
+                id: key,
+                roster_owner,
+                logical_owner,
+                expeditionary_owner,
+                province,
+                template,
+                hit_points,
+                organisation,
             }),
             _ => return Err(invalid("row fields do not match table schema")),
         })
@@ -326,7 +409,7 @@ pub fn encode_row(table: TableId, row: &Row, output: &mut Vec<u8>) -> io::Result
     if row.table() != table {
         return Err(invalid("row belongs to a different table"));
     }
-    output.extend_from_slice(&row.key().to_le_bytes());
+    table.encode_key(row.key(), output)?;
     for field in &row.fields()[..table.field_count()] {
         field.encode(output)?;
     }
@@ -334,8 +417,7 @@ pub fn encode_row(table: TableId, row: &Row, output: &mut Vec<u8>) -> io::Result
 }
 
 pub fn decode_row(table: TableId, decoder: &mut Decoder<'_>) -> io::Result<Row> {
-    let key = decoder.u32()?;
-    table.check_key(key)?;
+    let key = table.decode_key(decoder)?;
     let mut fields = [Field::Empty; MAX_FIELDS];
     for (index, kind) in table.schema().iter().enumerate() {
         fields[index] = kind.decode(decoder)?;
@@ -353,15 +435,14 @@ pub fn encode_delta(table: TableId, delta: &DeltaRow, output: &mut Vec<u8>) -> i
         }
     }
     decoder.finish()?;
-    output.extend_from_slice(&delta.key.to_le_bytes());
+    table.encode_key(delta.key, output)?;
     output.extend_from_slice(&delta.mask.to_le_bytes()[..table.mask_width()]);
     output.extend_from_slice(&delta.values);
     Ok(())
 }
 
 pub fn decode_delta(table: TableId, decoder: &mut Decoder<'_>) -> io::Result<DeltaRow> {
-    let key = decoder.u32()?;
-    table.check_key(key)?;
+    let key = table.decode_key(decoder)?;
     let mut mask_bytes = [0; 8];
     mask_bytes[..table.mask_width()].copy_from_slice(decoder.take(table.mask_width())?);
     let mask = u64::from_le_bytes(mask_bytes);
@@ -464,6 +545,19 @@ mod tests {
         }
     }
 
+    fn division() -> DivisionRow {
+        DivisionRow {
+            id: 0x8000_0001_0000_0029,
+            roster_owner: 7,
+            logical_owner: 2,
+            expeditionary_owner: 0,
+            province: 123,
+            template: 0x8000_0002_0000_002a,
+            hit_points: -9_007_199_254_740_993,
+            organisation: 100_001,
+        }
+    }
+
     #[test]
     fn full_rows_and_insertions_preserve_native_values_and_raw_aliases() {
         let rows = [
@@ -491,6 +585,16 @@ mod tests {
                 id: u32::MAX,
                 owner: 0,
                 controller: u32::MAX,
+            }),
+            Row::Division(DivisionRow {
+                id: u64::MAX,
+                roster_owner: u32::MAX,
+                logical_owner: 0,
+                expeditionary_owner: u32::MAX,
+                province: u32::MAX,
+                template: u64::MAX,
+                hit_points: i64::MIN,
+                organisation: i64::MAX,
             }),
         ];
         for row in rows {
@@ -540,7 +644,7 @@ mod tests {
         assert_eq!(old.delta(Some(&old)).unwrap(), None);
         for mask in 1..=TableId::States.full_mask() {
             let new = Row::State(StateRow {
-                id: old.key(),
+                id: old.key().try_into().unwrap(),
                 owner: if mask & 1 != 0 { 0 } else { 7 },
                 controller: if mask & 2 != 0 { u32::MAX } else { 2 },
             });
@@ -549,13 +653,125 @@ mod tests {
             let mut bytes = Vec::new();
             encode_delta(TableId::States, &delta, &mut bytes).unwrap();
             assert_eq!(bytes.len(), 4 + 1 + mask.count_ones() as usize * 4);
-            assert_eq!(&bytes[..4], &old.key().to_le_bytes());
+            assert_eq!(&bytes[..4], &old.key().to_le_bytes()[..4]);
             let mut input = Decoder::new(&bytes);
             let decoded = decode_delta(TableId::States, &mut input).unwrap();
             input.finish().unwrap();
             assert_eq!(decoded.apply(TableId::States, Some(&old)).unwrap(), new);
             if mask != TableId::States.full_mask() {
                 assert!(decoded.apply(TableId::States, None).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn division_rows_keep_full_handles_and_native_fixed_point_bytes() {
+        for id in [0, 1_u64 << 63, u64::MAX] {
+            let row = Row::Division(DivisionRow { id, ..division() });
+            let mut bytes = Vec::new();
+            encode_row(TableId::Divisions, &row, &mut bytes).unwrap();
+            assert_eq!(bytes.len(), 48);
+            assert_eq!(&bytes[..8], &id.to_le_bytes());
+            assert_eq!(&bytes[24..32], &division().template.to_le_bytes());
+            assert_eq!(&bytes[32..40], &division().hit_points.to_le_bytes());
+            assert_eq!(&bytes[40..48], &division().organisation.to_le_bytes());
+            let mut input = Decoder::new(&bytes);
+            assert_eq!(decode_row(TableId::Divisions, &mut input).unwrap(), row);
+            input.finish().unwrap();
+            for cut in 0..bytes.len() {
+                assert!(decode_row(TableId::Divisions, &mut Decoder::new(&bytes[..cut])).is_err());
+            }
+            let delta = row.delta(None).unwrap().unwrap();
+            bytes.clear();
+            encode_delta(TableId::Divisions, &delta, &mut bytes).unwrap();
+            assert_eq!(bytes.len(), 49);
+            assert_eq!(bytes[8], 0x7f);
+            assert_eq!(delta.apply(TableId::Divisions, None).unwrap(), row);
+        }
+    }
+
+    #[test]
+    fn division_masks_preserve_every_field_subset_without_quantization() {
+        let original = division();
+        let old = Row::Division(original.clone());
+        for mask in 1..=TableId::Divisions.full_mask() {
+            let mut updated = original.clone();
+            if mask & 1 != 0 {
+                updated.roster_owner = u32::MAX;
+            }
+            if mask & 2 != 0 {
+                updated.logical_owner = 0;
+            }
+            if mask & 4 != 0 {
+                updated.expeditionary_owner = 7;
+            }
+            if mask & 8 != 0 {
+                updated.province = u32::MAX;
+            }
+            if mask & 16 != 0 {
+                updated.template = u64::MAX;
+            }
+            if mask & 32 != 0 {
+                updated.hit_points = i64::MIN;
+            }
+            if mask & 64 != 0 {
+                updated.organisation = i64::MAX;
+            }
+            let new = Row::Division(updated);
+            let delta = new.delta(Some(&old)).unwrap().unwrap();
+            assert_eq!(delta.mask, mask);
+            let mut bytes = Vec::new();
+            encode_delta(TableId::Divisions, &delta, &mut bytes).unwrap();
+            let values_size =
+                (mask & 0x0f).count_ones() as usize * 4 + (mask & 0x70).count_ones() as usize * 8;
+            assert_eq!(bytes.len(), 8 + 1 + values_size);
+            let mut input = Decoder::new(&bytes);
+            let decoded = decode_delta(TableId::Divisions, &mut input).unwrap();
+            input.finish().unwrap();
+            assert_eq!(decoded.apply(TableId::Divisions, Some(&old)).unwrap(), new);
+            assert_eq!(
+                old.delta(Some(&new))
+                    .unwrap()
+                    .unwrap()
+                    .apply(TableId::Divisions, Some(&new))
+                    .unwrap(),
+                old
+            );
+            if mask != TableId::Divisions.full_mask() {
+                assert!(decoded.apply(TableId::Divisions, None).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn table_key_widths_refuse_overflow_and_keep_existing_rows_at_four_bytes() {
+        for table in TableId::ALL {
+            let key = match table {
+                TableId::Clock | TableId::Campaign => 0,
+                TableId::Divisions => u64::MAX,
+                _ => u64::from(u32::MAX),
+            };
+            let mut bytes = Vec::new();
+            table.encode_key(key, &mut bytes).unwrap();
+            assert_eq!(bytes.len(), if table == TableId::Divisions { 8 } else { 4 });
+            let mut input = Decoder::new(&bytes);
+            assert_eq!(table.decode_key(&mut input).unwrap(), key);
+            input.finish().unwrap();
+            if table == TableId::Divisions {
+                continue;
+            }
+            for oversized in [u64::from(u32::MAX) + 1, u64::MAX] {
+                let before = bytes.clone();
+                assert!(table.encode_key(oversized, &mut bytes).is_err());
+                assert_eq!(bytes, before);
+                let invalid = DeltaRow {
+                    key: oversized,
+                    mask: table.full_mask(),
+                    values: Vec::new(),
+                };
+                assert!(invalid.apply(table, None).is_err());
+                assert!(encode_delta(table, &invalid, &mut bytes).is_err());
+                assert_eq!(bytes, before);
             }
         }
     }

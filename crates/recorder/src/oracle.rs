@@ -241,6 +241,7 @@ struct Report {
     countries: usize,
     provinces: usize,
     states: usize,
+    divisions: usize,
     scalar_checks: usize,
     differences: Vec<String>,
     limitations: BTreeMap<String, Vec<String>>,
@@ -288,8 +289,8 @@ impl Report {
 
     fn print(&self) {
         println!(
-            "Compared: {} provinces, {} states, {} countries, {} exact scalar values (/100000)",
-            self.provinces, self.states, self.countries, self.scalar_checks
+            "Compared: {} provinces, {} states, {} divisions, {} countries, {} exact scalar values (/100000)",
+            self.provinces, self.states, self.divisions, self.countries, self.scalar_checks
         );
         println!("Differences: {}", self.differences.len());
         for difference in self.differences.iter().take(100) {
@@ -337,7 +338,7 @@ fn compare(
     );
     report.limitation(
         "saves retain country tags but erase raw country-link and canonical-slot identities",
-        "countries / country links / province and state references",
+        "countries / country links / province, state and division country references",
     );
     report.limitation("save serializer omits owner-equivalent and nonpositive controller references; these compare by resolved control", "provinces with no explicit saved controller");
     let mut by_tag = BTreeMap::new();
@@ -536,7 +537,128 @@ fn compare(
         "state serializer omits controllers equal to owner by raw or canonical country-link identity; omitted fields compare to the saved owner without accepting captured zero",
         "states with no explicit saved controller",
     );
+    compare_divisions(frame, save, membership, &links, &mut report)?;
     Ok(report)
+}
+
+fn compare_divisions(
+    frame: &DecodedFrame,
+    save: &Save,
+    membership: &save::MapMembership,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut divisions = BTreeMap::new();
+    for row in complete(frame, TableId::Divisions)? {
+        let Row::Division(division) = row else {
+            return Err(invalid("non-division row in division table"));
+        };
+        if division.id == 0 || divisions.insert(division.id, division).is_some() {
+            return Err(invalid("null or duplicate full division handle in replay"));
+        }
+    }
+    for (&id, expected) in &save.divisions {
+        let label = format!("division type={} id={}", id as u32, id >> 32);
+        for tag in [
+            Some(&expected.roster_owner),
+            Some(&expected.logical_owner),
+            expected.expeditionary_owner.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !save.countries.contains_key(tag) {
+                return Err(invalid(format!(
+                    "{label} references unknown saved country {}",
+                    String::from_utf8_lossy(tag)
+                )));
+            }
+        }
+        if expected
+            .province
+            .is_some_and(|province| province == 0 || !membership.provinces.contains_key(&province))
+        {
+            return Err(invalid(format!(
+                "{label} location is absent from the verified map or is its sentinel"
+            )));
+        }
+        let Some(actual) = divisions.remove(&id) else {
+            report.difference(&label, "absent", "present");
+            continue;
+        };
+        report.divisions += 1;
+        for (field, captured, saved) in [
+            (
+                "roster_owner",
+                actual.roster_owner,
+                Some(expected.roster_owner.as_slice()),
+            ),
+            (
+                "logical_owner",
+                actual.logical_owner,
+                Some(expected.logical_owner.as_slice()),
+            ),
+            (
+                "expeditionary_owner",
+                actual.expeditionary_owner,
+                expected.expeditionary_owner.as_deref(),
+            ),
+        ] {
+            // BF7010 drops signed-nonpositive expeditionary tags. BF4E40
+            // clears to zero, but a negative raw value cannot be verified as
+            // that null. Refuse it instead of reporting an exact comparison.
+            if field == "expeditionary_owner" && (captured as i32) < 0 {
+                return Err(invalid(format!(
+                    "{label}.expeditionary_owner has invalid signed country reference {}; the save omits nonpositive references and cannot verify these bits",
+                    captured as i32
+                )));
+            }
+            let captured = country_tag(captured, links)?;
+            if captured != saved {
+                report.difference(
+                    format!("{label}.{field}"),
+                    tag_text(captured),
+                    tag_text(saved),
+                );
+            }
+        }
+        if actual.province != expected.province.unwrap_or(0) {
+            report.difference(
+                format!("{label}.province"),
+                actual.province,
+                expected.province,
+            );
+        }
+        if actual.template != expected.template.unwrap_or(0) {
+            report.difference(
+                format!("{label}.template"),
+                actual.template,
+                expected.template,
+            );
+        } else if expected.template.is_none() {
+            report.limitation("division has a null standard template and the save omits its template reference; no fake-intel template was substituted", label.clone());
+        }
+        report.scalar(
+            &label,
+            "hit_points (save strength)",
+            Some(actual.hit_points),
+            Some(&expected.hit_points),
+        );
+        report.scalar(
+            &label,
+            "organisation",
+            Some(actual.organisation),
+            Some(&expected.organisation),
+        );
+    }
+    for id in divisions.keys() {
+        report.difference(
+            format!("division type={} id={}", *id as u32, id >> 32),
+            "present",
+            "absent",
+        );
+    }
+    Ok(())
 }
 
 fn country_tag<'a>(
@@ -643,7 +765,7 @@ mod tests {
     use super::*;
     use replay::{
         frame::Metrics,
-        rows::{CampaignRow, ClockRow, CountryLinkRow, ProvinceRow, StateRow},
+        rows::{CampaignRow, ClockRow, CountryLinkRow, DivisionRow, ProvinceRow, StateRow},
     };
 
     fn fixture() -> (
@@ -711,12 +833,84 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                     owner: 102,
                     controller: 101,
                 })]),
+                TableView::Complete(Vec::new()),
             ],
         };
         let membership = save::MapMembership {
             provinces: BTreeMap::from([(0, None), (1, Some(1)), (2, None)]),
         };
         (frame, save, membership, save::EquipmentTypes::default())
+    }
+
+    fn add_country(frame: &mut DecodedFrame, save: &mut Save, id: u32, slot: u32, tag: &[u8]) {
+        let mut saved = save.countries[b"GER".as_slice()].clone();
+        saved.tag = tag.to_vec();
+        save.countries.insert(tag.to_vec(), saved);
+        let TableView::Complete(rows) = &mut frame.tables[TableId::Countries.index()] else {
+            unreachable!()
+        };
+        let Row::Country(mut row) = rows[0].clone() else {
+            unreachable!()
+        };
+        row.id = id;
+        row.canonical_slot = slot;
+        row.tag = tag.to_vec();
+        rows.push(Row::Country(row));
+        let TableView::Complete(rows) = &mut frame.tables[TableId::CountryLinks.index()] else {
+            unreachable!()
+        };
+        rows.push(Row::CountryLink(CountryLinkRow {
+            id,
+            canonical_slot: slot,
+        }));
+    }
+
+    fn division_fixture() -> (
+        DecodedFrame,
+        Save,
+        save::MapMembership,
+        save::EquipmentTypes,
+    ) {
+        let (mut frame, mut save, membership, equipment) = fixture();
+        add_country(&mut frame, &mut save, 201, 8, b"D01");
+        add_country(&mut frame, &mut save, 301, 9, b"SOV");
+        let id = (2_147_483_649_u64 << 32) | 4919;
+        let template = (u64::from(u32::MAX) << 32) | 6000;
+        save.divisions.insert(
+            id,
+            save::Division {
+                id,
+                roster_owner: b"GER".to_vec(),
+                logical_owner: b"D01".to_vec(),
+                expeditionary_owner: Some(b"SOV".to_vec()),
+                province: Some(1),
+                template: Some(template),
+                hit_points: Decimal::parse(b"90071992547.40993").unwrap(),
+                organisation: Decimal::parse(b"53.45454").unwrap(),
+            },
+        );
+        frame.tables[TableId::Divisions.index()] =
+            TableView::Complete(vec![Row::Division(DivisionRow {
+                id,
+                roster_owner: 102,
+                logical_owner: 201,
+                expeditionary_owner: 301,
+                province: 1,
+                template,
+                hit_points: 9_007_199_254_740_993,
+                organisation: 5_345_454,
+            })]);
+        (frame, save, membership, equipment)
+    }
+
+    fn division_row_mut(frame: &mut DecodedFrame) -> &mut DivisionRow {
+        let TableView::Complete(rows) = &mut frame.tables[TableId::Divisions.index()] else {
+            unreachable!()
+        };
+        let Row::Division(row) = &mut rows[0] else {
+            unreachable!()
+        };
+        row
     }
 
     #[test]
@@ -871,6 +1065,125 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             invalid.tables[TableId::States.index()] = view;
             assert!(compare(&invalid, &save, &membership, &equipment).is_err());
         }
+    }
+
+    #[test]
+    fn division_oracle_compares_native_precision_and_three_distinct_owners() {
+        let (frame, save, membership, equipment) = division_fixture();
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.divisions, 1);
+        assert_eq!(report.scalar_checks, 17);
+        let mut changed = frame.clone();
+        let row = division_row_mut(&mut changed);
+        row.hit_points -= 1;
+        row.organisation += 1;
+        row.roster_owner = 201;
+        row.logical_owner = 301;
+        row.expeditionary_owner = 101;
+        row.province = 2;
+        row.template ^= 1;
+        let report = compare(&changed, &save, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 7, "{:?}", report.differences);
+    }
+
+    #[test]
+    fn division_type_word_is_part_of_identity_and_duplicate_full_handles_are_refused() {
+        let (mut frame, save, membership, equipment) = division_fixture();
+        division_row_mut(&mut frame).id ^= 1;
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+        assert_eq!(report.divisions, 0);
+        let (mut frame, save, membership, equipment) = division_fixture();
+        let TableView::Complete(rows) = &mut frame.tables[TableId::Divisions.index()] else {
+            unreachable!()
+        };
+        rows.push(rows[0].clone());
+        assert!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate full division handle")
+        );
+    }
+
+    #[test]
+    fn division_optional_omissions_require_captured_nulls() {
+        let (mut frame, mut save, membership, equipment) = division_fixture();
+        let expected = save.divisions.values_mut().next().unwrap();
+        expected.province = None;
+        expected.template = None;
+        expected.expeditionary_owner = None;
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+        let row = division_row_mut(&mut frame);
+        row.province = 0;
+        row.template = 0;
+        row.expeditionary_owner = 0;
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("null standard template"))
+        );
+        division_row_mut(&mut frame).expeditionary_owner = u32::MAX;
+        assert!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("cannot verify these bits")
+        );
+    }
+
+    #[test]
+    fn division_incomplete_tables_and_unresolved_references_cannot_pass() {
+        let (frame, save, membership, equipment) = division_fixture();
+        for table in [
+            TableView::Unavailable {
+                reason: "division unreadable".into(),
+            },
+            TableView::Truncated {
+                rows: Vec::new(),
+                missing: 1,
+            },
+            TableView::Complete(vec![Row::Province(ProvinceRow::default())]),
+            TableView::Complete(vec![Row::Division(DivisionRow::default())]),
+        ] {
+            let mut invalid = frame.clone();
+            invalid.tables[TableId::Divisions.index()] = table;
+            assert!(compare(&invalid, &save, &membership, &equipment).is_err());
+        }
+        let mut invalid = frame.clone();
+        division_row_mut(&mut invalid).logical_owner = 777;
+        assert!(
+            compare(&invalid, &save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("unresolved country reference")
+        );
+        let mut invalid_save = save.clone();
+        invalid_save
+            .divisions
+            .values_mut()
+            .next()
+            .unwrap()
+            .logical_owner = b"UNKNOWN".to_vec();
+        assert!(
+            compare(&frame, &invalid_save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown saved country")
+        );
+        let mut invalid_save = save;
+        invalid_save.divisions.values_mut().next().unwrap().province = Some(999_999);
+        assert!(
+            compare(&frame, &invalid_save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("verified map")
+        );
     }
 
     #[test]

@@ -1159,6 +1159,7 @@ mod tests {
                 TableView::Complete(Vec::new()),
                 TableView::Complete(Vec::new()),
                 TableView::Complete(Vec::new()),
+                TableView::Complete(Vec::new()),
             ],
         }
     }
@@ -1255,9 +1256,9 @@ mod tests {
     fn old_replay_version_is_refused_before_decoding_frames() {
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
         let mut bytes = replay.bytes().to_vec();
-        bytes[4..6].copy_from_slice(&1_u16.to_le_bytes());
+        bytes[4..6].copy_from_slice(&2_u16.to_le_bytes());
         let error = Replay::open(bytes).err().unwrap().to_string();
-        assert_eq!(error, "unsupported replay format version 1; expected 2");
+        assert_eq!(error, "unsupported replay format version 2; expected 3");
     }
 
     #[test]

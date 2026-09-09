@@ -38,7 +38,7 @@ pub enum TableUpdate {
     Delta {
         baseline: Hour,
         changed: Vec<DeltaRow>,
-        deleted: Vec<u32>,
+        deleted: Vec<u64>,
     },
     Unchanged {
         baseline: Hour,
@@ -80,6 +80,7 @@ fn validate_rows(table: TableId, rows: &[Row]) -> io::Result<()> {
                 "table rows must have matching types and unique ascending keys",
             ));
         }
+        table.check_key(row.key())?;
         if let Row::Country(country) = row
             && !country_slots.insert(country.canonical_slot)
         {
@@ -151,7 +152,7 @@ impl Frame {
                     changed,
                     deleted,
                 } => {
-                    validate_delta(changed, deleted)?;
+                    validate_delta(table, changed, deleted)?;
                     out.push(1);
                     out.extend_from_slice(&baseline.to_le_bytes());
                     put_count(out, changed.len())?;
@@ -160,7 +161,7 @@ impl Frame {
                     }
                     put_count(out, deleted.len())?;
                     for key in deleted {
-                        out.extend_from_slice(&key.to_le_bytes());
+                        table.encode_key(*key, out)?;
                     }
                 }
                 TableUpdate::Unchanged { baseline } => {
@@ -209,17 +210,17 @@ impl Frame {
                 0 => TableUpdate::Snapshot(decode_rows(table, input)?),
                 1 => {
                     let baseline = input.i32()?;
-                    let count = input.count(5)?;
+                    let count = input.count(table.key_width() + table.mask_width())?;
                     let mut changed = Vec::with_capacity(count);
                     for _ in 0..count {
                         changed.push(rows::decode_delta(table, input)?);
                     }
-                    let count = input.count(4)?;
+                    let count = input.count(table.key_width())?;
                     let mut deleted = Vec::with_capacity(count);
                     for _ in 0..count {
-                        deleted.push(input.u32()?);
+                        deleted.push(table.decode_key(input)?);
                     }
-                    validate_delta(&changed, &deleted)?;
+                    validate_delta(table, &changed, &deleted)?;
                     TableUpdate::Delta {
                         baseline,
                         changed,
@@ -278,7 +279,7 @@ fn encode_rows(table: TableId, values: &[Row], out: &mut Vec<u8>) -> io::Result<
 }
 
 fn decode_rows(table: TableId, input: &mut Decoder<'_>) -> io::Result<Vec<Row>> {
-    let count = input.count(4)?;
+    let count = input.count(table.key_width())?;
     let mut values = Vec::with_capacity(count);
     for _ in 0..count {
         values.push(rows::decode_row(table, input)?);
@@ -287,7 +288,14 @@ fn decode_rows(table: TableId, input: &mut Decoder<'_>) -> io::Result<Vec<Row>> 
     Ok(values)
 }
 
-fn validate_delta(changed: &[DeltaRow], deleted: &[u32]) -> io::Result<()> {
+fn validate_delta(table: TableId, changed: &[DeltaRow], deleted: &[u64]) -> io::Result<()> {
+    for key in changed
+        .iter()
+        .map(|row| row.key)
+        .chain(deleted.iter().copied())
+    {
+        table.check_key(key)?;
+    }
     if changed.windows(2).any(|w| w[0].key >= w[1].key) || deleted.windows(2).any(|w| w[0] >= w[1])
     {
         return Err(invalid("delta keys must be unique and ascending"));
@@ -550,7 +558,7 @@ fn apply_table(
                 changed, deleted, ..
             } = update
             {
-                validate_delta(changed, deleted)?;
+                validate_delta(table, changed, deleted)?;
                 let mut rows =
                     Vec::with_capacity(previous_rows.len().saturating_sub(deleted.len()));
                 let mut changed = changed.iter().peekable();
@@ -594,7 +602,9 @@ fn apply_table(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rows::{CampaignRow, ClockRow, CountryLinkRow, CountryRow, ProvinceRow, StateRow};
+    use crate::rows::{
+        CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow, ProvinceRow, StateRow,
+    };
 
     fn source(branch: BranchId, hour: Hour) -> DecodedFrame {
         DecodedFrame {
@@ -602,7 +612,7 @@ mod tests {
             hour,
             metrics: Metrics {
                 total_ns: 4_567_890,
-                table_ns: [100, 200, 300, 400, 500, 600],
+                table_ns: [100, 200, 300, 400, 500, 600, 700],
                 pool_bytes: 123_456,
                 dropped_frames: 2,
             },
@@ -637,6 +647,7 @@ mod tests {
                     owner: 7,
                     controller: 2,
                 })]),
+                TableView::Complete(vec![division(0x1234_5678_0000_0035, 300_000, 100_001)]),
             ],
         }
     }
@@ -647,6 +658,19 @@ mod tests {
             state: 8,
             owner: 7,
             controller,
+        })
+    }
+
+    fn division(id: u64, hit_points: i64, organisation: i64) -> Row {
+        Row::Division(DivisionRow {
+            id,
+            roster_owner: 7,
+            logical_owner: 2,
+            expeditionary_owner: 0,
+            province: 1,
+            template: 0xfedc_ba98_0000_002b,
+            hit_points,
+            organisation,
         })
     }
 
@@ -829,6 +853,175 @@ mod tests {
                 );
             }
             assert_eq!(decoder.apply(&wire(&frame)).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn division_handles_and_native_health_survive_insert_update_delete_and_dropped_hours() {
+        // Equal instance halves with different type halves must remain distinct keys.
+        let first_id = 0xfedc_ba98_0000_0035;
+        let second_id = 0xfedc_ba98_0000_0036;
+        let inserted_id = 0xffff_ffff_0000_0035;
+        let index = TableId::Divisions.index();
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        let mut first = source(1, 10);
+        first.tables[index] = TableView::Complete(vec![
+            division(first_id, 300_000, 100_001),
+            division(second_id, 300_000, 100_001),
+        ]);
+        let frame = encoder.encode(&first, false).unwrap();
+        assert_eq!(decoder.apply(&wire(&frame)).unwrap(), first);
+
+        let mut next = source(1, 11);
+        next.tables[index] = TableView::Complete(vec![
+            division(second_id, i64::MAX, i64::MIN),
+            division(inserted_id, 9_007_199_254_740_993, -100_001),
+        ]);
+        let frame = encoder.encode(&next, false).unwrap();
+        let TableUpdate::Delta {
+            baseline,
+            changed,
+            deleted,
+        } = &frame.tables[index]
+        else {
+            panic!("division changes did not produce a delta")
+        };
+        assert_eq!(*baseline, 10);
+        assert_eq!(deleted, &[first_id]);
+        assert_eq!(changed.len(), 2);
+        assert_eq!((changed[0].key, changed[0].mask), (second_id, 0b110_0000));
+        assert_eq!(changed[0].values.len(), 16);
+        assert_eq!(&changed[0].values[..8], &i64::MAX.to_le_bytes());
+        assert_eq!(&changed[0].values[8..], &i64::MIN.to_le_bytes());
+        assert_eq!(
+            (changed[1].key, changed[1].mask),
+            (inserted_id, TableId::Divisions.full_mask())
+        );
+        assert_eq!(decoder.apply(&wire(&frame)).unwrap(), next);
+
+        let mut resting = source(1, 12);
+        resting.tables[index] = next.tables[index].clone();
+        let frame = encoder.encode(&resting, false).unwrap();
+        assert_eq!(frame.tables[index], TableUpdate::Unchanged { baseline: 11 });
+        assert_eq!(decoder.apply(&wire(&frame)).unwrap(), resting);
+
+        // The spool's gap control record explains the missing hours; surviving
+        // table deltas still refer to the last successfully recorded baseline.
+        let mut after_gap = source(1, 19);
+        after_gap.tables[index] = TableView::Complete(vec![
+            division(second_id, i64::MAX, i64::MIN + 1),
+            division(inserted_id, 9_007_199_254_740_993, -100_001),
+        ]);
+        let frame = encoder.encode(&after_gap, false).unwrap();
+        let TableUpdate::Delta {
+            baseline,
+            changed,
+            deleted,
+        } = &frame.tables[index]
+        else {
+            panic!("organisation change did not produce a delta")
+        };
+        assert_eq!(*baseline, 12);
+        assert!(deleted.is_empty());
+        assert_eq!(changed.len(), 1);
+        assert_eq!((changed[0].key, changed[0].mask), (second_id, 0b100_0000));
+        assert_eq!(changed[0].values, (i64::MIN + 1).to_le_bytes());
+        assert_eq!(decoder.apply(&wire(&frame)).unwrap(), after_gap);
+    }
+
+    #[test]
+    fn division_failures_and_partial_keyframes_clear_only_their_own_baseline() {
+        let index = TableId::Divisions.index();
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        for hour in 0..=6 {
+            let mut expected = source(1, hour);
+            if matches!(hour, 0 | 4) {
+                expected.tables[index] = TableView::Truncated {
+                    rows: vec![division(0x1234_5678_0000_0035, 300_000, 100_001)],
+                    missing: 17,
+                };
+            } else if hour == 2 {
+                expected.tables[index] = TableView::Unavailable {
+                    reason: "division reference unreadable".into(),
+                };
+            }
+            let frame = encoder.encode(&expected, false).unwrap();
+            match hour {
+                1 | 3 | 5 => assert!(matches!(frame.tables[index], TableUpdate::Snapshot(_))),
+                6 => assert_eq!(frame.tables[index], TableUpdate::Unchanged { baseline: 5 }),
+                _ => {}
+            }
+            if hour > 0 {
+                assert_eq!(
+                    frame.tables[TableId::Provinces.index()],
+                    TableUpdate::Unchanged { baseline: hour - 1 }
+                );
+            }
+            let actual = decoder.apply(&wire(&frame)).unwrap();
+            if hour == 0 {
+                unavailable(&actual.tables[index], "17 rows not read");
+                expected.tables[index] = actual.tables[index].clone();
+            }
+            assert_eq!(actual, expected);
+        }
+
+        let expected = source(1, 7);
+        let mut invalid = encoder.encode(&expected, false).unwrap();
+        invalid.tables[index] = TableUpdate::Unchanged { baseline: 999 };
+        let actual = decoder.apply(&wire(&invalid)).unwrap();
+        unavailable(&actual.tables[index], "baseline at hour 999");
+        for table in TableId::ALL
+            .into_iter()
+            .filter(|table| *table != TableId::Divisions)
+        {
+            assert_eq!(actual.tables[table.index()], expected.tables[table.index()]);
+        }
+        let later = encoder.encode(&source(1, 8), false).unwrap();
+        unavailable(
+            &decoder.apply(&wire(&later)).unwrap().tables[index],
+            "baseline at hour 7",
+        );
+        let recovered = source(1, 9);
+        let frame = encoder.encode(&recovered, true).unwrap();
+        assert_eq!(decoder.apply(&wire(&frame)).unwrap(), recovered);
+    }
+
+    #[test]
+    fn direct_delta_application_rejects_narrow_key_overflow_and_nonzero_singleton_keys() {
+        let mut encoder = FrameEncoder::new();
+        let first = encoder.encode(&source(1, 0), false).unwrap();
+        let expected = source(1, 1);
+        let next = encoder.encode(&expected, false).unwrap();
+        for (table, invalid_key) in [
+            (TableId::Provinces, u64::from(u32::MAX) + 1),
+            (TableId::Campaign, 1),
+        ] {
+            for delete in [false, true] {
+                let mut bad = next.clone();
+                let TableView::Complete(values) = &expected.tables[table.index()] else {
+                    panic!()
+                };
+                let mut change = values[0].delta(None).unwrap().unwrap();
+                change.key = invalid_key;
+                bad.tables[table.index()] = TableUpdate::Delta {
+                    baseline: 0,
+                    changed: if delete { vec![] } else { vec![change] },
+                    deleted: if delete { vec![invalid_key] } else { vec![] },
+                };
+                let reason = table.check_key(invalid_key).unwrap_err().to_string();
+                assert_eq!(bad.encode(&mut Vec::new()).unwrap_err().to_string(), reason);
+                let mut decoder = FrameDecoder::new();
+                decoder.apply(&first).unwrap();
+                let actual = decoder.apply(&bad).unwrap();
+                unavailable(&actual.tables[table.index()], &reason);
+                for other in TableId::ALL.into_iter().filter(|other| *other != table) {
+                    assert_eq!(actual.tables[other.index()], expected.tables[other.index()]);
+                }
+                let later = FrameEncoder::new().encode(&source(1, 2), false).unwrap();
+                assert_eq!(decoder.apply(&later).unwrap(), source(1, 2));
+            }
         }
     }
 
@@ -1088,7 +1281,8 @@ mod tests {
         assert!(invalid_keyframe.encode(&mut Vec::new()).is_err());
         assert!(decoder.apply(&invalid_keyframe).is_err());
         let mut invalid_last_table = FrameEncoder::new().encode(&expected, false).unwrap();
-        invalid_last_table.tables[TableId::States.index()] = TableUpdate::Unchanged { baseline: 0 };
+        invalid_last_table.tables[TableId::Divisions.index()] =
+            TableUpdate::Unchanged { baseline: 0 };
         assert!(decoder.apply(&invalid_last_table).is_err());
         let mut bytes = Vec::new();
         valid.encode(&mut bytes).unwrap();

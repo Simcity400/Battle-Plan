@@ -139,13 +139,18 @@ impl Inspector {
             TableId::Provinces | TableId::States => {
                 ui.weak("Country selection includes rows owned or controlled by that country.");
             }
+            TableId::Divisions => {
+                ui.weak("Country selection includes roster, logical and expeditionary owners.");
+            }
             _ => {}
         }
         if let Some(message) = limitation(&frame.tables[TableId::Countries.index()]) {
             ui.colored_label(egui::Color32::YELLOW, format!("Country list: {message}"));
         }
-        if matches!(self.table, TableId::Provinces | TableId::States)
-            && let Some(message) = limitation(&frame.tables[TableId::CountryLinks.index()])
+        if matches!(
+            self.table,
+            TableId::Provinces | TableId::States | TableId::Divisions
+        ) && let Some(message) = limitation(&frame.tables[TableId::CountryLinks.index()])
         {
             ui.colored_label(
                 egui::Color32::YELLOW,
@@ -278,6 +283,7 @@ fn table_name(table: TableId) -> &'static str {
         TableId::CountryLinks => "Country references",
         TableId::Provinces => "Provinces",
         TableId::States => "States",
+        TableId::Divisions => "Divisions",
     }
 }
 
@@ -296,8 +302,9 @@ fn country_match(row: &Row, country: Option<u32>, links: &BTreeMap<u32, u32>) ->
         Row::Clock(_) | Row::Campaign(_) => return CountryMatch::Included,
         Row::Country(row) => return slot_match(row.canonical_slot, country),
         Row::CountryLink(row) => return slot_match(row.canonical_slot, country),
-        Row::Province(row) => [row.owner, row.controller],
-        Row::State(row) => [row.owner, row.controller],
+        Row::Province(row) => [row.owner, row.controller, 0],
+        Row::State(row) => [row.owner, row.controller, 0],
+        Row::Division(row) => [row.roster_owner, row.logical_owner, row.expeditionary_owner],
     };
     let resolved = references.map(|raw| resolve_reference(raw, links));
     if resolved.contains(&Some(country)) {
@@ -357,6 +364,16 @@ fn columns(table: TableId) -> &'static [(&'static str, f32)] {
             ("Controller", 160.0),
         ],
         TableId::States => &[("State ID", 90.0), ("Owner", 160.0), ("Controller", 160.0)],
+        TableId::Divisions => &[
+            ("Division (type / ID)", 175.0),
+            ("Roster owner", 160.0),
+            ("Logical owner", 160.0),
+            ("Expeditionary owner", 160.0),
+            ("Province ID", 90.0),
+            ("Template (type / ID)", 175.0),
+            ("Hit points", 115.0),
+            ("Organisation", 115.0),
+        ],
     }
 }
 
@@ -366,6 +383,15 @@ struct Cell {
 }
 
 impl Cell {
+    fn handle(raw: u64) -> Self {
+        let kind = raw as u32;
+        let id = (raw >> 32) as u32;
+        Self {
+            text: format!("{kind} / {id}"),
+            hover: format!("Recorded 64-bit handle: {raw} (0x{raw:016x})\nType: {kind}\nID: {id}"),
+        }
+    }
+
     fn integer(value: impl ToString) -> Self {
         let text = value.to_string();
         Self {
@@ -483,6 +509,16 @@ fn cells(row: &Row, links: &BTreeMap<u32, u32>, countries: &BTreeMap<u32, String
             Cell::country(row.owner, links, countries),
             Cell::country(row.controller, links, countries),
         ],
+        Row::Division(row) => vec![
+            Cell::handle(row.id),
+            Cell::country(row.roster_owner, links, countries),
+            Cell::country(row.logical_owner, links, countries),
+            Cell::country(row.expeditionary_owner, links, countries),
+            Cell::integer(row.province),
+            Cell::handle(row.template),
+            Cell::fixed(Some(row.hit_points), false, ""),
+            Cell::fixed(Some(row.organisation), false, ""),
+        ],
     }
 }
 
@@ -497,7 +533,7 @@ fn fixed(raw: i64, percent: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{CountryLinkRow, CountryRow, ProvinceRow, StateRow};
+    use replay::rows::{CountryLinkRow, CountryRow, DivisionRow, ProvinceRow, StateRow};
 
     #[test]
     fn display_rounding_preserves_large_native_values_and_signed_ties() {
@@ -508,6 +544,10 @@ mod tests {
         assert_eq!(fixed(i64::MAX, false), "92233720368547.76");
         assert_eq!(fixed(i64::MIN, false), "-92233720368547.76");
         assert_eq!(fixed(i64::MAX, true), "9223372036854775.81");
+        assert_eq!(fixed(26_429_000, false), "264.29");
+        let handle = Cell::handle(0xffff_ffff_0000_1269);
+        assert_eq!(handle.text, "4713 / 4294967295");
+        assert!(handle.hover.contains("0xffffffff00001269"));
     }
 
     #[test]
@@ -602,6 +642,39 @@ mod tests {
                 Some(0),
                 &links
             ),
+            CountryMatch::Included
+        );
+        let mut division = DivisionRow {
+            roster_owner: 12,
+            logical_owner: 50,
+            expeditionary_owner: 91,
+            ..Default::default()
+        };
+        assert_eq!(
+            country_match(&Row::Division(division.clone()), Some(4), &links),
+            CountryMatch::Included
+        );
+        assert_eq!(
+            country_match(&Row::Division(division.clone()), Some(2), &links),
+            CountryMatch::Included
+        );
+        division.roster_owner = 50;
+        assert_eq!(
+            country_match(&Row::Division(division.clone()), Some(4), &links),
+            CountryMatch::Included
+        );
+        division.expeditionary_owner = 0;
+        assert_eq!(
+            country_match(&Row::Division(division.clone()), Some(4), &links),
+            CountryMatch::Excluded
+        );
+        division.expeditionary_owner = 999;
+        assert_eq!(
+            country_match(&Row::Division(division.clone()), Some(4), &links),
+            CountryMatch::Unresolved
+        );
+        assert_eq!(
+            country_match(&Row::Division(division), Some(2), &links),
             CountryMatch::Included
         );
     }

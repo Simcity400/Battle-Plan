@@ -10,7 +10,8 @@ use replay::{
     frame::{DecodedFrame, FrameEncoder, Metrics, TABLE_COUNT, TableView},
     identity::SessionStart,
     rows::{
-        CampaignRow, ClockRow, CountryLinkRow, CountryRow, ProvinceRow, Row, StateRow, TableId,
+        CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow, ProvinceRow, Row, StateRow,
+        TableId,
     },
     spool::{FileBackend, Record, SegmentBackend, SegmentedSpool},
 };
@@ -412,6 +413,7 @@ struct Statistics {
     truncated_tables: usize,
     links_mismatches: u64,
     states_mismatches: u64,
+    divisions_mismatches: u64,
     pool_bytes: u64,
     previous: Option<(String, BranchId, i32, i64)>,
     interval_hours: u64,
@@ -587,11 +589,13 @@ impl Processor {
         stats.dropped_frames = captured.dropped_frames;
         stats.links_mismatches += captured.links_mismatches as u64;
         stats.states_mismatches += captured.states_mismatches as u64;
+        stats.divisions_mismatches += captured.divisions_mismatches as u64;
         stats.truncated_tables = [
             captured.countries_result,
             captured.links_result,
             captured.provinces_result,
             captured.states_result,
+            captured.divisions_result,
         ]
         .into_iter()
         .filter(|outcome| matches!(outcome, Outcome::Truncated { .. }))
@@ -690,6 +694,7 @@ impl Processor {
             "spool_bytes": spool_bytes, "dropped_frames": stats.dropped_frames,
             "truncated_tables": stats.truncated_tables, "links_mismatches": stats.links_mismatches,
             "states_mismatches": stats.states_mismatches,
+            "divisions_mismatches": stats.divisions_mismatches,
             "pool_bytes": stats.pool_bytes, "write_errors": stats.errors, "last_error": stats.last_error,
             "unknown_losses_pending": self.unknown_pending,
             "spool_work": {
@@ -847,6 +852,22 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> DecodedFrame 
                     })
                 })
             },
+            if captured.divisions_mismatches != 0 {
+                unavailable("divisions changed during double read")
+            } else {
+                table(captured.divisions_result, &captured.divisions, |division| {
+                    Row::Division(DivisionRow {
+                        id: division.id,
+                        roster_owner: division.roster_owner,
+                        logical_owner: division.logical_owner,
+                        expeditionary_owner: division.expeditionary_owner,
+                        province: division.province,
+                        template: division.template,
+                        hit_points: division.hit_points,
+                        organisation: division.organisation,
+                    })
+                })
+            },
         ]
     };
     DecodedFrame {
@@ -917,6 +938,7 @@ mod tests {
         captured.links_result = Outcome::Rows { len: 0 };
         captured.provinces_result = Outcome::Rows { len: 0 };
         captured.states_result = Outcome::Rows { len: 0 };
+        captured.divisions_result = Outcome::Rows { len: 0 };
         captured
     }
 
@@ -953,6 +975,23 @@ mod tests {
             controller: u32::MAX,
         };
         captured.states_result = Outcome::Rows { len: 1 };
+        // Equal numeric ids in different native type namespaces remain separate
+        // rows. Their roster order is intentionally opposite to wire key order.
+        captured.divisions[0] = engine::carmy::Row {
+            id: (u64::from(u32::MAX) << 32) | 4713,
+            roster_owner: 7,
+            logical_owner: 2,
+            expeditionary_owner: 0,
+            province: 6,
+            template: u64::MAX,
+            hit_points: i64::MIN,
+            organisation: 9_007_199_254_740_993,
+        };
+        captured.divisions[1] = engine::carmy::Row {
+            id: (u64::from(u32::MAX) << 32) | 51,
+            ..captured.divisions[0]
+        };
+        captured.divisions_result = Outcome::Rows { len: 2 };
         let frame = decoded(&captured, clock(10), 1);
         assert_eq!(
             frame.tables[2],
@@ -968,6 +1007,22 @@ mod tests {
                 convoys_raw: Some(i64::MAX),
             })])
         );
+        let TableView::Complete(divisions) = &frame.tables[TableId::Divisions.index()] else {
+            panic!("distinct full division handles must survive conversion");
+        };
+        assert_eq!(
+            divisions.iter().map(Row::key).collect::<Vec<_>>(),
+            vec![captured.divisions[1].id, captured.divisions[0].id]
+        );
+        for row in divisions {
+            let Row::Division(division) = row else {
+                panic!()
+            };
+            assert_eq!(division.hit_points, i64::MIN);
+            assert_eq!(division.organisation, 9_007_199_254_740_993);
+            assert_eq!(division.template, u64::MAX);
+            assert_eq!(division.expeditionary_owner, 0);
+        }
         assert_eq!(
             frame.tables[3],
             TableView::Complete(vec![Row::CountryLink(CountryLinkRow {
@@ -1012,6 +1067,7 @@ mod tests {
             unread_rows: 9,
         };
         captured.states_mismatches = 1;
+        captured.divisions_mismatches = 1;
         let frame = decoded(&captured, clock(10), 1);
         assert_eq!(frame.tables[2], unavailable("country pointer unreadable"));
         assert_eq!(
@@ -1025,6 +1081,10 @@ mod tests {
         assert_eq!(
             frame.tables[TableId::States.index()],
             unavailable("states changed during double read")
+        );
+        assert_eq!(
+            frame.tables[TableId::Divisions.index()],
+            unavailable("divisions changed during double read")
         );
         captured.clock_after = Some(clock(11));
         assert!(

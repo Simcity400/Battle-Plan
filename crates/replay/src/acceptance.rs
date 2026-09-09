@@ -14,7 +14,8 @@ use crate::{
     frame::{DecodedFrame, FrameEncoder, Metrics, TableUpdate, TableView},
     identity::{Identity, Roster, SessionStart, Verification},
     rows::{
-        CampaignRow, ClockRow, CountryLinkRow, CountryRow, ProvinceRow, Row, StateRow, TableId,
+        CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow, ProvinceRow, Row, StateRow,
+        TableId,
     },
     spool::{
         Record, Recovery, SegmentBackend, SegmentSink, SegmentedSpool, encode_record,
@@ -24,6 +25,10 @@ use crate::{
 
 const CAMPAIGN: &[u8] = b"synthetic-campaign-native-values";
 const HOURS: usize = 2_000;
+// Native handles retain the type in the low word and the instance id in the high word.
+const DIVISION_A: u64 = (0x8000_0041_u64 << 32) | 53;
+const DIVISION_B: u64 = (0x8000_0041_u64 << 32) | 54;
+const DIVISION_TEMPORARY: u64 = (u32::MAX as u64) << 32 | 53;
 
 #[derive(Default)]
 struct Disk {
@@ -207,6 +212,28 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             controller: 0,
         }));
     }
+    let native_value = |tick: usize| match tick % 31 {
+        0 => i64::MIN,
+        1 => i64::MAX,
+        _ => (1_i64 << 42) - tick as i64,
+    };
+    let division = |id, ordinal: usize| {
+        Row::Division(DivisionRow {
+            id,
+            roster_owner: [2, 19][(index / 101 + ordinal) % 2],
+            logical_owner: [7, 19][(index / 79 + ordinal) % 2],
+            expeditionary_owner: [0, 2, 19][(index / 83 + ordinal) % 3],
+            province: ((index / 11 + ordinal) % 8 + 1) as u32,
+            template: ((0x8000_0029 + (index / 127 + ordinal) as u64 % 2) << 32) | 91,
+            // Alternating ticks isolate the HP and organisation field masks.
+            hit_points: native_value(index / 2),
+            organisation: native_value(index.div_ceil(2)),
+        })
+    };
+    let mut divisions = vec![division(DIVISION_A, 0), division(DIVISION_B, 1)];
+    if index % 17 < 5 {
+        divisions.push(division(DIVISION_TEMPORARY, 2));
+    }
     let mut tables = [
         TableView::Complete(vec![Row::Clock(ClockRow {
             hour,
@@ -221,16 +248,21 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         TableView::Complete(links),
         TableView::Complete(provinces),
         TableView::Complete(states),
+        TableView::Complete(divisions),
     ];
     for table in [
         TableId::Countries,
         TableId::CountryLinks,
         TableId::Provinces,
         TableId::States,
+        TableId::Divisions,
     ] {
         let draw = random(index, 91 + table.index() as u64);
         let force_partial = matches!(index, 0 | 38 | 758 | 830)
-            && matches!(table, TableId::Countries | TableId::States);
+            && matches!(
+                table,
+                TableId::Countries | TableId::States | TableId::Divisions
+            );
         if draw.is_multiple_of(47) || (index == 780 && table == TableId::Provinces) {
             tables[table.index()] = TableView::Unavailable {
                 reason: format!("synthetic pointer unavailable for {table:?} at {hour}"),
@@ -251,7 +283,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         tables,
         metrics: Metrics {
             total_ns: 100_000 + index as u64,
-            table_ns: [1, 2, 3, 4, 5, 6],
+            table_ns: std::array::from_fn(|table| table as u64 + 1),
             pool_bytes: 1 << 25,
             dropped_frames: (index / 61) as u64,
         },
@@ -283,6 +315,13 @@ struct Coverage {
     state_unavailable_tables: usize,
     state_truncated_tables: usize,
     state_partial_keyframes: usize,
+    division_hp_only_deltas: usize,
+    division_organisation_only_deltas: usize,
+    division_deletions: usize,
+    division_insertions: usize,
+    division_unavailable_tables: usize,
+    division_truncated_tables: usize,
+    division_partial_keyframes: usize,
 }
 
 struct Campaign {
@@ -415,15 +454,29 @@ fn synthesize() -> Campaign {
                         .iter()
                         .filter(|row| row.mask == table.full_mask())
                         .count();
+                    if table == TableId::Divisions {
+                        coverage.division_hp_only_deltas +=
+                            changed.iter().filter(|row| row.mask == 1 << 5).count();
+                        coverage.division_organisation_only_deltas +=
+                            changed.iter().filter(|row| row.mask == 1 << 6).count();
+                        coverage.division_deletions += deleted.len();
+                        coverage.division_insertions += changed
+                            .iter()
+                            .filter(|row| row.mask == table.full_mask())
+                            .count();
+                    }
                 }
                 TableUpdate::Unchanged { .. } => coverage.unchanged_tables += 1,
                 TableUpdate::Unavailable { .. } => {
                     coverage.unavailable_tables += 1;
                     coverage.state_unavailable_tables += usize::from(table == TableId::States);
+                    coverage.division_unavailable_tables +=
+                        usize::from(table == TableId::Divisions);
                 }
                 TableUpdate::Truncated { .. } => {
                     coverage.truncated_tables += 1;
                     coverage.state_truncated_tables += usize::from(table == TableId::States);
+                    coverage.division_truncated_tables += usize::from(table == TableId::Divisions);
                 }
                 TableUpdate::Snapshot(_) => {}
             }
@@ -482,6 +535,7 @@ fn synthesize() -> Campaign {
                 if let TableView::Truncated { missing, .. } = table {
                     coverage.partial_keyframes += 1;
                     coverage.state_partial_keyframes += usize::from(id == TableId::States);
+                    coverage.division_partial_keyframes += usize::from(id == TableId::Divisions);
                     *table = TableView::Unavailable {
                         reason: format!("truncated at keyframe: {missing} rows not read"),
                     };
@@ -550,6 +604,7 @@ fn assert_aliases(frame: &DecodedFrame) {
         TableView::Complete(links),
         TableView::Complete(provinces),
         _,
+        _,
     ] = &frame.tables
     else {
         return;
@@ -575,6 +630,20 @@ fn assert_aliases(frame: &DecodedFrame) {
     assert_eq!((country.id, country.canonical_slot), (7, 1));
     assert_eq!(country.name, [0xff, 7, 0, b'N']);
     assert_ne!(province.owner, country.id);
+}
+
+fn assert_division_handles(frame: &DecodedFrame) {
+    let TableView::Complete(divisions) = &frame.tables[TableId::Divisions.index()] else {
+        return;
+    };
+    let handles: Vec<_> = divisions
+        .iter()
+        .filter_map(|row| match row {
+            Row::Division(division) if division.id >> 32 == DIVISION_A >> 32 => Some(division.id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(handles, [DIVISION_A, DIVISION_B]);
 }
 
 #[test]
@@ -641,6 +710,11 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
     assert!(coverage.state_delta_tables > 100);
     assert!(coverage.state_unavailable_tables > 0 && coverage.state_truncated_tables > 0);
     assert!(coverage.state_partial_keyframes > 0);
+    assert!(coverage.division_hp_only_deltas > 100);
+    assert!(coverage.division_organisation_only_deltas > 100);
+    assert!(coverage.division_deletions > 10 && coverage.division_insertions > 10);
+    assert!(coverage.division_unavailable_tables > 0 && coverage.division_truncated_tables > 0);
+    assert!(coverage.division_partial_keyframes > 0);
 
     let first = Replay::from_recovered(CAMPAIGN.to_vec(), &campaign.segments[..2]).unwrap();
     assert_eq!(first.sessions.len(), 1);
@@ -680,6 +754,7 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
             SeekResult::Frame(actual) => {
                 assert_eq!(actual.as_ref(), expected, "branch {branch}, hour {hour}");
                 assert_aliases(&actual);
+                assert_division_handles(&actual);
             }
             other => panic!("readable branch {branch}, hour {hour}: {other:?}"),
         }
