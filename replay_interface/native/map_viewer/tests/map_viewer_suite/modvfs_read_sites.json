@@ -1,4 +1,8 @@
 {
+  "portable_replay/native/compact_stream/src/division_routes.rs": [
+    "retained_visual_variant::read(payload, index)?;",
+    "retained_visual_variant::read(self.payload, index).expect(\"validated retained visual input\")"
+  ],
   "portable_replay/native/compact_stream/src/lib.rs": [
     "use std::fs::{self, File};",
     "self.reader.read(buf)",
@@ -1723,6 +1727,12 @@
     "(\"permanent_snow_id_cell.datdump.txt\", include_str!(\"../artifacts/permanent_snow_id_cell.datdump.txt\")),",
     "(\"permanent_snow_registration.instructions.txt\", include_str!(\"../artifacts/permanent_snow_registration.instructions.txt\")),",
     "(\"permanent_snow_load_dispatch.instructions.txt\", include_str!(\"../artifacts/permanent_snow_load_dispatch.instructions.txt\")),"
+  ],
+  "portable_replay/native/engine_evidence/src/runtime_language.rs": [
+    "const GETTER: &str = include_str!(\"../artifacts/func_142389260.decompile.c\");",
+    "const AVAILABLE: &str = include_str!(\"../artifacts/func_142389500.decompile.c\");",
+    "const GETTER_INSTRUCTIONS: &str = include_str!(\"../artifacts/func_142389260.instructions.txt\");",
+    "const AVAILABLE_INSTRUCTIONS: &str = include_str!(\"../artifacts/func_142389500.instructions.txt\");"
   ],
   "portable_replay/native/engine_evidence/src/vc_map_admission.rs": [
     "//! `include_str!` proves an artifact is on DISK, not that it is committed: it",
@@ -5915,6 +5925,10 @@
     "let expected = include_str!(\"country_identity.rs\")",
     "let own = include_str!(\"country_identity.rs\");"
   ],
+  "replay_interface/native/replay_core/src/division_combat_membership.rs": [
+    "assert!(std::fs::metadata(&path).unwrap().len() <= 1024 * 1024);",
+    "let bytes = std::fs::read(path).unwrap();"
+  ],
   "replay_interface/native/replay_core/src/division_training_inputs.rs": [
     "assert!(std::fs::metadata(&path).unwrap().len() <= 1024 * 1024);",
     "let bytes = std::fs::read(path).unwrap();"
@@ -6055,6 +6069,8 @@
     "let manifest = include_str!(\"../Cargo.toml\").replace('\\\\', \"/\");",
     "fs::rename(&recording, &moved)",
     "fs::rename(&recording, &moved).unwrap();",
+    "let _ = fs::remove_dir_all(parent);",
+    "let _ = fs::remove_dir_all(parent);",
     "let _ = fs::remove_dir_all(parent);",
     "fs::create_dir_all(&game_dir).unwrap();",
     "fs::write(",
