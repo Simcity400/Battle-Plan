@@ -52,8 +52,8 @@ These rules always apply. Code, schemas, registries, tests, and evidence hold th
 
 - Recording adds at most 16 ms per game hour, including the slowest 5% of hours.
 - A replay is ready to open within 30 seconds of the game ending.
-- A finished replay is under 1 GB. The goal is 50 MB.
-- The viewer holds 60 fps on average, with worst frames under 33 ms, at 1920x1080 on an i5-8400 / GTX 1060 class PC.
+- A finished full campaign replay is under 1 GB. The goal is 50 MB.
+- The viewer holds 60 fps on average
 
 ## Release
 
