@@ -43,7 +43,10 @@ struct Options {
 }
 
 fn usage() -> String {
-    "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once]\nrecorder detach [--out <directory>]\nrecorder finalize <session-directory> [--out <directory>]\nrecorder inspect <campaign.battleplan>".into()
+    format!(
+        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once]\nrecorder detach [--out <directory>]\nrecorder finalize <session-directory> [--out <directory>]\nrecorder inspect <campaign.battleplan>\n{}",
+        crate::oracle::USAGE
+    )
 }
 
 pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
@@ -57,6 +60,9 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
     };
     if command == "inspect" && args.len() == 1 {
         return replay_io::inspect(Path::new(&args[0]));
+    }
+    if command == "oracle" {
+        return crate::oracle::command(args).map_err(|error| error.to_string());
     }
     if command == "--help" || args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("{}", usage());
@@ -756,7 +762,7 @@ fn finalization_lock(output: &Path) -> Result<File, String> {
     }
 }
 
-fn resolve_user_directory() -> Result<PathBuf, String> {
+pub(crate) fn resolve_user_directory() -> Result<PathBuf, String> {
     use std::os::windows::ffi::OsStringExt;
     let key = windows::wide(OsStr::new(
         r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",

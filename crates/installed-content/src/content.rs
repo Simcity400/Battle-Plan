@@ -45,6 +45,20 @@ pub struct GatherOptions {
     pub dlc_order: Option<Vec<String>>,
 }
 
+/// Local locations used to resolve a replay, independently of launcher state.
+#[derive(Clone, Debug)]
+pub struct ResolveOptions {
+    pub game_dir: PathBuf,
+    pub user_dir: PathBuf,
+    pub cache_dir: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedContent {
+    pub layers: ResolvedLayers,
+    pub stats: HashStats,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct HashStats {
     pub files: u64,
@@ -710,6 +724,121 @@ fn sort_descriptors(descriptors: &mut [PathBuf]) -> io::Result<()> {
     Ok(())
 }
 
+fn mod_id(document: &Document, descriptor: &Path) -> io::Result<String> {
+    Ok(scalar(document, b"remote_file_id")?
+        .filter(|id| !id.is_empty())
+        .unwrap_or(
+            descriptor
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| invalid("mod descriptor has no Unicode file name"))?
+                .to_owned(),
+        ))
+}
+
+fn named_error(kind: &str, id: &str, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{kind} {id}: {error}"))
+}
+
+fn select_recorded_paths<'a>(
+    kind: &str,
+    ids: impl Iterator<Item = &'a str>,
+    candidates: Vec<(String, PathBuf)>,
+) -> io::Result<Vec<PathBuf>> {
+    let mut available: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    for (id, path) in candidates {
+        available.entry(id).or_default().push(path);
+    }
+    ids.map(|id| match available.remove(id).as_deref() {
+        Some([path]) => Ok(path.clone()),
+        Some(_) => Err(invalid(format!(
+            "{kind} {id}: multiple installed descriptors match the recorded id"
+        ))),
+        None => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{kind} {id}: recorded layer is missing"),
+        )),
+    })
+    .collect()
+}
+
+fn recorded_dlc_paths(game_dir: &Path, recorded: &[Dlc]) -> io::Result<Vec<PathBuf>> {
+    let mut candidates = Vec::new();
+    for dlc in recorded {
+        let directory = game_dir.join("dlc").join(&dlc.id);
+        if !directory.try_exists()? {
+            continue;
+        }
+        for entry in
+            directory_entries(&directory).map_err(|error| named_error("DLC", &dlc.id, error))?
+        {
+            let path = entry.path();
+            if entry.file_type()?.is_file()
+                && path.extension().is_some_and(|extension| extension == "dlc")
+            {
+                candidates.push((dlc.id.clone(), path));
+            }
+        }
+    }
+    select_recorded_paths(
+        "DLC",
+        recorded.iter().map(|dlc| dlc.id.as_str()),
+        candidates,
+    )
+}
+
+fn recorded_mod_paths(user_dir: &Path, recorded: &[Mod]) -> io::Result<Vec<String>> {
+    if recorded.is_empty() {
+        return Ok(Vec::new());
+    }
+    let directory = user_dir.join("mod");
+    let mut candidates = Vec::new();
+    if directory.try_exists()? {
+        for entry in directory_entries(&directory)? {
+            let path = entry.path();
+            if !entry.file_type()?.is_file()
+                || path.extension().is_none_or(|extension| extension != "mod")
+            {
+                continue;
+            }
+            // A broken unrelated descriptor must not prevent another replay
+            // from resolving. A selected local descriptor is parsed below.
+            let id = match read_document(&path).and_then(|document| mod_id(&document, &path)) {
+                Ok(id) => id,
+                Err(_) => text_path(Path::new(entry.file_name().as_os_str()))?.to_owned(),
+            };
+            candidates.push((id, path));
+        }
+    }
+    select_recorded_paths(
+        "Mod",
+        recorded.iter().map(|layer| layer.id.as_str()),
+        candidates,
+    )?
+    .into_iter()
+    .map(|path| {
+        normalize_relative(text_path(
+            path.strip_prefix(user_dir)
+                .map_err(|_| invalid("mod descriptor escaped user folder"))?,
+        )?)
+    })
+    .collect()
+}
+
+fn check_hash(kind: &str, id: &str, actual: [u8; 32], expected: [u8; 32]) -> io::Result<()> {
+    if actual == expected {
+        return Ok(());
+    }
+    fn hex(hash: [u8; 32]) -> String {
+        hash.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+    Err(invalid(format!(
+        "{kind} {id}: content hash mismatch (expected {}, found {})",
+        hex(expected),
+        hex(actual)
+    )))
+}
+
 fn builtin_layer(
     id: String,
     source: LayerSource,
@@ -759,12 +888,57 @@ fn append_builtin(
 
 /// Hashes only covered bytes. Call on a background thread before injection.
 pub fn gather(options: &GatherOptions) -> io::Result<GatheredContent> {
+    gather_selected(options, None)
+}
+
+/// Resolves exactly the replay's recorded ids and order and verifies every
+/// content hash. Current launcher selections, language and user-directory
+/// overrides are not loaded. This verifies local bytes; callers still enforce
+/// the recording's `Verification` state before claiming verified content.
+pub fn resolve(identity: &Identity, options: &ResolveOptions) -> io::Result<ResolvedContent> {
+    identity.validate()?;
+    if identity.coverage_policy != COVERAGE_POLICY_VERSION {
+        return Err(invalid(format!(
+            "unsupported recorded content coverage policy {} (supported {})",
+            identity.coverage_policy, COVERAGE_POLICY_VERSION
+        )));
+    }
+    let content = gather_selected(
+        &GatherOptions {
+            game_dir: options.game_dir.clone(),
+            user_dir: options.user_dir.clone(),
+            cache_dir: options.cache_dir.clone(),
+            dlc_order: Some(identity.dlc.iter().map(|dlc| dlc.id.clone()).collect()),
+        },
+        Some(identity),
+    )?;
+    Ok(ResolvedContent {
+        layers: content.layers,
+        stats: content.stats,
+    })
+}
+
+fn gather_selected(
+    options: &GatherOptions,
+    recorded: Option<&Identity>,
+) -> io::Result<GatheredContent> {
     let started = Instant::now();
     let game_dir = fs::canonicalize(&options.game_dir)?;
     let user_dir = fs::canonicalize(&options.user_dir)?;
-    let launcher: LauncherState =
-        serde_json::from_slice(&fs::read(user_dir.join("dlc_load.json"))?)?;
-    let language = required(&read_document(&user_dir.join("settings.txt"))?, b"language")?;
+    let (launcher, language) = if let Some(identity) = recorded {
+        (
+            LauncherState {
+                enabled_mods: recorded_mod_paths(&user_dir, &identity.mods)?,
+                disabled_dlcs: Vec::new(),
+            },
+            identity.language.clone(),
+        )
+    } else {
+        (
+            serde_json::from_slice(&fs::read(user_dir.join("dlc_load.json"))?)?,
+            required(&read_document(&user_dir.join("settings.txt"))?, b"language")?,
+        )
+    };
     fs::create_dir_all(&options.cache_dir)?;
     let cache_path = options.cache_dir.join("content-hashes-v1.json");
     // An incomplete cache is disposable; the installed bytes remain the authority.
@@ -774,6 +948,24 @@ pub fn gather(options: &GatherOptions) -> io::Result<GatheredContent> {
         .unwrap_or_default();
     let result = (|| {
         let mut stats = HashStats::default();
+        if let Some(identity) = recorded {
+            let executable = game_dir.join("hoi4.exe");
+            let size = fs::metadata(&executable)
+                .map_err(|error| named_error("Game", "hoi4.exe", error))?
+                .len();
+            if size != identity.exe_size {
+                return Err(invalid(format!(
+                    "Game hoi4.exe: byte size mismatch (expected {}, found {size})",
+                    identity.exe_size
+                )));
+            }
+            check_hash(
+                "Game",
+                "hoi4.exe",
+                cache.file(&executable, &mut stats)?,
+                identity.exe_hash,
+            )?;
+        }
         let mut vanilla = ResolvedLayer {
             id: "vanilla".into(),
             source: LayerSource::Folder(game_dir.clone()),
@@ -792,17 +984,19 @@ pub fn gather(options: &GatherOptions) -> io::Result<GatheredContent> {
             effective: BTreeMap::new(),
         };
         let mut order_notes = Vec::new();
-        let mut user_layer = builtin_layer(
-            "user directory".into(),
-            LayerSource::Folder(user_dir.clone()),
-            None,
-        )?;
-        user_layer.inventory()?;
-        if !user_layer.files.is_empty() {
-            order_notes.push(format!("The game's mounted user directory contains {} covered files outside the declared content layers", user_layer.files.len()));
-            user_layer.hash(&mut cache, &mut stats)?;
+        if recorded.is_none() {
+            let mut user_layer = builtin_layer(
+                "user directory".into(),
+                LayerSource::Folder(user_dir.clone()),
+                None,
+            )?;
+            user_layer.inventory()?;
+            if !user_layer.files.is_empty() {
+                order_notes.push(format!("The game's mounted user directory contains {} covered files outside the declared content layers", user_layer.files.len()));
+                user_layer.hash(&mut cache, &mut stats)?;
+            }
+            layers.layers.push(user_layer);
         }
-        layers.layers.push(user_layer);
         // Startup 140128700 mounts integrated descriptor parent folders before
         // selectable DLC. Their old descriptor `path=dlc/...` is not used here.
         let integrated_dir = game_dir.join("integrated_dlc");
@@ -835,8 +1029,13 @@ pub fn gather(options: &GatherOptions) -> io::Result<GatheredContent> {
                 )?;
             }
         }
-        let mut descriptors = Vec::new();
-        find_descriptors(&game_dir.join("dlc"), &mut descriptors)?;
+        let mut descriptors = if let Some(identity) = recorded {
+            recorded_dlc_paths(&game_dir, &identity.dlc)?
+        } else {
+            let mut paths = Vec::new();
+            find_descriptors(&game_dir.join("dlc"), &mut paths)?;
+            paths
+        };
         // The pinned engine compares UTF-8 descriptor bytes, not Windows UTF-16
         // collation. Reject non-Unicode paths instead of lossy conversion.
         sort_descriptors(&mut descriptors)?;
@@ -862,16 +1061,31 @@ pub fn gather(options: &GatherOptions) -> io::Result<GatheredContent> {
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| invalid("DLC descriptor lacks a folder id"))?
                 .to_owned();
-            let (mut layer, document) = descriptor_layer(id.clone(), path, &game_dir, false)?;
+            let (mut layer, document) = descriptor_layer(id.clone(), path, &game_dir, false)
+                .map_err(|error| named_error("DLC", &id, error))?;
             has_dependencies |= document
                 .get(b"dependencies")
                 .is_some_and(|value| value.items().is_none_or(|items| !items.is_empty()));
-            layer.inventory()?;
+            layer
+                .inventory()
+                .map_err(|error| named_error("DLC", &id, error))?;
             let dlc = Dlc {
                 id: id.clone(),
-                hash: layer.hash(&mut cache, &mut stats)?,
+                hash: layer
+                    .hash(&mut cache, &mut stats)
+                    .map_err(|error| named_error("DLC", &id, error))?,
                 declared_checksum: scalar(&document, b"checksum")?,
             };
+            if let Some(identity) = recorded {
+                let expected = identity
+                    .dlc
+                    .iter()
+                    .find(|dlc| dlc.id == id)
+                    .ok_or_else(|| {
+                        invalid(format!("DLC {id}: descriptor id changed during resolution"))
+                    })?;
+                check_hash("DLC", &id, dlc.hash, expected.hash)?;
+            }
             discovered_order.push(id.clone());
             if dlc_layers.insert(id, (layer, dlc)).is_some() {
                 return Err(invalid("multiple DLC descriptors have the same folder id"));
@@ -900,7 +1114,7 @@ pub fn gather(options: &GatherOptions) -> io::Result<GatheredContent> {
                     .to_owned(),
             );
         }
-        if !launcher.enabled_mods.is_empty() {
+        if recorded.is_none() && !launcher.enabled_mods.is_empty() {
             order_notes.push(
             "Mod dependency ordering and duplicate display-name selection have not been measured"
                 .to_owned(),
@@ -909,27 +1123,37 @@ pub fn gather(options: &GatherOptions) -> io::Result<GatheredContent> {
         let order_note = (!order_notes.is_empty()).then(|| order_notes.join("; "));
         let mut mods = Vec::new();
         let mut mod_ids = BTreeSet::new();
-        for descriptor in launcher.enabled_mods {
+        for (index, descriptor) in launcher.enabled_mods.into_iter().enumerate() {
             let descriptor = normalize_relative(&descriptor)?;
             let path = user_dir.join(&descriptor);
-            let (mut layer, document) = descriptor_layer(String::new(), path, &user_dir, true)?;
-            let id = scalar(&document, b"remote_file_id")?
-                .filter(|id| !id.is_empty())
-                .unwrap_or_else(|| {
-                    Path::new(&descriptor)
-                        .file_name()
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned()
-                });
+            let requested_id = recorded
+                .map(|identity| identity.mods[index].id.as_str())
+                .unwrap_or(&descriptor);
+            let (mut layer, document) = descriptor_layer(String::new(), path, &user_dir, true)
+                .map_err(|error| named_error("Mod", requested_id, error))?;
+            let id = mod_id(&document, Path::new(&descriptor))?;
             if !mod_ids.insert(id.clone()) {
                 return Err(invalid(format!("duplicate enabled mod id: {id}")));
             }
             let display_name = required(&document, b"name")?;
             let declared_version = scalar(&document, b"version")?.unwrap_or_default();
             layer.id = id.clone();
-            layer.inventory()?;
-            let hash = layer.hash(&mut cache, &mut stats)?;
+            layer
+                .inventory()
+                .map_err(|error| named_error("Mod", &id, error))?;
+            let hash = layer
+                .hash(&mut cache, &mut stats)
+                .map_err(|error| named_error("Mod", &id, error))?;
+            if let Some(identity) = recorded {
+                let expected = &identity.mods[index];
+                if id != expected.id {
+                    return Err(invalid(format!(
+                        "Mod {}: descriptor id changed during resolution to {id}",
+                        expected.id
+                    )));
+                }
+                check_hash("Mod", &id, hash, expected.hash)?;
+            }
             layers.layers.push(layer);
             mods.push(Mod {
                 id,
@@ -964,6 +1188,9 @@ pub fn gather(options: &GatherOptions) -> io::Result<GatheredContent> {
             )?;
         }
         let vanilla_hash = layer_hash(&vanilla_files)?;
+        if let Some(identity) = recorded {
+            check_hash("Game", "vanilla", vanilla_hash, identity.vanilla_hash)?;
+        }
         let expected_mounts = layers
             .layers
             .iter()
@@ -1146,5 +1373,69 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn recorded_selection_preserves_order_and_ignores_unrequested_layers() {
+        let selected = select_recorded_paths(
+            "DLC",
+            ["b", "a"].into_iter(),
+            vec![
+                ("a".into(), PathBuf::from("dlc/a/a.dlc")),
+                ("extra".into(), PathBuf::from("dlc/extra/first.dlc")),
+                ("b".into(), PathBuf::from("dlc/b/b.dlc")),
+                ("extra".into(), PathBuf::from("dlc/extra/second.dlc")),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            selected,
+            [PathBuf::from("dlc/b/b.dlc"), PathBuf::from("dlc/a/a.dlc")]
+        );
+        let missing =
+            select_recorded_paths("DLC", ["missing"].into_iter(), Vec::new()).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        assert!(missing.to_string().contains("DLC missing"));
+        let ambiguous = select_recorded_paths(
+            "Mod",
+            ["123"].into_iter(),
+            vec![
+                ("123".into(), PathBuf::from("mod/one.mod")),
+                ("123".into(), PathBuf::from("mod/two.mod")),
+            ],
+        )
+        .unwrap_err();
+        assert!(ambiguous.to_string().contains("Mod 123"));
+        assert!(ambiguous.to_string().contains("multiple"));
+    }
+
+    #[test]
+    fn remote_mod_ids_take_precedence_over_local_descriptor_names() {
+        let remote = parser::parse(b"remote_file_id=123 name=Example").unwrap();
+        let empty = parser::parse(b"remote_file_id=\"\" name=Example").unwrap();
+        let local = parser::parse(b"name=Example").unwrap();
+        let descriptor = Path::new("mod/example.mod");
+        assert_eq!(mod_id(&remote, descriptor).unwrap(), "123");
+        assert_eq!(mod_id(&empty, descriptor).unwrap(), "example.mod");
+        assert_eq!(mod_id(&local, descriptor).unwrap(), "example.mod");
+        assert!(
+            select_recorded_paths(
+                "Mod",
+                ["example.mod"].into_iter(),
+                vec![(mod_id(&remote, descriptor).unwrap(), descriptor.to_owned())],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn hash_mismatch_names_the_layer_and_both_digests() {
+        check_hash("DLC", "dlc034_no_step_back", [7; 32], [7; 32]).unwrap();
+        let error = check_hash("DLC", "dlc034_no_step_back", [8; 32], [7; 32])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("DLC dlc034_no_step_back"));
+        assert!(error.contains(&"07".repeat(32)));
+        assert!(error.contains(&"08".repeat(32)));
     }
 }

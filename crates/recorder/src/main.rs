@@ -1,3 +1,4 @@
+mod oracle;
 mod recording;
 mod replay_io;
 mod windows;

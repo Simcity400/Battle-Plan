@@ -1,0 +1,822 @@
+//! Exact-hour comparison against an independently parsed text save.
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::{OsStr, OsString},
+    fs, io,
+    path::PathBuf,
+    time::Instant,
+};
+
+use installed_content::{
+    ResolveOptions,
+    save::{self, Decimal, Save},
+};
+use replay::{
+    BranchId, Hour,
+    container::{Replay, SeekResult},
+    frame::{DecodedFrame, TableView},
+    identity::Verification,
+    rows::{CountryRow, Row, TableId},
+};
+
+pub const USAGE: &str = "recorder oracle <campaign.battleplan> <save.hoi4> [--hour n] [--branch id] [--game-dir <directory>] [--user-dir <directory>]";
+const CONVOY_LIMIT: i64 = 0x53e2_d620_fb40;
+
+fn invalid(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+pub fn command(args: Vec<OsString>) -> io::Result<()> {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("{USAGE}");
+        return Ok(());
+    }
+    let started = Instant::now();
+    let mut args = args.into_iter();
+    let replay_path = PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?);
+    let save_path = PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?);
+    let mut requested_hour = None;
+    let mut requested_branch = None;
+    let mut game_dir = None;
+    let mut user_dir = None;
+    while let Some(option) = args.next() {
+        let value = args.next().ok_or_else(|| invalid(USAGE))?;
+        match option.to_str() {
+            Some("--hour") if requested_hour.is_none() => {
+                requested_hour = Some(
+                    value
+                        .to_str()
+                        .and_then(|v| v.parse().ok())
+                        .ok_or_else(|| invalid("--hour requires an engine i32 hour"))?,
+                );
+            }
+            Some("--branch") if requested_branch.is_none() => {
+                requested_branch = Some(
+                    value
+                        .to_str()
+                        .and_then(|v| v.parse().ok())
+                        .ok_or_else(|| invalid("--branch requires a u64 branch id"))?,
+                );
+            }
+            Some("--game-dir") if game_dir.is_none() => game_dir = Some(PathBuf::from(value)),
+            Some("--user-dir") if user_dir.is_none() => user_dir = Some(PathBuf::from(value)),
+            _ => return Err(invalid(USAGE)),
+        }
+    }
+    let save = save::parse(&fs::read(&save_path)?)?;
+    let hour = matching_hour(save.date.engine_hour()?, requested_hour)?;
+    let replay = Replay::open(fs::read(&replay_path)?)?;
+    if save.campaign_id != replay.campaign_id {
+        return Err(invalid("save campaign id differs from the replay"));
+    }
+    let frame = select_frame(&replay, hour, requested_branch)?;
+    let branch = replay
+        .branches
+        .iter()
+        .find(|branch| branch.id == frame.branch)
+        .ok_or_else(|| invalid("frame branch metadata is missing"))?;
+    let session = replay
+        .sessions
+        .iter()
+        .find(|session| session.id == branch.session)
+        .ok_or_else(|| invalid("frame session metadata is missing"))?;
+    match &session.identity.verification {
+        Verification::Verified { .. } => {}
+        Verification::Unverified { reason, .. } => {
+            return Err(invalid(format!(
+                "oracle refuses unverified session content: {reason}"
+            )));
+        }
+        Verification::Unchecked => return Err(invalid("oracle refuses unchecked session content")),
+    }
+    if !same_version(&save.version, &session.identity.game_version) {
+        return Err(invalid(format!(
+            "save version {} differs from recorded version {}",
+            String::from_utf8_lossy(&save.version),
+            session.identity.game_version
+        )));
+    }
+    // Refuse missing tables before paying for content resolution.
+    for table in TableId::ALL {
+        complete(&frame, table)?;
+    }
+    let options = ResolveOptions {
+        game_dir: game_dir.map(Ok).unwrap_or_else(default_game_directory)?,
+        user_dir: user_dir
+            .map(Ok)
+            .unwrap_or_else(|| crate::recording::resolve_user_directory().map_err(invalid))?,
+        cache_dir: PathBuf::from(
+            std::env::var_os("LOCALAPPDATA").ok_or_else(|| invalid("LOCALAPPDATA is not set"))?,
+        )
+        .join("HOI4Replay")
+        .join("recorder"),
+    };
+    println!(
+        "Oracle: save {} / hour {hour}, session {}, branch {}",
+        save.date, session.id, branch.id
+    );
+    println!(
+        "Content: game {}, user {}",
+        options.game_dir.display(),
+        options.user_dir.display()
+    );
+    let content = installed_content::resolve(&session.identity, &options)?;
+    println!(
+        "Content verified under policy {}: {} files, {} bytes, {} ms",
+        session.identity.coverage_policy,
+        content.stats.files,
+        content.stats.bytes,
+        content.stats.elapsed_ms
+    );
+    let membership = save::read_map_membership(&content.layers)?;
+    let equipment_types = save::read_equipment_types(&content.layers)?;
+    let report = compare(&frame, &save, &membership, &equipment_types)?;
+    report.print();
+    println!("Oracle elapsed: {:.3} s", started.elapsed().as_secs_f64());
+    if report.differences.is_empty() {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "oracle found {} differences",
+            report.differences.len()
+        )))
+    }
+}
+
+fn matching_hour(saved: Hour, requested: Option<Hour>) -> io::Result<Hour> {
+    if requested.is_some_and(|hour| hour != saved) {
+        return Err(invalid(format!(
+            "save hour {saved} differs from requested hour {}; pause and save at the captured hour",
+            requested.unwrap()
+        )));
+    }
+    Ok(saved)
+}
+
+fn same_version(saved: &[u8], recorded: &str) -> bool {
+    saved == recorded.as_bytes()
+        || saved
+            .strip_prefix(recorded.as_bytes())
+            .is_some_and(|suffix| {
+                suffix.len() == 7
+                    && suffix.starts_with(b" (")
+                    && suffix.ends_with(b")")
+                    && suffix[2..6].iter().all(u8::is_ascii_hexdigit)
+            })
+}
+
+fn select_frame(
+    replay: &Replay,
+    hour: Hour,
+    explicit: Option<BranchId>,
+) -> io::Result<Box<DecodedFrame>> {
+    if let Some(branch) = explicit {
+        if !replay.branches.iter().any(|entry| entry.id == branch) {
+            return Err(invalid(format!("unknown branch {branch}")));
+        }
+        return match replay.seek(branch, hour)? {
+            SeekResult::Frame(frame) => Ok(frame),
+            SeekResult::Gap { reason, .. } => Err(invalid(format!(
+                "branch {branch}, hour {hour} is a gap: {reason}"
+            ))),
+        };
+    }
+    let candidates = replay
+        .index
+        .iter()
+        .filter(|block| block.first_hour <= hour && hour <= block.last_hour)
+        .map(|block| block.branch)
+        .collect::<BTreeSet<_>>();
+    let mut frames = BTreeMap::new();
+    let mut gaps = Vec::new();
+    for branch in candidates {
+        match replay.seek(branch, hour)? {
+            SeekResult::Frame(frame) => {
+                frames.insert(branch, frame);
+            }
+            SeekResult::Gap { reason, .. } => gaps.push(format!("branch {branch}: {reason}")),
+        }
+    }
+    let branch = unique_branch(&frames.keys().copied().collect::<Vec<_>>()).map_err(|error| {
+        invalid(format!(
+            "hour {hour}: {error}{}",
+            if gaps.is_empty() {
+                String::new()
+            } else {
+                format!("; {}", gaps.join("; "))
+            }
+        ))
+    })?;
+    Ok(frames.remove(&branch).unwrap())
+}
+
+fn unique_branch(branches: &[BranchId]) -> io::Result<BranchId> {
+    match branches {
+        [branch] => Ok(*branch),
+        [] => Err(invalid(
+            "no recorded frame; select --branch to report that branch's gap reason",
+        )),
+        _ => Err(invalid(format!(
+            "recorded on branches {branches:?}; pass --branch explicitly"
+        ))),
+    }
+}
+
+fn complete(frame: &DecodedFrame, table: TableId) -> io::Result<&[Row]> {
+    match &frame.tables[table.index()] {
+        TableView::Complete(rows) => Ok(rows),
+        TableView::Truncated { missing, .. } => Err(invalid(format!(
+            "hour {} {table:?} is truncated ({missing} missing rows)",
+            frame.hour
+        ))),
+        TableView::Unavailable { reason } => Err(invalid(format!(
+            "hour {} {table:?} is unavailable: {reason}",
+            frame.hour
+        ))),
+    }
+}
+
+#[derive(Debug, Default)]
+struct Report {
+    countries: usize,
+    provinces: usize,
+    scalar_checks: usize,
+    differences: Vec<String>,
+    limitations: BTreeMap<String, Vec<String>>,
+}
+
+impl Report {
+    fn difference(
+        &mut self,
+        field: impl AsRef<str>,
+        replay: impl std::fmt::Debug,
+        save: impl std::fmt::Debug,
+    ) {
+        self.differences.push(format!(
+            "{}: replay {replay:?}, save {save:?}",
+            field.as_ref()
+        ));
+    }
+
+    fn limitation(&mut self, reason: &str, subject: impl Into<String>) {
+        self.limitations
+            .entry(reason.into())
+            .or_default()
+            .push(subject.into());
+    }
+
+    fn scalar(&mut self, tag: &str, field: &str, captured: Option<i64>, saved: Option<&Decimal>) {
+        match (captured, saved) {
+            (Some(captured), Some(saved)) => {
+                self.scalar_checks += 1;
+                if captured != saved.raw {
+                    self.difference(format!("{tag}.{field}"), captured, saved.raw);
+                }
+            }
+            (None, _) => self.limitation(
+                "captured scalar is explicitly unavailable",
+                format!("{tag}.{field}"),
+            ),
+            (_, None) => self.difference(
+                format!("{tag}.{field}"),
+                captured,
+                "missing serialized scalar",
+            ),
+        }
+    }
+
+    fn print(&self) {
+        println!(
+            "Compared: {} provinces, {} countries, {} exact scalar values (/100000)",
+            self.provinces, self.countries, self.scalar_checks
+        );
+        println!("Differences: {}", self.differences.len());
+        for difference in self.differences.iter().take(100) {
+            println!("  {difference}");
+        }
+        if self.differences.len() > 100 {
+            println!(
+                "  {} additional differences omitted",
+                self.differences.len() - 100
+            );
+        }
+        println!("Limitations:");
+        for (reason, subjects) in &self.limitations {
+            println!("  {reason}: {}", subjects.join(", "));
+        }
+    }
+}
+
+fn compare(
+    frame: &DecodedFrame,
+    save: &Save,
+    membership: &save::MapMembership,
+    equipment_types: &save::EquipmentTypes,
+) -> io::Result<Report> {
+    matching_hour(save.date.engine_hour()?, Some(frame.hour))?;
+    let [Row::Clock(clock)] = complete(frame, TableId::Clock)? else {
+        return Err(invalid("clock table must contain one clock"));
+    };
+    let [Row::Campaign(campaign)] = complete(frame, TableId::Campaign)? else {
+        return Err(invalid("campaign table must contain one identity"));
+    };
+    if clock.hour != frame.hour || clock.seed != save.seed || campaign.id != save.campaign_id {
+        return Err(invalid(
+            "frame clock, seed or campaign identity differs from the save",
+        ));
+    }
+    let mut report = Report::default();
+    report.limitation(
+        "save session time includes elapsed wall time; it is not the captured persisted play_time",
+        "clock.play_time",
+    );
+    report.limitation(
+        "process-local load timestamp is absent from saves",
+        "clock.play_session_started_at",
+    );
+    report.limitation(
+        "saves retain country tags but erase raw country-link and canonical-slot identities",
+        "countries / country links / province references",
+    );
+    report.limitation("save serializer omits owner-equivalent and nonpositive controller references; these compare by resolved control", "provinces with no explicit saved controller");
+    let mut by_tag = BTreeMap::new();
+    let mut by_slot = BTreeMap::new();
+    for row in complete(frame, TableId::Countries)? {
+        let Row::Country(country) = row else {
+            return Err(invalid("non-country row in country table"));
+        };
+        if by_tag.insert(country.tag.as_slice(), country).is_some()
+            || by_slot.insert(country.canonical_slot, country).is_some()
+        {
+            return Err(invalid("ambiguous country tag or canonical slot"));
+        }
+    }
+    let mut links = BTreeMap::new();
+    for row in complete(frame, TableId::CountryLinks)? {
+        let Row::CountryLink(link) = row else {
+            return Err(invalid("non-link row in link table"));
+        };
+        let country = by_slot
+            .get(&link.canonical_slot)
+            .ok_or_else(|| invalid(format!("country link {} has no canonical country", link.id)))?;
+        if links.insert(link.id, *country).is_some() {
+            return Err(invalid("duplicate country link"));
+        }
+    }
+    for (&tag, captured) in &by_tag {
+        if links
+            .get(&captured.id)
+            .map(|country| country.canonical_slot)
+            != Some(captured.canonical_slot)
+        {
+            return Err(invalid(format!(
+                "country {} has an inconsistent identity link",
+                String::from_utf8_lossy(tag)
+            )));
+        }
+        let label = String::from_utf8_lossy(tag);
+        let Some(saved) = save.countries.get(tag) else {
+            report.difference(format!("country {label}"), "present", "absent");
+            continue;
+        };
+        report.countries += 1;
+        report.scalar(
+            &label,
+            "political_power",
+            captured.political_power_raw,
+            saved.political_power.as_ref(),
+        );
+        report.scalar(
+            &label,
+            "command_power",
+            Some(captured.command_power_raw),
+            saved.command_power.as_ref(),
+        );
+        report.scalar(
+            &label,
+            "stability",
+            Some(captured.stability_raw),
+            saved.stability.as_ref(),
+        );
+        report.scalar(
+            &label,
+            "war_support",
+            Some(captured.war_support_raw),
+            saved.war_support.as_ref(),
+        );
+        // CCountry's rendered name is not emitted by its save serializer.
+        if saved.name.is_some() {
+            report.limitation(
+                "direct saved name has no proven equivalence to the rendered engine country name",
+                label.to_string(),
+            );
+        }
+        match (
+            captured.convoys_raw,
+            convoy_total(saved, save, equipment_types),
+        ) {
+            (None, _) => report.limitation(
+                "convoy cache was invalid at capture; no value was invented",
+                label.to_string(),
+            ),
+            (Some(actual), Ok(expected)) => {
+                report.scalar_checks += 1;
+                if actual != expected {
+                    report.difference(format!("{label}.convoys"), actual, expected);
+                }
+            }
+            (Some(_), Err(reason)) => {
+                return Err(invalid(format!(
+                    "{label}.convoys cannot be compared: {reason}"
+                )));
+            }
+        }
+    }
+    report.limitation(
+        "rendered country names are not serialized by the country writer",
+        format!("all {} countries", by_tag.len()),
+    );
+    for tag in save
+        .countries
+        .keys()
+        .filter(|tag| !by_tag.contains_key(tag.as_slice()))
+    {
+        report.difference(
+            format!("country {}", String::from_utf8_lossy(tag)),
+            "absent",
+            "present",
+        );
+    }
+    let mut provinces = BTreeMap::new();
+    for row in complete(frame, TableId::Provinces)? {
+        let Row::Province(province) = row else {
+            return Err(invalid("non-province row in province table"));
+        };
+        if provinces.insert(province.id, province).is_some() {
+            return Err(invalid("duplicate province row"));
+        }
+    }
+    for expected in save.province_control(membership)? {
+        let Some(actual) = provinces.remove(&expected.id) else {
+            report.difference(format!("province {}", expected.id), "absent", "present");
+            continue;
+        };
+        report.provinces += 1;
+        if actual.state != expected.state.unwrap_or(0) {
+            report.difference(
+                format!("province {}.state", expected.id),
+                actual.state,
+                expected.state,
+            );
+        }
+        let owner = country_tag(actual.owner, &links)?;
+        if owner != expected.owner.as_deref() {
+            report.difference(
+                format!("province {}.owner", expected.id),
+                tag_text(owner),
+                tag_text(expected.owner.as_deref()),
+            );
+        }
+        let controller = if actual.controller == 0 && !expected.controller_explicit {
+            owner
+        } else {
+            country_tag(actual.controller, &links)?
+        };
+        if controller != expected.controller.as_deref() {
+            report.difference(
+                format!("province {}.controller", expected.id),
+                tag_text(controller),
+                tag_text(expected.controller.as_deref()),
+            );
+        }
+    }
+    for id in provinces.keys() {
+        report.difference(format!("province {id}"), "present", "absent");
+    }
+    Ok(report)
+}
+
+fn country_tag<'a>(
+    reference: u32,
+    links: &BTreeMap<u32, &'a CountryRow>,
+) -> io::Result<Option<&'a [u8]>> {
+    if reference == 0 {
+        return Ok(None);
+    }
+    links
+        .get(&reference)
+        .map(|country| Some(country.tag.as_slice()))
+        .ok_or_else(|| invalid(format!("unresolved country reference {reference}")))
+}
+
+fn tag_text(tag: Option<&[u8]>) -> String {
+    tag.map(|tag| String::from_utf8_lossy(tag).into_owned())
+        .unwrap_or_else(|| "<none>".into())
+}
+
+fn convoy_total(
+    country: &save::Country,
+    save: &Save,
+    types: &save::EquipmentTypes,
+) -> Result<i64, String> {
+    let pool = country
+        .convoy_equipment
+        .as_ref()
+        .ok_or("save lacks the convoy equipment pool")?;
+    let mut total = 0;
+    for entry in pool {
+        let definition = save
+            .equipment_definitions
+            .get(&(entry.id, entry.id_type))
+            .ok_or_else(|| {
+                format!(
+                    "save lacks equipment definition ({}, {})",
+                    entry.id, entry.id_type
+                )
+            })?;
+        let convoy = types.is_convoy(definition).ok_or_else(|| {
+            format!(
+                "verified content cannot classify equipment {}: {}",
+                String::from_utf8_lossy(definition),
+                types
+                    .limitations
+                    .get(definition)
+                    .map(String::as_str)
+                    .unwrap_or("definition absent")
+            )
+        })?;
+        if convoy {
+            total = convoy_add(total, entry.amount.raw);
+        }
+    }
+    Ok(total)
+}
+
+fn convoy_add(total: i64, amount: i64) -> i64 {
+    (i128::from(total) + i128::from(amount))
+        .clamp(-i128::from(CONVOY_LIMIT), i128::from(CONVOY_LIMIT)) as i64
+}
+
+fn default_game_directory() -> io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+    for key in [
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Steam App 394360",
+        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Steam App 394360",
+    ] {
+        let key = crate::windows::wide(OsStr::new(key));
+        let name = crate::windows::wide(OsStr::new("InstallLocation"));
+        let mut buffer = vec![0_u16; 32768];
+        let mut bytes = (buffer.len() * 2) as u32;
+        let result = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                key.as_ptr(),
+                name.as_ptr(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buffer.as_mut_ptr().cast(),
+                &mut bytes,
+            )
+        };
+        if result == 0 {
+            let length = buffer
+                .iter()
+                .position(|&ch| ch == 0)
+                .unwrap_or(buffer.len());
+            let path = PathBuf::from(OsString::from_wide(&buffer[..length]));
+            if path.join("hoi4.exe").is_file() {
+                return Ok(path);
+            }
+        }
+    }
+    Err(invalid(
+        "Steam the game installation was not found in the registry; pass --game-dir",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay::{
+        frame::Metrics,
+        rows::{CampaignRow, ClockRow, CountryLinkRow, ProvinceRow},
+    };
+
+    fn fixture() -> (
+        DecodedFrame,
+        Save,
+        save::MapMembership,
+        save::EquipmentTypes,
+    ) {
+        let save = save::parse(br#"HOI4txt
+date="1936.1.1.1" game_unique_id="campaign" game_unique_seed=7 version="build"
+states={1={owner="GER"}} provinces={2={controller="GER"}}
+countries={GER={politics={political_power=10.00001} command_power=2 stability=0.7 war_support=0.3 convoys={equipment={}}}}
+"#).unwrap();
+        let hour = save.date.engine_hour().unwrap();
+        let frame = DecodedFrame {
+            branch: 2,
+            hour,
+            metrics: Metrics::default(),
+            tables: [
+                TableView::Complete(vec![Row::Clock(ClockRow {
+                    hour,
+                    seed: 7,
+                    ..Default::default()
+                })]),
+                TableView::Complete(vec![Row::Campaign(CampaignRow {
+                    id: b"campaign".to_vec(),
+                })]),
+                TableView::Complete(vec![Row::Country(CountryRow {
+                    id: 101,
+                    canonical_slot: 7,
+                    tag: b"GER".to_vec(),
+                    name: b"Germany".to_vec(),
+                    political_power_raw: Some(1_000_001),
+                    command_power_raw: 200_000,
+                    stability_raw: 70_000,
+                    war_support_raw: 30_000,
+                    convoys_raw: Some(0),
+                })]),
+                TableView::Complete(vec![
+                    Row::CountryLink(CountryLinkRow {
+                        id: 101,
+                        canonical_slot: 7,
+                    }),
+                    Row::CountryLink(CountryLinkRow {
+                        id: 102,
+                        canonical_slot: 7,
+                    }),
+                ]),
+                TableView::Complete(vec![
+                    Row::Province(ProvinceRow {
+                        id: 1,
+                        state: 1,
+                        owner: 102,
+                        controller: 0,
+                    }),
+                    Row::Province(ProvinceRow {
+                        id: 2,
+                        state: 0,
+                        owner: 0,
+                        controller: 101,
+                    }),
+                ]),
+            ],
+        };
+        let membership = save::MapMembership {
+            provinces: BTreeMap::from([(0, None), (1, Some(1)), (2, None)]),
+        };
+        (frame, save, membership, save::EquipmentTypes::default())
+    }
+
+    #[test]
+    fn full_comparison_resolves_aliases_and_independent_map_membership() {
+        let (frame, save, membership, equipment) = fixture();
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(
+            (report.provinces, report.countries, report.scalar_checks),
+            (2, 1, 5)
+        );
+        assert!(!report.limitations.is_empty());
+    }
+
+    #[test]
+    fn missing_extra_and_changed_province_rows_are_differences() {
+        let (mut frame, save, membership, equipment) = fixture();
+        let TableView::Complete(rows) = &mut frame.tables[TableId::Provinces.index()] else {
+            unreachable!()
+        };
+        rows.remove(0);
+        let Row::Province(province) = &mut rows[0] else {
+            unreachable!()
+        };
+        // Explicit saved control cannot be manufactured from captured raw zero.
+        province.controller = 0;
+        rows.push(Row::Province(ProvinceRow {
+            id: 3,
+            ..Default::default()
+        }));
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    }
+
+    #[test]
+    fn incomplete_tables_and_unresolved_links_cannot_pass() {
+        let (mut frame, save, membership, equipment) = fixture();
+        frame.tables[TableId::Provinces.index()] = TableView::Unavailable {
+            reason: "bad pointer".into(),
+        };
+        assert!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("bad pointer")
+        );
+        frame.tables[TableId::Provinces.index()] = TableView::Truncated {
+            rows: Vec::new(),
+            missing: 2,
+        };
+        assert!(compare(&frame, &save, &membership, &equipment).is_err());
+        let (mut frame, save, membership, equipment) = fixture();
+        let TableView::Complete(rows) = &mut frame.tables[TableId::CountryLinks.index()] else {
+            unreachable!()
+        };
+        rows.pop();
+        assert!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("102")
+        );
+    }
+
+    #[test]
+    fn ambiguous_branch_and_wrong_hour_are_refused() {
+        assert_eq!(unique_branch(&[2]).unwrap(), 2);
+        assert!(
+            unique_branch(&[1, 2])
+                .unwrap_err()
+                .to_string()
+                .contains("--branch")
+        );
+        assert!(unique_branch(&[]).is_err());
+        assert_eq!(matching_hour(20, None).unwrap(), 20);
+        assert!(matching_hour(20, Some(21)).is_err());
+    }
+
+    #[test]
+    fn fixed_point_difference_of_one_is_not_rounded_away() {
+        let mut report = Report::default();
+        report.scalar(
+            "GER",
+            "political_power",
+            Some(9_007_199_254_740_992),
+            Some(&Decimal::parse(b"90071992547.40993").unwrap()),
+        );
+        assert_eq!(report.differences.len(), 1);
+        assert_eq!(report.scalar_checks, 1);
+        report.scalar("GER", "command_power", Some(0), None);
+        assert_eq!(report.differences.len(), 2);
+        report.scalar(
+            "GER",
+            "political_power",
+            None,
+            Some(&Decimal::parse(b"1").unwrap()),
+        );
+        assert_eq!(report.limitations.len(), 1);
+    }
+
+    #[test]
+    fn missing_convoy_data_is_an_error_when_capture_has_a_value() {
+        let (frame, mut save, membership, equipment) = fixture();
+        save.countries
+            .get_mut(b"GER".as_slice())
+            .unwrap()
+            .convoy_equipment = None;
+        assert!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("convoy equipment pool")
+        );
+        save.countries
+            .get_mut(b"GER".as_slice())
+            .unwrap()
+            .convoy_equipment = Some(vec![save::EquipmentAmount {
+            id: 7,
+            id_type: 70,
+            amount: Decimal::parse(b"1").unwrap(),
+        }]);
+        assert!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("equipment definition")
+        );
+        save.equipment_definitions
+            .insert((7, 70), b"unknown_variant".to_vec());
+        assert!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("cannot classify")
+        );
+    }
+
+    #[test]
+    fn convoy_clamp_is_per_row_and_preserves_order() {
+        assert_eq!(convoy_add(convoy_add(0, i64::MAX), -10), CONVOY_LIMIT - 10);
+        assert_eq!(convoy_add(convoy_add(0, i64::MIN), 10), -CONVOY_LIMIT + 10);
+    }
+
+    #[test]
+    fn save_checksum_suffix_does_not_hide_a_different_build() {
+        assert!(same_version(b"build (d245)", "build"));
+        assert!(same_version(b"build", "build"));
+        assert!(!same_version(b"build2 (d245)", "build"));
+        assert!(!same_version(b"build (xxxx)", "build"));
+    }
+}

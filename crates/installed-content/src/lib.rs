@@ -2,7 +2,9 @@
 
 pub mod content;
 pub mod parser;
+pub mod save;
 
 pub use content::{
-    GatherOptions, GatheredContent, HashStats, ResolvedLayer, ResolvedLayers, gather,
+    GatherOptions, GatheredContent, HashStats, ResolveOptions, ResolvedContent, ResolvedLayer,
+    ResolvedLayers, gather, resolve,
 };
