@@ -350,11 +350,39 @@ impl PortableLaunchBinding {
             .settings
             .authority
             .ok_or("launch binding omitted the settings authority")?;
+        let runtime_language = settings_authority == crate::modset::SettingsAuthority::RuntimeObserved;
+        if !settings_authority.is_launch_proven() && !runtime_language {
+            return Err(
+                "portable content manifest cannot promote post-launch disk settings \
+                 to launch-bound material settings"
+                    .into(),
+            );
+        }
         let localisation_language = report
             .localisation_language()
             .cloned()
             .filter(|value| !value.trim().is_empty())
             .ok_or("resolved launch binding omitted localisation language")?;
+        let (required_settings, recorder_local_settings) = if runtime_language {
+            let observation = report.settings.runtime_language_observation.as_ref()
+                .ok_or("runtime language binding omitted its source observation")?;
+            observation.validate()?;
+            if observation.language != localisation_language
+                || observation.executable_sha256 != executable_sha256
+                || Some(observation.process_creation_filetime) != report.process_start_filetime
+                || report.settings.map_render.is_some()
+                || report.settings.display.is_some()
+                || report.settings.attach_sha256.is_some()
+                || report.settings.seal_sha256.is_some()
+                || report.settings.endpoint_semantics_equal.is_some()
+            {
+                return Err("runtime language binding differs from its source or invents graphics settings".into());
+            }
+            (
+                BTreeMap::new(),
+                BTreeMap::from([("settings_authority".into(), settings_authority.as_str().into())]),
+            )
+        } else {
         let display = report
             .display_variant()
             .ok_or("resolved launch binding omitted display settings")?;
@@ -413,6 +441,8 @@ impl PortableLaunchBinding {
                 settings_authority.as_str().to_string(),
             ),
         ]);
+        (required_settings, recorder_local_settings)
+        };
         let roots = RuntimeContentRoots::from_modset(report)?;
         let directory_layers = report
             .enabled_mods
@@ -4795,6 +4825,7 @@ mod tests {
                 attach_sha256: Some(sha('7')),
                 seal_sha256: None,
                 endpoint_semantics_equal: None,
+                runtime_language_observation: None,
             },
             exe_path: Some(game.join("hoi4.exe")),
             exe_size_bytes: Some(1),
@@ -4848,6 +4879,62 @@ mod tests {
             ]),
         };
         let portable = PortableLaunchBinding::from_modset(&report).unwrap();
+        let mut observed_settings = report.clone();
+        observed_settings.settings.authority =
+            Some(crate::modset::SettingsAuthority::PostLaunchDiskObservation);
+        for result in [
+            PortableLaunchBinding::from_modset(&observed_settings),
+            PortableLaunchBinding::from_effective_runtime_candidate(&observed_settings),
+        ] {
+            assert!(result.unwrap_err().contains("cannot promote post-launch disk settings"));
+        }
+        let mut retained_settings = report.clone();
+        retained_settings.settings.authority =
+            Some(crate::modset::SettingsAuthority::SameProcessAuthority);
+        let retained = PortableLaunchBinding::from_modset(&retained_settings).unwrap();
+        assert_eq!(retained.localisation_language, portable.localisation_language);
+        assert_eq!(retained.required_settings, portable.required_settings);
+        let mut runtime = report.clone();
+        let observation = crate::runtime_language::RuntimeLanguageObservation {
+            schema: crate::runtime_language::SCHEMA.into(), pid: 640,
+            process_creation_filetime: 134_333_846_092_118_857,
+            executable_sha256: crate::native_design_catalog::PROGRAM_SHA256.into(),
+            observed_unix_ms: 1_788_911_010_000,
+            game_hour: 17_030_442, language: "l_english".into(), double_stable: true,
+        };
+        runtime.exe_sha256 = Some(observation.executable_sha256.clone());
+        runtime.process_start_filetime = Some(observation.process_creation_filetime);
+        runtime.settings = crate::modset::SettingsBinding {
+            authority: Some(crate::modset::SettingsAuthority::RuntimeObserved),
+            language: Some(observation.language.clone()),
+            runtime_language_observation: Some(observation.clone()),
+            ..Default::default()
+        };
+        let current = PortableLaunchBinding::from_modset(&runtime).unwrap();
+        assert_eq!(current.localisation_language, "l_english");
+        assert!(current.required_settings.is_empty());
+        assert_eq!(current.recorder_local_settings,
+            BTreeMap::from([
+                ("settings_authority".into(), "runtime_observed".into()),
+                ("map_province_sidecar_capture".into(), "absent".into()),
+                ("map_province_sidecar_capture_probe".into(), "complete".into()),
+            ]));
+        for variant in 0..8 {
+            let mut invalid = runtime.clone();
+            match variant {
+                0 => invalid.settings.language = Some("l_french".into()),
+                1 => invalid.process_start_filetime = Some(observation.process_creation_filetime + 1),
+                2 => invalid.settings.runtime_language_observation = None,
+                3 => invalid.settings.map_render = report.settings.map_render.clone(),
+                4 => invalid.settings.display = report.settings.display.clone(),
+                5 => invalid.settings.attach_sha256 = Some(sha('7')),
+                6 => invalid.settings.seal_sha256 = Some(sha('7')),
+                7 => invalid.settings.endpoint_semantics_equal = Some(true),
+                _ => unreachable!(),
+            }
+            assert!(PortableLaunchBinding::from_modset(&invalid).is_err(),
+                "runtime binding accepted invalid variant {variant}");
+        }
         assert_eq!(
             portable.required_settings,
             BTreeMap::from([

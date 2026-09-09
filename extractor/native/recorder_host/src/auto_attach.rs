@@ -221,6 +221,12 @@ mod live {
                     crate::modset::codes::SETTINGS_UNREADABLE,
                     format!("same-process settings authority unavailable: {error}"),
                 );
+            } else {
+                crate::modset::observe_runtime_language_if_needed(
+                    &mut report,
+                    before.key.pid,
+                    before.key.creation_filetime.0,
+                );
             }
             match probe.identify(before.key.pid) {
                 Ok(after) if after == before => {}

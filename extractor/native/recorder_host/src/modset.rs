@@ -79,6 +79,8 @@ pub mod codes {
     pub const EXE_NO_PARENT: &str = "exe_path_has_no_parent";
 
     pub const SETTINGS_UNREADABLE: &str = "settings_unreadable";
+    pub const SETTINGS_AUTHORITY_UNAVAILABLE: &str = "settings_launch_authority_unavailable";
+    pub const SETTINGS_RUNTIME_LANGUAGE_UNAVAILABLE: &str = "settings_runtime_language_unavailable";
     pub const SETTINGS_LANGUAGE_ABSENT: &str = "settings_language_absent";
     pub const SETTINGS_NO_PROCESS_START: &str = "settings_process_start_unavailable";
     pub const SETTINGS_NO_USER_DIR: &str = "settings_user_dir_uncorroborated";
@@ -242,6 +244,7 @@ pub enum SettingsAuthority {
     PreLaunchBracketed,
     SameProcessAuthority,
     PostLaunchDiskObservation,
+    RuntimeObserved,
 }
 
 impl SettingsAuthority {
@@ -250,6 +253,7 @@ impl SettingsAuthority {
             Self::PreLaunchBracketed => "pre_launch_bracketed",
             Self::SameProcessAuthority => "same_process_authority",
             Self::PostLaunchDiskObservation => "post_launch_disk_observation",
+            Self::RuntimeObserved => "runtime_observed",
         }
     }
 
@@ -268,6 +272,7 @@ pub struct SettingsBinding {
     pub attach_sha256: Option<String>,
     pub seal_sha256: Option<String>,
     pub endpoint_semantics_equal: Option<bool>,
+    pub runtime_language_observation: Option<crate::runtime_language::RuntimeLanguageObservation>,
 }
 
 impl SettingsBinding {
@@ -280,6 +285,7 @@ impl SettingsBinding {
         self.language = None;
         self.display = None;
         self.map_render = None;
+        self.runtime_language_observation = None;
         self.errors.push(ModsetError::new(code, detail));
     }
 
@@ -319,6 +325,7 @@ impl SettingsBinding {
             "attach_settings_sha256": self.attach_sha256,
             "seal_settings_sha256": self.seal_sha256,
             "endpoint_semantics_equal": self.endpoint_semantics_equal,
+            "runtime_language_observation": self.runtime_language_observation,
         })
     }
 }
@@ -456,12 +463,31 @@ pub fn apply_same_process_settings_authority(
     if report.settings.authority != Some(SettingsAuthority::PostLaunchDiskObservation) {
         return Ok(());
     }
-    let bytes = fs::read(authority_path).map_err(|error| {
-        format!(
-            "read same-process settings authority {}: {error}",
-            portable_path(authority_path)
-        )
-    })?;
+    let bytes = match fs::read(authority_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // A game started before this recorder may already have rewritten
+            // settings.txt. No earlier observation exists to recover; preserve
+            // world capture without treating those disk values as loaded state.
+            report.settings.fail(
+                codes::SETTINGS_AUTHORITY_UNAVAILABLE,
+                "settings.txt was first observed after game process start and no \
+                 same-process launch authority was retained; language, display and \
+                 map rendering settings are unavailable"
+                    .into(),
+            );
+            report.settings.attach_sha256 = None;
+            report.settings.seal_sha256 = None;
+            report.settings.endpoint_semantics_equal = None;
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(format!(
+                "read same-process settings authority {}: {error}",
+                portable_path(authority_path)
+            ));
+        }
+    };
     let authority: SameProcessSettingsAuthority =
         serde_json::from_slice(&bytes).map_err(|error| {
             format!(
@@ -506,6 +532,64 @@ pub fn apply_same_process_settings_authority(
     report.settings.map_render = Some(authority.map_render);
     report.settings.authority = Some(SettingsAuthority::SameProcessAuthority);
     Ok(())
+}
+
+/// A late attach can observe the active language even when no recorder saw
+/// settings before launch. Graphics remain explicitly unavailable: a runtime
+/// language read proves neither launch settings nor capture graphics quality.
+pub fn observe_runtime_language_if_needed(
+    report: &mut ModsetReport,
+    pid: u32,
+    creation_filetime: u64,
+) {
+    if !report.content_resolved
+        || report.settings.authority.is_some_and(SettingsAuthority::is_launch_proven)
+    {
+        return;
+    }
+    let observation = match (report.exe_path.as_deref(), report.exe_sha256.as_deref()) {
+        (Some(image), Some(sha256)) => crate::runtime_language::observe(
+            pid, creation_filetime, image, sha256,
+        ),
+        _ => Err("runtime language has no resolved executable identity".into()),
+    };
+    apply_runtime_language_result(report, pid, creation_filetime, observation);
+}
+
+fn apply_runtime_language_result(
+    report: &mut ModsetReport,
+    pid: u32,
+    creation_filetime: u64,
+    observation: Result<crate::runtime_language::RuntimeLanguageObservation, String>,
+) {
+    report.settings.authority = None;
+    report.settings.language = None;
+    report.settings.display = None;
+    report.settings.map_render = None;
+    report.settings.attach_sha256 = None;
+    report.settings.seal_sha256 = None;
+    report.settings.endpoint_semantics_equal = None;
+    report.settings.runtime_language_observation = None;
+    match observation.and_then(|observation| {
+        observation.validate()?;
+        if observation.pid != pid
+            || observation.process_creation_filetime != creation_filetime
+            || report.exe_sha256.as_deref() != Some(observation.executable_sha256.as_str())
+            || report.process_start_filetime != Some(observation.process_creation_filetime)
+        {
+            return Err("runtime language observation differs from the resolved process identity".into());
+        }
+        Ok(observation)
+    }) {
+        Ok(observation) => {
+            report.settings.authority = Some(SettingsAuthority::RuntimeObserved);
+            report.settings.language = Some(observation.language.clone());
+            report.settings.runtime_language_observation = Some(observation);
+        }
+        Err(error) => report.settings.fail(
+            codes::SETTINGS_RUNTIME_LANGUAGE_UNAVAILABLE, error,
+        ),
+    }
 }
 
 fn create_or_validate_same_process_settings_authority(
@@ -1939,7 +2023,7 @@ fn corroborate_user_dir_live(user_dir: &Path, pid: u32) -> Result<(), String> {
 /// file's metadata is captured before hashing and re-checked after; any
 /// mid-hash mutation (game update mid-capture, partial write) fails closed
 /// instead of recording a mixed hash as the build binding.
-fn hash_file_streaming_stable(path: &Path) -> Result<(u64, String), String> {
+pub(crate) fn hash_file_streaming_stable(path: &Path) -> Result<(u64, String), String> {
     let meta_before = fs::metadata(path).map_err(|e| format!("{}: {e}", portable_path(path)))?;
     let (size_before, mtime_before) = (meta_before.len(), meta_before.modified().ok());
     let mut file = fs::File::open(path).map_err(|e| format!("{}: {e}", portable_path(path)))?;
@@ -2289,6 +2373,7 @@ mod tests {
                 attach_sha256: Some(settings_sha256),
                 seal_sha256: None,
                 endpoint_semantics_equal: None,
+                runtime_language_observation: None,
             },
             exe_path: Some(PathBuf::from(r"F:\game\hoi4.exe")),
             exe_size_bytes: Some(7),
@@ -2306,6 +2391,139 @@ mod tests {
             dlc_display_names: BTreeMap::new(),
             dlc_descriptor_evidence: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn runtime_language_keeps_content_and_carries_only_the_observed_language() {
+        let mut report = authority_report(Path::new("unused"), "ab".repeat(32));
+        let observation = crate::runtime_language::RuntimeLanguageObservation {
+            schema: crate::runtime_language::SCHEMA.into(), pid: 640,
+            process_creation_filetime: 134_333_846_092_118_857,
+            executable_sha256: crate::native_design_catalog::PROGRAM_SHA256.into(),
+            observed_unix_ms: 1_788_911_010_000,
+            game_hour: 17_030_442, language: "l_english".into(), double_stable: true,
+        };
+        report.exe_sha256 = Some(observation.executable_sha256.clone());
+        report.process_start_filetime = Some(observation.process_creation_filetime);
+        let initial = report.clone();
+        apply_runtime_language_result(&mut report, 640, observation.process_creation_filetime,
+            Ok(observation.clone()));
+        assert!(report.content_resolved);
+        assert_eq!(report.enabled_dlcs, initial.enabled_dlcs);
+        assert_eq!(report.exe_sha256, initial.exe_sha256);
+        assert_eq!(report.settings.authority, Some(SettingsAuthority::RuntimeObserved));
+        assert_eq!(report.settings.language.as_deref(), Some("l_english"));
+        assert_eq!(report.settings.runtime_language_observation.as_ref(), Some(&observation));
+        let settings = report.settings.as_json();
+        assert_eq!(settings["launch_proven"], false);
+        for field in ["display_variant", "map_rendering_options", "attach_settings_sha256",
+            "seal_settings_sha256", "endpoint_semantics_equal"] {
+            assert!(settings[field].is_null(), "invented {field}");
+        }
+        for (pid, creation, wrong_exe) in [
+            (641, observation.process_creation_filetime, false),
+            (640, observation.process_creation_filetime + 1, false),
+            (640, observation.process_creation_filetime, true),
+        ] {
+            let mut mismatched = initial.clone();
+            if wrong_exe { mismatched.exe_sha256 = Some("ab".repeat(32)); }
+            apply_runtime_language_result(&mut mismatched, pid, creation, Ok(observation.clone()));
+            assert!(mismatched.content_resolved);
+            assert!(mismatched.settings.authority.is_none());
+            assert!(mismatched.settings.language.is_none());
+            assert!(mismatched.settings.runtime_language_observation.is_none());
+            assert!(mismatched.settings.errors.iter().any(|error|
+                error.code == codes::SETTINGS_RUNTIME_LANGUAGE_UNAVAILABLE));
+        }
+        observe_settings_at_capture_close(&mut report, u32::MAX);
+        assert_eq!(report.settings.runtime_language_observation.as_ref(), Some(&observation));
+        assert!(report.settings.seal_sha256.is_none());
+    }
+
+    #[test]
+    fn fresh_game_first_preserves_content_without_inventing_settings_authority() {
+        let dir = temp_dir("fresh_game_first_settings");
+        let settings_path = dir.join("settings.txt");
+        let observed = "language=\"english\"\ngraphics={ size={x=1920 y=1080} \
+            min_gui={x=1280 y=720} gui_scale=1.0 refreshRate=60 max_refresh_rate=75 \
+            fullScreen=no borderless=yes }\nmapRenderingOptions={ \
+            draw_hires_terrain=no high_gfx_shaders=yes texture_quality=0 }\n";
+        fs::write(&settings_path, observed).unwrap();
+        assert!(read_launch_settings(&dir, SystemTime::UNIX_EPOCH).is_err());
+        let (language, display, map_render) = read_launch_settings_observed(&dir).unwrap();
+        let mut report = authority_report(&dir, Sha256::hex(observed.as_bytes()));
+        report.settings.authority = Some(SettingsAuthority::PostLaunchDiskObservation);
+        report.settings.language = language;
+        report.settings.display = Some(display);
+        report.settings.map_render = Some(map_render);
+        let mut worker_report = report.clone();
+        let mut original_content = report.as_json();
+        original_content.as_object_mut().unwrap().remove("settings_binding");
+        let authority_path = same_process_settings_authority_path(&dir, 77, 88);
+
+        // Coordinator and worker both use this path; neither may require a
+        // pre-existing recorder just to preserve an already-running campaign.
+        apply_same_process_settings_authority(&mut report, &authority_path, 77, 88)
+            .expect("missing authority degrades settings rather than aborting capture");
+        apply_same_process_settings_authority(&mut worker_report, &authority_path, 77, 88)
+            .expect("the worker's independent resolution must also preserve capture");
+        assert_eq!(worker_report.as_json(), report.as_json());
+        assert!(!authority_path.exists(), "no authority may be minted from disk-only values");
+        assert_eq!(fs::read_to_string(&settings_path).unwrap(), observed);
+        assert!(report.content_resolved);
+        assert!(!report.settings.is_readable());
+        assert_eq!(report.settings.authority, None);
+        assert_eq!(report.settings.language, None);
+        assert_eq!(report.settings.display, None);
+        assert_eq!(report.settings.map_render, None);
+        assert_eq!(report.settings.attach_sha256, None);
+        assert_eq!(report.settings.seal_sha256, None);
+        assert_eq!(report.settings.endpoint_semantics_equal, None);
+        assert_eq!(report.settings.errors.len(), 1);
+        assert_eq!(report.settings.errors[0].code, codes::SETTINGS_AUTHORITY_UNAVAILABLE);
+        let mut actual_content = report.as_json();
+        actual_content.as_object_mut().unwrap().remove("settings_binding");
+        assert_eq!(actual_content, original_content, "settings loss must not lose content identity");
+        assert!(crate::portable_content_manifest::PortableLaunchBinding::from_modset(&report)
+            .unwrap_err()
+            .contains("settings authority"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn existing_malformed_or_foreign_settings_authority_still_refuses() {
+        let dir = temp_dir("invalid_game_first_settings_authority");
+        let authority_path = same_process_settings_authority_path(&dir, 77, 88);
+        let mut proven = authority_report(&dir, "ab".repeat(32));
+        apply_same_process_settings_authority(&mut proven, &authority_path, 77, 88).unwrap();
+        let original = fs::read(&authority_path).unwrap();
+        let original_value: Value = serde_json::from_slice(&original).unwrap();
+        let mut observed = proven.clone();
+        observed.settings.authority = Some(SettingsAuthority::PostLaunchDiskObservation);
+        for (key, value, refusal) in [
+            ("schema", json!("foreign_schema"), "identity mismatch"),
+            ("pid", json!(78), "identity mismatch"),
+            ("process_creation_filetime", json!(89), "identity mismatch"),
+            ("exe_sha256", json!("cd".repeat(32)), "executable hash mismatch"),
+            ("user_dir", json!("another-profile"), "user directory mismatch"),
+            ("unexpected", json!(true), "parse same-process settings authority"),
+        ] {
+            let mut changed = original_value.clone();
+            changed[key] = value;
+            fs::write(&authority_path, serde_json::to_vec(&changed).unwrap()).unwrap();
+            let before = fs::read(&authority_path).unwrap();
+            let error = apply_same_process_settings_authority(
+                &mut observed.clone(), &authority_path, 77, 88,
+            ).unwrap_err();
+            assert!(error.contains(refusal), "{key}: {error}");
+            assert_eq!(fs::read(&authority_path).unwrap(), before);
+        }
+        fs::write(&authority_path, b"{").unwrap();
+        assert!(apply_same_process_settings_authority(&mut observed, &authority_path, 77, 88)
+            .unwrap_err()
+            .contains("parse same-process settings authority"));
+        assert_eq!(fs::read(&authority_path).unwrap(), b"{");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

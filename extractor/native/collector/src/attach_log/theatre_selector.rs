@@ -11,6 +11,9 @@ pub(super) struct CompactTheatreSelectorRead {
     pub(super) read_time_us: u64,
     pub(super) status_flags: u32,
     pub(super) diagnostic_units: Vec<CompactDomainPerfDiagnosticUnit>,
+    // A failed native language observation also invalidates the containing hour.
+    // Other D98 failures remain local to this domain.
+    pub(super) runtime_language_refusal: Option<String>,
 }
 
 fn frame_error(message: impl Into<String>) -> lane::CarrierError {
@@ -18,6 +21,21 @@ fn frame_error(message: impl Into<String>) -> lane::CarrierError {
 }
 
 const NO_CONTENT_IDENTITY: &str = "no authenticated theatre-selector content identity";
+
+#[derive(Debug)]
+pub(super) struct ContentIdentityReadError {
+    source: lane::CarrierError,
+    runtime_language_refusal: Option<String>,
+}
+
+impl From<lane::CarrierError> for ContentIdentityReadError {
+    fn from(source: lane::CarrierError) -> Self {
+        Self {
+            source,
+            runtime_language_refusal: None,
+        }
+    }
+}
 
 fn raw_vector(
     owner: usize,
@@ -276,13 +294,22 @@ fn alert_categories_by_theatre(
 
 pub(super) fn content_identity(
     control: &CollectorControl,
-) -> Result<lane::ContentIdentity, lane::CarrierError> {
-    content_identity_with(control, engine_localization_digest, engine_content_roster)
+) -> Result<lane::ContentIdentity, ContentIdentityReadError> {
+    let mut runtime_language_refusal = None;
+    content_identity_with(
+        control,
+        |language| engine_localization_digest(language, &mut runtime_language_refusal),
+        engine_content_roster,
+    )
+    .map_err(|source| ContentIdentityReadError {
+        source,
+        runtime_language_refusal,
+    })
 }
 
 pub(super) fn content_identity_with(
     control: &CollectorControl,
-    localization_digest: impl Fn(&str) -> Result<[u8; 32], String>,
+    mut localization_digest: impl FnMut(&str) -> Result<[u8; 32], String>,
     engine_roster: impl Fn() -> Result<lane::EngineContentRoster, String>,
 ) -> Result<lane::ContentIdentity, lane::CarrierError> {
     let authority = control
@@ -364,37 +391,304 @@ fn wire_roster(
     })
 }
 
-fn engine_localization_digest(expected_language: &str) -> Result<[u8; 32], String> {
-    static CACHE: std::sync::Mutex<Option<(String, [u8; 32])>> = std::sync::Mutex::new(None);
-    if let Ok(cache) = CACHE.lock() {
-        if let Some((language, digest)) = cache.as_ref() {
-            if language == expected_language {
-                return Ok(*digest);
-            }
-        }
-    }
+fn engine_localization_digest(
+    expected_language: &str,
+    runtime_language_refusal: &mut Option<String>,
+) -> Result<[u8; 32], String> {
     let module_base = unsafe { crate::attach_log::GetModuleHandleW(core::ptr::null()) } as u64;
     if module_base == 0 {
         return Err("GetModuleHandleW(NULL) failed".to_string());
     }
-    let read = |image: &crate::engine_localisation_reader::InProcessEngineImage| {
-        lane::engine_localisation_provenance::read_engine_localisation_provenance_once(
-            image,
-            module_base,
-            expected_language,
-        )
+    localization_digest_with_runtime_language(
+        expected_language,
+        runtime_language_refusal,
+        || read_current_runtime_language(module_base),
+        |runtime_language_refusal| {
+            static CACHE: std::sync::Mutex<Option<(String, [u8; 32])>> =
+                std::sync::Mutex::new(None);
+            if let Ok(cache) = CACHE.lock() {
+                if let Some((language, digest)) = cache.as_ref() {
+                    if language == expected_language {
+                        return Ok(*digest);
+                    }
+                }
+            }
+            let mut read = |image: &crate::engine_localisation_reader::InProcessEngineImage| {
+                lane::engine_localisation_provenance::read_engine_localisation_provenance_once(
+                    image,
+                    module_base,
+                    expected_language,
+                )
+                .map_err(|error| retain_localisation_read_refusal(error, runtime_language_refusal))
+            };
+            let first = read(&crate::engine_localisation_reader::InProcessEngineImage::new())?;
+            let second = read(&crate::engine_localisation_reader::InProcessEngineImage::new())?;
+            if first != second {
+                return Err("engine localisation changed between two consecutive reads".to_string());
+            }
+            let digest = sha256_hex_to_bytes(&first.provenance_sha256)
+                .ok_or("engine localisation digest is not a sha256")?;
+            if let Ok(mut cache) = CACHE.lock() {
+                *cache = Some((expected_language.to_string(), digest));
+            }
+            Ok(digest)
+        },
+    )
+}
+
+fn localization_digest_with_runtime_language(
+    expected_language: &str,
+    runtime_language_refusal: &mut Option<String>,
+    read_language: impl FnOnce() -> Result<String, String>,
+    read_digest: impl FnOnce(&mut Option<String>) -> Result<[u8; 32], String>,
+) -> Result<[u8; 32], String> {
+    require_runtime_language_with(Some(expected_language), true, read_language).map_err(|reason| {
+        *runtime_language_refusal = Some(reason.clone());
+        reason
+    })?;
+    read_digest(runtime_language_refusal)
+}
+
+fn retain_localisation_read_refusal(
+    error: lane::engine_localisation_provenance::EngineLocalisationReadError,
+    runtime_language_refusal: &mut Option<String>,
+) -> String {
+    use lane::engine_localisation_provenance::EngineLocalisationReadError;
+    match error {
+        EngineLocalisationReadError::ActiveLanguage(reason) => {
+            *runtime_language_refusal = Some(reason.clone());
+            reason
+        }
+        EngineLocalisationReadError::Database(reason) => reason,
+    }
+}
+
+const RUNTIME_LANGUAGE_READ_BUDGET: usize = 256;
+
+struct RuntimeLanguageMemory<F> {
+    read: F,
+    remaining: std::cell::Cell<usize>,
+}
+
+impl<F> lane::engine_localisation_provenance::TargetImageMemory for RuntimeLanguageMemory<F>
+where
+    F: Fn(u64, usize) -> Result<Vec<u8>, String>,
+{
+    fn read(&self, address: u64, length: usize) -> Result<Vec<u8>, String> {
+        if length == 0 || address.checked_add(length as u64).is_none() {
+            return Err("runtime language read has an invalid range".into());
+        }
+        let remaining = self.remaining.get().checked_sub(length)
+            .ok_or("runtime language read exceeded its byte budget")?;
+        self.remaining.set(remaining);
+        let bytes = (self.read)(address, length)?;
+        if bytes.len() != length {
+            return Err("runtime language read was partial".into());
+        }
+        Ok(bytes)
+    }
+}
+
+fn read_current_runtime_language(module_base: u64) -> Result<String, String> {
+    let memory = RuntimeLanguageMemory {
+        read: |address, length| {
+            let address = usize::try_from(address)
+                .map_err(|_| "runtime language address does not fit usize")?;
+            read_bytes_with_reason(address, length)
+                .map_err(|reason| format!("runtime language memory read refused: {reason:?}"))
+        },
+        remaining: std::cell::Cell::new(RUNTIME_LANGUAGE_READ_BUDGET),
     };
-    let first = read(&crate::engine_localisation_reader::InProcessEngineImage::new())?;
-    let second = read(&crate::engine_localisation_reader::InProcessEngineImage::new())?;
-    if first != second {
-        return Err("engine localisation changed between two consecutive reads".to_string());
+    // Exact guarded reads bypass the localisation database's 64 KiB block cache.
+    // The two prefix observations consume at most 224 bytes, including a heap token.
+    lane::engine_localisation_provenance::read_engine_active_language(&memory, module_base)
+}
+
+pub(super) fn guard_runtime_language(
+    control: &CollectorControl,
+    module_base: u64,
+) -> Result<(), String> {
+    require_runtime_language_with(
+        control.d98_theatre_selector_content_identity.as_ref()
+            .map(|identity| identity.language.as_str()),
+        control.d98_theatre_selector_content_identity_valid,
+        || read_current_runtime_language(module_base),
+    )
+}
+
+fn require_runtime_language_with(
+    expected: Option<&str>,
+    authority_valid: bool,
+    read: impl FnOnce() -> Result<String, String>,
+) -> Result<(), String> {
+    // No content language is claimed in this case. The scheduled D98 domain
+    // retains its existing named unavailable path while world capture continues.
+    let Some(expected) = expected.filter(|_| authority_valid) else {
+        return Ok(());
+    };
+    let observed = read()?;
+    if observed != expected {
+        return Err(format!(
+            "runtime language differs from authenticated content: expected {expected:?}, observed {observed:?}"
+        ));
     }
-    let digest = sha256_hex_to_bytes(&first.provenance_sha256)
-        .ok_or("engine localisation digest is not a sha256")?;
-    if let Ok(mut cache) = CACHE.lock() {
-        *cache = Some((expected_language.to_string(), digest));
+    Ok(())
+}
+
+#[cfg(test)]
+mod runtime_language_guard_tests {
+    use super::*;
+    use lane::engine_localisation_provenance::TargetImageMemory;
+
+    #[test]
+    fn runtime_language_guard_does_not_read_without_authenticated_expected_language() {
+        require_runtime_language_with(None, true, || panic!("no language authority")).unwrap();
+        require_runtime_language_with(Some("l_english"), false, || panic!("invalid authority")).unwrap();
     }
-    Ok(digest)
+
+    #[test]
+    fn runtime_language_guard_checks_each_observation_and_recovers_after_changed_hours() {
+        for (observed, accepted) in [("l_english", true), ("l_french", false), ("l_english", true)] {
+            let result = require_runtime_language_with(Some("l_english"), true, || Ok(observed.into()));
+            assert_eq!(result.is_ok(), accepted);
+            if let Err(reason) = result {
+                assert!(reason.contains("expected \"l_english\", observed \"l_french\""));
+            }
+        }
+        assert!(require_runtime_language_with(Some("l_english"), true, || Err("unreadable".into()))
+            .unwrap_err().contains("unreadable"));
+    }
+
+    #[test]
+    fn runtime_language_guard_d98_retains_native_refusal_before_digest_access() {
+        for observed in [Ok("l_french".into()), Err("native prefix unreadable".into())] {
+            let mut refusal = None;
+            let result = localization_digest_with_runtime_language(
+                "l_english",
+                &mut refusal,
+                || observed,
+                |_| panic!("a refused native prefix must not reach the digest cache or database"),
+            );
+            let reason = result.unwrap_err();
+            assert_eq!(refusal.as_deref(), Some(reason.as_str()));
+            assert!(reason.contains("l_french") || reason.contains("native prefix unreadable"));
+        }
+    }
+
+    #[test]
+    fn runtime_language_guard_d98_does_not_promote_database_or_roster_failures() {
+        for digest in [Ok([0x55; 32]), Err("localisation database unreadable".into())] {
+            let mut refusal = None;
+            let expected = digest.clone();
+            let result = localization_digest_with_runtime_language(
+                "l_english",
+                &mut refusal,
+                || Ok("l_english".into()),
+                |_| digest,
+            );
+            assert_eq!(result, expected);
+            assert_eq!(refusal, None);
+        }
+        let roster_error: ContentIdentityReadError =
+            frame_error("authenticated country roster unavailable").into();
+        assert_eq!(roster_error.runtime_language_refusal, None);
+        let read = unavailable_read(
+            42,
+            43,
+            0,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            Instant::now(),
+            Vec::new(),
+        );
+        assert_eq!(read.runtime_language_refusal, None);
+    }
+
+    #[test]
+    fn runtime_language_guard_d98_retains_full_reader_language_refusal_only() {
+        use lane::engine_localisation_provenance::EngineLocalisationReadError;
+        for (error, affects_hour) in [
+            (
+                EngineLocalisationReadError::ActiveLanguage(
+                    "full reader observed l_french instead of l_english".into(),
+                ),
+                true,
+            ),
+            (
+                EngineLocalisationReadError::ActiveLanguage(
+                    "full reader active language is unreadable".into(),
+                ),
+                true,
+            ),
+            (
+                EngineLocalisationReadError::Database("localisation table is unreadable".into()),
+                false,
+            ),
+        ] {
+            let mut refusal = None;
+            let result = localization_digest_with_runtime_language(
+                "l_english",
+                &mut refusal,
+                || Ok("l_english".into()),
+                |refusal| Err(retain_localisation_read_refusal(error, refusal)),
+            );
+            let reason = result.unwrap_err();
+            assert_eq!(refusal.as_deref(), affects_hour.then_some(reason.as_str()));
+        }
+    }
+
+    #[test]
+    fn runtime_language_guard_reads_are_exact_fresh_and_budgeted() {
+        let calls = std::cell::Cell::new(0u8);
+        let memory = RuntimeLanguageMemory {
+            read: |_, length| {
+                calls.set(calls.get() + 1);
+                Ok(vec![calls.get(); length])
+            },
+            remaining: std::cell::Cell::new(RUNTIME_LANGUAGE_READ_BUDGET),
+        };
+        assert_eq!(memory.read(0x1000, 128).unwrap(), vec![1; 128]);
+        assert_eq!(memory.read(0x1000, 128).unwrap(), vec![2; 128]);
+        assert!(memory.read(0x1000, 1).unwrap_err().contains("budget"));
+        assert_eq!(calls.get(), 2);
+        assert!(memory.read(u64::MAX, 1).unwrap_err().contains("range"));
+        let partial = RuntimeLanguageMemory {
+            read: |_, _| Ok(vec![0; 7]),
+            remaining: std::cell::Cell::new(RUNTIME_LANGUAGE_READ_BUDGET),
+        };
+        assert!(partial.read(0x1000, 8).unwrap_err().contains("partial"));
+    }
+
+    #[test]
+    fn runtime_language_guard_native_prefix_fits_the_hour_budget_without_database_reads() {
+        let token = format!("l_{}", "a".repeat(62));
+        let bytes_read = std::cell::Cell::new(0usize);
+        let module_base = 0x140000000;
+        let memory = RuntimeLanguageMemory {
+            read: |address, length| {
+                bytes_read.set(bytes_read.get() + length);
+                match (address, length) {
+                    (address, 8) if address == module_base
+                        + lane::engine_localisation_provenance::LOCALISATION_ROOT_RVA =>
+                        Ok(0x2000u64.to_le_bytes().to_vec()),
+                    (0x2000, 8) => Ok(0x3000u64.to_le_bytes().to_vec()),
+                    (0x3000, 32) => {
+                        let mut header = vec![0; 32];
+                        header[..8].copy_from_slice(&0x4000u64.to_le_bytes());
+                        header[16..24].copy_from_slice(&64u64.to_le_bytes());
+                        header[24..32].copy_from_slice(&64u64.to_le_bytes());
+                        Ok(header)
+                    }
+                    (0x4000, 64) => Ok(token.as_bytes().to_vec()),
+                    _ => Err(format!("unexpected database read at {address:#x}, length {length}")),
+                }
+            },
+            remaining: std::cell::Cell::new(RUNTIME_LANGUAGE_READ_BUDGET),
+        };
+        assert_eq!(lane::engine_localisation_provenance::read_engine_active_language(&memory, module_base)
+            .unwrap(), token);
+        assert_eq!(bytes_read.get(), 224);
+        assert!(bytes_read.get() * 3 < 1024);
+    }
 }
 
 fn sha256_hex_to_bytes(text: &str) -> Option<[u8; 32]> {
@@ -990,6 +1284,7 @@ pub(super) fn compact_theatre_selector_worker_panic_read(
             name: "d98_fail_worker_panic",
             value: 1,
         }],
+        runtime_language_refusal: None,
     }
 }
 
@@ -1012,6 +1307,7 @@ fn unavailable_read(
         read_time_us: duration_micros_u64(started.elapsed()),
         status_flags,
         diagnostic_units,
+        runtime_language_refusal: None,
     }
 }
 
@@ -1049,14 +1345,14 @@ pub(super) fn read_compact_theatre_selector(
     let frame_hour = frame_hour.expect("checked above");
     let source_sequence = frame_hour.saturating_add(1);
 
-    let build = (|| -> Result<AllCountrySource<'_>, lane::CarrierError> {
+    let build = (|| -> Result<AllCountrySource<'_>, ContentIdentityReadError> {
         let identity = content_identity(control)?;
         let roster = domain51_read_complete_country_roster(state)
             .ok_or_else(|| frame_error("authenticated country roster unavailable"))?;
         let native = sample_compact_air_wings_native(state)
             .ok_or_else(|| frame_error("strategic-air wing walk unavailable"))?;
         if native.invalid_air_wing_rows > 0 {
-            return Err(frame_error("strategic-air wing walk reported invalid rows"));
+            return Err(frame_error("strategic-air wing walk reported invalid rows").into());
         }
         let mut wings_by_owner: BTreeMap<u32, Vec<CompactAirWingRow>> = BTreeMap::new();
         for row in native.rows {
@@ -1082,13 +1378,13 @@ pub(super) fn read_compact_theatre_selector(
         Ok(source) => source,
         Err(error) => {
             let failed = status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE;
-            return unavailable_read(
+            let mut read = unavailable_read(
                 frame_hour,
                 source_sequence,
                 elapsed_wall_ms,
                 failed,
                 started,
-                match &error {
+                match &error.source {
                     lane::CarrierError::Source(message) if message == NO_CONTENT_IDENTITY => {
                         vec![CompactDomainPerfDiagnosticUnit {
                             name: "d98_fail_no_content_identity",
@@ -1102,11 +1398,13 @@ pub(super) fn read_compact_theatre_selector(
                         },
                         CompactDomainPerfDiagnosticUnit {
                             name: "d98_fail_reason_hash",
-                            value: fnv1a_64(format!("{error:?}").as_bytes()),
+                            value: fnv1a_64(format!("{:?}", error.source).as_bytes()),
                         },
                     ],
                 },
             );
+            read.runtime_language_refusal = error.runtime_language_refusal;
+            return read;
         }
     };
 
@@ -1153,6 +1451,7 @@ pub(super) fn read_compact_theatre_selector(
                 read_time_us: duration_micros_u64(started.elapsed()),
                 status_flags: 0,
                 diagnostic_units,
+                runtime_language_refusal: None,
             }
         }
         Err(error) => {

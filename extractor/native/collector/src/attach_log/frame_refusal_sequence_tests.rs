@@ -12,6 +12,130 @@ const MEASURED_FIRST_REFUSED_HOUR: i32 = 60_831_000;
 const MEASURED_PUBLISHED_CURSOR: u64 = 75;
 const MEASURED_STAGED_CURSOR: u64 = 222;
 
+fn runtime_language_exit_refusal(preboundary: bool) {
+    let hour = MEASURED_FIRST_REFUSED_HOUR;
+    let mut scheduler = crate::read_only_scheduler::ReadOnlyScheduler::new(vec![10, 98], 2, 8)
+        .expect("bounded scheduler");
+    scheduler.observe_stable(hour, 1);
+    let request = scheduler.take_current_request().expect("one pending sampled hour");
+    let mut ledger = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+    let status = runtime_language_guard_status(&mut ledger,
+        Err("runtime language differs: expected l_english, observed l_french".into()), 0);
+    let mut records = Vec::new();
+    append_compact_frame_end_record(&mut records, 1, hour, 0, 0, 0, 0, status);
+    let findings = compact_frame_completeness_findings(&records, hour, &ledger);
+    let path = temp_stream_path(if preboundary { "language_boundary" } else { "language_terminal" });
+    let mut transport = file_transport(&path);
+    let mut sequence = PublishedSequence::start_on(None);
+    if preboundary {
+        publish_preboundary_frame_refusal_record(&mut transport, &mut sequence, hour, &findings)
+            .expect("old-identity language refusal publishes");
+    } else {
+        assert_eq!(publish_frame_refusal_record(&mut transport, &mut sequence, hour,
+            findings.iter().filter_map(|finding| finding.offender.clone()).collect(),
+            findings.iter().filter_map(|finding| finding.frame_finding.clone()).collect()).unwrap(),
+            FrameRefusalPublication::Published);
+    }
+    assert_eq!(scheduler.reject_request(request), 2);
+    scheduler.flush();
+    assert!(scheduler.drain_control().all(|gap|
+        hour < gap.first_hour_raw || hour > gap.last_hour_raw),
+        "a published H4FR cannot also become a terminal H4DG");
+    assert_eq!(sequence.get(), 2);
+    drop(transport);
+    let bytes = read_stream(&path);
+    let headers = certify(&bytes).expect("named refusal is a valid standalone stream");
+    assert_eq!(headers.len(), 1);
+    assert_eq!(headers[0].game_hour_raw, hour);
+    assert_eq!(headers[0].record_type, compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED);
+    assert!(bytes.windows(b"runtime_language_matches_content".len())
+        .any(|part| part == b"runtime_language_matches_content"));
+    assert!(bytes.windows(b"expected l_english, observed l_french".len())
+        .any(|part| part == b"expected l_english, observed l_french"));
+    let decoded = compact_contract::frame_refusal::FrameRefusalRecordV2::decode(
+        &bytes[compact_contract::record_header::COMPACT_RECORD_HEADER_LEN..]).unwrap();
+    assert!(decoded.frame_findings.iter().any(|finding|
+        finding.authority == Authority::Engine {
+            rva: theatre_selector_live_lane::engine_localisation_provenance::LOCALISATION_ROOT_RVA,
+        }));
+    portable_test_fs_retry::remove_file(&path).unwrap();
+}
+
+#[test]
+fn runtime_language_guard_terminal_refusal_retains_cause_without_duplicate_gap() {
+    runtime_language_exit_refusal(false);
+    let source = include_str!("../attach_log.rs");
+    let exit = source.split_once("let terminal_findings = compact_frame_completeness_findings(")
+        .unwrap().1.split_once("if let FrameCompletenessVerdict::Degraded(domains) = terminal_verdict")
+        .unwrap().0;
+    assert!(exit.contains("terminal_findings.iter().filter_map(|finding| finding.frame_finding.clone())"));
+    let published = exit.split_once("Ok(FrameRefusalPublication::Published) => {").unwrap().1;
+    let published = published.split_once("FrameRefusalPublication::Incomplete").unwrap().0;
+    assert!(published.contains("runtime.record_frame_rejected(pending_request)"));
+    assert!(published.contains("terminal_refusal_published = true"));
+    let (before_settlement, settlement) = published.split_once("if let Err(error) = pending_trackers.hook_reservations")
+        .expect("only a failed exact-custody settlement may make published H4FR terminal");
+    let (settlement_failure, after_settlement) = settlement.split_once("if let Some(runtime)").unwrap();
+    assert!(settlement_failure.contains(".settle_published_terminal_refusal()"));
+    assert_eq!(settlement_failure.matches("append_terminal_error").count(), 1);
+    assert!(settlement_failure.contains("could not settle its reserved observations"));
+    assert!(!before_settlement.contains("append_terminal_error") && !after_settlement.contains("append_terminal_error"));
+    assert!(!published.contains("terminal_control_error ="));
+    assert_eq!(exit.matches(".settle_published_terminal_refusal()").count(), 1,
+        "missing or refused H4FR writes cannot settle queue custody");
+    assert!(source.contains("!frame_publishable && !terminal_refusal_published && terminal_control_error.is_none()"));
+    let d75 = source.split_once("if terminal_d75_d64_custody.is_some() {").unwrap().1
+        .split_once("// Any request still in flight").unwrap().0;
+    assert!(d75.contains("abort_terminal_d75_owner("), "refused D75 custody must still abort");
+    assert!(d75.contains("if !terminal_refusal_published && terminal_control_error.is_none()"),
+        "successful refusal cannot become a synthetic D75 publication failure");
+}
+
+#[test]
+fn runtime_language_guard_terminal_gap_settlement_uses_only_exact_reserved_event_custody() {
+    let source = include_str!("../attach_log.rs");
+    let settlement = source.split_once("fn settle_published_terminal_refusal(&mut self)").unwrap().1
+        .split_once("fn take_d55_from(").unwrap().0;
+    for operation in [
+        "commit_production_zero_removals(reservation_id)",
+        "commit_sealed_terminal(reservation_id)",
+        "commit_refused_terminal_snapshot(reservation_id)",
+        "settle_sealed_convoy_terminal_gap(reservation_id)",
+    ] {
+        assert!(settlement.contains(operation));
+    }
+    assert!(!settlement.contains("commit_all"));
+    assert!(!settlement.contains("commit_published_terminal_snapshot"));
+    assert!(!settlement.contains("seal_reserve") && !settlement.contains(".clear()"));
+    for slot in ["d67_zero_removals", "d86_sunk_ship_history", "d90_convoy_transport_attack"] {
+        let clear = format!("self.{slot} = None;");
+        let clear_at = settlement.find(&clear).unwrap();
+        assert!(settlement[..clear_at].trim_end().ends_with("?;"),
+            "failed settlement retains {slot} for its ordinary rollback");
+    }
+}
+
+#[test]
+fn runtime_language_guard_ordinary_refusal_does_not_poison_successful_finalization() {
+    let source = include_str!("../attach_log.rs");
+    let refusal = source.split_once("let refused_frame_detail = format!(").unwrap().1
+        .split_once("Ok(FrameRefusalPublication::Incomplete) => {").unwrap().0;
+    assert!(!refusal.contains("terminal_control_error ="));
+    assert!(!refusal.contains("append_terminal_error"));
+    assert!(refusal.contains("Ok(FrameRefusalPublication::Published) => {"));
+}
+
+#[test]
+fn runtime_language_guard_boundary_refusal_retains_cause_without_duplicate_gap() {
+    runtime_language_exit_refusal(true);
+    let source = include_str!("../attach_log.rs");
+    let exit = source.split_once("fn finalize_scheduler_before_identity_boundary(").unwrap().1
+        .split_once("drop(pending_service_disposal);").unwrap().0;
+    let refusal = exit.split_once("publish_preboundary_frame_refusal_record(").unwrap().1;
+    assert!(refusal.contains("&findings"));
+    assert!(refusal.contains("runtime.record_frame_rejected(pending_request)"));
+}
+
 fn temp_stream_path(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "hoi4_collector_frame_refusal_sequence_{tag}_{}_{}",

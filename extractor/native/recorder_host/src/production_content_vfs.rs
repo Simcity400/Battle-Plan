@@ -887,6 +887,7 @@ mod tests {
                     attach_sha256: Some("b".repeat(64)),
                     seal_sha256: None,
                     endpoint_semantics_equal: None,
+                    runtime_language_observation: None,
                 },
                 exe_path: Some(self.install.join("hoi4.exe")),
                 exe_size_bytes: None,

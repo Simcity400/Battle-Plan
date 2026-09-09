@@ -94,6 +94,7 @@ pub use convoy_terminal_hook_windows::{
     peek_convoy_transport_attack_payload, publish_h_convoy_evidence_game_state,
     live_module_base, read_live_a729_client_route, rollback_convoy_terminal_events,
     rollback_convoy_transport_attack_payload, seal_and_drain_convoy_transport_attack_payload,
+    settle_sealed_convoy_terminal_gap,
     take_h_convoy_positive_raw, take_released_hook_receipt, uninstall_convoy_terminal_hook,
     ConvoyTerminalDrain, ConvoyTerminalDrainReservation, ConvoyTerminalHookHeartbeat,
     ConvoyTerminalHookTelemetry, ConvoyTerminalInstallError, ConvoyTerminalPayloadReservation,

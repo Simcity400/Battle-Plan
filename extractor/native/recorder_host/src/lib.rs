@@ -27,6 +27,7 @@ pub mod hourly_service;
 pub mod mem_account;
 pub mod mmap;
 pub mod modset;
+pub mod runtime_language;
 pub mod native_design_catalog;
 pub mod portable_content_manifest;
 pub mod portable_manifest;

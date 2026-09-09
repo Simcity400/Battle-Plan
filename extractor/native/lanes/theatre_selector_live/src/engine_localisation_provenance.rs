@@ -52,15 +52,85 @@ pub struct EngineLocalisationProvenance {
     pub provenance_sha256: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EngineLocalisationReadError {
+    ActiveLanguage(String),
+    Database(String),
+}
+
+impl From<String> for EngineLocalisationReadError {
+    fn from(reason: String) -> Self {
+        Self::Database(reason)
+    }
+}
+
+impl std::fmt::Display for EngineLocalisationReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ActiveLanguage(reason) | Self::Database(reason) => formatter.write_str(reason),
+        }
+    }
+}
+
 const PREIMAGE_SCHEMA: &str = "hoi4.d98-engine-localisation-provenance.v1";
+
+/// Observe the engine's current language without asserting a launch language
+/// or walking the localisation tables. Equal reads bind this observation,
+/// not the language of every past or future hour in the process.
+/// The root/getter and passive witness are pinned by
+/// `portable_engine_evidence::runtime_language`; the string layout is the
+/// existing `engine_abi` contract.
+pub fn read_engine_active_language(
+    memory: &dyn TargetImageMemory,
+    image_base: u64,
+) -> Result<String, String> {
+    let first = read_active_language(memory, image_base)?;
+    let second = read_active_language(memory, image_base)?;
+    if first != second {
+        return Err("engine active language changed between consecutive reads".into());
+    }
+    Ok(first.1)
+}
+
+fn read_active_language(
+    memory: &dyn TargetImageMemory,
+    image_base: u64,
+) -> Result<(u64, String), String> {
+    let root_slot = image_base
+        .checked_add(LOCALISATION_ROOT_RVA)
+        .ok_or("localisation root slot address overflow")?;
+    let root = read_u64(memory, root_slot, "localisation root")?;
+    if root == 0 {
+        return Err("engine localisation system is not initialised".into());
+    }
+    let language_string = read_u64(
+        memory,
+        field(root, ROOT_LANGUAGE_STRING_PTR)?,
+        "active language string pointer",
+    )?;
+    if language_string == 0 {
+        return Err("engine localisation root carries no active language".into());
+    }
+    let language_bytes = read_std_string_bounded(memory, language_string, "active language", 64)?;
+    let language = String::from_utf8(language_bytes)
+        .map_err(|_| "engine active language token is not UTF-8".to_string())?;
+    if language.trim().is_empty()
+        || language.chars().any(|c| c.is_control() || c == '/' || c == '\\')
+    {
+        return Err("engine active language token is not selectable".into());
+    }
+    Ok((root, language))
+}
 
 pub fn read_engine_localisation_provenance(
     memory: &dyn TargetImageMemory,
     image_base: u64,
     expected_language: &str,
 ) -> Result<EngineLocalisationProvenance, String> {
-    let first = read_engine_localisation_provenance_once(memory, image_base, expected_language)?;
-    let second = read_engine_localisation_provenance_once(memory, image_base, expected_language)?;
+    let first = read_engine_localisation_provenance_once(memory, image_base, expected_language)
+        .map_err(|error| error.to_string())?;
+    let second = read_engine_localisation_provenance_once(memory, image_base, expected_language)
+        .map_err(|error| error.to_string())?;
     if first != second {
         return Err(
             "engine localisation provenance changed between two consecutive reads".to_string(),
@@ -73,48 +143,33 @@ pub fn read_engine_localisation_provenance_once(
     memory: &dyn TargetImageMemory,
     image_base: u64,
     expected_language: &str,
-) -> Result<EngineLocalisationProvenance, String> {
+) -> Result<EngineLocalisationProvenance, EngineLocalisationReadError> {
     if expected_language.is_empty() {
-        return Err("engine localisation provenance requires a launch-bound language".to_string());
-    }
-    let root_slot = image_base
-        .checked_add(LOCALISATION_ROOT_RVA)
-        .ok_or("localisation root slot address overflow")?;
-    let root = read_u64(memory, root_slot, "localisation root")?;
-    if root == 0 {
-        return Err("engine localisation system is not initialised".to_string());
-    }
-
-    let language_string = read_u64(
-        memory,
-        field(root, ROOT_LANGUAGE_STRING_PTR)?,
-        "active language string pointer",
-    )?;
-    if language_string == 0 {
-        return Err("engine localisation root carries no active language".to_string());
-    }
-    let language_bytes = read_std_string(memory, language_string, "active language")?;
-    let language = String::from_utf8(language_bytes)
-        .map_err(|_| "engine active language token is not UTF-8".to_string())?;
-    if language != expected_language {
-        return Err(format!(
-            "engine active language {language:?} differs from the launch-bound language \
-             {expected_language:?}"
+        return Err(EngineLocalisationReadError::ActiveLanguage(
+            "engine localisation provenance requires an authenticated language".into(),
         ));
+    }
+    let (root, language) = read_active_language(memory, image_base)
+        .map_err(EngineLocalisationReadError::ActiveLanguage)?;
+    if language != expected_language {
+        return Err(EngineLocalisationReadError::ActiveLanguage(format!(
+            "engine active language {language:?} differs from the authenticated language \
+             {expected_language:?}"
+        )));
     }
 
     let (table_array, table_count) =
         read_pdx_vector(memory, field(root, ROOT_TABLE_VECTOR)?, "language table")?;
     if table_array == 0 || table_count == 0 {
-        return Err("engine localisation holds no language tables".to_string());
+        return Err("engine localisation holds no language tables".to_string().into());
     }
     if table_count > MAX_TABLES {
-        return Err("engine localisation language table count is unbounded".to_string());
+        return Err("engine localisation language table count is unbounded".to_string().into());
     }
     let (arena, arena_len) =
         read_pdx_vector(memory, field(root, ROOT_TEXT_ARENA_VECTOR)?, "text arena")?;
     if arena == 0 || arena_len == 0 {
-        return Err("engine localisation holds no text arena".to_string());
+        return Err("engine localisation holds no text arena".to_string().into());
     }
 
     let table = select_language_table(memory, table_array, table_count, &language)?;
@@ -327,6 +382,15 @@ fn read_std_string(
     address: u64,
     label: &str,
 ) -> Result<Vec<u8>, String> {
+    read_std_string_bounded(memory, address, label, MAX_TEXT_BYTES)
+}
+
+fn read_std_string_bounded(
+    memory: &dyn TargetImageMemory,
+    address: u64,
+    label: &str,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
     let header = memory.read(address, STD_STRING_STRIDE as usize)?;
     let size = u64_at(&header, STD_STRING_SIZE_OFFSET)?;
     let capacity = u64_at(&header, STD_STRING_CAPACITY_OFFSET)?;
@@ -337,7 +401,7 @@ fn read_std_string(
     }
     let size = usize::try_from(size)
         .map_err(|_| format!("engine localisation {label} string size does not fit usize"))?;
-    if size > MAX_TEXT_BYTES {
+    if size > max_bytes {
         return Err(format!("engine localisation {label} string is unbounded"));
     }
     if capacity <= STD_STRING_SSO_CAPACITY {

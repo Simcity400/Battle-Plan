@@ -5,6 +5,35 @@ use std::collections::BTreeMap;
 const IMAGE_BASE: u64 = 0x0000_0001_4000_0000;
 const HEAP_BASE: u64 = 0x0000_0002_0000_0000;
 
+#[test]
+fn full_provenance_distinguishes_language_observation_failure_from_database_failure() {
+    let image = Fixture::new("l_english", vec![]).build();
+    let mismatch = read_engine_localisation_provenance_once(&image, IMAGE_BASE, "l_french")
+        .unwrap_err();
+    assert!(matches!(mismatch, EngineLocalisationReadError::ActiveLanguage(_)));
+    let language_unreadable = ScriptedImage(|address, length| {
+        if address == IMAGE_BASE + LOCALISATION_ROOT_RVA {
+            Err("unreadable active language root".into())
+        } else {
+            image.read(address, length)
+        }
+    });
+    assert!(matches!(read_engine_localisation_provenance_once(
+        &language_unreadable, IMAGE_BASE, "l_english").unwrap_err(),
+        EngineLocalisationReadError::ActiveLanguage(_)));
+    let root = read_u64(&image, IMAGE_BASE + LOCALISATION_ROOT_RVA, "fixture root").unwrap();
+    let database_unreadable = ScriptedImage(|address, length| {
+        if address == root + ROOT_TABLE_VECTOR {
+            Err("unreadable localisation database".into())
+        } else {
+            image.read(address, length)
+        }
+    });
+    assert!(matches!(read_engine_localisation_provenance_once(
+        &database_unreadable, IMAGE_BASE, "l_english").unwrap_err(),
+        EngineLocalisationReadError::Database(_)));
+}
+
 #[derive(Default, Clone)]
 struct FakeImage {
     regions: BTreeMap<u64, Vec<u8>>,
@@ -431,6 +460,32 @@ fn a_synthetic_engine_table_yields_its_keys_sources_and_language() {
 }
 
 #[test]
+fn active_language_observation_does_not_require_a_launch_token_or_table_walk() {
+    let image = Fixture::new("l_english", base_records()).build();
+    let prefix_only = ScriptedImage(|address, length| {
+        let root = u64_at(&image.read(IMAGE_BASE + LOCALISATION_ROOT_RVA, 8)?, 0)?;
+        if address >= root + ROOT_TABLE_VECTOR && address < root + ROOT_TEXT_ARENA_VECTOR + 24 {
+            return Err("the language-only observer must not read tables or text arena".into());
+        }
+        image.read(address, length)
+    });
+    assert_eq!(read_engine_active_language(&prefix_only, IMAGE_BASE).unwrap(), "l_english");
+}
+
+#[test]
+fn active_language_observation_refuses_changed_or_unbounded_tokens() {
+    let changed = FlippingImage {
+        first: Fixture::new("l_english", base_records()).build(),
+        second: Fixture::new("l_french", base_records()).build(),
+        root_reads: Cell::new(0),
+    };
+    assert!(read_engine_active_language(&changed, IMAGE_BASE).unwrap_err().contains("changed"));
+    let too_long = "x".repeat(65);
+    let image = Fixture::new(Box::leak(too_long.into_boxed_str()), base_records()).build();
+    assert!(read_engine_active_language(&image, IMAGE_BASE).unwrap_err().contains("unbounded"));
+}
+
+#[test]
 fn the_digest_is_invariant_to_the_engines_physical_entry_order() {
     let forward = Fixture::new("l_english", base_records()).build();
     let mut reversed_records = base_records();
@@ -539,7 +594,7 @@ fn an_engine_language_differing_from_the_launch_binding_is_refused() {
     let image = Fixture::new("l_french", base_records()).build();
     let error = error_of(&image, "l_english");
     assert!(
-        error.contains("differs from the launch-bound language"),
+        error.contains("differs from the authenticated language"),
         "got: {error}"
     );
 }
@@ -622,7 +677,7 @@ fn an_empty_language_binding_is_refused() {
     let image = Fixture::new("l_english", base_records()).build();
     let error = error_of(&image, "");
     assert!(
-        error.contains("requires a launch-bound language"),
+        error.contains("requires an authenticated language"),
         "got: {error}"
     );
 }

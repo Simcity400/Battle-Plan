@@ -20,7 +20,7 @@ fn terminal_data_region() -> String {
             .split_once("let terminal_write_attempt =")
             .expect("terminal DATA publication")
             .1
-            .split_once("} else if !frame_publishable && terminal_control_error.is_none() {")
+            .split_once("} else if !frame_publishable && !terminal_refusal_published && terminal_control_error.is_none() {")
             .expect("terminal DATA publication terminator")
             .0,
     )
@@ -111,9 +111,9 @@ fn every_production_rollover_exit_routes_through_successor_census_recovery() {
         production
             .matches("require_successor_install_census_after_rollover(")
             .count(),
-        9,
-        "the seven existing terminal/boundary sites, the explicitly checked frame-build \
-         storage-refusal rollover, and the function definition are required"
+        10,
+        "the seven existing terminal/boundary sites, the frame-build storage refusal, \
+         the terminal H4FR refusal rollover, and the function definition are required"
     );
     assert_eq!(
         production
@@ -419,12 +419,12 @@ fn the_terminal_gap_publication_names_every_range_it_could_not_publish() {
         code_only(capture_loop.1)
             .matches("scheduler_stream_closed_by_write = true")
             .count(),
-        7,
+        8,
         "every site that reaches teardown after a write committed a rollover sets it: the \
          scheduler DATA publication, the completeness-refusal publication, the explicitly \
          checked frame-build storage-refusal publication, the clock-unreadable \
          interval publication, the untrusted clock-recovery publication, the ordinary terminal \
-         DATA write, and the D75-owned terminal DATA write"
+         DATA write, the D75-owned terminal DATA write, and terminal H4FR publication"
     );
     let gap_publication = capture_loop
         .1

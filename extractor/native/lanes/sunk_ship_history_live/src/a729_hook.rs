@@ -310,6 +310,7 @@ impl DrainReservationState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SealedCompleteSnapshotState {
+    hook_epoch: u64,
     reserved_prefix: DrainReservationState,
     snapshot: crate::SunkShipSnapshot,
 }
@@ -320,6 +321,7 @@ struct CaptureQueueState {
     reservation: Option<DrainReservationState>,
     sealed_complete_snapshot: Option<SealedCompleteSnapshotState>,
     published_terminal_loss: Option<(u64, Option<crate::SunkShipProducerLoss>)>,
+    refused_terminal_loss: Option<(u64, Option<crate::SunkShipProducerLoss>)>,
 }
 
 impl CaptureQueueState {
@@ -329,6 +331,7 @@ impl CaptureQueueState {
             reservation: None,
             sealed_complete_snapshot: None,
             published_terminal_loss: None,
+            refused_terminal_loss: None,
         }
     }
 
@@ -337,6 +340,7 @@ impl CaptureQueueState {
         self.reservation = None;
         self.sealed_complete_snapshot = None;
         self.published_terminal_loss = None;
+        self.refused_terminal_loss = None;
     }
 }
 
@@ -1071,27 +1075,45 @@ fn next_drain_reservation_id() -> Result<u64, String> {
 }
 
 pub fn commit_drain(reservation_id: u64) -> Result<(), String> {
-    commit_drain_inner(reservation_id, false)
+    commit_drain_inner(reservation_id, None)
 }
 
 /// Call only after the sealed snapshot's stream publication commits.
 pub fn commit_published_terminal_snapshot(reservation_id: u64) -> Result<(), String> {
-    commit_drain_inner(reservation_id, true)
+    commit_drain_inner(reservation_id, Some(TerminalDisposition::Data))
 }
 
-fn commit_drain_inner(reservation_id: u64, published: bool) -> Result<(), String> {
+/// Call only after the H4FR gap refusing this sealed snapshot commits durably.
+/// This settles the reserved custody without claiming the snapshot was published.
+pub fn commit_refused_terminal_snapshot(reservation_id: u64) -> Result<(), String> {
+    commit_drain_inner(reservation_id, Some(TerminalDisposition::Gap))
+}
+
+#[derive(Clone, Copy)]
+enum TerminalDisposition {
+    Data,
+    Gap,
+}
+
+fn commit_drain_inner(
+    reservation_id: u64,
+    disposition: Option<TerminalDisposition>,
+) -> Result<(), String> {
     let mut queue = STATE
         .get_or_init(|| Mutex::new(CaptureQueueState::new()))
         .lock()
         .map_err(|_| "A33 queue lock poisoned")?;
     let reservation = matching_drain_reservation(&queue, reservation_id)?;
-    let published_loss = if published {
+    let disposed_loss = if disposition.is_some() {
         if INSTALL_PHASE.load(Ordering::Acquire) != INSTALL_PHASE_NONE {
             return Err("A33 terminal publication cannot commit before physical teardown".into());
         }
         let sealed = queue.sealed_complete_snapshot.as_ref()
             .ok_or("A33 terminal publication has no sealed snapshot custody")?;
-        Some((ACTIVE_HOOK_EPOCH.load(Ordering::Acquire), sealed.snapshot.producer_loss))
+        if sealed.hook_epoch != ACTIVE_HOOK_EPOCH.load(Ordering::Acquire) {
+            return Err("A33 terminal publication hook epoch changed after sealing".into());
+        }
+        Some((sealed.hook_epoch, sealed.snapshot.producer_loss))
     } else {
         None
     };
@@ -1119,8 +1141,14 @@ fn commit_drain_inner(reservation_id: u64, published: bool) -> Result<(), String
     queue.pending.drain(..reservation.row_count);
     queue.reservation = None;
     queue.sealed_complete_snapshot = None;
-    if let Some(published_loss) = published_loss {
-        queue.published_terminal_loss = Some(published_loss);
+    match (disposition, disposed_loss) {
+        (Some(TerminalDisposition::Data), Some(loss)) => {
+            queue.published_terminal_loss = Some(loss);
+        }
+        (Some(TerminalDisposition::Gap), Some(loss)) => {
+            queue.refused_terminal_loss = Some(loss);
+        }
+        _ => {}
     }
     DROPPED_UNBOUND.fetch_sub(reservation.dropped_unbound, Ordering::AcqRel);
     DROPPED_REENTRANT.fetch_sub(reservation.dropped_reentrant, Ordering::AcqRel);
@@ -1520,6 +1548,7 @@ pub fn terminal_drain_has_unpublished_custody(reservation: &HookDrainReservation
         return true;
     };
     if matching_drain_reservation(&queue, reservation.reservation_id).is_err()
+        || drain.hook_epoch != ACTIVE_HOOK_EPOCH.load(Ordering::Acquire)
         || !queue.pending.is_empty()
         || queue.sealed_complete_snapshot.is_some()
     {
@@ -1536,10 +1565,11 @@ pub fn terminal_drain_has_unpublished_custody(reservation: &HookDrainReservation
         return false;
     }
     let loss = producer_loss_since_install();
-    // Cumulative completeness never heals. Only a committed terminal snapshot
-    // can prove this same loss was published rather than discarded at teardown.
+    // Cumulative completeness never heals. The same epoch and loss must have
+    // an explicit committed disposition: a DATA snapshot or its H4FR refusal.
     loss.is_none()
-        || queue.published_terminal_loss != Some((drain.hook_epoch, loss))
+        || (queue.published_terminal_loss != Some((drain.hook_epoch, loss))
+            && queue.refused_terminal_loss != Some((drain.hook_epoch, loss)))
 }
 
 pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, String> {
@@ -1659,6 +1689,7 @@ fn persist_sealed_complete_snapshot(
     }
     queue.reservation = Some(reserved_prefix);
     queue.sealed_complete_snapshot = Some(SealedCompleteSnapshotState {
+        hook_epoch: ACTIVE_HOOK_EPOCH.load(Ordering::Acquire),
         reserved_prefix,
         snapshot,
     });
@@ -2972,6 +3003,7 @@ mod tests {
             assert_eq!(decoded.snapshot, Some(snapshot.clone()));
             let mut queue = STATE.get().unwrap().lock().unwrap();
             queue.sealed_complete_snapshot = Some(SealedCompleteSnapshotState {
+                hook_epoch: reservation.drain.hook_epoch,
                 reserved_prefix: queue.reservation.unwrap(), snapshot,
             });
             reservation
@@ -3057,6 +3089,151 @@ mod tests {
             rollback_drain(old_empty.reservation_id).unwrap();
             let new = peek_drain().unwrap();
             assert!(terminal_drain_has_unpublished_custody(&new));
+        }
+    }
+
+    #[test]
+    fn terminal_gap_acknowledges_custody_without_claiming_data_or_healing_loss() {
+        let _lock = WITNESS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let fixture = TerminalCustodyFixture::new();
+        let reservation = fixture.stage();
+        let loss = producer_loss_since_install();
+        assert!(terminal_drain_has_unpublished_custody(&reservation));
+        commit_refused_terminal_snapshot(reservation.reservation_id).unwrap();
+        {
+            let queue = STATE.get().unwrap().lock().unwrap();
+            assert!(queue.pending.is_empty());
+            assert!(queue.reservation.is_none());
+            assert!(queue.sealed_complete_snapshot.is_none());
+            assert!(queue.published_terminal_loss.is_none());
+            assert_eq!(queue.refused_terminal_loss, Some((777, loss)));
+        }
+        assert_eq!(DROPPED_UNBOUND.load(Ordering::Acquire), 0);
+        assert!(COMPLETENESS_POISONED.load(Ordering::Acquire));
+        assert_eq!(producer_loss_since_install(), loss);
+        for _ in 0..2 {
+            let empty = peek_drain().unwrap();
+            assert!(empty.drain.completeness_poisoned);
+            assert!(!empty.drain.loss_free());
+            assert!(!terminal_drain_has_unpublished_custody(&empty));
+            commit_drain(empty.reservation_id).unwrap();
+        }
+        STATE.get().unwrap().lock().unwrap().reset();
+        let reset = peek_drain().unwrap();
+        assert!(terminal_drain_has_unpublished_custody(&reset));
+    }
+
+    #[test]
+    fn terminal_gap_settles_only_reserved_rows_and_counters() {
+        let _lock = WITNESS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let fixture = TerminalCustodyFixture::new();
+        let reservation = fixture.stage();
+        let reserved_loss = producer_loss_since_install();
+        let later = event(3);
+        STATE.get().unwrap().lock().unwrap().pending.push_back(later.clone());
+        for cause in LOSS_CAUSES {
+            poison(cause);
+        }
+        commit_refused_terminal_snapshot(reservation.reservation_id).unwrap();
+        {
+            let queue = STATE.get().unwrap().lock().unwrap();
+            assert_eq!(queue.pending.iter().cloned().collect::<Vec<_>>(), vec![later]);
+            assert!(queue.published_terminal_loss.is_none());
+            assert_eq!(queue.refused_terminal_loss, Some((777, reserved_loss)));
+        }
+        for cause in LOSS_CAUSES {
+            assert_eq!(cause.reservable.load(Ordering::Acquire), 1);
+        }
+        let pending = peek_drain().unwrap();
+        assert!(terminal_drain_has_unpublished_custody(&pending));
+        commit_drain(pending.reservation_id).unwrap();
+        let discarded = peek_drain().unwrap();
+        assert!(terminal_drain_has_unpublished_custody(&discarded));
+        assert_eq!(producer_loss_since_install().unwrap().dropped_total(), 6);
+    }
+
+    #[test]
+    fn terminal_gap_new_rows_drops_sequence_faults_and_epochs_remain_unpublished() {
+        let _lock = WITNESS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for kind in 0..4 {
+            let fixture = TerminalCustodyFixture::new();
+            let reservation = fixture.stage();
+            commit_refused_terminal_snapshot(reservation.reservation_id).unwrap();
+            let old_empty = peek_drain().unwrap();
+            assert!(!terminal_drain_has_unpublished_custody(&old_empty));
+            match kind {
+                0 => STATE.get().unwrap().lock().unwrap().pending.push_back(event(3)),
+                1 => poison(LOSS_UNREADABLE),
+                2 => SEQUENCE_REGRESSION_SINCE_INSTALL.store(true, Ordering::Release),
+                _ => ACTIVE_HOOK_EPOCH.store(778, Ordering::Release),
+            }
+            assert!(terminal_drain_has_unpublished_custody(&old_empty));
+            rollback_drain(old_empty.reservation_id).unwrap();
+            let new = peek_drain().unwrap();
+            assert!(terminal_drain_has_unpublished_custody(&new));
+        }
+    }
+
+    #[test]
+    fn terminal_gap_failed_commit_does_not_acknowledge_or_consume_custody() {
+        let _lock = WITNESS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for failure in 0..5 {
+            let fixture = TerminalCustodyFixture::new();
+            let reservation = fixture.stage();
+            let supplied_id = match failure {
+                0 => reservation.reservation_id + 1,
+                1 => {
+                    INSTALL_PHASE.store(INSTALL_PHASE_ACTIVE, Ordering::Release);
+                    reservation.reservation_id
+                }
+                2 => {
+                    STATE.get().unwrap().lock().unwrap().sealed_complete_snapshot = None;
+                    reservation.reservation_id
+                }
+                3 => {
+                    STATE.get().unwrap().lock().unwrap().sealed_complete_snapshot
+                        .as_mut().unwrap().reserved_prefix.row_count += 1;
+                    reservation.reservation_id
+                }
+                _ => {
+                    ACTIVE_HOOK_EPOCH.store(778, Ordering::Release);
+                    reservation.reservation_id
+                }
+            };
+            assert!(commit_refused_terminal_snapshot(supplied_id).is_err());
+            {
+                let queue = STATE.get().unwrap().lock().unwrap();
+                assert!(queue.published_terminal_loss.is_none());
+                assert!(queue.refused_terminal_loss.is_none());
+                assert_eq!(queue.pending.len(), 1);
+                assert_eq!(queue.pending[0], reservation.drain.events[0]);
+                assert_eq!(queue.reservation.unwrap().reservation_id, reservation.reservation_id);
+            }
+            assert_eq!(DROPPED_UNBOUND.load(Ordering::Acquire), 1);
+            assert_eq!(producer_loss_since_install().unwrap().dropped_unbound, 1);
+            assert!(terminal_drain_has_unpublished_custody(&reservation));
+        }
+    }
+
+    #[test]
+    fn terminal_gap_rollback_and_raw_discard_never_acknowledge_refusal() {
+        let _lock = WITNESS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for raw_discard in [false, true] {
+            let fixture = TerminalCustodyFixture::new();
+            let reservation = fixture.stage();
+            if raw_discard {
+                commit_drain(reservation.reservation_id).unwrap();
+            } else {
+                rollback_drain(reservation.reservation_id).unwrap();
+            }
+            {
+                let queue = STATE.get().unwrap().lock().unwrap();
+                assert!(queue.published_terminal_loss.is_none());
+                assert!(queue.refused_terminal_loss.is_none());
+            }
+            let pending = peek_drain().unwrap();
+            assert!(terminal_drain_has_unpublished_custody(&pending));
+            assert_eq!(producer_loss_since_install().unwrap().dropped_unbound, 1);
         }
     }
 
