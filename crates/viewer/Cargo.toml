@@ -4,3 +4,14 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+
+[dependencies]
+replay = { path = "../replay" }
+installed-content = { path = "../installed-content" }
+eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+png = "0.18"
+rfd = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,6 +1,7 @@
 //! Game content layers, identity hashes, and Rust parsers for the viewer.
 
 pub mod content;
+pub mod map;
 pub mod parser;
 pub mod save;
 
