@@ -1,6 +1,9 @@
 use sha2::{Digest, Sha256};
 use std::io::{self, Read};
 
+/// Module-static version banner candidate; old session_header DOMAIN68 reads ASCII at RVA0x2701108, hash remains the build authority.
+pub const VERSION_BANNER_RVA: usize = 0x0270_1108;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Build {
     pub version: &'static str,

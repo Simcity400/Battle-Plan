@@ -449,7 +449,7 @@ fn mod_id(bytes: &[u8]) -> Result<String, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::pdx::Text;
+    use engine::msvc_string::Text;
     use replay::identity::{COVERAGE_POLICY_VERSION, Dlc};
 
     fn identity(ids: &[&str]) -> Identity {

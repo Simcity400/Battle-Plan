@@ -7,7 +7,7 @@ use engine::{
     cgame_state::{self, Clock},
     cprovince,
     memory::LiveMemory,
-    pdx::Text,
+    msvc_string::Text,
     walk::Outcome,
 };
 use std::{

@@ -1,4 +1,4 @@
-use crate::{Memory, pdx::Array, read};
+use crate::{Memory, cpdx_array::Array, read};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {

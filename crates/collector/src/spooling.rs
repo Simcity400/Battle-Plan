@@ -858,7 +858,7 @@ mod tests {
         assert_eq!(report["p50_ns"], 200);
         assert_eq!(report["p95_ns"], 400);
     }
-    use engine::pdx::Text;
+    use engine::msvc_string::Text;
     use replay::{
         branches::{BranchReason, Parentage},
         identity::{Identity, Verification},
