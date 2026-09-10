@@ -49,6 +49,9 @@ pub fn walk(
         let mut bytes_len = 0_usize;
         let mut required_bytes = 0_usize;
         let mut unread_rows = 0_u32;
+        // One chunk's module entries are read with a single contiguous copy
+        // whose failure is reported for the whole chunk, so this size is part
+        // of the walker's error precedence rather than a free tuning knob.
         const BATCH: usize = 32;
         const HEADERS: [RecordField; 1] = [RecordField {
             source_offset: cequipment_variant::MODULES + ENTRIES_CANDIDATE,

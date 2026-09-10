@@ -644,6 +644,9 @@ pub mod rail_supply_arrow_layout;
 pub mod rail_supply_arrow_row_layout;
 pub mod rasterizer_state_description_layout;
 pub mod rasterizer_state_wrapper_layout;
+/// Test-only measurement instrument for the deterministic cost proxies.
+#[cfg(test)]
+pub mod read_census;
 pub mod reference_bucket;
 pub mod render_context_layout;
 pub mod render_entity_layout;

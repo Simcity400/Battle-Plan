@@ -7,8 +7,15 @@
 
 use crate::{
     Memory, cpdx_array::Array, cstrategic_air, loop_history_record_fields, loop_history_window,
-    read, walk::Outcome,
+    memory::RecordField, read, walk::Outcome,
 };
+
+/// One region-table slot pointer, gathered for a whole batch of slots.
+const SLOT_FIELD: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: 8,
+}];
 
 /// CLoopHistory primary vtable; a729 RTTI identity and old derive_country_row_result vtable check.
 pub const VTABLE_RVA: usize = 0x029b_be58;
@@ -57,24 +64,59 @@ fn walk_inner(
 ) -> Result<(usize, u32), &'static str> {
     let mut len = 0;
     let mut unread_rows = 0_u32;
+    // The region-indexed history table is a contiguous pointer vector. One
+    // guarded round per batch replaces one read per region slot; each slot is
+    // still decoded in order, and the first unreadable slot keeps its position.
+    const BATCH: usize = 64;
+    let mut slots = [0_usize; BATCH];
+    let mut slot_bytes = [0_u8; BATCH * 8];
     cstrategic_air::visit(memory, base, game_state, |root| {
         let histories = array(memory, root.address, cstrategic_air::HISTORY_TABLE, 8)?;
-        for region in 0..histories.count {
-            let slot = histories
-                .element(region, 8)
-                .ok_or("air history region address overflow")?;
-            let history = pointer(memory, slot, 0)?;
-            if history == 0 {
-                continue;
+        let mut first = 0;
+        while first < histories.count {
+            let count = ((histories.count - first) as usize).min(BATCH);
+            let mut overflow = None;
+            for (index, slot) in slots[..count].iter_mut().enumerate() {
+                match histories.element(first + index as u32, 8) {
+                    Some(element) => *slot = element,
+                    None => {
+                        overflow = Some(index);
+                        break;
+                    }
+                }
             }
-            if len == output.len() {
-                unread_rows = unread_rows
-                    .checked_add(1)
-                    .ok_or("air history row count overflow")?;
-                continue;
+            let staged = overflow.unwrap_or(count);
+            let copied = memory.copy_records(
+                &slots[..staged],
+                &SLOT_FIELD,
+                8,
+                &mut slot_bytes[..staged * 8],
+            );
+            for index in 0..count {
+                let region = first + index as u32;
+                if overflow == Some(index) {
+                    return Err("air history region address overflow");
+                }
+                if index >= copied {
+                    return Err("air history field unreadable or address overflow");
+                }
+                let history = usize::try_from(u64::from_le_bytes(
+                    slot_bytes[index * 8..index * 8 + 8].try_into().unwrap(),
+                ))
+                .map_err(|_| "air history pointer outside address space")?;
+                if history == 0 {
+                    continue;
+                }
+                if len == output.len() {
+                    unread_rows = unread_rows
+                        .checked_add(1)
+                        .ok_or("air history row count overflow")?;
+                    continue;
+                }
+                output[len] = read_current(memory, base, history, root.country, region)?;
+                len += 1;
             }
-            output[len] = read_current(memory, base, history, root.country, region)?;
-            len += 1;
+            first += count as u32;
         }
         Ok(())
     })?;
@@ -448,6 +490,23 @@ mod tests {
             };
             assert_eq!(row.channels[ordinal], expected);
         }
+    }
+
+    /// The region-indexed slots are gathered per batch. An unreadable slot in
+    /// the middle of that batch must keep its own reason and stop the walk
+    /// there, rather than skipping to the live slot staged after it.
+    #[test]
+    fn a_mid_batch_history_slot_fault_keeps_its_reason_and_stops_the_walk() {
+        let mut f = Fixture::new();
+        f.0.remove(&(0x41000 + 10 * 8 + 3));
+        let mut output = [Row::default(); 2];
+        assert_eq!(
+            walk(&f, BASE, GAME, &mut output),
+            Outcome::Unavailable {
+                reason: "air history field unreadable or address overflow"
+            }
+        );
+        assert_eq!(output[0], Row::default());
     }
 
     #[test]

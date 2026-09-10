@@ -50,6 +50,10 @@ pub const STARTED: usize = 0x1bc;
 /// CProject +0x1bd completed flag u8; archived lifecycle walker accepts only 0 or 1.
 pub const COMPLETED: usize = 0x1bd;
 
+/// A batch's identity gather and its state-machine gather are both checked for
+/// the whole batch before any record is decoded, so this size is part of the
+/// walker's error precedence, not a free tuning knob: a wider batch would let a
+/// later record's copy fault outrank an earlier record's validation failure.
 const BATCH: usize = 16;
 const HEADER_LEN: usize = HISTORY_COUNT + 4;
 const RECORD_SIZE: usize = HEADER_LEN + 2;

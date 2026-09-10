@@ -48,7 +48,7 @@ pub fn walk(
         let definition_vtable = base
             .checked_add(cequipment_upgrade::VTABLE_RVA)
             .ok_or("upgrade definition module address overflow")?;
-        const BATCH: usize = 32;
+        const BATCH: usize = 64;
         const HEADERS: [RecordField; 1] = [RecordField {
             source_offset: cequipment_variant::UPGRADES,
             destination_offset: 0,
