@@ -1,18 +1,282 @@
-//! Peace conference object fields retained from the old D97 observation path.
+//! CPeaceConference identity and turn state from the game's conference roster.
 //!
-//! The descriptive module name is not an RTTI class-name claim. The old reader
-//! resolved the GUI's reference through the shared reference resolver and checked
-//! both reference words against this object. It did not prove an hourly walk of
-//! all conferences. Completion semantics and the object's writers need reassessment
-//! before a state walker is added; the old transport reduced the raw word to bool.
-//!
-//! Source: archive tag `archive/pre-rewrite-2026-09-09`,
-//! `extractor/native/lanes/design_catalog_context_live/src/a40_peace_evidence.rs`,
-//! lines 127-130 and 818-863. Evidence capture lengths were not object sizes.
+//! BAF880 appends native objects to CGameState+4E0; BAFB50 visits every
+//! pointer and BAFB00 advances the first conference. Reading this roster needs
+//! neither the old window-refresh hook nor an engine reference-resolver call.
+//! Participants, bids, claims and settlement actions are not represented here.
 
-/// Peace conference +0x08, type/id u32 reference pair; old capture_conference_refresh back-joined it to the GUI handle.
+use crate::{Memory, cgame_state, cpdx_array::Array, read, walk::Outcome};
+
+/// CPeaceConference primary vtable; E21DD0 installs VA14293A818 at instruction E21E09.
+pub const VTABLE_RVA: usize = 0x0293_a818;
+/// CPeaceConference +0x08, native type/id u32 pair; E21DD0 initializes it and BAF880 registers the object.
 pub const REFERENCE: usize = 0x08;
-/// Peace conference +0xD8, raw i32 turn; read_i32 in old capture_conference_refresh confirms the reader width.
+/// CPeaceConference +0xD8 i32 turn; E3C2B0 increments it, E34E60 rebuilds it from saved bidding history.
 pub const CURRENT_TURN: usize = 0xd8;
-/// Peace conference +0x170, raw 64-bit completion-related storage; old capture_conference_refresh read usize then tested nonzero, not a proven bool layout.
-pub const COMPLETION_STORAGE: usize = 0x170;
+/// CPeaceConference +0xDD finalized byte; E30E30 sets it and BAFB50 removes flagged objects from the roster.
+pub const FINALIZED: usize = 0xdd;
+/// CPeaceConference +0x170 participant pointer; E3A940 assigns the sole scored winner, E3DED0 saves its reference. This is not completion storage.
+pub const SOLE_SCORED_WINNER: usize = 0x170;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    /// Full native reference, low u32 type and high u32 id.
+    pub id: u64,
+    /// Position in the native roster. BAFB00 processes ordinal zero first.
+    pub ordinal: u32,
+    pub current_turn: i32,
+    /// Native byte, preserved without conversion to bool.
+    pub finalized: u8,
+}
+
+/// Copies resident conferences, including any queued behind the first one, into
+/// caller-owned rows. A readable zero-length roster is empty; an unreadable or
+/// unauthenticated nonzero entry is unavailable. No UI state or pointers enter
+/// the rows. Capacity stops the walk and reports every remaining roster entry.
+pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
+    let result = (|| {
+        if base == 0 || game_state == 0 {
+            return Err("peace conference module or game state is null");
+        }
+        let expected_vtable = base
+            .checked_add(VTABLE_RVA)
+            .ok_or("peace conference module address overflow")?;
+        // BAF880 passes container+8 to the ordinary CPdxArray append helper
+        // 120090, which reads signed capacity+8/count+C and copies qword slots.
+        let header = game_state
+            .checked_add(cgame_state::PEACE_CONFERENCES_DATA)
+            .ok_or("peace conference roster address overflow")?;
+        let roster = Array::read(memory, header, 8)
+            .ok_or("peace conference roster unreadable or invalid")?;
+        let len = output.len().min(roster.count as usize);
+        for (index, slot) in output[..len].iter_mut().enumerate() {
+            let address = roster
+                .element(index as u32, 8)
+                .ok_or("peace conference roster address overflow")?;
+            let pointer = read::<u64>(memory, address)
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|&value| value != 0)
+                .ok_or("peace conference pointer unreadable or null")?;
+            let at = |offset| {
+                pointer
+                    .checked_add(offset)
+                    .ok_or("peace conference object address overflow")
+            };
+            // Vtable and handle are adjacent. Authenticate before reading
+            // non-header fields; no unrelated object bytes are copied.
+            let identity =
+                read::<[u8; 16]>(memory, pointer).ok_or("peace conference identity unreadable")?;
+            if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected_vtable as u64 {
+                return Err("peace conference vtable mismatch");
+            }
+            let id = u64::from_le_bytes(identity[REFERENCE..].try_into().unwrap());
+            if id == 0 {
+                return Err("non-null peace conference has null handle");
+            }
+            let mut turn = [0; 4];
+            let mut finalized = [0; 1];
+            if memory.copy_scattered(
+                [at(CURRENT_TURN)?, at(FINALIZED)?],
+                &mut [&mut turn, &mut finalized],
+            ) != 2
+            {
+                return Err("peace conference turn or finalized byte unreadable");
+            }
+            *slot = Row {
+                id,
+                ordinal: index as u32,
+                current_turn: i32::from_le_bytes(turn),
+                finalized: finalized[0],
+            };
+        }
+        // An in-place sort is bounded by caller capacity; native ordering is
+        // retained separately in ordinal and duplicate handles cannot alias rows.
+        output[..len].sort_unstable_by_key(|row| row.id);
+        if output[..len]
+            .windows(2)
+            .any(|pair| pair[0].id == pair[1].id)
+        {
+            return Err("duplicate peace conference handle");
+        }
+        Ok(if len == roster.count as usize {
+            Outcome::Rows { len }
+        } else {
+            Outcome::Truncated {
+                len,
+                unread_rows: roster.count - len as u32,
+            }
+        })
+    })();
+    result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+
+    const BASE: usize = 0x140000000;
+    const GAME: usize = 0x1000;
+    const ARRAY: usize = 0x1600;
+    const FIRST: usize = 0x1700;
+    const SECOND: usize = 0x1900;
+
+    fn put<const N: usize>(bytes: &mut [u8], address: usize, value: [u8; N]) {
+        bytes[address - GAME..address - GAME + N].copy_from_slice(&value);
+    }
+
+    fn fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 0xc00];
+        put(
+            &mut bytes,
+            GAME + cgame_state::PEACE_CONFERENCES_DATA,
+            (ARRAY as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            GAME + cgame_state::PEACE_CONFERENCES_DATA + 8,
+            2_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            GAME + cgame_state::PEACE_CONFERENCES_COUNT,
+            2_u32.to_le_bytes(),
+        );
+        for (ordinal, pointer, id, turn, finalized) in [
+            (0, FIRST, u64::MAX - 1, i32::MIN, 0x80_u8),
+            (1, SECOND, 1_u64, i32::MAX, 1_u8),
+        ] {
+            put(
+                &mut bytes,
+                ARRAY + ordinal * 8,
+                (pointer as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                pointer,
+                ((BASE + VTABLE_RVA) as u64).to_le_bytes(),
+            );
+            put(&mut bytes, pointer + REFERENCE, id.to_le_bytes());
+            put(&mut bytes, pointer + CURRENT_TURN, turn.to_le_bytes());
+            put(&mut bytes, pointer + FINALIZED, [finalized]);
+        }
+        bytes
+    }
+
+    fn capture(bytes: &[u8], output: &mut [Row]) -> Outcome {
+        walk(&SliceMemory { base: GAME, bytes }, BASE, GAME, output)
+    }
+
+    #[test]
+    fn native_ids_turns_finalized_bytes_and_roster_order_survive() {
+        let bytes = fixture();
+        let mut output = [Row::default(); 2];
+        assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 2 });
+        assert_eq!(
+            output[0],
+            Row {
+                id: 1,
+                ordinal: 1,
+                current_turn: i32::MAX,
+                finalized: 1
+            }
+        );
+        assert_eq!(
+            output[1],
+            Row {
+                id: u64::MAX - 1,
+                ordinal: 0,
+                current_turn: i32::MIN,
+                finalized: 0x80
+            }
+        );
+    }
+
+    #[test]
+    fn capacity_reports_unread_conferences_without_touching_their_fields() {
+        let bytes = fixture();
+        // The second object is inaccessible, but lies beyond caller capacity.
+        let bytes = &bytes[..SECOND - GAME];
+        let mut output = [Row::default(); 1];
+        assert_eq!(
+            capture(bytes, &mut output),
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 1
+            }
+        );
+        assert_eq!(output[0].ordinal, 0);
+        assert_eq!(
+            capture(bytes, &mut []),
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 2
+            }
+        );
+        assert!(matches!(
+            capture(bytes, &mut [Row::default(); 2]),
+            Outcome::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn a_proven_empty_roster_is_distinct_from_an_invalid_header() {
+        let mut bytes = fixture();
+        put(
+            &mut bytes,
+            GAME + cgame_state::PEACE_CONFERENCES_COUNT,
+            0_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            GAME + cgame_state::PEACE_CONFERENCES_DATA,
+            0_u64.to_le_bytes(),
+        );
+        assert_eq!(capture(&bytes, &mut []), Outcome::Rows { len: 0 });
+        for count in [1_u32, 3, u32::MAX] {
+            put(
+                &mut bytes,
+                GAME + cgame_state::PEACE_CONFERENCES_COUNT,
+                count.to_le_bytes(),
+            );
+            assert!(matches!(
+                capture(&bytes, &mut []),
+                Outcome::Unavailable { .. }
+            ));
+        }
+        assert!(matches!(
+            walk(
+                &SliceMemory {
+                    base: GAME,
+                    bytes: &bytes
+                },
+                BASE,
+                0,
+                &mut []
+            ),
+            Outcome::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn bad_identity_duplicate_keys_and_late_read_faults_do_not_publish_a_prefix() {
+        for (address, value) in [
+            (ARRAY + 8, 0_u64),
+            (SECOND, 0_u64),
+            (SECOND + REFERENCE, 0_u64),
+            (SECOND + REFERENCE, u64::MAX - 1),
+        ] {
+            let mut bytes = fixture();
+            put(&mut bytes, address, value.to_le_bytes());
+            let outcome = capture(&bytes, &mut [Row::default(); 2]);
+            assert!(matches!(outcome, Outcome::Unavailable { .. }));
+            assert_eq!(outcome.len(), 0);
+        }
+        let bytes = fixture();
+        let bytes = &bytes[..SECOND + FINALIZED - GAME];
+        assert!(matches!(
+            capture(bytes, &mut [Row::default(); 2]),
+            Outcome::Unavailable { .. }
+        ));
+    }
+}

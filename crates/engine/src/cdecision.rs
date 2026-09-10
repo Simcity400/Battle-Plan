@@ -2,8 +2,63 @@
 //! Effect ownership follows the authored-definition argument and its +0x120 token read;
 //! the old untyped hook ABI does not independently establish the methods' RTTI owner.
 
+use crate::{Memory, msvc_string, read};
+
 /// CDecision MSVC string token; offsets.rs:292 and direct_frd_transitions_live/a729_hook.rs:41,1374 agree on the read.
 pub const TOKEN: usize = 0x120;
+pub const VTABLE_RVA: usize = 0x027d_4f00;
+
+/// Exact token location. The caller copies bytes into its preallocated arena.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Token {
+    pub address: usize,
+    pub len: usize,
+}
+
+pub(crate) fn token(
+    memory: &impl Memory,
+    base: usize,
+    definition: usize,
+) -> Result<Token, &'static str> {
+    if definition == 0 {
+        return Err("decision definition is null");
+    }
+    let expected = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("module address overflow")?;
+    if read::<u64>(memory, definition) != Some(expected as u64) {
+        return Err("decision definition vtable mismatch");
+    }
+    let address = definition
+        .checked_add(TOKEN)
+        .ok_or("decision token address overflow")?;
+    let header = read::<[u8; 32]>(memory, address).ok_or("decision token header unreadable")?;
+    let len = u64::from_le_bytes(header[16..24].try_into().unwrap());
+    let capacity = u64::from_le_bytes(header[24..32].try_into().unwrap());
+    if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
+        return Err("decision token header invalid");
+    }
+    let len = usize::try_from(len).map_err(|_| "decision token length overflow")?;
+    let source = if capacity == msvc_string::INLINE_CAPACITY {
+        address
+    } else {
+        usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
+            .map_err(|_| "decision token pointer overflow")?
+    };
+    if source == 0 {
+        return Err("decision token pointer is null");
+    }
+    let terminator = source
+        .checked_add(len)
+        .ok_or("decision token extent overflow")?;
+    if read::<u8>(memory, terminator) != Some(0) {
+        return Err("decision token terminator unreadable or invalid");
+    }
+    Ok(Token {
+        address: source,
+        len,
+    })
+}
 
 /// Authored-decision cancel-effect entry FUN14071b350; direct_frd_transitions_live/lib.rs:62 and hook_decision_cancel_effect observe invocation only.
 pub const CANCEL_EFFECT_RVA: usize = 0x0071_b350;

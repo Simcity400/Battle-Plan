@@ -2,7 +2,7 @@
 
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{self, Write},
     rc::Rc,
 };
@@ -11,15 +11,17 @@ use crate::{
     BranchId, Hour, KEYFRAME_INTERVAL,
     branches::{BranchReason, BranchStart, BranchTracker, Gap, Parentage},
     container::{Replay, SeekResult},
-    frame::{DecodedFrame, FrameEncoder, Metrics, TableUpdate, TableView},
+    frame::{DecodedFrame, FrameDecoder, FrameEncoder, Metrics, TableUpdate, TableView},
     identity::{Identity, Roster, SessionStart, Verification},
     rows::{
-        CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow, FactionMemberRow,
-        FactionRow, ProvinceRow, Row, StateRow, TableId, WarRelationRow,
+        AirWingRow, ArmyOrderRow, CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow,
+        FactionMemberRow, FactionRow, FleetRow, HumanControllerRow, LandCombatRow,
+        NavalCombatParticipantRow, NavalCombatRow, PlayerRow, ProvinceRow, RowCodec, RowRef,
+        ShipRow, StateRow, TableId, TableRows, TableSchema, TaskForceRow, WarRelationRow, tables,
     },
     spool::{
-        Record, Recovery, SegmentBackend, SegmentSink, SegmentedSpool, encode_record,
-        recover_prefix,
+        ControlRecord, Record, Recovery, SegmentBackend, SegmentSink, SegmentedSpool,
+        encode_record, recover_prefix,
     },
 };
 
@@ -32,10 +34,124 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const RELATION_TABLES: [TableId; 3] = [
+const DOMAIN_TABLES: [TableId; 117] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
+    TableId::Players,
+    TableId::HumanControllers,
+    TableId::LandCombats,
+    TableId::Fleets,
+    TableId::TaskForces,
+    TableId::Ships,
+    TableId::NavalCombats,
+    TableId::NavalCombatParticipants,
+    TableId::AirWings,
+    TableId::ArmyOrders,
+    TableId::Focus,
+    TableId::CompletedFocuses,
+    TableId::ResearchTechnologies,
+    TableId::ResearchSlots,
+    TableId::TechnologyDefinitions,
+    TableId::Politics,
+    TableId::PoliticalParties,
+    TableId::ActiveIdeas,
+    TableId::DecisionCounts,
+    TableId::Decisions,
+    TableId::DynamicModifiers,
+    TableId::PreferredTactics,
+    TableId::PreferredTacticOperands,
+    TableId::TechSharingGroups,
+    TableId::TechSharingMembers,
+    TableId::PowerBalances,
+    TableId::PowerBalanceMembers,
+    TableId::PowerBalanceRanges,
+    TableId::PowerBalanceOverrides,
+    TableId::ProductionLines,
+    TableId::Stockpiles,
+    TableId::DivisionEquipment,
+    TableId::VariantDefinitions,
+    TableId::VariantModules,
+    TableId::VariantStats,
+    TableId::VariantUpgrades,
+    TableId::ArmyUpgradeGroups,
+    TableId::ArmyUpgradeRequests,
+    TableId::ArmyUpgradeDeliveries,
+    TableId::ArmyUpgradeProduced,
+    TableId::CountryFuel,
+    TableId::ResourceDefinitions,
+    TableId::CountryResources,
+    TableId::ResourceExchanges,
+    TableId::PurchaseContracts,
+    TableId::ProvinceSupply,
+    TableId::HubMotorization,
+    TableId::DisruptedSupply,
+    TableId::ForeignHomebases,
+    TableId::CountryExperience,
+    TableId::StateBuildings,
+    TableId::ProvinceBuildings,
+    TableId::StateBaseResources,
+    TableId::BuildingConstruction,
+    TableId::RailwayConstruction,
+    TableId::OccupationSettings,
+    TableId::StateOccupationLaws,
+    TableId::StateGarrisons,
+    TableId::StateAssignedManpower,
+    TableId::CountryOccupationReserveManpower,
+    TableId::StateResistance,
+    TableId::CountryCollaboration,
+    TableId::Characters,
+    TableId::CountryLeaderRoles,
+    TableId::AdvisorRoles,
+    TableId::UnitLeaders,
+    TableId::UnitLeaderTraits,
+    TableId::UnitLeaderTraitExperience,
+    TableId::ActiveAbilities,
+    TableId::Capitulation,
+    TableId::Subjects,
+    TableId::Autonomy,
+    TableId::IntelligenceAgencies,
+    TableId::OperativeMemberships,
+    TableId::Cryptology,
+    TableId::IntelNetworks,
+    TableId::ScriptFlags,
+    TableId::ScriptVariables,
+    TableId::Operations,
+    TableId::OperationAssignments,
+    TableId::WingEquipment,
+    TableId::AirBases,
+    TableId::WingCumulative,
+    TableId::AirRegionHistory,
+    TableId::AirRegionDamage,
+    TableId::AirAces,
+    TableId::AirStatistics,
+    TableId::SunkConvoys,
+    TableId::RailCooldowns,
+    TableId::RailEdges,
+    TableId::LandTheatres,
+    TableId::LandTheatreGroups,
+    TableId::LandTheatreMembers,
+    TableId::AirTheatres,
+    TableId::AirTheatreGroups,
+    TableId::AirTheatreMembers,
+    TableId::NavalResults,
+    TableId::NavalResultMembers,
+    TableId::NavalResultCountries,
+    TableId::SunkShips,
+    TableId::ProjectPrograms,
+    TableId::Projects,
+    TableId::ProjectHistory,
+    TableId::ProjectBreakthroughs,
+    TableId::Nukes,
+    TableId::RaidCountries,
+    TableId::Raids,
+    TableId::PeaceConferences,
+    TableId::WeatherLimits,
+    TableId::WeatherRegions,
+    TableId::WeatherProvinces,
+    TableId::OperationTokens,
+    TableId::LexicalTokens,
+    TableId::NavalSupremacy,
 ];
 const RAW_FLAG_CASES: [u8; 3] = [0, 2, 255];
 const FACTION_A: u64 = (0x8000_0033_u64 << 32) | 75;
@@ -138,87 +254,245 @@ fn random(index: usize, salt: u64) -> u64 {
     value ^ (value >> 31)
 }
 
+/// The new map domains share fault scheduling, but each source keeps its native
+/// key shape, scalar widths and ordered arrays independent of the codec.
+fn push_map<S: TableSchema>(tables: &mut [TableView], row: S::Row) {
+    let TableView::Complete(rows) = &mut tables[S::ID.index()] else {
+        unreachable!()
+    };
+    let rows = rows.rows_mut::<S>().unwrap();
+    rows.push(row);
+    rows.sort_unstable_by_key(RowCodec::key);
+}
+
+fn add_map_rows(index: usize, tables: &mut [TableView]) {
+    for ordinal in 0..3 {
+        if ordinal == 2 && index % 17 >= 5 {
+            continue;
+        }
+        let tick = index + ordinal;
+        let id = [0, 0x8000_0041_0000_0035, u64::MAX][ordinal];
+        let country = [0, 7, u32::MAX][(tick / 3) % 3];
+        let scalar = |offset: usize| match (tick + offset) % 31 {
+            0 => i64::MIN,
+            1 => i64::MAX,
+            value => (1_i64 << 53) + value as i64,
+        };
+        let handles = |offset: usize| match (tick + offset) % 4 {
+            0 => Vec::new(),
+            1 => vec![0, u64::MAX, DIVISION_A],
+            2 => vec![DIVISION_A, 0, u64::MAX],
+            _ => vec![u64::MAX, u64::MAX],
+        };
+        let geometry = |offset: usize| match (tick + offset) % 4 {
+            0 => Vec::new(),
+            1 => vec![0, u32::MAX, 7],
+            2 => vec![7, u32::MAX, 0],
+            _ => vec![u32::MAX, u32::MAX],
+        };
+
+        push_map::<tables::Players>(
+            tables,
+            PlayerRow {
+                id: [0, i32::MAX, i32::MIN][ordinal],
+                country,
+                flags: RAW_FLAG_CASES[tick % RAW_FLAG_CASES.len()],
+                user: vec![0xff, 0, (tick % 251) as u8],
+                name: match (tick / 5) % 3 {
+                    0 => Vec::new(),
+                    1 => b"Duplicate name".to_vec(),
+                    _ => vec![0, 0xff, (tick % 251) as u8],
+                },
+            },
+        );
+        push_map::<tables::HumanControllers>(
+            tables,
+            HumanControllerRow {
+                country: [0, 7, u32::MAX][ordinal],
+                count: [i8::MIN, -1, 0, i8::MAX][tick % 4],
+            },
+        );
+        push_map::<tables::LandCombats>(
+            tables,
+            LandCombatRow {
+                id,
+                province: country,
+                duration: [i32::MIN, i32::MAX, tick as i32][tick % 3],
+                day: [i32::MIN, -1, i32::MAX][(tick + 1) % 3],
+                attackers: handles(0),
+                defenders: handles(1),
+            },
+        );
+        push_map::<tables::Fleets>(
+            tables,
+            FleetRow {
+                id,
+                owner: country,
+                home_base: [0, u32::MAX, tick as u32][tick % 3],
+            },
+        );
+        push_map::<tables::TaskForces>(
+            tables,
+            TaskForceRow {
+                id,
+                fleet: [0, u64::MAX, FACTION_A][tick % 3],
+                roster_owner: country,
+                logical_owner: [0, 2, u32::MAX][tick % 3],
+                expeditionary_owner: [0, 19, u32::MAX][(tick + 1) % 3],
+                province: tick as u32,
+                mission: [0, u32::MAX, 7][tick % 3],
+            },
+        );
+        push_map::<tables::Ships>(
+            tables,
+            ShipRow {
+                id,
+                task_force: [0, u64::MAX, FACTION_A][tick % 3],
+                strength: scalar(0),
+                organisation: scalar(1),
+                experience: scalar(2),
+                category: [0, u32::MAX, tick as u32][tick % 3],
+                sunk_convoys: tick as i32,
+                class_id: [i32::MIN, 0, i32::MAX][tick % 3],
+            },
+        );
+        push_map::<tables::NavalCombats>(
+            tables,
+            NavalCombatRow {
+                id,
+                province: country,
+                attacker_positioning: scalar(0),
+                defender_positioning: scalar(1),
+                attacker_anti_air: scalar(2),
+                defender_anti_air: scalar(3),
+            },
+        );
+        push_map::<tables::NavalCombatParticipants>(
+            tables,
+            NavalCombatParticipantRow {
+                combat: if ordinal == 2 {
+                    u64::MAX
+                } else {
+                    0x8000_0041_0000_0061
+                },
+                side: (ordinal % 2) as u8,
+                battle_slot: u32::MAX,
+                ship: [0, u64::MAX, DIVISION_A][tick % 3],
+                owner: country,
+                state: [0, u32::MAX, tick as u32][tick % 3],
+            },
+        );
+        push_map::<tables::AirWings>(
+            tables,
+            AirWingRow {
+                id,
+                owner: country,
+                air_base: [0, u64::MAX, FACTION_A][tick % 3],
+                base_override: [u64::MAX, FACTION_A, 0][tick % 3],
+                country_override: [i32::MIN, -1, i32::MAX][tick % 3],
+                planes: [i32::MIN, 0, i32::MAX][tick % 3],
+                effective_planes: [i32::MAX, i32::MIN, 0][tick % 3],
+                mission_mask: [0, u32::MAX, 0x8000_0001][tick % 3],
+                mission_region: [None, Some(0), Some(u32::MAX)][tick % 3],
+            },
+        );
+        push_map::<tables::ArmyOrders>(
+            tables,
+            ArmyOrderRow {
+                owner_group: if ordinal == 2 {
+                    u64::MAX
+                } else {
+                    0x8000_0041_0000_0051
+                },
+                instance: [0, 7, u32::MAX][ordinal],
+                country,
+                order_type: [i32::MIN, 0, i32::MAX][tick % 3],
+                active: RAW_FLAG_CASES[tick % RAW_FLAG_CASES.len()],
+                paradrop_target: [0, u32::MAX, tick as u32][tick % 3],
+                path: geometry(0),
+                target_states: geometry(1),
+            },
+        );
+    }
+}
+
 /// Independent direct reads: no previous rows, field masks, or format reader participate.
 fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFrame {
     let optional_scalar = |offset: usize| {
         OPTIONAL_SCALAR_CASES[OPTIONAL_SCALAR_ORDER[(index + offset) % OPTIONAL_SCALAR_ORDER.len()]]
     };
-    let country = |id, canonical_slot| {
-        Row::Country(CountryRow {
-            id,
-            canonical_slot,
-            tag: if id == 7 {
-                b"GER".to_vec()
-            } else {
-                b"TAG".to_vec()
-            },
-            name: vec![0xff, id as u8, 0, b'N'],
-            political_power_raw: optional_scalar(0),
-            command_power_raw: -((index / 7) as i64) * 100_000,
-            stability_raw: 78_901,
-            war_support_raw: 54_321,
-            convoys_raw: optional_scalar(5),
-        })
+    let country = |id, canonical_slot| CountryRow {
+        id,
+        canonical_slot,
+        tag: if id == 7 {
+            b"GER".to_vec()
+        } else {
+            b"TAG".to_vec()
+        },
+        name: vec![0xff, id as u8, 0, b'N'],
+        political_power_raw: optional_scalar(0),
+        command_power_raw: -((index / 7) as i64) * 100_000,
+        stability_raw: 78_901,
+        war_support_raw: 54_321,
+        convoys_raw: optional_scalar(5),
     };
     let mut countries = vec![country(7, 1), country(19, 3)];
     let mut links = vec![
-        Row::CountryLink(CountryLinkRow {
+        CountryLinkRow {
             id: 2,
             canonical_slot: 1,
-        }),
-        Row::CountryLink(CountryLinkRow {
+        },
+        CountryLinkRow {
             id: 7,
             canonical_slot: 1,
-        }),
-        Row::CountryLink(CountryLinkRow {
+        },
+        CountryLinkRow {
             id: 19,
             canonical_slot: 3,
-        }),
+        },
     ];
     if index % 13 < 7 {
         countries.push(country(29, 5));
-        links.push(Row::CountryLink(CountryLinkRow {
+        links.push(CountryLinkRow {
             id: 29,
             canonical_slot: 5,
-        }));
+        });
     }
     let mut provinces: Vec<_> = (1..=8)
-        .map(|id| {
-            Row::Province(ProvinceRow {
-                id,
-                state: id / 3,
-                owner: 2,
-                controller: if id == 1 {
-                    if index.is_multiple_of(2) { 7 } else { 2 }
-                } else {
-                    [0, 2, 19][(index / 9 + id as usize) % 3]
-                },
-            })
+        .map(|id| ProvinceRow {
+            id,
+            state: id / 3,
+            owner: 2,
+            controller: if id == 1 {
+                if index.is_multiple_of(2) { 7 } else { 2 }
+            } else {
+                [0, 2, 19][(index / 9 + id as usize) % 3]
+            },
+            victory_points: [i32::MIN, -1, 0, i32::MAX][(index + id as usize) % 4],
         })
         .collect();
     if index % 17 < 5 {
-        provinces.push(Row::Province(ProvinceRow {
+        provinces.push(ProvinceRow {
             id: 9,
             state: u32::MAX,
             owner: 0,
             controller: 0,
-        }));
+            victory_points: i32::MAX,
+        });
     }
     let mut states: Vec<_> = (0..=2)
-        .map(|id| {
-            Row::State(StateRow {
-                id,
-                owner: [2, 19][(index / 37 + id as usize) % 2],
-                controller: [0, 7, 19][(index / 5 + id as usize) % 3],
-            })
+        .map(|id| StateRow {
+            id,
+            owner: [2, 19][(index / 37 + id as usize) % 2],
+            controller: [0, 7, 19][(index / 5 + id as usize) % 3],
         })
         .collect();
     if index % 17 < 5 {
-        states.push(Row::State(StateRow {
+        states.push(StateRow {
             id: u32::MAX,
             owner: 0,
             controller: 0,
-        }));
+        });
     }
     let native_value = |tick: usize| match tick % 31 {
         0 => i64::MIN,
@@ -226,7 +500,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         _ => (1_i64 << 42) - tick as i64,
     };
     let division = |id, ordinal: usize| {
-        Row::Division(DivisionRow {
+        DivisionRow {
             id,
             roster_owner: [2, 19][(index / 101 + ordinal) % 2],
             logical_owner: [7, 19][(index / 79 + ordinal) % 2],
@@ -236,7 +510,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             // Alternating ticks isolate the HP and organisation field masks.
             hit_points: native_value(index / 2),
             organisation: native_value(index.div_ceil(2)),
-        })
+        }
     };
     let mut divisions = vec![division(DIVISION_A, 0), division(DIVISION_B, 1)];
     if index % 17 < 5 {
@@ -244,19 +518,17 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         divisions.insert(0, division(DIVISION_EDGE_KEYS[0], 2));
         divisions.push(division(DIVISION_EDGE_KEYS[1], 3));
     }
-    let relation = |first_country, second_country, offset: usize| {
-        Row::WarRelation(WarRelationRow {
-            first_country,
-            second_country,
-            start_hour: [i32::MIN, hour, i32::MAX][(index / 7 + offset) % 3],
-            end_hour: [i32::MAX, 0, i32::MIN][(index / 11 + offset) % 3],
-            cancel: RAW_FLAG_CASES[(index + offset) % RAW_FLAG_CASES.len()],
-            first_casualties: native_value(index + offset),
-            second_casualties: native_value(index + offset + 1),
-            first_unknown_casualties: native_value(index + offset + 2),
-            second_unknown_casualties: native_value(index + offset + 3),
-            first_was_instigator: RAW_FLAG_CASES[(index / 3 + offset) % RAW_FLAG_CASES.len()],
-        })
+    let relation = |first_country, second_country, offset: usize| WarRelationRow {
+        first_country,
+        second_country,
+        start_hour: [i32::MIN, hour, i32::MAX][(index / 7 + offset) % 3],
+        end_hour: [i32::MAX, 0, i32::MIN][(index / 11 + offset) % 3],
+        cancel: RAW_FLAG_CASES[(index + offset) % RAW_FLAG_CASES.len()],
+        first_casualties: native_value(index + offset),
+        second_casualties: native_value(index + offset + 1),
+        first_unknown_casualties: native_value(index + offset + 2),
+        second_unknown_casualties: native_value(index + offset + 3),
+        first_was_instigator: RAW_FLAG_CASES[(index / 3 + offset) % RAW_FLAG_CASES.len()],
     };
     // Direction is part of the key: both orders must remain separate rows.
     let mut relations = vec![relation(7, 19, 0), relation(19, 7, 1)];
@@ -265,84 +537,86 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         relations.push(relation(u32::MAX, 0, 3));
     }
     let mut factions = vec![
-        Row::Faction(FactionRow {
+        FactionRow {
             id: 0,
             name: b"Synthetic faction".to_vec(),
-        }),
-        Row::Faction(FactionRow {
+        },
+        FactionRow {
             id: FACTION_A,
             name: match (index / 11) % 3 {
                 0 => Vec::new(),
                 1 => vec![0xff, 0, b'F'],
                 _ => b"Renamed faction".to_vec(),
             },
-        }),
+        },
     ];
     if index % 17 < 5 {
-        factions.push(Row::Faction(FactionRow {
+        factions.push(FactionRow {
             id: u64::MAX,
             name: b"Temporary faction".to_vec(),
-        }));
+        });
     }
     let mut members = vec![
-        Row::FactionMember(FactionMemberRow {
+        FactionMemberRow {
             country: 7,
             faction: FACTION_A,
             ordinal: ((index / 3) % 2) as u32,
-        }),
-        Row::FactionMember(FactionMemberRow {
+        },
+        FactionMemberRow {
             country: 19,
             faction: FACTION_A,
             ordinal: (1 - (index / 3) % 2) as u32,
-        }),
+        },
     ];
     if index % 13 < 7 {
-        members.push(Row::FactionMember(FactionMemberRow {
+        members.push(FactionMemberRow {
             country: 29,
             faction: if index % 17 < 5 { u64::MAX } else { 0 },
             ordinal: 0,
-        }));
+        });
     }
-    let mut tables = [
-        TableView::Complete(vec![Row::Clock(ClockRow {
+    let initial_tables = [
+        TableView::Complete(TableRows::Clock(vec![ClockRow {
             hour,
             play_time: (1_u64 << 40) + index as u64,
             play_session_started_at: signal,
             seed: i32::MIN,
-        })]),
-        TableView::Complete(vec![Row::Campaign(CampaignRow {
+        }])),
+        TableView::Complete(TableRows::Campaign(vec![CampaignRow {
             id: CAMPAIGN.to_vec(),
-        })]),
-        TableView::Complete(countries),
-        TableView::Complete(links),
-        TableView::Complete(provinces),
-        TableView::Complete(states),
-        TableView::Complete(divisions),
-        TableView::Complete(relations),
-        TableView::Complete(factions),
-        TableView::Complete(members),
+        }])),
+        TableView::Complete(TableRows::Countries(countries)),
+        TableView::Complete(TableRows::CountryLinks(links)),
+        TableView::Complete(TableRows::Provinces(provinces)),
+        TableView::Complete(TableRows::States(states)),
+        TableView::Complete(TableRows::Divisions(divisions)),
+        TableView::Complete(TableRows::WarRelations(relations)),
+        TableView::Complete(TableRows::Factions(factions)),
+        TableView::Complete(TableRows::FactionMembers(members)),
     ];
-    for table in [
-        TableId::Countries,
-        TableId::CountryLinks,
-        TableId::Provinces,
-        TableId::States,
-        TableId::Divisions,
-        TableId::WarRelations,
-        TableId::Factions,
-        TableId::FactionMembers,
-    ] {
+    let mut tables =
+        std::array::from_fn(|index| TableView::Complete(TableRows::empty(TableId::ALL[index])));
+    for (destination, initial) in tables.iter_mut().zip(initial_tables) {
+        *destination = initial;
+    }
+    add_map_rows(index, &mut tables);
+    for table in TableId::ALL.into_iter().skip(20) {
+        tables[table.index()] =
+            TableView::Complete(crate::rows::sample_extended_table(table, index).unwrap());
+    }
+    for table in TableId::ALL.into_iter().skip(2) {
         let draw = random(index, 91 + table.index() as u64);
         let force_partial = matches!(index, 0 | 38 | 758 | 830)
-            && matches!(
-                table,
-                TableId::Countries
-                    | TableId::States
-                    | TableId::Divisions
-                    | TableId::WarRelations
-                    | TableId::Factions
-                    | TableId::FactionMembers
-            );
+            && (table.index() >= TableId::Players.index()
+                || matches!(
+                    table,
+                    TableId::Countries
+                        | TableId::States
+                        | TableId::Divisions
+                        | TableId::WarRelations
+                        | TableId::Factions
+                        | TableId::FactionMembers
+                ));
         if draw.is_multiple_of(47) || (index == 780 && table == TableId::Provinces) {
             tables[table.index()] = TableView::Unavailable {
                 reason: format!("synthetic pointer unavailable for {table:?} at {hour}"),
@@ -352,8 +626,12 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
                 unreachable!()
             };
             tables[table.index()] = TableView::Truncated {
-                rows: rows[..1].to_vec(),
-                missing: (rows.len() - 1) as u32,
+                rows: {
+                    let mut partial = rows.clone();
+                    partial.truncate(if table.key_bits() == 0 { 0 } else { 1 });
+                    partial
+                },
+                missing: (rows.len() - if table.key_bits() == 0 { 0 } else { 1 }) as u32,
             };
         }
     }
@@ -381,7 +659,8 @@ fn may_drop(index: usize) -> bool {
 }
 
 #[derive(Default)]
-struct RelationCoverage {
+struct DomainCoverage {
+    changed_fields: u64,
     changes: usize,
     insertions: usize,
     deletions: usize,
@@ -416,7 +695,7 @@ struct Coverage {
     division_edge_insertions: [bool; 2],
     division_edge_deletions: [bool; 2],
     country_optional_transitions: [[bool; 4]; 4],
-    relations: [RelationCoverage; RELATION_TABLES.len()],
+    domains: Vec<DomainCoverage>,
     war_field_changes: u64,
     war_flag_values: [[bool; RAW_FLAG_CASES.len()]; 2],
     war_casualty_extremes: [[bool; 2]; 4],
@@ -442,7 +721,12 @@ fn synthesize() -> Campaign {
     let mut missing = BTreeMap::new();
     let mut starts = Vec::new();
     let mut pending_gaps = Vec::new();
-    let mut coverage = Coverage::default();
+    let mut coverage = Coverage {
+        domains: (0..DOMAIN_TABLES.len())
+            .map(|_| DomainCoverage::default())
+            .collect(),
+        ..Coverage::default()
+    };
     let mut current_session = session(1);
     let mut hour = 10_000;
     let mut signal = 1_000;
@@ -455,10 +739,10 @@ fn synthesize() -> Campaign {
         if matches!(index, 0 | 1000 | 1500) {
             if index != 0 {
                 spool
-                    .append(&Record::Detach {
+                    .append(&Record::Control(ControlRecord::Detach {
                         session: current_session.id,
                         last_hour: Some(hour),
-                    })
+                    }))
                     .unwrap();
                 spool.finish_segment().unwrap();
             }
@@ -532,7 +816,7 @@ fn synthesize() -> Campaign {
                 i64::from(hour) - i64::from(previous) >= i64::from(KEYFRAME_INTERVAL)
             });
         let keyframe = force || periodic;
-        let frame = encoder.encode(&source, force).unwrap();
+        let frame = encoder.encode(source.clone(), force).unwrap();
         assert_eq!(
             frame.keyframe, keyframe,
             "keyframe cadence at source {index}"
@@ -543,12 +827,12 @@ fn synthesize() -> Campaign {
         coverage.keyframes += usize::from(keyframe);
         coverage.periodic_keyframes += usize::from(periodic);
         for (table, update) in TableId::ALL.into_iter().zip(&frame.tables) {
-            let relation_index = RELATION_TABLES.iter().position(|id| *id == table);
+            let domain_index = DOMAIN_TABLES.iter().position(|id| *id == table);
             if table == TableId::WarRelations
                 && let TableView::Complete(rows) = &source.tables[table.index()]
             {
                 for row in rows {
-                    let Row::WarRelation(row) = row else {
+                    let RowRef::WarRelation(row) = row else {
                         unreachable!()
                     };
                     for (field, value) in [row.cancel, row.first_was_instigator]
@@ -585,15 +869,16 @@ fn synthesize() -> Campaign {
                         .iter()
                         .filter(|row| row.mask == table.full_mask())
                         .count();
-                    if let Some(relation_index) = relation_index {
+                    if let Some(domain_index) = domain_index {
                         let previous: &DecodedFrame = &expected[&(observed.branch, *baseline)];
                         let TableView::Complete(before) = &previous.tables[table.index()] else {
                             panic!("relation delta must have a complete direct source baseline");
                         };
-                        coverage.relations[relation_index].deletions += deleted.len();
+                        coverage.domains[domain_index].deletions += deleted.len();
                         for row in changed {
                             if before.iter().any(|old| old.key() == row.key) {
-                                coverage.relations[relation_index].changes += 1;
+                                coverage.domains[domain_index].changes += 1;
+                                coverage.domains[domain_index].changed_fields |= row.mask;
                                 if table == TableId::WarRelations {
                                     coverage.war_field_changes |= row.mask;
                                 }
@@ -604,7 +889,7 @@ fn synthesize() -> Campaign {
                                         usize::from(row.mask & 1 != 0);
                                 }
                             } else {
-                                coverage.relations[relation_index].insertions += 1;
+                                coverage.domains[domain_index].insertions += 1;
                             }
                         }
                     }
@@ -619,10 +904,11 @@ fn synthesize() -> Campaign {
                             .filter(|row| row.mask == table.full_mask())
                             .count();
                         for (edge, key) in DIVISION_EDGE_KEYS.into_iter().enumerate() {
-                            coverage.division_edge_insertions[edge] |= changed
-                                .iter()
-                                .any(|row| row.key == key && row.mask == table.full_mask());
-                            coverage.division_edge_deletions[edge] |= deleted.contains(&key);
+                            coverage.division_edge_insertions[edge] |= changed.iter().any(|row| {
+                                row.key == u128::from(key) && row.mask == table.full_mask()
+                            });
+                            coverage.division_edge_deletions[edge] |=
+                                deleted.contains(&u128::from(key));
                         }
                     }
                     if table == TableId::Countries {
@@ -633,7 +919,8 @@ fn synthesize() -> Campaign {
                         ) else {
                             panic!("country delta must have complete direct source baselines");
                         };
-                        let (Row::Country(before), Row::Country(after)) = (&before[0], &after[0])
+                        let (Some(RowRef::Country(before)), Some(RowRef::Country(after))) =
+                            (before.first(), after.first())
                         else {
                             unreachable!()
                         };
@@ -656,8 +943,8 @@ fn synthesize() -> Campaign {
                 TableUpdate::Unchanged { .. } => coverage.unchanged_tables += 1,
                 TableUpdate::Unavailable { .. } => {
                     coverage.unavailable_tables += 1;
-                    if let Some(relation_index) = relation_index {
-                        coverage.relations[relation_index].unavailable += 1;
+                    if let Some(domain_index) = domain_index {
+                        coverage.domains[domain_index].unavailable += 1;
                     }
                     coverage.state_unavailable_tables += usize::from(table == TableId::States);
                     coverage.division_unavailable_tables +=
@@ -665,8 +952,8 @@ fn synthesize() -> Campaign {
                 }
                 TableUpdate::Truncated { .. } => {
                     coverage.truncated_tables += 1;
-                    if let Some(relation_index) = relation_index {
-                        coverage.relations[relation_index].truncated += 1;
+                    if let Some(domain_index) = domain_index {
+                        coverage.domains[domain_index].truncated += 1;
                     }
                     coverage.state_truncated_tables += usize::from(table == TableId::States);
                     coverage.division_truncated_tables += usize::from(table == TableId::Divisions);
@@ -675,7 +962,7 @@ fn synthesize() -> Campaign {
                     if table == TableId::Divisions {
                         for (edge, key) in DIVISION_EDGE_KEYS.into_iter().enumerate() {
                             coverage.division_edge_snapshots[edge] |=
-                                rows.iter().any(|row| row.key() == key);
+                                rows.iter().any(|row| row.key() == u128::from(key));
                         }
                     }
                 }
@@ -691,12 +978,12 @@ fn synthesize() -> Campaign {
             }
             if index == HOURS - 1 {
                 spool
-                    .append(&Record::ClockWitness {
+                    .append(&Record::Control(ControlRecord::ClockWitness {
                         session: current_session.id,
                         qpc: u64::MAX,
                         hour,
                         load_signal: Some(signal),
-                    })
+                    }))
                     .unwrap();
             }
             if index == 37 {
@@ -736,10 +1023,9 @@ fn synthesize() -> Campaign {
                     coverage.partial_keyframes += 1;
                     coverage.state_partial_keyframes += usize::from(id == TableId::States);
                     coverage.division_partial_keyframes += usize::from(id == TableId::Divisions);
-                    if let Some(relation_index) =
-                        RELATION_TABLES.iter().position(|table| *table == id)
+                    if let Some(domain_index) = DOMAIN_TABLES.iter().position(|table| *table == id)
                     {
-                        coverage.relations[relation_index].partial_keyframes += 1;
+                        coverage.domains[domain_index].partial_keyframes += 1;
                     }
                     *table = TableView::Unavailable {
                         reason: format!("truncated at keyframe: {missing} rows not read"),
@@ -776,7 +1062,7 @@ fn synthesize() -> Campaign {
                 .iter()
                 .rev()
                 .find_map(|record| match record {
-                    Record::ClockWitness { hour, .. } => Some(*hour),
+                    Record::Control(ControlRecord::ClockWitness { hour, .. }) => Some(*hour),
                     _ => None,
                 })
                 .unwrap();
@@ -802,36 +1088,33 @@ fn synthesize() -> Campaign {
 }
 
 fn assert_aliases(frame: &DecodedFrame) {
-    let [
-        _,
-        _,
+    let (
         TableView::Complete(countries),
         TableView::Complete(links),
         TableView::Complete(provinces),
-        _,
-        _,
-        _,
-        _,
-        _,
-    ] = &frame.tables
+    ) = (
+        &frame.tables[TableId::Countries.index()],
+        &frame.tables[TableId::CountryLinks.index()],
+        &frame.tables[TableId::Provinces.index()],
+    )
     else {
         return;
     };
-    let Some(Row::Province(province)) = provinces.first() else {
+    let Some(RowRef::Province(province)) = provinces.first() else {
         return;
     };
     assert_eq!(province.owner, 2);
     let slot = links
         .iter()
         .find_map(|row| match row {
-            Row::CountryLink(link) if link.id == province.owner => Some(link.canonical_slot),
+            RowRef::CountryLink(link) if link.id == province.owner => Some(link.canonical_slot),
             _ => None,
         })
         .unwrap();
     let country = countries
         .iter()
         .find_map(|row| match row {
-            Row::Country(country) if country.canonical_slot == slot => Some(country),
+            RowRef::Country(country) if country.canonical_slot == slot => Some(country),
             _ => None,
         })
         .unwrap();
@@ -847,7 +1130,9 @@ fn assert_division_handles(frame: &DecodedFrame) {
     let handles: Vec<_> = divisions
         .iter()
         .filter_map(|row| match row {
-            Row::Division(division) if division.id >> 32 == DIVISION_A >> 32 => Some(division.id),
+            RowRef::Division(division) if division.id >> 32 == DIVISION_A >> 32 => {
+                Some(division.id)
+            }
             _ => None,
         })
         .collect();
@@ -859,7 +1144,7 @@ fn assert_relations(frame: &DecodedFrame) {
         let ordered_pairs: Vec<_> = relations
             .iter()
             .filter_map(|row| match row {
-                Row::WarRelation(row)
+                RowRef::WarRelation(row)
                     if matches!((row.first_country, row.second_country), (7, 19) | (19, 7)) =>
                 {
                     Some((row.first_country, row.second_country))
@@ -872,11 +1157,16 @@ fn assert_relations(frame: &DecodedFrame) {
     let TableView::Complete(members) = &frame.tables[TableId::FactionMembers.index()] else {
         return;
     };
-    assert!(members.windows(2).all(|rows| rows[0].key() < rows[1].key()));
+    assert!(
+        members
+            .iter()
+            .zip(members.iter().skip(1))
+            .all(|(left, right)| left.key() < right.key())
+    );
     let first_faction: Vec<_> = members
         .iter()
         .filter_map(|row| match row {
-            Row::FactionMember(row) if row.faction == FACTION_A => Some(row),
+            RowRef::FactionMember(row) if row.faction == FACTION_A => Some(row),
             _ => None,
         })
         .collect();
@@ -892,13 +1182,13 @@ fn assert_relations(frame: &DecodedFrame) {
     assert_eq!(ordinals, [0, 1]);
     if let TableView::Complete(factions) = &frame.tables[TableId::Factions.index()] {
         for member in members {
-            let Row::FactionMember(member) = member else {
+            let RowRef::FactionMember(member) = member else {
                 unreachable!()
             };
             assert!(
                 factions
                     .iter()
-                    .any(|faction| faction.key() == member.faction)
+                    .any(|faction| faction.key() == u128::from(member.faction))
             );
         }
     }
@@ -999,13 +1289,20 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
             );
         }
     }
-    for (table, covered) in RELATION_TABLES.into_iter().zip(&coverage.relations) {
+    for (table, covered) in DOMAIN_TABLES.into_iter().zip(&coverage.domains) {
+        assert_eq!(
+            covered.changed_fields,
+            table.full_mask(),
+            "{table:?} field coverage"
+        );
         assert!(
             covered.changes > 10,
             "{table:?} never changed existing rows"
         );
-        assert!(covered.insertions > 10, "{table:?} never inserted new rows");
-        assert!(covered.deletions > 10, "{table:?} never deleted rows");
+        if table.key_bits() != 0 {
+            assert!(covered.insertions > 10, "{table:?} never inserted new rows");
+            assert!(covered.deletions > 10, "{table:?} never deleted rows");
+        }
         assert!(
             covered.unavailable > 0,
             "{table:?} never became unavailable"
@@ -1063,8 +1360,45 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
         - i64::from(block.first_hour)
         < i64::from(KEYFRAME_INTERVAL)));
 
-    // Every target is an independently generated source state, including partial rows and metrics.
-    for (&(branch, hour), expected) in &campaign.expected {
+    // Sequential playback checks every independently generated state, including
+    // partial rows and metrics, while decompressing each block only once.
+    let mut visited = BTreeSet::new();
+    let mut cold_targets = BTreeSet::new();
+    for block in &replay.index {
+        let frames = replay.read_block(block).unwrap();
+        let mut decoder = FrameDecoder::new();
+        for frame in &frames {
+            let key = (frame.branch, frame.hour);
+            assert!(visited.insert(key), "duplicate replay hour {key:?}");
+            let expected = &campaign.expected[&key];
+            let actual = decoder.advance(frame).unwrap();
+            assert_eq!(actual, expected, "branch {}, hour {}", key.0, key.1);
+            assert_aliases(actual);
+            assert_division_handles(actual);
+            assert_relations(actual);
+        }
+        for frame in [frames.first(), frames.get(frames.len() / 2), frames.last()]
+            .into_iter()
+            .flatten()
+        {
+            cold_targets.insert((frame.branch, frame.hour));
+        }
+    }
+    assert_eq!(visited, campaign.expected.keys().copied().collect());
+    // Cold seeks independently exercise block boundaries, interior deltas and
+    // both surviving sides of every dropped or damaged-record boundary.
+    for &(branch, hour) in campaign.missing.keys() {
+        for adjacent in [hour.checked_sub(1), hour.checked_add(1)]
+            .into_iter()
+            .flatten()
+        {
+            if campaign.expected.contains_key(&(branch, adjacent)) {
+                cold_targets.insert((branch, adjacent));
+            }
+        }
+    }
+    for (branch, hour) in cold_targets {
+        let expected = &campaign.expected[&(branch, hour)];
         match replay.seek(branch, hour).unwrap() {
             SeekResult::Frame(actual) => {
                 assert_eq!(actual.as_ref(), expected, "branch {branch}, hour {hour}");

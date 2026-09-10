@@ -29,6 +29,12 @@ static __forceinline void copy_bytes(unsigned char *dst,
         memcpy(dst, src, 4);
     } else if (len == 16) {
         memcpy(dst, src, 16);
+    } else if (len == 1) {
+        memcpy(dst, src, 1);
+    } else if (len == 2) {
+        memcpy(dst, src, 2);
+    } else if (len == 12) {
+        memcpy(dst, src, 12);
     } else {
         memcpy(dst, src, len);
     }
@@ -53,17 +59,86 @@ typedef struct {
 size_t seh_guarded_copy_scattered(const CopySpan *spans, size_t count) {
     volatile size_t completed = 0;
     __try {
-        for (; completed < count; ++completed) {
-            const CopySpan *span = &spans[completed];
+        /* The normal loop index can stay in a register. Publish completion only
+           after each exact span; the exception filter needs that volatile
+           witness, not repeated volatile reloads for indexing and bounds. */
+        for (size_t index = 0; index < count; ++index) {
+            const CopySpan *span = &spans[index];
             if (span->len != 0) {
                 copy_bytes(span->dst, span->src, span->len);
             }
+            completed = index + 1;
         }
     } __except (completed < count &&
                         copy_fault(GetExceptionInformation(), spans[completed].src,
                                    spans[completed].len, spans[completed].dst)
                     ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
         /* The current span may be partial. No later span has been accessed. */
+    }
+    return completed;
+}
+
+typedef struct {
+    size_t source_offset;
+    size_t destination_offset;
+    size_t len;
+} RecordField;
+
+static int record_copy_fault(EXCEPTION_POINTERS *ep, const uintptr_t *pointers,
+                             size_t row_count, const RecordField *fields,
+                             size_t field_count, size_t row_stride,
+                             unsigned char *destination, size_t completed) {
+    if (field_count == 0 || completed >= row_count * field_count) {
+        return 0;
+    }
+    size_t row = completed / field_count;
+    const RecordField *field = &fields[completed % field_count];
+    uintptr_t pointer = pointers[row];
+    if (field->len == 0 || pointer == 0 ||
+        field->source_offset > UINTPTR_MAX - pointer) {
+        return 0;
+    }
+    uintptr_t address = pointer + field->source_offset;
+    if (field->len > UINTPTR_MAX - address) {
+        return 0;
+    }
+    return copy_fault(ep, (const unsigned char *)address, field->len,
+                      destination + row * row_stride + field->destination_offset);
+}
+
+/* Rust validates immutable metadata, total field count, and every destination
+   bound before entry. Source ranges are checked in field order, so a later bad
+   source cannot conceal an earlier completed field or change its precedence. */
+size_t seh_guarded_copy_records(const uintptr_t *pointers, size_t row_count,
+                               const RecordField *fields, size_t field_count,
+                               size_t row_stride, unsigned char *destination) {
+    volatile size_t completed = 0;
+    __try {
+        size_t index = 0;
+        for (size_t row = 0; row < row_count; ++row) {
+            uintptr_t pointer = pointers[row];
+            unsigned char *target = destination + row * row_stride;
+            for (size_t field_index = 0; field_index < field_count; ++field_index) {
+                const RecordField *field = &fields[field_index];
+                if (field->len != 0) {
+                    if (pointer == 0 || field->source_offset > UINTPTR_MAX - pointer) {
+                        return completed;
+                    }
+                    uintptr_t address = pointer + field->source_offset;
+                    if (field->len > UINTPTR_MAX - address) {
+                        return completed;
+                    }
+                    copy_bytes(target + field->destination_offset,
+                               (const unsigned char *)address, field->len);
+                }
+                completed = ++index;
+            }
+        }
+    } __except (record_copy_fault(GetExceptionInformation(), pointers, row_count,
+                                  fields, field_count, row_stride, destination,
+                                  completed)
+                    ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        /* The current field may be partial. Later fields are untouched. */
     }
     return completed;
 }

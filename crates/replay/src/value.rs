@@ -1,0 +1,337 @@
+//! Explicit native values inside a nested field, without row or delta framing.
+//!
+//! Collections carry a u32 element count, options carry a strict 0/1 tag, and
+//! fixed arrays carry neither. Struct fields are written in declaration order.
+//! No Rust padding, addresses or intermediate encoded buffers are involved.
+
+use std::io;
+
+use crate::codec::{Decoder, invalid};
+
+pub(crate) trait Value: Sized {
+    /// Lower bound for every encoding of this type, including absent/empty values.
+    const MINIMUM_ENCODED_BYTES: usize;
+
+    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()>;
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self>;
+
+    /// The default handles structured elements; byte values override it to copy once.
+    fn encode_many(values: &[Self], output: &mut Vec<u8>) -> io::Result<()> {
+        for value in values {
+            value.encode(output)?;
+        }
+        Ok(())
+    }
+
+    /// Validate the declared count before allocating the final owning collection.
+    fn decode_many(count: usize, input: &mut Decoder<'_>) -> io::Result<Vec<Self>> {
+        check_count(count, Self::MINIMUM_ENCODED_BYTES, input.remaining())?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| invalid("nested collection allocation failed"))?;
+        for _ in 0..count {
+            values.push(Self::decode(input)?);
+        }
+        Ok(values)
+    }
+}
+
+/// Object-safe adapter for a borrowed native complex field. Its caller owns any
+/// outer byte-length prefix and can write/fill that prefix around this direct append.
+pub(crate) trait EncodeValue {
+    fn encode_value(&self, output: &mut Vec<u8>) -> io::Result<()>;
+}
+
+impl<T: Value> EncodeValue for T {
+    fn encode_value(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        self.encode(output)
+    }
+}
+
+fn check_count(count: usize, minimum_item_bytes: usize, remaining: usize) -> io::Result<()> {
+    if count != 0 && (minimum_item_bytes == 0 || count > remaining / minimum_item_bytes) {
+        return Err(invalid(
+            "nested collection length exceeds remaining payload",
+        ));
+    }
+    Ok(())
+}
+
+macro_rules! integer {
+    ($($ty:ty),+ $(,)?) => {
+        $(impl Value for $ty {
+            const MINIMUM_ENCODED_BYTES: usize = size_of::<Self>();
+
+            fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+                output.extend_from_slice(&self.to_le_bytes());
+                Ok(())
+            }
+
+            fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+                Ok(Self::from_le_bytes(
+                    input.take(size_of::<Self>())?.try_into().unwrap(),
+                ))
+            }
+        })+
+    };
+}
+
+integer!(i8, u16, i16, u32, i32, u64, i64);
+
+impl Value for u8 {
+    const MINIMUM_ENCODED_BYTES: usize = 1;
+
+    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        output.push(*self);
+        Ok(())
+    }
+
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        input.u8()
+    }
+
+    fn encode_many(values: &[Self], output: &mut Vec<u8>) -> io::Result<()> {
+        output.extend_from_slice(values);
+        Ok(())
+    }
+
+    fn decode_many(count: usize, input: &mut Decoder<'_>) -> io::Result<Vec<Self>> {
+        let bytes = input.take(count)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| invalid("nested byte collection allocation failed"))?;
+        values.extend_from_slice(bytes);
+        Ok(values)
+    }
+}
+
+impl Value for bool {
+    const MINIMUM_ENCODED_BYTES: usize = 1;
+
+    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        output.push(u8::from(*self));
+        Ok(())
+    }
+
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        input.bool()
+    }
+}
+
+impl<T: Value> Value for Option<T> {
+    const MINIMUM_ENCODED_BYTES: usize = 1;
+
+    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        match self {
+            None => output.push(0),
+            Some(value) => {
+                output.push(1);
+                value.encode(output)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        match input.u8()? {
+            0 => Ok(None),
+            1 => T::decode(input).map(Some),
+            _ => Err(invalid("invalid nested option tag")),
+        }
+    }
+}
+
+impl<T: Value> Value for Vec<T> {
+    const MINIMUM_ENCODED_BYTES: usize = 4;
+
+    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        let count = u32::try_from(self.len())
+            .map_err(|_| invalid("nested collection count exceeds u32"))?;
+        // A nonempty zero-width collection cannot be bounded by its payload.
+        // Zero-length fixed arrays remain usable as fields and in empty vectors.
+        if count != 0 && T::MINIMUM_ENCODED_BYTES == 0 {
+            return Err(invalid(
+                "nonempty nested collection has zero-width elements",
+            ));
+        }
+        output.extend_from_slice(&count.to_le_bytes());
+        T::encode_many(self, output)
+    }
+
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        let count = input.u32()? as usize;
+        T::decode_many(count, input)
+    }
+}
+
+impl<T: Value, const N: usize> Value for [T; N] {
+    const MINIMUM_ENCODED_BYTES: usize = T::MINIMUM_ENCODED_BYTES.saturating_mul(N);
+
+    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        T::encode_many(self, output)
+    }
+
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        if Self::MINIMUM_ENCODED_BYTES > input.remaining() {
+            return Err(invalid("nested array exceeds remaining payload"));
+        }
+        // Safe stack construction also drops initialized elements if a later
+        // element fails. No temporary Vec, unsafe initialization or Copy bound.
+        let mut values = std::array::from_fn::<_, N, _>(|_| None);
+        for value in &mut values {
+            *value = Some(T::decode(input)?);
+        }
+        Ok(values.map(|value| value.expect("all array elements initialized")))
+    }
+}
+
+/// Implement a declared struct's wire field order without encoding its layout.
+/// Example: value_struct!(Entry { name: Vec<u8>, amount: i64 });
+macro_rules! value_struct {
+    ($ty:ty { $($field:ident : $field_ty:ty),* $(,)? }) => {
+        impl $crate::value::Value for $ty {
+            const MINIMUM_ENCODED_BYTES: usize = 0_usize
+                $(.saturating_add(<$field_ty as $crate::value::Value>::MINIMUM_ENCODED_BYTES))*;
+
+            fn encode(&self, output: &mut Vec<u8>) -> std::io::Result<()> {
+                $(<$field_ty as $crate::value::Value>::encode(&self.$field, output)?;)*
+                Ok(())
+            }
+
+            fn decode(input: &mut $crate::codec::Decoder<'_>) -> std::io::Result<Self> {
+                Ok(Self {
+                    $($field: <$field_ty as $crate::value::Value>::decode(input)?,)*
+                })
+            }
+        }
+    };
+}
+
+pub(crate) use value_struct;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Reading {
+        name: Vec<u8>,
+        flags: [bool; 2],
+        raw: i64,
+        samples: Vec<Option<[i16; 2]>>,
+    }
+
+    value_struct!(Reading {
+        name: Vec<u8>,
+        flags: [bool; 2],
+        raw: i64,
+        samples: Vec<Option<[i16; 2]>>,
+    });
+
+    #[test]
+    fn primitive_values_have_exact_little_endian_bytes() {
+        fn check<T: Value + std::fmt::Debug + PartialEq>(value: T, expected: &[u8]) {
+            let mut bytes = Vec::new();
+            value.encode(&mut bytes).unwrap();
+            assert_eq!(bytes, expected);
+            assert_eq!(bytes.len(), T::MINIMUM_ENCODED_BYTES);
+            let mut input = Decoder::new(&bytes);
+            assert_eq!(T::decode(&mut input).unwrap(), value);
+            input.finish().unwrap();
+        }
+        check(false, &[0]);
+        check(true, &[1]);
+        check(u8::MAX, &[0xff]);
+        check(i8::MIN, &[0x80]);
+        check(0xabcd_u16, &[0xcd, 0xab]);
+        check(i16::MIN, &[0, 0x80]);
+        check(0x1234_abcd_u32, &[0xcd, 0xab, 0x34, 0x12]);
+        check(i32::MIN, &[0, 0, 0, 0x80]);
+        check(u64::MAX, &[0xff; 8]);
+        check(i64::MIN, &[0, 0, 0, 0, 0, 0, 0, 0x80]);
+        check(i64::MAX, &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f]);
+    }
+
+    #[test]
+    fn nested_structs_preserve_order_raw_bytes_and_optional_native_extrema() {
+        let rows = vec![
+            Reading {
+                name: vec![0xff, 0, 0xc3, 0x28],
+                flags: [true, false],
+                raw: i64::MIN,
+                samples: vec![None, Some([i16::MIN, i16::MAX]), None],
+            },
+            Reading {
+                name: vec![0xff, 0, 0xc3, 0x28],
+                flags: [false, true],
+                raw: i64::MAX,
+                samples: vec![Some([0, -1]), Some([0, -1])],
+            },
+        ];
+        assert_eq!(Reading::MINIMUM_ENCODED_BYTES, 18);
+        let mut encoded = vec![0xa5];
+        let borrowed: &dyn EncodeValue = &rows;
+        borrowed.encode_value(&mut encoded).unwrap();
+        assert_eq!(&encoded[..9], &[0xa5, 2, 0, 0, 0, 4, 0, 0, 0]);
+        let payload_end = encoded.len();
+        encoded.push(0x5a);
+        let mut input = Decoder::new(&encoded[1..]);
+        assert_eq!(Vec::<Reading>::decode(&mut input).unwrap(), rows);
+        assert_eq!(input.u8().unwrap(), 0x5a);
+        input.finish().unwrap();
+        for end in 1..payload_end {
+            assert!(Vec::<Reading>::decode(&mut Decoder::new(&encoded[1..end])).is_err());
+        }
+    }
+
+    #[test]
+    fn hostile_counts_invalid_tags_and_partial_elements_are_rejected() {
+        let excessive = u32::MAX.to_le_bytes();
+        assert!(Vec::<u8>::decode(&mut Decoder::new(&excessive)).is_err());
+        assert!(Vec::<Reading>::decode(&mut Decoder::new(&excessive)).is_err());
+        assert!(
+            Vec::<Vec<i64>>::decode(&mut Decoder::new(&[1, 0, 0, 0, 0xff, 0xff, 0xff, 0xff,]))
+                .is_err()
+        );
+        assert!(
+            Vec::<[i64; 2]>::decode(&mut Decoder::new(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,]))
+                .is_err()
+        );
+        for tag in [2, 127, 255] {
+            assert!(bool::decode(&mut Decoder::new(&[tag])).is_err());
+            assert!(Option::<i64>::decode(&mut Decoder::new(&[tag])).is_err());
+        }
+        assert!(Option::<i64>::decode(&mut Decoder::new(&[1, 0, 0])).is_err());
+        assert!(<[Option<i64>; 2]>::decode(&mut Decoder::new(&[0, 2])).is_err());
+
+        // An absent option consumes its own tag, never an absent payload or the
+        // following field. A present zero is observably different from absence.
+        let mut input = Decoder::new(&[0, 0xff]);
+        assert_eq!(Option::<u64>::decode(&mut input).unwrap(), None);
+        assert_eq!(input.u8().unwrap(), 0xff);
+        let mut bytes = Vec::new();
+        Some(0_i64).encode(&mut bytes).unwrap();
+        assert_eq!(bytes, [1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn empty_arrays_and_collections_remain_distinct_and_bounded() {
+        let empty_array: [i64; 0] = [];
+        let mut bytes = Vec::new();
+        empty_array.encode(&mut bytes).unwrap();
+        assert!(bytes.is_empty());
+        assert_eq!(<[i64; 0]>::decode(&mut Decoder::new(&[])).unwrap(), []);
+
+        Vec::<[u8; 0]>::new().encode(&mut bytes).unwrap();
+        assert_eq!(bytes, [0; 4]);
+        assert!(
+            Vec::<[u8; 0]>::decode(&mut Decoder::new(&bytes))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(vec![[0_u8; 0]].encode(&mut Vec::new()).is_err());
+        assert!(Vec::<[u8; 0]>::decode(&mut Decoder::new(&[1, 0, 0, 0])).is_err());
+    }
+}

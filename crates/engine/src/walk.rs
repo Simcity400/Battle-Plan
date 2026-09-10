@@ -1,4 +1,4 @@
-use crate::{Memory, cpdx_array::Array, read};
+use crate::{Memory, cpdx_array::Array};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -28,8 +28,10 @@ impl Outcome {
     }
 }
 
-/// Both game arrays reserve slot zero. Null holes contain no row. A fault never
+/// These game arrays reserve slot zero. Null holes contain no row. A fault never
 /// turns a prefix into a successful table, and capacity never causes allocation.
+/// Exact pointer spans are copied in bounded batches. Earlier complete rows keep
+/// their validation precedence over a later unreadable pointer in the batch.
 pub(crate) fn pointers<R>(
     memory: &impl Memory,
     array: Array,
@@ -43,32 +45,58 @@ pub(crate) fn pointers<R>(
     }
     let mut len = 0;
     let mut unread_rows = 0;
-    for index in 1..array.count {
-        let Some(address) = array.element(index, 8) else {
-            return Outcome::Unavailable {
-                reason: "table address overflow",
-            };
-        };
-        let Some(pointer) = read::<u64>(memory, address).and_then(|p| usize::try_from(p).ok())
-        else {
-            return Outcome::Unavailable {
-                reason: "table pointer unreadable",
-            };
-        };
-        if pointer == 0 {
-            continue;
-        }
-        if len == output.len() {
-            unread_rows += 1;
-            continue;
-        }
-        match read_row(index, pointer) {
-            Ok(row) => {
-                output[len] = row;
-                len += 1;
+    const POINTERS_PER_BATCH: usize = 64;
+    let mut pointers = [[0_u8; 8]; POINTERS_PER_BATCH];
+    let mut first = 1;
+    while first < array.count {
+        let count = ((array.count - first) as usize).min(POINTERS_PER_BATCH);
+        let addresses: [usize; POINTERS_PER_BATCH] = std::array::from_fn(|slot| {
+            if slot < count {
+                array.element(first + slot as u32, 8).unwrap_or(0)
+            } else {
+                0
             }
-            Err(reason) => return Outcome::Unavailable { reason },
+        });
+        let mut fields = pointers.iter_mut().enumerate();
+        let copied = memory.copy_scattered(
+            addresses,
+            &mut std::array::from_fn(|_| {
+                let (slot, bytes) = fields.next().unwrap();
+                // Empty trailing spans never inspect their source addresses.
+                &mut bytes[..if slot < count { 8 } else { 0 }]
+            }),
+        );
+        for (slot, bytes) in pointers.iter().take(copied.min(count)).enumerate() {
+            let Ok(pointer) = usize::try_from(u64::from_le_bytes(*bytes)) else {
+                return Outcome::Unavailable {
+                    reason: "table pointer unreadable",
+                };
+            };
+            if pointer == 0 {
+                continue;
+            }
+            if len == output.len() {
+                unread_rows += 1;
+                continue;
+            }
+            match read_row(first + slot as u32, pointer) {
+                Ok(row) => {
+                    output[len] = row;
+                    len += 1;
+                }
+                Err(reason) => return Outcome::Unavailable { reason },
+            }
         }
+        if copied < count {
+            return Outcome::Unavailable {
+                reason: if array.element(first + copied as u32, 8).is_none() {
+                    "table address overflow"
+                } else {
+                    "table pointer unreadable"
+                },
+            };
+        }
+        first += count as u32;
     }
     if unread_rows == 0 {
         Outcome::Rows { len }
@@ -81,6 +109,257 @@ pub(crate) fn pointers<R>(
 mod tests {
     use super::*;
     use crate::memory::SliceMemory;
+    use std::cell::{Cell, RefCell};
+
+    struct TracedMemory<'a> {
+        bytes: &'a [u8],
+        blocked: Option<usize>,
+        reads: RefCell<Vec<(usize, usize)>>,
+    }
+
+    impl Memory for TracedMemory<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push((address, destination.len()));
+            if self
+                .blocked
+                .is_some_and(|blocked| (address..address + destination.len()).contains(&blocked))
+            {
+                // No byte from a partial failed pointer may become a row.
+                destination.fill(0xff);
+                return false;
+            }
+            SliceMemory {
+                base: 0x1000,
+                bytes: self.bytes,
+            }
+            .copy(address, destination)
+        }
+    }
+
+    struct CountBatches<M> {
+        memory: M,
+        batches: Cell<usize>,
+    }
+
+    impl<M: Memory> Memory for CountBatches<M> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.memory.copy(address, destination)
+        }
+
+        fn copy_scattered<const N: usize>(
+            &self,
+            addresses: [usize; N],
+            destinations: &mut [&mut [u8]; N],
+        ) -> usize {
+            self.batches.set(self.batches.get() + 1);
+            self.memory.copy_scattered(addresses, destinations)
+        }
+    }
+
+    fn pointer_bytes(count: u32) -> Vec<u8> {
+        (0..count)
+            .flat_map(|slot| {
+                if slot == 0 {
+                    u64::MAX
+                } else if slot % 3 == 0 {
+                    0
+                } else {
+                    0x2000_u64 + u64::from(slot)
+                }
+                .to_le_bytes()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn batches_read_each_pointer_once_and_skip_the_sentinel_and_short_tail() {
+        let bytes = pointer_bytes(132);
+        let memory = CountBatches {
+            memory: TracedMemory {
+                bytes: &bytes,
+                blocked: None,
+                reads: RefCell::new(Vec::new()),
+            },
+            batches: Cell::new(0),
+        };
+        let mut rows = [0; 132];
+        let expected: Vec<u32> = (1..132).filter(|slot| slot % 3 != 0).collect();
+        assert_eq!(
+            pointers(
+                &memory,
+                Array {
+                    data: 0x1000,
+                    count: 132,
+                },
+                &mut rows,
+                |slot, pointer| {
+                    assert_eq!(pointer, 0x2000 + slot as usize);
+                    Ok(slot)
+                },
+            ),
+            Outcome::Rows {
+                len: expected.len()
+            }
+        );
+        assert_eq!(&rows[..expected.len()], expected);
+        assert_eq!(memory.batches.get(), 3);
+        assert_eq!(
+            *memory.memory.reads.borrow(),
+            (1..132)
+                .map(|slot| (0x1000 + slot * 8, 8))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pointer_faults_keep_the_complete_prefix_and_earlier_row_failure() {
+        let bytes = pointer_bytes(132);
+        for failed_slot in [2, 64, 65, 131] {
+            let memory = TracedMemory {
+                bytes: &bytes,
+                blocked: Some(0x1000 + failed_slot * 8 + 3),
+                reads: RefCell::new(Vec::new()),
+            };
+            let mut visited = Vec::new();
+            assert_eq!(
+                pointers(
+                    &memory,
+                    Array {
+                        data: 0x1000,
+                        count: 132,
+                    },
+                    &mut [0; 132],
+                    |slot, _| {
+                        visited.push(slot);
+                        Ok(slot)
+                    },
+                ),
+                Outcome::Unavailable {
+                    reason: "table pointer unreadable"
+                }
+            );
+            assert_eq!(
+                visited,
+                (1..failed_slot as u32)
+                    .filter(|slot| slot % 3 != 0)
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                memory
+                    .reads
+                    .borrow()
+                    .iter()
+                    .all(|&(address, _)| address <= 0x1000 + failed_slot * 8)
+            );
+            assert_eq!(
+                pointers(
+                    &memory,
+                    Array {
+                        data: 0x1000,
+                        count: 132,
+                    },
+                    &mut [0; 132],
+                    |_, _| Err("earlier row invalid"),
+                ),
+                Outcome::Unavailable {
+                    reason: "earlier row invalid"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn capacity_counts_holes_across_batches_without_reading_more_rows() {
+        let bytes = pointer_bytes(132);
+        let memory = TracedMemory {
+            bytes: &bytes,
+            blocked: None,
+            reads: RefCell::new(Vec::new()),
+        };
+        let mut visited = Vec::new();
+        assert_eq!(
+            pointers(
+                &memory,
+                Array {
+                    data: 0x1000,
+                    count: 132,
+                },
+                &mut [0; 2],
+                |slot, _| {
+                    visited.push(slot);
+                    Ok(slot)
+                },
+            ),
+            Outcome::Truncated {
+                len: 2,
+                unread_rows: 86,
+            }
+        );
+        assert_eq!(visited, [1, 2]);
+        assert_eq!(memory.reads.borrow().len(), 131);
+        let memory = TracedMemory {
+            bytes: &bytes,
+            blocked: Some(0x1000 + 130 * 8),
+            reads: RefCell::new(Vec::new()),
+        };
+        assert_eq!(
+            pointers(
+                &memory,
+                Array {
+                    data: 0x1000,
+                    count: 132,
+                },
+                &mut [0; 0],
+                |_, _| panic!("a full output must not read row fields"),
+            ),
+            Outcome::Unavailable {
+                reason: "table pointer unreadable"
+            }
+        );
+    }
+
+    #[test]
+    fn later_address_overflow_does_not_hide_earlier_pointer_or_row_failure() {
+        struct EdgeMemory;
+        impl Memory for EdgeMemory {
+            fn copy(&self, _: usize, destination: &mut [u8]) -> bool {
+                destination.copy_from_slice(&0x2000_u64.to_le_bytes());
+                true
+            }
+        }
+        let array = Array {
+            data: usize::MAX - 23,
+            count: 4,
+        };
+        assert_eq!(
+            pointers(&EdgeMemory, array, &mut [0; 4], |id, _| Ok(id)),
+            Outcome::Unavailable {
+                reason: "table pointer unreadable"
+            }
+        );
+        assert_eq!(
+            pointers(&EdgeMemory, array, &mut [0; 4], |_, _| {
+                Err("earlier row invalid")
+            }),
+            Outcome::Unavailable {
+                reason: "earlier row invalid"
+            }
+        );
+        assert_eq!(
+            pointers(
+                &EdgeMemory,
+                Array {
+                    data: usize::MAX - 3,
+                    count: 2,
+                },
+                &mut [0; 2],
+                |id, _| Ok(id),
+            ),
+            Outcome::Unavailable {
+                reason: "table address overflow"
+            }
+        );
+    }
 
     #[test]
     fn capacity_and_pointer_faults_have_distinct_outcomes() {

@@ -15,7 +15,7 @@ use crate::{
     identity::SessionStart,
 };
 
-pub const RECORD_MAGIC: [u8; 4] = *b"H4S5";
+pub const RECORD_MAGIC: [u8; 4] = *b"H4S8";
 pub const RECORD_HEADER_BYTES: usize = 12;
 pub const MAX_RECORD_BYTES: usize = 128 * 1024 * 1024;
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
@@ -23,13 +23,19 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(
     clippy::large_enum_variant,
-    reason = "Frames dominate spool records; boxing adds a per-hour allocation while the enum still reserves space for SessionStart."
+    reason = "Frames stay inline without a per-hour box; replay trailers retain controls in their compact enum."
 )]
 pub enum Record {
     SessionStart(SessionStart),
     BranchStart(BranchStart),
     Frame(Frame),
     Gap(Gap),
+    Control(ControlRecord),
+}
+
+/// Per-hour trailer entries never reserve space for a frame or session identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ControlRecord {
     Detach {
         session: u64,
         last_hour: Option<i32>,
@@ -48,8 +54,16 @@ pub enum Record {
     },
 }
 
-impl Record {
-    /// Encode a payload; `encode_record` adds its length and checksum envelope.
+impl ControlRecord {
+    pub const fn session(&self) -> u64 {
+        match self {
+            Self::Detach { session, .. }
+            | Self::ClockWitness { session, .. }
+            | Self::GapSummary { session, .. } => *session,
+        }
+    }
+
+    /// These tags are shared by spool payloads and the replay trailer.
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
         match self {
             Self::GapSummary {
@@ -64,22 +78,6 @@ impl Record {
                 out.extend_from_slice(&session.to_le_bytes());
                 out.extend_from_slice(&dropped_frames.to_le_bytes());
                 put_string(out, reason)?;
-            }
-            Self::SessionStart(value) => {
-                out.push(0);
-                value.encode(out)?;
-            }
-            Self::BranchStart(value) => {
-                out.push(1);
-                value.encode(out)?;
-            }
-            Self::Frame(value) => {
-                out.push(2);
-                value.encode(out)?;
-            }
-            Self::Gap(value) => {
-                out.push(3);
-                value.encode(out)?;
             }
             Self::Detach { session, last_hour } => {
                 out.push(4);
@@ -109,7 +107,11 @@ impl Record {
     }
 
     pub fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
-        Ok(match input.u8()? {
+        Self::decode_tag(input.u8()?, input)
+    }
+
+    fn decode_tag(tag: u8, input: &mut Decoder<'_>) -> io::Result<Self> {
+        Ok(match tag {
             6 => {
                 let session = input.u64()?;
                 let dropped_frames = input.u64()?;
@@ -123,10 +125,6 @@ impl Record {
                     reason,
                 }
             }
-            0 => Self::SessionStart(SessionStart::decode(input)?),
-            1 => Self::BranchStart(BranchStart::decode(input)?),
-            2 => Self::Frame(Frame::decode(input)?),
-            3 => Self::Gap(Gap::decode(input)?),
             4 => Self::Detach {
                 session: input.u64()?,
                 last_hour: if input.bool()? {
@@ -145,6 +143,43 @@ impl Record {
                     None
                 },
             },
+            _ => return Err(invalid("unknown control record tag")),
+        })
+    }
+}
+
+impl Record {
+    /// Encode a payload; `encode_record` adds its length and checksum envelope.
+    pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        match self {
+            Self::SessionStart(value) => {
+                out.push(0);
+                value.encode(out)?;
+            }
+            Self::BranchStart(value) => {
+                out.push(1);
+                value.encode(out)?;
+            }
+            Self::Frame(value) => {
+                out.push(2);
+                value.encode(out)?;
+            }
+            Self::Gap(value) => {
+                out.push(3);
+                value.encode(out)?;
+            }
+            Self::Control(value) => value.encode(out)?,
+        }
+        Ok(())
+    }
+
+    pub fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        Ok(match input.u8()? {
+            0 => Self::SessionStart(SessionStart::decode(input)?),
+            1 => Self::BranchStart(BranchStart::decode(input)?),
+            2 => Self::Frame(Frame::decode(input)?),
+            3 => Self::Gap(Gap::decode(input)?),
+            tag @ 4..=6 => Self::Control(ControlRecord::decode_tag(tag, input)?),
             _ => return Err(invalid("unknown spool record tag")),
         })
     }
@@ -242,10 +277,11 @@ impl SegmentState {
                 // Its first hour may already have a frame in an earlier segment.
                 self.gap_before_keyframe |= self.needs_keyframe;
             }
-            Record::ClockWitness { session, .. } | Record::GapSummary { session, .. } => {
+            Record::Control(ControlRecord::ClockWitness { session, .. })
+            | Record::Control(ControlRecord::GapSummary { session, .. }) => {
                 self.require_session(*session)?
             }
-            Record::Detach { session, last_hour } => {
+            Record::Control(ControlRecord::Detach { session, last_hour }) => {
                 self.require_session(*session)?;
                 if self.needs_keyframe {
                     return Err(invalid("detach before initial keyframe"));
@@ -423,7 +459,10 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         let mut state = SegmentState::default();
         let mut encoded = Vec::with_capacity(context.len() + 1);
         for record in context {
-            if matches!(record, Record::Frame(_) | Record::Detach { .. }) {
+            if matches!(
+                record,
+                Record::Frame(_) | Record::Control(ControlRecord::Detach { .. })
+            ) {
                 return Err(invalid("segment context contains frame or detach"));
             }
             state.accept(record)?;
@@ -466,7 +505,8 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         if let Err(error) = self.write_flushed(&bytes) {
             return self.failed(error);
         }
-        if (matches!(record, Record::Detach { .. }) || self.last_sync.elapsed() >= SYNC_INTERVAL)
+        if (matches!(record, Record::Control(ControlRecord::Detach { .. }))
+            || self.last_sync.elapsed() >= SYNC_INTERVAL)
             && let Err(error) = self.sync_current()
         {
             return self.failed(error);
@@ -605,13 +645,13 @@ mod tests {
     #[test]
     fn old_spool_magic_is_refused_before_decoding_any_records() {
         let mut bytes = valid_segment();
-        bytes[..4].copy_from_slice(b"H4S4");
+        bytes[..4].copy_from_slice(b"H4S7");
         let recovered = recover_prefix(&bytes);
         assert_eq!(recovered.valid_bytes, 0);
         assert!(recovered.records.is_empty());
         let reason = recovered.damage.unwrap();
-        assert!(reason.contains("unsupported spool record magic \"H4S4\""));
-        assert!(reason.contains("expected \"H4S5\""));
+        assert!(reason.contains("unsupported spool record magic \"H4S7\""));
+        assert!(reason.contains("expected \"H4S8\""));
     }
 
     #[test]
@@ -663,26 +703,26 @@ mod tests {
     #[test]
     fn control_payloads_preserve_optional_witness_values_and_detach_ends_segment() {
         let records = [
-            Record::ClockWitness {
+            Record::Control(ControlRecord::ClockWitness {
                 session: 3,
                 qpc: u64::MAX,
                 hour: i32::MIN,
                 load_signal: Some(i64::MIN),
-            },
-            Record::ClockWitness {
+            }),
+            Record::Control(ControlRecord::ClockWitness {
                 session: 3,
                 qpc: 0,
                 hour: 0,
                 load_signal: None,
-            },
-            Record::Detach {
+            }),
+            Record::Control(ControlRecord::Detach {
                 session: 3,
                 last_hour: None,
-            },
-            Record::Detach {
+            }),
+            Record::Control(ControlRecord::Detach {
                 session: 3,
                 last_hour: Some(i32::MAX),
-            },
+            }),
         ];
         for record in records {
             let mut bytes = Vec::new();
@@ -693,10 +733,10 @@ mod tests {
         }
         let mut bytes = valid_segment();
         bytes.extend(
-            encode_record(&Record::Detach {
+            encode_record(&Record::Control(ControlRecord::Detach {
                 session: 3,
                 last_hour: Some(11),
-            })
+            }))
             .unwrap(),
         );
         let valid_bytes = bytes.len();
@@ -704,6 +744,74 @@ mod tests {
         let recovered = recover_prefix(&bytes);
         assert_eq!(recovered.valid_bytes, valid_bytes);
         assert!(recovered.damage.unwrap().contains("after detach"));
+    }
+
+    #[test]
+    fn compact_controls_use_the_same_wire_payload_in_spools_and_trailers() {
+        let session = 7_u64;
+        let controls = [
+            (
+                ControlRecord::Detach {
+                    session,
+                    last_hour: Some(-2),
+                },
+                [
+                    vec![4],
+                    session.to_le_bytes().to_vec(),
+                    vec![1],
+                    (-2_i32).to_le_bytes().to_vec(),
+                ]
+                .concat(),
+            ),
+            (
+                ControlRecord::ClockWitness {
+                    session,
+                    qpc: 13,
+                    hour: 42,
+                    load_signal: None,
+                },
+                [
+                    vec![5],
+                    session.to_le_bytes().to_vec(),
+                    13_u64.to_le_bytes().to_vec(),
+                    42_i32.to_le_bytes().to_vec(),
+                    vec![0],
+                ]
+                .concat(),
+            ),
+            (
+                ControlRecord::GapSummary {
+                    session,
+                    dropped_frames: 3,
+                    reason: "loss".into(),
+                },
+                [
+                    vec![6],
+                    session.to_le_bytes().to_vec(),
+                    3_u64.to_le_bytes().to_vec(),
+                    4_u32.to_le_bytes().to_vec(),
+                    b"loss".to_vec(),
+                ]
+                .concat(),
+            ),
+        ];
+        for (control, expected) in controls {
+            assert_eq!(control.session(), session);
+            let mut trailer_payload = Vec::new();
+            control.encode(&mut trailer_payload).unwrap();
+            assert_eq!(trailer_payload, expected);
+            let spool_record = encode_record(&Record::Control(control.clone())).unwrap();
+            assert_eq!(spool_record[RECORD_HEADER_BYTES..], expected);
+            let mut decoder = Decoder::new(&trailer_payload);
+            assert_eq!(ControlRecord::decode(&mut decoder).unwrap(), control);
+            decoder.finish().unwrap();
+            for length in 0..expected.len() {
+                assert!(ControlRecord::decode(&mut Decoder::new(&expected[..length])).is_err());
+            }
+        }
+        for tag in [0, 1, 2, 3, 7, u8::MAX] {
+            assert!(ControlRecord::decode(&mut Decoder::new(&[tag])).is_err());
+        }
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -909,10 +1017,10 @@ mod tests {
         assert!(state.accept(&Record::BranchStart(next)).is_err());
         assert!(
             state
-                .accept(&Record::Detach {
+                .accept(&Record::Control(ControlRecord::Detach {
                     session: 3,
                     last_hour: None,
-                })
+                }))
                 .is_err()
         );
         dependent.keyframe = true;
@@ -1051,10 +1159,10 @@ mod tests {
         spool.sync_if_due().unwrap();
         assert_eq!(shared.borrow().syncs, 2);
         spool
-            .append(&Record::Detach {
+            .append(&Record::Control(ControlRecord::Detach {
                 session: 3,
                 last_hour: Some(11),
-            })
+            }))
             .unwrap();
         assert_eq!(shared.borrow().syncs, 3);
         assert!(spool.append(&Record::Frame(frame(12, false))).is_err());

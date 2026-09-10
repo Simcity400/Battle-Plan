@@ -13,8 +13,8 @@ use replay::{
     container::{RecoveryNote, Replay},
     frame::{DecodedFrame, Frame, FrameDecoder, TABLE_COUNT, TableUpdate, TableView},
     identity::{Identity, SessionStart, Verification},
-    rows::{Row, TableId},
-    spool::{Record, Recovery, recover_prefix},
+    rows::{TableId, TableRows},
+    spool::{ControlRecord, Record, Recovery, recover_prefix},
 };
 
 type Result<T> = std::result::Result<T, String>;
@@ -65,8 +65,8 @@ fn campaign_id(segments: &[(u32, Recovery)]) -> Result<Vec<u8>> {
         .flat_map(|(_, recovery)| &recovery.records)
         .find_map(|record| match record {
             Record::Frame(frame) => match &frame.tables[TableId::Campaign.index()] {
-                TableUpdate::Snapshot(rows) => match rows.as_slice() {
-                    [Row::Campaign(campaign)] if !campaign.id.is_empty() => Some(campaign.id.clone()),
+                TableUpdate::Snapshot(TableRows::Campaign(rows)) => match rows.as_slice() {
+                    [campaign] if !campaign.id.is_empty() => Some(campaign.id.clone()),
                     _ => None,
                 },
                 _ => None,
@@ -239,7 +239,14 @@ fn finalize_campaign(
         }
     }
     summary.print(spool_bytes);
-    print_throughput(&replay.sessions, records.iter().copied());
+    print_throughput(
+        &replay.sessions,
+        records.iter().filter_map(|record| match record {
+            Record::Control(control) => Some(Some(control)),
+            Record::Gap(_) | Record::BranchStart(_) => Some(None),
+            _ => None,
+        }),
+    );
     let gap_count = records
         .iter()
         .filter(|record| matches!(record, Record::Gap(_)))
@@ -252,11 +259,11 @@ fn finalize_campaign(
             .count()
     );
     for record in records {
-        if let Record::GapSummary {
+        if let Record::Control(ControlRecord::GapSummary {
             session,
             dropped_frames,
             reason,
-        } = record
+        }) = record
         {
             println!(
                 "gap_summary session={session} dropped_frames={dropped_frames} hour_range=unknown: {reason}"
@@ -328,11 +335,9 @@ fn already_finalized(previous: &Replay, segments: &[(u32, Recovery)]) -> Result<
             _ => {}
         }
     }
-    let controls = records.iter().copied().filter(|record| {
-        matches!(
-            record,
-            Record::Detach { .. } | Record::ClockWitness { .. } | Record::GapSummary { .. }
-        )
+    let controls = records.iter().filter_map(|record| match record {
+        Record::Control(control) => Some(control),
+        _ => None,
     });
     if !is_subsequence(previous.controls.iter(), controls) {
         return Err(conflict());
@@ -444,10 +449,10 @@ pub fn inspect(path: &Path) -> Result<()> {
     }
     for control in &replay.controls {
         match control {
-            Record::Detach { session, last_hour } => {
+            ControlRecord::Detach { session, last_hour } => {
                 println!("detach session={session} last_hour={last_hour:?}")
             }
-            Record::GapSummary {
+            ControlRecord::GapSummary {
                 session,
                 dropped_frames,
                 reason,
@@ -466,7 +471,7 @@ pub fn inspect(path: &Path) -> Result<()> {
             );
         }
     }
-    print_throughput(&replay.sessions, replay.controls.iter());
+    print_throughput(&replay.sessions, replay.controls.iter().map(Some));
     println!(
         "oracle=not run; this command inspects recorded data without asserting save agreement"
     );
@@ -566,7 +571,6 @@ struct Issue {
     reason: String,
 }
 
-#[derive(Default)]
 struct Summary {
     decoder: FrameDecoder,
     totals: Vec<u64>,
@@ -577,6 +581,22 @@ struct Summary {
     max_dropped: u64,
     hours: BTreeMap<BranchId, BTreeSet<Hour>>,
     issues: [Vec<Issue>; TABLE_COUNT],
+}
+
+impl Default for Summary {
+    fn default() -> Self {
+        Self {
+            decoder: FrameDecoder::default(),
+            totals: Vec::new(),
+            table_times: std::array::from_fn(|_| Vec::new()),
+            table_bytes: [0; TABLE_COUNT],
+            states: [[0; 5]; TABLE_COUNT],
+            max_pool: 0,
+            max_dropped: 0,
+            hours: BTreeMap::new(),
+            issues: std::array::from_fn(|_| Vec::new()),
+        }
+    }
 }
 
 impl Summary {
@@ -721,7 +741,11 @@ impl Throughput {
     }
 }
 
-fn print_throughput<'a>(sessions: &[SessionStart], controls: impl Iterator<Item = &'a Record>) {
+// A None marks a branch or gap boundary in a recovered spool's record stream.
+fn print_throughput<'a>(
+    sessions: &[SessionStart],
+    controls: impl Iterator<Item = Option<&'a ControlRecord>>,
+) {
     let frequencies: BTreeMap<_, _> = sessions
         .iter()
         .map(|session| (session.id, session.qpc_frequency))
@@ -729,12 +753,12 @@ fn print_throughput<'a>(sessions: &[SessionStart], controls: impl Iterator<Item 
     let mut throughput = Throughput::default();
     for control in controls {
         match control {
-            Record::ClockWitness {
+            Some(ControlRecord::ClockWitness {
                 session,
                 qpc,
                 hour,
                 load_signal,
-            } => {
+            }) => {
                 throughput.witness(
                     *session,
                     frequencies.get(session).copied().unwrap_or(0),
@@ -743,11 +767,12 @@ fn print_throughput<'a>(sessions: &[SessionStart], controls: impl Iterator<Item 
                     *load_signal,
                 );
             }
-            Record::Detach { session, .. } | Record::GapSummary { session, .. } => {
+            Some(
+                ControlRecord::Detach { session, .. } | ControlRecord::GapSummary { session, .. },
+            ) => {
                 throughput.previous.remove(session);
             }
-            Record::Gap(_) | Record::BranchStart(_) => throughput.previous.clear(),
-            _ => {}
+            None => throughput.previous.clear(),
         }
     }
     if throughput.seconds > 0.0 {
@@ -823,7 +848,7 @@ mod tests {
         use replay::{
             branches::{BranchReason, BranchStart},
             frame::Metrics,
-            rows::{CampaignRow, ClockRow},
+            rows::{CampaignRow, ClockRow, SunkShipsRow, WeatherLimitsRow},
         };
         let id = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6".to_vec();
         let session = Record::SessionStart(SessionStart {
@@ -859,25 +884,41 @@ mod tests {
                 hour,
                 keyframe: true,
                 metrics: Metrics::default(),
-                tables: [
-                    TableUpdate::Snapshot(vec![Row::Clock(ClockRow {
+                tables: std::array::from_fn(|index| match TableId::ALL[index] {
+                    TableId::Clock => TableUpdate::Snapshot(TableRows::Clock(vec![ClockRow {
                         hour,
                         seed,
                         ..Default::default()
-                    })]),
-                    TableUpdate::Snapshot(vec![Row::Campaign(CampaignRow { id: id.clone() })]),
-                    TableUpdate::Snapshot(vec![]),
-                    TableUpdate::Snapshot(vec![]),
-                    TableUpdate::Snapshot(vec![]),
-                    TableUpdate::Snapshot(vec![]),
-                    TableUpdate::Snapshot(vec![]),
-                    TableUpdate::Snapshot(vec![]),
-                    TableUpdate::Snapshot(vec![]),
-                    TableUpdate::Snapshot(vec![]),
-                ],
+                    }])),
+                    TableId::Campaign => {
+                        TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
+                            id: id.clone(),
+                        }]))
+                    }
+                    TableId::SunkShips => {
+                        TableUpdate::Snapshot(TableRows::SunkShips(vec![SunkShipsRow::default()]))
+                    }
+                    TableId::WeatherLimits => {
+                        TableUpdate::Snapshot(TableRows::WeatherLimits(vec![
+                            WeatherLimitsRow::default(),
+                        ]))
+                    }
+                    _ => TableUpdate::Snapshot(TableRows::empty(TableId::ALL[index])),
+                }),
             })
         };
-        let first = vec![session.clone(), branch.clone(), frame(2, 10)];
+        let witness = Record::Control(ControlRecord::ClockWitness {
+            session: 1,
+            qpc: 200,
+            hour: 2,
+            load_signal: None,
+        });
+        let first = vec![
+            session.clone(),
+            branch.clone(),
+            frame(2, 10),
+            witness.clone(),
+        ];
         let previous = Replay::from_records(id.clone(), std::slice::from_ref(&first)).unwrap();
         let recovered = |records| {
             vec![(
@@ -890,6 +931,19 @@ mod tests {
             )]
         };
         assert!(already_finalized(&previous, &recovered(first)).unwrap());
+        assert!(
+            already_finalized(
+                &previous,
+                &recovered(vec![
+                    session.clone(),
+                    branch.clone(),
+                    frame(2, 10),
+                    witness.clone(),
+                    witness,
+                ])
+            )
+            .is_err()
+        );
         assert!(
             already_finalized(
                 &previous,

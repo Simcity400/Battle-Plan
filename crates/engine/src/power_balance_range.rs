@@ -5,3 +5,10 @@
 
 /// Power-balance range identity MSVC string; archived D74 copy_once reads the active range at +0x718.
 pub const IDENTITY: usize = 0x718;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub record: u32,
+    pub ordinal: u32,
+    pub identity: crate::power_balance_definition::Token,
+}

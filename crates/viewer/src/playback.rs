@@ -7,7 +7,7 @@ use replay::{
     branches::Parentage,
     container::{Replay, SeekResult},
     frame::{DecodedFrame, Frame, FrameDecoder, TableView},
-    rows::{Row, TableId},
+    rows::{TableId, tables},
 };
 
 struct CachedBlock {
@@ -193,8 +193,9 @@ impl Playback {
             // read_block validates the wire representation. Like Replay::seek,
             // validate identity after every applied frame, including the prefix.
             if let TableView::Complete(rows) = &decoded.tables[TableId::Campaign.index()]
-                && (rows.len() != 1
-                    || !matches!(&rows[0], Row::Campaign(campaign) if campaign.id == self.replay.campaign_id))
+                && rows
+                    .rows::<tables::Campaign>()
+                    .is_none_or(|rows| rows.len() != 1 || rows[0].id != self.replay.campaign_id)
             {
                 let reason = "frame campaign identity differs from replay header".to_owned();
                 cache.failure = Some((frame.hour, reason.clone()));
@@ -286,8 +287,10 @@ mod tests {
         frame::{FrameEncoder, Metrics, TableUpdate},
         identity::{Identity, Roster, SessionStart, Verification},
         rows::{
-            CampaignRow, ClockRow, CountryRow, DivisionRow, FactionMemberRow, FactionRow,
-            ProvinceRow, StateRow, WarRelationRow,
+            AirWingRow, ArmyOrderRow, CampaignRow, ClockRow, CountryRow, DivisionRow,
+            FactionMemberRow, FactionRow, FleetRow, HumanControllerRow, LandCombatRow,
+            NavalCombatParticipantRow, NavalCombatRow, PlayerRow, ProvinceRow, ShipRow, StateRow,
+            TableRows, TaskForceRow, WarRelationRow,
         },
         spool::Record,
     };
@@ -322,69 +325,156 @@ mod tests {
             branch,
             hour,
             metrics: Metrics::default(),
-            tables: [
-                TableView::Complete(vec![Row::Clock(ClockRow {
-                    hour,
-                    ..ClockRow::default()
-                })]),
-                TableView::Complete(vec![Row::Campaign(CampaignRow {
-                    id: b"campaign".to_vec(),
-                })]),
-                TableView::Complete(vec![Row::Country(CountryRow {
-                    id: 1,
-                    canonical_slot: 1,
-                    tag: b"GER".to_vec(),
-                    name: b"Germany".to_vec(),
-                    political_power_raw: Some(i64::MAX - i64::from(hour)),
-                    command_power_raw: 100_001,
-                    stability_raw: 70_000,
-                    war_support_raw: 30_000,
-                    convoys_raw: None,
-                })]),
-                TableView::Complete(Vec::new()),
-                TableView::Complete(vec![Row::Province(ProvinceRow {
-                    id: 1,
-                    state: 1,
-                    owner: 1,
-                    controller: 1,
-                })]),
-                TableView::Complete(vec![Row::State(StateRow {
-                    id: 1,
-                    owner: 1,
-                    controller: 1,
-                })]),
-                TableView::Complete(vec![Row::Division(DivisionRow {
-                    id: (1_u64 << 32) | 4713,
-                    roster_owner: 1,
-                    logical_owner: 1,
-                    expeditionary_owner: 0,
-                    province: 1,
-                    template: (2_u64 << 32) | 52,
-                    hit_points: 26_429_000,
-                    organisation: 6_000_001,
-                })]),
-                TableView::Complete(vec![Row::WarRelation(WarRelationRow {
-                    first_country: 1,
-                    second_country: 2,
-                    start_hour: 99,
-                    end_hour: 0,
-                    cancel: 0,
-                    first_casualties: i64::from(hour),
-                    second_casualties: 0,
-                    first_unknown_casualties: 0,
-                    second_unknown_casualties: 0,
-                    first_was_instigator: 1,
-                })]),
-                TableView::Complete(vec![Row::Faction(FactionRow {
-                    id: 1_u64 << 32 | 42,
-                    name: Vec::new(),
-                })]),
-                TableView::Complete(vec![Row::FactionMember(FactionMemberRow {
-                    country: 1,
-                    faction: 1_u64 << 32 | 42,
-                    ordinal: 0,
-                })]),
-            ],
+            tables: {
+                let map_tables = [
+                    TableView::Complete(TableRows::Clock(vec![ClockRow {
+                        hour,
+                        ..ClockRow::default()
+                    }])),
+                    TableView::Complete(TableRows::Campaign(vec![CampaignRow {
+                        id: b"campaign".to_vec(),
+                    }])),
+                    TableView::Complete(TableRows::Countries(vec![CountryRow {
+                        id: 1,
+                        canonical_slot: 1,
+                        tag: b"GER".to_vec(),
+                        name: b"Germany".to_vec(),
+                        political_power_raw: Some(i64::MAX - i64::from(hour)),
+                        command_power_raw: 100_001,
+                        stability_raw: 70_000,
+                        war_support_raw: 30_000,
+                        convoys_raw: None,
+                    }])),
+                    TableView::Complete(TableRows::CountryLinks(Vec::new())),
+                    TableView::Complete(TableRows::Provinces(vec![ProvinceRow {
+                        id: 1,
+                        state: 1,
+                        owner: 1,
+                        controller: 1,
+                        victory_points: hour - 103,
+                    }])),
+                    TableView::Complete(TableRows::States(vec![StateRow {
+                        id: 1,
+                        owner: 1,
+                        controller: 1,
+                    }])),
+                    TableView::Complete(TableRows::Divisions(vec![DivisionRow {
+                        id: (1_u64 << 32) | 4713,
+                        roster_owner: 1,
+                        logical_owner: 1,
+                        expeditionary_owner: 0,
+                        province: 1,
+                        template: (2_u64 << 32) | 52,
+                        hit_points: 26_429_000,
+                        organisation: 6_000_001,
+                    }])),
+                    TableView::Complete(TableRows::WarRelations(vec![WarRelationRow {
+                        first_country: 1,
+                        second_country: 2,
+                        start_hour: 99,
+                        end_hour: 0,
+                        cancel: 0,
+                        first_casualties: i64::from(hour),
+                        second_casualties: 0,
+                        first_unknown_casualties: 0,
+                        second_unknown_casualties: 0,
+                        first_was_instigator: 1,
+                    }])),
+                    TableView::Complete(TableRows::Factions(vec![FactionRow {
+                        id: 1_u64 << 32 | 42,
+                        name: Vec::new(),
+                    }])),
+                    TableView::Complete(TableRows::FactionMembers(vec![FactionMemberRow {
+                        country: 1,
+                        faction: 1_u64 << 32 | 42,
+                        ordinal: 0,
+                    }])),
+                    TableView::Complete(TableRows::Players(vec![PlayerRow {
+                        id: i32::MIN,
+                        country: 1,
+                        flags: 0x81,
+                        user: b"synthetic user".to_vec(),
+                        name: b"synthetic name".to_vec(),
+                    }])),
+                    TableView::Complete(TableRows::HumanControllers(vec![HumanControllerRow {
+                        country: 1,
+                        count: i8::MIN,
+                    }])),
+                    TableView::Complete(TableRows::LandCombats(vec![LandCombatRow {
+                        id: (9_u64 << 32) | 62,
+                        province: 1,
+                        duration: hour,
+                        day: -1,
+                        attackers: vec![(1_u64 << 32) | 4713],
+                        defenders: vec![(2_u64 << 32) | 4713],
+                    }])),
+                    TableView::Complete(TableRows::Fleets(vec![FleetRow {
+                        id: (1_u64 << 32) | 61,
+                        owner: 1,
+                        home_base: 1,
+                    }])),
+                    TableView::Complete(TableRows::TaskForces(vec![TaskForceRow {
+                        id: (2_u64 << 32) | 51,
+                        fleet: (1_u64 << 32) | 61,
+                        roster_owner: 1,
+                        logical_owner: 1,
+                        ..Default::default()
+                    }])),
+                    TableView::Complete(TableRows::Ships(vec![ShipRow {
+                        id: (3_u64 << 32) | 51,
+                        task_force: (2_u64 << 32) | 51,
+                        strength: i64::from(hour),
+                        organisation: i64::MAX,
+                        experience: i64::MIN,
+                        ..Default::default()
+                    }])),
+                    TableView::Complete(TableRows::NavalCombats(vec![NavalCombatRow {
+                        id: u64::MAX,
+                        province: 1,
+                        attacker_positioning: i64::MIN,
+                        defender_anti_air: i64::MAX,
+                        ..Default::default()
+                    }])),
+                    TableView::Complete(TableRows::NavalCombatParticipants(vec![
+                        NavalCombatParticipantRow {
+                            combat: u64::MAX,
+                            side: 1,
+                            battle_slot: u32::MAX,
+                            ship: (3_u64 << 32) | 51,
+                            owner: 1,
+                            state: 0x8000_0020,
+                        },
+                    ])),
+                    TableView::Complete(TableRows::AirWings(vec![AirWingRow {
+                        id: (4_u64 << 32) | 69,
+                        owner: 1,
+                        air_base: 65,
+                        base_override: (5_u64 << 32) | 65,
+                        planes: hour,
+                        mission_region: Some(u32::MAX),
+                        ..Default::default()
+                    }])),
+                    TableView::Complete(TableRows::ArmyOrders(vec![ArmyOrderRow {
+                        owner_group: u64::MAX,
+                        instance: u32::MAX,
+                        country: 1,
+                        order_type: 4,
+                        active: 0x80,
+                        path: vec![1, hour as u32, 1],
+                        target_states: vec![u32::MAX, 1],
+                        paradrop_target: 7,
+                    }])),
+                ];
+                // This fixture exercises the twenty map tables. Other domains,
+                // including singleton tables, are explicitly unavailable.
+                let mut tables = std::array::from_fn(|_| TableView::Unavailable {
+                    reason: "outside the map playback fixture".into(),
+                });
+                for (table, rows) in tables.iter_mut().zip(map_tables) {
+                    *table = rows;
+                }
+                tables
+            },
         }
     }
 
@@ -408,11 +498,11 @@ mod tests {
                     reason: "country read failed".into(),
                 };
                 frame.tables[TableId::Provinces.index()] = TableView::Truncated {
-                    rows: Vec::new(),
+                    rows: TableRows::Provinces(Vec::new()),
                     missing: 1,
                 };
             }
-            records.push(Record::Frame(encoder.encode(&frame, false).unwrap()));
+            records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
         }
         records
     }
@@ -527,13 +617,13 @@ mod tests {
         let cache = playback.cache.as_mut().unwrap();
         let frames = cache.frames.as_mut().unwrap();
         frames[1].tables[TableId::Campaign.index()] =
-            TableUpdate::Snapshot(vec![Row::Campaign(CampaignRow {
+            TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
                 id: b"other".to_vec(),
-            })]);
+            }]));
         frames[2].tables[TableId::Campaign.index()] =
-            TableUpdate::Snapshot(vec![Row::Campaign(CampaignRow {
+            TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
                 id: b"campaign".to_vec(),
-            })]);
+            }]));
         for hour in [104, 105, 101, 104] {
             playback.seek(1, hour).unwrap();
             assert!(matches!(

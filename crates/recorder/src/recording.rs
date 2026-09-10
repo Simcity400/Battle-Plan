@@ -288,7 +288,8 @@ fn capture(pid: u32, output: &Path, user: &Path) -> Result<bool, String> {
         .ok_or("game changed before injection")?;
     process.inject(&dll, || STOP.load(Ordering::Acquire))?;
     let error_path = bin.join("collector.error.txt");
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut next_progress = Instant::now() + Duration::from_secs(10);
     while !ready.handle.signaled()? {
         if error_path.exists() {
             return Err(fs::read_to_string(&error_path).unwrap_or_else(|e| e.to_string()));
@@ -301,6 +302,10 @@ fn capture(pid: u32, output: &Path, user: &Path) -> Result<bool, String> {
         }
         if STOP.load(Ordering::Acquire) {
             detach.set()?;
+        }
+        if Instant::now() >= next_progress {
+            println!("Preparing collector and prior campaign history before hourly sampling...");
+            next_progress = Instant::now() + Duration::from_secs(10);
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -630,6 +635,7 @@ fn print_status(path: &Path) {
         if let Some(error) = value["error"]
             .as_str()
             .or_else(|| value["last_error"].as_str())
+            .or_else(|| value["warning"].as_str())
         {
             eprintln!("Collector: {error}");
         }
@@ -757,7 +763,12 @@ fn finalization_lock(output: &Path) -> Result<File, String> {
             Err(error) if error.raw_os_error() == Some(32) && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(100))
             }
-            Err(error) => return Err(format!("finalizer lock {}: {error}", path.display())),
+            Err(error) => {
+                return Err(format!(
+                    "output is busy recording/finalizing or unavailable: {}: {error}",
+                    path.display()
+                ));
+            }
         }
     }
 }

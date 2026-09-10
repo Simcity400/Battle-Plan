@@ -1,0 +1,817 @@
+//! Exact construction, building and occupation values serialized in text saves.
+
+use std::{collections::BTreeMap, io};
+
+use super::{
+    Decimal, GameDate, Item, block, boolean, bytes, decimal, field, integer, invalid,
+    required_block, required_bytes, scalar, typed_handle,
+};
+
+pub type BuildingKey = (u32, Vec<u8>);
+pub type LawKey = (Vec<u8>, Vec<u8>, u32);
+pub type GarrisonKey = (Vec<u8>, u32);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Building {
+    pub location: u32,
+    pub building_type: Vec<u8>,
+    pub ordinal: u32,
+    pub level: i16,
+    pub healthy_level: i16,
+    /// Native fixed5 health toward the next repaired level; 100 means one level.
+    pub partial_health: Decimal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Production {
+    pub id: u64,
+    pub country: Vec<u8>,
+    /// Position in the shared building/railway queue, independent of priority.
+    pub queue_ordinal: u32,
+    pub active_factories: i32,
+    pub cost: Decimal,
+    pub speed: Decimal,
+    pub produced: Decimal,
+    pub priority: i32,
+    pub amount: i32,
+    pub created_date: GameDate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BuildingConstruction {
+    pub production: Production,
+    pub building_type: Vec<u8>,
+    /// CBuildingReference location, -1 for a country target.
+    pub target_location: i32,
+    /// BA6770 emits only a signed-positive reference; location targets omit it.
+    pub target_country: Option<Vec<u8>>,
+    /// F594E0 emits only positive repair counts; omission proves <= 0.
+    pub repair_levels: Option<i32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RailwayConstruction {
+    pub production: Production,
+    pub base_level: i32,
+    pub target_level: i32,
+    pub cancelled: bool,
+    pub current_segment: i32,
+    /// Save spelling is remaining_hours; native 19F0B70 computes remaining work.
+    pub remaining_cost: Decimal,
+    pub route: Vec<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OccupationSettings {
+    pub country: Vec<u8>,
+    pub garrison_template: Option<u64>,
+    pub default_law: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateOccupationLaw {
+    pub controller: Vec<u8>,
+    pub occupied: Vec<u8>,
+    /// Literal integer key, including zero; not a guessed CState association.
+    pub state: u32,
+    pub law: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateGarrison {
+    pub controller: Vec<u8>,
+    pub occupied: Vec<u8>,
+    pub state: u32,
+    pub required_manpower: i32,
+    pub strength_ratio: Decimal,
+    pub garrison_required: Decimal,
+    pub serialized_flag: bool,
+    /// C5B610 serializes positive rows only, retaining their relative order.
+    pub manpower: Vec<Manpower>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Manpower {
+    pub source_country: Vec<u8>,
+    pub amount: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateResistance {
+    pub state: u32,
+    /// F87B70 emits only a signed-positive country link.
+    pub country: Option<Vec<u8>>,
+    pub level: Decimal,
+    pub speed: Decimal,
+    pub compliance: Decimal,
+    pub compliance_speed: Decimal,
+    pub active: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CountryCollaboration {
+    pub source: Vec<u8>,
+    pub target: Vec<u8>,
+    pub progress: Decimal,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Pack {
+    pub state_buildings: BTreeMap<BuildingKey, Building>,
+    pub province_buildings: BTreeMap<BuildingKey, Building>,
+    pub building_construction: BTreeMap<u64, BuildingConstruction>,
+    pub railway_construction: BTreeMap<u64, RailwayConstruction>,
+    pub occupation_settings: BTreeMap<Vec<u8>, OccupationSettings>,
+    pub state_occupation_laws: BTreeMap<LawKey, StateOccupationLaw>,
+    pub state_garrisons: BTreeMap<GarrisonKey, StateGarrison>,
+    pub country_reserve_manpower: BTreeMap<Vec<u8>, Vec<Manpower>>,
+    pub state_resistance: BTreeMap<u32, StateResistance>,
+    pub country_collaboration: BTreeMap<(Vec<u8>, Vec<u8>), CountryCollaboration>,
+}
+
+fn number<T: std::str::FromStr>(items: &[Item], key: &[u8]) -> io::Result<T> {
+    integer(&required_bytes(items, key)?)
+}
+
+fn fixed(items: &[Item], key: &[u8]) -> io::Result<Decimal> {
+    decimal(items, key)?
+        .ok_or_else(|| invalid(format!("save lacks {}", String::from_utf8_lossy(key))))
+}
+
+fn zero_omitted_fixed(items: &[Item], key: &[u8]) -> io::Result<Decimal> {
+    decimal(items, key)?
+        .map(Ok)
+        .unwrap_or_else(|| Decimal::parse(b"0"))
+}
+
+fn zero_omitted_integer(items: &[Item], key: &[u8]) -> io::Result<i32> {
+    field(items, key)?
+        .map(|value| integer(scalar(value)?))
+        .transpose()
+        .map(|n| n.unwrap_or(0))
+}
+
+fn false_omitted(items: &[Item], key: &[u8]) -> io::Result<bool> {
+    field(items, key)?
+        .map(boolean)
+        .transpose()
+        .map(|v| v.unwrap_or(false))
+}
+
+fn production(country: &[u8], queue_ordinal: u32, items: &[Item]) -> io::Result<Production> {
+    // 14A36A0 omits these three values exactly when their native integer is zero.
+    Ok(Production {
+        id: typed_handle(field(items, b"id")?.ok_or_else(|| invalid("production line lacks id"))?)?,
+        country: country.to_vec(),
+        queue_ordinal,
+        active_factories: zero_omitted_integer(items, b"active_factories")?,
+        cost: fixed(items, b"cost")?,
+        speed: zero_omitted_fixed(items, b"speed")?,
+        produced: zero_omitted_fixed(items, b"produced")?,
+        priority: number(items, b"priority")?,
+        amount: number(items, b"amount")?,
+        // Embedded CGameDate primary +50/raw +58/CPersistent +60.
+        created_date: GameDate::parse(&required_bytes(items, b"created_date")?)?,
+    })
+}
+
+fn railway(country: &[u8], ordinal: u32, items: &[Item]) -> io::Result<RailwayConstruction> {
+    let mut route = Vec::new();
+    if let Some(value) = field(items, b"rail_way")? {
+        for item in block(value)? {
+            if item.key.is_some() {
+                return Err(invalid("railway route contains a keyed entry"));
+            }
+            route.push(integer(scalar(&item.value)?)?);
+        }
+    }
+    // 19F0F20 emits all four numeric values unconditionally; cancel is bool.
+    Ok(RailwayConstruction {
+        production: production(country, ordinal, items)?,
+        base_level: number(items, b"base")?,
+        target_level: number(items, b"target")?,
+        cancelled: false_omitted(items, b"cancel")?,
+        current_segment: number(items, b"current_province")?,
+        remaining_cost: fixed(items, b"remaining_hours")?,
+        route,
+    })
+}
+
+fn manpower(items: &[Item], key: &[u8]) -> io::Result<Vec<Manpower>> {
+    let Some(value) = field(items, key)? else {
+        return Ok(Vec::new());
+    };
+    let mut rows = Vec::new();
+    for item in block(value)? {
+        if item.key.as_deref() != Some(b"value") {
+            return Err(invalid("unexpected serialized manpower entry"));
+        }
+        let fields = block(&item.value)?;
+        let amount = number(fields, b"value")?;
+        if amount <= 0 {
+            return Err(invalid(
+                "native manpower serializer emits only positive amounts",
+            ));
+        }
+        rows.push(Manpower {
+            source_country: required_bytes(fields, b"tag")?,
+            amount,
+        });
+    }
+    Ok(rows)
+}
+
+fn occupation(country: &[u8], items: &[Item], pack: &mut Pack) -> io::Result<()> {
+    let settings = OccupationSettings {
+        country: country.to_vec(),
+        // FEAE70 emits token 0x3142 only for a nonnull template pointer.
+        garrison_template: field(items, b"division_template_id")?
+            .map(typed_handle)
+            .transpose()?,
+        default_law: bytes(items, b"default_law")?,
+    };
+    if pack
+        .occupation_settings
+        .insert(country.to_vec(), settings)
+        .is_some()
+    {
+        return Err(invalid("duplicate occupation settings country"));
+    }
+    pack.country_reserve_manpower
+        .insert(country.to_vec(), manpower(items, b"foreign_manpower")?);
+    if let Some(value) = field(items, b"occupation")? {
+        let mut seen = std::collections::BTreeSet::new();
+        for item in block(value)? {
+            let occupied = item
+                .key
+                .as_deref()
+                .filter(|key| !key.is_empty())
+                .ok_or_else(|| invalid("occupation lacks target tag"))?;
+            if !seen.insert(occupied) {
+                return Err(invalid("duplicate occupied country scope"));
+            }
+            let fields = block(&item.value)?;
+            if let Some(value) = field(fields, b"occupation_law_list")? {
+                for item in block(value)? {
+                    let state = integer(
+                        item.key
+                            .as_deref()
+                            .ok_or_else(|| invalid("occupation law lacks raw state key"))?,
+                    )?;
+                    let row = StateOccupationLaw {
+                        controller: country.to_vec(),
+                        occupied: occupied.to_vec(),
+                        state,
+                        law: scalar(&item.value)?.to_vec(),
+                    };
+                    if pack
+                        .state_occupation_laws
+                        .insert((country.to_vec(), occupied.to_vec(), state), row)
+                        .is_some()
+                    {
+                        return Err(invalid(
+                            "duplicate controller/occupied/state occupation law",
+                        ));
+                    }
+                }
+            }
+            if let Some(value) = field(fields, b"state_garrison_data")? {
+                for item in block(value)? {
+                    let state = integer(
+                        item.key
+                            .as_deref()
+                            .ok_or_else(|| invalid("garrison lacks state key"))?,
+                    )?;
+                    if state == 0 {
+                        return Err(invalid("saved garrison state must be positive"));
+                    }
+                    let fields = block(&item.value)?;
+                    let row = StateGarrison {
+                        controller: country.to_vec(),
+                        occupied: occupied.to_vec(),
+                        state,
+                        required_manpower: zero_omitted_integer(fields, b"army_manpower_need")?,
+                        strength_ratio: zero_omitted_fixed(fields, b"strength_ratio")?,
+                        garrison_required: zero_omitted_fixed(fields, b"garrison_required")?,
+                        serialized_flag: false_omitted(fields, b"suppression")?,
+                        manpower: manpower(fields, b"manpower_pool")?,
+                    };
+                    if pack
+                        .state_garrisons
+                        .insert((country.to_vec(), state), row)
+                        .is_some()
+                    {
+                        return Err(invalid(
+                            "duplicate controller/state garrison across occupied scopes",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn buildings(
+    location: u32,
+    items: &[Item],
+    output: &mut BTreeMap<BuildingKey, Building>,
+) -> io::Result<()> {
+    for (ordinal, item) in items.iter().enumerate() {
+        let name = item
+            .key
+            .as_ref()
+            .filter(|key| !key.is_empty())
+            .ok_or_else(|| invalid("saved building lacks type"))?;
+        let fields = block(&item.value)?;
+        let row = Building {
+            location,
+            building_type: name.clone(),
+            ordinal: u32::try_from(ordinal).map_err(|_| invalid("building ordinal exceeds u32"))?,
+            level: number(fields, b"level")?,
+            healthy_level: number(fields, b"healthy_levels")?,
+            partial_health: fixed(fields, b"partial_health")?,
+        };
+        if output.insert((location, name.clone()), row).is_some() {
+            return Err(invalid("duplicate scoped building type"));
+        }
+    }
+    Ok(())
+}
+
+pub fn parse(items: &[Item]) -> io::Result<Pack> {
+    let mut pack = Pack::default();
+    for item in required_block(items, b"countries")? {
+        let country = item
+            .key
+            .as_deref()
+            .filter(|key| !key.is_empty())
+            .ok_or_else(|| invalid("construction country has no tag"))?;
+        let fields = block(&item.value)?;
+        if let Some(value) = field(fields, b"production")?
+            && let Some(value) = field(block(value)?, b"general_lines")?
+        {
+            for (ordinal, item) in block(value)?.iter().enumerate() {
+                let ordinal = u32::try_from(ordinal)
+                    .map_err(|_| invalid("construction ordinal exceeds u32"))?;
+                let fields = block(&item.value)?;
+                match item.key.as_deref() {
+                    Some(b"building") => {
+                        let production = production(country, ordinal, fields)?;
+                        let target = required_block(fields, b"building")?;
+                        let repair_levels: Option<i32> = field(fields, b"to_repair")?
+                            .map(|value| integer(scalar(value)?))
+                            .transpose()?;
+                        if repair_levels.is_some_and(|value| value <= 0) {
+                            return Err(invalid(
+                                "native construction serializer emits only positive to_repair",
+                            ));
+                        }
+                        let row = BuildingConstruction {
+                            production,
+                            building_type: required_bytes(target, b"template")?,
+                            target_location: number(target, b"location")?,
+                            target_country: bytes(target, b"country")?,
+                            repair_levels,
+                        };
+                        if pack
+                            .building_construction
+                            .insert(row.production.id, row)
+                            .is_some()
+                        {
+                            return Err(invalid("duplicate full building construction handle"));
+                        }
+                    }
+                    Some(b"rail_way") => {
+                        let row = railway(country, ordinal, fields)?;
+                        if pack
+                            .railway_construction
+                            .insert(row.production.id, row)
+                            .is_some()
+                        {
+                            return Err(invalid("duplicate full railway construction handle"));
+                        }
+                    }
+                    _ => {
+                        return Err(invalid(
+                            "unsupported saved construction line kind; queue order cannot be compared",
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(value) = field(fields, b"occupation_status")? {
+            occupation(country, block(value)?, &mut pack)?;
+        }
+        if let Some(value) = field(fields, b"collaboration")? {
+            // Country 70C580 and status13E08A0 use the same literal at two levels.
+            if let Some(value) = field(block(value)?, b"collaboration")? {
+                for item in block(value)? {
+                    let target = item
+                        .key
+                        .clone()
+                        .filter(|key| !key.is_empty())
+                        .ok_or_else(|| invalid("collaboration lacks target country"))?;
+                    let row = CountryCollaboration {
+                        source: country.to_vec(),
+                        target: target.clone(),
+                        progress: fixed(block(&item.value)?, b"value")?,
+                    };
+                    if pack
+                        .country_collaboration
+                        .insert((country.to_vec(), target), row)
+                        .is_some()
+                    {
+                        return Err(invalid("duplicate country collaboration pair"));
+                    }
+                }
+            }
+        }
+    }
+    for item in required_block(items, b"states")? {
+        let state: u32 = integer(
+            item.key
+                .as_deref()
+                .ok_or_else(|| invalid("construction state lacks id"))?,
+        )?;
+        let fields = block(&item.value)?;
+        if let Some(value) = field(fields, b"buildings")? {
+            buildings(state, block(value)?, &mut pack.state_buildings)?;
+        }
+        if let Some(value) = field(fields, b"resistance")? {
+            let fields = block(value)?;
+            let row = StateResistance {
+                state,
+                country: bytes(fields, b"occupied_country_tag")?,
+                level: zero_omitted_fixed(fields, b"resistance")?,
+                speed: zero_omitted_fixed(fields, b"resistance_speed")?,
+                compliance: zero_omitted_fixed(fields, b"compliance")?,
+                compliance_speed: zero_omitted_fixed(fields, b"compliance_speed")?,
+                active: false_omitted(fields, b"operational_status")?,
+            };
+            if pack.state_resistance.insert(state, row).is_some() {
+                return Err(invalid("duplicate saved state resistance"));
+            }
+        }
+    }
+    for item in required_block(items, b"provinces")? {
+        let province: u32 = integer(
+            item.key
+                .as_deref()
+                .ok_or_else(|| invalid("construction province lacks id"))?,
+        )?;
+        if let Some(value) = field(block(&item.value)?, b"buildings")? {
+            buildings(province, block(value)?, &mut pack.province_buildings)?;
+        }
+    }
+    if pack
+        .building_construction
+        .keys()
+        .any(|id| pack.railway_construction.contains_key(id))
+    {
+        return Err(invalid("construction families share a full native handle"));
+    }
+    Ok(pack)
+}
+
+/// Initial CStateTemplate resource declarations from the independently verified
+/// content. They are not the runtime CState resource pool serialized by a save.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BaseResources {
+    pub rows: BTreeMap<(u32, Vec<u8>), (u32, i64)>,
+    states: std::collections::BTreeSet<u32>,
+}
+
+impl BaseResources {
+    pub fn add_state_history(&mut self, input: &[u8]) -> io::Result<()> {
+        let document = crate::parser::parse(input)?;
+        let state = required_block(&document.items, b"state")?;
+        let state_id: u32 = number(state, b"id")?;
+        if !self.states.insert(state_id) {
+            return Err(invalid("duplicate base resource state history"));
+        }
+        // AAF580 appends on each resources field; repeated blocks share one
+        // native vector, without clearing it or restarting its ordinals.
+        let mut ordinal = 0_u32;
+        for resources in state
+            .iter()
+            .filter(|item| item.key.as_deref() == Some(b"resources"))
+        {
+            for item in block(&resources.value)? {
+                let name = item
+                    .key
+                    .clone()
+                    .filter(|key| !key.is_empty())
+                    .ok_or_else(|| invalid("base resource has no name"))?;
+                // AAF580 -> 24B0080 reads the signed decimal prefix, then scales.
+                let amount = state_resource_integer(scalar(&item.value)?)?;
+                match self.rows.entry((state_id, name)) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert((ordinal, i64::from(amount) * super::FIXED_SCALE));
+                    }
+                    std::collections::btree_map::Entry::Occupied(_) => {
+                        // The native loader appends duplicate tokens too, but
+                        // the recorded table rejects their duplicate row key.
+                        return Err(invalid(
+                            "duplicate state/base resource declaration cannot be represented by the recorded (state, resource) key",
+                        ));
+                    }
+                }
+                ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("base resource ordinal exceeds u32"))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn read(layers: &crate::ResolvedLayers) -> io::Result<Self> {
+        let mut result = Self::default();
+        for path in layers.paths().filter(|path| {
+            path.to_ascii_lowercase().starts_with("history/states/")
+                && path.to_ascii_lowercase().ends_with(".txt")
+        }) {
+            let input = layers.read(path)?;
+            result
+                .add_state_history(&input)
+                .map_err(|error| invalid(format!("{path}: {error}")))?;
+        }
+        if result.states.is_empty() {
+            return Err(invalid("verified content contains no state history"));
+        }
+        Ok(result)
+    }
+}
+
+/// 24B0080 -> 254AF28 -> 253C770 uses base 10 and signed mode: stop at
+/// the first non-digit, return zero without digits, and clamp i32 overflow.
+/// This is the engine's content conversion, before AAF580 multiplies by 100000.
+fn state_resource_integer(input: &[u8]) -> io::Result<i32> {
+    let input = input
+        .iter()
+        .position(|&byte| !matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
+        .map_or(&[][..], |start| &input[start..]);
+    if input.first().is_some_and(|byte| !byte.is_ascii()) {
+        return Err(invalid(
+            "base resource has an unsupported locale-dependent leading byte",
+        ));
+    }
+    let (negative, digits) = match input {
+        [b'-', digits @ ..] => (true, digits),
+        [b'+', digits @ ..] => (false, digits),
+        digits => (false, digits),
+    };
+    let mut amount = 0_i32;
+    for &byte in digits.iter().take_while(|byte| byte.is_ascii_digit()) {
+        let digit = i32::from(byte - b'0');
+        amount = if negative {
+            amount.saturating_mul(10).saturating_sub(digit)
+        } else {
+            amount.saturating_mul(10).saturating_add(digit)
+        };
+    }
+    Ok(amount)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn railway_fields(extra: &str) -> Vec<Item> {
+        crate::parser::parse(
+            format!(
+                "id={{id=4294967295 type=4713}} cost=-90071992547.40993 priority=-9 amount=-2147483648 created_date=1936.1.1.12 base=-3 target=7 current_province=-1 remaining_hours=0.00001 {extra}"
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+        .items
+    }
+
+    fn pack(input: &str) -> io::Result<Pack> {
+        parse(&crate::parser::parse(input.as_bytes())?.items)
+    }
+
+    #[test]
+    fn construction_and_buildings_keep_shared_queue_order_and_signed_levels() {
+        let saved = pack(r#"
+            countries={GER={production={general_lines={
+                building={id={id=4 type=59} cost=1 priority=-8 amount=1 created_date=1936.1.1.12 building={template=factory location=3}}
+                rail_way={id={id=4 type=4713} cost=2 priority=-9 amount=1 created_date=1936.1.1.12 base=-1 target=3 current_province=-1 remaining_hours=-0.00001 rail_way={8 3 8}}
+            }}}}
+            states={3={buildings={factory={level=-32768 healthy_levels=-2 partial_health=-90071992547.40993} port={level=1 healthy_levels=1 partial_health=0}} resistance={}}}
+            provinces={3={buildings={factory={level=32767 healthy_levels=1 partial_health=0.00001}}}}
+        "#).unwrap();
+        let building = saved.building_construction.values().next().unwrap();
+        assert_eq!(building.production.queue_ordinal, 0);
+        assert_eq!(building.target_country, None);
+        assert_eq!(building.repair_levels, None);
+        assert_eq!(
+            saved
+                .railway_construction
+                .values()
+                .next()
+                .unwrap()
+                .production
+                .queue_ordinal,
+            1
+        );
+        let state = &saved.state_buildings[&(3, b"factory".to_vec())];
+        assert_eq!(state.level, i16::MIN);
+        assert_eq!(state.partial_health.raw, -9_007_199_254_740_993);
+        assert_eq!(saved.state_buildings[&(3, b"port".to_vec())].ordinal, 1);
+        assert_eq!(
+            saved.province_buildings[&(3, b"factory".to_vec())].level,
+            i16::MAX
+        );
+        assert_eq!(saved.state_resistance[&3].level.raw, 0);
+    }
+
+    #[test]
+    fn occupation_retains_empty_present_law_full_scope_and_manpower_order() {
+        let saved = pack(r#"
+            countries={GER={occupation_status={default_law="" division_template_id={id=4294967295 type=52}
+                foreign_manpower={value={tag=GER value=3} value={tag=FRA value=7}}
+                occupation={FRA={occupation_law_list={0="law_a"} state_garrison_data={9={strength_ratio=90071992547.40993 garrison_required=-0.00001 suppression=yes army_manpower_need=-2147483648 manpower_pool={value={tag=GER value=4}}}}}
+                    ENG={occupation_law_list={0="law_b"}}}
+            } collaboration={collaboration={FRA={value=-0.00001}}}}}
+            states={9={resistance={resistance=-90071992547.40993 resistance_speed=-0.00001 compliance=3 compliance_speed=0.00001 operational_status=yes occupied_country_tag=FRA}}} provinces={}
+        "#).unwrap();
+        assert_eq!(
+            saved.occupation_settings[b"GER".as_slice()].default_law,
+            Some(Vec::new())
+        );
+        assert_eq!(
+            saved.occupation_settings[b"GER".as_slice()].garrison_template,
+            Some((u64::from(u32::MAX) << 32) | 52)
+        );
+        assert_eq!(saved.state_occupation_laws.len(), 2);
+        assert_eq!(
+            saved.state_occupation_laws[&(b"GER".to_vec(), b"ENG".to_vec(), 0)].law,
+            b"law_b"
+        );
+        let garrison = &saved.state_garrisons[&(b"GER".to_vec(), 9)];
+        assert_eq!(garrison.required_manpower, i32::MIN);
+        assert_eq!(garrison.strength_ratio.raw, 9_007_199_254_740_993);
+        assert_eq!(
+            saved.country_reserve_manpower[b"GER".as_slice()][1].source_country,
+            b"FRA"
+        );
+        assert_eq!(saved.state_resistance[&9].speed.raw, -1);
+        assert_eq!(
+            saved
+                .country_collaboration
+                .values()
+                .next()
+                .unwrap()
+                .progress
+                .raw,
+            -1
+        );
+    }
+
+    #[test]
+    fn malformed_or_duplicate_serialized_scope_is_never_silently_overwritten() {
+        for input in [
+            "countries={GER={occupation_status={occupation={FRA={occupation_law_list={0=a 0=b}}}}}} states={} provinces={}",
+            "countries={GER={occupation_status={occupation={FRA={state_garrison_data={0={}}}}}}} states={} provinces={}",
+            "countries={GER={occupation_status={foreign_manpower={value={tag=GER value=0}}}}} states={} provinces={}",
+            "countries={} states={1={buildings={a={level=32768 healthy_levels=0 partial_health=0}}}} provinces={}",
+            "countries={} states={1={buildings={a={level=1 healthy_levels=0}}}} provinces={}",
+            "countries={GER={production={general_lines={unknown={}}}}} states={} provinces={}",
+        ] {
+            assert!(pack(input).is_err(), "{input}");
+        }
+    }
+
+    #[test]
+    fn base_resources_use_initial_declarations_and_preserve_native_integer_scale() {
+        let mut resources = BaseResources::default();
+        resources
+            .add_state_history(
+                b"state={id=1 resources={steel=-2147483648 oil=3 aluminium=10.000 chromium=-1.9 rubber=2147483648.0} history={resources={steel=999}}}",
+            )
+            .unwrap();
+        assert_eq!(
+            resources.rows[&(1, b"steel".to_vec())],
+            (0, -214_748_364_800_000)
+        );
+        assert_eq!(resources.rows[&(1, b"oil".to_vec())], (1, 300_000));
+        assert_eq!(resources.rows[&(1, b"aluminium".to_vec())], (2, 1_000_000));
+        assert_eq!(resources.rows[&(1, b"chromium".to_vec())], (3, -100_000));
+        assert_eq!(
+            resources.rows[&(1, b"rubber".to_vec())],
+            (4, 214_748_364_700_000)
+        );
+        assert!(resources.add_state_history(b"state={id=1}").is_err());
+    }
+
+    #[test]
+    fn state_resource_numbers_follow_native_decimal_prefix_and_signed_saturation() {
+        for (text, expected) in [
+            ("10.000", 10),
+            ("1.99999", 1),
+            ("-1.99999", -1),
+            ("-0.99999", 0),
+            ("+.5", 0),
+            ("+00019.25", 19),
+            ("\t\n\r\u{b}\u{c} -7.5", -7),
+            ("1e9", 1),
+            ("0x10", 0),
+            ("19suffix", 19),
+            ("", 0),
+            ("-", 0),
+            ("word", 0),
+            ("2147483646.99999", i32::MAX - 1),
+            ("2147483647.99999", i32::MAX),
+            ("2147483648", i32::MAX),
+            ("214748364800000suffix000", i32::MAX),
+            ("4294967295", i32::MAX),
+            ("4294967296", i32::MAX),
+            ("999999999999999999999999999999999999", i32::MAX),
+            ("-2147483647.99999", i32::MIN + 1),
+            ("-2147483648.99999", i32::MIN),
+            ("-2147483649", i32::MIN),
+            ("-4294967296", i32::MIN),
+            ("-999999999999999999999999999999999999", i32::MIN),
+        ] {
+            assert_eq!(
+                state_resource_integer(text.as_bytes()).unwrap(),
+                expected,
+                "{text:?}"
+            );
+        }
+        assert!(state_resource_integer(b"\xa010").is_err());
+    }
+
+    #[test]
+    fn repeated_resource_blocks_append_in_document_order() {
+        let mut resources = BaseResources::default();
+        resources
+            .add_state_history(
+                b"state={id=949 resources={aluminium=1} history={resources={steel=999}} resources={} resources={oil=1 steel=-1.9}}",
+            )
+            .unwrap();
+        assert_eq!(resources.rows.len(), 3);
+        assert_eq!(resources.rows[&(949, b"aluminium".to_vec())], (0, 100_000));
+        assert_eq!(resources.rows[&(949, b"oil".to_vec())], (1, 100_000));
+        assert_eq!(resources.rows[&(949, b"steel".to_vec())], (2, -100_000));
+    }
+
+    #[test]
+    fn duplicate_resource_tokens_fail_without_replacing_an_earlier_declaration() {
+        for input in [
+            b"state={id=1 resources={steel=2 steel=7}}".as_slice(),
+            b"state={id=1 resources={steel=2} resources={steel=7}}".as_slice(),
+        ] {
+            let mut resources = BaseResources::default();
+            let error = resources.add_state_history(input).unwrap_err();
+            assert!(error.to_string().contains("recorded (state, resource) key"));
+            assert_eq!(resources.rows[&(1, b"steel".to_vec())], (0, 200_000));
+        }
+    }
+
+    #[test]
+    fn railway_retains_signed_precision_full_identity_and_repeated_route_order() {
+        let fields = railway_fields(
+            "rail_way={7 4 7} cancel=yes speed=-0.00001 produced=90071992547.40993 active_factories=-8",
+        );
+        let row = railway(b"GER", 19, &fields).unwrap();
+        assert_eq!(row.production.id, (u64::from(u32::MAX) << 32) | 4713);
+        assert_eq!(row.production.cost.raw, -9_007_199_254_740_993);
+        assert_eq!(row.production.produced.raw, 9_007_199_254_740_993);
+        assert_eq!(row.production.speed.raw, -1);
+        assert_eq!(row.production.active_factories, -8);
+        assert_eq!(
+            (row.production.queue_ordinal, row.production.priority),
+            (19, -9)
+        );
+        assert_eq!(row.production.amount, i32::MIN);
+        assert_eq!((row.base_level, row.current_segment), (-3, -1));
+        assert_eq!(row.remaining_cost.raw, 1);
+        assert!(row.cancelled);
+        assert_eq!(row.route, [7, 4, 7]);
+    }
+
+    #[test]
+    fn railway_applies_only_serializer_proven_omissions_and_refuses_precision_loss() {
+        let fields = railway_fields("");
+        let row = railway(b"GER", 0, &fields).unwrap();
+        assert_eq!(row.production.active_factories, 0);
+        assert_eq!(
+            (row.production.speed.raw, row.production.produced.raw),
+            (0, 0)
+        );
+        assert!(!row.cancelled);
+        assert!(row.route.is_empty());
+        for extra in ["speed=0.000001", "rail_way={x=4}", "cancel=2", "amount=2"] {
+            assert!(
+                railway(b"GER", 0, &railway_fields(extra)).is_err(),
+                "{extra}"
+            );
+        }
+        let mut fields = fields;
+        fields.retain(|item| item.key.as_deref() != Some(b"remaining_hours"));
+        assert!(railway(b"GER", 0, &fields).is_err());
+    }
+}

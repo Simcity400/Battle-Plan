@@ -3,12 +3,22 @@
 //! `PROJECT_PROJECT_OFF_ITERATIONS` and `PROJECT_PROJECT_OFF_HISTORY_COUNT`
 //! both named +0x74. The serializer-owned history vector provides the latter
 //! interpretation; the old project row called the same bytes iterations.
-//! Both candidates are preserved explicitly, not treated as independent fields.
+//! Native deserialization resolves the conflict as history count, not iterations.
 //! Local project ids are unique only within the owning country, as observed
 //! by the archived owner-joined lifecycle walk.
 //! Sources: `collector/src/attach_log/offsets.rs:1214-1270`,
 //! `read_project_row`, `read_country_project_lifecycle`, and
 //! `read_project_reward_history_from_bytes` in archived `attach_log.rs`.
+
+use crate::{
+    Memory, ccountry,
+    cpdx_array::Array,
+    memory::RecordField,
+    nproject_cprogram_status, nproject_cproject_pool,
+    nproject_cproject_state_machine::{self, State},
+    nproject_sproject_history as history,
+    walk::Outcome,
+};
 
 /// NProject::CProject primary vtable; confirmed by pinned executable RTTI.
 pub const VTABLE_RVA: usize = 0x0296_c270;
@@ -22,6 +32,7 @@ pub const TYPE: usize = 0x08;
 pub const ID: usize = 0x0c;
 /// CProject +0x18 static project definition handle u32; checked by archived `project_pin`.
 pub const DEFINITION_HANDLE: usize = 0x18;
+pub const OWNER: usize = 0x1c;
 /// CProject +0x28 CProjectStateMachine pointer; vtable-checked by archived `read_project_state_row`.
 pub const STATE_MACHINE: usize = 0x28;
 /// CProject +0x60 worked-at reference type u32, checked as CProgram type 83; old OWNER_TAG name was misleading.
@@ -32,11 +43,715 @@ pub const PROGRAM_REFERENCE_ID: usize = 0x64;
 pub const HISTORY: usize = 0x68;
 /// CProject +0x70 history vector capacity u32; archived history walker checks count <= capacity.
 pub const HISTORY_CAPACITY: usize = 0x70;
-/// CProject +0x74 history vector count u32 candidate; conflicts with the old iterations interpretation.
-pub const HISTORY_COUNT_CANDIDATE: usize = 0x74;
-/// CProject +0x74 old project-row iterations u32 candidate; aliases history count and is not separately proved.
-pub const ITERATIONS_CONFLICTING_CANDIDATE: usize = 0x74;
+/// CProject +0x74 signed history count; FCB2D0 moves 0x58-byte records and FCF9A0 deserializes this vector.
+pub const HISTORY_COUNT: usize = 0x74;
 /// CProject +0x1bc started flag u8; archived lifecycle walker accepts only 0 or 1.
 pub const STARTED: usize = 0x1bc;
 /// CProject +0x1bd completed flag u8; archived lifecycle walker accepts only 0 or 1.
 pub const COMPLETED: usize = 0x1bd;
+
+const BATCH: usize = 16;
+const HEADER_LEN: usize = HISTORY_COUNT + 4;
+const RECORD_SIZE: usize = HEADER_LEN + 2;
+const PROJECT_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: HEADER_LEN,
+    },
+    RecordField {
+        source_offset: STARTED,
+        destination_offset: HEADER_LEN,
+        len: 2,
+    },
+];
+const MACHINE_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: nproject_cproject_state_machine::SIZE,
+}];
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub owner: u32,
+    pub local_id: u32,
+    pub definition_id: u32,
+    /// Full initialized CProgram reference, including the native empty sentinel.
+    pub program_reference: u64,
+    pub started: u8,
+    pub completed: u8,
+    pub state: State,
+}
+
+impl Row {
+    pub fn key(self) -> u64 {
+        (u64::from(self.owner) << 32) | u64::from(self.local_id)
+    }
+}
+
+/// Visits each authenticated country's single project pool.
+/// Pool count is the engine's signed live extent; no collector-specific cap or
+/// speculative adjacent pool/status scan is used.
+fn for_each_pool<M: Memory>(
+    memory: &M,
+    base: usize,
+    game_state: usize,
+    mut visit: impl FnMut(
+        &ccountry::Reader<'_, M>,
+        ccountry::Country,
+        Array,
+    ) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    let countries = ccountry::Reader::new(memory, base, game_state)?;
+    let mut found_country = false;
+    for slot in 1..countries.count() {
+        let Some(country) = countries.at(slot)? else {
+            continue;
+        };
+        found_country = true;
+        let status = nproject_cprogram_status::from_country(memory, base, country, &countries)?;
+        let projects = nproject_cproject_pool::from_status(memory, base, status)?;
+        visit(&countries, country, projects)?;
+    }
+    if !found_country {
+        return Err("project country roster contains no countries");
+    }
+    Ok(())
+}
+
+/// Captures every pool row, including projects never started. IDs are local to
+/// the owning country. Only capacity limits the walk; exact engine-native
+/// values are neither rounded nor inferred from the saved completion flags.
+pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
+    walk_tables(memory, base, game_state, output, None).0
+}
+
+/// One authenticated pool census produces both tables. Lifecycle/state failures
+/// affect projects only; malformed history affects history only. Empty output
+/// slices still count omitted rows without reading their state/child payloads.
+pub fn walk_with_history(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    projects: &mut [Row],
+    histories: &mut [history::Row],
+) -> (Outcome, Outcome) {
+    walk_tables(memory, base, game_state, projects, Some(histories))
+}
+
+fn walk_tables(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    projects: &mut [Row],
+    mut histories: Option<&mut [history::Row]>,
+) -> (Outcome, Outcome) {
+    let mut project_len = 0;
+    let mut project_unread = 0_u32;
+    let mut project_error = None;
+    let mut history_len = 0;
+    let mut history_unread = 0_u32;
+    let mut history_error = None;
+    let mut headers = [0; RECORD_SIZE * BATCH];
+    let mut machines = [0; nproject_cproject_state_machine::SIZE * BATCH];
+    let mut pointers = [0; BATCH];
+    let mut machine_pointers = [0; BATCH];
+    let result = (|| {
+        let expected = base
+            .checked_add(VTABLE_RVA)
+            .ok_or("project vtable overflow")? as u64;
+        let decoder = nproject_cproject_state_machine::Decoder::new(base)?;
+        for_each_pool(memory, base, game_state, |countries, country, pool| {
+            let mut index = 0;
+            // Alias resolution is valid for this one synchronous pool census.
+            // It never survives into another callback or comparison read.
+            let mut authenticated_owner = country.id;
+            while index < pool.count {
+                let capture_project = project_error.is_none() && project_len < projects.len();
+                let mut count = BATCH.min((pool.count - index) as usize);
+                if capture_project {
+                    count = count.min(projects.len() - project_len);
+                }
+                for (ordinal, pointer) in pointers[..count].iter_mut().enumerate() {
+                    *pointer = pool
+                        .element(index + ordinal as u32, POOL_STRIDE)
+                        .ok_or("project address overflow")?;
+                }
+                let fields = &PROJECT_FIELDS[..if capture_project { 2 } else { 1 }];
+                let copied = memory.copy_records(
+                    &pointers[..count],
+                    fields,
+                    RECORD_SIZE,
+                    &mut headers[..count * RECORD_SIZE],
+                );
+                if copied > count * fields.len() {
+                    return Err("project batch copy count invalid");
+                }
+                if copied < count * fields.len() && copied.is_multiple_of(fields.len()) {
+                    return Err("project identity unreadable");
+                }
+                let header_count = copied.div_ceil(fields.len());
+                if header_count == 0 {
+                    return Err("project identity unreadable");
+                }
+                if copied < count * fields.len() {
+                    // A flag read failed after its header completed. Keep all
+                    // history headers, then continue after that record without
+                    // retrying its failed field or accessing its state machine.
+                    project_error = Some("project lifecycle unreadable");
+                }
+                for ordinal in 0..header_count {
+                    let bytes = &headers[ordinal * RECORD_SIZE..(ordinal + 1) * RECORD_SIZE];
+                    if u64_at(bytes, 0) != expected {
+                        return Err("project vtable mismatch");
+                    }
+                    if u32_at(bytes, TYPE) != REFERENCE_TYPE {
+                        return Err("project reference type mismatch");
+                    }
+                    if u32_at(bytes, ID) == 0 {
+                        return Err("project local id is zero");
+                    }
+                    let owner = u32_at(bytes, OWNER);
+                    if owner != authenticated_owner {
+                        if countries.resolve(owner)?.pointer != country.pointer {
+                            return Err("project pool owner mismatch");
+                        }
+                        authenticated_owner = owner;
+                    }
+                    machine_pointers[ordinal] = usize::try_from(u64_at(bytes, STATE_MACHINE))
+                        .map_err(|_| "project state address overflow")?;
+                }
+                if capture_project && project_error.is_none() {
+                    let copied = memory.copy_records(
+                        &machine_pointers[..header_count],
+                        &MACHINE_FIELDS,
+                        nproject_cproject_state_machine::SIZE,
+                        &mut machines[..header_count * nproject_cproject_state_machine::SIZE],
+                    );
+                    if copied != header_count {
+                        project_error = Some("project state machine unreadable");
+                    }
+                }
+                for ordinal in 0..header_count {
+                    let bytes = &headers[ordinal * RECORD_SIZE..(ordinal + 1) * RECORD_SIZE];
+                    let owner = u32_at(bytes, OWNER);
+                    let id = u32_at(bytes, ID);
+                    if project_error.is_none() {
+                        if !capture_project {
+                            project_unread = project_unread
+                                .checked_add(1)
+                                .ok_or("project row count overflow")?;
+                        } else {
+                            let row = (|| {
+                                let flags = &bytes[HEADER_LEN..];
+                                if flags.iter().any(|&flag| flag > 1) {
+                                    return Err("project lifecycle flag invalid");
+                                }
+                                let state_start = ordinal * nproject_cproject_state_machine::SIZE;
+                                let state_bytes = machines[state_start
+                                    ..state_start + nproject_cproject_state_machine::SIZE]
+                                    .try_into()
+                                    .unwrap();
+                                Ok(Row {
+                                    owner,
+                                    local_id: id,
+                                    definition_id: u32_at(bytes, DEFINITION_HANDLE),
+                                    program_reference: u64_at(bytes, PROGRAM_REFERENCE_TYPE),
+                                    started: flags[0],
+                                    completed: flags[1],
+                                    state: decoder
+                                        .decode(machine_pointers[ordinal], state_bytes)?,
+                                })
+                            })();
+                            match row {
+                                Ok(row) => {
+                                    projects[project_len] = row;
+                                    project_len += 1;
+                                }
+                                Err(reason) => project_error = Some(reason),
+                            }
+                        }
+                    }
+                    if let Some(output) =
+                        histories.as_deref_mut().filter(|_| history_error.is_none())
+                    {
+                        let result = (|| {
+                            let array = history_array(bytes[..HEADER_LEN].try_into().unwrap())?;
+                            let read_count =
+                                (array.count as usize).min(output.len() - history_len) as u32;
+                            history_unread = history_unread
+                                .checked_add(array.count - read_count)
+                                .ok_or("project history omitted row count overflow")?;
+                            for ordinal in 0..read_count {
+                                let address = array
+                                    .element(ordinal, history::STRIDE)
+                                    .ok_or("project history row address overflow")?;
+                                output[history_len] =
+                                    history::read_row(memory, base, address, owner, id, ordinal)?;
+                                history_len += 1;
+                            }
+                            Ok(())
+                        })();
+                        if let Err(reason) = result {
+                            history_error = Some(reason);
+                        }
+                    }
+                }
+                index += header_count as u32;
+            }
+            Ok(())
+        })
+    })();
+    if let Err(reason) = result {
+        return (
+            Outcome::Unavailable { reason },
+            Outcome::Unavailable { reason },
+        );
+    }
+    if project_error.is_none() {
+        projects[..project_len].sort_unstable_by_key(|row| row.key());
+        if projects[..project_len]
+            .windows(2)
+            .any(|pair| pair[0].key() == pair[1].key())
+        {
+            project_error = Some("duplicate country-local project id");
+        }
+    }
+    if let Some(histories) = histories.filter(|_| history_error.is_none()) {
+        histories[..history_len].sort_unstable_by_key(|row| (row.owner, row.project, row.ordinal));
+        if histories[..history_len].windows(2).any(|pair| {
+            (pair[0].owner, pair[0].project, pair[0].ordinal)
+                == (pair[1].owner, pair[1].project, pair[1].ordinal)
+        }) {
+            history_error = Some("duplicate country-local project history row");
+        }
+    }
+    (
+        outcome(project_len, project_unread, project_error),
+        outcome(history_len, history_unread, history_error),
+    )
+}
+
+fn outcome(len: usize, unread_rows: u32, error: Option<&'static str>) -> Outcome {
+    match error {
+        Some(reason) => Outcome::Unavailable { reason },
+        None if unread_rows != 0 => Outcome::Truncated { len, unread_rows },
+        None => Outcome::Rows { len },
+    }
+}
+
+fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+}
+
+fn u64_at(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+}
+
+fn history_array(bytes: &[u8; HISTORY_COUNT + 4]) -> Result<Array, &'static str> {
+    let data =
+        usize::try_from(u64_at(bytes, HISTORY)).map_err(|_| "project history address overflow")?;
+    let capacity = u32_at(bytes, HISTORY_CAPACITY);
+    let count = u32_at(bytes, HISTORY_COUNT);
+    if capacity > i32::MAX as u32
+        || count > capacity
+        || (count != 0 && data == 0)
+        || (count as usize)
+            .checked_mul(history::STRIDE)
+            .and_then(|len| data.checked_add(len))
+            .is_none()
+    {
+        return Err("project history array unreadable or invalid");
+    }
+    Ok(Array { data, count })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+    use crate::{
+        cgame_state, memory::SliceMemory, nproject_cprototype_project_state as prototype,
+        nproject_csimple_project_state as simple, nproject_sproject_context,
+    };
+
+    const GAME: usize = 0x1000;
+    const COUNTRIES: usize = 0x2000;
+    const LINKS: usize = 0x2100;
+    const COUNTRY: usize = 0x3000;
+    const STATUS: usize = 0x4800;
+    const POOL: usize = 0x4900;
+    const PROJECT: usize = 0x5000;
+    const MACHINE: usize = 0x6000;
+    const HISTORY_ROW: usize = 0x7000;
+    const MANY_PROJECTS: usize = 0x10000;
+    const MANY_MACHINES: usize = 0x20000;
+    const MANY_HISTORIES: usize = 0x40000;
+    const MANY_COUNT: usize = BATCH * 2 + 1;
+
+    fn put32(bytes: &mut [u8], address: usize, value: u32) {
+        bytes[address..address + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put64(bytes: &mut [u8], address: usize, value: u64) {
+        bytes[address..address + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn array(bytes: &mut [u8], address: usize, data: usize, count: u32) {
+        put64(bytes, address, data as u64);
+        put32(bytes, address + 8, count);
+        put32(bytes, address + 12, count);
+    }
+
+    fn fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 0x8000];
+        array(&mut bytes, GAME + cgame_state::COUNTRIES, COUNTRIES, 4);
+        array(&mut bytes, GAME + cgame_state::COUNTRY_LINKS, LINKS, 4);
+        for slot in [1, 3] {
+            put64(&mut bytes, COUNTRIES + slot * 8, COUNTRY as u64);
+            put32(&mut bytes, LINKS + slot * 4, 1);
+        }
+        put64(&mut bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+        put32(&mut bytes, COUNTRY + ccountry::ID, 3);
+        put64(
+            &mut bytes,
+            COUNTRY + ccountry::PROGRAM_STATUS,
+            STATUS as u64,
+        );
+        put64(
+            &mut bytes,
+            STATUS,
+            nproject_cprogram_status::VTABLE_RVA as u64,
+        );
+        put64(
+            &mut bytes,
+            STATUS + 8,
+            nproject_cprogram_status::SECONDARY_VTABLE_RVA as u64,
+        );
+        put32(&mut bytes, STATUS + nproject_cprogram_status::OWNER, 3);
+        put64(
+            &mut bytes,
+            STATUS + nproject_cprogram_status::PROJECT_POOL,
+            POOL as u64,
+        );
+        put64(&mut bytes, POOL, nproject_cproject_pool::VTABLE_RVA as u64);
+        array(
+            &mut bytes,
+            POOL + nproject_cproject_pool::PROJECTS,
+            PROJECT,
+            1,
+        );
+        put64(&mut bytes, PROJECT, VTABLE_RVA as u64);
+        put32(&mut bytes, PROJECT + TYPE, REFERENCE_TYPE);
+        put32(&mut bytes, PROJECT + ID, 17);
+        put32(&mut bytes, PROJECT + DEFINITION_HANDLE, 45);
+        // Project retains the original tag while the country's current id is3.
+        put32(&mut bytes, PROJECT + OWNER, 1);
+        put64(&mut bytes, PROJECT + STATE_MACHINE, MACHINE as u64);
+        bytes[PROJECT + STARTED] = 1;
+        array(&mut bytes, PROJECT + HISTORY, HISTORY_ROW, 1);
+        put64(
+            &mut bytes,
+            MACHINE,
+            nproject_cproject_state_machine::VTABLE_RVA as u64,
+        );
+        put64(
+            &mut bytes,
+            MACHINE + nproject_cproject_state_machine::CURRENT_STATE,
+            (MACHINE + nproject_cproject_state_machine::SIMPLE_STATE_2) as u64,
+        );
+        bytes[MACHINE + nproject_cproject_state_machine::NOT_COMPLETED] = 1;
+        for (index, offset) in [0x18, 0xe8, 0x168, 0x1e8].into_iter().enumerate() {
+            let vtable = if index == 0 {
+                prototype::VTABLE_RVA
+            } else {
+                simple::VTABLE_RVA
+            };
+            put64(&mut bytes, MACHINE + offset, vtable as u64);
+            put32(
+                &mut bytes,
+                MACHINE + offset + simple::STATE_ENUM,
+                index as u32,
+            );
+        }
+        put64(&mut bytes, MACHINE + 0x168 + simple::PHASE_PROGRESS, 7);
+        put64(&mut bytes, HISTORY_ROW, history::VTABLE_RVA as u64);
+        put64(
+            &mut bytes,
+            HISTORY_ROW + history::CONTEXT,
+            nproject_sproject_context::VTABLE_RVA as u64,
+        );
+        bytes
+    }
+
+    fn many_projects() -> Vec<u8> {
+        let mut bytes = fixture();
+        let project = bytes[PROJECT..PROJECT + POOL_STRIDE].to_vec();
+        let machine = bytes[MACHINE..MACHINE + nproject_cproject_state_machine::SIZE].to_vec();
+        let reward = bytes[HISTORY_ROW..HISTORY_ROW + history::STRIDE].to_vec();
+        bytes.resize(0x50000, 0);
+        array(
+            &mut bytes,
+            POOL + nproject_cproject_pool::PROJECTS,
+            MANY_PROJECTS,
+            MANY_COUNT as u32,
+        );
+        for index in 0..MANY_COUNT {
+            let project_at = MANY_PROJECTS + index * POOL_STRIDE;
+            let machine_at = MANY_MACHINES + index * nproject_cproject_state_machine::SIZE;
+            let history_at = MANY_HISTORIES + index * history::STRIDE;
+            bytes[project_at..project_at + project.len()].copy_from_slice(&project);
+            bytes[machine_at..machine_at + machine.len()].copy_from_slice(&machine);
+            bytes[history_at..history_at + reward.len()].copy_from_slice(&reward);
+            put32(&mut bytes, project_at + ID, 17 + index as u32);
+            put64(&mut bytes, project_at + STATE_MACHINE, machine_at as u64);
+            array(&mut bytes, project_at + HISTORY, history_at, 1);
+            put64(
+                &mut bytes,
+                machine_at + nproject_cproject_state_machine::CURRENT_STATE,
+                (machine_at + nproject_cproject_state_machine::SIMPLE_STATE_2) as u64,
+            );
+            put64(
+                &mut bytes,
+                machine_at
+                    + nproject_cproject_state_machine::SIMPLE_STATE_2
+                    + simple::PHASE_PROGRESS,
+                (i64::MIN + index as i64) as u64,
+            );
+            put32(
+                &mut bytes,
+                history_at + history::DATE,
+                (i32::MIN + index as i32) as u32,
+            );
+        }
+        bytes
+    }
+
+    #[test]
+    fn multiple_batches_preserve_signed_fields_and_history_joins() {
+        let bytes = many_projects();
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let mut projects = [Row::default(); MANY_COUNT];
+        let mut histories = [history::Row::default(); MANY_COUNT];
+        assert_eq!(
+            walk_with_history(&memory, 0, GAME, &mut projects, &mut histories),
+            (
+                Outcome::Rows { len: MANY_COUNT },
+                Outcome::Rows { len: MANY_COUNT },
+            )
+        );
+        for (index, (project, history)) in projects.iter().zip(&histories).enumerate() {
+            assert_eq!(project.owner, 1);
+            assert_eq!(project.local_id, 17 + index as u32);
+            assert_eq!(project.state.phase_progress, i64::MIN + index as i64);
+            assert_eq!(history.owner, project.owner);
+            assert_eq!(history.project, project.local_id);
+            assert_eq!(history.ordinal, 0);
+            assert_eq!(history.date, i32::MIN + index as i32);
+        }
+    }
+
+    #[test]
+    fn partial_gather_failures_are_not_retried_and_keep_independent_history() {
+        struct FaultMemory<'a> {
+            memory: SliceMemory<'a>,
+            fault: usize,
+            failures: Cell<usize>,
+        }
+        impl Memory for FaultMemory<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                if address <= self.fault && self.fault < address + destination.len() {
+                    self.failures.set(self.failures.get() + 1);
+                    destination[0] = 0xff;
+                    return false;
+                }
+                self.memory.copy(address, destination)
+            }
+        }
+        let bytes = many_projects();
+        for (fault, reason, history_readable) in [
+            (
+                MANY_PROJECTS + 8 * POOL_STRIDE + STARTED,
+                "project lifecycle unreadable",
+                true,
+            ),
+            (
+                MANY_MACHINES + 8 * nproject_cproject_state_machine::SIZE,
+                "project state machine unreadable",
+                true,
+            ),
+            (
+                MANY_PROJECTS + 8 * POOL_STRIDE,
+                "project identity unreadable",
+                false,
+            ),
+        ] {
+            let memory = FaultMemory {
+                memory: SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                fault,
+                failures: Cell::new(0),
+            };
+            let mut histories = [history::Row::default(); MANY_COUNT];
+            let result = walk_with_history(
+                &memory,
+                0,
+                GAME,
+                &mut [Row::default(); MANY_COUNT],
+                &mut histories,
+            );
+            assert_eq!(result.0, Outcome::Unavailable { reason });
+            assert_eq!(
+                result.1,
+                if history_readable {
+                    Outcome::Rows { len: MANY_COUNT }
+                } else {
+                    Outcome::Unavailable { reason }
+                }
+            );
+            assert_eq!(memory.failures.get(), 1);
+            if history_readable {
+                for (index, history) in histories.iter().enumerate() {
+                    assert_eq!(history.project, 17 + index as u32);
+                    assert_eq!(history.date, i32::MIN + index as i32);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn capacity_inside_a_batch_skips_invalid_omitted_state_and_counts_every_row() {
+        let mut bytes = many_projects();
+        put64(
+            &mut bytes,
+            MANY_PROJECTS + 5 * POOL_STRIDE + STATE_MACHINE,
+            u64::MAX,
+        );
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert_eq!(
+            walk_with_history(
+                &memory,
+                0,
+                GAME,
+                &mut [Row::default(); 5],
+                &mut [history::Row::default(); MANY_COUNT],
+            ),
+            (
+                Outcome::Truncated {
+                    len: 5,
+                    unread_rows: MANY_COUNT as u32 - 5,
+                },
+                Outcome::Rows { len: MANY_COUNT },
+            )
+        );
+    }
+
+    #[test]
+    fn equivalent_owner_alias_is_authenticated_and_preserved_in_both_tables() {
+        let bytes = fixture();
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let mut projects = [Row::default(); 1];
+        let mut histories = [history::Row::default(); 1];
+        assert_eq!(
+            walk_with_history(&memory, 0, GAME, &mut projects, &mut histories),
+            (Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 })
+        );
+        assert_eq!(
+            (
+                projects[0].owner,
+                projects[0].local_id,
+                projects[0].state.phase_progress
+            ),
+            (1, 17, 7)
+        );
+        assert_eq!(
+            (
+                histories[0].owner,
+                histories[0].project,
+                histories[0].ordinal
+            ),
+            (1, 17, 0)
+        );
+    }
+
+    #[test]
+    fn state_and_history_failures_are_independent_but_invalid_owner_is_not_invented() {
+        for (at, failed) in [(MACHINE, 0), (HISTORY_ROW, 1), (PROJECT + OWNER, 2)] {
+            let mut bytes = fixture();
+            put32(&mut bytes, at, 0);
+            let memory = SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            let result = walk_with_history(
+                &memory,
+                0,
+                GAME,
+                &mut [Row::default(); 1],
+                &mut [history::Row::default(); 1],
+            );
+            match failed {
+                0 => {
+                    assert!(matches!(result.0, Outcome::Unavailable { .. }));
+                    assert_eq!(result.1, Outcome::Rows { len: 1 });
+                }
+                1 => {
+                    assert_eq!(result.0, Outcome::Rows { len: 1 });
+                    assert!(matches!(result.1, Outcome::Unavailable { .. }));
+                }
+                _ => {
+                    assert!(matches!(result.0, Outcome::Unavailable { .. }));
+                    assert!(matches!(result.1, Outcome::Unavailable { .. }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn independent_capacities_count_omissions_without_reading_omitted_state_or_history() {
+        let mut bytes = fixture();
+        put64(&mut bytes, PROJECT + STATE_MACHINE, u64::MAX);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert_eq!(
+            walk_with_history(&memory, 0, GAME, &mut [], &mut [history::Row::default(); 1]),
+            (
+                Outcome::Truncated {
+                    len: 0,
+                    unread_rows: 1
+                },
+                Outcome::Rows { len: 1 }
+            )
+        );
+        let mut bytes = fixture();
+        put64(&mut bytes, PROJECT + HISTORY, 0x9000);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert_eq!(
+            walk_with_history(&memory, 0, GAME, &mut [Row::default(); 1], &mut []),
+            (
+                Outcome::Rows { len: 1 },
+                Outcome::Truncated {
+                    len: 0,
+                    unread_rows: 1
+                }
+            )
+        );
+    }
+}

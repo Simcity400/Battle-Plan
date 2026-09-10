@@ -12,9 +12,9 @@ use installed_content::{
 };
 use replay::{
     container::{Replay, SeekResult},
-    frame::{DecodedFrame, TableView},
+    frame::DecodedFrame,
     identity::Verification,
-    rows::{CountryRow, Row, TableId},
+    rows::{CountryRow, tables},
 };
 
 use crate::playback::Playback;
@@ -110,36 +110,18 @@ fn check_verification(
     Ok(())
 }
 
-fn complete(frame: &DecodedFrame, table: TableId) -> io::Result<&[Row]> {
-    match &frame.tables[table.index()] {
-        TableView::Complete(rows) => Ok(rows),
-        TableView::Truncated { missing, .. } => Err(invalid(format!(
-            "hour {} {table:?} is truncated ({missing} missing rows)",
-            frame.hour
-        ))),
-        TableView::Unavailable { reason } => Err(invalid(format!(
-            "hour {} {table:?} is unavailable: {reason}",
-            frame.hour
-        ))),
-    }
-}
-
 fn palette(map: &MapData, frame: &DecodedFrame, control: bool) -> io::Result<Palette> {
-    let countries = complete(frame, TableId::Countries)?
+    let countries = frame
+        .complete::<tables::Countries>()?
         .iter()
-        .map(|row| match row {
-            Row::Country(country) => Ok((country.canonical_slot, country)),
-            _ => Err(invalid("Countries table contains a different row type")),
-        })
-        .collect::<io::Result<BTreeMap<_, _>>>()?;
-    let links = complete(frame, TableId::CountryLinks)?
+        .map(|country| (country.canonical_slot, country))
+        .collect::<BTreeMap<_, _>>();
+    let links = frame
+        .complete::<tables::CountryLinks>()?
         .iter()
-        .map(|row| match row {
-            Row::CountryLink(link) => Ok((link.id, link.canonical_slot)),
-            _ => Err(invalid("CountryLinks table contains a different row type")),
-        })
-        .collect::<io::Result<BTreeMap<_, _>>>()?;
-    let provinces = complete(frame, TableId::Provinces)?;
+        .map(|link| (link.id, link.canonical_slot))
+        .collect::<BTreeMap<_, _>>();
+    let provinces = frame.complete::<tables::Provinces>()?;
     let count = map
         .definitions
         .last_key_value()
@@ -154,10 +136,7 @@ fn palette(map: &MapData, frame: &DecodedFrame, control: bool) -> io::Result<Pal
     };
     let mut observed = BTreeSet::new();
     let mut unknown = Vec::new();
-    for row in provinces {
-        let Row::Province(province) = row else {
-            return Err(invalid("Provinces table contains a different row type"));
-        };
+    for province in provinces {
         let definition = map.definitions.get(&province.id).ok_or_else(|| {
             invalid(format!(
                 "recorded province {} is absent from map/definition.csv",
@@ -240,9 +219,9 @@ mod tests {
     use super::*;
     use installed_content::map::{CountryColors, ProvinceDefinition};
     use replay::{
-        frame::Metrics,
+        frame::{Metrics, TableView},
         identity::Roster,
-        rows::{CountryLinkRow, ProvinceRow},
+        rows::{CountryLinkRow, ProvinceRow, TableId, TableRows},
     };
 
     fn map() -> MapData {
@@ -279,40 +258,43 @@ mod tests {
         let mut tables = std::array::from_fn(|_| TableView::Unavailable {
             reason: "not needed for map".into(),
         });
-        tables[TableId::Countries.index()] = TableView::Complete(vec![Row::Country(CountryRow {
-            id: 100,
-            canonical_slot: 1,
-            tag: b"GER".to_vec(),
-            ..Default::default()
-        })]);
-        tables[TableId::CountryLinks.index()] = TableView::Complete(vec![
-            Row::CountryLink(CountryLinkRow {
+        tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(vec![CountryRow {
                 id: 100,
                 canonical_slot: 1,
-            }),
-            Row::CountryLink(CountryLinkRow {
+                tag: b"GER".to_vec(),
+                ..Default::default()
+            }]));
+        tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+            CountryLinkRow {
+                id: 100,
+                canonical_slot: 1,
+            },
+            CountryLinkRow {
                 id: 101,
                 canonical_slot: 1,
-            }),
-        ]);
-        tables[TableId::Provinces.index()] = TableView::Complete(vec![
-            Row::Province(ProvinceRow {
+            },
+        ]));
+        tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![
+            ProvinceRow {
                 id: 1,
                 owner: 100,
                 controller: 0,
+                victory_points: 10,
                 ..Default::default()
-            }),
-            Row::Province(ProvinceRow {
+            },
+            ProvinceRow {
                 id: 2,
                 owner: 101,
                 controller: 100,
+                victory_points: -5,
                 ..Default::default()
-            }),
-            Row::Province(ProvinceRow {
+            },
+            ProvinceRow {
                 id: 3,
                 ..Default::default()
-            }),
-        ]);
+            },
+        ]));
         DecodedFrame {
             branch: 1,
             hour: 42,
@@ -346,7 +328,7 @@ mod tests {
     fn required_table_failure_and_absent_province_are_refused() {
         let mut frame = frame();
         frame.tables[TableId::CountryLinks.index()] = TableView::Truncated {
-            rows: Vec::new(),
+            rows: TableRows::CountryLinks(Vec::new()),
             missing: 7,
         };
         assert!(
@@ -357,7 +339,9 @@ mod tests {
                 .contains("CountryLinks is truncated (7 missing rows)")
         );
         let mut frame = super::tests::frame();
-        let TableView::Complete(rows) = &mut frame.tables[TableId::Provinces.index()] else {
+        let TableView::Complete(TableRows::Provinces(rows)) =
+            &mut frame.tables[TableId::Provinces.index()]
+        else {
             unreachable!()
         };
         rows.pop();
@@ -385,7 +369,8 @@ mod tests {
                 .contains("country GER color is unavailable: runtime color only")
         );
         let mut frame = frame();
-        frame.tables[TableId::CountryLinks.index()] = TableView::Complete(Vec::new());
+        frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(Vec::new()));
         assert!(
             palette(&super::tests::map(), &frame, false)
                 .err()

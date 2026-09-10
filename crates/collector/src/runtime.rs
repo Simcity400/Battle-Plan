@@ -1,6 +1,7 @@
 //! Loader worker, spool thread, and restore/drain/self-unload lifecycle.
 
 use crate::{
+    history::PreparedCampaigns,
     hook::{Hook, Threads},
     sampling::{self, ACTIVE, SHARED, Shared},
     spooling::{Distribution, Processor},
@@ -13,7 +14,10 @@ use std::{
     ffi::{OsString, c_void},
     fs::{self, File},
     io,
-    os::windows::ffi::{OsStrExt, OsStringExt},
+    os::windows::{
+        ffi::{OsStrExt, OsStringExt},
+        fs::OpenOptionsExt,
+    },
     path::{Path, PathBuf},
     ptr,
     sync::{
@@ -336,6 +340,26 @@ fn run(module: HMODULE) -> Result<(), String> {
     if read::<[u8; 16]>(&memory, base + rva) != Some(sentinel) {
         return Err(format!("hourly boundary sentinel differs at RVA {rva:#x}"));
     }
+    // The recorder uses this same exclusive handle before every finalization.
+    // It protects both existing histories and campaigns with no replay yet.
+    let _output_lock = reserve_output(&config, &detach)?;
+    let history = PreparedCampaigns::load(&config.replay_dir, &session, |campaign| {
+        if config.cancel_file.exists() || detach.signaled() {
+            return Err(io::Error::other(
+                "recording cancelled during history preparation",
+            ));
+        }
+        write_status(
+            &status_path,
+            &json!({
+                "state":"preparing campaign history", "session":session.id,
+                "campaign":campaign, "hours":0,
+            }),
+        )
+    })
+    .map_err(|error| error.to_string())?;
+    let processor = Processor::new(&config.output_dir, history, session.clone())
+        .map_err(|error| error.to_string())?;
     let mut hook =
         unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }?;
     let shared = Arc::new(Shared::new(base, hook.trampoline(), frequency as u64));
@@ -351,7 +375,7 @@ fn run(module: HMODULE) -> Result<(), String> {
         .name("hoi4-spool".into())
         .spawn(move || {
             spool_thread_id.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
-            spool_loop(&spool_shared, &config, session, &spool_status)
+            spool_loop(&spool_shared, &config, session, processor, &spool_status)
         })
         .map_err(|e| e.to_string())?;
     SHARED.store(Arc::as_ptr(&shared).cast_mut(), Ordering::Release);
@@ -370,7 +394,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     if installation_error.is_none() {
         ready.set();
     }
-    while installation_error.is_none() && !detach.signaled() {
+    while installation_error.is_none() && !detach.signaled() && !spool.is_finished() {
         std::thread::sleep(Duration::from_millis(20));
     }
     // Never unwind through an enabled or partially published detour.
@@ -468,6 +492,34 @@ fn run(module: HMODULE) -> Result<(), String> {
     spool_result
 }
 
+fn reserve_output(config: &Config, detach: &Event) -> Result<File, String> {
+    let path = config.replay_dir.join("finalize.lock");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if config.cancel_file.exists() || detach.signaled() {
+            return Err("recording cancelled while waiting for campaign output".into());
+        }
+        match fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(0)
+            .open(&path)
+        {
+            Ok(file) => return Ok(file),
+            Err(error) if error.raw_os_error() == Some(32) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "campaign output is busy or unavailable: {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+}
+
 fn add_terminal_error(result: &mut Result<(), String>, error: String) {
     match result {
         Ok(()) => *result = Err(error),
@@ -543,10 +595,14 @@ fn spool_loop(
     shared: &Shared,
     config: &Config,
     mut session: SessionStart,
+    mut processor: Processor,
     status_path: &Path,
 ) -> Result<Option<String>, String> {
-    let mut processor: Option<Processor> = None;
-    let mut capacities = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
+    let mut capacities = sampling::INITIAL_CAPACITIES;
+    let mut map_capacities = crate::map_capture::MapCapacities::default();
+    let mut extended_capacities = crate::extended::Capacities::default();
+    let mut successful = [0; sampling::CONSISTENCY_TABLES.len()];
+    let mut extended_successful = [0; replay::frame::TABLE_COUNT];
     let mut last_warning = None;
     let mut drain_result = Ok(());
     let mut startup_unknown = 0_u64;
@@ -561,7 +617,7 @@ fn spool_loop(
                 std::thread::yield_now();
                 elapsed = shared.completed[index].load(Ordering::Acquire);
             }
-            let frame = unsafe { &mut *shared.frames[index].get() };
+            let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
             frame.total_ns = shared.ns(elapsed);
             let before_bytes = frame.allocated_bytes();
             if !shared.roster_ready.load(Ordering::Acquire) {
@@ -579,6 +635,15 @@ fn spool_loop(
                             .sum::<u64>(),
                     );
                 let _ = shared.free.push(index);
+                unsafe {
+                    shared.grow_pool(
+                        &capacities,
+                        &map_capacities,
+                        successful,
+                        &extended_capacities,
+                        extended_successful,
+                    )
+                };
                 work.buffer_service
                     .record_ticks(sampling::qpc() - service_started, shared.frequency);
                 continue;
@@ -602,66 +667,79 @@ fn spool_loop(
                 {
                     last_warning = Some(format!("cannot write content observation: {error}"));
                 }
+                processor.set_verified_session(session.clone());
             }
-            while processor.is_none() {
-                match Processor::new(&config.output_dir, &config.replay_dir, session.clone()) {
-                    Ok(created) => processor = Some(created),
-                    Err(error) => {
-                        last_warning = Some(error.to_string());
-                        let _ = write_status(
-                            status_path,
-                            &json!({"state":"spool unavailable", "session":session.id, "warning":last_warning, "drain_complete":false}),
-                        );
-                        if shared.stop_spool.load(Ordering::Acquire) {
-                            return Err(format!(
-                                "cannot create spool at detach; queued observations remain unwritten: {error}"
-                            ));
-                        }
-                        // Keep the current buffer and its preceding loss witnesses.
-                        // Later callback overflows remain recorded in the fixed pool.
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
+            // Campaign directories can still fail to open. Keep the buffer and
+            // preceding witnesses until those operations succeed. History is ready.
+            while let Err(error) = processor.prepare(frame) {
+                if error.kind() == io::ErrorKind::InvalidData {
+                    // An immutable history or identity refusal cannot recover by
+                    // retaining this buffer. Ending the worker requests restore
+                    // through the loader's JoinHandle check and preserves the
+                    // precise error in its terminal status.
+                    let drain = processor.detach().err();
+                    return Err(format!(
+                        "campaign recording refused: {error}; current and {} queued observations remain unwritten{}",
+                        shared.ready.len(),
+                        drain.map_or_else(String::new, |error| format!(
+                            "; prior spool detach: {error}"
+                        )),
+                    ));
                 }
+                last_warning = Some(error.to_string());
+                let _ = write_status(
+                    status_path,
+                    &json!({
+                        "state":"campaign spool unavailable", "session":session.id,
+                        "warning":last_warning, "drain_complete":false,
+                        "dropped_frames":shared.dropped.load(Ordering::Relaxed),
+                    }),
+                );
+                if shared.stop_spool.load(Ordering::Acquire) {
+                    let _ = processor.detach();
+                    return Err(format!(
+                        "cannot open campaign spool at detach; retained observations remain unwritten: {error}"
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(100));
             }
-            if let Some(processor) = processor.as_mut() {
-                // Opening a campaign can read an existing replay or create a
-                // directory. Retain this buffer and every preceding witness until
-                // all those fallible operations succeed, before observing any hour.
-                while let Err(error) = processor.prepare(frame) {
-                    last_warning = Some(error.to_string());
-                    let _ = write_status(
-                        status_path,
-                        &json!({
-                            "state":"campaign spool unavailable", "session":session.id,
-                            "warning":last_warning, "drain_complete":false,
-                            "dropped_frames":shared.dropped.load(Ordering::Relaxed),
-                        }),
-                    );
-                    if shared.stop_spool.load(Ordering::Acquire) {
-                        let _ = processor.detach();
-                        return Err(format!(
-                            "cannot open campaign spool at detach; retained observations remain unwritten: {error}"
-                        ));
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                if startup_unknown != 0 {
-                    processor.unknown_loss(std::mem::take(&mut startup_unknown));
-                }
-                if frame.dropped_before.unknown_count != 0 {
-                    processor.unknown_loss(frame.dropped_before.unknown_count);
-                }
-                for loss in frame.dropped_before.iter() {
-                    if let Err(error) = processor.lost(loss) {
-                        last_warning = Some(error.to_string());
-                    }
-                }
-                if let Err(error) = processor.frame(frame) {
+            if startup_unknown != 0 {
+                processor.unknown_loss(std::mem::take(&mut startup_unknown));
+            }
+            if frame.dropped_before.unknown_count != 0 {
+                processor.unknown_loss(frame.dropped_before.unknown_count);
+            }
+            for loss in frame.dropped_before.iter() {
+                if let Err(error) = processor.lost(loss) {
                     last_warning = Some(error.to_string());
                 }
+            }
+            if let Err(error) = processor.frame(frame) {
+                last_warning = Some(error.to_string());
             }
             let previous_capacities = capacities;
+            let previous_map_capacities = map_capacities;
+            let previous_extended_capacities = extended_capacities;
+            let previous_extended_complete =
+                extended_successful.map(|count| count >= sampling::CONSISTENCY_TARGET);
+            let previous_complete = successful.map(|count| count >= sampling::CONSISTENCY_TARGET);
+            successful = frame.consistency_successful;
+            extended_successful = frame.extended_successful;
+            let extended_complete =
+                extended_successful.map(|count| count >= sampling::CONSISTENCY_TARGET);
+            let source_checks = crate::extended::Captured::source_checks(
+                &extended_complete.map(|complete| !complete),
+            );
+            let complete = successful.map(|count| count >= sampling::CONSISTENCY_TARGET);
             frame.grow(&mut capacities);
+            frame.map.grow(
+                &mut map_capacities,
+                &frame.consistency_successful[6..crate::sampling::PROVINCE_CHECK],
+                source_checks,
+            );
+            frame
+                .extended
+                .grow(&mut extended_capacities, &extended_successful);
             let after_bytes = frame.allocated_bytes();
             if after_bytes >= before_bytes {
                 shared
@@ -672,16 +750,30 @@ fn spool_loop(
                     .pool_bytes
                     .fetch_sub((before_bytes - after_bytes) as u64, Ordering::Relaxed);
             }
-            if previous_capacities != capacities {
+            if previous_capacities != capacities
+                || previous_map_capacities != map_capacities
+                || previous_extended_capacities != extended_capacities
+                || previous_complete != complete
+                || previous_extended_complete != extended_complete
+            {
                 // Grow every idle buffer under its queue-index lease, so a FIFO of
                 // old capacities does not repeat the same truncation for 256 hours.
                 for _ in 0..shared.free.len() {
                     let Some(idle_index) = shared.free.pop() else {
                         break;
                     };
-                    let idle = unsafe { &mut *shared.frames[idle_index].get() };
+                    let idle = unsafe { &mut *shared.frames[idle_index].load(Ordering::Acquire) };
                     let old_bytes = idle.allocated_bytes();
+                    idle.consistency_successful = successful;
+                    idle.extended_successful = extended_successful;
                     idle.grow(&mut capacities);
+                    idle.map.grow(
+                        &mut map_capacities,
+                        &idle.consistency_successful[6..crate::sampling::PROVINCE_CHECK],
+                        source_checks,
+                    );
+                    idle.extended
+                        .grow(&mut extended_capacities, &extended_successful);
                     let new_bytes = idle.allocated_bytes();
                     if new_bytes >= old_bytes {
                         shared
@@ -696,20 +788,25 @@ fn spool_loop(
                 }
             }
             let _ = shared.free.push(index);
+            unsafe {
+                shared.grow_pool(
+                    &capacities,
+                    &map_capacities,
+                    successful,
+                    &extended_capacities,
+                    extended_successful,
+                )
+            };
             work.buffer_service
                 .record_ticks(sampling::qpc() - service_started, shared.frequency);
         }
-        if let Some(processor) = processor.as_mut()
-            && let Err(error) = processor.flush()
-        {
+        if let Err(error) = processor.flush() {
             last_warning = Some(error.to_string());
         }
         if reported.elapsed() >= Duration::from_secs(1) || shared.stop_spool.load(Ordering::Acquire)
         {
             let status_started = sampling::qpc();
-            let mut status = processor
-                .as_ref()
-                .map_or_else(|| json!({"hours":0}), Processor::status);
+            let mut status = processor.status();
             status["state"] = json!(if shared.recording.load(Ordering::Acquire) {
                 "recording"
             } else {
@@ -717,6 +814,7 @@ fn spool_loop(
             });
             status["session"] = json!(session.id);
             status["pool_bytes"] = json!(shared.pool_bytes.load(Ordering::Relaxed));
+            status["pool_buffers"] = json!(shared.pool_buffers.load(Ordering::Relaxed));
             status["dropped_frames"] = json!(shared.dropped.load(Ordering::Relaxed));
             status["startup_unattributed_callbacks"] = json!(startup_unknown);
             status["drain_complete"] = json!(false);
@@ -739,64 +837,58 @@ fn spool_loop(
             }
             // The loader worker has restored the hook and proved every callback quiescent.
             let pending = unsafe { std::mem::take(&mut *shared.pending.get()) };
-            if let Some(processor) = processor.as_mut() {
-                match processor.prepare_losses(&pending) {
-                    Err(error) => {
-                        add_terminal_error(
-                            &mut drain_result,
-                            format!(
-                                "cannot open campaign spool for retained loss witnesses at detach: {error}"
-                            ),
-                        );
-                    }
-                    Ok(()) => {
-                        if pending.unknown_count != 0 {
-                            processor.unknown_loss(pending.unknown_count);
-                        }
-                        for loss in pending.iter() {
-                            if let Err(error) = processor.lost(loss) {
-                                add_terminal_error(
-                                    &mut drain_result,
-                                    format!("cannot drain retained loss witness: {error}"),
-                                );
-                            }
-                        }
-                    }
-                }
-                if let Err(error) = processor.detach() {
+            match processor.prepare_losses(&pending) {
+                Err(error) => {
                     add_terminal_error(
                         &mut drain_result,
-                        format!("cannot finish spool detach: {error}"),
+                        format!(
+                            "cannot open campaign spool for retained loss witnesses at detach: {error}"
+                        ),
                     );
                 }
-                let status_started = sampling::qpc();
-                let mut status = processor.status();
-                status["state"] = json!("detaching");
-                status["session"] = json!(session.id);
-                status["pool_bytes"] = json!(shared.pool_bytes.load(Ordering::Relaxed));
-                status["dropped_frames"] = json!(shared.dropped.load(Ordering::Relaxed));
-                status["drain_complete"] = json!(false);
-                if let Some(error) = &last_warning {
-                    status["warning"] = json!(error);
+                Ok(()) => {
+                    if pending.unknown_count != 0 {
+                        processor.unknown_loss(pending.unknown_count);
+                    }
+                    for loss in pending.iter() {
+                        if let Err(error) = processor.lost(loss) {
+                            add_terminal_error(
+                                &mut drain_result,
+                                format!("cannot drain retained loss witness: {error}"),
+                            );
+                        }
+                    }
                 }
-                if let Err(error) = &drain_result {
-                    status["error"] = json!(error);
-                }
-                work.add_status(&mut status, shared.frequency);
-                if let Err(error) = write_status(status_path, &status) {
-                    // The loader still publishes the authoritative detached
-                    // status after joining us. Retain this diagnostic in memory
-                    // so successful terminal publication can report recovery.
-                    last_warning = Some(format!("cannot publish final spool status: {error}"));
-                }
-                work.status_update
-                    .record_ticks(sampling::qpc() - status_started, shared.frequency);
-            } else if pending.unknown_count != 0 || pending.iter().next().is_some() {
+            }
+            if let Err(error) = processor.detach() {
                 add_terminal_error(
                     &mut drain_result,
-                    "retained loss witnesses have no initialized spool at detach".into(),
+                    format!("cannot finish spool detach: {error}"),
                 );
             }
+            let status_started = sampling::qpc();
+            let mut status = processor.status();
+            status["state"] = json!("detaching");
+            status["session"] = json!(session.id);
+            status["pool_bytes"] = json!(shared.pool_bytes.load(Ordering::Relaxed));
+            status["pool_buffers"] = json!(shared.pool_buffers.load(Ordering::Relaxed));
+            status["dropped_frames"] = json!(shared.dropped.load(Ordering::Relaxed));
+            status["drain_complete"] = json!(false);
+            if let Some(error) = &last_warning {
+                status["warning"] = json!(error);
+            }
+            if let Err(error) = &drain_result {
+                status["error"] = json!(error);
+            }
+            work.add_status(&mut status, shared.frequency);
+            if let Err(error) = write_status(status_path, &status) {
+                // The loader still publishes the authoritative detached
+                // status after joining us. Retain this diagnostic in memory
+                // so successful terminal publication can report recovery.
+                last_warning = Some(format!("cannot publish final spool status: {error}"));
+            }
+            work.status_update
+                .record_ticks(sampling::qpc() - status_started, shared.frequency);
             break;
         }
         std::thread::sleep(Duration::from_millis(2));

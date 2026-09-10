@@ -3,11 +3,16 @@
 #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
 compile_error!("collector requires Windows x64 MSVC");
 
+mod extended;
+mod history;
 mod hook;
+mod map_capture;
+mod map_spool;
 mod roster;
 mod runtime;
 mod sampling;
 mod spooling;
+mod table_capture;
 
 use std::ffi::c_void;
 use windows_sys::Win32::{

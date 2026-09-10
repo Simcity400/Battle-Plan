@@ -8,13 +8,13 @@ use std::{
 };
 
 use crate::{
-    BranchId, FORMAT_VERSION, Hour, KEYFRAME_INTERVAL,
-    branches::{BranchReason, BranchStart, Gap},
+    BranchId, FORMAT_VERSION, Hour, KEYFRAME_INTERVAL, SessionId,
+    branches::{BranchReason, BranchStart, BranchTracker, Gap},
     codec::{Decoder, invalid, put_bytes, put_string},
     frame::{DecodedFrame, Frame, FrameDecoder, TABLE_COUNT, TableView},
     identity::{Identity, SessionStart, Verification},
-    rows::{Row, TableId},
-    spool::{Record, Recovery, SegmentState},
+    rows::{TableId, TableRows},
+    spool::{ControlRecord, Record, Recovery, SegmentState},
 };
 
 const HEADER_MAGIC: &[u8; 4] = b"H4RP";
@@ -97,11 +97,72 @@ pub struct Replay {
     pub sessions: Vec<SessionStart>,
     pub branches: Vec<BranchStart>,
     pub gaps: Vec<Gap>,
-    pub controls: Vec<Record>,
+    pub controls: Vec<ControlRecord>,
     pub recovery_notes: Vec<RecoveryNote>,
     pub index: Vec<BlockIndex>,
     header_end: usize,
     trailer_start: usize,
+}
+
+/// Exact validated prior hours and provenance, without replay bytes or decoded rows.
+/// Build this, and any tracker made from it, before starting a bounded capture queue.
+#[derive(Clone, Debug)]
+pub struct CampaignHistory {
+    pub campaign_id: Vec<u8>,
+    pub identity: Identity,
+    pub sessions: Vec<SessionStart>,
+    pub branches: Vec<RecordedBranchHistory>,
+    tails: BTreeMap<SessionId, SessionTail>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedBranchHistory {
+    pub start: BranchStart,
+    /// Actual frame hours only. Holes in the block index are never filled.
+    pub hours: Vec<Hour>,
+}
+
+/// The last recorded frame in that process's block write order, not its largest hour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionTail {
+    pub branch: BranchId,
+    pub hour: Hour,
+    pub load_signal: Option<i64>,
+}
+
+impl CampaignHistory {
+    pub fn session_tail(&self, session: SessionId) -> Option<SessionTail> {
+        self.tails.get(&session).copied()
+    }
+
+    /// Seed exact history and select a new process session or resume the same process.
+    /// Same-process reattachment requires its complete saved session metadata to match.
+    /// A caller whose content verification is still pending can preload against the
+    /// saved SessionStart, then compare it with the final verified session before use.
+    pub fn tracker_for(&self, session: &SessionStart) -> io::Result<BranchTracker> {
+        if !self.identity.same_content(&session.identity) {
+            return Err(invalid("existing campaign replay has different content"));
+        }
+        let previous = self.sessions.iter().find(|old| old.id == session.id);
+        if previous.is_some_and(|old| old != session) {
+            return Err(invalid(
+                "same process session has conflicting collector or content metadata",
+            ));
+        }
+        let mut tracker = BranchTracker::new();
+        for branch in &self.branches {
+            tracker.seed_recorded_branch(branch.start.clone(), branch.hours.iter().copied())?;
+        }
+        if previous.is_some() {
+            let tail = self.session_tail(session.id).ok_or_else(|| {
+                invalid("existing process session has no recorded hour to resume")
+            })?;
+            tracker.resume_session(session.id, tail.branch, tail.hour, tail.load_signal)?;
+        } else {
+            tracker.begin_session(session.id)?;
+        }
+        Ok(tracker)
+    }
 }
 
 struct RawBlock {
@@ -148,7 +209,7 @@ struct Pending {
     sessions: Vec<SessionStart>,
     branches: Vec<BranchStart>,
     gaps: Vec<Gap>,
-    controls: Vec<Record>,
+    controls: Vec<ControlRecord>,
     blocks: Vec<RawBlock>,
 }
 
@@ -328,6 +389,83 @@ impl Replay {
         Ok(hours)
     }
 
+    /// Validate every block and replay all its table baselines once, retaining only
+    /// compact exact history. Consuming self releases compressed bytes, control rows
+    /// and block payloads before this method returns to a recorder/collector worker.
+    pub fn into_history(self) -> io::Result<CampaignHistory> {
+        let positions: BTreeMap<_, _> = self
+            .branches
+            .iter()
+            .enumerate()
+            .map(|(index, branch)| (branch.id, index))
+            .collect();
+        let mut branches: Vec<_> = self
+            .branches
+            .iter()
+            .map(|start| RecordedBranchHistory {
+                start: start.clone(),
+                hours: Vec::new(),
+            })
+            .collect();
+        let mut tails = BTreeMap::new();
+        for block in &self.index {
+            let index = *positions
+                .get(&block.branch)
+                .ok_or_else(|| invalid("block refers to an unknown branch"))?;
+            let history = &mut branches[index];
+            let mut decoder = FrameDecoder::new();
+            let mut load_signal = None;
+            for frame in self.read_block(block)? {
+                let decoded = decoder.advance(&frame)?;
+                validate_campaign(decoded, &self.campaign_id)?;
+                if history.hours.last().is_some_and(|hour| *hour >= frame.hour) {
+                    return Err(invalid(
+                        "recorded history hours do not increase within branch",
+                    ));
+                }
+                history.hours.push(frame.hour);
+                load_signal = match &decoded.tables[TableId::Clock.index()] {
+                    TableView::Complete(TableRows::Clock(rows)) => {
+                        rows.first().map(|clock| clock.play_session_started_at)
+                    }
+                    TableView::Complete(_) => None,
+                    TableView::Truncated { .. } | TableView::Unavailable { .. } => None,
+                };
+            }
+            tails.insert(
+                history.start.session,
+                SessionTail {
+                    branch: block.branch,
+                    hour: block.last_hour,
+                    load_signal,
+                },
+            );
+        }
+        // Match the existing reattach fallback: latest matching nonempty witness
+        // is used only when the last recorded frame has no readable Clock table.
+        for control in self.controls.iter().rev() {
+            if let ControlRecord::ClockWitness {
+                session,
+                hour,
+                load_signal: Some(signal),
+                ..
+            } = control
+                && let Some(tail) = tails.get_mut(session)
+                && tail.hour == *hour
+                && tail.load_signal.is_none()
+            {
+                tail.load_signal = Some(*signal);
+            }
+        }
+        Ok(CampaignHistory {
+            campaign_id: self.campaign_id,
+            identity: self.identity,
+            sessions: self.sessions,
+            branches,
+            tails,
+        })
+    }
+
     pub fn open(bytes: Vec<u8>) -> io::Result<Self> {
         if bytes.len() < FOOTER_SIZE {
             return Err(invalid("missing replay footer"));
@@ -374,7 +512,7 @@ impl Replay {
         let sessions = decode_list(&mut trailer, SessionStart::decode)?;
         let branches = decode_list(&mut trailer, BranchStart::decode)?;
         let gaps = decode_list(&mut trailer, Gap::decode)?;
-        let controls = decode_list(&mut trailer, Record::decode)?;
+        let controls = decode_list(&mut trailer, ControlRecord::decode)?;
         let recovery_notes = decode_list(&mut trailer, RecoveryNote::decode)?;
         let count = trailer.count(40)?;
         let mut index = Vec::with_capacity(count);
@@ -516,8 +654,9 @@ impl Replay {
         let mut frames = Vec::with_capacity(count);
         let mut last = None;
         for position in 0..count {
-            let payload = decoder.bytes()?;
-            let mut frame_decoder = Decoder::new(&payload);
+            let payload_length = decoder.u32()? as usize;
+            let payload = decoder.take(payload_length)?;
+            let mut frame_decoder = Decoder::new(payload);
             let frame = Frame::decode(&mut frame_decoder)?;
             frame_decoder.finish()?;
             if frame.branch != index.branch
@@ -776,7 +915,7 @@ fn finish_file(
     sessions: &[SessionStart],
     branches: &[BranchStart],
     gaps: &[Gap],
-    controls: &[Record],
+    controls: &[ControlRecord],
     recovery_notes: &[RecoveryNote],
     index: &[BlockIndex],
 ) -> io::Result<()> {
@@ -785,7 +924,7 @@ fn finish_file(
     encode_list(bytes, sessions, SessionStart::encode)?;
     encode_list(bytes, branches, BranchStart::encode)?;
     encode_list(bytes, gaps, Gap::encode)?;
-    encode_list(bytes, controls, Record::encode)?;
+    encode_list(bytes, controls, ControlRecord::encode)?;
     encode_list(bytes, recovery_notes, RecoveryNote::encode)?;
     put_count(bytes, index.len())?;
     for block in index {
@@ -808,7 +947,7 @@ fn finish_file(
 fn validate_campaign(frame: &DecodedFrame, campaign_id: &[u8]) -> io::Result<()> {
     if let TableView::Complete(rows) = &frame.tables[TableId::Campaign.index()]
         && (rows.len() != 1
-            || !matches!(&rows[0], Row::Campaign(campaign) if campaign.id == campaign_id))
+            || !matches!(rows, TableRows::Campaign(values) if values[0].id == campaign_id))
     {
         return Err(invalid(
             "frame campaign identity differs from replay header",
@@ -964,13 +1103,11 @@ fn collect(
                     }
                     pending.gaps.push(gap.clone());
                 }
-                Record::Detach { session, .. }
-                | Record::ClockWitness { session, .. }
-                | Record::GapSummary { session, .. } => {
-                    if current_session != Some(*session) {
+                Record::Control(control) => {
+                    if current_session != Some(control.session()) {
                         return Err(invalid("control has no matching session context"));
                     }
-                    pending.controls.push(record.clone());
+                    pending.controls.push(control.clone());
                 }
             }
         }
@@ -989,7 +1126,7 @@ fn validate_metadata(
     sessions: &[SessionStart],
     branches: &[BranchStart],
     gaps: &[Gap],
-    controls: &[Record],
+    controls: &[ControlRecord],
     index: &[BlockIndex],
     header_end: usize,
     trailer_start: usize,
@@ -1027,12 +1164,8 @@ fn validate_metadata(
         }
     }
     for control in controls {
-        match control {
-            Record::Detach { session, .. }
-            | Record::ClockWitness { session, .. }
-            | Record::GapSummary { session, .. }
-                if session_ids.contains(session) => {}
-            _ => return Err(invalid("invalid replay control or unknown session")),
+        if !session_ids.contains(&control.session()) {
+            return Err(invalid("replay control refers to an unknown session"));
         }
     }
     let mut expected_offset = header_end as u64;
@@ -1100,7 +1233,7 @@ mod tests {
         branches::Parentage,
         frame::{FrameEncoder, Metrics, TableUpdate},
         identity::Roster,
-        rows::{CampaignRow, ClockRow},
+        rows::{CampaignRow, ClockRow, SunkShipsRow, WeatherLimitsRow},
         spool::{encode_record, recover_prefix},
     };
 
@@ -1143,27 +1276,25 @@ mod tests {
     }
 
     fn source(branch: u64, hour: i32) -> DecodedFrame {
+        let mut tables =
+            std::array::from_fn(|index| TableView::Complete(TableRows::empty(TableId::ALL[index])));
+        tables[TableId::Clock.index()] = TableView::Complete(TableRows::Clock(vec![ClockRow {
+            hour,
+            ..ClockRow::default()
+        }]));
+        tables[TableId::Campaign.index()] =
+            TableView::Complete(TableRows::Campaign(vec![CampaignRow {
+                id: CAMPAIGN.into(),
+            }]));
+        tables[TableId::SunkShips.index()] =
+            TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow::default()]));
+        tables[TableId::WeatherLimits.index()] =
+            TableView::Complete(TableRows::WeatherLimits(vec![WeatherLimitsRow::default()]));
         DecodedFrame {
             branch,
             hour,
             metrics: Metrics::default(),
-            tables: [
-                TableView::Complete(vec![Row::Clock(ClockRow {
-                    hour,
-                    ..ClockRow::default()
-                })]),
-                TableView::Complete(vec![Row::Campaign(CampaignRow {
-                    id: CAMPAIGN.into(),
-                })]),
-                TableView::Complete(Vec::new()),
-                TableView::Complete(Vec::new()),
-                TableView::Complete(Vec::new()),
-                TableView::Complete(Vec::new()),
-                TableView::Complete(Vec::new()),
-                TableView::Complete(Vec::new()),
-                TableView::Complete(Vec::new()),
-                TableView::Complete(Vec::new()),
-            ],
+            tables,
         }
     }
 
@@ -1175,7 +1306,7 @@ mod tests {
         ];
         for &hour in hours {
             records.push(Record::Frame(
-                encoder.encode(&source(id, hour), false).unwrap(),
+                encoder.encode(source(id, hour).clone(), false).unwrap(),
             ));
         }
         records
@@ -1194,6 +1325,143 @@ mod tests {
         )
         .unwrap();
         bytes
+    }
+
+    #[test]
+    fn history_preserves_exact_hours_and_parentage_across_blocks_and_sessions() {
+        let mut first = records(1, &[1, 3, 721]);
+        first.push(Record::Gap(Gap {
+            branch: 1,
+            first_hour: 2,
+            last_hour: 2,
+            reason: "queue full".into(),
+        }));
+        let history = Replay::from_records(CAMPAIGN.into(), &[first, records(2, &[3, 4])])
+            .unwrap()
+            .into_history()
+            .unwrap();
+        assert_eq!(history.campaign_id, CAMPAIGN);
+        assert_eq!(history.sessions, [session(1), session(2)]);
+        assert_eq!(history.branches[0].hours, [1, 3, 721]);
+        assert_eq!(history.branches[1].hours, [3, 4]);
+        for (loaded_hour, expected) in [
+            (1, Parentage::Probable { branch: 1, hour: 1 }),
+            (2, Parentage::Unknown),
+            (3, Parentage::Unknown),
+        ] {
+            let mut tracker = history.tracker_for(&session(3)).unwrap();
+            let start = tracker
+                .observe(Some(loaded_hour), loaded_hour + 1, Some(0), &[])
+                .unwrap()
+                .start
+                .unwrap();
+            assert_eq!(start.id, 3);
+            assert_eq!(start.reason, BranchReason::SessionStart);
+            assert_eq!(start.parent, expected);
+        }
+    }
+
+    #[test]
+    fn history_resumes_last_written_branch_and_checks_actual_session_metadata() {
+        let mut input = records(1, &[1, 3]);
+        input.push(Record::BranchStart(BranchStart {
+            id: 2,
+            session: 1,
+            loaded_hour: Some(1),
+            first_hour: 2,
+            parent: Parentage::Probable { branch: 1, hour: 1 },
+            reason: BranchReason::LoadSignal,
+        }));
+        let mut reloaded = source(2, 2);
+        if let TableView::Complete(TableRows::Clock(rows)) =
+            &mut reloaded.tables[TableId::Clock.index()]
+        {
+            rows[0].play_session_started_at = 42;
+        }
+        input.push(Record::Frame(
+            FrameEncoder::new().encode(reloaded.clone(), true).unwrap(),
+        ));
+        let history = Replay::from_records(CAMPAIGN.into(), &[input])
+            .unwrap()
+            .into_history()
+            .unwrap();
+        assert_eq!(
+            history.session_tail(1),
+            Some(SessionTail {
+                branch: 2,
+                hour: 2,
+                load_signal: Some(42),
+            })
+        );
+        let mut tracker = history.tracker_for(&session(1)).unwrap();
+        assert_eq!(tracker.current_branch(), Some(2));
+        assert_eq!(
+            tracker.observe(Some(2), 3, Some(42), &[]).unwrap().start,
+            None
+        );
+        let mut tracker = history.tracker_for(&session(1)).unwrap();
+        assert_eq!(
+            tracker
+                .observe(Some(2), 3, Some(43), &[])
+                .unwrap()
+                .start
+                .unwrap()
+                .reason,
+            BranchReason::LoadSignal
+        );
+
+        let mut pending = session(1);
+        pending.identity.verification = Verification::Unchecked;
+        assert!(
+            history
+                .tracker_for(&pending)
+                .unwrap_err()
+                .to_string()
+                .contains("metadata")
+        );
+        assert!(history.tracker_for(&history.sessions[0]).is_ok());
+        let mut changed = session(2);
+        changed.identity.vanilla_hash[0] ^= 1;
+        assert!(
+            history
+                .tracker_for(&changed)
+                .unwrap_err()
+                .to_string()
+                .contains("different content")
+        );
+    }
+
+    #[test]
+    fn history_uses_matching_witness_only_when_tail_clock_is_unavailable() {
+        for clock_available in [false, true] {
+            let mut input = records(1, &[1, 2]);
+            if !clock_available && let Record::Frame(frame) = &mut input[3] {
+                frame.tables[TableId::Clock.index()] = TableUpdate::Unavailable {
+                    reason: "hour changed during read".into(),
+                };
+            }
+            for (hour, load_signal) in [(2, Some(41)), (2, Some(42)), (2, None), (3, Some(99))] {
+                input.push(Record::Control(ControlRecord::ClockWitness {
+                    session: 1,
+                    qpc: 100,
+                    hour,
+                    load_signal,
+                }));
+            }
+            let history = Replay::from_records(CAMPAIGN.into(), &[input])
+                .unwrap()
+                .into_history()
+                .unwrap();
+            assert_eq!(history.branches[0].hours, [1, 2]);
+            assert_eq!(
+                history.session_tail(1),
+                Some(SessionTail {
+                    branch: 1,
+                    hour: 2,
+                    load_signal: Some(if clock_available { 0 } else { 42 }),
+                })
+            );
+        }
     }
 
     #[test]
@@ -1237,14 +1505,86 @@ mod tests {
     }
 
     #[test]
+    fn compact_trailer_controls_preserve_order_duplicates_and_session_context() {
+        let witness = ControlRecord::ClockWitness {
+            session: 1,
+            qpc: 200,
+            hour: 2,
+            load_signal: Some(-1),
+        };
+        let controls = vec![
+            witness.clone(),
+            witness,
+            ControlRecord::GapSummary {
+                session: 1,
+                dropped_frames: 3,
+                reason: "loss range unavailable".into(),
+            },
+            ControlRecord::Detach {
+                session: 1,
+                last_hour: Some(2),
+            },
+        ];
+        let mut first = records(1, &[1, 2]);
+        first.extend(controls.iter().cloned().map(Record::Control));
+        let replay = Replay::from_records(CAMPAIGN.into(), &[first]).unwrap();
+        assert_eq!(replay.controls, controls);
+        let reopened = Replay::open(replay.bytes().to_vec()).unwrap();
+        assert_eq!(reopened.controls, controls);
+        let next_control = ControlRecord::Detach {
+            session: 2,
+            last_hour: None,
+        };
+        let mut next = records(2, &[3]);
+        next.push(Record::Control(next_control.clone()));
+        let appended = reopened.append(&[next]).unwrap();
+        assert_eq!(appended.controls[..controls.len()], controls);
+        assert_eq!(appended.controls.last(), Some(&next_control));
+        assert_eq!(
+            appended.bytes()[..reopened.trailer_start],
+            reopened.bytes()[..reopened.trailer_start]
+        );
+
+        let mut invalid_context = records(1, &[1]);
+        invalid_context.push(Record::Control(ControlRecord::ClockWitness {
+            session: 99,
+            qpc: 1,
+            hour: 1,
+            load_signal: None,
+        }));
+        assert!(Replay::from_records(CAMPAIGN.into(), &[invalid_context]).is_err());
+        let mut invalid_trailer = replay.bytes()[..replay.trailer_start].to_vec();
+        finish_file(
+            &mut invalid_trailer,
+            &replay.sessions,
+            &replay.branches,
+            &replay.gaps,
+            &[ControlRecord::Detach {
+                session: 99,
+                last_hour: None,
+            }],
+            &replay.recovery_notes,
+            &replay.index,
+        )
+        .unwrap();
+        assert!(
+            Replay::open(invalid_trailer)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("unknown session")
+        );
+    }
+
+    #[test]
     fn incompatible_campaign_or_content_cannot_append() {
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
         let mut wrong_campaign = records(2, &[2]);
         if let Record::Frame(frame) = &mut wrong_campaign[2] {
             frame.tables[TableId::Campaign.index()] =
-                crate::frame::TableUpdate::Snapshot(vec![Row::Campaign(CampaignRow {
+                crate::frame::TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
                     id: b"other".into(),
-                })]);
+                }]));
         }
         assert!(replay.append(&[wrong_campaign]).is_err());
         let mut wrong_content = records(2, &[2]);
@@ -1260,13 +1600,13 @@ mod tests {
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2, 3])]).unwrap();
         let mut frames = replay.read_block(&replay.index[0]).unwrap();
         frames[1].tables[TableId::Campaign.index()] =
-            TableUpdate::Snapshot(vec![Row::Campaign(CampaignRow {
+            TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
                 id: b"different-campaign".to_vec(),
-            })]);
+            }]));
         frames[2].tables[TableId::Campaign.index()] =
-            TableUpdate::Snapshot(vec![Row::Campaign(CampaignRow {
+            TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
                 id: CAMPAIGN.to_vec(),
-            })]);
+            }]));
 
         // The malformed identity is inside a structurally valid compressed block.
         let mut raw = RawBlock::new(&frames[0]);
@@ -1294,15 +1634,22 @@ mod tests {
                     if reason == "frame campaign identity differs from replay header"
             ));
         }
+        assert!(malformed.into_history().is_err());
     }
 
     #[test]
     fn old_replay_version_is_refused_before_decoding_frames() {
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
         let mut bytes = replay.bytes().to_vec();
-        bytes[4..6].copy_from_slice(&4_u16.to_le_bytes());
+        let previous_version = FORMAT_VERSION - 1;
+        bytes[4..6].copy_from_slice(&previous_version.to_le_bytes());
         let error = Replay::open(bytes).err().unwrap().to_string();
-        assert_eq!(error, "unsupported replay format version 4; expected 5");
+        assert_eq!(
+            error,
+            format!(
+                "unsupported replay format version {previous_version}; expected {FORMAT_VERSION}"
+            )
+        );
     }
 
     #[test]
@@ -1318,6 +1665,7 @@ mod tests {
         assert!(
             matches!(damaged.seek(1, 721).unwrap(), SeekResult::Frame(frame) if *frame == source(1, 721))
         );
+        assert!(damaged.into_history().is_err());
     }
 
     #[test]
@@ -1434,7 +1782,9 @@ mod tests {
         let first = records(1, &[1]);
         let mut later = vec![Record::BranchStart(branch(1, 1))];
         let mut encoder = FrameEncoder::new();
-        later.push(Record::Frame(encoder.encode(&source(1, 2), true).unwrap()));
+        later.push(Record::Frame(
+            encoder.encode(source(1, 2).clone(), true).unwrap(),
+        ));
         let recovery = |records| Recovery {
             records,
             valid_bytes: 0,
@@ -1463,7 +1813,8 @@ mod tests {
                 crate::frame::TableUpdate::Unchanged { baseline: 999 };
         }
         if let Record::Frame(frame) = &mut input[5] {
-            frame.tables[TableId::Provinces.index()] = TableUpdate::Snapshot(Vec::new());
+            frame.tables[TableId::Provinces.index()] =
+                TableUpdate::Snapshot(TableRows::Provinces(Vec::new()));
         }
         let mut sequential = FrameDecoder::new();
         let expected: Vec<_> = input
@@ -1502,7 +1853,7 @@ mod tests {
         );
         assert_eq!(
             observed[3].tables[TableId::Provinces.index()],
-            TableView::Complete(Vec::new())
+            TableView::Complete(TableRows::Provinces(Vec::new()))
         );
         for frame in &observed {
             assert!(
@@ -1540,6 +1891,20 @@ mod tests {
             replay
                 .append_recovered_with(&next, |_, _, _| Err(io::Error::other("report aborted")))
                 .is_err()
+        );
+        // Failed table baselines affect table visibility, not the recorded hour
+        // used as exact evidence when resolving a later branch's parentage.
+        let history = replay.into_history().unwrap();
+        assert_eq!(history.branches[0].hours, [1, 2, 3, 4]);
+        let mut tracker = history.tracker_for(&session(2)).unwrap();
+        assert_eq!(
+            tracker
+                .observe(Some(2), 3, Some(0), &[])
+                .unwrap()
+                .start
+                .unwrap()
+                .parent,
+            Parentage::Probable { branch: 1, hour: 2 }
         );
     }
 

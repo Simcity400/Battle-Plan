@@ -1,5 +1,6 @@
 //! Conversion, differencing and durable output. Nothing here runs on the game thread.
 
+use crate::history::PreparedCampaigns;
 use crate::sampling::{
     CONSISTENCY_TABLES, CONSISTENCY_TARGET, Captured, LossBatch, LostObservation,
     qpc as current_qpc, stable_clock,
@@ -9,20 +10,21 @@ use replay::{
     BranchId,
     branches::{BranchStart, BranchTracker, Gap},
     codec::invalid,
-    container::{Replay, SeekResult},
     frame::{DecodedFrame, FrameEncoder, Metrics, TABLE_COUNT, TableView},
     identity::SessionStart,
     rows::{
         CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow, FactionMemberRow,
-        FactionRow, ProvinceRow, Row, StateRow, TableId, WarRelationRow,
+        FactionRow, ProvinceRow, RowCodec, StateRow, TableRows, TableSchema, WarRelationRow,
+        tables,
     },
-    spool::{FileBackend, Record, SegmentBackend, SegmentedSpool},
+    spool::{ControlRecord, FileBackend, Record, SegmentBackend, SegmentedSpool},
 };
 use serde_json::{Value, json};
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
-    fs, io,
+    fs::{self, File},
+    io,
     path::{Path, PathBuf},
 };
 
@@ -127,86 +129,16 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     disk_branch: Option<BranchId>,
     last_written: Option<i32>,
     pending: Vec<PendingBranch>,
+    _history_file: Option<File>,
 }
 
 impl Campaign {
-    fn open(root: &Path, replay_dir: &Path, id: &str, session: &SessionStart) -> io::Result<Self> {
-        let mut tracker = BranchTracker::new();
-        let mut session = session.clone();
-        let replay_path = replay_dir.join(format!("{id}.battleplan"));
-        let previous = match fs::read(&replay_path) {
-            Ok(bytes) => Some(Replay::open(bytes)?),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error),
-        };
-        if let Some(previous) = &previous {
-            if previous.campaign_id != id.as_bytes() {
-                return Err(invalid("existing replay has a different campaign id"));
-            }
-            if !previous.identity.same_content(&session.identity) {
-                return Err(invalid("existing campaign replay has different content"));
-            }
-            for branch in &previous.branches {
-                tracker
-                    .seed_recorded_branch(branch.clone(), previous.recorded_hours(branch.id)?)?;
-            }
-            if let Some(old_session) = previous.sessions.iter().find(|old| old.id == session.id) {
-                if old_session != &session {
-                    return Err(invalid(
-                        "same process session has conflicting collector or content metadata",
-                    ));
-                }
-                session = old_session.clone();
-                let branch = previous
-                    .index
-                    .iter()
-                    .rev()
-                    .find_map(|block| {
-                        previous
-                            .branches
-                            .iter()
-                            .find(|branch| {
-                                branch.id == block.branch && branch.session == session.id
-                            })
-                            .map(|branch| (branch.id, block.last_hour))
-                    })
-                    .ok_or_else(|| {
-                        invalid("existing process session has no recorded hour to resume")
-                    })?;
-                let signal = match previous.seek(branch.0, branch.1)? {
-                    SeekResult::Frame(frame) => match &frame.tables[TableId::Clock.index()] {
-                        TableView::Complete(rows) => rows.iter().find_map(|row| match row {
-                            Row::Clock(clock) => Some(clock.play_session_started_at),
-                            _ => None,
-                        }),
-                        _ => None,
-                    },
-                    SeekResult::Gap { .. } => None,
-                }
-                .or_else(|| {
-                    previous
-                        .controls
-                        .iter()
-                        .rev()
-                        .find_map(|record| match record {
-                            Record::ClockWitness {
-                                session: witness_session,
-                                hour,
-                                load_signal,
-                                ..
-                            } if *witness_session == session.id && *hour == branch.1 => {
-                                *load_signal
-                            }
-                            _ => None,
-                        })
-                });
-                tracker.resume_session(session.id, branch.0, branch.1, signal)?;
-            } else {
-                tracker.begin_session(session.id)?;
-            }
-        } else {
-            tracker.begin_session(session.id)?;
-        }
+    fn open(
+        root: &Path,
+        history: &mut PreparedCampaigns,
+        id: &str,
+        session: &SessionStart,
+    ) -> io::Result<Self> {
         let directory = root.join(id);
         // An attach has its own root. Reusing an unfinalized root would conceal
         // history from the tracker and could assign existing branch ids again.
@@ -220,15 +152,17 @@ impl Campaign {
             ));
         }
         let spool = SegmentedSpool::new(FileBackend::new(&directory)?);
+        let (tracker, history_file) = history.take(id, session)?;
         Ok(Self {
             directory,
-            session,
+            session: session.clone(),
             tracker,
             encoder: FrameEncoder::new(),
             spool,
             disk_branch: None,
             last_written: None,
             pending: Vec::new(),
+            _history_file: history_file,
         })
     }
 }
@@ -345,12 +279,13 @@ impl<B: SegmentBackend> Campaign<B> {
 
     fn write(
         &mut self,
-        source: &DecodedFrame,
+        source: DecodedFrame,
         qpc: i64,
         signal: Option<i64>,
         unknown: u64,
         work: &mut WorkSample,
     ) -> io::Result<()> {
+        let (branch, hour) = (source.branch, source.hour);
         let result = self.write_inner(source, qpc, signal, unknown, work);
         if let Err(error) = &result {
             // Codec/validation errors are failures too. Closing also prevents a
@@ -360,24 +295,20 @@ impl<B: SegmentBackend> Campaign<B> {
             *work.record_writes.get_or_insert(0) += current_qpc() - close_started;
             self.disk_branch = None;
             self.encoder = FrameEncoder::new();
-            self.gap(
-                source.branch,
-                source.hour,
-                source.hour,
-                format!("spool write failed: {error}"),
-            );
+            self.gap(branch, hour, hour, format!("spool write failed: {error}"));
         }
         result
     }
 
     fn write_inner(
         &mut self,
-        source: &DecodedFrame,
+        source: DecodedFrame,
         qpc: i64,
         signal: Option<i64>,
         unknown: u64,
         work: &mut WorkSample,
     ) -> io::Result<()> {
+        let (branch, hour) = (source.branch, source.hour);
         let restarting = !self.spool.is_open();
         if restarting {
             self.encoder = FrameEncoder::new();
@@ -390,19 +321,19 @@ impl<B: SegmentBackend> Campaign<B> {
         let result = (|| {
             let mut context = self.context(restarting);
             if unknown != 0 {
-                context.push(Record::GapSummary {
+                context.push(Record::Control(ControlRecord::GapSummary {
                     session: self.session.id,
                     dropped_frames: unknown,
                     reason: "collector lost clock metadata; campaign and hour range are unknown"
                         .into(),
-                });
+                }));
             }
-            context.push(Record::ClockWitness {
+            context.push(Record::Control(ControlRecord::ClockWitness {
                 session: self.session.id,
                 qpc: u64::try_from(qpc).map_err(|_| invalid("negative callback QPC"))?,
-                hour: source.hour,
+                hour,
                 load_signal: signal,
-            });
+            }));
             if restarting {
                 self.spool.start_segment(&context, &frame)
             } else {
@@ -415,9 +346,9 @@ impl<B: SegmentBackend> Campaign<B> {
         work.record_writes = Some(current_qpc() - write_started);
         match result {
             Ok(()) => {
-                self.tracker.record_hour(source.branch, source.hour)?;
-                self.disk_branch = Some(source.branch);
-                self.last_written = Some(source.hour);
+                self.tracker.record_hour(branch, hour)?;
+                self.disk_branch = Some(branch);
+                self.last_written = Some(hour);
                 self.pending.clear();
                 Ok(())
             }
@@ -438,22 +369,23 @@ impl<B: SegmentBackend> Campaign<B> {
             self.spool.append(&record)?;
         }
         if unknown != 0 {
-            self.spool.append(&Record::GapSummary {
-                session: self.session.id,
-                dropped_frames: unknown,
-                reason: "collector lost clock metadata; campaign and hour range are unknown".into(),
-            })?;
+            self.spool
+                .append(&Record::Control(ControlRecord::GapSummary {
+                    session: self.session.id,
+                    dropped_frames: unknown,
+                    reason: "collector lost clock metadata; campaign and hour range are unknown"
+                        .into(),
+                }))?;
         }
-        self.spool.append(&Record::Detach {
+        self.spool.append(&Record::Control(ControlRecord::Detach {
             session: self.session.id,
             last_hour: self.last_written,
-        })?;
+        }))?;
         self.pending.clear();
         self.spool.finish_segment()
     }
 }
 
-#[derive(Default)]
 struct Statistics {
     hours: u64,
     campaign: Option<String>,
@@ -469,25 +401,113 @@ struct Statistics {
     wars_mismatches: u64,
     factions_mismatches: u64,
     faction_members_mismatches: u64,
+    provinces_mismatches: u64,
+    map_mismatches: [u64; crate::map_capture::MAP_TABLES],
     consistency_successful: [u16; CONSISTENCY_TABLES.len()],
+    extended_successful: [u16; TABLE_COUNT],
+    extended_mismatches: [u64; TABLE_COUNT],
+    country_cache_failures: u64,
+    country_cache_fallbacks: u64,
+    country_cache_entries: usize,
+    country_cache_status: engine::country_memory::SeedStatus,
+    country_cache_error: Option<&'static str>,
+    country_cache_cost: Distribution,
     war_matrix_checks: u64,
     war_matrix_failures: u64,
     war_matrix_cost: Distribution,
     pool_bytes: u64,
+    sampled_buffer_bytes: usize,
+    sampled_buffer_parts: Vec<(&'static str, usize)>,
     previous: Option<(String, BranchId, i32, i64)>,
     interval_hours: u64,
     interval_qpc: u64,
     errors: u64,
     last_error: Option<String>,
     conversion: Distribution,
+    conversion_packs: [Distribution; crate::extended::PACK_NAMES.len()],
     frame_encoding: Distribution,
     record_writes: Distribution,
 }
 
+impl Default for Statistics {
+    fn default() -> Self {
+        Self {
+            hours: 0,
+            campaign: None,
+            last_hour: None,
+            total_ns: 0,
+            callback: Distribution::default(),
+            table_ns: [0; TABLE_COUNT],
+            dropped_frames: 0,
+            truncated_tables: 0,
+            links_mismatches: 0,
+            states_mismatches: 0,
+            divisions_mismatches: 0,
+            wars_mismatches: 0,
+            factions_mismatches: 0,
+            faction_members_mismatches: 0,
+            provinces_mismatches: 0,
+            map_mismatches: [0; crate::map_capture::MAP_TABLES],
+            consistency_successful: [0; CONSISTENCY_TABLES.len()],
+            extended_successful: [0; TABLE_COUNT],
+            extended_mismatches: [0; TABLE_COUNT],
+            country_cache_failures: 0,
+            country_cache_fallbacks: 0,
+            country_cache_entries: 0,
+            country_cache_error: None,
+            country_cache_status: engine::country_memory::SeedStatus::Unavailable {
+                reason: "no observation",
+            },
+            country_cache_cost: Distribution::default(),
+            war_matrix_checks: 0,
+            war_matrix_failures: 0,
+            war_matrix_cost: Distribution::default(),
+            pool_bytes: 0,
+            sampled_buffer_bytes: 0,
+            sampled_buffer_parts: Vec::new(),
+            previous: None,
+            interval_hours: 0,
+            interval_qpc: 0,
+            errors: 0,
+            last_error: None,
+            conversion: Distribution::default(),
+            conversion_packs: std::array::from_fn(|_| Distribution::default()),
+            frame_encoding: Distribution::default(),
+            record_writes: Distribution::default(),
+        }
+    }
+}
+
 impl Statistics {
     fn observe_consistency(&mut self, captured: &Captured) {
+        if captured.consistency_checked[crate::sampling::PROVINCE_CHECK] {
+            self.provinces_mismatches += captured.provinces_mismatches as u64;
+        }
         for (index, total) in self.consistency_successful.iter_mut().enumerate() {
             *total = (*total).max(captured.consistency_successful[index]);
+        }
+        let extended_mismatches = captured.extended.checked_mismatches();
+        for table in crate::extended::TABLES {
+            let index = table.index();
+            self.extended_successful[index] =
+                self.extended_successful[index].max(captured.extended_successful[index]);
+            if captured.extended_checked[index] {
+                self.extended_mismatches[index] += extended_mismatches[index] as u64;
+            }
+        }
+        self.country_cache_failures += u64::from(captured.country_cache_error.is_some());
+        self.country_cache_fallbacks +=
+            u64::from(captured.country_cache_status != engine::country_memory::SeedStatus::Ready);
+        self.country_cache_entries = captured.country_cache_entries;
+        self.country_cache_status = captured.country_cache_status;
+        self.country_cache_error = captured.country_cache_error;
+        self.country_cache_cost.record_ns(captured.country_cache_ns);
+        for (total, count) in self
+            .map_mismatches
+            .iter_mut()
+            .zip(captured.map.checked_mismatches())
+        {
+            *total += count;
         }
         for (index, (total, count)) in [
             (&mut self.links_mismatches, captured.links_mismatches),
@@ -525,22 +545,50 @@ impl Statistics {
     }
 
     fn consistency_status(&self) -> Value {
-        let successful: serde_json::Map<String, Value> = CONSISTENCY_TABLES
+        let mut successful: serde_json::Map<String, Value> = CONSISTENCY_TABLES
             .into_iter()
             .zip(self.consistency_successful)
             .map(|(table, count)| (table.to_owned(), json!(count)))
             .collect();
+        let mut mismatches: serde_json::Map<String, Value> = CONSISTENCY_TABLES
+            .into_iter()
+            .zip(
+                [
+                    self.links_mismatches,
+                    self.states_mismatches,
+                    self.divisions_mismatches,
+                    self.wars_mismatches,
+                    self.factions_mismatches,
+                    self.faction_members_mismatches,
+                ]
+                .into_iter()
+                .chain(self.map_mismatches)
+                .chain([self.provinces_mismatches]),
+            )
+            .map(|(table, count)| (table.to_owned(), json!(count)))
+            .collect();
+        for table in crate::extended::TABLES {
+            successful.insert(
+                format!("{table:?}"),
+                json!(self.extended_successful[table.index()]),
+            );
+            mismatches.insert(
+                format!("{table:?}"),
+                json!(self.extended_mismatches[table.index()]),
+            );
+        }
         json!({
             "scope": "this collector attach",
             "target_per_table": CONSISTENCY_TARGET,
             "successful_checks": successful,
+            "mismatches": mismatches,
         })
     }
 }
 
 pub struct Processor {
     root: PathBuf,
-    replay_dir: PathBuf,
+    history: PreparedCampaigns,
     session: SessionStart,
     campaigns: BTreeMap<String, Campaign>,
     stats: Statistics,
@@ -549,12 +597,12 @@ pub struct Processor {
 }
 
 impl Processor {
-    pub fn new(root: &Path, replay_dir: &Path, session: SessionStart) -> io::Result<Self> {
+    pub fn new(root: &Path, history: PreparedCampaigns, session: SessionStart) -> io::Result<Self> {
         session.validate()?;
         fs::create_dir_all(root)?;
         Ok(Self {
             root: root.into(),
-            replay_dir: replay_dir.into(),
+            history,
             session,
             campaigns: BTreeMap::new(),
             stats: Statistics::default(),
@@ -563,9 +611,15 @@ impl Processor {
         })
     }
 
+    pub fn set_verified_session(&mut self, session: SessionStart) {
+        // The spool worker calls this exactly once, before its first observation.
+        assert!(self.campaigns.is_empty());
+        self.session = session;
+    }
+
     fn campaign(&mut self, id: &str) -> io::Result<&mut Campaign> {
         if !self.campaigns.contains_key(id) {
-            let campaign = Campaign::open(&self.root, &self.replay_dir, id, &self.session)?;
+            let campaign = Campaign::open(&self.root, &mut self.history, id, &self.session)?;
             self.campaigns.insert(id.into(), campaign);
         }
         Ok(self.campaigns.get_mut(id).unwrap())
@@ -666,13 +720,13 @@ impl Processor {
         };
         let branch = campaign.observe(origin, clock.hour, Some(clock.play_session_started_at))?;
         let conversion_started = current_qpc();
-        let source = decoded(captured, clock, branch);
+        let (source, pack_ticks) = decoded_with_costs(captured, clock, branch);
         let mut work = WorkSample {
             conversion: current_qpc() - conversion_started,
             ..WorkSample::default()
         };
         let result = campaign.write(
-            &source,
+            source,
             captured.qpc,
             Some(clock.play_session_started_at),
             unknown,
@@ -682,6 +736,11 @@ impl Processor {
         self.stats
             .conversion
             .record_ticks(work.conversion, frequency);
+        for (cost, ticks) in self.stats.conversion_packs.iter_mut().zip(pack_ticks) {
+            if let Some(ticks) = ticks {
+                cost.record_ticks(ticks, frequency);
+            }
+        }
         if let Some(ticks) = work.frame_encoding {
             self.stats.frame_encoding.record_ticks(ticks, frequency);
         }
@@ -699,8 +758,18 @@ impl Processor {
         stats.callback.record_ns(captured.total_ns);
         stats.table_ns = captured.table_ns;
         stats.pool_bytes = captured.pool_bytes;
+        stats.sampled_buffer_bytes = captured.allocated_bytes();
+        stats.sampled_buffer_parts = captured.extended.allocated_by_pack();
+        let extended_bytes = captured.extended.allocated_bytes();
+        let map_bytes = captured.map.allocated_bytes();
+        stats.sampled_buffer_parts.push(("map", map_bytes));
+        stats.sampled_buffer_parts.push((
+            "core",
+            stats.sampled_buffer_bytes - extended_bytes - map_bytes,
+        ));
         stats.dropped_frames = captured.dropped_frames;
         stats.observe_consistency(captured);
+        let extended_outcomes = captured.extended.outcomes();
         stats.truncated_tables = [
             captured.countries_result,
             captured.links_result,
@@ -712,6 +781,8 @@ impl Processor {
             captured.faction_members_result,
         ]
         .into_iter()
+        .chain(captured.map.outcomes())
+        .chain(crate::extended::TABLES.map(|table| extended_outcomes[table.index()]))
         .filter(|outcome| matches!(outcome, Outcome::Truncated { .. }))
         .count();
         if let Some((old_id, old_branch, hour, qpc)) = &stats.previous
@@ -793,7 +864,7 @@ impl Processor {
         json!({
             "campaign": stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
             "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
-            "max_ns": callback.max_ns, "table_ns": stats.table_ns,
+            "max_ns": callback.max_ns, "table_ns": stats.table_ns.as_slice(),
             "hours_per_second": if stats.interval_qpc == 0 { 0.0 } else {
                 stats.interval_hours as f64 * self.session.qpc_frequency as f64 / stats.interval_qpc as f64
             },
@@ -808,13 +879,38 @@ impl Processor {
             "war_matrix_checks": stats.war_matrix_checks,
             "war_matrix_failures": stats.war_matrix_failures,
             "war_matrix_cost": stats.war_matrix_cost.json(),
+            "shared_read_groups": crate::extended::read_groups().into_iter().map(|(name, anchor, members)| {
+                let total_ns: u64 = members.iter().map(|table| stats.table_ns[table.index()]).sum();
+                json!({"name": name, "anchor": format!("{anchor:?}"),
+                    "members": members.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>(),
+                    "last_ns": total_ns})
+            }).collect::<Vec<_>>(),
+            "country_authentication": {
+                "entries": stats.country_cache_entries,
+                "seed_status": format!("{:?}", stats.country_cache_status),
+                "fallbacks": stats.country_cache_fallbacks,
+                "verification_failures": stats.country_cache_failures,
+                "last_error": stats.country_cache_error,
+                "cost": stats.country_cache_cost.json(),
+                "accounted_in": "Countries",
+            },
             "pool_bytes": stats.pool_bytes, "write_errors": stats.errors, "last_error": stats.last_error,
+            "sampled_buffer_allocation": {
+                "scope": "last consumed native row buffer, before off-thread growth; not the whole pool",
+                "bytes": stats.sampled_buffer_bytes,
+                "parts": stats.sampled_buffer_parts.iter().map(|(name, bytes)| {
+                    json!({"name": name, "bytes": bytes})
+                }).collect::<Vec<_>>(),
+            },
             "unknown_losses_pending": self.unknown_pending,
             "spool_work": {
                 "conversion": stats.conversion.json(),
+                "conversion_packs": crate::extended::PACK_NAMES.iter().zip(&stats.conversion_packs)
+                    .map(|(name, cost)| json!({"name": name, "cost": cost.json()})).collect::<Vec<_>>(),
+                "conversion_packs_scope": "nested within conversion; excludes core and map tables",
                 "frame_encoding": stats.frame_encoding.json(),
                 "record_writes": stats.record_writes.json(),
-                "row_enum_bytes": std::mem::size_of::<Row>(),
+                "table_rows_storage_bytes": std::mem::size_of::<TableRows>(),
             },
         })
     }
@@ -837,7 +933,7 @@ fn prepare_campaigns<'a>(
     Ok(())
 }
 
-fn campaign_name(bytes: &[u8]) -> io::Result<String> {
+pub(super) fn campaign_name(bytes: &[u8]) -> io::Result<String> {
     if bytes.len() != 36
         || bytes.iter().enumerate().any(|(i, byte)| {
             if [8, 13, 18, 23].contains(&i) {
@@ -855,24 +951,41 @@ fn campaign_name(bytes: &[u8]) -> io::Result<String> {
     Ok(String::from_utf8(bytes.to_vec()).expect("validated UUID is ASCII"))
 }
 
-fn unavailable(reason: &str) -> TableView {
+pub(crate) fn unavailable(reason: &str) -> TableView {
     TableView::Unavailable {
         reason: reason.into(),
     }
 }
 
-fn table<T>(outcome: Outcome, source: &[T], convert: impl Fn(&T) -> Row) -> TableView {
+pub(crate) fn table<S: TableSchema, T>(
+    outcome: Outcome,
+    source: &[T],
+    convert: impl Fn(&T) -> S::Row,
+) -> TableView {
+    let Some(source) = source.get(..outcome.len()) else {
+        return unavailable("walker row count exceeds allocated buffer");
+    };
+    table_iter::<S, _>(outcome, source.iter(), convert)
+}
+
+/// Convert borrowed rows without first materializing a parallel reference list.
+pub(crate) fn table_iter<S: TableSchema, T>(
+    outcome: Outcome,
+    source: impl ExactSizeIterator<Item = T>,
+    convert: impl Fn(T) -> S::Row,
+) -> TableView {
     match outcome {
         Outcome::Unavailable { reason } => unavailable(reason),
         Outcome::Rows { len } | Outcome::Truncated { len, .. } => {
-            let Some(source) = source.get(..len) else {
+            if source.len() != len {
                 return unavailable("walker row count exceeds allocated buffer");
-            };
-            let mut rows: Vec<_> = source.iter().map(convert).collect();
-            rows.sort_unstable_by_key(Row::key);
+            }
+            let mut rows: Vec<_> = source.map(convert).collect();
+            rows.sort_unstable_by_key(RowCodec::key);
             if rows.windows(2).any(|rows| rows[0].key() == rows[1].key()) {
                 return unavailable("walker produced duplicate engine ids");
             }
+            let rows = TableRows::from_rows::<S>(rows);
             match outcome {
                 Outcome::Truncated { unread_rows, .. } if unread_rows != 0 => {
                     TableView::Truncated {
@@ -922,16 +1035,29 @@ fn faction_table(captured: &Captured) -> TableView {
     {
         return unavailable("faction name lies outside the captured byte arena");
     }
-    table(captured.factions_result, &captured.factions, |faction| {
-        Row::Faction(FactionRow {
+    table::<tables::Factions, _>(captured.factions_result, &captured.factions, |faction| {
+        FactionRow {
             id: faction.id,
             name: captured.faction_names[faction.name_start..faction.name_start + faction.name_len]
                 .to_vec(),
-        })
+        }
     })
 }
 
+#[cfg(test)]
 fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> DecodedFrame {
+    decoded_with_costs(captured, clock, branch).0
+}
+
+fn decoded_with_costs(
+    captured: &Captured,
+    clock: Clock,
+    branch: BranchId,
+) -> (
+    DecodedFrame,
+    [Option<i64>; crate::extended::PACK_NAMES.len()],
+) {
+    let mut pack_ticks = [None; crate::extended::PACK_NAMES.len()];
     let metrics = Metrics {
         total_ns: captured.total_ns,
         table_ns: captured.table_ns,
@@ -955,18 +1081,32 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> DecodedFrame 
     let tables = if let Some(reason) = failure {
         std::array::from_fn(|_| unavailable(reason))
     } else {
-        [
-            TableView::Complete(vec![Row::Clock(ClockRow {
+        let [
+            players,
+            controllers,
+            land,
+            fleets,
+            task_forces,
+            ships,
+            naval,
+            naval_participants,
+            air,
+            orders,
+        ] = crate::map_spool::tables(&captured.map);
+        let core = [
+            TableView::Complete(TableRows::Clock(vec![ClockRow {
                 hour: clock.hour,
                 play_time: clock.play_time,
                 play_session_started_at: clock.play_session_started_at,
                 seed: clock.seed,
-            })]),
-            TableView::Complete(vec![Row::Campaign(CampaignRow {
+            }])),
+            TableView::Complete(TableRows::Campaign(vec![CampaignRow {
                 id: clock.campaign_id.as_bytes().to_vec(),
-            })]),
-            table(captured.countries_result, &captured.countries, |country| {
-                Row::Country(CountryRow {
+            }])),
+            table::<tables::Countries, _>(
+                captured.countries_result,
+                &captured.countries,
+                |country| CountryRow {
                     id: country.id,
                     canonical_slot: country.canonical_slot,
                     tag: country.tag.as_bytes().to_vec(),
@@ -976,42 +1116,53 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> DecodedFrame 
                     stability_raw: country.stability_raw,
                     war_support_raw: country.war_support_raw,
                     convoys_raw: country.convoys_raw,
-                })
-            }),
+                },
+            ),
             if captured.consistency_checked[0] && captured.links_mismatches != 0 {
                 unavailable("country links changed during double read")
             } else {
-                table(captured.links_result, &captured.links, |link| {
-                    Row::CountryLink(CountryLinkRow {
+                table::<tables::CountryLinks, _>(captured.links_result, &captured.links, |link| {
+                    CountryLinkRow {
                         id: link.id,
                         canonical_slot: link.canonical_slot,
-                    })
+                    }
                 })
             },
-            table(captured.provinces_result, &captured.provinces, |province| {
-                Row::Province(ProvinceRow {
-                    id: province.id,
-                    state: province.state,
-                    owner: province.owner,
-                    controller: province.controller,
-                })
-            }),
+            if captured.consistency_checked[crate::sampling::PROVINCE_CHECK]
+                && captured.provinces_mismatches != 0
+            {
+                unavailable("provinces changed during double read")
+            } else {
+                table::<tables::Provinces, _>(
+                    captured.provinces_result,
+                    &captured.provinces,
+                    |province| ProvinceRow {
+                        id: province.id,
+                        state: province.state,
+                        owner: province.owner,
+                        controller: province.controller,
+                        victory_points: province.victory_points,
+                    },
+                )
+            },
             if captured.consistency_checked[1] && captured.states_mismatches != 0 {
                 unavailable("states changed during double read")
             } else {
-                table(captured.states_result, &captured.states, |state| {
-                    Row::State(StateRow {
+                table::<tables::States, _>(captured.states_result, &captured.states, |state| {
+                    StateRow {
                         id: state.id,
                         owner: state.owner,
                         controller: state.controller,
-                    })
+                    }
                 })
             },
             if captured.consistency_checked[2] && captured.divisions_mismatches != 0 {
                 unavailable("divisions changed during double read")
             } else {
-                table(captured.divisions_result, &captured.divisions, |division| {
-                    Row::Division(DivisionRow {
+                table::<tables::Divisions, _>(
+                    captured.divisions_result,
+                    &captured.divisions,
+                    |division| DivisionRow {
                         id: division.id,
                         roster_owner: division.roster_owner,
                         logical_owner: division.logical_owner,
@@ -1020,16 +1171,16 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> DecodedFrame 
                         template: division.template,
                         hit_points: division.hit_points,
                         organisation: division.organisation,
-                    })
-                })
+                    },
+                )
             },
             if captured.consistency_checked[3] && captured.wars_mismatches != 0 {
                 unavailable("war relations changed during double read")
             } else if let Some(reason) = war_matrix_issue(captured) {
                 unavailable(reason)
             } else {
-                table(captured.wars_result, &captured.wars, |war| {
-                    Row::WarRelation(WarRelationRow {
+                table::<tables::WarRelations, _>(captured.wars_result, &captured.wars, |war| {
+                    WarRelationRow {
                         first_country: war.first_country,
                         second_country: war.second_country,
                         start_hour: war.start_hour,
@@ -1040,38 +1191,66 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> DecodedFrame 
                         first_unknown_casualties: war.first_unknown_casualties,
                         second_unknown_casualties: war.second_unknown_casualties,
                         first_was_instigator: war.first_was_instigator,
-                    })
+                    }
                 })
             },
             faction_table(captured),
             if captured.consistency_checked[5] && captured.faction_members_mismatches != 0 {
                 unavailable("faction members changed during double read")
             } else {
-                table(
+                table::<tables::FactionMembers, _>(
                     captured.faction_members_result,
                     &captured.faction_members,
-                    |member| {
-                        Row::FactionMember(FactionMemberRow {
-                            country: member.country,
-                            faction: member.faction,
-                            ordinal: member.ordinal,
-                        })
+                    |member| FactionMemberRow {
+                        country: member.country,
+                        faction: member.faction,
+                        ordinal: member.ordinal,
                     },
                 )
             },
-        ]
+            players,
+            controllers,
+            land,
+            fleets,
+            task_forces,
+            ships,
+            naval,
+            naval_participants,
+            air,
+            orders,
+        ];
+        let mut tables = std::array::from_fn(|_| unavailable("table was not acquired"));
+        for (destination, value) in tables.iter_mut().zip(core) {
+            *destination = value;
+        }
+        pack_ticks = captured.extended.insert_tables(&mut tables).map(Some);
+        if let Some(reason) = captured.country_cache_error {
+            for (index, value) in tables.iter_mut().enumerate() {
+                if !matches!(index, 0 | 1 | 4 | 5)
+                    && index != replay::rows::TableId::LexicalTokens.index()
+                {
+                    *value = unavailable(reason);
+                }
+            }
+        }
+        tables
     };
-    DecodedFrame {
-        branch,
-        hour: clock.hour,
-        tables,
-        metrics,
-    }
+    (
+        DecodedFrame {
+            branch,
+            hour: clock.hour,
+            tables,
+            metrics,
+        },
+        pack_ticks,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay::container::{Replay, SeekResult};
+    use replay::rows::TableId;
 
     #[test]
     fn work_ticks_use_nanoseconds_and_nearest_rank_percentiles() {
@@ -1174,7 +1353,7 @@ mod tests {
     fn cached_callback_summary_does_not_freeze_status_errors_or_latest_cost() {
         let mut processor = Processor {
             root: PathBuf::new(),
-            replay_dir: PathBuf::new(),
+            history: PreparedCampaigns::default(),
             session: session(),
             campaigns: BTreeMap::new(),
             stats: Statistics::default(),
@@ -1257,6 +1436,16 @@ mod tests {
         captured.wars_result = Outcome::Rows { len: 0 };
         captured.factions_result = Outcome::Rows { len: 0 };
         captured.faction_members_result = Outcome::Rows { len: 0 };
+        captured.map.players.outcome = Outcome::Rows { len: 0 };
+        captured.map.human_controllers.outcome = Outcome::Rows { len: 0 };
+        captured.map.land_combats.outcome = Outcome::Rows { len: 0 };
+        captured.map.fleets.outcome = Outcome::Rows { len: 0 };
+        captured.map.task_forces.outcome = Outcome::Rows { len: 0 };
+        captured.map.ships.outcome = Outcome::Rows { len: 0 };
+        captured.map.naval_combats.outcome = Outcome::Rows { len: 0 };
+        captured.map.naval_combat_participants.outcome = Outcome::Rows { len: 0 };
+        captured.map.air_wings.outcome = Outcome::Rows { len: 0 };
+        captured.map.army_orders.outcome = Outcome::Rows { len: 0 };
         captured.consistency_checked.fill(true);
         captured
     }
@@ -1286,6 +1475,7 @@ mod tests {
             state: 4,
             owner: 7,
             controller: 2,
+            victory_points: i32::MIN,
         };
         captured.provinces_result = Outcome::Rows { len: 1 };
         captured.states[0] = engine::cstate::Row {
@@ -1314,7 +1504,7 @@ mod tests {
         let frame = decoded(&captured, clock(10), 1);
         assert_eq!(
             frame.tables[2],
-            TableView::Complete(vec![Row::Country(CountryRow {
+            TableView::Complete(TableRows::Countries(vec![CountryRow {
                 id: 7,
                 canonical_slot: 1,
                 tag: b"GER".to_vec(),
@@ -1324,19 +1514,24 @@ mod tests {
                 stability_raw: 100_001,
                 war_support_raw: -9_007_199_254_740_993,
                 convoys_raw: Some(i64::MAX),
-            })])
+            }]))
         );
         let TableView::Complete(divisions) = &frame.tables[TableId::Divisions.index()] else {
             panic!("distinct full division handles must survive conversion");
         };
         assert_eq!(
-            divisions.iter().map(Row::key).collect::<Vec<_>>(),
-            vec![captured.divisions[1].id, captured.divisions[0].id]
+            divisions
+                .rows::<tables::Divisions>()
+                .unwrap()
+                .iter()
+                .map(DivisionRow::key)
+                .collect::<Vec<_>>(),
+            vec![
+                u128::from(captured.divisions[1].id),
+                u128::from(captured.divisions[0].id)
+            ]
         );
-        for row in divisions {
-            let Row::Division(division) = row else {
-                panic!()
-            };
+        for division in divisions.rows::<tables::Divisions>().unwrap() {
             assert_eq!(division.hit_points, i64::MIN);
             assert_eq!(division.organisation, 9_007_199_254_740_993);
             assert_eq!(division.template, u64::MAX);
@@ -1344,34 +1539,30 @@ mod tests {
         }
         assert_eq!(
             frame.tables[3],
-            TableView::Complete(vec![Row::CountryLink(CountryLinkRow {
+            TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow {
                 id: 2,
                 canonical_slot: 1
-            })])
+            }]))
         );
         assert_eq!(
             frame.tables[4],
-            TableView::Complete(vec![Row::Province(ProvinceRow {
+            TableView::Complete(TableRows::Provinces(vec![ProvinceRow {
                 id: 6,
                 state: 4,
                 owner: 7,
-                controller: 2
-            })])
+                controller: 2,
+                victory_points: i32::MIN,
+            }]))
         );
-        let Row::Clock(value) = &match &frame.tables[0] {
-            TableView::Complete(rows) => rows,
-            _ => panic!(),
-        }[0] else {
-            panic!()
-        };
+        let value = &frame.complete::<tables::Clock>().unwrap()[0];
         assert_eq!(value.play_time, u64::MAX);
         assert_eq!(
             frame.tables[TableId::States.index()],
-            TableView::Complete(vec![Row::State(StateRow {
+            TableView::Complete(TableRows::States(vec![StateRow {
                 id: 4,
                 owner: 7,
                 controller: u32::MAX,
-            })])
+            }]))
         );
     }
 
@@ -1392,11 +1583,24 @@ mod tests {
         assert_eq!(
             frame.tables[3],
             TableView::Truncated {
-                rows: Vec::new(),
+                rows: TableRows::CountryLinks(Vec::new()),
                 missing: 9
             }
         );
-        assert_eq!(frame.tables[4], TableView::Complete(Vec::new()));
+        assert_eq!(
+            frame.tables[4],
+            TableView::Complete(TableRows::Provinces(Vec::new()))
+        );
+        captured.provinces_mismatches = 1;
+        assert_eq!(
+            decoded(&captured, clock(10), 1).tables[4],
+            unavailable("provinces changed during double read")
+        );
+        captured.consistency_checked[crate::sampling::PROVINCE_CHECK] = false;
+        assert_eq!(
+            decoded(&captured, clock(10), 1).tables[4],
+            TableView::Complete(TableRows::Provinces(Vec::new()))
+        );
         assert_eq!(
             frame.tables[TableId::States.index()],
             unavailable("states changed during double read")
@@ -1469,7 +1673,7 @@ mod tests {
         ] {
             assert_eq!(
                 skipped.tables[table.index()],
-                TableView::Complete(Vec::new())
+                TableView::Complete(TableRows::empty(table))
             );
         }
         assert_eq!(
@@ -1479,29 +1683,31 @@ mod tests {
         assert_eq!(
             skipped.tables[TableId::Divisions.index()],
             TableView::Truncated {
-                rows: Vec::new(),
+                rows: TableRows::Divisions(Vec::new()),
                 missing: 3
             }
         );
         assert_eq!(
             skipped.tables[TableId::Factions.index()],
-            TableView::Complete(vec![Row::Faction(FactionRow {
+            TableView::Complete(TableRows::Factions(vec![FactionRow {
                 id: 88,
                 name: vec![b'N', 0, 255],
-            })])
+            }]))
         );
     }
 
     #[test]
     fn consistency_status_keeps_attach_successes_without_counting_skipped_mismatches() {
         let mut source = captured(10);
-        source.consistency_successful = [199, 200, 197, 196, 195, 194];
+        source.consistency_successful[..6].copy_from_slice(&[199, 200, 197, 196, 195, 194]);
         source.links_mismatches = 1;
         source.states_mismatches = 2;
         source.divisions_mismatches = 3;
         source.wars_mismatches = 4;
         source.factions_mismatches = 5;
         source.faction_members_mismatches = 6;
+        source.provinces_mismatches = 7;
+        source.consistency_successful[crate::sampling::PROVINCE_CHECK] = 198;
         let mut stats = Statistics::default();
         stats.observe_consistency(&source);
         source.consistency_checked.fill(false);
@@ -1518,6 +1724,8 @@ mod tests {
             [1, 2, 3, 4, 5, 6]
         );
         let status = stats.consistency_status();
+        assert_eq!(status["mismatches"]["Provinces"], 7);
+        assert_eq!(status["successful_checks"]["Provinces"], 198);
         assert_eq!(status["scope"], "this collector attach");
         assert_eq!(status["target_per_table"], CONSISTENCY_TARGET);
         for (table, count) in CONSISTENCY_TABLES
@@ -1526,7 +1734,13 @@ mod tests {
         {
             assert_eq!(status["successful_checks"][table], count);
         }
-        assert_eq!(status["successful_checks"].as_object().unwrap().len(), 6);
+        assert_eq!(
+            status["successful_checks"].as_object().unwrap().len(),
+            CONSISTENCY_TABLES.len() + crate::extended::TABLES.len()
+        );
+        for table in crate::extended::TABLES {
+            assert_eq!(status["successful_checks"][format!("{table:?}")], 0);
+        }
     }
 
     #[test]
@@ -1570,6 +1784,25 @@ mod tests {
     }
 
     #[test]
+    fn changed_country_authentication_preserves_clock_map_and_independent_dictionary() {
+        let mut source = captured(10);
+        let before = decoded(&source, clock(10), 1);
+        source.country_cache_error = Some("country authentication changed during capture");
+        let failed = decoded(&source, clock(10), 1);
+        for table in replay::rows::TableId::ALL {
+            let index = table.index();
+            if matches!(index, 0 | 1 | 4 | 5) || table == TableId::LexicalTokens {
+                assert_eq!(failed.tables[index], before.tables[index]);
+            } else {
+                assert_eq!(
+                    failed.tables[index],
+                    unavailable("country authentication changed during capture")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn primary_only_hours_restore_failed_baselines_and_keep_new_values() {
         use replay::frame::{FrameDecoder, TableUpdate};
 
@@ -1579,7 +1812,7 @@ mod tests {
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::new();
         let failed = encoder
-            .encode(&decoded(&source, clock(10), 1), true)
+            .encode(decoded(&source, clock(10), 1), true)
             .unwrap();
         decoder.apply(&failed).unwrap();
 
@@ -1603,7 +1836,7 @@ mod tests {
             source.states[0].controller = hour as u32;
             source.faction_names[..3].copy_from_slice(if hour == 11 { b"one" } else { b"two" });
             let expected = decoded(&source, clock(hour), 1);
-            let frame = encoder.encode(&expected, false).unwrap();
+            let frame = encoder.encode(expected.clone(), false).unwrap();
             for table in [TableId::States, TableId::Factions] {
                 if hour == 11 {
                     assert!(matches!(
@@ -1657,13 +1890,9 @@ mod tests {
         };
         source.faction_members_result = Outcome::Rows { len: 2 };
         let frame = decoded(&source, clock(10), 1);
-        let TableView::Complete(wars) = &frame.tables[TableId::WarRelations.index()] else {
-            panic!("war conversion incomplete")
-        };
-        let Row::WarRelation(war) = &wars[0] else {
-            panic!("wrong row")
-        };
-        assert_eq!(wars[0].key(), (u64::from(u32::MAX) << 32) | 1);
+        let wars = frame.complete::<tables::WarRelations>().unwrap();
+        let war = &wars[0];
+        assert_eq!(wars[0].key(), (u128::from(u32::MAX) << 32) | 1);
         assert_eq!((war.cancel, war.first_was_instigator), (255, 254));
         assert_eq!(
             (
@@ -1675,27 +1904,27 @@ mod tests {
         );
         assert_eq!(
             frame.tables[TableId::Factions.index()],
-            TableView::Complete(vec![Row::Faction(FactionRow {
+            TableView::Complete(TableRows::Factions(vec![FactionRow {
                 id: u64::MAX,
                 name: vec![b'A', 0, 255, b'B']
-            })])
+            }]))
         );
         assert_eq!(
             frame.tables[TableId::FactionMembers.index()],
-            TableView::Complete(vec![
-                Row::FactionMember(FactionMemberRow {
+            TableView::Complete(TableRows::FactionMembers(vec![
+                FactionMemberRow {
                     country: 1,
                     faction: u64::MAX,
                     ordinal: 1
-                }),
-                Row::FactionMember(FactionMemberRow {
+                },
+                FactionMemberRow {
                     country: 9,
                     faction: u64::MAX,
                     ordinal: 0
-                }),
-            ])
+                },
+            ]))
         );
-        let encoded = FrameEncoder::new().encode(&frame, true).unwrap();
+        let encoded = FrameEncoder::new().encode(frame.clone(), true).unwrap();
         let decoded = replay::frame::FrameDecoder::new().apply(&encoded).unwrap();
         assert_eq!(decoded.tables, frame.tables);
     }
@@ -1726,7 +1955,7 @@ mod tests {
         );
         assert_eq!(
             frame.tables[TableId::Factions.index()],
-            TableView::Complete(Vec::new())
+            TableView::Complete(TableRows::Factions(Vec::new()))
         );
         source.war_matrix_result = Some(Outcome::Unavailable {
             reason: "bad matrix pointer",
@@ -1767,22 +1996,61 @@ mod tests {
 
     #[test]
     fn table_conversion_rejects_duplicate_keys_and_path_validation_is_strict() {
+        let source = [(2, i32::MIN), (1, i32::MAX)];
+        let values = table_iter::<tables::Provinces, _>(
+            Outcome::Truncated {
+                len: 2,
+                unread_rows: 3,
+            },
+            source.into_iter(),
+            |(id, victory_points)| ProvinceRow {
+                id,
+                victory_points,
+                ..Default::default()
+            },
+        );
         assert_eq!(
-            table(Outcome::Rows { len: 2 }, &[1, 1], |id| Row::Province(
-                ProvinceRow {
-                    id: *id,
+            values,
+            TableView::Truncated {
+                rows: TableRows::Provinces(vec![
+                    ProvinceRow {
+                        id: 1,
+                        victory_points: i32::MAX,
+                        ..Default::default()
+                    },
+                    ProvinceRow {
+                        id: 2,
+                        victory_points: i32::MIN,
+                        ..Default::default()
+                    },
+                ]),
+                missing: 3,
+            }
+        );
+        assert_eq!(
+            table_iter::<tables::Provinces, _>(
+                Outcome::Rows { len: 1 },
+                source.into_iter(),
+                |(id, victory_points)| ProvinceRow {
+                    id,
+                    victory_points,
                     ..Default::default()
                 }
-            )),
+            ),
+            unavailable("walker row count exceeds allocated buffer"),
+        );
+        assert_eq!(
+            table::<tables::Provinces, _>(Outcome::Rows { len: 2 }, &[1, 1], |id| ProvinceRow {
+                id: *id,
+                ..Default::default()
+            }),
             unavailable("walker produced duplicate engine ids")
         );
         assert_eq!(
-            table(Outcome::Rows { len: 3 }, &[1], |id| Row::Province(
-                ProvinceRow {
-                    id: *id,
-                    ..Default::default()
-                }
-            )),
+            table::<tables::Provinces, _>(Outcome::Rows { len: 3 }, &[1], |id| ProvinceRow {
+                id: *id,
+                ..Default::default()
+            }),
             unavailable("walker row count exceeds allocated buffer")
         );
         assert_eq!(campaign_name(ID).unwrap().as_bytes(), ID);
@@ -1882,6 +2150,7 @@ mod tests {
                 disk_branch: None,
                 last_written: None,
                 pending: Vec::new(),
+                _history_file: None,
             },
             store,
         )
@@ -1895,7 +2164,7 @@ mod tests {
         let branch = campaign.observe(Some(hour - 1), hour, Some(signal))?;
         let source = decoded(&captured(hour), clock(hour), branch);
         campaign.write(
-            &source,
+            source,
             1000 + i64::from(hour),
             Some(signal),
             0,
@@ -1998,7 +2267,7 @@ mod tests {
         assert_eq!(replay.recorded_hours(branch).unwrap(), vec![10]);
         assert!(replay.gaps.is_empty());
         assert!(replay.controls.iter().any(|record| matches!(record,
-            Record::GapSummary { dropped_frames: 3, reason, .. } if reason.contains("hour range are unknown"))));
+            ControlRecord::GapSummary { dropped_frames: 3, reason, .. } if reason.contains("hour range are unknown"))));
     }
 
     #[test]
@@ -2040,7 +2309,7 @@ mod tests {
     fn malformed_campaign_witnesses_become_unknown_losses_without_filesystem_access() {
         let mut processor = Processor {
             root: PathBuf::new(),
-            replay_dir: PathBuf::new(),
+            history: PreparedCampaigns::default(),
             session: session(),
             campaigns: BTreeMap::new(),
             stats: Statistics::default(),

@@ -21,3 +21,730 @@ pub const ASSIGNED_MANPOWER: usize = 0x90;
 /// CCountryOccupationStatus default COccupationLaw pointer; old D52 collector_module.rs:40 and read_country_occupation_status.
 pub const DEFAULT_LAW: usize = 0x118;
 pub const RESET_RVA: usize = 0x00fe_0c30;
+
+use crate::{
+    Memory, ccountry,
+    ccountry_occupation_data::{self, LawRow, Scope},
+    coccupation_law, creferenced_division_template,
+    cstate_garrison_data::{self, ManpowerRow},
+    manpower_value_entry, pdx_robin_hood_table, read,
+    walk::Outcome,
+};
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub country: u32,
+    pub garrison_template: Option<u64>,
+    /// Zero means the native default-law pointer is null; an empty token is distinct.
+    pub default_law_present: u8,
+    pub law_start: usize,
+    pub law_len: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ReserveManpowerRow {
+    pub country: u32,
+    pub ordinal: u32,
+    pub source_country: u32,
+    pub amount: i32,
+}
+
+pub struct Buffers<'a> {
+    pub settings: &'a mut [Row],
+    pub laws: &'a mut [LawRow],
+    pub garrisons: &'a mut [cstate_garrison_data::Row],
+    pub manpower: &'a mut [ManpowerRow],
+    pub reserve_manpower: &'a mut [ReserveManpowerRow],
+    pub names: &'a mut [u8],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Walk {
+    pub settings: Outcome,
+    pub laws: Outcome,
+    pub garrisons: Outcome,
+    pub manpower: Outcome,
+    pub reserve_manpower: Outcome,
+    pub bytes_len: usize,
+    pub required_bytes: usize,
+}
+
+/// Independent table accounting; one table's capacity/fault never fabricates a
+/// complete result for that table or prevents a sibling table's valid read.
+pub(crate) struct Rows<'a, T> {
+    pub data: &'a mut [T],
+    pub len: usize,
+    unread: u32,
+    reason: Option<&'static str>,
+}
+
+impl<'a, T> Rows<'a, T> {
+    fn new(data: &'a mut [T]) -> Self {
+        Self {
+            data,
+            len: 0,
+            unread: 0,
+            reason: None,
+        }
+    }
+    pub fn fits(&self) -> bool {
+        self.reason.is_none() && self.len < self.data.len()
+    }
+    pub fn remaining(&self) -> usize {
+        if self.reason.is_some() {
+            0
+        } else {
+            self.data.len() - self.len
+        }
+    }
+    pub fn push(&mut self, row: T) -> Result<(), &'static str> {
+        if self.fits() {
+            self.data[self.len] = row;
+            self.len += 1;
+            Ok(())
+        } else {
+            self.omit()
+        }
+    }
+    pub fn omit(&mut self) -> Result<(), &'static str> {
+        self.omit_n(1)
+    }
+    pub fn omit_n(&mut self, count: u32) -> Result<(), &'static str> {
+        self.unread = self
+            .unread
+            .checked_add(count)
+            .ok_or("occupation omitted row count overflow")?;
+        Ok(())
+    }
+    pub fn fail(&mut self, reason: &'static str) {
+        self.reason.get_or_insert(reason);
+    }
+    fn outcome(&self) -> Outcome {
+        match self.reason {
+            Some(reason) => Outcome::Unavailable { reason },
+            None if self.unread == 0 => Outcome::Rows { len: self.len },
+            None => Outcome::Truncated {
+                len: self.len,
+                unread_rows: self.unread,
+            },
+        }
+    }
+}
+
+fn status(memory: &impl Memory, base: usize, country: usize) -> Result<usize, &'static str> {
+    let pointer = country
+        .checked_add(ccountry::OCCUPATION_STATUS)
+        .and_then(|p| read::<u64>(memory, p))
+        .and_then(|p| usize::try_from(p).ok())
+        .ok_or("occupation status pointer unreadable")?;
+    if base.checked_add(VTABLE_RVA).map(|p| p as u64) != read::<u64>(memory, pointer) {
+        return Err("occupation status primary vtable mismatch");
+    }
+    if base.checked_add(SECONDARY_VTABLE_RVA).map(|p| p as u64)
+        != pointer
+            .checked_add(SECONDARY_BASE)
+            .and_then(|p| read::<u64>(memory, p))
+    {
+        return Err("occupation status secondary vtable mismatch");
+    }
+    Ok(pointer)
+}
+
+fn settings(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    country: u32,
+    rows: &mut Rows<'_, Row>,
+    names: &mut coccupation_law::Names<'_>,
+) -> Result<(), &'static str> {
+    let template = pointer
+        .checked_add(GARRISON_TEMPLATE)
+        .and_then(|p| read::<u64>(memory, p))
+        .and_then(|p| usize::try_from(p).ok())
+        .ok_or("garrison template pointer unreadable")?;
+    let garrison_template = if template == 0 {
+        None
+    } else {
+        if base
+            .checked_add(creferenced_division_template::VTABLE_RVA)
+            .map(|p| p as u64)
+            != read::<u64>(memory, template)
+        {
+            return Err("garrison template vtable mismatch");
+        }
+        let reference = template
+            .checked_add(creferenced_division_template::TYPE)
+            .and_then(|p| read::<u64>(memory, p))
+            .ok_or("garrison template reference unreadable")?;
+        if reference == 0 {
+            return Err("garrison template reference is zero");
+        }
+        Some(reference)
+    };
+    let law = pointer
+        .checked_add(DEFAULT_LAW)
+        .and_then(|p| read::<u64>(memory, p))
+        .and_then(|p| usize::try_from(p).ok())
+        .ok_or("default occupation law pointer unreadable")?;
+    if law == 0 {
+        return rows.push(Row {
+            country,
+            garrison_template,
+            ..Row::default()
+        });
+    }
+    let token = coccupation_law::literal(memory, base, law)?;
+    match names.copy(memory, token, rows.fits())? {
+        Some(law_start) => rows.push(Row {
+            country,
+            garrison_template,
+            default_law_present: 1,
+            law_start,
+            law_len: token.len,
+        }),
+        None => rows.omit(),
+    }
+}
+
+/// Visits the country/occupation graph once into independent preallocated table
+/// buffers. Law bytes are copied exactly into one arena; no hashing or engine
+/// invocation occurs. Reserve manpower is distinct from state assignments.
+pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffers<'_>) -> Walk {
+    let mut setting_rows = Rows::new(buffers.settings);
+    let mut law_rows = Rows::new(buffers.laws);
+    let mut garrison_rows = Rows::new(buffers.garrisons);
+    let mut manpower_rows = Rows::new(buffers.manpower);
+    let mut reserve_rows = Rows::new(buffers.reserve_manpower);
+    let mut names = coccupation_law::Names::new(buffers.names);
+    let result = (|| {
+        let countries = ccountry::Reader::new(memory, base, game_state)?;
+        let states = ccountry_occupation_data::state_array(memory, game_state);
+        for slot in 1..countries.count() {
+            let Some(country) = countries.at(slot)? else {
+                continue;
+            };
+            let pointer = match status(memory, base, country.pointer) {
+                Ok(pointer) => pointer,
+                Err(reason) => {
+                    setting_rows.fail(reason);
+                    law_rows.fail(reason);
+                    garrison_rows.fail(reason);
+                    manpower_rows.fail(reason);
+                    reserve_rows.fail(reason);
+                    continue;
+                }
+            };
+            if let Err(reason) = settings(
+                memory,
+                base,
+                pointer,
+                country.id,
+                &mut setting_rows,
+                &mut names,
+            ) {
+                setting_rows.fail(reason);
+            }
+            let reserve = pointer
+                .checked_add(ASSIGNED_MANPOWER)
+                .ok_or("occupation reserve manpower address overflow")
+                .and_then(|container| {
+                    manpower_value_entry::visit(
+                        memory,
+                        base,
+                        container,
+                        reserve_rows.remaining(),
+                        |ordinal, source_country, amount| {
+                            reserve_rows.push(ReserveManpowerRow {
+                                country: country.id,
+                                ordinal,
+                                source_country,
+                                amount,
+                            })
+                        },
+                    )
+                });
+            match reserve {
+                Ok(unread) => reserve_rows.omit_n(unread)?,
+                Err(reason) => reserve_rows.fail(reason),
+            }
+            let graph = pointer
+                .checked_add(OCCUPATION_DATA_TABLE)
+                .ok_or("occupation data table address overflow")
+                .and_then(|table| {
+                    pdx_robin_hood_table::visit(memory, table, |entry| {
+                        let occupied = ccountry_occupation_data::identity(
+                            memory, base, pointer, entry, &countries,
+                        )?;
+                        let scope = Scope {
+                            controller: country.id,
+                            occupied,
+                            pointer: entry.value,
+                        };
+                        if let Err(reason) = ccountry_occupation_data::laws(
+                            memory,
+                            base,
+                            &scope,
+                            &mut law_rows,
+                            &mut names,
+                        ) {
+                            law_rows.fail(reason);
+                        }
+                        if let Err(reason) = states.and_then(|states| {
+                            cstate_garrison_data::walk_data(
+                                memory,
+                                base,
+                                states,
+                                &scope,
+                                &mut garrison_rows,
+                                &mut manpower_rows,
+                            )
+                        }) {
+                            garrison_rows.fail(reason);
+                            manpower_rows.fail(reason);
+                        }
+                        Ok(())
+                    })
+                });
+            if let Err(reason) = graph {
+                law_rows.fail(reason);
+                garrison_rows.fail(reason);
+                manpower_rows.fail(reason);
+            }
+        }
+        Ok::<(), &'static str>(())
+    })();
+    if let Err(reason) = result {
+        setting_rows.fail(reason);
+        law_rows.fail(reason);
+        garrison_rows.fail(reason);
+        manpower_rows.fail(reason);
+        reserve_rows.fail(reason);
+    }
+    law_rows.data[..law_rows.len]
+        .sort_unstable_by_key(|row| (row.controller, row.occupied, row.state));
+    if law_rows.data[..law_rows.len].windows(2).any(|rows| {
+        (rows[0].controller, rows[0].occupied, rows[0].state)
+            == (rows[1].controller, rows[1].occupied, rows[1].state)
+    }) {
+        law_rows.fail("duplicate occupation state law");
+    }
+    garrison_rows.data[..garrison_rows.len].sort_unstable_by_key(|row| row.state);
+    if garrison_rows.data[..garrison_rows.len]
+        .windows(2)
+        .any(|rows| rows[0].state == rows[1].state)
+    {
+        garrison_rows.fail("duplicate state garrison");
+    }
+    manpower_rows.data[..manpower_rows.len].sort_unstable_by_key(|row| (row.state, row.ordinal));
+    if manpower_rows.data[..manpower_rows.len]
+        .windows(2)
+        .any(|rows| (rows[0].state, rows[0].ordinal) == (rows[1].state, rows[1].ordinal))
+    {
+        manpower_rows.fail("duplicate state garrison manpower entry");
+    }
+    Walk {
+        settings: setting_rows.outcome(),
+        laws: law_rows.outcome(),
+        garrisons: garrison_rows.outcome(),
+        manpower: manpower_rows.outcome(),
+        reserve_manpower: reserve_rows.outcome(),
+        bytes_len: names.len,
+        required_bytes: names.required,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{carmy_manpower_values, cgame_state, cstate, memory::SliceMemory};
+
+    const BASE: usize = 0x1000;
+
+    fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
+        bytes[address - BASE..address - BASE + value.len()].copy_from_slice(value);
+    }
+    fn u32_at(bytes: &mut [u8], address: usize, value: u32) {
+        put(bytes, address, &value.to_le_bytes());
+    }
+    fn u64_at(bytes: &mut [u8], address: usize, value: u64) {
+        put(bytes, address, &value.to_le_bytes());
+    }
+    fn array(bytes: &mut [u8], address: usize, data: u64, count: u32) {
+        u64_at(bytes, address, data);
+        u32_at(bytes, address + 8, count);
+        u32_at(bytes, address + 12, count);
+    }
+    fn table(bytes: &mut [u8], address: usize, data: u64, key: u32, value: u64) {
+        u64_at(bytes, address, data);
+        u32_at(bytes, address + 8, 1);
+        u32_at(bytes, address + 12, 1);
+        put(bytes, data as usize + 4, &[1]);
+        u32_at(bytes, data as usize + 8, key);
+        u64_at(bytes, data as usize + 16, value);
+    }
+    fn fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 0xc000];
+        array(&mut bytes, BASE + cgame_state::COUNTRIES, 0x2000, 3);
+        array(&mut bytes, BASE + cgame_state::COUNTRY_LINKS, 0x2100, 100);
+        array(&mut bytes, BASE + cgame_state::STATES, 0x2400, 3);
+        u64_at(&mut bytes, 0x2008, 0x3000);
+        u64_at(&mut bytes, 0x2010, 0x5000);
+        u32_at(&mut bytes, 0x2104, 1);
+        u32_at(&mut bytes, 0x2108, 2);
+        u32_at(&mut bytes, 0x2100 + 99 * 4, 2);
+        for (country, id, status) in [(0x3000, 1, 0x7000), (0x5000, 99, 0x7200)] {
+            u64_at(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+            u32_at(&mut bytes, country + ccountry::ID, id);
+            u64_at(
+                &mut bytes,
+                country + ccountry::OCCUPATION_STATUS,
+                status as u64,
+            );
+            u64_at(&mut bytes, status, VTABLE_RVA as u64);
+            u64_at(
+                &mut bytes,
+                status + SECONDARY_BASE,
+                SECONDARY_VTABLE_RVA as u64,
+            );
+            u64_at(
+                &mut bytes,
+                status + ASSIGNED_MANPOWER,
+                carmy_manpower_values::VTABLE_RVA as u64,
+            );
+        }
+        u64_at(&mut bytes, 0x7000 + GARRISON_TEMPLATE, 0xa100);
+        u64_at(
+            &mut bytes,
+            0xa100,
+            creferenced_division_template::VTABLE_RVA as u64,
+        );
+        u64_at(
+            &mut bytes,
+            0xa100 + creferenced_division_template::TYPE,
+            (7_u64 << 32) | 52,
+        );
+        u64_at(&mut bytes, 0x7000 + DEFAULT_LAW, 0xa000);
+        u64_at(&mut bytes, 0xa000, coccupation_law::VTABLE_RVA as u64);
+        put(&mut bytes, 0xa000 + coccupation_law::NAME, b"civilian");
+        u64_at(&mut bytes, 0xa000 + coccupation_law::NAME + 16, 8);
+        u64_at(&mut bytes, 0xa000 + coccupation_law::NAME + 24, 15);
+        array(&mut bytes, 0x7000 + ASSIGNED_MANPOWER + 8, 0xb000, 1);
+        u32_at(&mut bytes, 0xb000, 99);
+        put(&mut bytes, 0xb004, &(-17_i32).to_le_bytes());
+        table(
+            &mut bytes,
+            0x7000 + OCCUPATION_DATA_TABLE,
+            0x8000,
+            2,
+            0x8400,
+        );
+        u64_at(
+            &mut bytes,
+            0x8400,
+            ccountry_occupation_data::VTABLE_RVA as u64,
+        );
+        u64_at(
+            &mut bytes,
+            0x8400 + ccountry_occupation_data::PARENT_STATUS,
+            0x7000,
+        );
+        u32_at(
+            &mut bytes,
+            0x8400 + ccountry_occupation_data::OCCUPIED_COUNTRY,
+            99,
+        );
+        table(
+            &mut bytes,
+            0x8400 + ccountry_occupation_data::LAW_TABLE,
+            0x8200,
+            1,
+            0xa000,
+        );
+        table(
+            &mut bytes,
+            0x8400 + ccountry_occupation_data::GARRISON_TABLE,
+            0x8600,
+            1,
+            0x9000,
+        );
+        u64_at(&mut bytes, 0x2408, 0xb100);
+        u64_at(&mut bytes, 0xb100, cstate::VTABLE_RVA as u64);
+        u32_at(&mut bytes, 0xb100 + cstate::ID, 1);
+        u64_at(&mut bytes, 0x9000, cstate_garrison_data::VTABLE_RVA as u64);
+        u64_at(&mut bytes, 0x9000 + cstate_garrison_data::STATE, 0xb100);
+        u64_at(
+            &mut bytes,
+            0x9000 + cstate_garrison_data::OCCUPATION_DATA,
+            0x8400,
+        );
+        u64_at(
+            &mut bytes,
+            0x9000 + cstate_garrison_data::STRENGTH_RATIO,
+            i64::MAX as u64,
+        );
+        u64_at(
+            &mut bytes,
+            0x9000 + cstate_garrison_data::GARRISON_REQUIRED,
+            i64::MIN as u64,
+        );
+        put(
+            &mut bytes,
+            0x9000 + cstate_garrison_data::REQUIRED_MANPOWER,
+            &i32::MAX.to_le_bytes(),
+        );
+        let manpower = 0x9000 + cstate_garrison_data::ASSIGNED_MANPOWER;
+        u64_at(
+            &mut bytes,
+            manpower,
+            carmy_manpower_values::VTABLE_RVA as u64,
+        );
+        array(&mut bytes, manpower + 8, 0xb800, 2);
+        u32_at(&mut bytes, 0xb800, 99);
+        put(&mut bytes, 0xb804, &i32::MIN.to_le_bytes());
+        u32_at(&mut bytes, 0xb808, 1);
+        put(&mut bytes, 0xb80c, &i32::MAX.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn shared_graph_retains_aliases_literal_laws_all_manpower_and_native_widths() {
+        let bytes = fixture();
+        let mut settings = [Row::default(); 2];
+        let mut laws = [LawRow::default(); 1];
+        let mut garrisons = [cstate_garrison_data::Row::default(); 1];
+        let mut manpower = [ManpowerRow::default(); 2];
+        let mut reserve = [ReserveManpowerRow::default(); 1];
+        let mut names = [0; 16];
+        let result = walk(
+            &SliceMemory {
+                base: BASE,
+                bytes: &bytes,
+            },
+            0,
+            BASE,
+            Buffers {
+                settings: &mut settings,
+                laws: &mut laws,
+                garrisons: &mut garrisons,
+                manpower: &mut manpower,
+                reserve_manpower: &mut reserve,
+                names: &mut names,
+            },
+        );
+        assert_eq!(
+            result,
+            Walk {
+                settings: Outcome::Rows { len: 2 },
+                laws: Outcome::Rows { len: 1 },
+                garrisons: Outcome::Rows { len: 1 },
+                manpower: Outcome::Rows { len: 2 },
+                reserve_manpower: Outcome::Rows { len: 1 },
+                bytes_len: 16,
+                required_bytes: 16
+            }
+        );
+        assert_eq!(names, *b"civiliancivilian");
+        assert_eq!(
+            (
+                settings[0].garrison_template,
+                settings[1].default_law_present
+            ),
+            (Some((7_u64 << 32) | 52), 0)
+        );
+        assert_eq!((laws[0].occupied, garrisons[0].occupied), (99, 99));
+        assert_eq!(
+            (garrisons[0].strength_ratio, garrisons[0].garrison_required),
+            (i64::MAX, i64::MIN)
+        );
+        assert_eq!(
+            (
+                manpower[0].source_country,
+                manpower[0].amount,
+                manpower[1].amount
+            ),
+            (99, i32::MIN, i32::MAX)
+        );
+        assert_eq!(
+            (
+                reserve[0].country,
+                reserve[0].source_country,
+                reserve[0].amount
+            ),
+            (1, 99, -17)
+        );
+    }
+
+    #[test]
+    fn capacity_is_independent_per_table_and_law_bytes_never_shorten() {
+        let bytes = fixture();
+        let mut settings = [Row::default(); 2];
+        let mut laws = [LawRow::default(); 1];
+        let mut manpower = [ManpowerRow::default(); 1];
+        let mut names = [0; 3];
+        let result = walk(
+            &SliceMemory {
+                base: BASE,
+                bytes: &bytes,
+            },
+            0,
+            BASE,
+            Buffers {
+                settings: &mut settings,
+                laws: &mut laws,
+                garrisons: &mut [],
+                manpower: &mut manpower,
+                reserve_manpower: &mut [],
+                names: &mut names,
+            },
+        );
+        assert_eq!(
+            result.settings,
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 1
+            }
+        );
+        assert_eq!(
+            result.laws,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 1
+            }
+        );
+        assert_eq!(
+            result.garrisons,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 1
+            }
+        );
+        assert_eq!(
+            result.manpower,
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 1
+            }
+        );
+        assert_eq!(
+            result.reserve_manpower,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 1
+            }
+        );
+        assert_eq!((result.bytes_len, result.required_bytes), (0, 16));
+    }
+
+    #[test]
+    fn law_faults_are_scoped_and_raw_zero_state_law_keys_remain_visible() {
+        let mut bytes = fixture();
+        u32_at(&mut bytes, 0x8208, 0);
+        let mut settings = [Row::default(); 2];
+        let mut laws = [LawRow::default(); 1];
+        let mut garrisons = [cstate_garrison_data::Row::default(); 1];
+        let mut manpower = [ManpowerRow::default(); 2];
+        let mut reserve = [ReserveManpowerRow::default(); 1];
+        let mut names = [0; 16];
+        let result = walk(
+            &SliceMemory {
+                base: BASE,
+                bytes: &bytes,
+            },
+            0,
+            BASE,
+            Buffers {
+                settings: &mut settings,
+                laws: &mut laws,
+                garrisons: &mut garrisons,
+                manpower: &mut manpower,
+                reserve_manpower: &mut reserve,
+                names: &mut names,
+            },
+        );
+        assert_eq!(result.laws, Outcome::Rows { len: 1 });
+        assert_eq!(laws[0].state, 0);
+        u64_at(&mut bytes, 0xa000, 123);
+        let result = walk(
+            &SliceMemory {
+                base: BASE,
+                bytes: &bytes,
+            },
+            0,
+            BASE,
+            Buffers {
+                settings: &mut settings,
+                laws: &mut laws,
+                garrisons: &mut garrisons,
+                manpower: &mut manpower,
+                reserve_manpower: &mut reserve,
+                names: &mut names,
+            },
+        );
+        assert!(matches!(result.settings, Outcome::Unavailable { .. }));
+        assert!(matches!(result.laws, Outcome::Unavailable { .. }));
+        assert_eq!(result.garrisons, Outcome::Rows { len: 1 });
+        assert_eq!(result.manpower, Outcome::Rows { len: 2 });
+        assert_eq!(result.reserve_manpower, Outcome::Rows { len: 1 });
+    }
+
+    #[test]
+    fn identical_raw_law_state_keys_in_distinct_occupied_scopes_are_independent() {
+        let mut bytes = fixture();
+        u32_at(&mut bytes, 0x8208, 0);
+        u32_at(&mut bytes, 0x7000 + OCCUPATION_DATA_TABLE + 8, 2);
+        u32_at(&mut bytes, 0x7000 + OCCUPATION_DATA_TABLE + 12, 2);
+        put(&mut bytes, 0x8018 + 4, &[1]);
+        u32_at(&mut bytes, 0x8018 + 8, 1);
+        u64_at(&mut bytes, 0x8018 + 16, 0x8800);
+        u64_at(
+            &mut bytes,
+            0x8800,
+            ccountry_occupation_data::VTABLE_RVA as u64,
+        );
+        u64_at(
+            &mut bytes,
+            0x8800 + ccountry_occupation_data::PARENT_STATUS,
+            0x7000,
+        );
+        u32_at(
+            &mut bytes,
+            0x8800 + ccountry_occupation_data::OCCUPIED_COUNTRY,
+            1,
+        );
+        table(
+            &mut bytes,
+            0x8800 + ccountry_occupation_data::LAW_TABLE,
+            0x8a00,
+            0,
+            0xa000,
+        );
+        let mut settings = [Row::default(); 2];
+        let mut laws = [LawRow::default(); 2];
+        let mut garrisons = [cstate_garrison_data::Row::default(); 1];
+        let mut manpower = [ManpowerRow::default(); 2];
+        let mut reserve = [ReserveManpowerRow::default(); 1];
+        let mut names = [0; 24];
+        let result = walk(
+            &SliceMemory {
+                base: BASE,
+                bytes: &bytes,
+            },
+            0,
+            BASE,
+            Buffers {
+                settings: &mut settings,
+                laws: &mut laws,
+                garrisons: &mut garrisons,
+                manpower: &mut manpower,
+                reserve_manpower: &mut reserve,
+                names: &mut names,
+            },
+        );
+        assert_eq!(result.laws, Outcome::Rows { len: 2 });
+        assert_eq!(
+            laws.map(|row| (row.controller, row.occupied, row.state)),
+            [(1, 1, 0), (1, 99, 0)]
+        );
+    }
+}

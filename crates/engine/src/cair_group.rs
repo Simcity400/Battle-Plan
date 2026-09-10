@@ -1,5 +1,25 @@
 //! CAirGroup, pinned a729; harvested layout only, hourly consistency unproven.
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub id: u64,
+    pub theatre: u64,
+    /// Actual position in the parent CAirTheatre's native group vector.
+    pub ordinal: u32,
+    pub name_start: usize,
+    pub name_len: usize,
+}
+
+/// Exact CAirGroup+78 reference-vector entry. No filter or presentation order
+/// is substituted for the native position. Reverse wing ownership must be
+/// checked against CAirWing+50 when joining this table to the wing census.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MemberRow {
+    pub wing: u64,
+    pub group: u64,
+    pub ordinal: u32,
+}
+
 /// CAirGroup primary vtable; executable RTTI confirms old offsets.rs AIR_GROUP_VTABLE_RVA.
 pub const VTABLE_RVA: usize = 0x029b_6340;
 /// CAirGroup reference type; checked by collector theatre_selector::air against its +8 handle.

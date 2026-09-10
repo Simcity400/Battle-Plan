@@ -1,6 +1,17 @@
 //! Text-save values for the oracle. The shared Clausewitz parser owns syntax;
 //! this module interprets only the state fields the recorder currently captures.
 
+pub mod air;
+pub mod characters;
+pub mod construction;
+pub mod economy;
+pub mod governance;
+pub mod intel;
+pub mod naval_history;
+pub mod production;
+pub mod projects;
+pub mod weather;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -16,6 +27,10 @@ pub const FIXED_SCALE: i64 = 100_000;
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+fn pack_error(pack: &str, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{pack} save tables: {error}"))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,6 +208,8 @@ pub struct ProvinceOverride {
     pub id: u32,
     pub owner: Option<Vec<u8>>,
     pub controller: Option<Vec<u8>>,
+    /// E6CA90 writes the signed CProvince+0x38 integer iff it is nonzero.
+    pub victory_points: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -245,6 +262,101 @@ pub struct Faction {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Player {
+    pub country: Vec<u8>,
+    /// CHuman +0x20, distinct from the unsaved display name at +0x40.
+    pub user: Vec<u8>,
+    pub country_leader: bool,
+    /// BAD720 omits precisely the signed -1 value.
+    pub id: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LandCombat {
+    pub id: u64,
+    pub province: u32,
+    pub day: i32,
+    pub duration: i32,
+    /// Direct side unit references, not the separate front subset.
+    pub attackers: Vec<u64>,
+    pub defenders: Vec<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fleet {
+    pub id: u64,
+    pub owner: Vec<u8>,
+    pub home_base: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskForce {
+    pub id: u64,
+    pub fleet: u64,
+    pub roster_owner: Vec<u8>,
+    pub logical_owner: Vec<u8>,
+    pub expeditionary_owner: Option<Vec<u8>>,
+    pub province: Option<u32>,
+    pub mission: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ship {
+    pub id: u64,
+    pub task_force: u64,
+    pub strength: Decimal,
+    pub organisation: Decimal,
+    pub experience: Decimal,
+    pub sunk_convoys: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArmyOrder {
+    pub owner_group: u64,
+    pub instance: u32,
+    pub country: Vec<u8>,
+    pub order_type: i32,
+    /// Saved can_execute is a signed byte spelling; preserve all native bits.
+    pub active: u8,
+    pub paradrop_target: u32,
+    pub path: Vec<u32>,
+    pub target_states: Vec<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AirWing {
+    pub id: u64,
+    pub owner: Vec<u8>,
+    pub country_override: Vec<u8>,
+    pub air_base: u64,
+    pub planes: i32,
+    pub effective_planes: i32,
+    pub mission_mask: u32,
+    pub mission_region: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NavalCombat {
+    pub id: u64,
+    pub province: u32,
+    pub attacker_positioning: Decimal,
+    pub defender_positioning: Decimal,
+    pub attacker_anti_air: Decimal,
+    pub defender_anti_air: Decimal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NavalCombatParticipant {
+    pub combat: u64,
+    pub side: u8,
+    pub battle_slot: u32,
+    pub ship: Option<u64>,
+    pub convoy: Option<u64>,
+    pub owner: Vec<u8>,
+    pub state: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Save {
     pub date: GameDate,
     pub campaign_id: Vec<u8>,
@@ -259,9 +371,30 @@ pub struct Save {
     /// One first-owned entry per ordered country pair, not a grouped war ID.
     pub war_relations: Vec<WarRelation>,
     pub factions: BTreeMap<u64, Faction>,
+    /// The saved header preserves repeated country keys and may retain users
+    /// absent from the live roster; it is not a current-player census.
+    pub players: Vec<Player>,
+    pub land_combats: BTreeMap<u64, LandCombat>,
+    pub fleets: BTreeMap<u64, Fleet>,
+    pub task_forces: BTreeMap<u64, TaskForce>,
+    pub ships: BTreeMap<u64, Ship>,
+    pub army_orders: BTreeMap<(u64, u32), ArmyOrder>,
+    pub air_wings: BTreeMap<u64, AirWing>,
+    pub naval_combats: BTreeMap<u64, NavalCombat>,
+    pub naval_combat_participants: BTreeMap<(u64, u8, u32), NavalCombatParticipant>,
     /// Saved (id, type) to equipment-definition key. Repeated definition names
     /// are normal; the typed engine ids uniquely identify each saved variant.
     pub equipment_definitions: BTreeMap<(u32, u32), Vec<u8>>,
+    pub air: air::Pack,
+    pub characters: characters::Pack,
+    pub construction: construction::Pack,
+    pub economy: economy::Pack,
+    pub governance: governance::Pack,
+    pub intel: intel::Pack,
+    pub naval_history: naval_history::Pack,
+    pub production: production::Pack,
+    pub projects: projects::Pack,
+    pub weather: weather::Pack,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -624,6 +757,276 @@ fn parse_faction(items: &[Item]) -> io::Result<Faction> {
     })
 }
 
+fn parse_players(items: &[Item]) -> io::Result<Vec<Player>> {
+    let Some(players) = field(items, b"player_countries")? else {
+        return Ok(Vec::new());
+    };
+    block(players)?
+        .iter()
+        .map(|item| {
+            let country = item
+                .key
+                .clone()
+                .filter(|key| !key.is_empty())
+                .ok_or_else(|| invalid("saved player lacks country key"))?;
+            let entry = block(&item.value)?;
+            Ok(Player {
+                country,
+                user: bytes(entry, b"user")?.ok_or_else(|| invalid("saved player lacks user"))?,
+                country_leader: boolean(
+                    field(entry, b"country_leader")?
+                        .ok_or_else(|| invalid("saved player lacks country_leader"))?,
+                )?,
+                id: field(entry, b"id")?
+                    .map(|value| integer(scalar(value)?))
+                    .transpose()?
+                    .unwrap_or(-1),
+            })
+        })
+        .collect()
+}
+
+fn parse_land_combat(items: &[Item]) -> io::Result<LandCombat> {
+    fn participants(items: &[Item], side: &[u8]) -> io::Result<Vec<u64>> {
+        required_block(items, side)?
+            .iter()
+            .filter(|item| item.key.as_deref() == Some(b"unit"))
+            .map(|item| typed_handle(&item.value))
+            .collect()
+    }
+    Ok(LandCombat {
+        id: typed_handle(
+            field(items, b"id")?.ok_or_else(|| invalid("land combat lacks typed id"))?,
+        )?,
+        province: integer::<i32>(&required_bytes(items, b"location")?)? as u32,
+        day: integer(&required_bytes(items, b"day")?)?,
+        duration: integer(&required_bytes(items, b"duration")?)?,
+        attackers: participants(items, b"attacker")?,
+        defenders: participants(items, b"defender")?,
+    })
+}
+
+fn object_id(items: &[Item]) -> io::Result<u64> {
+    let mut id = None;
+    for item in items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"id"))
+    {
+        let handle = typed_handle(&item.value)?;
+        if id.is_some_and(|previous| previous != handle) {
+            return Err(invalid("object has conflicting repeated typed ids"));
+        }
+        id = Some(handle);
+    }
+    id.ok_or_else(|| invalid("saved object lacks typed id"))
+}
+
+fn parse_fleet(owner: &[u8], items: &[Item]) -> io::Result<Fleet> {
+    Ok(Fleet {
+        id: object_id(items)?,
+        owner: owner.to_vec(),
+        home_base: field(items, b"home_base")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+    })
+}
+
+fn parse_task_force(owner: &[u8], fleet: u64, items: &[Item]) -> io::Result<TaskForce> {
+    Ok(TaskForce {
+        id: object_id(items)?,
+        fleet,
+        roster_owner: owner.to_vec(),
+        logical_owner: required_bytes(items, b"logical_country")?,
+        expeditionary_owner: bytes(items, b"expeditionary_owner")?,
+        province: field(items, b"location")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        mission: integer(&required_bytes(
+            required_block(items, b"mission")?,
+            b"mission",
+        )?)?,
+    })
+}
+
+fn parse_ship(task_force: u64, items: &[Item]) -> io::Result<Ship> {
+    Ok(Ship {
+        id: object_id(items)?,
+        task_force,
+        strength: decimal(items, b"strength")?.ok_or_else(|| invalid("ship lacks strength"))?,
+        organisation: decimal(items, b"organisation")?
+            .ok_or_else(|| invalid("ship lacks organisation"))?,
+        experience: decimal(items, b"experience")?.unwrap_or(Decimal::parse(b"0")?),
+        sunk_convoys: field(items, b"sunk_convoys")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?
+            .unwrap_or(0),
+    })
+}
+
+fn integer_list(items: &[Item], key: &[u8]) -> io::Result<Vec<u32>> {
+    let Some(value) = field(items, key)? else {
+        return Ok(Vec::new());
+    };
+    block(value)?
+        .iter()
+        .map(|item| {
+            if item.key.is_some() {
+                return Err(invalid("saved integer list has keyed entry"));
+            }
+            Ok(integer::<i32>(scalar(&item.value)?)? as u32)
+        })
+        .collect()
+}
+
+fn parse_army_order(country: &[u8], owner_group: u64, items: &[Item]) -> io::Result<ArmyOrder> {
+    Ok(ArmyOrder {
+        owner_group,
+        country: country.to_vec(),
+        instance: integer(&required_bytes(items, b"instance_id")?)?,
+        order_type: integer(&required_bytes(items, b"type")?)?,
+        active: field(items, b"can_execute")?
+            .map(|value| integer::<i8>(scalar(value)?))
+            .transpose()?
+            .unwrap_or(0) as u8,
+        paradrop_target: field(items, b"invasion_source")?
+            .map(|value| integer::<i32>(scalar(value)?))
+            .transpose()?
+            .unwrap_or(0) as u32,
+        path: integer_list(items, b"path")?,
+        target_states: integer_list(items, b"states")?,
+    })
+}
+
+fn parse_orders(
+    country: &[u8],
+    items: &[Item],
+    orders: &mut BTreeMap<(u64, u32), ArmyOrder>,
+) -> io::Result<()> {
+    let Some(theatres) = field(items, b"theatres")? else {
+        return Ok(());
+    };
+    for theatre in block(theatres)?
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"theatre"))
+    {
+        for group in block(&theatre.value)?.iter().filter(|item| {
+            matches!(
+                item.key.as_deref(),
+                Some(b"orders_group" | b"field_marshal_group")
+            )
+        }) {
+            let group = block(&group.value)?;
+            let id = object_id(group)?;
+            for item in group.iter().filter(|item| {
+                matches!(
+                    item.key.as_deref(),
+                    Some(b"order_instance" | b"fallback" | b"virtual_fallback")
+                )
+            }) {
+                let order = parse_army_order(country, id, block(&item.value)?)?;
+                if orders.insert((id, order.instance), order).is_some() {
+                    return Err(invalid("duplicate scoped army order instance in save"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_air_wings(items: &[Item]) -> io::Result<BTreeMap<u64, AirWing>> {
+    let mut wings = BTreeMap::new();
+    let Some(air) = field(items, b"strategic_air")? else {
+        return Ok(wings);
+    };
+    for country in block(air)? {
+        let owner = country
+            .key
+            .as_deref()
+            .filter(|key| !key.is_empty())
+            .ok_or_else(|| invalid("strategic air country lacks tag"))?;
+        for pool in block(&country.value)?
+            .iter()
+            .filter(|item| item.key.as_deref() == Some(b"air_wing_pool"))
+        {
+            let pool = block(&pool.value)?;
+            for wing in pool
+                .iter()
+                .filter(|item| item.key.as_deref() == Some(b"air_wings"))
+            {
+                let fields = block(&wing.value)?;
+                let mission = required_block(fields, b"mission")?;
+                let wing = AirWing {
+                    id: object_id(fields)?,
+                    owner: owner.to_vec(),
+                    country_override: required_bytes(fields, b"tag")?,
+                    air_base: typed_handle(
+                        field(pool, b"air_base")?
+                            .ok_or_else(|| invalid("populated air pool lacks air_base"))?,
+                    )?,
+                    planes: integer(&required_bytes(fields, b"count")?)?,
+                    effective_planes: field(mission, b"effective_planes_count")?
+                        .map(|value| integer(scalar(value)?))
+                        .transpose()?
+                        .unwrap_or(0),
+                    mission_mask: integer::<i32>(&required_bytes(mission, b"type")?)? as u32,
+                    mission_region: field(mission, b"strategic_region")?
+                        .map(|value| integer(scalar(value)?))
+                        .transpose()?,
+                };
+                if wings.insert(wing.id, wing).is_some() {
+                    return Err(invalid("duplicate full air wing handle in save"));
+                }
+            }
+        }
+    }
+    Ok(wings)
+}
+
+fn parse_naval_combat(
+    items: &[Item],
+    participants: &mut BTreeMap<(u64, u8, u32), NavalCombatParticipant>,
+) -> io::Result<NavalCombat> {
+    let id = object_id(items)?;
+    let attacker = required_block(items, b"attacker")?;
+    let defender = required_block(items, b"defender")?;
+    for (side, fields) in [(0, attacker), (1, defender)] {
+        for group in fields
+            .iter()
+            .filter(|item| item.key.as_deref() == Some(b"group"))
+        {
+            for item in block(&group.value)?
+                .iter()
+                .filter(|item| item.key.as_deref() == Some(b"member"))
+            {
+                let fields = block(&item.value)?;
+                let row = NavalCombatParticipant {
+                    combat: id,
+                    side,
+                    battle_slot: integer::<i32>(&required_bytes(fields, b"unique_id")?)? as u32,
+                    ship: field(fields, b"ship")?.map(typed_handle).transpose()?,
+                    convoy: field(fields, b"convoy")?.map(typed_handle).transpose()?,
+                    owner: required_bytes(required_block(fields, b"cached_info")?, b"tag")?,
+                    state: integer::<i32>(&required_bytes(fields, b"state")?)? as u32,
+                };
+                if participants
+                    .insert((id, side, row.battle_slot), row)
+                    .is_some()
+                {
+                    return Err(invalid("duplicate combat side battle slot in save"));
+                }
+            }
+        }
+    }
+    Ok(NavalCombat {
+        id,
+        province: integer::<i32>(&required_bytes(items, b"location")?)? as u32,
+        attacker_positioning: Decimal::parse(&required_bytes(attacker, b"positioning")?)?,
+        defender_positioning: Decimal::parse(&required_bytes(defender, b"positioning")?)?,
+        attacker_anti_air: Decimal::parse(&required_bytes(attacker, b"anti_air")?)?,
+        defender_anti_air: Decimal::parse(&required_bytes(defender, b"anti_air")?)?,
+    })
+}
+
 /// Binary saves are refused before parsing. This never rounds a save decimal or
 /// fills a missing field with a historical or runtime default.
 pub fn parse(input: &[u8]) -> io::Result<Save> {
@@ -646,6 +1049,10 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
     let seed = integer(&required_bytes(items, b"game_unique_seed")?)?;
     let mut countries = BTreeMap::new();
     let mut divisions = BTreeMap::new();
+    let mut fleets = BTreeMap::new();
+    let mut task_forces = BTreeMap::new();
+    let mut ships = BTreeMap::new();
+    let mut army_orders = BTreeMap::new();
     let mut war_relations = Vec::new();
     let mut war_pairs = BTreeSet::new();
     for item in required_block(items, b"countries")? {
@@ -655,6 +1062,7 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
             .filter(|tag| !tag.is_empty())
             .ok_or_else(|| invalid("country has no tag"))?;
         let country_items = block(&item.value)?;
+        parse_orders(tag, country_items, &mut army_orders)?;
         let country = parse_country(tag, country_items).map_err(|error| {
             invalid(format!("country {}: {error}", String::from_utf8_lossy(tag)))
         })?;
@@ -678,6 +1086,35 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
                     return Err(invalid(
                         "duplicate full division handle across saved rosters",
                     ));
+                }
+            }
+            for item in block(units)?
+                .iter()
+                .filter(|item| item.key.as_deref() == Some(b"fleet"))
+            {
+                let fields = block(&item.value)?;
+                let fleet = parse_fleet(tag, fields)?;
+                for item in fields
+                    .iter()
+                    .filter(|item| item.key.as_deref() == Some(b"task_force"))
+                {
+                    let fields = block(&item.value)?;
+                    let task_force = parse_task_force(tag, fleet.id, fields)?;
+                    for item in fields
+                        .iter()
+                        .filter(|item| item.key.as_deref() == Some(b"ship"))
+                    {
+                        let ship = parse_ship(task_force.id, block(&item.value)?)?;
+                        if ships.insert(ship.id, ship).is_some() {
+                            return Err(invalid("duplicate full ship handle in save"));
+                        }
+                    }
+                    if task_forces.insert(task_force.id, task_force).is_some() {
+                        return Err(invalid("duplicate full task force handle in save"));
+                    }
+                }
+                if fleets.insert(fleet.id, fleet).is_some() {
+                    return Err(invalid("duplicate full fleet handle in save"));
                 }
             }
         }
@@ -714,6 +1151,31 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
         let faction = parse_faction(block(&item.value)?)?;
         if factions.insert(faction.id, faction).is_some() {
             return Err(invalid("duplicate full faction handle in save"));
+        }
+    }
+    let mut land_combats = BTreeMap::new();
+    let mut naval_combats = BTreeMap::new();
+    let mut naval_combat_participants = BTreeMap::new();
+    if let Some(combat) = field(items, b"combat")? {
+        for item in block(combat)?.iter().filter(|item| {
+            matches!(
+                item.key.as_deref(),
+                Some(b"land_combat" | b"border_war_combat")
+            )
+        }) {
+            let combat = parse_land_combat(block(&item.value)?)?;
+            if land_combats.insert(combat.id, combat).is_some() {
+                return Err(invalid("duplicate full land combat handle in save"));
+            }
+        }
+        for item in block(combat)?
+            .iter()
+            .filter(|item| item.key.as_deref() == Some(b"naval_combat"))
+        {
+            let combat = parse_naval_combat(block(&item.value)?, &mut naval_combat_participants)?;
+            if naval_combats.insert(combat.id, combat).is_some() {
+                return Err(invalid("duplicate full naval combat handle in save"));
+            }
         }
     }
     let mut states = BTreeMap::new();
@@ -753,6 +1215,9 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
                     id,
                     owner: bytes(province, b"owner")?,
                     controller: bytes(province, b"controller")?,
+                    victory_points: bytes(province, b"victory_points")?
+                        .map(|value| integer(&value))
+                        .transpose()?,
                 },
             )
             .is_some()
@@ -789,7 +1254,28 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
         divisions,
         war_relations,
         factions,
+        players: parse_players(items)?,
+        land_combats,
+        fleets,
+        task_forces,
+        ships,
+        army_orders,
+        air_wings: parse_air_wings(items)?,
+        naval_combats,
+        naval_combat_participants,
         equipment_definitions,
+        air: air::parse(items).map_err(|error| pack_error("air", error))?,
+        characters: characters::parse(items).map_err(|error| pack_error("characters", error))?,
+        construction: construction::parse(items)
+            .map_err(|error| pack_error("construction", error))?,
+        economy: economy::parse(items).map_err(|error| pack_error("economy", error))?,
+        governance: governance::parse(items).map_err(|error| pack_error("governance", error))?,
+        intel: intel::parse(items).map_err(|error| pack_error("intel", error))?,
+        naval_history: naval_history::parse(items)
+            .map_err(|error| pack_error("naval history", error))?,
+        production: production::parse(items).map_err(|error| pack_error("production", error))?,
+        projects: projects::parse(items).map_err(|error| pack_error("projects", error))?,
+        weather: weather::parse(items).map_err(|error| pack_error("weather", error))?,
     })
 }
 
@@ -1130,7 +1616,8 @@ mod tests {
         let save = parse(br#"HOI4txt
 date="1936.1.2.17" game_unique_id="campaign" version="build" game_unique_seed=-42
 countries={ GER={ command_power=78.1411 politics={ political_power=582.128 } stability=0.7 war_support=0.3
-flags={ stability=99 } convoys={ equipment={ equipment={ id={ id=1 type=70 } amount=200 } } } } D01={} }
+flags={ stability={value=99 date=1936.1.2.17} } unrelated={stability=99}
+convoys={ equipment={ equipment={ id={ id=1 type=70 } amount=200 } } } } D01={} }
 states={ 1={owner="GER"} } provinces={ 2={controller="D01"} 3={buildings={}} }
 "#).unwrap();
         assert_eq!(save.seed, -42);
@@ -1162,6 +1649,31 @@ states={ 1={owner="GER"} } provinces={ 2={controller="D01"} 3={buildings={}} }
         assert_eq!(save.countries[b"D01".as_slice()].command_power, None);
         assert_eq!(save.provinces[&3].controller, None);
         assert_eq!(save.countries[b"GER".as_slice()].name, None);
+        assert_eq!(
+            save.intel.countries[b"GER".as_slice()]
+                .flags
+                .as_ref()
+                .unwrap()[0]
+                .value,
+            99
+        );
+    }
+
+    #[test]
+    fn province_victory_points_keep_signed_integers_and_literal_omission() {
+        let text = |value: &str| {
+            format!(
+                "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 countries={{}} states={{}} provinces={{1={{victory_points={value}}} 2={{}}}}"
+            )
+        };
+        for value in [i32::MIN, -1, 0, i32::MAX] {
+            let saved = parse(text(&value.to_string()).as_bytes()).unwrap();
+            assert_eq!(saved.provinces[&1].victory_points, Some(value));
+            assert_eq!(saved.provinces[&2].victory_points, None);
+        }
+        for invalid in ["2147483648", "-2147483649", "1.0", "1.5"] {
+            assert!(parse(text(invalid).as_bytes()).is_err());
+        }
     }
 
     #[test]
@@ -1650,6 +2162,165 @@ faction={id={id=0 type=88} members={} name=""}"#,
     }
 
     #[test]
+    fn land_combat_keeps_typed_participants_and_does_not_substitute_front_units() {
+        let save = diplomacy_save(
+            "",
+            "combat={land_combat={
+            id={type=62 id=3} location=42 day=10 duration=240
+            attacker={unit={type=51 id=7} front={unit={type=51 id=99}} unit={type=52 id=7}}
+            defender={unit={type=51 id=8}}
+        }}",
+        )
+        .unwrap();
+        let combat = &save.land_combats[&((3_u64 << 32) | 62)];
+        assert_eq!(combat.province, 42);
+        assert_eq!(combat.attackers, [(7_u64 << 32) | 51, (7_u64 << 32) | 52]);
+        assert_eq!(combat.defenders, [(8_u64 << 32) | 51]);
+        let duplicate =
+            "land_combat={id={id=1 type=62} location=2 day=0 duration=0 attacker={} defender={}}";
+        assert!(diplomacy_save("", &format!("combat={{{duplicate} {duplicate}}}")).is_err());
+        assert!(
+            diplomacy_save(
+                "",
+                "combat={land_combat={id={id=1 type=62} location=2 attacker={}}}"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn player_header_preserves_coop_entries_empty_users_and_signed_ids() {
+        let save = diplomacy_save(
+            "",
+            r#"player_countries={
+            GER={user="" country_leader=no}
+            GER={user="same" country_leader=yes id=-2147483648}
+            SOV={user="same" country_leader=no id=2147483647}
+            ---={user="zero" country_leader=no id=0}
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(save.players.len(), 4);
+        assert_eq!(save.players[0].country, b"GER");
+        assert!(save.players[0].user.is_empty());
+        assert_eq!(save.players[0].id, -1);
+        assert_eq!(save.players[1].id, i32::MIN);
+        assert!(save.players[1].country_leader);
+        assert_eq!(save.players[2].id, i32::MAX);
+        assert_eq!(save.players[3].country, b"---");
+        assert_eq!(save.players[3].id, 0);
+        assert!(diplomacy_save("", "").unwrap().players.is_empty());
+    }
+
+    #[test]
+    fn player_header_requires_serialized_fields_and_preserves_ambiguity() {
+        for entry in [
+            "user=x",
+            "country_leader=yes",
+            "user=x country_leader=maybe",
+            "user=x country_leader=yes id=2147483648",
+            "user=x country_leader=yes id=-2147483649",
+            "user=x user=y country_leader=yes",
+            "user={} country_leader=yes",
+            "user=x country_leader=yes id=1 id=1",
+        ] {
+            assert!(
+                diplomacy_save("", &format!("player_countries={{GER={{{entry}}}}}")).is_err(),
+                "{entry}"
+            );
+        }
+        let saved = diplomacy_save("", "player_countries={GER={user=x country_leader=yes id=1} GER={user=x country_leader=yes id=1}}").unwrap();
+        assert_eq!(saved.players.len(), 2);
+        assert_eq!(saved.players[0], saved.players[1]);
+    }
+
+    #[test]
+    fn army_orders_preserve_all_lists_marshal_ownership_and_signed_native_bits() {
+        let saved = parse(br#"HOI4txt
+date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0
+states={} provinces={} countries={GER={theatres={theatre={id={id=1 type=67}
+orders_group={id={type=53 id=1}
+ order_instance={instance_id=4294967295 type=4 can_execute=-128 invasion_source=-1 path={2 1 2 -1} states={3 3}}
+ fallback={instance_id=2 type=2}
+ virtual_fallback={instance_id=3 type=-1}}
+field_marshal_group={id={type=53 id=2} field_marshal_group=yes orders_group={id={id=1 type=53}}
+ order_instance={instance_id=2 type=3 invasion_source=4}}
+}}}}
+"#).unwrap();
+        assert_eq!(saved.army_orders.len(), 4);
+        let group = (1_u64 << 32) | 53;
+        let order = &saved.army_orders[&(group, u32::MAX)];
+        assert_eq!(
+            (order.order_type, order.active, order.paradrop_target),
+            (4, 128, u32::MAX)
+        );
+        assert_eq!(order.path, [2, 1, 2, u32::MAX]);
+        assert_eq!(order.target_states, [3, 3]);
+        assert!(saved.army_orders[&(group, 2)].path.is_empty());
+        assert_eq!(
+            saved.army_orders[&((2_u64 << 32) | 53, 2)].paradrop_target,
+            4
+        );
+    }
+
+    #[test]
+    fn air_wings_preserve_pool_and_override_countries_and_required_mission_fields() {
+        let saved = diplomacy_save("", "strategic_air={GER={air_wing_pool={
+            id={id=1 type=70} air_base={id=2 type=63}
+            air_wings={id={id=3 type=54} count=-1 tag=--- experience=0 equipment={allow_zero_entries=no} mission={type=-2147483648}}
+            air_wings={id={id=4 type=54} count=100 tag=SOV experience=0 equipment={allow_zero_entries=no} mission={type=2 effective_planes_count=57 strategic_region=5}}
+        }}}").unwrap();
+        assert_eq!(saved.air_wings.len(), 2);
+        let wing = &saved.air_wings[&((3_u64 << 32) | 54)];
+        assert_eq!(wing.owner, b"GER");
+        assert_eq!(wing.country_override, b"---");
+        assert_eq!(
+            (wing.planes, wing.effective_planes, wing.mission_mask),
+            (-1, 0, 1 << 31)
+        );
+        assert_eq!(wing.mission_region, None);
+        let body = "strategic_air={GER={air_wing_pool={id={id=1 type=70} air_base={id=2 type=63} air_wings={id={id=3 type=54} count=1 tag=GER experience=0 equipment={allow_zero_entries=no} mission={type=0}}}}}";
+        assert!(diplomacy_save("", body).is_ok());
+        for fragment in [
+            body.replace("count=1", ""),
+            body.replace("type=0", ""),
+            body.replace("tag=GER", ""),
+            body.replace("air_base={id=2 type=63}", ""),
+        ] {
+            assert!(diplomacy_save("", &fragment).is_err(), "{fragment}");
+        }
+        let error = diplomacy_save("", &body.replace("allow_zero_entries=no", ""))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("air save tables: missing serialized air boolean"));
+    }
+
+    #[test]
+    fn naval_combat_keeps_full_member_handles_signed_slots_and_required_side_scalars() {
+        let body = "combat={naval_combat={id={type=61 id=4294967295} location=2
+            attacker={positioning=-0.00001 anti_air=90071992547.40993 group={
+                member={unique_id=-1 state=-2147483648 ship={id=1 type=51} convoy={id=2 type=69} cached_info={tag=GER}}
+                member={unique_id=0 state=32 cached_info={tag=---}}}}
+            defender={positioning=0 anti_air=0}}}";
+        let saved = diplomacy_save("", body).unwrap();
+        let id = (u64::from(u32::MAX) << 32) | 61;
+        assert_eq!(saved.naval_combats[&id].attacker_positioning.raw, -1);
+        let member = &saved.naval_combat_participants[&(id, 0, u32::MAX)];
+        assert_eq!(member.state, 1 << 31);
+        assert_eq!(member.ship, Some((1_u64 << 32) | 51));
+        assert_eq!(member.convoy, Some((2_u64 << 32) | 69));
+        assert!(saved.naval_combat_participants[&(id, 0, 0)].ship.is_none());
+        for fragment in [
+            body.replace("unique_id=-1", ""),
+            body.replace("anti_air=0", ""),
+            body.replace("tag=GER", ""),
+            body.replace("unique_id=0", "unique_id=-1"),
+        ] {
+            assert!(diplomacy_save("", &fragment).is_err(), "{fragment}");
+        }
+    }
+
+    #[test]
     fn equipment_classification_follows_inheritance_and_names_ambiguous_cases() {
         let mut catalog = EquipmentCatalog::default();
         catalog
@@ -1681,5 +2352,90 @@ conflict={parent=tank archetype=convoy} variable={type=@type_from_script}
             .unwrap();
         catalog.add(b"equipments={duplicate={type=armor}}").unwrap();
         assert_eq!(catalog.resolve().is_convoy(b"duplicate"), None);
+    }
+    // Suggested additions to installed-content/src/save.rs::tests.
+    // Pure strings only. No build or repository changes were made by this helper.
+
+    fn naval_save(units: &str) -> io::Result<Save> {
+        parse(format!(
+        "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 countries={{ GER={{units={{{units}}}}} SOV={{}} D01={{}} }} states={{}} provinces={{}}"
+    ).as_bytes())
+    }
+
+    #[test]
+    fn naval_save_keeps_nested_ownership_full_handles_and_exact_fixed5() {
+        let saved = naval_save(
+            r#"
+      fleet={id={id=4294967295 type=61} home_base=2
+        task_force={id={id=2147483648 type=4713} id={type=4713 id=2147483648}
+          location=1 logical_country=SOV expeditionary_owner=D01 mission={mission=-1}
+          ship={id={id=4294967295 type=51} definition=battleship
+            strength=90071992547.40993 organisation=78.72001 experience=34.32537 sunk_convoys=-1
+            history={sunk_ship={id={id=9 type=51} strength=99}}}
+          ship={id={id=0 type=51} definition=destroyer strength=0 organisation=0}
+        }
+      }
+      fleet={id={id=1 type=61}}
+    "#,
+        )
+        .unwrap();
+        let fleet_id = (u64::from(u32::MAX) << 32) | 61;
+        let force_id = (2_147_483_648_u64 << 32) | 4713;
+        let ship_id = (u64::from(u32::MAX) << 32) | 51;
+        assert_eq!(
+            (
+                saved.fleets.len(),
+                saved.task_forces.len(),
+                saved.ships.len()
+            ),
+            (2, 1, 2)
+        );
+        assert_eq!(saved.fleets[&fleet_id].owner, b"GER");
+        assert_eq!(saved.fleets[&fleet_id].home_base, Some(2));
+        assert_eq!(saved.fleets[&((1_u64 << 32) | 61)].home_base, None);
+        let force = &saved.task_forces[&force_id];
+        assert_eq!(
+            (force.fleet, force.province, force.mission),
+            (fleet_id, Some(1), -1)
+        );
+        assert_eq!(force.roster_owner, b"GER");
+        assert_eq!(force.logical_owner, b"SOV");
+        assert_eq!(
+            force.expeditionary_owner.as_deref(),
+            Some(b"D01".as_slice())
+        );
+        let ship = &saved.ships[&ship_id];
+        assert_eq!(ship.task_force, force_id);
+        assert_eq!(ship.strength.raw, 9_007_199_254_740_993);
+        assert_eq!(ship.organisation.raw, 7_872_001);
+        assert_eq!(ship.experience.raw, 3_432_537);
+        assert_eq!(ship.sunk_convoys, -1);
+        let omitted = &saved.ships[&51];
+        assert_eq!((omitted.experience.raw, omitted.sunk_convoys), (0, 0));
+    }
+
+    #[test]
+    fn naval_save_refuses_ambiguous_census_and_missing_required_values() {
+        let ship = "ship={id={id=1 type=51} strength=1 organisation=1}";
+        let force = format!(
+            "task_force={{id={{id=2 type=51}} logical_country=GER mission={{mission=0}} {ship}}}"
+        );
+        let fleet = format!("fleet={{id={{id=3 type=61}} {force}}}");
+        assert!(naval_save(&fleet).is_ok());
+        for invalid in [
+            fleet.replace("strength=1", ""),
+            fleet.replace("organisation=1", ""),
+            fleet.replace("strength=1", "strength=1.000001"),
+            fleet.replace("logical_country=GER", ""),
+            fleet.replace("mission={mission=0}", "mission={}"),
+            fleet.replace("mission={mission=0}", ""),
+            fleet.replace("id={id=1 type=51}", "id={id=1 type=51} id={id=2 type=51}"),
+            fleet.replace(ship, &format!("{ship} {ship}")),
+            fleet.replace(&force, &format!("{force} {force}")),
+            format!("{fleet} {fleet}"),
+            format!("{fleet} fleet={{id={{id=4 type=61}} {force}}}"),
+        ] {
+            assert!(naval_save(&invalid).is_err(), "{invalid}");
+        }
     }
 }

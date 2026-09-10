@@ -6,3 +6,15 @@ pub const STRIDE: usize = 0x38;
 pub const HANDLE: usize = 0x00;
 /// Assigned-operative low-u32 reference type; the old reader compares it to COperationInstance's 4713 without proving a distinct type.
 pub const REFERENCE_TYPE: u32 = 4_713;
+/// Assigned-operative raw selection word; 13EDEE0 stores its fourth argument at slot+8.
+pub const SELECTION: usize = 0x08;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub operation: u64,
+    pub ordinal: u32,
+    /// Full native reference; both-zero is an unassigned slot, retained as state.
+    pub operative: u64,
+    /// Opaque native bits; no inferred enum or display projection.
+    pub selection: u32,
+}

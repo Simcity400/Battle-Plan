@@ -1,10 +1,16 @@
-//! The sole game-thread callback. Buffers and loss witnesses are allocated before hooking.
+//! The sole game-thread callback. Buffers are allocated before publication to its free queue.
 
-use crate::roster::Roster;
+use crate::{
+    extended,
+    map_capture::{MapCapacities, MapCaptured},
+    roster::Roster,
+    table_capture::{comparison_rows, grow_capacity},
+};
 use crossbeam_queue::ArrayQueue;
 use engine::{
     carmy, ccountry, cfaction, cfaction_system,
     cgame_state::{self, Clock},
+    country_memory::{Cache, SeedStatus},
     cprovince, cstate, cwar_relation,
     memory::LiveMemory,
     msvc_string::Text,
@@ -20,21 +26,44 @@ use std::{
 use windows_sys::Win32::System::Performance::QueryPerformanceCounter;
 
 pub const BUFFERS: usize = 256;
+// The broad capture needed one queued buffer; keep a producer/consumer pair
+// plus two spare buffers, then grow off-thread when that reserve is consumed.
+const INITIAL_BUFFERS: usize = 4;
+const GROW_BUFFERS: usize = 4;
+const FREE_RESERVE: usize = 1;
+pub const INITIAL_CAPACITIES: [usize; 9] = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
 pub const CONSISTENCY_TARGET: u16 = 200;
 /// These indices describe comparison scheduling, not the replay's table indices.
-pub const CONSISTENCY_TABLES: [&str; 6] = [
+pub const CONSISTENCY_TABLES: [&str; 17] = [
     "CountryLinks",
     "States",
     "Divisions",
     "WarRelations",
     "Factions",
     "FactionMembers",
+    "Players",
+    "HumanControllers",
+    "LandCombats",
+    "Fleets",
+    "TaskForces",
+    "Ships",
+    "NavalCombats",
+    "NavalCombatParticipants",
+    "AirWings",
+    "ArmyOrders",
+    "Provinces",
 ];
+pub const PROVINCE_CHECK: usize = CONSISTENCY_TABLES.len() - 1;
 const LOSS_RUNS: usize = 64;
 pub static SHARED: AtomicPtr<Shared> = AtomicPtr::new(ptr::null_mut());
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
-fn mismatches<R: PartialEq>(first: Outcome, rows: &[R], second: Outcome, other: &[R]) -> usize {
+pub(crate) fn mismatches<R: PartialEq>(
+    first: Outcome,
+    rows: &[R],
+    second: Outcome,
+    other: &[R],
+) -> usize {
     if first != second {
         return 1;
     }
@@ -45,7 +74,7 @@ fn mismatches<R: PartialEq>(first: Outcome, rows: &[R], second: Outcome, other: 
         .count()
 }
 
-fn full_match(first: Outcome, second: Outcome, mismatches: usize) -> bool {
+pub(crate) fn full_match(first: Outcome, second: Outcome, mismatches: usize) -> bool {
     matches!(first, Outcome::Rows { .. }) && first == second && mismatches == 0
 }
 
@@ -57,22 +86,22 @@ pub(crate) fn stable_clock(before: Option<Clock>, after: Option<Clock>) -> bool 
             && before.play_session_started_at == after.play_session_started_at)
 }
 
-#[derive(Default)]
-struct ConsistencyWindow {
-    successful: [u16; CONSISTENCY_TABLES.len()],
+struct ConsistencyWindow<const N: usize> {
+    successful: [u16; N],
 }
 
-impl ConsistencyWindow {
-    fn needed(&self) -> [bool; CONSISTENCY_TABLES.len()] {
+impl<const N: usize> Default for ConsistencyWindow<N> {
+    fn default() -> Self {
+        Self { successful: [0; N] }
+    }
+}
+
+impl<const N: usize> ConsistencyWindow<N> {
+    fn needed(&self) -> [bool; N] {
         self.successful.map(|count| count < CONSISTENCY_TARGET)
     }
 
-    fn commit(
-        &mut self,
-        matched: [bool; CONSISTENCY_TABLES.len()],
-        stable: bool,
-        published: bool,
-    ) -> [u16; CONSISTENCY_TABLES.len()] {
+    fn commit(&mut self, matched: [bool; N], stable: bool, published: bool) -> [u16; N] {
         if stable && published {
             for (count, matched) in self.successful.iter_mut().zip(matched) {
                 if matched && *count < CONSISTENCY_TARGET {
@@ -149,11 +178,20 @@ impl LossBatch {
 }
 
 pub struct Captured {
+    pub map: MapCaptured,
+    pub extended: extended::Captured,
+    pub extended_checked: [bool; TABLE_COUNT],
+    pub extended_successful: [u16; TABLE_COUNT],
+    pub country_cache_status: SeedStatus,
+    pub country_cache_entries: usize,
+    pub country_cache_error: Option<&'static str>,
+    pub country_cache_ns: u64,
     pub clock_entry: Option<Clock>,
     pub clock_before: Option<Clock>,
     pub clock_after: Option<Clock>,
     pub countries: Vec<ccountry::Row>,
     pub provinces: Vec<cprovince::Row>,
+    provinces_second: Vec<cprovince::Row>,
     pub states: Vec<cstate::Row>,
     states_second: Vec<cstate::Row>,
     pub divisions: Vec<carmy::Row>,
@@ -173,6 +211,7 @@ pub struct Captured {
     links_second: Vec<ccountry::LinkRow>,
     pub countries_result: Outcome,
     pub provinces_result: Outcome,
+    pub provinces_mismatches: usize,
     pub states_result: Outcome,
     pub states_mismatches: usize,
     pub divisions_result: Outcome,
@@ -199,34 +238,80 @@ pub struct Captured {
 
 impl Captured {
     pub(crate) fn new() -> Self {
+        Self::with_capacities(
+            &INITIAL_CAPACITIES,
+            &MapCapacities::default(),
+            [0; CONSISTENCY_TABLES.len()],
+            &extended::Capacities::default(),
+            [0; TABLE_COUNT],
+        )
+    }
+
+    fn with_capacities(
+        capacities: &[usize; 9],
+        map_capacities: &MapCapacities,
+        successful: [u16; CONSISTENCY_TABLES.len()],
+        extended_capacities: &extended::Capacities,
+        extended_successful: [u16; TABLE_COUNT],
+    ) -> Self {
         let unavailable = Outcome::Unavailable {
             reason: "clock unavailable",
         };
         Self {
+            map: MapCaptured::with_capacities(
+                map_capacities,
+                &successful[6..PROVINCE_CHECK],
+                extended::Captured::source_checks(
+                    &extended_successful.map(|n| n < CONSISTENCY_TARGET),
+                ),
+            ),
+            extended: extended::Captured::with_capacities(
+                extended_capacities,
+                &extended_successful,
+            ),
+            extended_checked: [false; TABLE_COUNT],
+            extended_successful,
+            country_cache_status: SeedStatus::Unavailable {
+                reason: "clock unavailable",
+            },
+            country_cache_entries: 0,
+            country_cache_error: None,
+            country_cache_ns: 0,
             clock_entry: None,
             clock_before: None,
             clock_after: None,
-            countries: vec![ccountry::Row::default(); 512],
-            provinces: vec![cprovince::Row::default(); 20_000],
-            states: vec![cstate::Row::default(); 2048],
-            states_second: vec![cstate::Row::default(); 2048],
-            divisions: vec![carmy::Row::default(); 4096],
-            divisions_second: vec![carmy::Row::default(); 4096],
-            wars: vec![cwar_relation::Row::default(); 1024],
-            wars_second: vec![cwar_relation::Row::default(); 1024],
-            wars_matrix: vec![cwar_relation::Row::default(); 1024],
-            factions: vec![cfaction::Row::default(); 64],
-            factions_second: vec![cfaction::Row::default(); 64],
-            faction_names: vec![0; 16_384],
-            faction_names_second: vec![0; 16_384],
+            countries: vec![ccountry::Row::default(); capacities[0]],
+            provinces: vec![cprovince::Row::default(); capacities[1]],
+            provinces_second: comparison_rows(capacities[1], successful[PROVINCE_CHECK]),
+            states: vec![cstate::Row::default(); capacities[3]],
+            states_second: comparison_rows(capacities[3], successful[1]),
+            divisions: vec![carmy::Row::default(); capacities[4]],
+            divisions_second: comparison_rows(
+                capacities[4],
+                if extended::Captured::needs_division_check(
+                    &extended_successful.map(|n| n < CONSISTENCY_TARGET),
+                ) {
+                    0
+                } else {
+                    successful[2]
+                },
+            ),
+            wars: vec![cwar_relation::Row::default(); capacities[5]],
+            wars_second: comparison_rows(capacities[5], successful[3]),
+            wars_matrix: vec![cwar_relation::Row::default(); capacities[5]],
+            factions: vec![cfaction::Row::default(); capacities[6]],
+            factions_second: comparison_rows(capacities[6], successful[4]),
+            faction_names: vec![0; capacities[8]],
+            faction_names_second: comparison_rows(capacities[8], successful[4]),
             faction_names_len: 0,
             faction_names_required: 0,
-            faction_members: vec![cfaction_system::MemberRow::default(); 1024],
-            faction_members_second: vec![cfaction_system::MemberRow::default(); 1024],
-            links: vec![ccountry::LinkRow::default(); 1024],
-            links_second: vec![ccountry::LinkRow::default(); 1024],
+            faction_members: vec![cfaction_system::MemberRow::default(); capacities[7]],
+            faction_members_second: comparison_rows(capacities[7], successful[5]),
+            links: vec![ccountry::LinkRow::default(); capacities[2]],
+            links_second: comparison_rows(capacities[2], successful[0]),
             countries_result: unavailable,
             provinces_result: unavailable,
+            provinces_mismatches: 0,
             states_result: unavailable,
             states_mismatches: 0,
             divisions_result: unavailable,
@@ -242,7 +327,7 @@ impl Captured {
             links_result: unavailable,
             links_mismatches: 0,
             consistency_checked: [false; CONSISTENCY_TABLES.len()],
-            consistency_successful: [0; CONSISTENCY_TABLES.len()],
+            consistency_successful: successful,
             table_ns: [0; TABLE_COUNT],
             total_ns: 0,
             qpc: 0,
@@ -254,8 +339,11 @@ impl Captured {
 
     pub fn allocated_bytes(&self) -> usize {
         size_of::<Self>()
+            + self.map.allocated_bytes()
+            + self.extended.allocated_bytes()
             + self.countries.capacity() * size_of::<ccountry::Row>()
-            + self.provinces.capacity() * size_of::<cprovince::Row>()
+            + (self.provinces.capacity() + self.provinces_second.capacity())
+                * size_of::<cprovince::Row>()
             + (self.states.capacity() + self.states_second.capacity()) * size_of::<cstate::Row>()
             + (self.divisions.capacity() + self.divisions_second.capacity())
                 * size_of::<carmy::Row>()
@@ -276,7 +364,7 @@ impl Captured {
     pub fn grow(&mut self, capacities: &mut [usize; 9]) {
         fn resize<T: Default + Clone>(rows: &mut Vec<T>, outcome: Outcome, capacity: &mut usize) {
             if let Outcome::Truncated { len, unread_rows } = outcome {
-                *capacity = (*capacity).max(len.saturating_add(unread_rows as usize));
+                grow_capacity(capacity, len.saturating_add(unread_rows as usize));
             }
             if rows.len() < *capacity {
                 rows.resize(*capacity, T::default());
@@ -300,6 +388,11 @@ impl Captured {
             &mut capacities[1],
         );
         resize(&mut self.links, self.links_result, &mut capacities[2]);
+        comparison(
+            &mut self.provinces_second,
+            self.consistency_successful[PROVINCE_CHECK],
+            capacities[1],
+        );
         resize(&mut self.states, self.states_result, &mut capacities[3]);
         resize(
             &mut self.divisions,
@@ -307,7 +400,7 @@ impl Captured {
             &mut capacities[4],
         );
         if let Some(Outcome::Truncated { len, unread_rows }) = self.war_matrix_result {
-            capacities[5] = capacities[5].max(len.saturating_add(unread_rows as usize));
+            grow_capacity(&mut capacities[5], len.saturating_add(unread_rows as usize));
         }
         resize(&mut self.wars, self.wars_result, &mut capacities[5]);
         resize(&mut self.factions, self.factions_result, &mut capacities[6]);
@@ -316,7 +409,7 @@ impl Captured {
             self.faction_members_result,
             &mut capacities[7],
         );
-        capacities[8] = capacities[8].max(self.faction_names_required);
+        grow_capacity(&mut capacities[8], self.faction_names_required);
         comparison(
             &mut self.links_second,
             self.consistency_successful[0],
@@ -329,7 +422,13 @@ impl Captured {
         );
         comparison(
             &mut self.divisions_second,
-            self.consistency_successful[2],
+            if extended::Captured::needs_division_check(
+                &self.extended_successful.map(|n| n < CONSISTENCY_TARGET),
+            ) {
+                0
+            } else {
+                self.consistency_successful[2]
+            },
             capacities[4],
         );
         comparison(
@@ -362,8 +461,10 @@ pub struct Shared {
     pub base: usize,
     pub trampoline: usize,
     pub frequency: u64,
-    pub frames: Vec<UnsafeCell<Captured>>,
-    pub completed: Vec<AtomicI64>,
+    /// Slot addresses never move. Only published slots own a Captured allocation.
+    pub frames: [AtomicPtr<Captured>; BUFFERS],
+    pub completed: [AtomicI64; BUFFERS],
+    pub pool_buffers: AtomicUsize,
     pub free: ArrayQueue<usize>,
     pub ready: ArrayQueue<usize>,
     pub dropped: AtomicU64,
@@ -377,7 +478,10 @@ pub struct Shared {
     /// Only the callback writes this. The worker may take it after callback quiescence.
     pub pending: UnsafeCell<LossBatch>,
     /// Only the sole game-thread callback updates these per-attach counts.
-    consistency: UnsafeCell<ConsistencyWindow>,
+    consistency: UnsafeCell<ConsistencyWindow<{ CONSISTENCY_TABLES.len() }>>,
+    extended_consistency: UnsafeCell<ConsistencyWindow<TABLE_COUNT>>,
+    /// Fresh country authentication per callback, verified directly before publication.
+    country_cache: UnsafeCell<Cache>,
     /// Independent matrix census supplements the owned-vector double read for 200 full walks.
     war_matrix_remaining: AtomicUsize,
 }
@@ -388,26 +492,17 @@ unsafe impl Sync for Shared {}
 
 impl Shared {
     pub fn new(base: usize, trampoline: usize, frequency: u64) -> Self {
-        let frames: Vec<_> = (0..BUFFERS)
-            .map(|_| UnsafeCell::new(Captured::new()))
-            .collect();
         let roster = Box::new(Roster::new());
-        let pool_bytes = frames
-            .iter()
-            .map(|frame| unsafe { &*frame.get() }.allocated_bytes())
-            .sum::<usize>()
-            + roster.allocated_bytes();
-        let free = ArrayQueue::new(BUFFERS);
-        for index in 0..BUFFERS {
-            free.push(index).unwrap();
-        }
-        Self {
+        let country_cache = Cache::with_capacity(8192);
+        let pool_bytes = roster.allocated_bytes() + country_cache.allocated_bytes();
+        let shared = Self {
             base,
             trampoline,
             frequency,
-            frames,
-            completed: (0..BUFFERS).map(|_| AtomicI64::new(0)).collect(),
-            free,
+            frames: std::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
+            completed: std::array::from_fn(|_| AtomicI64::new(0)),
+            pool_buffers: AtomicUsize::new(0),
+            free: ArrayQueue::new(BUFFERS),
             ready: ArrayQueue::new(BUFFERS),
             dropped: AtomicU64::new(0),
             pool_bytes: AtomicU64::new(pool_bytes as u64),
@@ -417,8 +512,59 @@ impl Shared {
             roster_ready: AtomicBool::new(false),
             pending: UnsafeCell::new(LossBatch::default()),
             consistency: UnsafeCell::new(ConsistencyWindow::default()),
+            extended_consistency: UnsafeCell::new(ConsistencyWindow::default()),
+            country_cache: UnsafeCell::new(country_cache),
             war_matrix_remaining: AtomicUsize::new(200),
+        };
+        for index in 0..INITIAL_BUFFERS {
+            // No callback or spool thread can observe Shared during construction.
+            unsafe { shared.publish_frame(index, Box::new(Captured::new())) };
         }
+        shared
+    }
+
+    /// Publish a previously unused slot; the caller is the sole pool allocator.
+    unsafe fn publish_frame(&self, index: usize, frame: Box<Captured>) {
+        debug_assert!(self.frames[index].load(Ordering::Relaxed).is_null());
+        let bytes = frame.allocated_bytes();
+        // Acquire after popping a free index makes the entire allocation visible.
+        self.frames[index].store(Box::into_raw(frame), Ordering::Release);
+        self.pool_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.pool_buffers.store(index + 1, Ordering::Relaxed);
+        // A newly allocated slot has no index in either queue. Both queues have
+        // room for every allocated slot, including ones currently held by a thread.
+        let published = self.free.push(index);
+        debug_assert!(published.is_ok());
+    }
+
+    /// Allocate only on the spool thread, after servicing a captured frame.
+    ///
+    /// # Safety
+    /// The caller must be the sole pool allocator; the callback never calls this.
+    pub unsafe fn grow_pool(
+        &self,
+        capacities: &[usize; 9],
+        map_capacities: &MapCapacities,
+        successful: [u16; CONSISTENCY_TABLES.len()],
+        extended_capacities: &extended::Capacities,
+        extended_successful: [u16; TABLE_COUNT],
+    ) -> usize {
+        if self.stop_spool.load(Ordering::Acquire) {
+            return 0;
+        }
+        let allocated = self.pool_buffers.load(Ordering::Relaxed);
+        let count = pool_growth(self.free.len(), allocated);
+        for index in allocated..allocated + count {
+            let frame = Box::new(Captured::with_capacities(
+                capacities,
+                map_capacities,
+                successful,
+                extended_capacities,
+                extended_successful,
+            ));
+            unsafe { self.publish_frame(index, frame) };
+        }
+        count
     }
 
     pub fn ns(&self, ticks: i64) -> u64 {
@@ -435,6 +581,27 @@ impl Shared {
             let roster = unsafe { (&mut *self.roster.get()).as_mut().unwrap() };
             roster.sample(memory, self.base, Some(clock.hour));
             self.roster_ready.store(roster.sampled(), Ordering::Release);
+        }
+    }
+}
+
+fn pool_growth(free: usize, allocated: usize) -> usize {
+    if free <= FREE_RESERVE {
+        GROW_BUFFERS.min(BUFFERS.saturating_sub(allocated))
+    } else {
+        0
+    }
+}
+
+impl Drop for Shared {
+    fn drop(&mut self) {
+        // The loader joins the spool thread after callback quiescence before
+        // dropping its last Arc. Slots stay allocated until that point.
+        for slot in &mut self.frames {
+            let frame = *slot.get_mut();
+            if !frame.is_null() {
+                unsafe { drop(Box::from_raw(frame)) };
+            }
         }
     }
 }
@@ -470,7 +637,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     let original_end = qpc();
     if recording {
         if let Some(index) = index {
-            let frame = unsafe { &mut *shared.frames[index].get() };
+            let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
             frame.clock_entry = entry;
             frame.qpc = entered;
             frame.table_ns = [0; TABLE_COUNT];
@@ -499,22 +666,43 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             frame.links_result = unavailable;
             frame.links_mismatches = 0;
             frame.consistency_checked = [false; CONSISTENCY_TABLES.len()];
+            frame.provinces_mismatches = 0;
+            frame.map.reset();
+            frame.extended.reset();
+            frame.extended_checked = [false; TABLE_COUNT];
+            frame.country_cache_status = SeedStatus::Unavailable {
+                reason: "clock unavailable",
+            };
+            frame.country_cache_entries = 0;
+            frame.country_cache_error = None;
+            frame.country_cache_ns = 0;
             let needed = unsafe { (&*shared.consistency.get()).needed() };
+            let extended_needed = unsafe { (&*shared.extended_consistency.get()).needed() };
             let mut matched = [false; CONSISTENCY_TABLES.len()];
+            let mut extended_matched = [false; TABLE_COUNT];
             let mut matrix_complete = false;
             if let Some(clock) = frame.clock_before {
                 let state = clock.game_state as usize;
+                let cache_begin = qpc();
+                let cached = unsafe { &mut *shared.country_cache.get() }.prepare(
+                    &memory,
+                    shared.base,
+                    state,
+                );
+                frame.country_cache_status = cached.seed_status();
+                frame.country_cache_entries = cached.cached_entries();
+                let cache_prepare_ticks = qpc() - cache_begin;
                 let begin = qpc();
                 frame.countries_result =
-                    ccountry::walk(&memory, shared.base, state, &mut frame.countries);
+                    ccountry::walk(&cached, shared.base, state, &mut frame.countries);
                 frame.table_ns[2] = shared.ns(qpc() - begin);
                 let begin = qpc();
                 frame.links_result =
-                    ccountry::walk_links(&memory, shared.base, state, &mut frame.links);
+                    ccountry::walk_links(&cached, shared.base, state, &mut frame.links);
                 if needed[0] {
                     frame.consistency_checked[0] = true;
                     let second =
-                        ccountry::walk_links(&memory, shared.base, state, &mut frame.links_second);
+                        ccountry::walk_links(&cached, shared.base, state, &mut frame.links_second);
                     frame.links_mismatches = mismatches(
                         frame.links_result,
                         &frame.links,
@@ -527,6 +715,19 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let begin = qpc();
                 frame.provinces_result =
                     cprovince::walk(&memory, shared.base, state, &mut frame.provinces);
+                if needed[PROVINCE_CHECK] {
+                    frame.consistency_checked[PROVINCE_CHECK] = true;
+                    let second =
+                        cprovince::walk(&memory, shared.base, state, &mut frame.provinces_second);
+                    frame.provinces_mismatches = mismatches(
+                        frame.provinces_result,
+                        &frame.provinces,
+                        second,
+                        &frame.provinces_second,
+                    );
+                    matched[PROVINCE_CHECK] =
+                        full_match(frame.provinces_result, second, frame.provinces_mismatches);
+                }
                 frame.table_ns[4] = shared.ns(qpc() - begin);
                 let begin = qpc();
                 frame.states_result = cstate::walk(&memory, shared.base, state, &mut frame.states);
@@ -544,29 +745,50 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 }
                 frame.table_ns[5] = shared.ns(qpc() - begin);
                 let begin = qpc();
-                frame.divisions_result =
-                    carmy::walk(&memory, shared.base, state, &mut frame.divisions);
-                if needed[2] {
-                    frame.consistency_checked[2] = true;
-                    let second =
-                        carmy::walk(&memory, shared.base, state, &mut frame.divisions_second);
+                let mut division_source_ticks = 0_u64;
+                frame.divisions_result = carmy::walk_with(
+                    &cached,
+                    shared.base,
+                    state,
+                    &mut frame.divisions,
+                    |pointer, row| {
+                        division_source_ticks += frame.extended.visit_division(pointer, row, false);
+                    },
+                );
+                division_source_ticks += frame
+                    .extended
+                    .finish_divisions(frame.divisions_result, false);
+                if needed[2] || extended::Captured::needs_division_check(&extended_needed) {
+                    frame.consistency_checked[2] = needed[2];
+                    let second = carmy::walk_with(
+                        &cached,
+                        shared.base,
+                        state,
+                        &mut frame.divisions_second,
+                        |pointer, row| {
+                            division_source_ticks +=
+                                frame.extended.visit_division(pointer, row, true);
+                        },
+                    );
+                    division_source_ticks += frame.extended.finish_divisions(second, true);
                     frame.divisions_mismatches = mismatches(
                         frame.divisions_result,
                         &frame.divisions,
                         second,
                         &frame.divisions_second,
                     );
-                    matched[2] =
-                        full_match(frame.divisions_result, second, frame.divisions_mismatches);
+                    matched[2] = needed[2]
+                        && full_match(frame.divisions_result, second, frame.divisions_mismatches);
                 }
-                frame.table_ns[6] = shared.ns(qpc() - begin);
+                frame.table_ns[6] =
+                    shared.ns((qpc() - begin).saturating_sub(division_source_ticks as i64));
                 let begin = qpc();
                 frame.wars_result =
-                    cwar_relation::walk(&memory, shared.base, state, &mut frame.wars);
+                    cwar_relation::walk(&cached, shared.base, state, &mut frame.wars);
                 if needed[3] {
                     frame.consistency_checked[3] = true;
                     let second =
-                        cwar_relation::walk(&memory, shared.base, state, &mut frame.wars_second);
+                        cwar_relation::walk(&cached, shared.base, state, &mut frame.wars_second);
                     frame.wars_mismatches =
                         mismatches(frame.wars_result, &frame.wars, second, &frame.wars_second);
                     matched[3] = full_match(frame.wars_result, second, frame.wars_mismatches);
@@ -574,7 +796,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 if shared.war_matrix_remaining.load(Ordering::Relaxed) != 0 {
                     let matrix_begin = qpc();
                     let matrix = cwar_relation::walk_matrix(
-                        &memory,
+                        &cached,
                         shared.base,
                         state,
                         &mut frame.wars_matrix,
@@ -589,7 +811,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 frame.table_ns[7] = shared.ns(qpc() - begin);
                 let begin = qpc();
                 let names = cfaction::walk(
-                    &memory,
+                    &cached,
                     shared.base,
                     state,
                     &mut frame.factions,
@@ -601,7 +823,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 if needed[4] {
                     frame.consistency_checked[4] = true;
                     let second = cfaction::walk(
-                        &memory,
+                        &cached,
                         shared.base,
                         state,
                         &mut frame.factions_second,
@@ -624,7 +846,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 frame.table_ns[8] = shared.ns(qpc() - begin);
                 let begin = qpc();
                 frame.faction_members_result = cfaction_system::walk_members(
-                    &memory,
+                    &cached,
                     shared.base,
                     state,
                     &mut frame.faction_members,
@@ -632,7 +854,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 if needed[5] {
                     frame.consistency_checked[5] = true;
                     let second = cfaction_system::walk_members(
-                        &memory,
+                        &cached,
                         shared.base,
                         state,
                         &mut frame.faction_members_second,
@@ -650,6 +872,46 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     );
                 }
                 frame.table_ns[9] = shared.ns(qpc() - begin);
+                let (map_matched, map_ticks) = frame.map.sample(
+                    &cached,
+                    shared.base,
+                    state,
+                    &needed[6..PROVINCE_CHECK],
+                    &mut frame
+                        .extended
+                        .sources(&cached, shared.base, &extended_needed),
+                );
+                matched[6..PROVINCE_CHECK].copy_from_slice(&map_matched);
+                frame.consistency_checked[6..PROVINCE_CHECK]
+                    .copy_from_slice(&needed[6..PROVINCE_CHECK]);
+                for (total, ticks) in frame.table_ns[10..].iter_mut().zip(map_ticks) {
+                    *total = shared.ns(ticks as i64);
+                }
+                let (checks, ticks) = frame.extended.capture(
+                    &cached,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    &extended_needed,
+                );
+                extended_matched = checks;
+                for table in extended::TABLES {
+                    let index = table.index();
+                    frame.extended_checked[index] = extended_needed[index];
+                    frame.table_ns[index] = shared.ns(ticks[index] as i64);
+                }
+                let cache_verify_begin = qpc();
+                frame.country_cache_error = cached.verify().err();
+                frame.country_cache_ns =
+                    shared.ns(cache_prepare_ticks + qpc() - cache_verify_begin);
+                // Authentication is shared by country-dependent tables. This
+                // accounting slot includes the seed and final direct check once.
+                frame.table_ns[2] += frame.country_cache_ns;
+                if frame.country_cache_error.is_some() {
+                    matched.fill(false);
+                    extended_matched.fill(false);
+                    matrix_complete = false;
+                }
             }
             let after = qpc();
             frame.clock_after = cgame_state::read_clock(&memory, shared.base);
@@ -667,6 +929,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let stable = stable_clock(frame.clock_before, frame.clock_after);
                 frame.consistency_successful =
                     unsafe { (&mut *shared.consistency.get()).commit(matched, stable, true) };
+                frame.extended_successful = unsafe {
+                    (&mut *shared.extended_consistency.get()).commit(extended_matched, stable, true)
+                };
                 if matrix_complete && stable {
                     shared.war_matrix_remaining.fetch_sub(1, Ordering::Relaxed);
                 }
@@ -699,6 +964,121 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pool_growth_preserves_reserve_threshold_and_hard_queue_bound() {
+        assert_eq!(pool_growth(FREE_RESERVE + 1, INITIAL_BUFFERS), 0);
+        assert_eq!(pool_growth(FREE_RESERVE, INITIAL_BUFFERS), GROW_BUFFERS);
+        assert_eq!(pool_growth(0, BUFFERS - 1), 1);
+        assert_eq!(pool_growth(0, BUFFERS), 0);
+        assert_eq!(pool_growth(0, BUFFERS + 1), 0);
+    }
+
+    #[test]
+    fn pool_initialization_allocates_only_published_slots_and_counts_actual_bytes() {
+        let shared = Shared::new(0, 0, 1);
+        assert_eq!(shared.free.capacity(), BUFFERS);
+        assert_eq!(shared.ready.capacity(), BUFFERS);
+        assert_eq!(shared.free.len(), INITIAL_BUFFERS);
+        assert_eq!(shared.pool_buffers.load(Ordering::Relaxed), INITIAL_BUFFERS);
+        let mut bytes = unsafe { (&*shared.roster.get()).as_ref().unwrap() }.allocated_bytes();
+        bytes += unsafe { &*shared.country_cache.get() }.allocated_bytes();
+        for (index, slot) in shared.frames.iter().enumerate() {
+            let frame = slot.load(Ordering::Acquire);
+            if index < INITIAL_BUFFERS {
+                assert!(!frame.is_null());
+                bytes += unsafe { &*frame }.allocated_bytes();
+            } else {
+                assert!(frame.is_null());
+            }
+        }
+        assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), bytes as u64);
+        assert_eq!(
+            unsafe {
+                shared.grow_pool(
+                    &INITIAL_CAPACITIES,
+                    &MapCapacities::default(),
+                    [0; CONSISTENCY_TABLES.len()],
+                    &extended::Capacities::default(),
+                    [0; TABLE_COUNT],
+                )
+            },
+            0
+        );
+    }
+
+    #[test]
+    fn new_pool_slots_publish_current_capacities_and_completed_proofs_without_moving_old_slots() {
+        let shared = Shared::new(0, 0, 1);
+        let original = shared.frames[0].load(Ordering::Acquire);
+        let held: Vec<_> = (0..INITIAL_BUFFERS)
+            .map(|_| shared.free.pop().unwrap())
+            .collect();
+        let mut capacities = INITIAL_CAPACITIES;
+        capacities[0] += 9;
+        capacities[4] += 17;
+        capacities[8] += 23;
+        let mut successful = [CONSISTENCY_TARGET; CONSISTENCY_TABLES.len()];
+        successful[2] -= 1;
+        let before_bytes = shared.pool_bytes.load(Ordering::Relaxed);
+        let published = AtomicBool::new(false);
+        let slots = std::thread::scope(|scope| {
+            let consumer = scope.spawn(|| {
+                let mut slots = Vec::new();
+                while slots.len() < GROW_BUFFERS {
+                    let Some(index) = shared.free.pop() else {
+                        if published.load(Ordering::Acquire) && shared.free.is_empty() {
+                            break;
+                        }
+                        std::thread::yield_now();
+                        continue;
+                    };
+                    let pointer = shared.frames[index].load(Ordering::Acquire);
+                    assert!(!pointer.is_null());
+                    let frame = unsafe { &*pointer };
+                    assert_eq!(frame.countries.len(), capacities[0]);
+                    assert_eq!(frame.divisions.len(), capacities[4]);
+                    assert_eq!(frame.divisions_second.len(), capacities[4]);
+                    assert_eq!(frame.faction_names.len(), capacities[8]);
+                    assert_eq!(frame.consistency_successful, successful);
+                    let second = comparison_capacities(frame);
+                    assert_eq!(second, [0, 0, capacities[4], 0, 0, 0, 0]);
+                    slots.push((index, frame.allocated_bytes()));
+                }
+                assert_eq!(slots.len(), GROW_BUFFERS);
+                slots
+            });
+            let added = unsafe {
+                shared.grow_pool(
+                    &capacities,
+                    &MapCapacities::default(),
+                    successful,
+                    &extended::Capacities::default(),
+                    [CONSISTENCY_TARGET; TABLE_COUNT],
+                )
+            };
+            published.store(true, Ordering::Release);
+            assert_eq!(added, GROW_BUFFERS);
+            consumer.join().unwrap()
+        });
+        assert_eq!(shared.frames[0].load(Ordering::Acquire), original);
+        assert_eq!(
+            shared.pool_buffers.load(Ordering::Relaxed),
+            INITIAL_BUFFERS + GROW_BUFFERS
+        );
+        assert_eq!(
+            shared.pool_bytes.load(Ordering::Relaxed) - before_bytes,
+            slots.iter().map(|(_, bytes)| *bytes as u64).sum::<u64>()
+        );
+        for index in held
+            .into_iter()
+            .chain(slots.into_iter().map(|(index, _)| index))
+        {
+            shared.free.push(index).unwrap();
+        }
+        assert_eq!(shared.free.len(), INITIAL_BUFFERS + GROW_BUFFERS);
+    }
+
     fn clock(hour: i32, signal: i64) -> Clock {
         Clock {
             game_state: 1,
@@ -761,18 +1141,26 @@ mod tests {
     fn consistency_windows_finish_independently_after_200_published_matches() {
         let mut window = ConsistencyWindow::default();
         for index in 0..CONSISTENCY_TARGET {
-            let passed = [true, index % 2 == 0, false, false, false, false];
+            let mut passed = [false; CONSISTENCY_TABLES.len()];
+            passed[0] = true;
+            passed[1] = index % 2 == 0;
             window.commit(passed, true, true);
         }
-        assert_eq!(window.successful, [200, 100, 0, 0, 0, 0]);
-        assert_eq!(window.needed(), [false, true, true, true, true, true]);
+        assert_eq!(&window.successful[..6], &[200, 100, 0, 0, 0, 0]);
+        assert_eq!(
+            &window.needed()[..6],
+            &[false, true, true, true, true, true]
+        );
         for _ in 0..CONSISTENCY_TARGET {
             window.commit(window.needed(), true, true);
         }
-        assert_eq!(window.successful, [200; 6]);
-        assert_eq!(window.needed(), [false; 6]);
+        assert_eq!(window.successful, [200; CONSISTENCY_TABLES.len()]);
+        assert_eq!(window.needed(), [false; CONSISTENCY_TABLES.len()]);
         // Completion stays capped even if the caller supplies a redundant pass.
-        assert_eq!(window.commit([true; 6], true, true), [200; 6]);
+        assert_eq!(
+            window.commit([true; CONSISTENCY_TABLES.len()], true, true),
+            [200; CONSISTENCY_TABLES.len()]
+        );
     }
 
     #[test]
@@ -793,16 +1181,27 @@ mod tests {
             (Some(before), Some(changed_state)),
         ] {
             assert_eq!(
-                window.commit([true; 6], stable_clock(before, after), true),
-                [0; 6]
+                window.commit(
+                    [true; CONSISTENCY_TABLES.len()],
+                    stable_clock(before, after),
+                    true
+                ),
+                [0; CONSISTENCY_TABLES.len()]
             );
         }
         assert_eq!(
-            window.commit([true; 6], stable_clock(Some(before), Some(before)), false),
-            [0; 6]
+            window.commit(
+                [true; CONSISTENCY_TABLES.len()],
+                stable_clock(Some(before), Some(before)),
+                false
+            ),
+            [0; CONSISTENCY_TABLES.len()]
         );
-        assert_eq!(window.needed(), [true; 6]);
-        assert_eq!(window.commit([true; 6], true, true), [1; 6]);
+        assert_eq!(window.needed(), [true; CONSISTENCY_TABLES.len()]);
+        assert_eq!(
+            window.commit([true; CONSISTENCY_TABLES.len()], true, true),
+            [1; CONSISTENCY_TABLES.len()]
+        );
     }
 
     #[test]
@@ -830,22 +1229,22 @@ mod tests {
                 frame.wars_second.len(),
                 frame.wars_matrix.len()
             ),
-            (1031, 1031, 1031)
+            (2048, 2048, 2048)
         );
         assert_eq!(
             (frame.factions.len(), frame.factions_second.len()),
-            (66, 66)
+            (128, 128)
         );
         assert_eq!(
             (
                 frame.faction_members.len(),
                 frame.faction_members_second.len()
             ),
-            (1027, 1027)
+            (2048, 2048)
         );
         assert_eq!(
             (frame.faction_names.len(), frame.faction_names_second.len()),
-            (20_000, 20_000)
+            (32768, 32768)
         );
         assert!(frame.allocated_bytes() > before);
         // An idle buffer with no truncation result receives the same capacities.
@@ -869,9 +1268,10 @@ mod tests {
     #[test]
     fn each_completed_window_releases_only_its_comparison_buffers() {
         let mut frame = Captured::new();
+        frame.extended_successful.fill(CONSISTENCY_TARGET);
         let mut capacities = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
         let mut expected = comparison_capacities(&frame);
-        frame.consistency_successful = [CONSISTENCY_TARGET - 1; 6];
+        frame.consistency_successful = [CONSISTENCY_TARGET - 1; CONSISTENCY_TABLES.len()];
         frame.links[0].id = 7;
         frame.wars_matrix[0].first_country = 11;
         frame.faction_names[0] = b'x';
@@ -887,7 +1287,7 @@ mod tests {
         ];
         frame.grow(&mut capacities);
         assert_eq!(comparison_capacities(&frame), expected);
-        for index in 0..CONSISTENCY_TABLES.len() {
+        for index in 0..6 {
             let before = frame.allocated_bytes();
             frame.consistency_successful[index] = CONSISTENCY_TARGET;
             frame.grow(&mut capacities);
@@ -914,13 +1314,21 @@ mod tests {
         assert_eq!(frame.links[0].id, 7);
         assert_eq!(frame.wars_matrix[0].first_country, 11);
         assert_eq!(frame.faction_names[0], b'x');
+        let primary_provinces = frame.provinces.capacity();
+        let before = frame.allocated_bytes();
+        frame.consistency_successful[PROVINCE_CHECK] = CONSISTENCY_TARGET;
+        frame.grow(&mut capacities);
+        assert_eq!(frame.provinces_second.capacity(), 0);
+        assert_eq!(frame.provinces.capacity(), primary_provinces);
+        assert!(frame.allocated_bytes() < before);
     }
 
     #[test]
     fn later_growth_keeps_completed_comparisons_empty_and_pending_ones_ready() {
         let mut complete = Captured::new();
+        complete.extended_successful.fill(CONSISTENCY_TARGET);
         let mut capacities = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
-        complete.consistency_successful = [CONSISTENCY_TARGET; 6];
+        complete.consistency_successful = [CONSISTENCY_TARGET; CONSISTENCY_TABLES.len()];
         complete.grow(&mut capacities);
         complete.divisions_result = Outcome::Truncated {
             len: 4096,
@@ -937,19 +1345,21 @@ mod tests {
         complete.faction_names_required = 20_000;
         complete.grow(&mut capacities);
         assert_eq!(comparison_capacities(&complete), [0; 7]);
-        assert_eq!(complete.divisions.len(), 4099);
-        assert_eq!(complete.wars.len(), 1031);
-        assert_eq!(complete.wars_matrix.len(), 1031);
-        assert_eq!(complete.factions.len(), 66);
-        assert_eq!(complete.faction_names.len(), 20_000);
+        assert_eq!(complete.provinces_second.capacity(), 0);
+        assert_eq!(complete.divisions.len(), 8192);
+        assert_eq!(complete.wars.len(), 2048);
+        assert_eq!(complete.wars_matrix.len(), 2048);
+        assert_eq!(complete.factions.len(), 128);
+        assert_eq!(complete.faction_names.len(), 32768);
 
         let mut pending = Captured::new();
-        pending.consistency_successful = [CONSISTENCY_TARGET - 1; 6];
+        pending.consistency_successful = [CONSISTENCY_TARGET - 1; CONSISTENCY_TABLES.len()];
         pending.grow(&mut capacities);
-        assert_eq!(pending.divisions_second.len(), 4099);
-        assert_eq!(pending.wars_second.len(), 1031);
-        assert_eq!(pending.factions_second.len(), 66);
-        assert_eq!(pending.faction_names_second.len(), 20_000);
+        assert_eq!(pending.provinces_second.len(), capacities[1]);
+        assert_eq!(pending.divisions_second.len(), 8192);
+        assert_eq!(pending.wars_second.len(), 2048);
+        assert_eq!(pending.factions_second.len(), 128);
+        assert_eq!(pending.faction_names_second.len(), 32768);
         assert!(
             comparison_capacities(&pending)
                 .into_iter()

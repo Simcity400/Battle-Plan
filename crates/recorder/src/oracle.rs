@@ -16,8 +16,26 @@ use replay::{
     container::{Replay, SeekResult},
     frame::{DecodedFrame, TableView},
     identity::Verification,
-    rows::{CountryRow, Row, TableId},
+    rows::{CountryRow, TableId, TableRows, TableSchema, tables},
 };
+
+mod air;
+mod characters;
+mod construction;
+mod economy;
+mod governance;
+mod intel;
+mod naval_history;
+mod production;
+mod projects;
+mod weather;
+
+type TokenNames<'a> = BTreeMap<u32, &'a [u8]>;
+type ContentRead<'a, T> = Result<&'a T, String>;
+
+fn content_read<T>(result: &io::Result<T>) -> ContentRead<'_, T> {
+    result.as_ref().map_err(ToString::to_string)
+}
 
 pub const USAGE: &str = "recorder oracle <campaign.battleplan> <save.hoi4> [--hour n] [--branch id] [--game-dir <directory>] [--user-dir <directory>]";
 const CONVOY_LIMIT: i64 = 0x53e2_d620_fb40;
@@ -96,10 +114,7 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
             session.identity.game_version
         )));
     }
-    // Refuse missing tables before paying for content resolution.
-    for table in TableId::ALL {
-        complete(&frame, table)?;
-    }
+    validate_identity(&frame, &save)?;
     let options = ResolveOptions {
         game_dir: game_dir.map(Ok).unwrap_or_else(default_game_directory)?,
         user_dir: user_dir
@@ -128,19 +143,27 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         content.stats.bytes,
         content.stats.elapsed_ms
     );
-    let membership = save::read_map_membership(&content.layers)?;
-    let equipment_types = save::read_equipment_types(&content.layers)?;
-    let report = compare(&frame, &save, &membership, &equipment_types)?;
+    let membership = save::read_map_membership(&content.layers);
+    let equipment_types = save::read_equipment_types(&content.layers);
+    let base_resources = save::construction::BaseResources::read(&content.layers);
+    let railway_adjacency = save::naval_history::RailwayAdjacency::read(&content.layers);
+    let mut report = compare_core(
+        &frame,
+        &save,
+        content_read(&membership),
+        content_read(&equipment_types),
+    )?;
+    compare_extended(
+        &frame,
+        &save,
+        content_read(&membership),
+        content_read(&base_resources),
+        content_read(&railway_adjacency),
+        &mut report,
+    );
     report.print();
     println!("Oracle elapsed: {:.3} s", started.elapsed().as_secs_f64());
-    if report.differences.is_empty() {
-        Ok(())
-    } else {
-        Err(invalid(format!(
-            "oracle found {} differences",
-            report.differences.len()
-        )))
-    }
+    report.outcome()
 }
 
 fn matching_hour(saved: Hour, requested: Option<Hour>) -> io::Result<Hour> {
@@ -222,9 +245,14 @@ fn unique_branch(branches: &[BranchId]) -> io::Result<BranchId> {
     }
 }
 
-fn complete(frame: &DecodedFrame, table: TableId) -> io::Result<&[Row]> {
+fn complete<T: TableSchema>(frame: &DecodedFrame) -> io::Result<&[T::Row]> {
+    frame.complete::<T>()
+}
+
+fn complete_table(frame: &DecodedFrame, table: TableId) -> io::Result<&TableRows> {
     match &frame.tables[table.index()] {
-        TableView::Complete(rows) => Ok(rows),
+        TableView::Complete(rows) if rows.table() == table => Ok(rows),
+        TableView::Complete(_) => Err(invalid(format!("wrong table rows in {table:?}"))),
         TableView::Truncated { missing, .. } => Err(invalid(format!(
             "hour {} {table:?} is truncated ({missing} missing rows)",
             frame.hour
@@ -236,6 +264,35 @@ fn complete(frame: &DecodedFrame, table: TableId) -> io::Result<&[Row]> {
     }
 }
 
+fn recorded_table_counts(frame: &DecodedFrame) -> BTreeMap<TableId, Result<usize, String>> {
+    TableId::ALL
+        .into_iter()
+        .map(|table| {
+            let count = complete_table(frame, table)
+                .map(TableRows::len)
+                .map_err(|error| error.to_string());
+            (table, count)
+        })
+        .collect()
+}
+
+fn lexical_tokens<'a>(frame: &'a DecodedFrame, report: &mut Report) -> io::Result<TokenNames<'a>> {
+    if let TableView::Unavailable { reason } = &frame.tables[TableId::LexicalTokens.index()] {
+        report.limitation(
+            "recorded lexical dictionary is unavailable; text-to-token comparisons name their missing coverage and do not infer token identities from game content",
+            reason.clone(),
+        );
+        return Ok(BTreeMap::new());
+    }
+    let mut tokens = BTreeMap::new();
+    for row in complete::<tables::LexicalTokens>(frame)? {
+        if tokens.insert(row.token, row.literal.as_slice()).is_some() {
+            return Err(invalid("duplicate lexical token id"));
+        }
+    }
+    Ok(tokens)
+}
+
 #[derive(Debug, Default)]
 struct Report {
     countries: usize,
@@ -245,18 +302,96 @@ struct Report {
     war_relations: usize,
     factions: usize,
     faction_members: usize,
+    players: usize,
+    land_combats: usize,
+    fleets: usize,
+    task_forces: usize,
+    ships: usize,
+    naval_combats: usize,
+    naval_combat_participants: usize,
+    air_wings: usize,
+    army_orders: usize,
     scalar_checks: usize,
     differences: Vec<String>,
     limitations: BTreeMap<String, Vec<String>>,
+    compared_tables: BTreeMap<String, usize>,
+    recorded_tables: BTreeMap<TableId, Result<usize, String>>,
+    failed_comparisons: BTreeMap<String, String>,
+    difference_groups: BTreeMap<String, usize>,
+    active_comparison: Option<String>,
 }
 
 impl Report {
+    fn attempt(&mut self, name: &str, compare: impl FnOnce(&mut Self) -> io::Result<()>) -> bool {
+        let previous = self.active_comparison.replace(name.into());
+        let result = compare(self);
+        self.active_comparison = previous;
+        match result {
+            Ok(()) => true,
+            Err(error) => {
+                self.failed_comparisons
+                    .insert(name.into(), error.to_string());
+                false
+            }
+        }
+    }
+
+    fn unavailable_tables(&self) -> usize {
+        self.recorded_tables
+            .values()
+            .filter(|rows| rows.is_err())
+            .count()
+    }
+
+    fn outcome(&self) -> io::Result<()> {
+        let unavailable = self.unavailable_tables();
+        if self.differences.is_empty() && unavailable == 0 && self.failed_comparisons.is_empty() {
+            Ok(())
+        } else {
+            Err(invalid(format!(
+                "oracle: {} differences; {} unavailable, truncated or invalid tables; {} failed or skipped comparison groups; comparison {}",
+                self.differences.len(),
+                unavailable,
+                self.failed_comparisons.len(),
+                if unavailable == 0 && self.failed_comparisons.is_empty() {
+                    "completed"
+                } else {
+                    "incomplete"
+                },
+            )))
+        }
+    }
+
+    fn record_tables(&mut self, frame: &DecodedFrame) {
+        self.recorded_tables = recorded_table_counts(frame);
+        for table in [TableId::LexicalTokens, TableId::ScriptVariables] {
+            if let TableView::Unavailable { reason } = &frame.tables[table.index()] {
+                self.limitation(
+                    "explicitly unavailable source remains unverified and makes the overall comparison incomplete; the recorded reason identifies the missing proof or failed read",
+                    format!("{table:?}: {reason}"),
+                );
+            }
+        }
+    }
+
+    fn compared(&mut self, table: &str, rows: usize) {
+        *self.compared_tables.entry(table.to_owned()).or_default() += rows;
+    }
     fn difference(
         &mut self,
         field: impl AsRef<str>,
         replay: impl std::fmt::Debug,
         save: impl std::fmt::Debug,
     ) {
+        let group = self
+            .active_comparison
+            .as_deref()
+            .unwrap_or("direct comparisons");
+        if let Some(count) = self.difference_groups.get_mut(group) {
+            *count += 1;
+        } else {
+            self.difference_groups.insert(group.into(), 1);
+        }
         self.differences.push(format!(
             "{}: replay {replay:?}, save {save:?}",
             field.as_ref()
@@ -292,7 +427,7 @@ impl Report {
 
     fn print(&self) {
         println!(
-            "Compared: {} provinces, {} states, {} divisions, {} war relations, {} factions, {} faction members, {} countries, {} exact scalar values (/100000)",
+            "Compared: {} provinces, {} states, {} divisions, {} war relations, {} factions, {} faction members, {} countries, {} exact field comparisons",
             self.provinces,
             self.states,
             self.divisions,
@@ -302,7 +437,45 @@ impl Report {
             self.countries,
             self.scalar_checks
         );
+        println!(
+            "Map tables: {} uniquely matched players, {} land combats, {} fleets, {} task forces, {} ships",
+            self.players, self.land_combats, self.fleets, self.task_forces, self.ships
+        );
+        println!(
+            "Map tables: {} naval combats, {} naval combat participants, {} air wings, {} army orders",
+            self.naval_combats, self.naval_combat_participants, self.air_wings, self.army_orders
+        );
         println!("Differences: {}", self.differences.len());
+        for (group, count) in &self.difference_groups {
+            println!("  Differences {group}: {count}");
+        }
+        println!(
+            "Comparison status: {}; {} table availability issues; {} failed or skipped comparison groups",
+            if self.unavailable_tables() == 0 && self.failed_comparisons.is_empty() {
+                "complete"
+            } else {
+                "incomplete"
+            },
+            self.unavailable_tables(),
+            self.failed_comparisons.len(),
+        );
+        for (table, rows) in &self.compared_tables {
+            println!("Compared {table}: {rows}");
+        }
+        if !self.recorded_tables.is_empty() {
+            println!(
+                "Recorded table coverage (row counts alone do not establish save comparison):"
+            );
+            for (table, rows) in &self.recorded_tables {
+                match rows {
+                    Ok(rows) => println!("  {table:?}: {rows} rows"),
+                    Err(reason) => println!("  {table:?}: {reason}"),
+                }
+            }
+        }
+        for (group, reason) in &self.failed_comparisons {
+            println!("  Comparison {group} incomplete: {reason}");
+        }
         for difference in self.differences.iter().take(100) {
             println!("  {difference}");
         }
@@ -314,22 +487,27 @@ impl Report {
         }
         println!("Limitations:");
         for (reason, subjects) in &self.limitations {
-            println!("  {reason}: {}", subjects.join(", "));
+            const EXAMPLES: usize = 5;
+            println!("  {reason}: {} entries", subjects.len());
+            for subject in subjects.iter().take(EXAMPLES) {
+                println!("    {subject}");
+            }
+            if subjects.len() > EXAMPLES {
+                println!(
+                    "    {} additional entries omitted",
+                    subjects.len() - EXAMPLES
+                );
+            }
         }
     }
 }
 
-fn compare(
-    frame: &DecodedFrame,
-    save: &Save,
-    membership: &save::MapMembership,
-    equipment_types: &save::EquipmentTypes,
-) -> io::Result<Report> {
+fn validate_identity(frame: &DecodedFrame, save: &Save) -> io::Result<()> {
     matching_hour(save.date.engine_hour()?, Some(frame.hour))?;
-    let [Row::Clock(clock)] = complete(frame, TableId::Clock)? else {
+    let [clock] = frame.complete::<tables::Clock>()? else {
         return Err(invalid("clock table must contain one clock"));
     };
-    let [Row::Campaign(campaign)] = complete(frame, TableId::Campaign)? else {
+    let [campaign] = frame.complete::<tables::Campaign>()? else {
         return Err(invalid("campaign table must contain one identity"));
     };
     if clock.hour != frame.hour || clock.seed != save.seed || campaign.id != save.campaign_id {
@@ -337,30 +515,18 @@ fn compare(
             "frame clock, seed or campaign identity differs from the save",
         ));
     }
-    let mut report = Report::default();
-    report.limitation(
-        "commands after the hourly callback can change state before saving without advancing the hour; matching hours do not prove the same command boundary, and differences still fail",
-        "all captured tables",
-    );
-    report.limitation(
-        "save session time includes elapsed wall time; it is not the captured persisted play_time",
-        "clock.play_time",
-    );
-    report.limitation(
-        "process-local load timestamp is absent from saves",
-        "clock.play_session_started_at",
-    );
-    report.limitation(
-        "saves retain country tags but erase raw country-link and canonical-slot identities",
-        "countries / country links / province, state, division, war relation and faction member country references",
-    );
-    report.limitation("save serializer omits owner-equivalent and nonpositive controller references; these compare by resolved control", "provinces with no explicit saved controller");
+    Ok(())
+}
+
+struct CountryContext<'a> {
+    by_tag: BTreeMap<&'a [u8], &'a CountryRow>,
+    links: BTreeMap<u32, &'a CountryRow>,
+}
+
+fn country_context(frame: &DecodedFrame) -> io::Result<CountryContext<'_>> {
     let mut by_tag = BTreeMap::new();
     let mut by_slot = BTreeMap::new();
-    for row in complete(frame, TableId::Countries)? {
-        let Row::Country(country) = row else {
-            return Err(invalid("non-country row in country table"));
-        };
+    for country in frame.complete::<tables::Countries>()? {
         if by_tag.insert(country.tag.as_slice(), country).is_some()
             || by_slot.insert(country.canonical_slot, country).is_some()
         {
@@ -368,10 +534,7 @@ fn compare(
         }
     }
     let mut links = BTreeMap::new();
-    for row in complete(frame, TableId::CountryLinks)? {
-        let Row::CountryLink(link) = row else {
-            return Err(invalid("non-link row in link table"));
-        };
+    for link in frame.complete::<tables::CountryLinks>()? {
         let country = by_slot
             .get(&link.canonical_slot)
             .ok_or_else(|| invalid(format!("country link {} has no canonical country", link.id)))?;
@@ -390,6 +553,130 @@ fn compare(
                 String::from_utf8_lossy(tag)
             )));
         }
+    }
+    Ok(CountryContext { by_tag, links })
+}
+
+fn compare_core(
+    frame: &DecodedFrame,
+    save: &Save,
+    membership: ContentRead<'_, save::MapMembership>,
+    equipment_types: ContentRead<'_, save::EquipmentTypes>,
+) -> io::Result<Report> {
+    validate_identity(frame, save)?;
+    let mut report = Report::default();
+    report.record_tables(frame);
+    report.attempt("content map membership", |_| {
+        required_context("verified map membership", &membership).map(|_| ())
+    });
+    report.attempt("content equipment types", |_| {
+        required_context("verified equipment types", &equipment_types).map(|_| ())
+    });
+    report.limitation(
+        "commands after the hourly callback can change state before saving without advancing the hour; matching hours do not prove the same command boundary, and differences still fail",
+        "all captured tables",
+    );
+    report.limitation(
+        "save session time includes elapsed wall time; it is not the captured persisted play_time",
+        "clock.play_time",
+    );
+    report.limitation(
+        "process-local load timestamp is absent from saves",
+        "clock.play_session_started_at",
+    );
+    report.limitation(
+        "saves retain country tags but erase raw country-link and canonical-slot identities",
+        "countries / country links / province, state, division, war relation and faction member country references",
+    );
+    report.limitation("save serializer omits owner-equivalent and nonpositive controller references; these compare by resolved control", "provinces with no explicit saved controller");
+    report.attempt("map country context", |report| {
+        let context = country_context(frame)?;
+        let by_tag = &context.by_tag;
+        let links = &context.links;
+        report.attempt("countries", |report| {
+            compare_countries(save, &equipment_types, by_tag, report);
+            Ok(())
+        });
+        report.attempt("provinces", |report| {
+            compare_provinces(
+                frame,
+                save,
+                required_context("verified map membership", &membership)?,
+                links,
+                report,
+            )
+        });
+        report.attempt("states", |report| {
+            compare_states(
+                frame,
+                save,
+                required_context("verified map membership", &membership)?,
+                links,
+                report,
+            )
+        });
+        report.attempt("divisions", |report| {
+            compare_divisions(
+                frame,
+                save,
+                required_context("verified map membership", &membership)?,
+                links,
+                report,
+            )
+        });
+        report.attempt("war relations", |report| {
+            compare_war_relations(frame, save, links, report)
+        });
+        report.attempt("factions", |report| {
+            compare_factions(frame, save, links, report)
+        });
+        report.attempt("players", |report| {
+            compare_players(frame, save, links, report)
+        });
+        report.attempt("naval units", |report| {
+            compare_naval_units(
+                frame,
+                save,
+                required_context("verified map membership", &membership)?,
+                links,
+                report,
+            )
+        });
+        report.attempt("naval combats", |report| {
+            compare_naval_combats(
+                frame,
+                save,
+                required_context("verified map membership", &membership)?,
+                links,
+                report,
+            )
+        });
+        report.attempt("air wings", |report| {
+            compare_air_wings(frame, save, links, report)
+        });
+        report.attempt("army orders", |report| {
+            compare_army_orders(frame, save, links, report)
+        });
+        Ok(())
+    });
+    report.attempt("land combats", |report| {
+        compare_land_combats(
+            frame,
+            save,
+            required_context("verified map membership", &membership)?,
+            report,
+        )
+    });
+    Ok(report)
+}
+
+fn compare_countries(
+    save: &Save,
+    equipment_types: &ContentRead<'_, save::EquipmentTypes>,
+    by_tag: &BTreeMap<&[u8], &CountryRow>,
+    report: &mut Report,
+) {
+    for (&tag, captured) in by_tag {
         let label = String::from_utf8_lossy(tag);
         let Some(saved) = save.countries.get(tag) else {
             report.difference(format!("country {label}"), "present", "absent");
@@ -429,7 +716,9 @@ fn compare(
         }
         match (
             captured.convoys_raw,
-            convoy_total(saved, save, equipment_types),
+            required_context("verified equipment types", equipment_types)
+                .map_err(|error| error.to_string())
+                .and_then(|types| convoy_total(saved, save, types)),
         ) {
             (None, _) => report.limitation(
                 "convoy cache was invalid at capture; no value was invented",
@@ -442,9 +731,10 @@ fn compare(
                 }
             }
             (Some(_), Err(reason)) => {
-                return Err(invalid(format!(
-                    "{label}.convoys cannot be compared: {reason}"
-                )));
+                report.failed_comparisons.insert(
+                    format!("country {label} convoys"),
+                    format!("{label}.convoys cannot be compared: {reason}"),
+                );
             }
         }
     }
@@ -463,11 +753,17 @@ fn compare(
             "present",
         );
     }
+}
+
+fn compare_provinces(
+    frame: &DecodedFrame,
+    save: &Save,
+    membership: &save::MapMembership,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
     let mut provinces = BTreeMap::new();
-    for row in complete(frame, TableId::Provinces)? {
-        let Row::Province(province) = row else {
-            return Err(invalid("non-province row in province table"));
-        };
+    for province in frame.complete::<tables::Provinces>()? {
         if provinces.insert(province.id, province).is_some() {
             return Err(invalid("duplicate province row"));
         }
@@ -478,6 +774,21 @@ fn compare(
             continue;
         };
         report.provinces += 1;
+        // E6CA90 omits +0x38 iff zero. 1F2A20 visits every province;
+        // AEBA0/AED30/AB010 can omit only an empty serialized object.
+        let victory_points = save
+            .provinces
+            .get(&expected.id)
+            .and_then(|saved| saved.victory_points)
+            .unwrap_or(0);
+        report.compared("Provinces.victory_points", 1);
+        if actual.victory_points != victory_points {
+            report.difference(
+                format!("province {}.victory_points", expected.id),
+                actual.victory_points,
+                victory_points,
+            );
+        }
         if actual.state != expected.state.unwrap_or(0) {
             report.difference(
                 format!("province {}.state", expected.id),
@@ -485,7 +796,7 @@ fn compare(
                 expected.state,
             );
         }
-        let owner = country_tag(actual.owner, &links)?;
+        let owner = country_tag(actual.owner, links)?;
         if owner != expected.owner.as_deref() {
             report.difference(
                 format!("province {}.owner", expected.id),
@@ -496,7 +807,7 @@ fn compare(
         let controller = if actual.controller == 0 && !expected.controller_explicit {
             owner
         } else {
-            country_tag(actual.controller, &links)?
+            country_tag(actual.controller, links)?
         };
         if controller != expected.controller.as_deref() {
             report.difference(
@@ -509,11 +820,18 @@ fn compare(
     for id in provinces.keys() {
         report.difference(format!("province {id}"), "present", "absent");
     }
+    Ok(())
+}
+
+fn compare_states(
+    frame: &DecodedFrame,
+    save: &Save,
+    membership: &save::MapMembership,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
     let mut states = BTreeMap::new();
-    for row in complete(frame, TableId::States)? {
-        let Row::State(state) = row else {
-            return Err(invalid("non-state row in state table"));
-        };
+    for state in frame.complete::<tables::States>()? {
         if states.insert(state.id, state).is_some() {
             return Err(invalid("duplicate state row"));
         }
@@ -524,7 +842,7 @@ fn compare(
             continue;
         };
         report.states += 1;
-        let owner = country_tag(actual.owner, &links)?;
+        let owner = country_tag(actual.owner, links)?;
         if owner != Some(expected.owner.as_slice()) {
             report.difference(
                 format!("state {}.owner", expected.id),
@@ -535,7 +853,7 @@ fn compare(
         // CState writer 1409d4040 emits zero controller when owner is positive;
         // only raw or canonical equality permits omission. Never apply the
         // province writer's zero-controller normalization to this table.
-        let controller = country_tag(actual.controller, &links)?;
+        let controller = country_tag(actual.controller, links)?;
         if controller != Some(expected.controller.as_slice()) {
             report.difference(
                 format!("state {}.controller", expected.id),
@@ -551,10 +869,805 @@ fn compare(
         "state serializer omits controllers equal to owner by raw or canonical country-link identity; omitted fields compare to the saved owner without accepting captured zero",
         "states with no explicit saved controller",
     );
-    compare_divisions(frame, save, membership, &links, &mut report)?;
-    compare_war_relations(frame, save, &links, &mut report)?;
-    compare_factions(frame, save, &links, &mut report)?;
-    Ok(report)
+    Ok(())
+}
+
+fn required_context<'a, T, E: std::fmt::Display>(
+    name: &str,
+    context: &'a Result<T, E>,
+) -> io::Result<&'a T> {
+    context
+        .as_ref()
+        .map_err(|error| invalid(format!("requires {name}: {error}")))
+}
+
+fn compare_extended(
+    frame: &DecodedFrame,
+    save: &Save,
+    membership: ContentRead<'_, save::MapMembership>,
+    base_resources: ContentRead<'_, save::construction::BaseResources>,
+    railway_adjacency: ContentRead<'_, save::naval_history::RailwayAdjacency>,
+    report: &mut Report,
+) {
+    let countries = country_context(frame);
+    let tokens = lexical_tokens(frame, report);
+    report.attempt("content base resources", |_| {
+        required_context("verified base resources", &base_resources).map(|_| ())
+    });
+    report.attempt("content railway adjacency", |_| {
+        required_context("verified railway adjacency", &railway_adjacency).map(|_| ())
+    });
+    report.attempt("governance", |report| {
+        governance::compare(
+            frame,
+            save,
+            &required_context("country links", &countries)?.links,
+            required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
+    report.attempt("production", |report| {
+        production::compare(
+            frame,
+            save,
+            &required_context("country links", &countries)?.links,
+            required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
+    report.attempt("economy", |report| {
+        economy::compare(
+            frame,
+            save,
+            &required_context("country links", &countries)?.links,
+            required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
+    report.attempt("construction StateBuildings", |report| {
+        construction::buildings(
+            complete::<tables::StateBuildings>(frame)?,
+            &save.construction.state_buildings,
+            false,
+            required_context("verified map membership", &membership)?,
+            required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
+    report.attempt("construction ProvinceBuildings", |report| {
+        construction::buildings(
+            complete::<tables::ProvinceBuildings>(frame)?,
+            &save.construction.province_buildings,
+            true,
+            required_context("verified map membership", &membership)?,
+            required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
+    report.attempt("construction StateBaseResources", |report| {
+        construction::base_resources(
+            complete::<tables::StateBaseResources>(frame)?,
+            required_context("verified base resources", &base_resources)?,
+            required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
+    report.attempt("construction BuildingConstruction", |report| {
+        construction::building_construction(
+            complete::<tables::BuildingConstruction>(frame)?,
+            &save.construction,
+            &required_context("country links", &countries)?.links,
+            required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
+    report.attempt("construction RailwayConstruction", |report| {
+        construction::railway_construction(
+            complete::<tables::RailwayConstruction>(frame)?,
+            &save.construction,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
+    report.attempt("construction OccupationSettings", |report| {
+        construction::occupation_settings(
+            complete::<tables::OccupationSettings>(frame)?,
+            &save.construction,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
+    report.attempt("construction StateOccupationLaws", |report| {
+        construction::occupation_laws(
+            complete::<tables::StateOccupationLaws>(frame)?,
+            &save.construction,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
+    report.attempt("construction StateGarrisons", |report| {
+        construction::garrisons(
+            complete::<tables::StateGarrisons>(frame)?,
+            &save.construction,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
+    report.attempt("construction StateAssignedManpower", |report| {
+        construction::assigned_manpower(
+            complete::<tables::StateAssignedManpower>(frame)?,
+            &save.construction,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
+    report.attempt("construction CountryOccupationReserveManpower", |report| {
+        construction::reserve_manpower(
+            complete::<tables::CountryOccupationReserveManpower>(frame)?,
+            &save.construction,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
+    report.attempt("construction StateResistance", |report| {
+        construction::resistance(
+            complete::<tables::StateResistance>(frame)?,
+            &save.construction,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
+    report.attempt("construction CountryCollaboration", |report| {
+        construction::collaboration(
+            complete::<tables::CountryCollaboration>(frame)?,
+            &save.construction,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
+    report.attempt("characters", |report| {
+        characters::compare(
+            frame,
+            &save.characters,
+            &required_context("country links", &countries)?.links,
+            required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
+    report.attempt("intel", |report| {
+        intel::compare(
+            frame,
+            &save.intel,
+            &required_context("country links", &countries)?.links,
+            required_context("lexical dictionary", &tokens)?,
+            intel::ScopeKinds {
+                global: 0,
+                country: 1,
+                state: 2,
+            },
+            report,
+        )
+    });
+    report.attempt("air", |report| {
+        air::compare(
+            frame,
+            &save.air,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
+    report.attempt("naval_history", |report| {
+        naval_history::compare(
+            frame,
+            &save.naval_history,
+            &required_context("country links", &countries)?.links,
+            required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
+    report.attempt("RailEdges", |report| {
+        naval_history::compare_rail_edges(
+            frame,
+            &save.naval_history,
+            required_context("verified railway adjacency", &railway_adjacency)?,
+            report,
+        )
+    });
+    report.attempt("projects", |report| {
+        projects::compare(
+            frame,
+            &save.projects,
+            &required_context("country links", &countries)?.links,
+            required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
+    report.attempt("weather", |report| weather::compare(frame, save, report));
+}
+
+fn compare_players(
+    frame: &DecodedFrame,
+    save: &Save,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut users = BTreeMap::<&[u8], Vec<&replay::rows::PlayerRow>>::new();
+    let mut keys = BTreeSet::new();
+    for player in frame.complete::<tables::Players>()? {
+        if player.id == -1 || !keys.insert(player.id) {
+            return Err(invalid("invalid or duplicate native player id"));
+        }
+        country_tag(player.country, links)?;
+        users.entry(&player.user).or_default().push(player);
+    }
+    let mut saved_users = BTreeMap::<&[u8], Vec<&save::Player>>::new();
+    for player in &save.players {
+        if player.country != b"---" && !save.countries.contains_key(&player.country) {
+            return Err(invalid("saved player has unknown country tag"));
+        }
+        saved_users.entry(&player.user).or_default().push(player);
+    }
+    for (&user, players) in &users {
+        let label = format!("player user {:?}", String::from_utf8_lossy(user));
+        let saved = saved_users.remove(user).unwrap_or_default();
+        if saved.len() != 1 {
+            report.difference(format!("{label}.saved refreshed entries"), 1, saved.len());
+            continue;
+        }
+        let expected = saved[0];
+        if players.len() != 1 {
+            report.limitation("native save upsert collapses equal current user bytes; only one surviving entry can be checked, not every live player or live order", format!("{label}: {} live entries", players.len()));
+            let matches = players.iter().any(|actual| {
+                let tag = country_tag(actual.country, links)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(b"---");
+                actual.id == expected.id
+                    && (actual.flags & 1 != 0) == expected.country_leader
+                    && tag == expected.country
+            });
+            if !matches {
+                report.difference(&label, "no live player matches saved survivor", expected);
+            }
+            continue;
+        }
+        let actual = players[0];
+        report.players += 1;
+        if actual.id != expected.id {
+            report.difference(format!("{label}.id"), actual.id, expected.id);
+        }
+        let tag = country_tag(actual.country, links)?.unwrap_or(b"---");
+        if tag != expected.country {
+            report.difference(
+                format!("{label}.country"),
+                tag_text(Some(tag)),
+                tag_text(Some(&expected.country)),
+            );
+        }
+        if (actual.flags & 1 != 0) != expected.country_leader {
+            report.difference(
+                format!("{label}.country_leader"),
+                actual.flags & 1,
+                expected.country_leader,
+            );
+        }
+    }
+    for (user, players) in saved_users {
+        report.limitation("saved header retains users absent from the current live roster; saved-only entries do not prove missing live players", format!("user {:?}: {} header entries", String::from_utf8_lossy(user), players.len()));
+    }
+    let mut controller_countries = BTreeSet::new();
+    for controller in frame.complete::<tables::HumanControllers>()? {
+        let tag = required_country_tag(controller.country, links)?;
+        if !controller_countries.insert(tag) {
+            return Err(invalid("duplicate resolved human-controller country"));
+        }
+    }
+    if controller_countries.len() != save.countries.len() {
+        report.difference(
+            "human controller canonical country coverage",
+            controller_countries.len(),
+            save.countries.len(),
+        );
+    }
+    report.limitation("saved player header is refreshed by user-based upserts and is not an independent complete live-roster census", "Players");
+    report.limitation("save carries CHuman user, signed id, resolved country and leader bit only; display name, upper flag bits and raw country alias bits have no independent save representation", "Players");
+    report.limitation("native signed controller counts are not serialized and are not universally equal to saved player entry counts", "HumanControllers");
+    Ok(())
+}
+
+fn compare_land_combats(
+    frame: &DecodedFrame,
+    save: &Save,
+    membership: &save::MapMembership,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut combats = BTreeMap::new();
+    for combat in frame.complete::<tables::LandCombats>()? {
+        if combat.id == 0 || combats.insert(combat.id, combat).is_some() {
+            return Err(invalid("null or duplicate full land combat handle"));
+        }
+    }
+    for (&id, expected) in &save.land_combats {
+        let label = format!("land combat type={} id={}", id as u32, id >> 32);
+        if expected.province == 0 || !membership.provinces.contains_key(&expected.province) {
+            return Err(invalid(
+                "saved land combat location is absent from verified map",
+            ));
+        }
+        let Some(actual) = combats.remove(&id) else {
+            report.difference(label, "absent", "present");
+            continue;
+        };
+        report.land_combats += 1;
+        if actual.province != expected.province {
+            report.difference(
+                format!("{label}.province"),
+                actual.province,
+                expected.province,
+            );
+        }
+        if actual.day != expected.day {
+            report.difference(format!("{label}.day"), actual.day, expected.day);
+        }
+        if actual.duration != expected.duration {
+            report.difference(
+                format!("{label}.duration"),
+                actual.duration,
+                expected.duration,
+            );
+        }
+        for (side, actual, expected) in [
+            ("attackers", &actual.attackers, &expected.attackers),
+            ("defenders", &actual.defenders, &expected.defenders),
+        ] {
+            if actual != expected {
+                report.difference(format!("{label}.{side}"), actual, expected);
+            }
+        }
+    }
+    for id in combats.keys() {
+        report.difference(
+            format!("land combat type={} id={}", *id as u32, id >> 32),
+            "present",
+            "absent",
+        );
+    }
+    report.limitation("land combat comparison covers recorded locations, native day/duration and ordered side participants; reduced saved combat details cannot certify intervening combat events", "LandCombats");
+    Ok(())
+}
+
+fn compare_naval_units(
+    frame: &DecodedFrame,
+    save: &Save,
+    membership: &save::MapMembership,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    fn province(value: Option<u32>, membership: &save::MapMembership) -> io::Result<u32> {
+        match value {
+            Some(value) if value == 0 || !membership.provinces.contains_key(&value) => Err(
+                invalid("saved naval unit province is absent from verified map or explicitly zero"),
+            ),
+            value => Ok(value.unwrap_or(0)),
+        }
+    }
+    let mut fleets = BTreeMap::new();
+    for row in frame.complete::<tables::Fleets>()? {
+        if row.id == 0 || fleets.insert(row.id, row).is_some() {
+            return Err(invalid("null or duplicate fleet handle"));
+        }
+    }
+    for (&id, expected) in &save.fleets {
+        let label = format!("fleet type={} id={}", id as u32, id >> 32);
+        let home = province(expected.home_base, membership)?;
+        let Some(actual) = fleets.remove(&id) else {
+            report.difference(label, "absent", "present");
+            continue;
+        };
+        report.fleets += 1;
+        let owner = required_country_tag(actual.owner, links)?;
+        if owner != expected.owner {
+            report.difference(
+                format!("{label}.owner"),
+                tag_text(Some(owner)),
+                tag_text(Some(&expected.owner)),
+            );
+        }
+        if actual.home_base != home {
+            report.difference(
+                format!("{label}.home_base"),
+                actual.home_base,
+                expected.home_base,
+            );
+        }
+    }
+    for id in fleets.keys() {
+        report.difference(format!("fleet {id}"), "present", "absent");
+    }
+    let mut forces = BTreeMap::new();
+    for row in frame.complete::<tables::TaskForces>()? {
+        if row.id == 0 || forces.insert(row.id, row).is_some() {
+            return Err(invalid("null or duplicate task force handle"));
+        }
+    }
+    for (&id, expected) in &save.task_forces {
+        let label = format!("task force type={} id={}", id as u32, id >> 32);
+        let location = province(expected.province, membership)?;
+        if !save.fleets.contains_key(&expected.fleet) {
+            return Err(invalid("saved task force references missing fleet"));
+        }
+        let Some(actual) = forces.remove(&id) else {
+            report.difference(label, "absent", "present");
+            continue;
+        };
+        report.task_forces += 1;
+        if actual.fleet != expected.fleet {
+            report.difference(format!("{label}.fleet"), actual.fleet, expected.fleet);
+        }
+        if actual.province != location {
+            report.difference(
+                format!("{label}.province"),
+                actual.province,
+                expected.province,
+            );
+        }
+        if actual.mission as i32 != expected.mission {
+            report.difference(
+                format!("{label}.mission"),
+                actual.mission as i32,
+                expected.mission,
+            );
+        }
+        for (field, raw, expected) in [
+            (
+                "roster_owner",
+                actual.roster_owner,
+                Some(expected.roster_owner.as_slice()),
+            ),
+            (
+                "logical_owner",
+                actual.logical_owner,
+                Some(expected.logical_owner.as_slice()),
+            ),
+            (
+                "expeditionary_owner",
+                actual.expeditionary_owner,
+                expected.expeditionary_owner.as_deref(),
+            ),
+        ] {
+            let actual = if field == "expeditionary_owner" && (raw as i32) <= 0 {
+                None
+            } else {
+                country_tag(raw, links)?
+            };
+            if actual != expected {
+                report.difference(
+                    format!("{label}.{field}"),
+                    tag_text(actual),
+                    tag_text(expected),
+                );
+            }
+        }
+    }
+    for id in forces.keys() {
+        report.difference(format!("task force {id}"), "present", "absent");
+    }
+    let mut ships = BTreeMap::new();
+    for row in frame.complete::<tables::Ships>()? {
+        if row.id == 0 || ships.insert(row.id, row).is_some() {
+            return Err(invalid("null or duplicate ship handle"));
+        }
+    }
+    for (&id, expected) in &save.ships {
+        let label = format!("ship type={} id={}", id as u32, id >> 32);
+        if !save.task_forces.contains_key(&expected.task_force) {
+            return Err(invalid("saved ship references missing task force"));
+        }
+        let Some(actual) = ships.remove(&id) else {
+            report.difference(label, "absent", "present");
+            continue;
+        };
+        report.ships += 1;
+        if actual.task_force != expected.task_force {
+            report.difference(
+                format!("{label}.task_force"),
+                actual.task_force,
+                expected.task_force,
+            );
+        }
+        if actual.sunk_convoys != expected.sunk_convoys {
+            report.difference(
+                format!("{label}.sunk_convoys"),
+                actual.sunk_convoys,
+                expected.sunk_convoys,
+            );
+        }
+        report.scalar(
+            &label,
+            "strength",
+            Some(actual.strength),
+            Some(&expected.strength),
+        );
+        report.scalar(
+            &label,
+            "organisation",
+            Some(actual.organisation),
+            Some(&expected.organisation),
+        );
+        report.scalar(
+            &label,
+            "experience",
+            Some(actual.experience),
+            Some(&expected.experience),
+        );
+    }
+    for id in ships.keys() {
+        report.difference(format!("ship {id}"), "present", "absent");
+    }
+    report.limitation("ship category and numeric class id are not independently serialized; saved definition names are not substituted for native ids", "Ships");
+    report.limitation("task-force serializer omits signed-nonpositive expeditionary references; absent fields verify the omission predicate, not those raw bits", "TaskForces");
+    Ok(())
+}
+
+fn compare_naval_combats(
+    frame: &DecodedFrame,
+    save: &Save,
+    membership: &save::MapMembership,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut combats = BTreeMap::new();
+    for row in frame.complete::<tables::NavalCombats>()? {
+        if row.id == 0 || combats.insert(row.id, row).is_some() {
+            return Err(invalid("null or duplicate full naval combat handle"));
+        }
+    }
+    for (&id, expected) in &save.naval_combats {
+        let label = format!("naval combat type={} id={}", id as u32, id >> 32);
+        if expected.province == 0 || !membership.provinces.contains_key(&expected.province) {
+            return Err(invalid(
+                "saved naval combat location is absent from verified map",
+            ));
+        }
+        let Some(actual) = combats.remove(&id) else {
+            report.difference(label, "absent", "present");
+            continue;
+        };
+        report.naval_combats += 1;
+        if actual.province != expected.province {
+            report.difference(
+                format!("{label}.province"),
+                actual.province,
+                expected.province,
+            );
+        }
+        for (field, captured, saved) in [
+            (
+                "attacker_positioning",
+                actual.attacker_positioning,
+                &expected.attacker_positioning,
+            ),
+            (
+                "defender_positioning",
+                actual.defender_positioning,
+                &expected.defender_positioning,
+            ),
+            (
+                "attacker_anti_air",
+                actual.attacker_anti_air,
+                &expected.attacker_anti_air,
+            ),
+            (
+                "defender_anti_air",
+                actual.defender_anti_air,
+                &expected.defender_anti_air,
+            ),
+        ] {
+            report.scalar(&label, field, Some(captured), Some(saved));
+        }
+    }
+    for id in combats.keys() {
+        report.difference(format!("naval combat {id}"), "present", "absent");
+    }
+    let mut participants = BTreeMap::new();
+    for row in frame.complete::<tables::NavalCombatParticipants>()? {
+        if row.combat == 0
+            || row.side > 1
+            || participants
+                .insert((row.combat, row.side, row.battle_slot), row)
+                .is_some()
+        {
+            return Err(invalid(
+                "invalid or duplicate naval combat participant identity",
+            ));
+        }
+    }
+    for (&key, expected) in &save.naval_combat_participants {
+        let label = format!(
+            "naval participant combat={} side={} slot={}",
+            key.0, key.1, key.2
+        );
+        if !save.naval_combats.contains_key(&expected.combat) {
+            return Err(invalid("saved participant has missing combat"));
+        }
+        let Some(actual) = participants.remove(&key) else {
+            report.difference(label, "absent", "present");
+            continue;
+        };
+        report.naval_combat_participants += 1;
+        if actual.ship != expected.ship.unwrap_or(0) {
+            report.difference(format!("{label}.ship"), actual.ship, expected.ship);
+        }
+        if actual.state != expected.state {
+            report.difference(format!("{label}.state"), actual.state, expected.state);
+        }
+        let owner = country_tag(actual.owner, links)?.unwrap_or(b"---");
+        if owner != expected.owner {
+            report.difference(
+                format!("{label}.owner"),
+                tag_text(Some(owner)),
+                tag_text(Some(&expected.owner)),
+            );
+        }
+    }
+    for key in participants.keys() {
+        report.difference(
+            format!(
+                "naval participant combat={} side={} slot={}",
+                key.0, key.1, key.2
+            ),
+            "present",
+            "absent",
+        );
+    }
+    report.limitation("naval combat comparison covers captured location, side scalars and participant identity/state; convoy/client handles and other reduced save details are not recorded, and hourly state cannot certify intervening events", "NavalCombats / NavalCombatParticipants");
+    Ok(())
+}
+
+fn compare_air_wings(
+    frame: &DecodedFrame,
+    save: &Save,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut wings = BTreeMap::new();
+    for row in frame.complete::<tables::AirWings>()? {
+        if row.id == 0 || wings.insert(row.id, row).is_some() {
+            return Err(invalid("null or duplicate full air wing handle"));
+        }
+    }
+    for (&id, expected) in &save.air_wings {
+        let label = format!("air wing type={} id={}", id as u32, id >> 32);
+        let Some(actual) = wings.remove(&id) else {
+            report.difference(label, "absent", "present");
+            continue;
+        };
+        report.air_wings += 1;
+        let owner = required_country_tag(actual.owner, links)?;
+        if owner != expected.owner {
+            report.difference(
+                format!("{label}.pool_owner"),
+                tag_text(Some(owner)),
+                tag_text(Some(&expected.owner)),
+            );
+        }
+        let country_override =
+            country_tag(actual.country_override as u32, links)?.unwrap_or(b"---");
+        if country_override != expected.country_override {
+            report.difference(
+                format!("{label}.country_override"),
+                tag_text(Some(country_override)),
+                tag_text(Some(&expected.country_override)),
+            );
+        }
+        for (field, actual, expected) in [
+            ("air_base", actual.air_base, expected.air_base),
+            (
+                "mission_mask",
+                u64::from(actual.mission_mask),
+                u64::from(expected.mission_mask),
+            ),
+        ] {
+            if actual != expected {
+                report.difference(format!("{label}.{field}"), actual, expected);
+            }
+        }
+        for (field, actual, expected) in [
+            ("planes", actual.planes, expected.planes),
+            (
+                "effective_planes",
+                actual.effective_planes,
+                expected.effective_planes,
+            ),
+        ] {
+            if actual != expected {
+                report.difference(format!("{label}.{field}"), actual, expected);
+            }
+        }
+        if actual.mission_region != expected.mission_region {
+            report.difference(
+                format!("{label}.mission_region"),
+                actual.mission_region,
+                expected.mission_region,
+            );
+        }
+    }
+    for id in wings.keys() {
+        report.difference(format!("air wing {id}"), "present", "absent");
+    }
+    report.limitation("air wing transfer override is serialized through a resolved state or carrier, not its raw airbase handle; an omitted transfer field can also be an unresolved override", "AirWings.base_override");
+    Ok(())
+}
+
+fn compare_army_orders(
+    frame: &DecodedFrame,
+    save: &Save,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut orders = BTreeMap::new();
+    for row in frame.complete::<tables::ArmyOrders>()? {
+        if row.owner_group == 0
+            || orders
+                .insert((row.owner_group, row.instance), row)
+                .is_some()
+        {
+            return Err(invalid("null or duplicate scoped army order identity"));
+        }
+    }
+    for (&key, expected) in &save.army_orders {
+        let label = format!("army order group={} instance={}", key.0, key.1);
+        let Some(actual) = orders.remove(&key) else {
+            report.difference(label, "absent", "present");
+            continue;
+        };
+        report.army_orders += 1;
+        let country = required_country_tag(actual.country, links)?;
+        if country != expected.country {
+            report.difference(
+                format!("{label}.country"),
+                tag_text(Some(country)),
+                tag_text(Some(&expected.country)),
+            );
+        }
+        if actual.order_type != expected.order_type {
+            report.difference(
+                format!("{label}.type"),
+                actual.order_type,
+                expected.order_type,
+            );
+        }
+        if actual.active != expected.active {
+            report.difference(
+                format!("{label}.can_execute"),
+                actual.active,
+                expected.active,
+            );
+        }
+        if actual.paradrop_target != expected.paradrop_target {
+            report.difference(
+                format!("{label}.invasion_source"),
+                actual.paradrop_target,
+                expected.paradrop_target,
+            );
+        }
+        for (field, actual, expected) in [
+            ("path", &actual.path, &expected.path),
+            ("states", &actual.target_states, &expected.target_states),
+        ] {
+            if actual != expected {
+                report.difference(format!("{label}.{field}"), actual, expected);
+            }
+        }
+    }
+    for key in orders.keys() {
+        report.difference(
+            format!("army order group={} instance={}", key.0, key.1),
+            "present",
+            "absent",
+        );
+    }
+    Ok(())
 }
 
 fn required_country_tag<'a>(
@@ -594,10 +1707,7 @@ fn compare_war_relations(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut relations = BTreeMap::new();
-    for row in complete(frame, TableId::WarRelations)? {
-        let Row::WarRelation(relation) = row else {
-            return Err(invalid("non-war-relation row in war relation table"));
-        };
+    for relation in frame.complete::<tables::WarRelations>()? {
         let first = required_country_tag(relation.first_country, links)?;
         let second = required_country_tag(relation.second_country, links)?;
         if first == second || relations.insert((first, second), relation).is_some() {
@@ -722,20 +1832,14 @@ fn compare_factions(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut factions = BTreeMap::new();
-    for row in complete(frame, TableId::Factions)? {
-        let Row::Faction(faction) = row else {
-            return Err(invalid("non-faction row in faction table"));
-        };
+    for faction in frame.complete::<tables::Factions>()? {
         if faction.id == 0 || factions.insert(faction.id, faction).is_some() {
             return Err(invalid("null or duplicate full faction handle in replay"));
         }
     }
     let mut members: BTreeMap<u64, BTreeMap<u32, &[u8]>> = BTreeMap::new();
     let mut member_countries = BTreeSet::new();
-    for row in complete(frame, TableId::FactionMembers)? {
-        let Row::FactionMember(member) = row else {
-            return Err(invalid("non-member row in faction member table"));
-        };
+    for member in frame.complete::<tables::FactionMembers>()? {
         let tag = required_country_tag(member.country, links)?;
         if !factions.contains_key(&member.faction) {
             return Err(invalid("faction member references an absent faction"));
@@ -833,10 +1937,7 @@ fn compare_divisions(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut divisions = BTreeMap::new();
-    for row in complete(frame, TableId::Divisions)? {
-        let Row::Division(division) = row else {
-            return Err(invalid("non-division row in division table"));
-        };
+    for division in frame.complete::<tables::Divisions>()? {
         if division.id == 0 || divisions.insert(division.id, division).is_some() {
             return Err(invalid("null or duplicate full division handle in replay"));
         }
@@ -1055,6 +2156,36 @@ mod tests {
         },
     };
 
+    fn compare(
+        frame: &DecodedFrame,
+        save: &Save,
+        membership: &save::MapMembership,
+        equipment: &save::EquipmentTypes,
+    ) -> io::Result<Report> {
+        compare_core(frame, save, Ok(membership), Ok(equipment))
+    }
+
+    fn comparison_error(result: io::Result<Report>) -> String {
+        match result {
+            Err(error) => error.to_string(),
+            Ok(report) => {
+                assert!(report.outcome().is_err());
+                report
+                    .failed_comparisons
+                    .values()
+                    .chain(
+                        report
+                            .recorded_tables
+                            .values()
+                            .filter_map(|rows| rows.as_ref().err()),
+                    )
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }
+    }
+
     fn fixture() -> (
         DecodedFrame,
         Save,
@@ -1071,60 +2202,88 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             branch: 2,
             hour,
             metrics: Metrics::default(),
-            tables: [
-                TableView::Complete(vec![Row::Clock(ClockRow {
-                    hour,
-                    seed: 7,
-                    ..Default::default()
-                })]),
-                TableView::Complete(vec![Row::Campaign(CampaignRow {
-                    id: b"campaign".to_vec(),
-                })]),
-                TableView::Complete(vec![Row::Country(CountryRow {
-                    id: 101,
-                    canonical_slot: 7,
-                    tag: b"GER".to_vec(),
-                    name: b"Germany".to_vec(),
-                    political_power_raw: Some(1_000_001),
-                    command_power_raw: 200_000,
-                    stability_raw: 70_000,
-                    war_support_raw: 30_000,
-                    convoys_raw: Some(0),
-                })]),
-                TableView::Complete(vec![
-                    Row::CountryLink(CountryLinkRow {
+            tables: {
+                let mut tables = std::array::from_fn(|index| {
+                    TableView::Complete(TableRows::empty(TableId::ALL[index]))
+                });
+                for (index, table) in [
+                    TableView::Complete(TableRows::Clock(vec![ClockRow {
+                        hour,
+                        seed: 7,
+                        ..Default::default()
+                    }])),
+                    TableView::Complete(TableRows::Campaign(vec![CampaignRow {
+                        id: b"campaign".to_vec(),
+                    }])),
+                    TableView::Complete(TableRows::Countries(vec![CountryRow {
                         id: 101,
                         canonical_slot: 7,
-                    }),
-                    Row::CountryLink(CountryLinkRow {
-                        id: 102,
-                        canonical_slot: 7,
-                    }),
-                ]),
-                TableView::Complete(vec![
-                    Row::Province(ProvinceRow {
+                        tag: b"GER".to_vec(),
+                        name: b"Germany".to_vec(),
+                        political_power_raw: Some(1_000_001),
+                        command_power_raw: 200_000,
+                        stability_raw: 70_000,
+                        war_support_raw: 30_000,
+                        convoys_raw: Some(0),
+                    }])),
+                    TableView::Complete(TableRows::CountryLinks(vec![
+                        CountryLinkRow {
+                            id: 101,
+                            canonical_slot: 7,
+                        },
+                        CountryLinkRow {
+                            id: 102,
+                            canonical_slot: 7,
+                        },
+                    ])),
+                    TableView::Complete(TableRows::Provinces(vec![
+                        ProvinceRow {
+                            id: 1,
+                            state: 1,
+                            owner: 102,
+                            controller: 0,
+                            victory_points: 0,
+                        },
+                        ProvinceRow {
+                            id: 2,
+                            state: 0,
+                            owner: 0,
+                            controller: 101,
+                            victory_points: 0,
+                        },
+                    ])),
+                    TableView::Complete(TableRows::States(vec![StateRow {
                         id: 1,
-                        state: 1,
                         owner: 102,
-                        controller: 0,
-                    }),
-                    Row::Province(ProvinceRow {
-                        id: 2,
-                        state: 0,
-                        owner: 0,
                         controller: 101,
-                    }),
-                ]),
-                TableView::Complete(vec![Row::State(StateRow {
-                    id: 1,
-                    owner: 102,
-                    controller: 101,
-                })]),
-                TableView::Complete(Vec::new()),
-                TableView::Complete(Vec::new()),
-                TableView::Complete(Vec::new()),
-                TableView::Complete(Vec::new()),
-            ],
+                    }])),
+                    TableView::Complete(TableRows::Divisions(Vec::new())),
+                    TableView::Complete(TableRows::WarRelations(Vec::new())),
+                    TableView::Complete(TableRows::Factions(Vec::new())),
+                    TableView::Complete(TableRows::FactionMembers(Vec::new())),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    tables[index] = table;
+                }
+                tables[TableId::HumanControllers.index()] =
+                    TableView::Complete(TableRows::HumanControllers(vec![
+                        replay::rows::HumanControllerRow {
+                            country: 101,
+                            count: 0,
+                        },
+                    ]));
+                tables[TableId::SunkShips.index()] =
+                    TableView::Complete(TableRows::SunkShips(vec![
+                        replay::rows::SunkShipsRow::default(),
+                    ]));
+                tables[TableId::WeatherLimits.index()] =
+                    TableView::Complete(TableRows::WeatherLimits(vec![
+                        replay::rows::WeatherLimitsRow::default(),
+                    ]));
+                tables
+            },
         };
         let membership = save::MapMembership {
             provinces: BTreeMap::from([(0, None), (1, Some(1)), (2, None)]),
@@ -1136,23 +2295,34 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         let mut saved = save.countries[b"GER".as_slice()].clone();
         saved.tag = tag.to_vec();
         save.countries.insert(tag.to_vec(), saved);
-        let TableView::Complete(rows) = &mut frame.tables[TableId::Countries.index()] else {
+        let TableView::Complete(TableRows::Countries(rows)) =
+            &mut frame.tables[TableId::Countries.index()]
+        else {
             unreachable!()
         };
-        let Row::Country(mut row) = rows[0].clone() else {
-            unreachable!()
-        };
+        let mut row = rows[0].clone();
         row.id = id;
         row.canonical_slot = slot;
         row.tag = tag.to_vec();
-        rows.push(Row::Country(row));
-        let TableView::Complete(rows) = &mut frame.tables[TableId::CountryLinks.index()] else {
+        rows.push(row);
+        let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut frame.tables[TableId::CountryLinks.index()]
+        else {
             unreachable!()
         };
-        rows.push(Row::CountryLink(CountryLinkRow {
+        rows.push(CountryLinkRow {
             id,
             canonical_slot: slot,
-        }));
+        });
+        let TableView::Complete(TableRows::HumanControllers(rows)) =
+            &mut frame.tables[TableId::HumanControllers.index()]
+        else {
+            unreachable!()
+        };
+        rows.push(replay::rows::HumanControllerRow {
+            country: id,
+            count: 0,
+        });
     }
 
     fn division_fixture() -> (
@@ -1180,7 +2350,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             },
         );
         frame.tables[TableId::Divisions.index()] =
-            TableView::Complete(vec![Row::Division(DivisionRow {
+            TableView::Complete(TableRows::Divisions(vec![DivisionRow {
                 id,
                 roster_owner: 102,
                 logical_owner: 201,
@@ -1189,18 +2359,17 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 template,
                 hit_points: 9_007_199_254_740_993,
                 organisation: 5_345_454,
-            })]);
+            }]));
         (frame, save, membership, equipment)
     }
 
     fn division_row_mut(frame: &mut DecodedFrame) -> &mut DivisionRow {
-        let TableView::Complete(rows) = &mut frame.tables[TableId::Divisions.index()] else {
+        let TableView::Complete(TableRows::Divisions(rows)) =
+            &mut frame.tables[TableId::Divisions.index()]
+        else {
             unreachable!()
         };
-        let Row::Division(row) = &mut rows[0] else {
-            unreachable!()
-        };
-        row
+        &mut rows[0]
     }
 
     fn relations_fixture() -> (
@@ -1227,7 +2396,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             first_was_instigator: false,
         });
         frame.tables[TableId::WarRelations.index()] =
-            TableView::Complete(vec![Row::WarRelation(WarRelationRow {
+            TableView::Complete(TableRows::WarRelations(vec![WarRelationRow {
                 first_country: 102,
                 second_country: 201,
                 start_hour: start.engine_hour().unwrap(),
@@ -1238,7 +2407,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 first_unknown_casualties: i64::MIN,
                 second_unknown_casualties: -17,
                 first_was_instigator: 0,
-            })]);
+            }]));
         // Both partial-zero handles are valid; do not collapse them to null or a shared type.
         save.factions.insert(
             88,
@@ -1256,39 +2425,304 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 members: Vec::new(),
             },
         );
-        frame.tables[TableId::Factions.index()] = TableView::Complete(vec![
-            Row::Faction(FactionRow {
+        frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![
+            FactionRow {
                 id: 88,
                 name: Vec::new(),
-            }),
-            Row::Faction(FactionRow {
+            },
+            FactionRow {
                 id: 1_u64 << 63,
                 name: b"Literal".to_vec(),
-            }),
-        ]);
-        frame.tables[TableId::FactionMembers.index()] = TableView::Complete(vec![
-            Row::FactionMember(FactionMemberRow {
-                country: 102,
-                faction: 88,
-                ordinal: 1,
-            }),
-            Row::FactionMember(FactionMemberRow {
-                country: 201,
-                faction: 88,
-                ordinal: 0,
-            }),
-        ]);
+            },
+        ]));
+        frame.tables[TableId::FactionMembers.index()] =
+            TableView::Complete(TableRows::FactionMembers(vec![
+                FactionMemberRow {
+                    country: 102,
+                    faction: 88,
+                    ordinal: 1,
+                },
+                FactionMemberRow {
+                    country: 201,
+                    faction: 88,
+                    ordinal: 0,
+                },
+            ]));
         (frame, save, membership, equipment)
     }
 
     fn war_row_mut(frame: &mut DecodedFrame) -> &mut WarRelationRow {
-        let TableView::Complete(rows) = &mut frame.tables[TableId::WarRelations.index()] else {
+        let TableView::Complete(TableRows::WarRelations(rows)) =
+            &mut frame.tables[TableId::WarRelations.index()]
+        else {
             unreachable!()
         };
-        let Row::WarRelation(row) = &mut rows[0] else {
-            unreachable!()
+        &mut rows[0]
+    }
+
+    #[test]
+    fn table_counts_collect_all_issues_and_unproved_sources_remain_incomplete() {
+        let (mut frame, _, _, _) = fixture();
+        frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+            reason: "global lexer writer is not proved".into(),
         };
-        row
+        frame.tables[TableId::ScriptVariables.index()] = TableView::Unavailable {
+            reason: "script scope roots are not proved".into(),
+        };
+        let counts = recorded_table_counts(&frame);
+        assert_eq!(counts.len(), TableId::ALL.len());
+        assert!(counts[&TableId::LexicalTokens].is_err());
+        assert!(counts[&TableId::ScriptVariables].is_err());
+        assert_eq!(counts[&TableId::Countries], Ok(1));
+        let mut report = Report::default();
+        report.record_tables(&frame);
+        assert!(lexical_tokens(&frame, &mut report).unwrap().is_empty());
+        assert!(report.limitations.values().any(|subjects| {
+            subjects
+                .iter()
+                .any(|subject| subject == "global lexer writer is not proved")
+        }));
+
+        frame.tables[TableId::Stockpiles.index()] = TableView::Unavailable {
+            reason: "failed native walk".into(),
+        };
+        let counts = recorded_table_counts(&frame);
+        let error = counts[&TableId::Stockpiles].as_ref().unwrap_err();
+        assert!(error.contains("Stockpiles") && error.contains("failed native walk"));
+        assert_eq!(counts.values().filter(|count| count.is_err()).count(), 3);
+        assert!(report.differences.is_empty());
+        assert!(
+            report
+                .outcome()
+                .unwrap_err()
+                .to_string()
+                .contains("incomplete")
+        );
+        frame.tables[TableId::Stockpiles.index()] =
+            TableView::Complete(TableRows::Stockpiles(Vec::new()));
+        frame.tables[TableId::LexicalTokens.index()] = TableView::Truncated {
+            rows: TableRows::LexicalTokens(Vec::new()),
+            missing: 7,
+        };
+        let counts = recorded_table_counts(&frame);
+        assert!(
+            counts[&TableId::LexicalTokens]
+                .as_ref()
+                .unwrap_err()
+                .contains("7 missing")
+        );
+        assert!(lexical_tokens(&frame, &mut report).is_err());
+    }
+
+    #[test]
+    fn lexical_dictionary_preserves_exact_bytes_and_rejects_duplicate_or_wrong_tables() {
+        use replay::rows::LexicalTokenRow;
+
+        let (mut frame, _, _, _) = fixture();
+        let entry = LexicalTokenRow {
+            token: u32::MAX,
+            literal: b"name\0suffix".to_vec(),
+        };
+        frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![
+                LexicalTokenRow {
+                    token: 0,
+                    literal: Vec::new(),
+                },
+                entry.clone(),
+            ]));
+        let mut report = Report::default();
+        let tokens = lexical_tokens(&frame, &mut report).unwrap();
+        assert_eq!(tokens[&0], b"");
+        assert_eq!(tokens[&u32::MAX], b"name\0suffix");
+        assert!(report.limitations.is_empty());
+        frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![entry.clone(), entry]));
+        assert!(lexical_tokens(&frame, &mut report).is_err());
+        frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::Stockpiles(Vec::new()));
+        assert!(lexical_tokens(&frame, &mut report).is_err());
+        assert!(recorded_table_counts(&frame)[&TableId::LexicalTokens].is_err());
+    }
+
+    #[test]
+    fn nested_comparison_counts_assign_each_difference_once_and_retain_failure() {
+        let mut report = Report::default();
+        assert!(report.attempt("outer", |report| {
+            report.difference("before", 1, 2);
+            assert!(!report.attempt("inner", |report| {
+                report.difference("inside", 3, 4);
+                Err(invalid("independent row failure"))
+            }));
+            report.difference("after", 5, 6);
+            Ok(())
+        }));
+        report.difference("direct", 7, 8);
+        assert_eq!(report.difference_groups["outer"], 2);
+        assert_eq!(report.difference_groups["inner"], 1);
+        assert_eq!(report.difference_groups["direct comparisons"], 1);
+        assert_eq!(
+            report.difference_groups.values().sum::<usize>(),
+            report.differences.len()
+        );
+        assert_eq!(
+            report.failed_comparisons["inner"],
+            "independent row failure"
+        );
+        assert!(report.active_comparison.is_none());
+        assert!(report.outcome().is_err());
+    }
+
+    #[test]
+    fn failed_content_reads_preserve_independent_map_and_pack_diagnostics() {
+        let (frame, saved, membership, equipment) = fixture();
+        let mut report = compare(&frame, &saved, &membership, &equipment).unwrap();
+        assert!(report.outcome().is_ok());
+        compare_extended(
+            &frame,
+            &saved,
+            Ok(&membership),
+            Err("history/states/101-Greenland.txt: malformed resource value".into()),
+            Err("map/provinces.bmp: malformed adjacency input".into()),
+            &mut report,
+        );
+        assert_eq!(report.countries, 1);
+        assert_eq!(report.provinces, 2);
+        assert!(report.failed_comparisons["content base resources"].contains("101-Greenland.txt"));
+        assert!(
+            report.failed_comparisons["construction StateBaseResources"]
+                .contains("101-Greenland.txt")
+        );
+        assert!(report.compared_tables.contains_key("WeatherLimits"));
+        assert!(
+            report.failed_comparisons["content railway adjacency"].contains("map/provinces.bmp")
+        );
+        assert!(report.failed_comparisons["RailEdges"].contains("map/provinces.bmp"));
+        assert!(report.compared_tables.contains_key("SunkConvoys"));
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains("weather.provinces"))
+        );
+        assert!(report.outcome().is_err());
+
+        let (mut frame, mut saved, _, _) = fixture();
+        add_country(&mut frame, &mut saved, 202, 9, b"ENG");
+        let report = compare_core(
+            &frame,
+            &saved,
+            Err("state membership is malformed".into()),
+            Err("equipment definition is malformed".into()),
+        )
+        .unwrap();
+        assert_eq!(report.countries, 2);
+        assert_eq!(report.scalar_checks, 8);
+        assert_eq!(report.provinces, 0);
+        assert!(report.failed_comparisons["provinces"].contains("state membership is malformed"));
+        assert!(
+            report.failed_comparisons["country GER convoys"]
+                .contains("equipment definition is malformed")
+        );
+        assert!(
+            report.failed_comparisons["country ENG convoys"]
+                .contains("equipment definition is malformed")
+        );
+        assert!(report.outcome().is_err());
+    }
+
+    #[test]
+    fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatches() {
+        let (mut frame, mut saved, membership, equipment) = fixture();
+        for (table, reason) in [
+            (TableId::Divisions, "division read failed"),
+            (TableId::ScriptVariables, "scope roots are not proved"),
+            (TableId::LexicalTokens, "global lexer writer is not proved"),
+        ] {
+            frame.tables[table.index()] = TableView::Unavailable {
+                reason: reason.into(),
+            };
+        }
+        frame.tables[TableId::Players.index()] =
+            TableView::Complete(TableRows::Players(vec![replay::rows::PlayerRow {
+                id: 1,
+                country: 101,
+                user: b"later-player".to_vec(),
+                ..Default::default()
+            }]));
+        let weather = installed_content::parser::parse(
+            b"weather={provinces={0={province=0 temperature=0.00001}} regions={}}",
+        )
+        .unwrap();
+        saved.weather = save::weather::parse(&weather.items).unwrap();
+        frame.tables[TableId::WeatherProvinces.index()] =
+            TableView::Complete(TableRows::WeatherProvinces(vec![
+                replay::rows::WeatherProvinceRow {
+                    id: 0,
+                    temperature: 2,
+                    ..Default::default()
+                },
+            ]));
+        let mut report = compare(&frame, &saved, &membership, &equipment).unwrap();
+        assert_eq!(report.countries, 1);
+        assert_eq!(report.provinces, 2);
+        assert!(report.failed_comparisons["divisions"].contains("division read failed"));
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains("later-player"))
+        );
+        compare_extended(
+            &frame,
+            &saved,
+            Ok(&membership),
+            Ok(&save::construction::BaseResources::default()),
+            Err("railway content is outside this fixture".into()),
+            &mut report,
+        );
+        assert!(report.failed_comparisons.contains_key("intel"));
+        assert!(
+            report.failed_comparisons["ScriptVariables"].contains("scope roots are not proved")
+        );
+        assert_eq!(report.compared_tables["WeatherProvinces"], 1);
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains("weather province 0.temperature"))
+        );
+        assert_eq!(report.unavailable_tables(), 3);
+        assert!(
+            report
+                .outcome()
+                .unwrap_err()
+                .to_string()
+                .contains("incomplete")
+        );
+
+        frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+            reason: "country links failed".into(),
+        };
+        let mut report = compare(&frame, &saved, &membership, &equipment).unwrap();
+        compare_extended(
+            &frame,
+            &saved,
+            Ok(&membership),
+            Ok(&save::construction::BaseResources::default()),
+            Err("railway content is outside this fixture".into()),
+            &mut report,
+        );
+        assert!(report.failed_comparisons["map country context"].contains("country links failed"));
+        assert!(report.failed_comparisons["air"].contains("requires country links"));
+        assert_eq!(report.compared_tables["WeatherProvinces"], 1);
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains("weather province 0.temperature"))
+        );
+        assert!(report.outcome().is_err());
     }
 
     #[test]
@@ -1374,16 +2808,11 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         );
         save.war_relations[0].roster_owner = b"ENG".to_vec();
         assert!(
-            compare(&frame, &save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
-                .contains("envelope")
+            comparison_error(compare(&frame, &save, &membership, &equipment)).contains("envelope")
         );
         save.war_relations[0].roster_owner = b"UNKNOWN".to_vec();
         assert!(
-            compare(&frame, &save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
+            comparison_error(compare(&frame, &save, &membership, &equipment))
                 .contains("unknown saved country")
         );
     }
@@ -1397,62 +2826,61 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             row.cancel = cancel;
             row.first_was_instigator = instigator;
             assert!(
-                compare(&changed, &save, &membership, &equipment)
-                    .unwrap_err()
-                    .to_string()
+                comparison_error(compare(&changed, &save, &membership, &equipment))
                     .contains("cannot verify these bits")
             );
         }
         let mut changed = frame.clone();
-        let TableView::Complete(rows) = &mut changed.tables[TableId::WarRelations.index()] else {
+        let TableView::Complete(TableRows::WarRelations(rows)) =
+            &mut changed.tables[TableId::WarRelations.index()]
+        else {
             unreachable!()
         };
-        let Row::WarRelation(mut duplicate) = rows[0].clone() else {
-            unreachable!()
-        };
+        let mut duplicate = rows[0].clone();
         duplicate.first_country = 101;
-        rows.push(Row::WarRelation(duplicate));
+        rows.push(duplicate);
         assert!(
-            compare(&changed, &save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
+            comparison_error(compare(&changed, &save, &membership, &equipment))
                 .contains("duplicate resolved")
         );
         let mut duplicate_save = save.clone();
         duplicate_save
             .war_relations
             .push(save.war_relations[0].clone());
-        assert!(compare(&frame, &duplicate_save, &membership, &equipment).is_err());
+        assert!(
+            compare(&frame, &duplicate_save, &membership, &equipment)
+                .and_then(|report| report.outcome())
+                .is_err()
+        );
     }
 
     #[test]
     fn faction_names_handles_and_membership_order_are_exact() {
         let (mut frame, save, membership, equipment) = relations_fixture();
-        let TableView::Complete(rows) = &mut frame.tables[TableId::Factions.index()] else {
+        let TableView::Complete(TableRows::Factions(rows)) =
+            &mut frame.tables[TableId::Factions.index()]
+        else {
             unreachable!()
         };
-        let Row::Faction(row) = &mut rows[0] else {
-            unreachable!()
-        };
+        let row = &mut rows[0];
         row.name = b"Axis".to_vec();
-        let TableView::Complete(rows) = &mut frame.tables[TableId::FactionMembers.index()] else {
+        let TableView::Complete(TableRows::FactionMembers(rows)) =
+            &mut frame.tables[TableId::FactionMembers.index()]
+        else {
             unreachable!()
         };
         for row in rows {
-            let Row::FactionMember(row) = row else {
-                unreachable!()
-            };
             row.ordinal = 1 - row.ordinal;
         }
         let report = compare(&frame, &save, &membership, &equipment).unwrap();
         assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
         let (mut frame, save, membership, equipment) = relations_fixture();
-        let TableView::Complete(rows) = &mut frame.tables[TableId::Factions.index()] else {
+        let TableView::Complete(TableRows::Factions(rows)) =
+            &mut frame.tables[TableId::Factions.index()]
+        else {
             unreachable!()
         };
-        let Row::Faction(row) = &mut rows[1] else {
-            unreachable!()
-        };
+        let row = &mut rows[1];
         row.id ^= 1;
         assert_eq!(
             compare(&frame, &save, &membership, &equipment)
@@ -1462,7 +2890,8 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             2
         );
         let (mut frame, save, membership, equipment) = relations_fixture();
-        frame.tables[TableId::FactionMembers.index()] = TableView::Complete(Vec::new());
+        frame.tables[TableId::FactionMembers.index()] =
+            TableView::Complete(TableRows::FactionMembers(Vec::new()));
         assert_eq!(
             compare(&frame, &save, &membership, &equipment)
                 .unwrap()
@@ -1493,25 +2922,28 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             },
         ] {
             let mut changed = frame.clone();
-            let TableView::Complete(rows) = &mut changed.tables[TableId::FactionMembers.index()]
+            let TableView::Complete(TableRows::FactionMembers(rows)) =
+                &mut changed.tables[TableId::FactionMembers.index()]
             else {
                 unreachable!()
             };
-            rows.push(Row::FactionMember(member));
-            assert!(compare(&changed, &save, &membership, &equipment).is_err());
+            rows.push(member);
+            assert!(
+                compare(&changed, &save, &membership, &equipment)
+                    .and_then(|report| report.outcome())
+                    .is_err()
+            );
         }
         let mut changed = frame.clone();
-        let TableView::Complete(rows) = &mut changed.tables[TableId::FactionMembers.index()] else {
+        let TableView::Complete(TableRows::FactionMembers(rows)) =
+            &mut changed.tables[TableId::FactionMembers.index()]
+        else {
             unreachable!()
         };
-        let Row::FactionMember(row) = &mut rows[0] else {
-            unreachable!()
-        };
+        let row = &mut rows[0];
         row.ordinal = 3;
         assert!(
-            compare(&changed, &save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
+            comparison_error(compare(&changed, &save, &membership, &equipment))
                 .contains("contiguous")
         );
         let mut duplicate_save = save.clone();
@@ -1522,9 +2954,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             .members
             .push(b"GER".to_vec());
         assert!(
-            compare(&frame, &duplicate_save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
+            comparison_error(compare(&frame, &duplicate_save, &membership, &equipment))
                 .contains("duplicate resolved country")
         );
     }
@@ -1542,14 +2972,18 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                     reason: "unreadable".into(),
                 },
                 TableView::Truncated {
-                    rows: Vec::new(),
+                    rows: TableRows::empty(table),
                     missing: 1,
                 },
-                TableView::Complete(vec![Row::Province(ProvinceRow::default())]),
+                TableView::Complete(TableRows::Provinces(vec![ProvinceRow::default()])),
             ] {
                 let mut changed = frame.clone();
                 changed.tables[table.index()] = view;
-                assert!(compare(&changed, &save, &membership, &equipment).is_err());
+                assert!(
+                    compare(&changed, &save, &membership, &equipment)
+                        .and_then(|report| report.outcome())
+                        .is_err()
+                );
             }
         }
     }
@@ -1572,21 +3006,70 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
     }
 
     #[test]
+    fn province_victory_points_compare_native_integer_extremes_and_proven_field_omission() {
+        let (mut frame, mut saved, membership, equipment) = fixture();
+        for value in [i32::MIN, -1, 0, i32::MAX] {
+            saved.provinces.get_mut(&2).unwrap().victory_points = Some(value);
+            let TableView::Complete(TableRows::Provinces(rows)) =
+                &mut frame.tables[TableId::Provinces.index()]
+            else {
+                unreachable!()
+            };
+            rows[1].victory_points = value;
+            let report = compare(&frame, &saved, &membership, &equipment).unwrap();
+            assert!(report.outcome().is_ok(), "{report:?}");
+            assert_eq!(report.compared_tables["Provinces.victory_points"], 2);
+        }
+        saved.provinces.get_mut(&2).unwrap().victory_points = None;
+        let TableView::Complete(TableRows::Provinces(rows)) =
+            &mut frame.tables[TableId::Provinces.index()]
+        else {
+            unreachable!()
+        };
+        rows[1].victory_points = 1;
+        let report = compare(&frame, &saved, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 1, "{report:?}");
+        assert!(report.differences[0].contains("province 2.victory_points"));
+        assert!(report.outcome().is_err());
+        let TableView::Complete(TableRows::Provinces(rows)) =
+            &mut frame.tables[TableId::Provinces.index()]
+        else {
+            unreachable!()
+        };
+        rows[1].victory_points = 0;
+        assert!(
+            compare(&frame, &saved, &membership, &equipment)
+                .unwrap()
+                .outcome()
+                .is_ok()
+        );
+        let TableView::Complete(TableRows::Provinces(rows)) =
+            &mut frame.tables[TableId::Provinces.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].victory_points = -1; // The whole saved province entry is absent.
+        let report = compare(&frame, &saved, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        assert!(report.differences[0].contains("province 1.victory_points"));
+    }
+
+    #[test]
     fn missing_extra_and_changed_province_rows_are_differences() {
         let (mut frame, save, membership, equipment) = fixture();
-        let TableView::Complete(rows) = &mut frame.tables[TableId::Provinces.index()] else {
+        let TableView::Complete(TableRows::Provinces(rows)) =
+            &mut frame.tables[TableId::Provinces.index()]
+        else {
             unreachable!()
         };
         rows.remove(0);
-        let Row::Province(province) = &mut rows[0] else {
-            unreachable!()
-        };
+        let province = &mut rows[0];
         // Explicit saved control cannot be manufactured from captured raw zero.
         province.controller = 0;
-        rows.push(Row::Province(ProvinceRow {
+        rows.push(ProvinceRow {
             id: 3,
             ..Default::default()
-        }));
+        });
         let report = compare(&frame, &save, &membership, &equipment).unwrap();
         assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
     }
@@ -1594,12 +3077,12 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
     #[test]
     fn state_ownership_and_controller_differences_are_independent_of_provinces() {
         let (mut frame, save, membership, equipment) = fixture();
-        let TableView::Complete(rows) = &mut frame.tables[TableId::States.index()] else {
+        let TableView::Complete(TableRows::States(rows)) =
+            &mut frame.tables[TableId::States.index()]
+        else {
             unreachable!()
         };
-        let Row::State(state) = &mut rows[0] else {
-            unreachable!()
-        };
+        let state = &mut rows[0];
         state.owner = 0;
         state.controller = 0;
         let report = compare(&frame, &save, &membership, &equipment).unwrap();
@@ -1612,22 +3095,23 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
     #[test]
     fn omitted_state_controller_does_not_accept_raw_zero_or_hide_missing_rows() {
         let (mut frame, save, membership, equipment) = fixture();
-        let TableView::Complete(rows) = &mut frame.tables[TableId::States.index()] else {
+        let TableView::Complete(TableRows::States(rows)) =
+            &mut frame.tables[TableId::States.index()]
+        else {
             unreachable!()
         };
-        let Row::State(state) = &mut rows[0] else {
-            unreachable!()
-        };
+        let state = &mut rows[0];
         state.controller = 0;
         let report = compare(&frame, &save, &membership, &equipment).unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         assert!(report.differences[0].starts_with("state 1.controller:"));
 
-        frame.tables[TableId::States.index()] = TableView::Complete(vec![Row::State(StateRow {
-            id: 2,
-            owner: 101,
-            controller: 101,
-        })]);
+        frame.tables[TableId::States.index()] =
+            TableView::Complete(TableRows::States(vec![StateRow {
+                id: 2,
+                owner: 101,
+                controller: 101,
+            }]));
         let report = compare(&frame, &save, &membership, &equipment).unwrap();
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
         assert_eq!(report.states, 0);
@@ -1636,36 +3120,17 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
     #[test]
     fn explicit_state_controller_is_compared_even_when_owner_and_provinces_match() {
         let (mut frame, mut save, membership, equipment) = fixture();
-        let mut other = save.countries[b"GER".as_slice()].clone();
-        other.tag = b"D01".to_vec();
-        save.countries.insert(b"D01".to_vec(), other);
+        add_country(&mut frame, &mut save, 201, 8, b"D01");
         save.states.get_mut(&1).unwrap().controller = Some(b"D01".to_vec());
-        let TableView::Complete(rows) = &mut frame.tables[TableId::Countries.index()] else {
-            unreachable!()
-        };
-        let Row::Country(mut other) = rows[0].clone() else {
-            unreachable!()
-        };
-        other.id = 201;
-        other.canonical_slot = 8;
-        other.tag = b"D01".to_vec();
-        rows.push(Row::Country(other));
-        let TableView::Complete(rows) = &mut frame.tables[TableId::CountryLinks.index()] else {
-            unreachable!()
-        };
-        rows.push(Row::CountryLink(CountryLinkRow {
-            id: 201,
-            canonical_slot: 8,
-        }));
         let report = compare(&frame, &save, &membership, &equipment).unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         assert!(report.differences[0].starts_with("state 1.controller:"));
-        let TableView::Complete(rows) = &mut frame.tables[TableId::States.index()] else {
+        let TableView::Complete(TableRows::States(rows)) =
+            &mut frame.tables[TableId::States.index()]
+        else {
             unreachable!()
         };
-        let Row::State(state) = &mut rows[0] else {
-            unreachable!()
-        };
+        let state = &mut rows[0];
         state.controller = 201;
         assert!(
             compare(&frame, &save, &membership, &equipment)
@@ -1683,28 +3148,32 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 reason: "state pointer unreadable".into(),
             },
             TableView::Truncated {
-                rows: Vec::new(),
+                rows: TableRows::empty(TableId::States),
                 missing: 1,
             },
-            TableView::Complete(vec![Row::State(StateRow {
+            TableView::Complete(TableRows::States(vec![StateRow {
                 id: 1,
                 owner: 777,
                 controller: 101,
-            })]),
-            TableView::Complete(vec![Row::State(StateRow {
+            }])),
+            TableView::Complete(TableRows::States(vec![StateRow {
                 id: 1,
                 owner: 101,
                 controller: 777,
-            })]),
-            TableView::Complete(vec![
-                Row::State(StateRow::default()),
-                Row::State(StateRow::default()),
-            ]),
-            TableView::Complete(vec![Row::Province(ProvinceRow::default())]),
+            }])),
+            TableView::Complete(TableRows::States(vec![
+                StateRow::default(),
+                StateRow::default(),
+            ])),
+            TableView::Complete(TableRows::Provinces(vec![ProvinceRow::default()])),
         ] {
             let mut invalid = frame.clone();
             invalid.tables[TableId::States.index()] = view;
-            assert!(compare(&invalid, &save, &membership, &equipment).is_err());
+            assert!(
+                compare(&invalid, &save, &membership, &equipment)
+                    .and_then(|report| report.outcome())
+                    .is_err()
+            );
         }
     }
 
@@ -1736,14 +3205,14 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
         assert_eq!(report.divisions, 0);
         let (mut frame, save, membership, equipment) = division_fixture();
-        let TableView::Complete(rows) = &mut frame.tables[TableId::Divisions.index()] else {
+        let TableView::Complete(TableRows::Divisions(rows)) =
+            &mut frame.tables[TableId::Divisions.index()]
+        else {
             unreachable!()
         };
         rows.push(rows[0].clone());
         assert!(
-            compare(&frame, &save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
+            comparison_error(compare(&frame, &save, &membership, &equipment))
                 .contains("duplicate full division handle")
         );
     }
@@ -1771,9 +3240,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         );
         division_row_mut(&mut frame).expeditionary_owner = u32::MAX;
         assert!(
-            compare(&frame, &save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
+            comparison_error(compare(&frame, &save, &membership, &equipment))
                 .contains("cannot verify these bits")
         );
     }
@@ -1786,22 +3253,24 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 reason: "division unreadable".into(),
             },
             TableView::Truncated {
-                rows: Vec::new(),
+                rows: TableRows::empty(TableId::Divisions),
                 missing: 1,
             },
-            TableView::Complete(vec![Row::Province(ProvinceRow::default())]),
-            TableView::Complete(vec![Row::Division(DivisionRow::default())]),
+            TableView::Complete(TableRows::Provinces(vec![ProvinceRow::default()])),
+            TableView::Complete(TableRows::Divisions(vec![DivisionRow::default()])),
         ] {
             let mut invalid = frame.clone();
             invalid.tables[TableId::Divisions.index()] = table;
-            assert!(compare(&invalid, &save, &membership, &equipment).is_err());
+            assert!(
+                compare(&invalid, &save, &membership, &equipment)
+                    .and_then(|report| report.outcome())
+                    .is_err()
+            );
         }
         let mut invalid = frame.clone();
         division_row_mut(&mut invalid).logical_owner = 777;
         assert!(
-            compare(&invalid, &save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
+            comparison_error(compare(&invalid, &save, &membership, &equipment))
                 .contains("unresolved country reference")
         );
         let mut invalid_save = save.clone();
@@ -1812,17 +3281,13 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             .unwrap()
             .logical_owner = b"UNKNOWN".to_vec();
         assert!(
-            compare(&frame, &invalid_save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
+            comparison_error(compare(&frame, &invalid_save, &membership, &equipment))
                 .contains("unknown saved country")
         );
         let mut invalid_save = save;
         invalid_save.divisions.values_mut().next().unwrap().province = Some(999_999);
         assert!(
-            compare(&frame, &invalid_save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
+            comparison_error(compare(&frame, &invalid_save, &membership, &equipment))
                 .contains("verified map")
         );
     }
@@ -1834,27 +3299,26 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             reason: "bad pointer".into(),
         };
         assert!(
-            compare(&frame, &save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
+            comparison_error(compare(&frame, &save, &membership, &equipment))
                 .contains("bad pointer")
         );
         frame.tables[TableId::Provinces.index()] = TableView::Truncated {
-            rows: Vec::new(),
+            rows: TableRows::empty(TableId::Provinces),
             missing: 2,
         };
-        assert!(compare(&frame, &save, &membership, &equipment).is_err());
+        assert!(
+            compare(&frame, &save, &membership, &equipment)
+                .and_then(|report| report.outcome())
+                .is_err()
+        );
         let (mut frame, save, membership, equipment) = fixture();
-        let TableView::Complete(rows) = &mut frame.tables[TableId::CountryLinks.index()] else {
+        let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut frame.tables[TableId::CountryLinks.index()]
+        else {
             unreachable!()
         };
         rows.pop();
-        assert!(
-            compare(&frame, &save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
-                .contains("102")
-        );
+        assert!(comparison_error(compare(&frame, &save, &membership, &equipment)).contains("102"));
     }
 
     #[test]
@@ -1901,9 +3365,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             .unwrap()
             .convoy_equipment = None;
         assert!(
-            compare(&frame, &save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
+            comparison_error(compare(&frame, &save, &membership, &equipment))
                 .contains("convoy equipment pool")
         );
         save.countries
@@ -1915,17 +3377,13 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             amount: Decimal::parse(b"1").unwrap(),
         }]);
         assert!(
-            compare(&frame, &save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
+            comparison_error(compare(&frame, &save, &membership, &equipment))
                 .contains("equipment definition")
         );
         save.equipment_definitions
             .insert((7, 70), b"unknown_variant".to_vec());
         assert!(
-            compare(&frame, &save, &membership, &equipment)
-                .unwrap_err()
-                .to_string()
+            comparison_error(compare(&frame, &save, &membership, &equipment))
                 .contains("cannot classify")
         );
     }
@@ -1942,5 +3400,429 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         assert!(same_version(b"build", "build"));
         assert!(!same_version(b"build2 (d245)", "build"));
         assert!(!same_version(b"build (xxxx)", "build"));
+    }
+
+    #[test]
+    fn player_oracle_compares_refreshed_fields_and_reports_header_limits() {
+        let (mut frame, mut saved, membership, equipment) = fixture();
+        frame.tables[TableId::Players.index()] =
+            TableView::Complete(TableRows::Players(vec![replay::rows::PlayerRow {
+                id: i32::MIN,
+                country: 102,
+                flags: 0x81,
+                user: b"user".to_vec(),
+                name: b"different display".to_vec(),
+            }]));
+        saved.players = vec![
+            save::Player {
+                id: i32::MIN,
+                country: b"GER".to_vec(),
+                user: b"user".to_vec(),
+                country_leader: true,
+            },
+            save::Player {
+                id: 20,
+                country: b"GER".to_vec(),
+                user: b"retained".to_vec(),
+                country_leader: false,
+            },
+        ];
+        let report = compare(&frame, &saved, &membership, &equipment).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.players, 1);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|key| key.contains("retains users"))
+        );
+        saved.players[0].id += 1;
+        saved.players[0].country_leader = false;
+        assert_eq!(
+            compare(&frame, &saved, &membership, &equipment)
+                .unwrap()
+                .differences
+                .len(),
+            2
+        );
+        saved.players[0].user = b"renamed".to_vec();
+        let report = compare(&frame, &saved, &membership, &equipment).unwrap();
+        assert_eq!(report.players, 0);
+        assert_eq!(report.differences.len(), 1);
+    }
+
+    #[test]
+    fn player_duplicate_user_collapse_never_certifies_every_current_player() {
+        let (mut frame, mut saved, membership, equipment) = fixture();
+        frame.tables[TableId::Players.index()] = TableView::Complete(TableRows::Players(vec![
+            replay::rows::PlayerRow {
+                id: 1,
+                country: 101,
+                user: Vec::new(),
+                ..Default::default()
+            },
+            replay::rows::PlayerRow {
+                id: 2,
+                country: 0,
+                user: Vec::new(),
+                ..Default::default()
+            },
+        ]));
+        saved.players = vec![save::Player {
+            id: 2,
+            country: b"---".to_vec(),
+            user: Vec::new(),
+            country_leader: false,
+        }];
+        let report = compare(&frame, &saved, &membership, &equipment).unwrap();
+        assert!(report.differences.is_empty());
+        assert_eq!(report.players, 0);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|key| key.contains("collapses equal"))
+        );
+        saved.players[0].id = 3;
+        assert_eq!(
+            compare(&frame, &saved, &membership, &equipment)
+                .unwrap()
+                .differences
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn map_combat_and_order_oracle_preserves_type_words_order_and_raw_fields() {
+        let (mut frame, mut saved, membership, equipment) = fixture();
+        let combat = (u64::from(u32::MAX) << 32) | 62;
+        let unit = (1_u64 << 32) | 51;
+        saved.land_combats.insert(
+            combat,
+            save::LandCombat {
+                id: combat,
+                province: 1,
+                day: -1,
+                duration: 2,
+                attackers: vec![unit, unit + 1],
+                defenders: vec![],
+            },
+        );
+        frame.tables[TableId::LandCombats.index()] =
+            TableView::Complete(TableRows::LandCombats(vec![replay::rows::LandCombatRow {
+                id: combat,
+                province: 1,
+                day: -1,
+                duration: 2,
+                attackers: vec![unit, unit + 1],
+                defenders: vec![],
+            }]));
+        let group = (u64::from(u32::MAX) << 32) | 53;
+        saved.army_orders.insert(
+            (group, u32::MAX),
+            save::ArmyOrder {
+                owner_group: group,
+                instance: u32::MAX,
+                country: b"GER".to_vec(),
+                order_type: 4,
+                active: 128,
+                paradrop_target: u32::MAX,
+                path: vec![2, 1, 2],
+                target_states: vec![1],
+            },
+        );
+        frame.tables[TableId::ArmyOrders.index()] =
+            TableView::Complete(TableRows::ArmyOrders(vec![replay::rows::ArmyOrderRow {
+                owner_group: group,
+                instance: u32::MAX,
+                country: 102,
+                order_type: 4,
+                active: 128,
+                paradrop_target: u32::MAX,
+                path: vec![2, 1, 2],
+                target_states: vec![1],
+            }]));
+        let report = compare(&frame, &saved, &membership, &equipment).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!((report.land_combats, report.army_orders), (1, 1));
+        saved
+            .land_combats
+            .get_mut(&combat)
+            .unwrap()
+            .attackers
+            .reverse();
+        let order = saved.army_orders.get_mut(&(group, u32::MAX)).unwrap();
+        order.path.swap(0, 1);
+        order.active = 0;
+        assert_eq!(
+            compare(&frame, &saved, &membership, &equipment)
+                .unwrap()
+                .differences
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
+        let (mut frame, mut saved, membership, equipment) = fixture();
+        let wing = (1_u64 << 32) | 54;
+        saved.air_wings.insert(
+            wing,
+            save::AirWing {
+                id: wing,
+                owner: b"GER".to_vec(),
+                country_override: b"---".to_vec(),
+                air_base: 63,
+                planes: 100,
+                effective_planes: 57,
+                mission_mask: 2,
+                mission_region: Some(3),
+            },
+        );
+        frame.tables[TableId::AirWings.index()] =
+            TableView::Complete(TableRows::AirWings(vec![replay::rows::AirWingRow {
+                id: wing,
+                owner: 102,
+                country_override: 0,
+                air_base: 63,
+                base_override: 99,
+                planes: 100,
+                effective_planes: 57,
+                mission_mask: 2,
+                mission_region: Some(3),
+            }]));
+        let combat = (1_u64 << 32) | 61;
+        let zero = Decimal::parse(b"0").unwrap();
+        saved.naval_combats.insert(
+            combat,
+            save::NavalCombat {
+                id: combat,
+                province: 2,
+                attacker_positioning: Decimal::parse(b"0.00001").unwrap(),
+                defender_positioning: zero.clone(),
+                attacker_anti_air: zero.clone(),
+                defender_anti_air: zero,
+            },
+        );
+        frame.tables[TableId::NavalCombats.index()] =
+            TableView::Complete(TableRows::NavalCombats(vec![
+                replay::rows::NavalCombatRow {
+                    id: combat,
+                    province: 2,
+                    attacker_positioning: 1,
+                    ..Default::default()
+                },
+            ]));
+        saved.naval_combat_participants.insert(
+            (combat, 1, u32::MAX),
+            save::NavalCombatParticipant {
+                combat,
+                side: 1,
+                battle_slot: u32::MAX,
+                ship: None,
+                convoy: Some(69),
+                owner: b"GER".to_vec(),
+                state: 32,
+            },
+        );
+        frame.tables[TableId::NavalCombatParticipants.index()] =
+            TableView::Complete(TableRows::NavalCombatParticipants(vec![
+                replay::rows::NavalCombatParticipantRow {
+                    combat,
+                    side: 1,
+                    battle_slot: u32::MAX,
+                    ship: 0,
+                    owner: 101,
+                    state: 32,
+                },
+            ]));
+        let report = compare(&frame, &saved, &membership, &equipment).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(
+            (
+                report.air_wings,
+                report.naval_combats,
+                report.naval_combat_participants
+            ),
+            (1, 1, 1)
+        );
+        saved.air_wings.get_mut(&wing).unwrap().effective_planes -= 1;
+        saved
+            .naval_combats
+            .get_mut(&combat)
+            .unwrap()
+            .attacker_positioning
+            .raw = 0;
+        saved
+            .naval_combat_participants
+            .get_mut(&(combat, 1, u32::MAX))
+            .unwrap()
+            .state = 0;
+        assert_eq!(
+            compare(&frame, &saved, &membership, &equipment)
+                .unwrap()
+                .differences
+                .len(),
+            3
+        );
+    }
+
+    // Uses that module's existing fixture() and add_country() helpers.
+
+    fn naval_fixture() -> (
+        DecodedFrame,
+        Save,
+        save::MapMembership,
+        save::EquipmentTypes,
+    ) {
+        let (mut frame, mut saved, membership, equipment) = fixture();
+        add_country(&mut frame, &mut saved, 201, 8, b"SOV");
+        add_country(&mut frame, &mut saved, 301, 9, b"D01");
+        let fleet = (u64::from(u32::MAX) << 32) | 61;
+        let force = (2_147_483_648_u64 << 32) | 4713;
+        let ship = (u64::from(u32::MAX) << 32) | 51;
+        saved.fleets.insert(
+            fleet,
+            save::Fleet {
+                id: fleet,
+                owner: b"GER".to_vec(),
+                home_base: Some(2),
+            },
+        );
+        saved.task_forces.insert(
+            force,
+            save::TaskForce {
+                id: force,
+                fleet,
+                roster_owner: b"GER".to_vec(),
+                logical_owner: b"SOV".to_vec(),
+                expeditionary_owner: Some(b"D01".to_vec()),
+                province: Some(1),
+                mission: -1,
+            },
+        );
+        saved.ships.insert(
+            ship,
+            save::Ship {
+                id: ship,
+                task_force: force,
+                strength: Decimal::parse(b"90071992547.40993").unwrap(),
+                organisation: Decimal::parse(b"78.72001").unwrap(),
+                experience: Decimal::parse(b"34.32537").unwrap(),
+                sunk_convoys: -1,
+            },
+        );
+        frame.tables[TableId::Fleets.index()] =
+            TableView::Complete(TableRows::Fleets(vec![replay::rows::FleetRow {
+                id: fleet,
+                owner: 102,
+                home_base: 2,
+            }]));
+        frame.tables[TableId::TaskForces.index()] =
+            TableView::Complete(TableRows::TaskForces(vec![replay::rows::TaskForceRow {
+                id: force,
+                fleet,
+                roster_owner: 102,
+                logical_owner: 201,
+                expeditionary_owner: 301,
+                province: 1,
+                mission: u32::MAX,
+            }]));
+        frame.tables[TableId::Ships.index()] =
+            TableView::Complete(TableRows::Ships(vec![replay::rows::ShipRow {
+                id: ship,
+                task_force: force,
+                strength: 9_007_199_254_740_993,
+                organisation: 7_872_001,
+                experience: 3_432_537,
+                sunk_convoys: -1,
+                category: 9,
+                class_id: -1,
+            }]));
+        (frame, saved, membership, equipment)
+    }
+
+    #[test]
+    fn naval_oracle_checks_precision_full_identity_and_parent_membership() {
+        let (frame, saved, membership, equipment) = naval_fixture();
+        let report = compare(&frame, &saved, &membership, &equipment).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!((report.fleets, report.task_forces, report.ships), (1, 1, 1));
+        let mut changed = frame.clone();
+        let TableView::Complete(TableRows::Ships(rows)) =
+            &mut changed.tables[TableId::Ships.index()]
+        else {
+            unreachable!()
+        };
+        let ship = &mut rows[0];
+        ship.strength -= 1;
+        ship.organisation += 1;
+        ship.task_force ^= 1;
+        let report = compare(&changed, &saved, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+        let mut changed = frame.clone();
+        let TableView::Complete(TableRows::Ships(rows)) =
+            &mut changed.tables[TableId::Ships.index()]
+        else {
+            unreachable!()
+        };
+        let ship = &mut rows[0];
+        ship.id ^= 1; // Same numeric id, different type: missing and unexpected rows.
+        let report = compare(&changed, &saved, &membership, &equipment).unwrap();
+        assert_eq!(report.ships, 0);
+        assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+        for table in [TableId::Fleets, TableId::TaskForces, TableId::Ships] {
+            let mut incomplete = frame.clone();
+            incomplete.tables[table.index()] = TableView::Unavailable {
+                reason: "source unavailable".into(),
+            };
+            assert!(
+                compare(&incomplete, &saved, &membership, &equipment)
+                    .and_then(|report| report.outcome())
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn naval_oracle_distinguishes_null_locations_and_expeditionary_omission_predicate() {
+        let (mut frame, mut saved, membership, equipment) = naval_fixture();
+        saved.fleets.values_mut().next().unwrap().home_base = None;
+        let force = saved.task_forces.values_mut().next().unwrap();
+        force.province = None;
+        force.expeditionary_owner = None;
+        let report = compare(&frame, &saved, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+        let TableView::Complete(TableRows::Fleets(rows)) =
+            &mut frame.tables[TableId::Fleets.index()]
+        else {
+            unreachable!()
+        };
+        let fleet = &mut rows[0];
+        fleet.home_base = 0;
+        let TableView::Complete(TableRows::TaskForces(rows)) =
+            &mut frame.tables[TableId::TaskForces.index()]
+        else {
+            unreachable!()
+        };
+        let force = &mut rows[0];
+        force.province = 0;
+        force.expeditionary_owner = u32::MAX; // Signed -1 is omitted, but not certified as raw zero.
+        let report = compare(&frame, &saved, &membership, &equipment).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("signed-nonpositive expeditionary"))
+        );
+        saved.task_forces.values_mut().next().unwrap().province = Some(0);
+        assert!(
+            compare(&frame, &saved, &membership, &equipment)
+                .and_then(|report| report.outcome())
+                .is_err()
+        );
     }
 }
