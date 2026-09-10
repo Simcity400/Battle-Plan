@@ -613,6 +613,7 @@ pub mod power_balance_manager;
 pub mod power_balance_range;
 pub mod power_balance_record;
 pub mod power_balance_side;
+pub mod prefetch;
 pub mod production_resource_demand_row;
 pub mod project_specialization_definition_candidate;
 pub mod project_specialization_manager_candidate;

@@ -1540,6 +1540,375 @@ mod tests {
         assert_eq!(captured.abilities.bytes.len, 0);
     }
 
+    // Deterministic read-cost proxy over one synthetic roster. Its proportions
+    // approach the measured capture's 0.154 country-leader roles, 0.728 advisor
+    // roles and 0.098 unit leaders per character: 32 characters carry 5, 22 and
+    // 3 of them, that is 0.156, 0.688 and 0.094, with two traits and fifteen
+    // trait experience entries per leader and heap literals throughout. The
+    // counts asserted below are guarded entries into the copy shim, the spans
+    // inside them, and the bytes those spans move.
+    const COST_CHARACTERS: usize = 32;
+    const COST_LEADER_STEP: usize = 7;
+    const COST_ADVISORS_PER: usize = 2;
+    const COST_UNIT_STEP: usize = 11;
+    const COST_TRAITS: u32 = 2;
+    const COST_EXPERIENCE: u32 = 15;
+    const COST_LITERAL: &[u8] = b"seventeen_bytes__";
+
+    const COST_MANAGER: usize = 0x1000;
+    const COST_ROSTER: usize = 0x2000;
+    const COST_CHARACTER: usize = 0x4000;
+    const COST_LEADER_HEAD: usize = 0x8000;
+    const COST_ADVISOR_HEAD: usize = 0x9000;
+    const COST_LEADER_NODE: usize = 0xa000;
+    const COST_ADVISOR_NODE: usize = 0xb000;
+    const COST_LEADER_ROLE: usize = 0xd000;
+    const COST_ADVISOR_ROLE: usize = 0xe000;
+    const COST_UNIT: usize = 0x12000;
+    const COST_DEFINITION: usize = 0x16000;
+    const COST_TRAIT_ARRAY: usize = 0x1a000;
+    const COST_EXPERIENCE_ARRAY: usize = 0x1b000;
+    const COST_HEAP: usize = 0x1c000;
+
+    struct CostHeap {
+        next: usize,
+    }
+
+    impl CostHeap {
+        /// Writes a heap MSVC string header, so every literal in this fixture
+        /// takes the separate terminator and body read path.
+        fn write(&mut self, bytes: &mut [u8], header: usize) {
+            let body = self.next;
+            self.next += 32;
+            put(bytes, header, ((ADDRESS + body) as u64).to_le_bytes());
+            put(bytes, header + 16, (COST_LITERAL.len() as u64).to_le_bytes());
+            put(bytes, header + 24, (COST_LITERAL.len() as u64).to_le_bytes());
+            bytes[body..body + COST_LITERAL.len()].copy_from_slice(COST_LITERAL);
+            bytes[body + COST_LITERAL.len()] = 0;
+        }
+    }
+
+    /// A head sentinel plus a right-leaning chain of `count` content nodes.
+    fn cost_tree(
+        bytes: &mut [u8],
+        field: usize,
+        head: usize,
+        node: usize,
+        stride: usize,
+        count: u32,
+    ) {
+        pointer(bytes, field, head);
+        put(bytes, field + 8, u64::from(count).to_le_bytes());
+        bytes[head + 0x19] = 1;
+        if count == 0 {
+            for link in [0, 8, 16] {
+                pointer(bytes, head + link, head);
+            }
+            return;
+        }
+        let last = node + (count as usize - 1) * stride;
+        pointer(bytes, head, node);
+        pointer(bytes, head + 8, node);
+        pointer(bytes, head + 16, last);
+        for index in 0..count as usize {
+            let current = node + index * stride;
+            pointer(bytes, current, head);
+            pointer(
+                bytes,
+                current + 8,
+                if index == 0 { head } else { current - stride },
+            );
+            pointer(
+                bytes,
+                current + 16,
+                if index + 1 == count as usize {
+                    head
+                } else {
+                    current + stride
+                },
+            );
+        }
+    }
+
+    fn cost_fixture() -> Vec<u8> {
+        use engine::{character_advisor_node, character_leader_node};
+        let mut bytes = vec![0; 0x20000];
+        let mut heap = CostHeap { next: COST_HEAP };
+        pointer(&mut bytes, cgame_state::CHARACTER_MANAGER, COST_MANAGER);
+        put(
+            &mut bytes,
+            COST_MANAGER,
+            ((IMAGE + ccharacter_manager::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        array(
+            &mut bytes,
+            COST_MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
+            COST_ROSTER,
+            COST_CHARACTERS as u32,
+        );
+        for definition in 0..4 {
+            let at = COST_DEFINITION + definition * 0x1000;
+            put(
+                &mut bytes,
+                at,
+                ((IMAGE + cunit_leader_trait::VTABLE_RVA) as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                at + cunit_leader_trait::TOKEN_ID,
+                (definition as i32).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                at + cunit_leader_trait::ORDINAL,
+                (definition as i32).to_le_bytes(),
+            );
+            heap.write(&mut bytes, at + cunit_leader_trait::TOKEN);
+        }
+        for index in 0..COST_CHARACTERS {
+            let character = COST_CHARACTER + index * 0x100;
+            pointer(&mut bytes, COST_ROSTER + index * 8, character);
+            put(
+                &mut bytes,
+                character,
+                ((IMAGE + ccharacter::VTABLE_RVA) as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                character + ccharacter::TYPE,
+                ccharacter::REFERENCE_TYPE.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                character + ccharacter::ID,
+                (index as u32 + 1).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                character + ccharacter::COUNTRY,
+                (index as u32 % 7 + 1).to_le_bytes(),
+            );
+            heap.write(&mut bytes, character + ccharacter::NAME);
+            heap.write(&mut bytes, character + ccharacter::TOKEN);
+            let leaders = u32::from(index % COST_LEADER_STEP == 0);
+            cost_tree(
+                &mut bytes,
+                character + ccharacter::LEADER_MAP_HEAD,
+                COST_LEADER_HEAD + index * 0x40,
+                COST_LEADER_NODE + index * 0x40,
+                character_leader_node::SIZE,
+                leaders,
+            );
+            if leaders != 0 {
+                let node = COST_LEADER_NODE + index * 0x40;
+                let role = COST_LEADER_ROLE + index * 0x20;
+                put(
+                    &mut bytes,
+                    node + character_leader_node::IDEOLOGY,
+                    (index as i32).to_le_bytes(),
+                );
+                pointer(&mut bytes, node + character_leader_node::LEADER, role);
+                put(
+                    &mut bytes,
+                    role,
+                    ((IMAGE + ccountry_leader::VTABLE_RVA) as u64).to_le_bytes(),
+                );
+                pointer(&mut bytes, role + ccountry_leader::CHARACTER, character);
+            }
+            let advisors = if index % 3 == 1 {
+                COST_ADVISORS_PER as u32
+            } else {
+                0
+            };
+            cost_tree(
+                &mut bytes,
+                character + ccharacter::ADVISOR_MAP_HEAD,
+                COST_ADVISOR_HEAD + index * 0x40,
+                COST_ADVISOR_NODE + index * 0x100,
+                character_advisor_node::SIZE,
+                advisors,
+            );
+            for advisor in 0..advisors as usize {
+                let node =
+                    COST_ADVISOR_NODE + index * 0x100 + advisor * character_advisor_node::SIZE;
+                let role = COST_ADVISOR_ROLE + index * 0x200 + advisor * 0x100;
+                put(
+                    &mut bytes,
+                    node + character_advisor_node::KEY_HASH,
+                    (advisor as u32).to_le_bytes(),
+                );
+                heap.write(&mut bytes, node + character_advisor_node::KEY);
+                pointer(&mut bytes, node + character_advisor_node::ADVISOR, role);
+                put(
+                    &mut bytes,
+                    role,
+                    ((IMAGE + cadvisor::VTABLE_RVA) as u64).to_le_bytes(),
+                );
+                pointer(&mut bytes, role + cadvisor::CHARACTER, character);
+                heap.write(&mut bytes, role + cadvisor::IDEA_TOKEN);
+                heap.write(&mut bytes, role + cadvisor::SLOT);
+            }
+            if index % COST_UNIT_STEP != 2 {
+                continue;
+            }
+            let slot = index / COST_UNIT_STEP;
+            let unit = COST_UNIT + slot * 0x1000;
+            pointer(&mut bytes, character + ccharacter::UNIT_LEADER, unit);
+            put(
+                &mut bytes,
+                unit,
+                ((IMAGE + cunit_leader::VTABLE_RVA) as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                unit + cunit_leader::TYPE,
+                cunit_leader::REFERENCE_TYPE.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                unit + cunit_leader::ID,
+                (index as u32 + 1).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                unit + cunit_leader::CHARACTER_TYPE,
+                ccharacter::REFERENCE_TYPE.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                unit + cunit_leader::CHARACTER_ID,
+                (index as u32 + 1).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                unit + cunit_leader::EXPERIENCE,
+                (index as i64).to_le_bytes(),
+            );
+            heap.write(&mut bytes, unit + cunit_leader::TOKEN);
+            heap.write(&mut bytes, unit + cunit_leader::NAME);
+            let traits = COST_TRAIT_ARRAY + slot * 0x100;
+            array(
+                &mut bytes,
+                unit + cunit_leader::TRAIT_DATA,
+                traits,
+                COST_TRAITS,
+            );
+            for entry in 0..COST_TRAITS as usize {
+                pointer(
+                    &mut bytes,
+                    traits + entry * 8,
+                    COST_DEFINITION + (entry % 4) * 0x1000,
+                );
+            }
+            let experience = COST_EXPERIENCE_ARRAY + slot * 0x400;
+            array(
+                &mut bytes,
+                unit + cunit_leader::TRAIT_EXPERIENCE_DATA,
+                experience,
+                COST_EXPERIENCE,
+            );
+            for entry in 0..COST_EXPERIENCE as usize {
+                pointer(
+                    &mut bytes,
+                    experience + entry * 16,
+                    COST_DEFINITION + (entry % 4) * 0x1000,
+                );
+                put(
+                    &mut bytes,
+                    experience + entry * 16 + 8,
+                    (entry as i64).to_le_bytes(),
+                );
+            }
+        }
+        bytes
+    }
+
+    struct CostMemory<'a> {
+        memory: SliceMemory<'a>,
+        guards: Cell<usize>,
+        spans: Cell<usize>,
+        bytes: Cell<usize>,
+    }
+
+    impl<'a> CostMemory<'a> {
+        fn new(bytes: &'a [u8]) -> Self {
+            Self {
+                memory: SliceMemory {
+                    base: ADDRESS,
+                    bytes,
+                },
+                guards: Cell::new(0),
+                spans: Cell::new(0),
+                bytes: Cell::new(0),
+            }
+        }
+
+        fn span(&self, address: usize, output: &mut [u8]) -> bool {
+            self.spans.set(self.spans.get() + 1);
+            self.bytes.set(self.bytes.get() + output.len());
+            self.memory.copy(address, output)
+        }
+    }
+
+    impl Memory for CostMemory<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.guards.set(self.guards.get() + 1);
+            self.span(address, output)
+        }
+
+        fn copy_scattered<const M: usize>(
+            &self,
+            addresses: [usize; M],
+            outputs: &mut [&mut [u8]; M],
+        ) -> usize {
+            if outputs.iter().any(|output| !output.is_empty()) {
+                self.guards.set(self.guards.get() + 1);
+            }
+            for (index, (address, output)) in addresses.into_iter().zip(outputs).enumerate() {
+                if output.is_empty() {
+                    continue;
+                }
+                if address == 0
+                    || address.checked_add(output.len()).is_none()
+                    || !self.span(address, output)
+                {
+                    return index;
+                }
+            }
+            M
+        }
+    }
+
+    #[test]
+    fn character_family_read_cost_stays_at_its_measured_shape() {
+        let bytes = cost_fixture();
+        let capacity = Capacities {
+            rows: [4096; N],
+            bytes: [131_072; N],
+        };
+        let mut captured = Captured::with_capacities(&capacity, &[0; N]);
+        let memory = CostMemory::new(&bytes);
+        let results = walk_family(&memory, IMAGE, ADDRESS, captured.family(false, [true; 6]));
+        assert_eq!(
+            results.map(|result| result.outcome),
+            [
+                Outcome::Rows { len: 32 },
+                Outcome::Rows { len: 5 },
+                Outcome::Rows { len: 22 },
+                Outcome::Rows { len: 3 },
+                Outcome::Rows { len: 6 },
+                Outcome::Rows { len: 45 },
+            ]
+        );
+        // The shared walk's read cost, pinned. Making the view's copied-span
+        // lookup cheaper removed decoding work, not reads, so every one of
+        // these three totals must stay exactly where it was.
+        assert_eq!(
+            (memory.guards.get(), memory.spans.get(), memory.bytes.get()),
+            (588, 1204, 16_872)
+        );
+    }
+
     #[test]
     fn growth_and_comparison_release_are_independent_for_shared_walk_outputs() {
         let mut capacities = small_capacities();
