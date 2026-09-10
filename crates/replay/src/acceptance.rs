@@ -34,7 +34,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 117] = [
+const DOMAIN_TABLES: [TableId; 123] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
@@ -152,7 +152,42 @@ const DOMAIN_TABLES: [TableId; 117] = [
     TableId::OperationTokens,
     TableId::LexicalTokens,
     TableId::NavalSupremacy,
+    TableId::RadarCoverage,
+    TableId::VolunteerHosts,
+    TableId::TheatreAreas,
+    TableId::StationedUnits,
+    TableId::UnitIntel,
+    TableId::AirBaseRegistrations,
 ];
+/// The fault campaign drives every table except the six the clock, campaign,
+/// country, province and state fixtures build directly, so a new table cannot
+/// be added without being exercised here.
+const DIRECT_TABLES: [TableId; 7] = [
+    TableId::Clock,
+    TableId::Campaign,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::Provinces,
+    TableId::States,
+    TableId::Divisions,
+];
+
+#[test]
+fn the_fault_campaign_covers_every_table_exactly_once() {
+    let mut covered: Vec<TableId> = DOMAIN_TABLES
+        .into_iter()
+        .chain(DIRECT_TABLES)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    covered.sort();
+    assert_eq!(covered, TableId::ALL);
+    assert_eq!(
+        DOMAIN_TABLES.len() + DIRECT_TABLES.len(),
+        TableId::ALL.len()
+    );
+}
+
 const RAW_FLAG_CASES: [u8; 3] = [0, 2, 255];
 const FACTION_A: u64 = (0x8000_0033_u64 << 32) | 75;
 

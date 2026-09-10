@@ -274,6 +274,10 @@ pub struct LandTheatre {
     pub id: u64,
     pub volunteers_country: Option<Vec<u8>>,
     pub groups: Vec<LandGroup>,
+    /// Ordered stationed-unit references; EED430 emits one `unit` per position.
+    pub units: Vec<u64>,
+    /// One representative province per controller area, in area order.
+    pub area_representatives: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -381,6 +385,18 @@ fn theatre_countries(items: &[Item]) -> io::Result<Option<BTreeMap<Vec<u8>, Thea
                     id: object_id(fields)?,
                     volunteers_country: bytes(fields, b"volunteers_theatre")?,
                     groups,
+                    units: fields
+                        .iter()
+                        .filter(|entry| entry.key.as_deref() == Some(b"unit"))
+                        .map(|entry| typed_handle(&entry.value))
+                        .collect::<io::Result<_>>()?,
+                    // EED430 emits one representative province per controller
+                    // area, through area+0x28, not each area's membership.
+                    area_representatives: fields
+                        .iter()
+                        .filter(|entry| entry.key.as_deref() == Some(b"area"))
+                        .map(|entry| Ok(integer::<i32>(scalar(&entry.value)?)? as u32))
+                        .collect::<io::Result<_>>()?,
                 });
             }
         }
@@ -778,6 +794,27 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn stationed_units_and_area_representatives_keep_save_order() {
+        let pack = parse_text(
+            br#"countries={GER={theatres={
+                theatre={id={id=5 type=67} volunteers_theatre=SOV
+                    unit={id=9 type=4919} unit={id=9 type=4919}
+                    area=21 area=22}
+                theatre={id={id=6 type=67}}}}}"#,
+        )
+        .unwrap();
+        let land = &pack.theatre_countries.unwrap()[b"GER".as_slice()].land;
+        assert_eq!(land[0].units, [(9_u64 << 32) | 4919; 2]);
+        assert_eq!(land[0].area_representatives, [21, 22]);
+        assert_eq!(
+            land[0].volunteers_country.as_deref(),
+            Some(b"SOV".as_slice())
+        );
+        // A theatre outside the volunteer scope still parses with empty lists.
+        assert!(land[1].units.is_empty() && land[1].area_representatives.is_empty());
     }
 
     #[test]

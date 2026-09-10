@@ -179,6 +179,29 @@ pub struct EquipmentAmount {
     pub amount: Decimal,
 }
 
+/// One `country_intel` triple of a saved CUnit, in serialized order.
+///
+/// CUnit writer BF7010 emits three signed integers per stored viewer entry: the
+/// viewer key word, the low 32 bits of the entry's decay accumulator, and the
+/// sign-extended level byte. Every entry is written, including nonpositive
+/// levels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IntelEntry {
+    pub viewer: i32,
+    pub timer_low: i32,
+    pub level: i32,
+}
+
+/// One `received_air_volunteer_permission` block of a saved country.
+///
+/// CCountry writer 70C580 emits one block per position of the native host
+/// vector, in vector order, with the resolved host tag and its paired count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VolunteerPermission {
+    pub tag: Vec<u8>,
+    pub count: i32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Country {
     pub tag: Vec<u8>,
@@ -192,6 +215,8 @@ pub struct Country {
     /// Serialized stockpile entries, not an assumed equivalent of a live cache.
     pub convoy_equipment: Option<Vec<EquipmentAmount>>,
     pub instances_counter: Option<u32>,
+    /// Ordered host blocks; absence and an empty vector are indistinguishable.
+    pub volunteer_permissions: Vec<VolunteerPermission>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -227,6 +252,8 @@ pub struct Division {
     /// Saved strength is absolute current hit points in native /100000 units.
     pub hit_points: Decimal,
     pub organisation: Decimal,
+    /// Ordered viewer entries; the writer omits the field for an empty array.
+    pub country_intel: Vec<IntelEntry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -298,6 +325,8 @@ pub struct TaskForce {
     pub expeditionary_owner: Option<Vec<u8>>,
     pub province: Option<u32>,
     pub mission: i32,
+    /// Ordered viewer entries; the writer omits the field for an empty array.
+    pub country_intel: Vec<IntelEntry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -620,6 +649,7 @@ fn parse_country(tag: &[u8], items: &[Item]) -> io::Result<Country> {
         instances_counter: bytes(items, b"instances_counter")?
             .map(|bytes| integer(&bytes))
             .transpose()?,
+        volunteer_permissions: volunteer_permissions(items)?,
     })
 }
 
@@ -670,7 +700,50 @@ fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<Division> {
             .transpose()?,
         hit_points: Decimal::parse(&required_bytes(items, b"strength")?)?,
         organisation: Decimal::parse(&required_bytes(items, b"organisation")?)?,
+        country_intel: country_intel(items)?,
     })
+}
+
+/// The writer emits one anonymous flat list of three signed integers per entry.
+fn country_intel(items: &[Item]) -> io::Result<Vec<IntelEntry>> {
+    let Some(value) = field(items, b"country_intel")? else {
+        return Ok(Vec::new());
+    };
+    let entries = block(value)?;
+    if entries.is_empty() || entries.len() % 3 != 0 {
+        return Err(invalid(
+            "saved country_intel is empty or not a whole number of viewer triples",
+        ));
+    }
+    let mut words = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if entry.key.is_some() {
+            return Err(invalid("saved country_intel must be an anonymous list"));
+        }
+        words.push(integer::<i32>(scalar(&entry.value)?)?);
+    }
+    Ok(words
+        .chunks_exact(3)
+        .map(|triple| IntelEntry {
+            viewer: triple[0],
+            timer_low: triple[1],
+            level: triple[2],
+        })
+        .collect())
+}
+
+fn volunteer_permissions(items: &[Item]) -> io::Result<Vec<VolunteerPermission>> {
+    items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"received_air_volunteer_permission"))
+        .map(|item| {
+            let fields = block(&item.value)?;
+            Ok(VolunteerPermission {
+                tag: required_bytes(fields, b"tag")?,
+                count: integer(&required_bytes(fields, b"count")?)?,
+            })
+        })
+        .collect()
 }
 
 fn boolean(value: &Value) -> io::Result<bool> {
@@ -845,6 +918,7 @@ fn parse_task_force(owner: &[u8], fleet: u64, items: &[Item]) -> io::Result<Task
             required_block(items, b"mission")?,
             b"mission",
         )?)?,
+        country_intel: country_intel(items)?,
     })
 }
 
@@ -1841,6 +1915,85 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
                 .unwrap_err()
                 .to_string()
                 .contains("no membership")
+        );
+    }
+
+    #[test]
+    fn country_intel_triples_keep_native_order_signs_and_nonpositive_levels() {
+        let save = division_save(
+            r#"
+division={
+ id={id=1 type=4919} logical_country=SOV strength=0 organisation=0
+ country_intel={ 2 -2147483648 4 -1 0 -1 }
+}
+division={ id={id=2 type=4919} logical_country=SOV strength=0 organisation=0 }
+"#,
+        )
+        .unwrap();
+        let intel = &save.divisions[&((1_u64 << 32) | 4919)].country_intel;
+        assert_eq!(
+            intel,
+            &[
+                IntelEntry {
+                    viewer: 2,
+                    timer_low: i32::MIN,
+                    level: 4
+                },
+                IntelEntry {
+                    viewer: -1,
+                    timer_low: 0,
+                    level: -1
+                },
+            ]
+        );
+        // An omitted field is a native empty array, not a refusal.
+        assert!(
+            save.divisions[&((2_u64 << 32) | 4919)]
+                .country_intel
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_partial_or_keyed_country_intel_list_is_refused() {
+        for list in ["{ 1 2 }", "{ }", "{ viewer=1 2 3 }"] {
+            let save = division_save(&format!(
+                "division={{ id={{id=1 type=4919}} logical_country=SOV strength=0 organisation=0 country_intel={list} }}"
+            ));
+            assert!(save.is_err(), "{list}");
+        }
+    }
+
+    #[test]
+    fn volunteer_permission_blocks_keep_save_order_and_repeated_tags() {
+        let save = parse(
+            b"HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 countries={ SOV={ received_air_volunteer_permission={ tag=GER count=3 } received_air_volunteer_permission={ tag=GER count=-1 } } GER={} } states={} provinces={}",
+        )
+        .unwrap();
+        let hosts = &save.countries[b"SOV".as_slice()].volunteer_permissions;
+        assert_eq!(
+            hosts,
+            &[
+                VolunteerPermission {
+                    tag: b"GER".to_vec(),
+                    count: 3
+                },
+                VolunteerPermission {
+                    tag: b"GER".to_vec(),
+                    count: -1
+                },
+            ]
+        );
+        assert!(
+            save.countries[b"GER".as_slice()]
+                .volunteer_permissions
+                .is_empty()
+        );
+        assert!(
+            parse(
+                b"HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 countries={ SOV={ received_air_volunteer_permission={ tag=GER } } } states={} provinces={}",
+            )
+            .is_err()
         );
     }
 

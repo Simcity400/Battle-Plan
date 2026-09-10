@@ -475,6 +475,12 @@ WeatherProvinces = 120 => WeatherProvince(WeatherProvinceRow),
 OperationTokens = 121 => OperationTokens(OperationTokensRow),
 LexicalTokens = 122 => LexicalToken(LexicalTokenRow),
 NavalSupremacy = 123 => NavalSupremacy(NavalSupremacyRow),
+RadarCoverage = 124 => RadarCoverage(RadarCoverageRow),
+VolunteerHosts = 125 => VolunteerHost(VolunteerHostRow),
+TheatreAreas = 126 => TheatreArea(TheatreAreaRow),
+StationedUnits = 127 => StationedUnit(StationedUnitRow),
+UnitIntel = 128 => UnitIntel(UnitIntelRow),
+AirBaseRegistrations = 129 => AirBaseRegistration(AirBaseRegistrationRow),
 }
 impl TableId {
     pub const fn index(self) -> usize {

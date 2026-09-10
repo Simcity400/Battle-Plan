@@ -148,6 +148,7 @@ packs!(
     characters,
     construction,
     economy,
+    fog,
     governance,
     intel,
     lexical,
@@ -226,6 +227,7 @@ impl Captured {
             characters,
             construction,
             economy,
+            fog,
             governance,
             intel,
             projects,
@@ -576,7 +578,7 @@ mod tests {
 
     #[test]
     fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership() {
-        assert_eq!(N, 104);
+        assert_eq!(N, 110);
         let actual: BTreeSet<_> = TABLES.into_iter().collect();
         assert_eq!(actual.len(), N);
         let expected: BTreeSet<_> = TableId::ALL

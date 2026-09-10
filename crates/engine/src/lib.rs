@@ -302,6 +302,7 @@ pub mod cpurchase_draft_window;
 pub mod cquick_wing_deploy_controller;
 pub mod cquick_wing_deploy_option;
 pub mod cquick_wing_deploy_ui_controller;
+pub mod cradars_pool;
 pub mod craid_instance;
 pub mod craid_source;
 pub mod craid_system;

@@ -1611,6 +1611,113 @@ typed_codec!(NavalSupremacyRow, 64, |row| (row.region as u128) << 32 | row.count
  |key, input| Ok(Self { region: (key >> 32) as u32, country: key as u32, region_slot: read_value(Kind::U32, input)?, current: read_value(Kind::I64, input)?, base_target: read_value(Kind::I64, input)?, target: read_value(Kind::I64, input)?, individual_ratio: read_value(Kind::I64, input)?, previous: read_value(Kind::I64, input)?, decline_from: read_value(Kind::I64, input)? }),
  { 0 => (region_slot): U32, 1 => (current): I64, 2 => (base_target): I64, 3 => (target): I64, 4 => (individual_ratio): I64, 5 => (previous): I64, 6 => (decline_from): I64 }, |_row| Ok(()));
 
+/// RadarCoverage: key country:ordinal (64 bits), 2 payload mask bits.
+///
+/// One radar coverage group of `CCountry+0x1120`. `ordinal` is the native vector
+/// persistent group; `state` is the group's host CState id at `+0x48`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RadarCoverageRow {
+    /// Raw country reference; resolve through CountryLinks to a canonical slot.
+    pub country: u32,
+    pub ordinal: u32,
+    /// Host state id; absent when the native `+0x48` pointer is null.
+    pub state: Option<u32>,
+    /// Covered province ids in native array order, repeats included.
+    pub provinces: Vec<u32>,
+}
+typed_codec!(RadarCoverageRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128, |key| Self { country: (key >> 32) as u32, ordinal: key as u32, state: Default::default(), provinces: Default::default() },
+ |key, input| Ok(Self { country: (key >> 32) as u32, ordinal: key as u32, state: read_value(Kind::OptionalU32, input)?, provinces: read_value(Kind::U32List, input)? }),
+ { 0 => (state): OptionalU32, 1 => (provinces): U32List }, |_row| Ok(()));
+
+/// VolunteerHosts: key country:position (64 bits), 2 payload mask bits.
+///
+/// One position of `CCountry+0x1428` and its paired `+0x1440` tally. The position
+/// is part of the key because the vector can hold a repeated host.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VolunteerHostRow {
+    /// Raw country reference of the country that owns the vector.
+    pub country: u32,
+    pub position: u32,
+    /// Raw country reference exactly as the native vector stores it.
+    pub host: u32,
+    /// Paired native word; the engine re-derives it from the sender's armies.
+    pub deployed_divisions: i32,
+}
+typed_codec!(VolunteerHostRow, 64, |row| (row.country as u128) << 32 | row.position as u128, |key| Self { country: (key >> 32) as u32, position: key as u32, host: Default::default(), deployed_divisions: Default::default() },
+ |key, input| Ok(Self { country: (key >> 32) as u32, position: key as u32, host: read_value(Kind::U32, input)?, deployed_divisions: read_value(Kind::I32, input)? }),
+ { 0 => (host): U32, 1 => (deployed_divisions): I32 }, |_row| Ok(()));
+
+/// TheatreAreas: key theatre:ordinal (96 bits), 2 payload mask bits.
+///
+/// One CControllerArea listed by a volunteer CTheatre at `+0x18`. `representative`
+/// is the province behind the area's `+0x28`, which is the only member the save
+/// writer emits; `provinces` is the area's whole `+0x30` membership.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TheatreAreaRow {
+    /// Full native CTheatre handle; join it to LandTheatres.
+    pub theatre: u64,
+    pub ordinal: u32,
+    /// Representative province id; absent when the native pointer is null.
+    pub representative: Option<u32>,
+    /// Member province ids in native array order, repeats included.
+    pub provinces: Vec<u32>,
+}
+typed_codec!(TheatreAreaRow, 96, |row| (row.theatre as u128) << 32 | row.ordinal as u128, |key| Self { theatre: (key >> 32) as u64, ordinal: key as u32, representative: Default::default(), provinces: Default::default() },
+ |key, input| Ok(Self { theatre: (key >> 32) as u64, ordinal: key as u32, representative: read_value(Kind::OptionalU32, input)?, provinces: read_value(Kind::U32List, input)? }),
+ { 0 => (representative): OptionalU32, 1 => (provinces): U32List }, |_row| Ok(()));
+
+/// StationedUnits: key theatre:ordinal (96 bits), 1 payload mask bit.
+///
+/// One position of a volunteer CTheatre's `+0x68` stationed-unit vector.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct StationedUnitRow {
+    /// Full native CTheatre handle; join it to LandTheatres.
+    pub theatre: u64,
+    pub ordinal: u32,
+    /// Full native CUnit handle; join it to Divisions or TaskForces.
+    pub unit: u64,
+}
+typed_codec!(StationedUnitRow, 96, |row| (row.theatre as u128) << 32 | row.ordinal as u128, |key| Self { theatre: (key >> 32) as u64, ordinal: key as u32, unit: Default::default() },
+ |key, input| Ok(Self { theatre: (key >> 32) as u64, ordinal: key as u32, unit: read_value(Kind::U64, input)? }),
+ { 0 => (unit): U64 }, |_row| Ok(()));
+
+/// UnitIntel: key unit:ordinal (96 bits), 2 payload mask bits.
+///
+/// One entry of a unit's `CUnit+0x278` per-viewer level array, in native order.
+/// The entry's `+8` decay accumulator is deliberately not recorded.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct UnitIntelRow {
+    /// Full native CUnit handle; join it to Divisions or TaskForces.
+    pub unit: u64,
+    pub ordinal: u32,
+    /// Stored viewer key: the country's ordinal in the engine's country array.
+    pub viewer: u32,
+    /// Native signed level byte; nonpositive entries are recorded as stored.
+    pub level: i8,
+}
+typed_codec!(UnitIntelRow, 96, |row| (row.unit as u128) << 32 | row.ordinal as u128, |key| Self { unit: (key >> 32) as u64, ordinal: key as u32, viewer: Default::default(), level: Default::default() },
+ |key, input| Ok(Self { unit: (key >> 32) as u64, ordinal: key as u32, viewer: read_value(Kind::U32, input)?, level: read_value(Kind::I8, input)? }),
+ { 0 => (viewer): U32, 1 => (level): I8 }, |_row| Ok(()));
+
+/// AirBaseRegistrations: key base:slot (96 bits), 2 payload mask bits.
+///
+/// One country's registered pool membership at one air base. `slot` is the index
+/// in `CAirBase+0x30`, which the engine fills at the country's resolved ordinal.
+/// Wings are flattened across the container's pools in pool order.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AirBaseRegistrationRow {
+    /// Full native CAirBase handle; join it to AirBases.
+    pub base: u64,
+    pub slot: u32,
+    /// Raw country reference stored by the container itself.
+    pub country: u32,
+    /// Full native CAirWing handles in native order, repeats included.
+    pub wings: Vec<u64>,
+}
+typed_codec!(AirBaseRegistrationRow, 96, |row| (row.base as u128) << 32 | row.slot as u128, |key| Self { base: (key >> 32) as u64, slot: key as u32, country: Default::default(), wings: Default::default() },
+ |key, input| Ok(Self { base: (key >> 32) as u64, slot: key as u32, country: read_value(Kind::U32, input)?, wings: read_value(Kind::U64List, input)? }),
+ { 0 => (country): U32, 1 => (wings): U64List }, |_row| Ok(()));
+
 // Variable records borrow their typed values during encoding and allocate only on decode.
 opaque_value!(Option<Vec<u8>>);
 opaque_value!(Vec<i64>);
@@ -1825,6 +1932,12 @@ mod fixtures {
     fixture!(OperationTokensRow, |key| {owner: (key >> 32) as u32, target: key as u32}, {tokens: Vec<u32>});
     fixture!(LexicalTokenRow, |key| {token: key as u32}, {literal: Vec<u8>});
     fixture!(NavalSupremacyRow, |key| {region: (key >> 32) as u32, country: key as u32}, {region_slot: u32, current: i64, base_target: i64, target: i64, individual_ratio: i64, previous: i64, decline_from: i64});
+    fixture!(RadarCoverageRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {state: Option<u32>, provinces: Vec<u32>});
+    fixture!(VolunteerHostRow, |key| {country: (key >> 32) as u32, position: key as u32}, {host: u32, deployed_divisions: i32});
+    fixture!(TheatreAreaRow, |key| {theatre: (key >> 32) as u64, ordinal: key as u32}, {representative: Option<u32>, provinces: Vec<u32>});
+    fixture!(StationedUnitRow, |key| {theatre: (key >> 32) as u64, ordinal: key as u32}, {unit: u64});
+    fixture!(UnitIntelRow, |key| {unit: (key >> 32) as u64, ordinal: key as u32}, {viewer: u32, level: i8});
+    fixture!(AirBaseRegistrationRow, |key| {base: (key >> 32) as u64, slot: key as u32}, {country: u32, wings: Vec<u64>});
 
     fn maximum_key<T: RowCodec>() -> u128 {
         if T::KEY_BITS == 128 {
@@ -2059,6 +2172,14 @@ mod fixtures {
             }
             TableId::LexicalTokens => TableRows::LexicalTokens(rows::<LexicalTokenRow>(tick)),
             TableId::NavalSupremacy => TableRows::NavalSupremacy(rows::<NavalSupremacyRow>(tick)),
+            TableId::RadarCoverage => TableRows::RadarCoverage(rows::<RadarCoverageRow>(tick)),
+            TableId::VolunteerHosts => TableRows::VolunteerHosts(rows::<VolunteerHostRow>(tick)),
+            TableId::TheatreAreas => TableRows::TheatreAreas(rows::<TheatreAreaRow>(tick)),
+            TableId::StationedUnits => TableRows::StationedUnits(rows::<StationedUnitRow>(tick)),
+            TableId::UnitIntel => TableRows::UnitIntel(rows::<UnitIntelRow>(tick)),
+            TableId::AirBaseRegistrations => {
+                TableRows::AirBaseRegistrations(rows::<AirBaseRegistrationRow>(tick))
+            }
             _ => return None,
         })
     }
@@ -2451,5 +2572,11 @@ mod fixtures {
         check_table::<OperationTokensRow>(TableId::OperationTokens);
         check_table::<LexicalTokenRow>(TableId::LexicalTokens);
         check_table::<NavalSupremacyRow>(TableId::NavalSupremacy);
+        check_table::<RadarCoverageRow>(TableId::RadarCoverage);
+        check_table::<VolunteerHostRow>(TableId::VolunteerHosts);
+        check_table::<TheatreAreaRow>(TableId::TheatreAreas);
+        check_table::<StationedUnitRow>(TableId::StationedUnits);
+        check_table::<UnitIntelRow>(TableId::UnitIntel);
+        check_table::<AirBaseRegistrationRow>(TableId::AirBaseRegistrations);
     }
 }

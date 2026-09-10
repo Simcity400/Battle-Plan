@@ -23,6 +23,7 @@ mod air;
 mod characters;
 mod construction;
 mod economy;
+mod fog;
 mod governance;
 mod intel;
 mod naval_history;
@@ -1083,6 +1084,14 @@ fn compare_extended(
         )
     });
     report.attempt("weather", |report| weather::compare(frame, save, report));
+    report.attempt("fog", |report| {
+        fog::compare(
+            frame,
+            save,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
 }
 
 fn compare_players(
@@ -2347,6 +2356,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 template: Some(template),
                 hit_points: Decimal::parse(b"90071992547.40993").unwrap(),
                 organisation: Decimal::parse(b"53.45454").unwrap(),
+                country_intel: Vec::new(),
             },
         );
         frame.tables[TableId::Divisions.index()] =
@@ -3701,6 +3711,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 expeditionary_owner: Some(b"D01".to_vec()),
                 province: Some(1),
                 mission: -1,
+                country_intel: Vec::new(),
             },
         );
         saved.ships.insert(
