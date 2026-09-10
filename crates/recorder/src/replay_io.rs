@@ -871,6 +871,9 @@ mod tests {
                     TableUpdate::Snapshot(vec![]),
                     TableUpdate::Snapshot(vec![]),
                     TableUpdate::Snapshot(vec![]),
+                    TableUpdate::Snapshot(vec![]),
+                    TableUpdate::Snapshot(vec![]),
+                    TableUpdate::Snapshot(vec![]),
                 ],
             })
         };

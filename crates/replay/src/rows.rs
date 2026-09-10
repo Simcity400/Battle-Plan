@@ -14,10 +14,13 @@ pub enum TableId {
     Provinces = 4,
     States = 5,
     Divisions = 6,
+    WarRelations = 7,
+    Factions = 8,
+    FactionMembers = 9,
 }
 
 impl TableId {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 10] = [
         Self::Clock,
         Self::Campaign,
         Self::Countries,
@@ -25,6 +28,9 @@ impl TableId {
         Self::Provinces,
         Self::States,
         Self::Divisions,
+        Self::WarRelations,
+        Self::Factions,
+        Self::FactionMembers,
     ];
 
     pub const fn index(self) -> usize {
@@ -71,11 +77,16 @@ impl TableId {
             Self::Provinces => &[U32, U32, U32],
             Self::States => &[U32, U32],
             Self::Divisions => &[U32, U32, U32, U32, U64, I64, I64],
+            Self::WarRelations => &[I32, I32, U8, I64, I64, I64, I64, U8],
+            Self::Factions => &[Bytes],
+            Self::FactionMembers => &[U64, U32],
         }
     }
 
     pub(crate) fn check_key(self, key: u64) -> io::Result<()> {
-        if self != Self::Divisions && u32::try_from(key).is_err() {
+        if !matches!(self, Self::Divisions | Self::WarRelations | Self::Factions)
+            && u32::try_from(key).is_err()
+        {
             return Err(invalid(format!("{self:?} row key exceeds u32")));
         }
         if matches!(self, Self::Clock | Self::Campaign) && key != 0 {
@@ -199,6 +210,39 @@ pub struct DivisionRow {
     pub organisation: i64,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct WarRelationRow {
+    /// Ordered country identities form the row key; this is not a full war id.
+    pub first_country: u32,
+    pub second_country: u32,
+    pub start_hour: i32,
+    pub end_hour: i32,
+    /// Raw engine byte, retained without boolean normalization.
+    pub cancel: u8,
+    pub first_casualties: i64,
+    pub second_casualties: i64,
+    pub first_unknown_casualties: i64,
+    pub second_unknown_casualties: i64,
+    /// Raw engine byte, retained without boolean normalization.
+    pub first_was_instigator: u8,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FactionRow {
+    pub id: u64,
+    /// Literal engine name bytes; an empty name is valid.
+    pub name: Vec<u8>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FactionMemberRow {
+    /// Raw country identity; a country has at most one faction membership.
+    pub country: u32,
+    pub faction: u64,
+    /// Recorded member order; ordinal zero identifies the first member.
+    pub ordinal: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     Clock(ClockRow),
@@ -208,6 +252,9 @@ pub enum Row {
     Province(ProvinceRow),
     State(StateRow),
     Division(DivisionRow),
+    WarRelation(WarRelationRow),
+    Faction(FactionRow),
+    FactionMember(FactionMemberRow),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +276,9 @@ impl Row {
             Self::Province(_) => TableId::Provinces,
             Self::State(_) => TableId::States,
             Self::Division(_) => TableId::Divisions,
+            Self::WarRelation(_) => TableId::WarRelations,
+            Self::Faction(_) => TableId::Factions,
+            Self::FactionMember(_) => TableId::FactionMembers,
         }
     }
 
@@ -240,6 +290,11 @@ impl Row {
             Self::Province(row) => row.id as u64,
             Self::State(row) => row.id as u64,
             Self::Division(row) => row.id,
+            Self::WarRelation(row) => {
+                ((row.first_country as u64) << 32) | row.second_country as u64
+            }
+            Self::Faction(row) => row.id,
+            Self::FactionMember(row) => row.country as u64,
         }
     }
 
@@ -309,12 +364,24 @@ impl Row {
                 I64(row.hit_points),
                 I64(row.organisation),
             ]),
+            Self::WarRelation(row) => padded([
+                I32(row.start_hour),
+                I32(row.end_hour),
+                U8(row.cancel),
+                I64(row.first_casualties),
+                I64(row.second_casualties),
+                I64(row.first_unknown_casualties),
+                I64(row.second_unknown_casualties),
+                U8(row.first_was_instigator),
+            ]),
+            Self::Faction(row) => padded([Bytes(&row.name)]),
+            Self::FactionMember(row) => padded([U64(row.faction), U32(row.ordinal)]),
         }
     }
 
     fn from_fields(table: TableId, key: u64, fields: [Field<'_>; MAX_FIELDS]) -> io::Result<Self> {
         use Field::*;
-        // Narrow table ids may be cast only after this check; division handles stay u64.
+        // Narrow table ids may be cast only after this check; wide keys stay u64.
         table.check_key(key)?;
         Ok(match (table, fields) {
             (
@@ -397,6 +464,41 @@ impl Row {
                 hit_points,
                 organisation,
             }),
+            (
+                TableId::WarRelations,
+                [
+                    I32(start_hour),
+                    I32(end_hour),
+                    U8(cancel),
+                    I64(first_casualties),
+                    I64(second_casualties),
+                    I64(first_unknown_casualties),
+                    I64(second_unknown_casualties),
+                    U8(first_was_instigator),
+                ],
+            ) => Self::WarRelation(WarRelationRow {
+                first_country: (key >> 32) as u32,
+                second_country: key as u32,
+                start_hour,
+                end_hour,
+                cancel,
+                first_casualties,
+                second_casualties,
+                first_unknown_casualties,
+                second_unknown_casualties,
+                first_was_instigator,
+            }),
+            (TableId::Factions, [Bytes(name), ..]) => Self::Faction(FactionRow {
+                id: key,
+                name: name.to_vec(),
+            }),
+            (TableId::FactionMembers, [U64(faction), U32(ordinal), ..]) => {
+                Self::FactionMember(FactionMemberRow {
+                    country: key as u32,
+                    faction,
+                    ordinal,
+                })
+            }
             _ => return Err(invalid("row fields do not match table schema")),
         })
     }
@@ -504,6 +606,7 @@ fn padded<const N: usize>(fields: [Field<'_>; N]) -> [Field<'_>; MAX_FIELDS] {
 
 #[derive(Clone, Copy)]
 enum Kind {
+    U8,
     U32,
     I32,
     U64,
@@ -515,6 +618,7 @@ enum Kind {
 impl Kind {
     fn minimum_row_bytes(self) -> usize {
         match self {
+            Self::U8 => 1,
             Self::U32 | Self::I32 | Self::Bytes => 4,
             Self::U64 | Self::I64 => 8,
             Self::OptionalI64 => 1,
@@ -544,10 +648,10 @@ impl Kind {
         }
         let encoded = decoder.varint()?;
         let difference = ((encoded >> 1) as i128) ^ -((encoded & 1) as i128);
-        let maximum = if matches!(self, Self::U32 | Self::I32) {
-            u128::from(u32::MAX)
-        } else {
-            u128::from(u64::MAX)
+        let maximum = match self {
+            Self::U8 => u128::from(u8::MAX),
+            Self::U32 | Self::I32 => u128::from(u32::MAX),
+            _ => u128::from(u64::MAX),
         };
         if difference.unsigned_abs() > maximum {
             return Err(invalid("numeric difference exceeds native field range"));
@@ -562,6 +666,7 @@ impl Kind {
     fn number(self, value: i128) -> io::Result<Field<'static>> {
         let range = |_| invalid("numeric delta exceeds native field range");
         Ok(match self {
+            Self::U8 => Field::U8(u8::try_from(value).map_err(range)?),
             Self::U32 => Field::U32(u32::try_from(value).map_err(range)?),
             Self::I32 => Field::I32(i32::try_from(value).map_err(range)?),
             Self::U64 => Field::U64(u64::try_from(value).map_err(range)?),
@@ -573,6 +678,7 @@ impl Kind {
 
     fn decode<'a>(self, decoder: &mut Decoder<'a>) -> io::Result<Field<'a>> {
         Ok(match self {
+            Self::U8 => Field::U8(decoder.u8()?),
             Self::U32 => Field::U32(decoder.u32()?),
             Self::I32 => Field::I32(decoder.i32()?),
             Self::U64 => Field::U64(decoder.u64()?),
@@ -634,6 +740,7 @@ impl<'a> Change<'a> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field<'a> {
     Empty,
+    U8(u8),
     U32(u32),
     I32(i32),
     U64(u64),
@@ -646,6 +753,7 @@ impl<'a> Field<'a> {
     fn number(self) -> io::Result<i128> {
         Ok(match self {
             Self::Empty | Self::OptionalI64(None) => 0,
+            Self::U8(value) => i128::from(value),
             Self::U32(value) => i128::from(value),
             Self::I32(value) => i128::from(value),
             Self::U64(value) => i128::from(value),
@@ -675,6 +783,7 @@ impl<'a> Field<'a> {
     fn encode(self, output: &mut Vec<u8>) -> io::Result<()> {
         match self {
             Self::Empty => return Err(invalid("missing row field")),
+            Self::U8(value) => output.push(value),
             Self::U32(value) => output.extend_from_slice(&value.to_le_bytes()),
             Self::I32(value) => output.extend_from_slice(&value.to_le_bytes()),
             Self::U64(value) => output.extend_from_slice(&value.to_le_bytes()),
@@ -723,6 +832,21 @@ mod tests {
         }
     }
 
+    fn war_relation() -> WarRelationRow {
+        WarRelationRow {
+            first_country: 7,
+            second_country: 19,
+            start_hour: i32::MIN,
+            end_hour: i32::MAX,
+            cancel: 0,
+            first_casualties: i64::MIN,
+            second_casualties: i64::MAX,
+            first_unknown_casualties: i64::MIN,
+            second_unknown_casualties: i64::MAX,
+            first_was_instigator: 0,
+        }
+    }
+
     #[test]
     fn full_rows_and_insertions_preserve_native_values_and_raw_aliases() {
         let rows = [
@@ -760,6 +884,26 @@ mod tests {
                 template: u64::MAX,
                 hit_points: i64::MIN,
                 organisation: i64::MAX,
+            }),
+            Row::WarRelation(WarRelationRow {
+                first_country: u32::MAX,
+                second_country: u32::MAX,
+                cancel: u8::MAX,
+                first_was_instigator: 2,
+                ..war_relation()
+            }),
+            Row::Faction(FactionRow {
+                id: 0,
+                name: Vec::new(),
+            }),
+            Row::Faction(FactionRow {
+                id: u64::MAX,
+                name: vec![0, 0xff, b'A'],
+            }),
+            Row::FactionMember(FactionMemberRow {
+                country: u32::MAX,
+                faction: u64::MAX,
+                ordinal: u32::MAX,
             }),
         ];
         for row in rows {
@@ -1006,6 +1150,15 @@ mod tests {
                 8,
                 vec![1, 2],
             ),
+            (
+                Row::WarRelation(WarRelationRow {
+                    cancel: u8::MAX,
+                    ..war_relation()
+                }),
+                4,
+                vec![2],
+            ),
+            (Row::WarRelation(war_relation()), 128, vec![1]),
         ];
         for (old, mask, values) in cases {
             let table = old.table();
@@ -1022,6 +1175,7 @@ mod tests {
             assert!(decoded.apply(table, Some(&old)).is_err());
         }
         for (table, mask, difference) in [
+            (TableId::WarRelations, 4, 1_u128 << 8),
             (TableId::States, 1, 1_u128 << 32),
             (TableId::Clock, 2, 1_u128 << 64),
         ] {
@@ -1042,9 +1196,13 @@ mod tests {
     #[test]
     fn table_keys_keep_native_ranges_and_refuse_overflow() {
         for table in TableId::ALL {
+            let wide = matches!(
+                table,
+                TableId::Divisions | TableId::WarRelations | TableId::Factions
+            );
             let key = match table {
                 TableId::Clock | TableId::Campaign => 0,
-                TableId::Divisions => u64::MAX,
+                _ if wide => u64::MAX,
                 _ => u64::from(u32::MAX),
             };
             let mut bytes = Vec::new();
@@ -1053,7 +1211,7 @@ mod tests {
                 bytes.len(),
                 if key == 0 {
                     1
-                } else if table == TableId::Divisions {
+                } else if wide {
                     10
                 } else {
                     5
@@ -1062,7 +1220,7 @@ mod tests {
             let mut input = Decoder::new(&bytes);
             assert_eq!(table.decode_key(0, &mut input).unwrap(), key);
             input.finish().unwrap();
-            if table == TableId::Divisions {
+            if wide {
                 continue;
             }
             for oversized in [u64::from(u32::MAX) + 1, u64::MAX] {
@@ -1078,6 +1236,120 @@ mod tests {
                 assert!(encode_delta(table, &invalid, 0, &mut bytes).is_err());
                 assert_eq!(bytes, before);
             }
+        }
+    }
+
+    #[test]
+    fn war_relation_keys_keep_ordered_endpoints_out_of_the_payload() {
+        let table = TableId::WarRelations;
+        let mut keys = Vec::new();
+        for (first_country, second_country) in [
+            (0, 0),
+            (0, u32::MAX),
+            (7, 19),
+            (19, 7),
+            (u32::MAX, 0),
+            (u32::MAX, u32::MAX),
+        ] {
+            let expected = WarRelationRow {
+                first_country,
+                second_country,
+                cancel: 2,
+                first_was_instigator: 255,
+                ..war_relation()
+            };
+            let row = Row::WarRelation(expected.clone());
+            assert_eq!(
+                row.key(),
+                (u64::from(first_country) << 32) | u64::from(second_country)
+            );
+            keys.push(row.key());
+            let mut bytes = Vec::new();
+            encode_row(table, &row, 0, &mut bytes).unwrap();
+            let mut fields = Decoder::new(&bytes);
+            assert_eq!(fields.varint().unwrap(), u128::from(row.key()));
+            assert_eq!(fields.remaining(), 42);
+            assert_eq!(fields.i32().unwrap(), expected.start_hour);
+            assert_eq!(fields.i32().unwrap(), expected.end_hour);
+            assert_eq!(fields.u8().unwrap(), 2);
+            assert_eq!(fields.i64().unwrap(), expected.first_casualties);
+            assert_eq!(fields.i64().unwrap(), expected.second_casualties);
+            assert_eq!(fields.i64().unwrap(), expected.first_unknown_casualties);
+            assert_eq!(fields.i64().unwrap(), expected.second_unknown_casualties);
+            assert_eq!(fields.u8().unwrap(), 255);
+            fields.finish().unwrap();
+            let mut input = Decoder::new(&bytes);
+            assert_eq!(decode_row(table, 0, &mut input).unwrap(), row);
+            input.finish().unwrap();
+        }
+        assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn war_relation_masks_preserve_each_native_field_and_raw_byte_value() {
+        let original = war_relation();
+        let old = Row::WarRelation(original.clone());
+        for mask in 1..=TableId::WarRelations.full_mask() {
+            let mut updated = original.clone();
+            if mask & 1 != 0 {
+                updated.start_hour = i32::MAX;
+            }
+            if mask & 2 != 0 {
+                updated.end_hour = i32::MIN;
+            }
+            if mask & 4 != 0 {
+                updated.cancel = 255;
+            }
+            if mask & 8 != 0 {
+                updated.first_casualties = i64::MAX;
+            }
+            if mask & 16 != 0 {
+                updated.second_casualties = i64::MIN;
+            }
+            if mask & 32 != 0 {
+                updated.first_unknown_casualties = i64::MAX;
+            }
+            if mask & 64 != 0 {
+                updated.second_unknown_casualties = i64::MIN;
+            }
+            if mask & 128 != 0 {
+                updated.first_was_instigator = 2;
+            }
+            let new = Row::WarRelation(updated);
+            let delta = new.delta(Some(&old)).unwrap().unwrap();
+            assert_eq!(delta.mask, mask);
+            let mut wire = Vec::new();
+            encode_delta(TableId::WarRelations, &delta, 0, &mut wire).unwrap();
+            let mut input = Decoder::new(&wire);
+            let decoded = decode_delta(TableId::WarRelations, 0, &mut input).unwrap();
+            input.finish().unwrap();
+            assert_eq!(
+                decoded.apply(TableId::WarRelations, Some(&old)).unwrap(),
+                new
+            );
+            assert_eq!(
+                old.delta(Some(&new))
+                    .unwrap()
+                    .unwrap()
+                    .apply(TableId::WarRelations, Some(&new))
+                    .unwrap(),
+                old
+            );
+        }
+        for value in 0..=u8::MAX {
+            let new = Row::WarRelation(WarRelationRow {
+                cancel: value,
+                first_was_instigator: u8::MAX - value,
+                ..original.clone()
+            });
+            let mut wire = Vec::new();
+            encode_row(TableId::WarRelations, &new, 0, &mut wire).unwrap();
+            assert_eq!(
+                decode_row(TableId::WarRelations, 0, &mut Decoder::new(&wire)).unwrap(),
+                new
+            );
+            let delta = new.delta(Some(&old)).unwrap().unwrap();
+            assert_eq!(delta.apply(TableId::WarRelations, Some(&old)).unwrap(), new);
         }
     }
 

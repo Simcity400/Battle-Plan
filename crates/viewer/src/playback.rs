@@ -124,6 +124,7 @@ impl Playback {
 
     /// Seek to exactly this hour. A hole never borrows the last displayed rows.
     /// Only the target block may be decompressed; backward seeks reuse its frames.
+    /// Intermediate hours advance the baseline without copying their decoded rows.
     pub fn seek(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
         if !self.replay.branches.iter().any(|entry| entry.id == branch) {
             return Err(unknown_branch(branch));
@@ -180,7 +181,7 @@ impl Playback {
             return Ok(());
         }
         while let Some(frame) = frames.get(cache.next).filter(|frame| frame.hour <= hour) {
-            let decoded = match cache.decoder.apply(frame) {
+            let decoded = match cache.decoder.advance(frame) {
                 Ok(decoded) => decoded,
                 Err(error) => {
                     let reason = format!("invalid frame baseline at hour {}: {error}", frame.hour);
@@ -203,7 +204,7 @@ impl Playback {
             cache.next += 1;
             cache.applied_hour = Some(frame.hour);
             if frame.hour == hour {
-                self.current = SeekResult::Frame(Box::new(decoded));
+                self.current = SeekResult::Frame(Box::new(decoded.clone()));
                 return Ok(());
             }
         }
@@ -284,7 +285,10 @@ mod tests {
         branches::{BranchReason, BranchStart, Gap},
         frame::{FrameEncoder, Metrics, TableUpdate},
         identity::{Identity, Roster, SessionStart, Verification},
-        rows::{CampaignRow, ClockRow, CountryRow, DivisionRow, ProvinceRow, StateRow},
+        rows::{
+            CampaignRow, ClockRow, CountryRow, DivisionRow, FactionMemberRow, FactionRow,
+            ProvinceRow, StateRow, WarRelationRow,
+        },
         spool::Record,
     };
 
@@ -358,6 +362,27 @@ mod tests {
                     template: (2_u64 << 32) | 52,
                     hit_points: 26_429_000,
                     organisation: 6_000_001,
+                })]),
+                TableView::Complete(vec![Row::WarRelation(WarRelationRow {
+                    first_country: 1,
+                    second_country: 2,
+                    start_hour: 99,
+                    end_hour: 0,
+                    cancel: 0,
+                    first_casualties: i64::from(hour),
+                    second_casualties: 0,
+                    first_unknown_casualties: 0,
+                    second_unknown_casualties: 0,
+                    first_was_instigator: 1,
+                })]),
+                TableView::Complete(vec![Row::Faction(FactionRow {
+                    id: 1_u64 << 32 | 42,
+                    name: Vec::new(),
+                })]),
+                TableView::Complete(vec![Row::FactionMember(FactionMemberRow {
+                    country: 1,
+                    faction: 1_u64 << 32 | 42,
+                    ordinal: 0,
                 })]),
             ],
         }

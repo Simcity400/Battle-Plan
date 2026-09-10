@@ -11,7 +11,7 @@ pub mod spool;
 pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
-pub const FORMAT_VERSION: u16 = 4;
+pub const FORMAT_VERSION: u16 = 5;
 pub const KEYFRAME_INTERVAL: u32 = 720;
 
 #[cfg(test)]

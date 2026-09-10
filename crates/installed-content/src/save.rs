@@ -1,7 +1,10 @@
 //! Text-save values for the oracle. The shared Clausewitz parser owns syntax;
 //! this module interprets only the state fields the recorder currently captures.
 
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
 use crate::{
     ResolvedLayers,
@@ -210,6 +213,38 @@ pub struct Division {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WarRelation {
+    /// Enclosing countries.<tag>, retained independently of the explicit first.
+    pub roster_owner: Vec<u8>,
+    /// Enclosing diplomacy.active_relations.<tag>, independently of second.
+    pub target: Vec<u8>,
+    /// Native ordered endpoints; neither country IDs nor instigator sort them.
+    pub first: Vec<u8>,
+    pub second: Vec<u8>,
+    /// CRelation writer D19260 omits this exactly when cancel is set.
+    pub start_date: Option<GameDate>,
+    /// Omission proves end <= start, not a particular raw end-hour default.
+    pub end_date: Option<GameDate>,
+    pub cancel: bool,
+    /// CWarRelation writer D19640 emits all four signed integers unscaled.
+    pub first_casualties: i64,
+    pub second_casualties: i64,
+    pub first_unknown_casualties: i64,
+    pub second_unknown_casualties: i64,
+    pub first_was_instigator: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Faction {
+    /// Full native reference: type low u32, id high u32; only both zero is null.
+    pub id: u64,
+    /// CFaction+18 literal bytes, empty when omitted; no display-name fallback.
+    pub name: Vec<u8>,
+    /// The native pointer-array order, with its leader first when nonempty.
+    pub members: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Save {
     pub date: GameDate,
     pub campaign_id: Vec<u8>,
@@ -221,6 +256,9 @@ pub struct Save {
     pub provinces: BTreeMap<u32, ProvinceOverride>,
     /// Full typed handles uniquely identify divisions across every country roster.
     pub divisions: BTreeMap<u64, Division>,
+    /// One first-owned entry per ordered country pair, not a grouped war ID.
+    pub war_relations: Vec<WarRelation>,
+    pub factions: BTreeMap<u64, Faction>,
     /// Saved (id, type) to equipment-definition key. Repeated definition names
     /// are normal; the typed engine ids uniquely identify each saved variant.
     pub equipment_definitions: BTreeMap<(u32, u32), Vec<u8>>,
@@ -459,7 +497,7 @@ fn typed_handle(value: &Value) -> io::Result<u64> {
     let handle = (u64::from(id) << 32) | u64::from(kind);
     if handle == 0 {
         return Err(invalid(
-            "serialized division or template has a null typed handle; refusing to confuse an unregistered object with an omitted pointer",
+            "serialized object has a null typed handle; refusing to confuse an unregistered object with an omitted pointer",
         ));
     }
     Ok(handle)
@@ -502,6 +540,90 @@ fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<Division> {
     })
 }
 
+fn boolean(value: &Value) -> io::Result<bool> {
+    match scalar(value)? {
+        b"yes" => Ok(true),
+        b"no" => Ok(false),
+        _ => Err(invalid("save boolean must be yes or no")),
+    }
+}
+
+fn parse_war_relation(
+    roster_owner: &[u8],
+    target: &[u8],
+    items: &[Item],
+) -> io::Result<WarRelation> {
+    let cancel = field(items, b"cancel")?.map(boolean).transpose()?;
+    if cancel == Some(false) {
+        return Err(invalid(
+            "war relation explicitly saves cancel=no; native writer omits an unset cancel flag",
+        ));
+    }
+    let cancel = cancel.unwrap_or(false);
+    let start_date = bytes(items, b"start_date")?
+        .map(|bytes| GameDate::parse(&bytes))
+        .transpose()?;
+    if cancel == start_date.is_some() {
+        return Err(invalid(
+            "war relation must save start_date exactly when cancel is unset",
+        ));
+    }
+    let end_date = bytes(items, b"end_date")?
+        .map(|bytes| GameDate::parse(&bytes))
+        .transpose()?;
+    if let (Some(start), Some(end)) = (start_date, end_date)
+        && end.engine_hour()? <= start.engine_hour()?
+    {
+        return Err(invalid(
+            "war relation saves end_date only when it is after start_date",
+        ));
+    }
+    Ok(WarRelation {
+        roster_owner: roster_owner.to_vec(),
+        target: target.to_vec(),
+        first: required_bytes(items, b"first")?,
+        second: required_bytes(items, b"second")?,
+        start_date,
+        end_date,
+        cancel,
+        first_casualties: integer(&required_bytes(items, b"first_casualties")?)?,
+        second_casualties: integer(&required_bytes(items, b"second_casualties")?)?,
+        first_unknown_casualties: integer(&required_bytes(items, b"first_unknown_casualties")?)?,
+        second_unknown_casualties: integer(&required_bytes(items, b"second_unknown_casualties")?)?,
+        first_was_instigator: boolean(
+            field(items, b"first_was_instigator")?
+                .ok_or_else(|| invalid("save lacks first_was_instigator"))?,
+        )?,
+    })
+}
+
+fn parse_faction(items: &[Item]) -> io::Result<Faction> {
+    let id =
+        typed_handle(field(items, b"id")?.ok_or_else(|| invalid("faction lacks its typed id"))?)?;
+    let mut members = Vec::new();
+    let mut seen = BTreeSet::new();
+    if let Some(value) = field(items, b"members")? {
+        for item in block(value)? {
+            if item.key.is_some() {
+                return Err(invalid("faction members must be an ordinary list of tags"));
+            }
+            let tag = scalar(&item.value)?;
+            if tag.is_empty() {
+                return Err(invalid("faction member has an empty country tag"));
+            }
+            if !seen.insert(tag) {
+                return Err(invalid("duplicate country tag in saved faction members"));
+            }
+            members.push(tag.to_vec());
+        }
+    }
+    Ok(Faction {
+        id,
+        name: bytes(items, b"name")?.unwrap_or_default(),
+        members,
+    })
+}
+
 /// Binary saves are refused before parsing. This never rounds a save decimal or
 /// fills a missing field with a historical or runtime default.
 pub fn parse(input: &[u8]) -> io::Result<Save> {
@@ -524,6 +646,8 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
     let seed = integer(&required_bytes(items, b"game_unique_seed")?)?;
     let mut countries = BTreeMap::new();
     let mut divisions = BTreeMap::new();
+    let mut war_relations = Vec::new();
+    let mut war_pairs = BTreeSet::new();
     for item in required_block(items, b"countries")? {
         let tag = item
             .key
@@ -556,6 +680,40 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
                     ));
                 }
             }
+        }
+        if let Some(diplomacy) = field(country_items, b"diplomacy")?
+            && let Some(relations) = field(block(diplomacy)?, b"active_relations")?
+        {
+            for item in block(relations)? {
+                let target = item
+                    .key
+                    .as_deref()
+                    .filter(|tag| !tag.is_empty())
+                    .ok_or_else(|| invalid("active relation has no target country tag"))?;
+                if let Some(war) = field(block(&item.value)?, b"war_relation")? {
+                    let war = parse_war_relation(tag, target, block(war)?).map_err(|error| {
+                        invalid(format!(
+                            "country {} relation {}: {error}",
+                            String::from_utf8_lossy(tag),
+                            String::from_utf8_lossy(target)
+                        ))
+                    })?;
+                    if !war_pairs.insert((war.first.clone(), war.second.clone())) {
+                        return Err(invalid("duplicate ordered war relation pair in save"));
+                    }
+                    war_relations.push(war);
+                }
+            }
+        }
+    }
+    let mut factions = BTreeMap::new();
+    for item in items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"faction"))
+    {
+        let faction = parse_faction(block(&item.value)?)?;
+        if factions.insert(faction.id, faction).is_some() {
+            return Err(invalid("duplicate full faction handle in save"));
         }
     }
     let mut states = BTreeMap::new();
@@ -629,6 +787,8 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
         states,
         provinces,
         divisions,
+        war_relations,
+        factions,
         equipment_definitions,
     })
 }
@@ -1288,6 +1448,204 @@ division={
                 .unwrap_err()
                 .to_string()
                 .contains("duplicate full division handle")
+        );
+    }
+
+    const WAR_FIELDS: &str = "first=GER second=SOV start_date=1936.1.1.12 first_casualties=0 second_casualties=0 first_unknown_casualties=0 second_unknown_casualties=0 first_was_instigator=yes";
+
+    fn diplomacy_save(relations: &str, factions: &str) -> io::Result<Save> {
+        parse(format!(
+            "HOI4txt\ndate=1936.1.2.1 game_unique_id=c version=b game_unique_seed=0 countries={{ GER={{diplomacy={{active_relations={{{relations}}}}}}} SOV={{}} D01={{}} }} states={{}} provinces={{}} {factions}"
+        ).as_bytes())
+    }
+
+    #[test]
+    fn war_relations_preserve_envelopes_order_and_unscaled_signed_integers() {
+        let body = WAR_FIELDS
+            .replace("first=GER", "first=D01")
+            .replace("second=SOV", "second=GER")
+            .replace(
+                "first_casualties=0",
+                "first_casualties=-9223372036854775808",
+            )
+            .replace(
+                "second_casualties=0",
+                "second_casualties=9223372036854775807",
+            )
+            .replace(
+                "first_unknown_casualties=0",
+                "first_unknown_casualties=9007199254740993",
+            )
+            .replace(
+                "second_unknown_casualties=0",
+                "second_unknown_casualties=-1",
+            )
+            .replace("first_was_instigator=yes", "first_was_instigator=no");
+        let save = diplomacy_save(&format!("SOV={{war_relation={{{body}}}}}"), "").unwrap();
+        let war = &save.war_relations[0];
+        assert_eq!(war.roster_owner, b"GER");
+        assert_eq!(war.target, b"SOV");
+        // Canonical equivalence and envelope agreement belong to the oracle.
+        assert_eq!(war.first, b"D01");
+        assert_eq!(war.second, b"GER");
+        assert_eq!(war.first_casualties, i64::MIN);
+        assert_eq!(war.second_casualties, i64::MAX);
+        assert_eq!(war.first_unknown_casualties, 9_007_199_254_740_993);
+        assert_eq!(war.second_unknown_casualties, -1);
+        assert!(!war.first_was_instigator);
+        assert!(!war.cancel);
+        assert_eq!(
+            war.start_date.unwrap(),
+            GameDate::parse(b"1936.1.1.12").unwrap()
+        );
+        assert_eq!(war.end_date, None);
+    }
+
+    #[test]
+    fn war_dates_preserve_native_omissions_without_filling_raw_hours() {
+        let cancelled = WAR_FIELDS.replace("start_date=1936.1.1.12", "cancel=yes");
+        for suffix in ["", " end_date=1936.1.2.1"] {
+            let save = diplomacy_save(&format!("SOV={{war_relation={{{cancelled}{suffix}}}}}"), "")
+                .unwrap();
+            let war = &save.war_relations[0];
+            assert!(war.cancel);
+            assert_eq!(war.start_date, None);
+            assert_eq!(war.end_date.is_some(), !suffix.is_empty());
+        }
+        let save = diplomacy_save(
+            &format!("SOV={{war_relation={{{WAR_FIELDS} end_date=1936.1.1.13}}}}"),
+            "",
+        )
+        .unwrap();
+        let war = &save.war_relations[0];
+        assert_eq!(
+            war.end_date.unwrap().engine_hour().unwrap(),
+            war.start_date.unwrap().engine_hour().unwrap() + 1
+        );
+        let empty = diplomacy_save("SOV={opinion=10}", "").unwrap();
+        assert!(empty.war_relations.is_empty());
+        assert!(empty.factions.is_empty());
+    }
+
+    #[test]
+    fn war_missing_required_fields_and_malformed_values_are_refused() {
+        for required in WAR_FIELDS.split(' ') {
+            let body = WAR_FIELDS.replace(required, "");
+            assert!(
+                diplomacy_save(&format!("SOV={{war_relation={{{body}}}}}"), "").is_err(),
+                "missing {required}"
+            );
+        }
+        for body in [
+            WAR_FIELDS.replace("first=GER", "first={}"),
+            WAR_FIELDS.replace("second=SOV", "second=\"\""),
+            WAR_FIELDS.replace("first_casualties=0", "first_casualties=0.0"),
+            WAR_FIELDS.replace(
+                "second_casualties=0",
+                "second_casualties=9223372036854775808",
+            ),
+            WAR_FIELDS.replace(
+                "first_unknown_casualties=0",
+                "first_unknown_casualties=-9223372036854775809",
+            ),
+            WAR_FIELDS.replace("first_was_instigator=yes", "first_was_instigator=1"),
+            WAR_FIELDS.replace("start_date=1936.1.1.12", "start_date=1936.2.29.12"),
+            WAR_FIELDS.replace("start_date=1936.1.1.12", "cancel=no"),
+            format!("{WAR_FIELDS} cancel=no"),
+            format!("{WAR_FIELDS} cancel=yes"),
+            format!("{WAR_FIELDS} cancel={{}}"),
+            format!("{WAR_FIELDS} end_date=1936.1.1.12"),
+            format!("{WAR_FIELDS} end_date=1936.1.1.11"),
+            format!("{WAR_FIELDS} end_date={{}}"),
+            format!("{WAR_FIELDS} first_casualties=0"),
+            format!("{WAR_FIELDS} first_was_instigator=yes"),
+        ] {
+            assert!(
+                diplomacy_save(&format!("SOV={{war_relation={{{body}}}}}"), "").is_err(),
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn war_duplicate_pairs_are_refused_across_target_envelopes() {
+        let war = format!("war_relation={{{WAR_FIELDS}}}");
+        for relations in [
+            format!("SOV={{{war} {war}}}"),
+            format!("SOV={{{war}}} D01={{{war}}}"),
+        ] {
+            assert!(diplomacy_save(&relations, "").is_err(), "{relations}");
+        }
+        let reversed = WAR_FIELDS
+            .replace("first=GER", "first=SOV")
+            .replace("second=SOV", "second=GER");
+        let save = diplomacy_save(
+            &format!("SOV={{{war}}} GER={{war_relation={{{reversed}}}}}"),
+            "",
+        )
+        .unwrap();
+        assert_eq!(save.war_relations.len(), 2);
+        assert_eq!(save.war_relations[1].first, b"SOV");
+    }
+
+    #[test]
+    fn factions_preserve_full_handles_literal_name_and_leader_order() {
+        let save = diplomacy_save(
+            "",
+            r#"faction={id={type=88 id=4294967295} members={SOV GER D01} template=faction_template_allies}
+faction={id={id=1 type=0} name="Literal name"}
+faction={id={id=0 type=88} members={} name=""}"#,
+        )
+        .unwrap();
+        let full = (u64::from(u32::MAX) << 32) | 88;
+        assert_eq!(save.factions.len(), 3);
+        let faction = &save.factions[&full];
+        assert_eq!(faction.id, full);
+        assert!(faction.name.is_empty());
+        assert_eq!(
+            faction.members,
+            [b"SOV".to_vec(), b"GER".to_vec(), b"D01".to_vec()]
+        );
+        let no_members = &save.factions[&(1_u64 << 32)];
+        assert_eq!(no_members.name, b"Literal name");
+        assert!(no_members.members.is_empty());
+        assert!(save.factions[&88].name.is_empty());
+        assert!(save.factions[&88].members.is_empty());
+    }
+
+    #[test]
+    fn factions_refuse_duplicate_handles_members_and_malformed_fields() {
+        for body in [
+            "",
+            "id={}",
+            "id={id=1}",
+            "id={type=88}",
+            "id={id=0 type=0}",
+            "id={id=4294967296 type=88}",
+            "id={id=1 type=-1}",
+            "id={id=1 type=88 type=88}",
+            "id={id=1 type=88} id={id=1 type=88}",
+            "id=no",
+            "id={id=1 type=88} name={}",
+            "id={id=1 type=88} name=x name=x",
+            "id={id=1 type=88} members=no",
+            "id={id=1 type=88} members={GER GER}",
+            "id={id=1 type=88} members={GER=yes}",
+            "id={id=1 type=88} members={{GER}}",
+            "id={id=1 type=88} members={\"\"}",
+            "id={id=1 type=88} members={} members={}",
+        ] {
+            assert!(
+                diplomacy_save("", &format!("faction={{{body}}}")).is_err(),
+                "{body}"
+            );
+        }
+        let duplicate = "faction={id={type=88 id=1}} faction={id={id=1 type=88}}";
+        assert!(
+            diplomacy_save("", duplicate)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate full faction handle")
         );
     }
 

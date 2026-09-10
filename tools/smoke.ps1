@@ -7,7 +7,10 @@ drive the game during local validation. Baseline verifies the pinned game build,
 then reads only its clock; it sends no input and does not inject.
 The script does not modify settings or certify that a save finished loading.
 
-Screenshot and click coordinates are relative to the outer game window.
+Screenshot, Click and Move coordinates are relative to the outer game window.
+Move positions the cursor without clicking or pressing a key. After setting
+speed and unpausing, move well inside the map before each timed run to avoid
+edge scrolling during either the baseline or the capture.
 Console opens the console with the supplied key, types one line, presses Enter,
 and closes it. Use Text for an already-open console or a save-name field.
 .EXAMPLE
@@ -19,11 +22,13 @@ powershell -File tools/smoke.ps1 -Action Key -Key Space
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Click -X 640 -Y 480
 .EXAMPLE
+powershell -File tools/smoke.ps1 -Action Move -GameId 1234 -X 1280 -Y 720
+.EXAMPLE
 powershell -File tools/smoke.ps1 -Action Baseline -Seconds 120 -Out captures\baseline
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Smoke', 'Launch', 'Screenshot', 'Key', 'Click', 'Text', 'Console', 'Baseline')]
+    [ValidateSet('Smoke', 'Launch', 'Screenshot', 'Key', 'Click', 'Move', 'Text', 'Console', 'Baseline')]
     [string]$Action = 'Smoke',
     [string]$GameExe = 'X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe',
     [string]$UserDirectory = 'C:\Users\Example\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV',
@@ -45,7 +50,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($Action -eq 'Smoke') {
-    throw 'The full product smoke check awaits Milestone 2.4. Milestone 1.3 supports explicit Launch, Screenshot, Key, Click, Text, Console, and Baseline actions only.'
+    throw 'The full product smoke check awaits Milestone 2.4. Milestone 1.3 supports explicit Launch, Screenshot, Key, Click, Move, Text, Console, and Baseline actions only.'
 }
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw 'The game driver requires Windows and an interactive desktop.'
@@ -368,6 +373,12 @@ public static class Hoi4ProbeInput {
             Send(window, process, input);
         }
     }
+    public static void Move(IntPtr window, uint process, int x, int y) {
+        CheckTarget(window, process);
+        if (!SetCursorPos(x, y)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        System.Threading.Thread.Sleep(100);
+        CheckTarget(window, process);
+    }
     public static void Click(IntPtr window, uint process, int x, int y) {
         CheckTarget(window, process);
         if (!SetCursorPos(x, y)) throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -436,8 +447,8 @@ switch ($Action) {
         [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$keys[$Key])
         [pscustomobject]@{ Action = $Action; GameId = $game.Id; Key = $Key }
     }
-    'Click' {
-        if ($X -lt 0 -or $Y -lt 0 -or $X -ge $width -or $Y -ge $height) { throw 'Click coordinates must lie inside the screenshot rectangle.' }
+    { $_ -eq 'Click' -or $_ -eq 'Move' } {
+        if ($X -lt 0 -or $Y -lt 0 -or $X -ge $width -or $Y -ge $height) { throw "$Action coordinates must lie inside the screenshot rectangle." }
         $client = New-Object Hoi4ProbeInput+Rect
         $origin = New-Object Hoi4ProbeInput+Point
         if (-not [Hoi4ProbeInput]::GetClientRect($window, [ref]$client) -or -not [Hoi4ProbeInput]::ClientToScreen($window, [ref]$origin)) {
@@ -446,9 +457,14 @@ switch ($Action) {
         $screenX = $rect.Left + $X
         $screenY = $rect.Top + $Y
         if ($screenX -lt $origin.X -or $screenY -lt $origin.Y -or $screenX -ge $origin.X + $client.Right -or $screenY -ge $origin.Y + $client.Bottom) {
+            if ($Action -eq 'Move') { throw 'Move coordinates must be inside the game client area, not the window frame.' }
             throw 'Clicks must be inside the game client area, not the window frame.'
         }
-        [Hoi4ProbeInput]::Click($window, [uint32]$game.Id, $screenX, $screenY)
+        if ($Action -eq 'Move') {
+            [Hoi4ProbeInput]::Move($window, [uint32]$game.Id, $screenX, $screenY)
+        } else {
+            [Hoi4ProbeInput]::Click($window, [uint32]$game.Id, $screenX, $screenY)
+        }
         [pscustomobject]@{ Action = $Action; GameId = $game.Id; X = $X; Y = $Y }
     }
     { $_ -eq 'Text' -or $_ -eq 'Console' } {

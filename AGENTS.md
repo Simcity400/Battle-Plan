@@ -2,6 +2,7 @@
 
 - Read [PLAN.md](PLAN.md) first, then [README.md](README.md). Work the current phase; do not start the next phase before its check passes.
 - Work on one coordinated branch. Parallel helpers are owner-authorized; give them bounded tasks with clear file ownership. No lanes, landing branches or owner rulings in code comments.
+- Design for aggregate cost as recorded data grows. Batch independent implementation and validation; shared captures must retain per-table correctness and cost results. Keep builds and heavy analysis outside timed game intervals.
 - Keep one file per engine struct. The owner superseded the original under-100-file limit; report the final count without inventing a replacement cap.
 - Replace, never shim. Delete replaced code and its references. A format change updates every reader and writer in the same commit.
 - Validation is [PLAN.md section 5](PLAN.md#5-validation) and nothing else. Do not add test infrastructure, cloud CI, corpus tests or evidence reverification.

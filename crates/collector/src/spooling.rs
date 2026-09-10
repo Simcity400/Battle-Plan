@@ -1,6 +1,9 @@
 //! Conversion, differencing and durable output. Nothing here runs on the game thread.
 
-use crate::sampling::{Captured, LossBatch, LostObservation, qpc as current_qpc};
+use crate::sampling::{
+    CONSISTENCY_TABLES, CONSISTENCY_TARGET, Captured, LossBatch, LostObservation,
+    qpc as current_qpc, stable_clock,
+};
 use engine::{cgame_state::Clock, walk::Outcome};
 use replay::{
     BranchId,
@@ -10,13 +13,14 @@ use replay::{
     frame::{DecodedFrame, FrameEncoder, Metrics, TABLE_COUNT, TableView},
     identity::SessionStart,
     rows::{
-        CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow, ProvinceRow, Row, StateRow,
-        TableId,
+        CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow, FactionMemberRow,
+        FactionRow, ProvinceRow, Row, StateRow, TableId, WarRelationRow,
     },
     spool::{FileBackend, Record, SegmentBackend, SegmentedSpool},
 };
 use serde_json::{Value, json};
 use std::{
+    cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Path, PathBuf},
@@ -26,30 +30,78 @@ use std::{
 pub(super) struct Distribution {
     samples_ns: Vec<u64>,
     total_ns: u64,
+    cached: Cell<Option<Percentiles>>,
+    scratch: RefCell<Vec<u64>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Percentiles {
+    p50_ns: u64,
+    p95_ns: u64,
+    p99_ns: u64,
+    max_ns: u64,
+}
+
+fn exact_percentiles(samples: &mut [u64]) -> Percentiles {
+    if samples.is_empty() {
+        return Percentiles::default();
+    }
+    let max_ns = samples.iter().copied().max().unwrap();
+    let ranks = [50, 95, 99].map(|percent| (samples.len() * percent).div_ceil(100) - 1);
+    let mut values = [0; 3];
+    let mut remaining = samples;
+    let mut offset = 0;
+    let mut selected = 0;
+    for (rank, value) in ranks.into_iter().zip(&mut values) {
+        if rank >= offset {
+            let (_, at_rank, suffix) = remaining.select_nth_unstable(rank - offset);
+            selected = *at_rank;
+            remaining = suffix;
+            offset = rank + 1;
+        }
+        // Small samples can put several requested percentiles at the same rank.
+        *value = selected;
+    }
+    Percentiles {
+        p50_ns: values[0],
+        p95_ns: values[1],
+        p99_ns: values[2],
+        max_ns,
+    }
 }
 
 impl Distribution {
     pub fn record_ticks(&mut self, ticks: i64, frequency: u64) {
         let ns = ((ticks.max(0) as u128 * 1_000_000_000) / u128::from(frequency)) as u64;
+        self.record_ns(ns);
+    }
+
+    fn record_ns(&mut self, ns: u64) {
         self.total_ns = self.total_ns.saturating_add(ns);
         self.samples_ns.push(ns);
+        self.cached.set(None);
+    }
+
+    fn percentiles(&self) -> Percentiles {
+        // Repeated status reads reuse exact results until another sample arrives.
+        if let Some(cached) = self.cached.get() {
+            return cached;
+        }
+        let mut scratch = self.scratch.borrow_mut();
+        scratch.clone_from(&self.samples_ns);
+        let result = exact_percentiles(&mut scratch);
+        self.cached.set(Some(result));
+        result
     }
 
     pub fn json(&self) -> Value {
-        let mut ordered = self.samples_ns.clone();
-        ordered.sort_unstable();
-        let percentile = |percent: usize| {
-            if ordered.is_empty() {
-                0
-            } else {
-                ordered[(ordered.len() * percent).div_ceil(100) - 1]
-            }
-        };
+        let percentiles = self.percentiles();
+        let count = self.samples_ns.len();
         json!({
-            "calls": ordered.len(), "total_ns": self.total_ns,
-            "mean_ns": if ordered.is_empty() { 0.0 } else { self.total_ns as f64 / ordered.len() as f64 },
-            "p50_ns": percentile(50), "p95_ns": percentile(95), "p99_ns": percentile(99),
-            "max_ns": ordered.last().copied().unwrap_or(0),
+            "calls": count, "total_ns": self.total_ns,
+            "mean_ns": if count == 0 { 0.0 } else { self.total_ns as f64 / count as f64 },
+            "p50_ns": percentiles.p50_ns, "p95_ns": percentiles.p95_ns,
+            "p99_ns": percentiles.p99_ns, "max_ns": percentiles.max_ns,
         })
     }
 }
@@ -407,13 +459,20 @@ struct Statistics {
     campaign: Option<String>,
     last_hour: Option<i32>,
     total_ns: u64,
-    samples: Vec<u64>,
+    callback: Distribution,
     table_ns: [u64; TABLE_COUNT],
     dropped_frames: u64,
     truncated_tables: usize,
     links_mismatches: u64,
     states_mismatches: u64,
     divisions_mismatches: u64,
+    wars_mismatches: u64,
+    factions_mismatches: u64,
+    faction_members_mismatches: u64,
+    consistency_successful: [u16; CONSISTENCY_TABLES.len()],
+    war_matrix_checks: u64,
+    war_matrix_failures: u64,
+    war_matrix_cost: Distribution,
     pool_bytes: u64,
     previous: Option<(String, BranchId, i32, i64)>,
     interval_hours: u64,
@@ -423,6 +482,60 @@ struct Statistics {
     conversion: Distribution,
     frame_encoding: Distribution,
     record_writes: Distribution,
+}
+
+impl Statistics {
+    fn observe_consistency(&mut self, captured: &Captured) {
+        for (index, total) in self.consistency_successful.iter_mut().enumerate() {
+            *total = (*total).max(captured.consistency_successful[index]);
+        }
+        for (index, (total, count)) in [
+            (&mut self.links_mismatches, captured.links_mismatches),
+            (&mut self.states_mismatches, captured.states_mismatches),
+            (
+                &mut self.divisions_mismatches,
+                captured.divisions_mismatches,
+            ),
+            (&mut self.wars_mismatches, captured.wars_mismatches),
+            (&mut self.factions_mismatches, captured.factions_mismatches),
+            (
+                &mut self.faction_members_mismatches,
+                captured.faction_members_mismatches,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if captured.consistency_checked[index] {
+                *total += count as u64;
+            }
+        }
+        if captured.war_matrix_result.is_some() {
+            self.war_matrix_cost
+                .record_ticks(captured.war_matrix_ns as i64, 1_000_000_000);
+            self.war_matrix_checks += u64::from(
+                matches!(
+                    (captured.wars_result, captured.war_matrix_result),
+                    (Outcome::Rows { .. }, Some(Outcome::Rows { .. }))
+                ) && stable_clock(captured.clock_before, captured.clock_after)
+                    && (!captured.consistency_checked[3] || captured.wars_mismatches == 0),
+            );
+            self.war_matrix_failures += u64::from(war_matrix_issue(captured).is_some());
+        }
+    }
+
+    fn consistency_status(&self) -> Value {
+        let successful: serde_json::Map<String, Value> = CONSISTENCY_TABLES
+            .into_iter()
+            .zip(self.consistency_successful)
+            .map(|(table, count)| (table.to_owned(), json!(count)))
+            .collect();
+        json!({
+            "scope": "this collector attach",
+            "target_per_table": CONSISTENCY_TARGET,
+            "successful_checks": successful,
+        })
+    }
 }
 
 pub struct Processor {
@@ -583,19 +696,20 @@ impl Processor {
         stats.campaign = Some(id.clone());
         stats.last_hour = Some(clock.hour);
         stats.total_ns = captured.total_ns;
-        stats.samples.push(captured.total_ns);
+        stats.callback.record_ns(captured.total_ns);
         stats.table_ns = captured.table_ns;
         stats.pool_bytes = captured.pool_bytes;
         stats.dropped_frames = captured.dropped_frames;
-        stats.links_mismatches += captured.links_mismatches as u64;
-        stats.states_mismatches += captured.states_mismatches as u64;
-        stats.divisions_mismatches += captured.divisions_mismatches as u64;
+        stats.observe_consistency(captured);
         stats.truncated_tables = [
             captured.countries_result,
             captured.links_result,
             captured.provinces_result,
             captured.states_result,
             captured.divisions_result,
+            captured.wars_result,
+            captured.factions_result,
+            captured.faction_members_result,
         ]
         .into_iter()
         .filter(|outcome| matches!(outcome, Outcome::Truncated { .. }))
@@ -665,15 +779,7 @@ impl Processor {
 
     pub fn status(&self) -> Value {
         let stats = &self.stats;
-        let mut samples = stats.samples.clone();
-        samples.sort_unstable();
-        let percentile = |percent: usize| {
-            if samples.is_empty() {
-                0
-            } else {
-                samples[(samples.len() * percent).div_ceil(100) - 1]
-            }
-        };
+        let callback = stats.callback.percentiles();
         let spool_bytes: u64 = self
             .campaigns
             .values()
@@ -686,8 +792,8 @@ impl Processor {
             .sum();
         json!({
             "campaign": stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
-            "total_ns": stats.total_ns, "p50_ns": percentile(50), "p95_ns": percentile(95),
-            "max_ns": samples.last().copied().unwrap_or(0), "table_ns": stats.table_ns,
+            "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
+            "max_ns": callback.max_ns, "table_ns": stats.table_ns,
             "hours_per_second": if stats.interval_qpc == 0 { 0.0 } else {
                 stats.interval_hours as f64 * self.session.qpc_frequency as f64 / stats.interval_qpc as f64
             },
@@ -695,6 +801,13 @@ impl Processor {
             "truncated_tables": stats.truncated_tables, "links_mismatches": stats.links_mismatches,
             "states_mismatches": stats.states_mismatches,
             "divisions_mismatches": stats.divisions_mismatches,
+            "wars_mismatches": stats.wars_mismatches,
+            "factions_mismatches": stats.factions_mismatches,
+            "faction_members_mismatches": stats.faction_members_mismatches,
+            "consistency": stats.consistency_status(),
+            "war_matrix_checks": stats.war_matrix_checks,
+            "war_matrix_failures": stats.war_matrix_failures,
+            "war_matrix_cost": stats.war_matrix_cost.json(),
             "pool_bytes": stats.pool_bytes, "write_errors": stats.errors, "last_error": stats.last_error,
             "unknown_losses_pending": self.unknown_pending,
             "spool_work": {
@@ -776,6 +889,48 @@ fn table<T>(outcome: Outcome, source: &[T], convert: impl Fn(&T) -> Row) -> Tabl
     }
 }
 
+/// The two native censuses have different iteration orders. Compare their full
+/// rows here, off the game thread, while leaving encoding to the common path.
+fn war_matrix_issue(captured: &Captured) -> Option<&'static str> {
+    let Outcome::Rows { len } = captured.wars_result else {
+        return None;
+    };
+    match captured.war_matrix_result? {
+        Outcome::Rows { len: other_len } => (len != other_len
+            || captured.wars[..len]
+                .iter()
+                .any(|row| !captured.wars_matrix[..other_len].contains(row)))
+        .then_some("war owned-vector and matrix censuses disagree"),
+        Outcome::Truncated { .. } => Some("independent war matrix census truncated"),
+        Outcome::Unavailable { .. } => Some("independent war matrix census unavailable"),
+    }
+}
+
+fn faction_table(captured: &Captured) -> TableView {
+    if captured.consistency_checked[4] && captured.factions_mismatches != 0 {
+        return unavailable("factions changed during double read");
+    }
+    if captured.faction_names_len > captured.faction_names.len()
+        || captured.factions_result.len() > captured.factions.len()
+        || captured.factions[..captured.factions_result.len()]
+            .iter()
+            .any(|row| {
+                row.name_start
+                    .checked_add(row.name_len)
+                    .is_none_or(|end| end > captured.faction_names_len)
+            })
+    {
+        return unavailable("faction name lies outside the captured byte arena");
+    }
+    table(captured.factions_result, &captured.factions, |faction| {
+        Row::Faction(FactionRow {
+            id: faction.id,
+            name: captured.faction_names[faction.name_start..faction.name_start + faction.name_len]
+                .to_vec(),
+        })
+    })
+}
+
 fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> DecodedFrame {
     let metrics = Metrics {
         total_ns: captured.total_ns,
@@ -823,7 +978,7 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> DecodedFrame 
                     convoys_raw: country.convoys_raw,
                 })
             }),
-            if captured.links_mismatches != 0 {
+            if captured.consistency_checked[0] && captured.links_mismatches != 0 {
                 unavailable("country links changed during double read")
             } else {
                 table(captured.links_result, &captured.links, |link| {
@@ -841,7 +996,7 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> DecodedFrame 
                     controller: province.controller,
                 })
             }),
-            if captured.states_mismatches != 0 {
+            if captured.consistency_checked[1] && captured.states_mismatches != 0 {
                 unavailable("states changed during double read")
             } else {
                 table(captured.states_result, &captured.states, |state| {
@@ -852,7 +1007,7 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> DecodedFrame 
                     })
                 })
             },
-            if captured.divisions_mismatches != 0 {
+            if captured.consistency_checked[2] && captured.divisions_mismatches != 0 {
                 unavailable("divisions changed during double read")
             } else {
                 table(captured.divisions_result, &captured.divisions, |division| {
@@ -867,6 +1022,42 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> DecodedFrame 
                         organisation: division.organisation,
                     })
                 })
+            },
+            if captured.consistency_checked[3] && captured.wars_mismatches != 0 {
+                unavailable("war relations changed during double read")
+            } else if let Some(reason) = war_matrix_issue(captured) {
+                unavailable(reason)
+            } else {
+                table(captured.wars_result, &captured.wars, |war| {
+                    Row::WarRelation(WarRelationRow {
+                        first_country: war.first_country,
+                        second_country: war.second_country,
+                        start_hour: war.start_hour,
+                        end_hour: war.end_hour,
+                        cancel: war.cancel,
+                        first_casualties: war.first_casualties,
+                        second_casualties: war.second_casualties,
+                        first_unknown_casualties: war.first_unknown_casualties,
+                        second_unknown_casualties: war.second_unknown_casualties,
+                        first_was_instigator: war.first_was_instigator,
+                    })
+                })
+            },
+            faction_table(captured),
+            if captured.consistency_checked[5] && captured.faction_members_mismatches != 0 {
+                unavailable("faction members changed during double read")
+            } else {
+                table(
+                    captured.faction_members_result,
+                    &captured.faction_members,
+                    |member| {
+                        Row::FactionMember(FactionMemberRow {
+                            country: member.country,
+                            faction: member.faction,
+                            ordinal: member.ordinal,
+                        })
+                    },
+                )
             },
         ]
     };
@@ -896,6 +1087,130 @@ mod tests {
         assert_eq!(report["p50_ns"], 200);
         assert_eq!(report["p95_ns"], 400);
     }
+
+    #[test]
+    fn selected_percentiles_match_sorted_ranks_for_small_tied_and_extreme_samples() {
+        for len in 0..=257 {
+            let mut input: Vec<_> = (0..len)
+                .map(|index| match index % 5 {
+                    0 => 0,
+                    1 => u64::MAX,
+                    2 => (index % 7) as u64,
+                    3 => (len - index) as u64,
+                    _ => 17,
+                })
+                .collect();
+            let mut sorted = input.clone();
+            sorted.sort_unstable();
+            let at = |percent: usize| {
+                if sorted.is_empty() {
+                    0
+                } else {
+                    sorted[(sorted.len() * percent).div_ceil(100) - 1]
+                }
+            };
+            let expected = Percentiles {
+                p50_ns: at(50),
+                p95_ns: at(95),
+                p99_ns: at(99),
+                max_ns: sorted.last().copied().unwrap_or(0),
+            };
+            assert_eq!(exact_percentiles(&mut input), expected, "length {len}");
+            sorted.reverse();
+            assert_eq!(
+                exact_percentiles(&mut sorted),
+                expected,
+                "reverse length {len}"
+            );
+        }
+    }
+
+    #[test]
+    fn cached_percentiles_refresh_after_samples_below_and_above_the_old_range() {
+        let mut values = Distribution::default();
+        assert_eq!(values.percentiles(), Percentiles::default());
+        assert_eq!(values.cached.get(), Some(Percentiles::default()));
+        for ns in [10, 20, 30] {
+            values.record_ns(ns);
+        }
+        assert_eq!(values.cached.get(), None);
+        let first = values.json();
+        assert_eq!(
+            first,
+            json!({
+                "calls": 3, "total_ns": 60, "mean_ns": 20.0,
+                "p50_ns": 20, "p95_ns": 30, "p99_ns": 30, "max_ns": 30,
+            })
+        );
+        let cached = values.cached.get();
+        assert!(cached.is_some());
+        assert_eq!(values.json(), first);
+        assert_eq!(values.cached.get(), cached);
+
+        values.record_ns(5);
+        assert_eq!(values.cached.get(), None);
+        assert_eq!(
+            values.json(),
+            json!({
+                "calls": 4, "total_ns": 65, "mean_ns": 16.25,
+                "p50_ns": 10, "p95_ns": 30, "p99_ns": 30, "max_ns": 30,
+            })
+        );
+        values.record_ticks(100, 1_000_000_000);
+        assert_eq!(values.cached.get(), None);
+        let last = values.json();
+        assert_eq!(
+            last,
+            json!({
+                "calls": 5, "total_ns": 165, "mean_ns": 33.0,
+                "p50_ns": 20, "p95_ns": 100, "p99_ns": 100, "max_ns": 100,
+            })
+        );
+        assert_eq!(values.json(), last);
+        assert_eq!(values.samples_ns, [10, 20, 30, 5, 100]);
+    }
+
+    #[test]
+    fn cached_callback_summary_does_not_freeze_status_errors_or_latest_cost() {
+        let mut processor = Processor {
+            root: PathBuf::new(),
+            replay_dir: PathBuf::new(),
+            session: session(),
+            campaigns: BTreeMap::new(),
+            stats: Statistics::default(),
+            unknown_pending: 0,
+            suppress_origin: false,
+        };
+        for ns in [100, 200, 300] {
+            processor.stats.callback.record_ns(ns);
+        }
+        processor.stats.hours = 3;
+        processor.stats.total_ns = 300;
+        let first = processor.status();
+        assert_eq!(first["p50_ns"], 200);
+        assert_eq!(first["p95_ns"], 300);
+        assert_eq!(first["max_ns"], 300);
+        assert_eq!(first["total_ns"], 300);
+        assert_eq!(processor.status(), first);
+
+        processor.error(&io::Error::other("new disk failure while paused"));
+        let failed = processor.status();
+        assert_eq!(failed["last_error"], "new disk failure while paused");
+        assert_eq!(failed["write_errors"], 1);
+        assert_eq!(failed["p50_ns"], first["p50_ns"]);
+
+        processor.stats.callback.record_ns(50);
+        processor.stats.hours += 1;
+        processor.stats.total_ns = 50;
+        let resumed = processor.status();
+        assert_eq!(resumed["hours"], 4);
+        assert_eq!(resumed["total_ns"], 50);
+        assert_eq!(resumed["p50_ns"], 100);
+        assert_eq!(resumed["p95_ns"], 300);
+        assert_eq!(resumed["max_ns"], 300);
+        assert_eq!(resumed["last_error"], failed["last_error"]);
+    }
+
     use engine::msvc_string::Text;
     use replay::{
         branches::{BranchReason, Parentage},
@@ -939,6 +1254,10 @@ mod tests {
         captured.provinces_result = Outcome::Rows { len: 0 };
         captured.states_result = Outcome::Rows { len: 0 };
         captured.divisions_result = Outcome::Rows { len: 0 };
+        captured.wars_result = Outcome::Rows { len: 0 };
+        captured.factions_result = Outcome::Rows { len: 0 };
+        captured.faction_members_result = Outcome::Rows { len: 0 };
+        captured.consistency_checked.fill(true);
         captured
     }
 
@@ -1099,6 +1418,350 @@ mod tests {
                 .tables
                 .iter()
                 .all(|table| *table == unavailable("clock unreadable around table walk"))
+        );
+    }
+
+    #[test]
+    fn skipped_comparisons_ignore_stale_mismatches_but_keep_primary_failures() {
+        let mut source = captured(10);
+        source.links_mismatches = 1;
+        source.states_mismatches = 1;
+        source.divisions_mismatches = 1;
+        source.wars_mismatches = 1;
+        source.factions_mismatches = 1;
+        source.faction_members_mismatches = 1;
+        let checked = decoded(&source, clock(10), 1);
+        for table in [
+            TableId::CountryLinks,
+            TableId::States,
+            TableId::Divisions,
+            TableId::WarRelations,
+            TableId::Factions,
+            TableId::FactionMembers,
+        ] {
+            assert!(matches!(
+                checked.tables[table.index()],
+                TableView::Unavailable { .. }
+            ));
+        }
+
+        source.consistency_checked.fill(false);
+        source.states_result = Outcome::Unavailable {
+            reason: "primary state pointer unreadable",
+        };
+        source.divisions_result = Outcome::Truncated {
+            len: 0,
+            unread_rows: 3,
+        };
+        source.factions[0] = engine::cfaction::Row {
+            id: 88,
+            name_start: 0,
+            name_len: 3,
+        };
+        source.factions_result = Outcome::Rows { len: 1 };
+        source.faction_names[..3].copy_from_slice(&[b'N', 0, 255]);
+        source.faction_names_len = 3;
+        let skipped = decoded(&source, clock(10), 1);
+        for table in [
+            TableId::CountryLinks,
+            TableId::WarRelations,
+            TableId::FactionMembers,
+        ] {
+            assert_eq!(
+                skipped.tables[table.index()],
+                TableView::Complete(Vec::new())
+            );
+        }
+        assert_eq!(
+            skipped.tables[TableId::States.index()],
+            unavailable("primary state pointer unreadable")
+        );
+        assert_eq!(
+            skipped.tables[TableId::Divisions.index()],
+            TableView::Truncated {
+                rows: Vec::new(),
+                missing: 3
+            }
+        );
+        assert_eq!(
+            skipped.tables[TableId::Factions.index()],
+            TableView::Complete(vec![Row::Faction(FactionRow {
+                id: 88,
+                name: vec![b'N', 0, 255],
+            })])
+        );
+    }
+
+    #[test]
+    fn consistency_status_keeps_attach_successes_without_counting_skipped_mismatches() {
+        let mut source = captured(10);
+        source.consistency_successful = [199, 200, 197, 196, 195, 194];
+        source.links_mismatches = 1;
+        source.states_mismatches = 2;
+        source.divisions_mismatches = 3;
+        source.wars_mismatches = 4;
+        source.factions_mismatches = 5;
+        source.faction_members_mismatches = 6;
+        let mut stats = Statistics::default();
+        stats.observe_consistency(&source);
+        source.consistency_checked.fill(false);
+        stats.observe_consistency(&source);
+        assert_eq!(
+            [
+                stats.links_mismatches,
+                stats.states_mismatches,
+                stats.divisions_mismatches,
+                stats.wars_mismatches,
+                stats.factions_mismatches,
+                stats.faction_members_mismatches
+            ],
+            [1, 2, 3, 4, 5, 6]
+        );
+        let status = stats.consistency_status();
+        assert_eq!(status["scope"], "this collector attach");
+        assert_eq!(status["target_per_table"], CONSISTENCY_TARGET);
+        for (table, count) in CONSISTENCY_TABLES
+            .into_iter()
+            .zip(source.consistency_successful)
+        {
+            assert_eq!(status["successful_checks"][table], count);
+        }
+        assert_eq!(status["successful_checks"].as_object().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn matrix_status_counts_full_stable_attempts_and_keeps_failed_attempt_costs() {
+        let mut source = captured(10);
+        source.war_matrix_result = Some(Outcome::Rows { len: 0 });
+        source.war_matrix_ns = 100;
+        let mut stats = Statistics::default();
+        stats.observe_consistency(&source);
+        assert_eq!(stats.war_matrix_checks, 1);
+
+        source.clock_after = Some(clock(11));
+        stats.observe_consistency(&source);
+        source.clock_after = None;
+        stats.observe_consistency(&source);
+        source.clock_after = Some(clock(10));
+        source.wars_mismatches = 1;
+        stats.observe_consistency(&source);
+        source.wars_mismatches = 0;
+        source.wars_result = Outcome::Truncated {
+            len: 0,
+            unread_rows: 1,
+        };
+        stats.observe_consistency(&source);
+        source.wars_result = Outcome::Rows { len: 0 };
+        source.war_matrix_result = Some(Outcome::Truncated {
+            len: 0,
+            unread_rows: 1,
+        });
+        stats.observe_consistency(&source);
+        source.war_matrix_result = Some(Outcome::Unavailable {
+            reason: "matrix unreadable",
+        });
+        stats.observe_consistency(&source);
+        source.war_matrix_result = None;
+        stats.observe_consistency(&source);
+        assert_eq!(stats.war_matrix_checks, 1);
+        assert_eq!(stats.war_matrix_failures, 2);
+        assert_eq!(stats.war_matrix_cost.json()["calls"], 7);
+        assert_eq!(stats.war_matrix_cost.json()["total_ns"], 700);
+    }
+
+    #[test]
+    fn primary_only_hours_restore_failed_baselines_and_keep_new_values() {
+        use replay::frame::{FrameDecoder, TableUpdate};
+
+        let mut source = captured(10);
+        source.states_mismatches = 1;
+        source.factions_mismatches = 1;
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        let failed = encoder
+            .encode(&decoded(&source, clock(10), 1), true)
+            .unwrap();
+        decoder.apply(&failed).unwrap();
+
+        source.consistency_checked.fill(false);
+        source.states_result = Outcome::Rows { len: 1 };
+        source.states[0] = engine::cstate::Row {
+            id: 4,
+            owner: 7,
+            controller: 7,
+        };
+        source.factions_result = Outcome::Rows { len: 1 };
+        source.factions[0] = engine::cfaction::Row {
+            id: 88,
+            name_start: 0,
+            name_len: 3,
+        };
+        source.faction_names_len = 3;
+        for hour in [11, 12] {
+            source.clock_before = Some(clock(hour));
+            source.clock_after = Some(clock(hour));
+            source.states[0].controller = hour as u32;
+            source.faction_names[..3].copy_from_slice(if hour == 11 { b"one" } else { b"two" });
+            let expected = decoded(&source, clock(hour), 1);
+            let frame = encoder.encode(&expected, false).unwrap();
+            for table in [TableId::States, TableId::Factions] {
+                if hour == 11 {
+                    assert!(matches!(
+                        frame.tables[table.index()],
+                        TableUpdate::Snapshot(_)
+                    ));
+                } else {
+                    assert!(matches!(
+                        frame.tables[table.index()],
+                        TableUpdate::Delta { .. }
+                    ));
+                }
+            }
+            assert_eq!(decoder.apply(&frame).unwrap().tables, expected.tables);
+        }
+    }
+
+    #[test]
+    fn relation_and_faction_conversion_preserves_native_fields_and_member_order() {
+        let mut source = captured(10);
+        source.wars[0] = engine::cwar_relation::Row {
+            first_country: u32::MAX,
+            second_country: 1,
+            start_hour: i32::MIN,
+            end_hour: i32::MAX,
+            cancel: 255,
+            first_casualties: i64::MAX,
+            second_casualties: i64::MIN,
+            first_unknown_casualties: -1,
+            second_unknown_casualties: 1_i64 << 40,
+            first_was_instigator: 254,
+        };
+        source.wars_result = Outcome::Rows { len: 1 };
+        source.factions[0] = engine::cfaction::Row {
+            id: u64::MAX,
+            name_start: 2,
+            name_len: 4,
+        };
+        source.factions_result = Outcome::Rows { len: 1 };
+        source.faction_names[..6].copy_from_slice(&[0, 0, b'A', 0, 255, b'B']);
+        source.faction_names_len = 6;
+        source.faction_members[0] = engine::cfaction_system::MemberRow {
+            country: 9,
+            faction: u64::MAX,
+            ordinal: 0,
+        };
+        source.faction_members[1] = engine::cfaction_system::MemberRow {
+            country: 1,
+            faction: u64::MAX,
+            ordinal: 1,
+        };
+        source.faction_members_result = Outcome::Rows { len: 2 };
+        let frame = decoded(&source, clock(10), 1);
+        let TableView::Complete(wars) = &frame.tables[TableId::WarRelations.index()] else {
+            panic!("war conversion incomplete")
+        };
+        let Row::WarRelation(war) = &wars[0] else {
+            panic!("wrong row")
+        };
+        assert_eq!(wars[0].key(), (u64::from(u32::MAX) << 32) | 1);
+        assert_eq!((war.cancel, war.first_was_instigator), (255, 254));
+        assert_eq!(
+            (
+                war.first_casualties,
+                war.second_casualties,
+                war.second_unknown_casualties
+            ),
+            (i64::MAX, i64::MIN, 1_i64 << 40)
+        );
+        assert_eq!(
+            frame.tables[TableId::Factions.index()],
+            TableView::Complete(vec![Row::Faction(FactionRow {
+                id: u64::MAX,
+                name: vec![b'A', 0, 255, b'B']
+            })])
+        );
+        assert_eq!(
+            frame.tables[TableId::FactionMembers.index()],
+            TableView::Complete(vec![
+                Row::FactionMember(FactionMemberRow {
+                    country: 1,
+                    faction: u64::MAX,
+                    ordinal: 1
+                }),
+                Row::FactionMember(FactionMemberRow {
+                    country: 9,
+                    faction: u64::MAX,
+                    ordinal: 0
+                }),
+            ])
+        );
+        let encoded = FrameEncoder::new().encode(&frame, true).unwrap();
+        let decoded = replay::frame::FrameDecoder::new().apply(&encoded).unwrap();
+        assert_eq!(decoded.tables, frame.tables);
+    }
+
+    #[test]
+    fn independent_census_compares_rows_without_assuming_native_iteration_order() {
+        let mut source = captured(10);
+        source.wars[0] = engine::cwar_relation::Row {
+            first_country: 1,
+            second_country: 2,
+            ..Default::default()
+        };
+        source.wars[1] = engine::cwar_relation::Row {
+            first_country: 1,
+            second_country: 3,
+            ..Default::default()
+        };
+        source.wars_result = Outcome::Rows { len: 2 };
+        source.wars_matrix[0] = source.wars[1];
+        source.wars_matrix[1] = source.wars[0];
+        source.war_matrix_result = Some(Outcome::Rows { len: 2 });
+        assert_eq!(war_matrix_issue(&source), None);
+        source.wars_matrix[0].first_casualties = 1;
+        let frame = decoded(&source, clock(10), 1);
+        assert_eq!(
+            frame.tables[TableId::WarRelations.index()],
+            unavailable("war owned-vector and matrix censuses disagree")
+        );
+        assert_eq!(
+            frame.tables[TableId::Factions.index()],
+            TableView::Complete(Vec::new())
+        );
+        source.war_matrix_result = Some(Outcome::Unavailable {
+            reason: "bad matrix pointer",
+        });
+        assert_eq!(
+            war_matrix_issue(&source),
+            Some("independent war matrix census unavailable")
+        );
+        source.war_matrix_result = None;
+        assert_eq!(war_matrix_issue(&source), None);
+    }
+
+    #[test]
+    fn faction_byte_ranges_and_double_reads_cannot_publish_partial_values_as_complete() {
+        let mut source = captured(10);
+        source.factions[0] = engine::cfaction::Row {
+            id: 88,
+            name_start: usize::MAX,
+            name_len: 1,
+        };
+        source.factions_result = Outcome::Rows { len: 1 };
+        assert_eq!(
+            faction_table(&source),
+            unavailable("faction name lies outside the captured byte arena")
+        );
+        source.factions_mismatches = 1;
+        source.faction_members_mismatches = 1;
+        let frame = decoded(&source, clock(10), 1);
+        assert_eq!(
+            frame.tables[TableId::Factions.index()],
+            unavailable("factions changed during double read")
+        );
+        assert_eq!(
+            frame.tables[TableId::FactionMembers.index()],
+            unavailable("faction members changed during double read")
         );
     }
 

@@ -14,8 +14,8 @@ use crate::{
     frame::{DecodedFrame, FrameEncoder, Metrics, TableUpdate, TableView},
     identity::{Identity, Roster, SessionStart, Verification},
     rows::{
-        CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow, ProvinceRow, Row, StateRow,
-        TableId,
+        CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow, FactionMemberRow,
+        FactionRow, ProvinceRow, Row, StateRow, TableId, WarRelationRow,
     },
     spool::{
         Record, Recovery, SegmentBackend, SegmentSink, SegmentedSpool, encode_record,
@@ -32,6 +32,13 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
+const RELATION_TABLES: [TableId; 3] = [
+    TableId::WarRelations,
+    TableId::Factions,
+    TableId::FactionMembers,
+];
+const RAW_FLAG_CASES: [u8; 3] = [0, 2, 255];
+const FACTION_A: u64 = (0x8000_0033_u64 << 32) | 75;
 
 #[derive(Default)]
 struct Disk {
@@ -237,6 +244,65 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         divisions.insert(0, division(DIVISION_EDGE_KEYS[0], 2));
         divisions.push(division(DIVISION_EDGE_KEYS[1], 3));
     }
+    let relation = |first_country, second_country, offset: usize| {
+        Row::WarRelation(WarRelationRow {
+            first_country,
+            second_country,
+            start_hour: [i32::MIN, hour, i32::MAX][(index / 7 + offset) % 3],
+            end_hour: [i32::MAX, 0, i32::MIN][(index / 11 + offset) % 3],
+            cancel: RAW_FLAG_CASES[(index + offset) % RAW_FLAG_CASES.len()],
+            first_casualties: native_value(index + offset),
+            second_casualties: native_value(index + offset + 1),
+            first_unknown_casualties: native_value(index + offset + 2),
+            second_unknown_casualties: native_value(index + offset + 3),
+            first_was_instigator: RAW_FLAG_CASES[(index / 3 + offset) % RAW_FLAG_CASES.len()],
+        })
+    };
+    // Direction is part of the key: both orders must remain separate rows.
+    let mut relations = vec![relation(7, 19, 0), relation(19, 7, 1)];
+    if index % 17 < 5 {
+        relations.insert(0, relation(0, u32::MAX, 2));
+        relations.push(relation(u32::MAX, 0, 3));
+    }
+    let mut factions = vec![
+        Row::Faction(FactionRow {
+            id: 0,
+            name: b"Synthetic faction".to_vec(),
+        }),
+        Row::Faction(FactionRow {
+            id: FACTION_A,
+            name: match (index / 11) % 3 {
+                0 => Vec::new(),
+                1 => vec![0xff, 0, b'F'],
+                _ => b"Renamed faction".to_vec(),
+            },
+        }),
+    ];
+    if index % 17 < 5 {
+        factions.push(Row::Faction(FactionRow {
+            id: u64::MAX,
+            name: b"Temporary faction".to_vec(),
+        }));
+    }
+    let mut members = vec![
+        Row::FactionMember(FactionMemberRow {
+            country: 7,
+            faction: FACTION_A,
+            ordinal: ((index / 3) % 2) as u32,
+        }),
+        Row::FactionMember(FactionMemberRow {
+            country: 19,
+            faction: FACTION_A,
+            ordinal: (1 - (index / 3) % 2) as u32,
+        }),
+    ];
+    if index % 13 < 7 {
+        members.push(Row::FactionMember(FactionMemberRow {
+            country: 29,
+            faction: if index % 17 < 5 { u64::MAX } else { 0 },
+            ordinal: 0,
+        }));
+    }
     let mut tables = [
         TableView::Complete(vec![Row::Clock(ClockRow {
             hour,
@@ -252,6 +318,9 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         TableView::Complete(provinces),
         TableView::Complete(states),
         TableView::Complete(divisions),
+        TableView::Complete(relations),
+        TableView::Complete(factions),
+        TableView::Complete(members),
     ];
     for table in [
         TableId::Countries,
@@ -259,12 +328,20 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         TableId::Provinces,
         TableId::States,
         TableId::Divisions,
+        TableId::WarRelations,
+        TableId::Factions,
+        TableId::FactionMembers,
     ] {
         let draw = random(index, 91 + table.index() as u64);
         let force_partial = matches!(index, 0 | 38 | 758 | 830)
             && matches!(
                 table,
-                TableId::Countries | TableId::States | TableId::Divisions
+                TableId::Countries
+                    | TableId::States
+                    | TableId::Divisions
+                    | TableId::WarRelations
+                    | TableId::Factions
+                    | TableId::FactionMembers
             );
         if draw.is_multiple_of(47) || (index == 780 && table == TableId::Provinces) {
             tables[table.index()] = TableView::Unavailable {
@@ -304,6 +381,16 @@ fn may_drop(index: usize) -> bool {
 }
 
 #[derive(Default)]
+struct RelationCoverage {
+    changes: usize,
+    insertions: usize,
+    deletions: usize,
+    unavailable: usize,
+    truncated: usize,
+    partial_keyframes: usize,
+}
+
+#[derive(Default)]
 struct Coverage {
     keyframes: usize,
     periodic_keyframes: usize,
@@ -329,6 +416,12 @@ struct Coverage {
     division_edge_insertions: [bool; 2],
     division_edge_deletions: [bool; 2],
     country_optional_transitions: [[bool; 4]; 4],
+    relations: [RelationCoverage; RELATION_TABLES.len()],
+    war_field_changes: u64,
+    war_flag_values: [[bool; RAW_FLAG_CASES.len()]; 2],
+    war_casualty_extremes: [[bool; 2]; 4],
+    member_ordinal_only_deltas: usize,
+    member_faction_changes: usize,
 }
 
 struct Campaign {
@@ -450,6 +543,35 @@ fn synthesize() -> Campaign {
         coverage.keyframes += usize::from(keyframe);
         coverage.periodic_keyframes += usize::from(periodic);
         for (table, update) in TableId::ALL.into_iter().zip(&frame.tables) {
+            let relation_index = RELATION_TABLES.iter().position(|id| *id == table);
+            if table == TableId::WarRelations
+                && let TableView::Complete(rows) = &source.tables[table.index()]
+            {
+                for row in rows {
+                    let Row::WarRelation(row) = row else {
+                        unreachable!()
+                    };
+                    for (field, value) in [row.cancel, row.first_was_instigator]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let case = RAW_FLAG_CASES.iter().position(|raw| *raw == value).unwrap();
+                        coverage.war_flag_values[field][case] = true;
+                    }
+                    for (field, value) in [
+                        row.first_casualties,
+                        row.second_casualties,
+                        row.first_unknown_casualties,
+                        row.second_unknown_casualties,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        coverage.war_casualty_extremes[field][0] |= value == i64::MIN;
+                        coverage.war_casualty_extremes[field][1] |= value == i64::MAX;
+                    }
+                }
+            }
             match update {
                 TableUpdate::Delta {
                     baseline,
@@ -463,6 +585,29 @@ fn synthesize() -> Campaign {
                         .iter()
                         .filter(|row| row.mask == table.full_mask())
                         .count();
+                    if let Some(relation_index) = relation_index {
+                        let previous: &DecodedFrame = &expected[&(observed.branch, *baseline)];
+                        let TableView::Complete(before) = &previous.tables[table.index()] else {
+                            panic!("relation delta must have a complete direct source baseline");
+                        };
+                        coverage.relations[relation_index].deletions += deleted.len();
+                        for row in changed {
+                            if before.iter().any(|old| old.key() == row.key) {
+                                coverage.relations[relation_index].changes += 1;
+                                if table == TableId::WarRelations {
+                                    coverage.war_field_changes |= row.mask;
+                                }
+                                if table == TableId::FactionMembers {
+                                    coverage.member_ordinal_only_deltas +=
+                                        usize::from(row.mask == 1 << 1);
+                                    coverage.member_faction_changes +=
+                                        usize::from(row.mask & 1 != 0);
+                                }
+                            } else {
+                                coverage.relations[relation_index].insertions += 1;
+                            }
+                        }
+                    }
                     if table == TableId::Divisions {
                         coverage.division_hp_only_deltas +=
                             changed.iter().filter(|row| row.mask == 1 << 5).count();
@@ -511,12 +656,18 @@ fn synthesize() -> Campaign {
                 TableUpdate::Unchanged { .. } => coverage.unchanged_tables += 1,
                 TableUpdate::Unavailable { .. } => {
                     coverage.unavailable_tables += 1;
+                    if let Some(relation_index) = relation_index {
+                        coverage.relations[relation_index].unavailable += 1;
+                    }
                     coverage.state_unavailable_tables += usize::from(table == TableId::States);
                     coverage.division_unavailable_tables +=
                         usize::from(table == TableId::Divisions);
                 }
                 TableUpdate::Truncated { .. } => {
                     coverage.truncated_tables += 1;
+                    if let Some(relation_index) = relation_index {
+                        coverage.relations[relation_index].truncated += 1;
+                    }
                     coverage.state_truncated_tables += usize::from(table == TableId::States);
                     coverage.division_truncated_tables += usize::from(table == TableId::Divisions);
                 }
@@ -585,6 +736,11 @@ fn synthesize() -> Campaign {
                     coverage.partial_keyframes += 1;
                     coverage.state_partial_keyframes += usize::from(id == TableId::States);
                     coverage.division_partial_keyframes += usize::from(id == TableId::Divisions);
+                    if let Some(relation_index) =
+                        RELATION_TABLES.iter().position(|table| *table == id)
+                    {
+                        coverage.relations[relation_index].partial_keyframes += 1;
+                    }
                     *table = TableView::Unavailable {
                         reason: format!("truncated at keyframe: {missing} rows not read"),
                     };
@@ -654,6 +810,9 @@ fn assert_aliases(frame: &DecodedFrame) {
         TableView::Complete(provinces),
         _,
         _,
+        _,
+        _,
+        _,
     ] = &frame.tables
     else {
         return;
@@ -693,6 +852,56 @@ fn assert_division_handles(frame: &DecodedFrame) {
         })
         .collect();
     assert_eq!(handles, [DIVISION_A, DIVISION_B]);
+}
+
+fn assert_relations(frame: &DecodedFrame) {
+    if let TableView::Complete(relations) = &frame.tables[TableId::WarRelations.index()] {
+        let ordered_pairs: Vec<_> = relations
+            .iter()
+            .filter_map(|row| match row {
+                Row::WarRelation(row)
+                    if matches!((row.first_country, row.second_country), (7, 19) | (19, 7)) =>
+                {
+                    Some((row.first_country, row.second_country))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ordered_pairs, [(7, 19), (19, 7)]);
+    }
+    let TableView::Complete(members) = &frame.tables[TableId::FactionMembers.index()] else {
+        return;
+    };
+    assert!(members.windows(2).all(|rows| rows[0].key() < rows[1].key()));
+    let first_faction: Vec<_> = members
+        .iter()
+        .filter_map(|row| match row {
+            Row::FactionMember(row) if row.faction == FACTION_A => Some(row),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        first_faction
+            .iter()
+            .map(|row| row.country)
+            .collect::<Vec<_>>(),
+        [7, 19]
+    );
+    let mut ordinals: Vec<_> = first_faction.iter().map(|row| row.ordinal).collect();
+    ordinals.sort_unstable();
+    assert_eq!(ordinals, [0, 1]);
+    if let TableView::Complete(factions) = &frame.tables[TableId::Factions.index()] {
+        for member in members {
+            let Row::FactionMember(member) = member else {
+                unreachable!()
+            };
+            assert!(
+                factions
+                    .iter()
+                    .any(|faction| faction.key() == member.faction)
+            );
+        }
+    }
 }
 
 #[test]
@@ -790,6 +999,37 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
             );
         }
     }
+    for (table, covered) in RELATION_TABLES.into_iter().zip(&coverage.relations) {
+        assert!(
+            covered.changes > 10,
+            "{table:?} never changed existing rows"
+        );
+        assert!(covered.insertions > 10, "{table:?} never inserted new rows");
+        assert!(covered.deletions > 10, "{table:?} never deleted rows");
+        assert!(
+            covered.unavailable > 0,
+            "{table:?} never became unavailable"
+        );
+        assert!(covered.truncated > 0, "{table:?} never truncated rows");
+        assert!(
+            covered.partial_keyframes > 0,
+            "{table:?} never truncated at a keyframe"
+        );
+    }
+    assert_eq!(
+        coverage.war_field_changes,
+        TableId::WarRelations.full_mask()
+    );
+    assert!(coverage.war_flag_values.iter().flatten().all(|seen| *seen));
+    assert!(
+        coverage
+            .war_casualty_extremes
+            .iter()
+            .flatten()
+            .all(|seen| *seen)
+    );
+    assert!(coverage.member_ordinal_only_deltas > 100);
+    assert!(coverage.member_faction_changes > 10);
 
     let first = Replay::from_recovered(CAMPAIGN.to_vec(), &campaign.segments[..2]).unwrap();
     assert_eq!(first.sessions.len(), 1);
@@ -830,6 +1070,7 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
                 assert_eq!(actual.as_ref(), expected, "branch {branch}, hour {hour}");
                 assert_aliases(&actual);
                 assert_division_handles(&actual);
+                assert_relations(&actual);
             }
             other => panic!("readable branch {branch}, hour {hour}: {other:?}"),
         }

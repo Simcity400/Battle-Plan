@@ -108,24 +108,80 @@ pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
 
 fn write_status(path: &Path, status: &Value) -> io::Result<()> {
     let temp = path.with_extension("json.tmp");
-    fs::write(&temp, serde_json::to_vec(status)?)?;
+    let bytes = serde_json::to_vec(status).map_err(|error| {
+        io::Error::other(format!(
+            "cannot serialize collector status for {}: {error}",
+            path.display()
+        ))
+    })?;
+    fs::write(&temp, bytes).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "cannot write status temporary file {} for {}: {error}",
+                temp.display(),
+                path.display()
+            ),
+        )
+    })?;
+    replace_status(&temp, path)
+}
+
+const STATUS_RENAME_RETRY_BUDGET: Duration = Duration::from_millis(30);
+
+fn status_rename_retry_delay(error: &io::Error, elapsed: Duration) -> Option<Duration> {
+    if !matches!(error.raw_os_error(), Some(5 | 32)) {
+        return None;
+    }
+    STATUS_RENAME_RETRY_BUDGET
+        .checked_sub(elapsed)
+        .filter(|remaining| !remaining.is_zero())
+        .map(|remaining| remaining.min(Duration::from_millis(1)))
+}
+
+fn replace_status(temp: &Path, path: &Path) -> io::Result<()> {
     let wide = |path: &Path| {
         path.as_os_str()
             .encode_wide()
             .chain(Some(0))
             .collect::<Vec<_>>()
     };
-    if unsafe {
-        MoveFileExW(
-            wide(&temp).as_ptr(),
-            wide(path).as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    let source = wide(temp);
+    let target = wide(path);
+    let started = Instant::now();
+    let mut attempts = 0;
+    // Even a delete-sharing status reader can transiently prevent replacement.
+    // Bound retries off the game thread; OS I/O and scheduling are not time-bounded.
+    let error = loop {
+        attempts += 1;
+        if unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                target.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } != 0
+        {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        let Some(delay) = status_rename_retry_delay(&error, started.elapsed()) else {
+            break error;
+        };
+        std::thread::sleep(delay);
+        if started.elapsed() >= STATUS_RENAME_RETRY_BUDGET {
+            break error;
+        }
+    };
+    Err(io::Error::new(
+        error.kind(),
+        format!(
+            "cannot atomically replace status {} from {} after {attempts} attempts ({:.3} ms elapsed): {error}",
+            path.display(),
+            temp.display(),
+            started.elapsed().as_secs_f64() * 1000.0
+        ),
+    ))
 }
 
 struct WorkerWork {
@@ -490,7 +546,7 @@ fn spool_loop(
     status_path: &Path,
 ) -> Result<Option<String>, String> {
     let mut processor: Option<Processor> = None;
-    let mut capacities = [512, 20_000, 1024, 2048, 4096];
+    let mut capacities = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
     let mut last_warning = None;
     let mut drain_result = Ok(());
     let mut startup_unknown = 0_u64;
@@ -626,10 +682,16 @@ fn spool_loop(
                     let idle = unsafe { &mut *shared.frames[idle_index].get() };
                     let old_bytes = idle.allocated_bytes();
                     idle.grow(&mut capacities);
-                    shared.pool_bytes.fetch_add(
-                        (idle.allocated_bytes() - old_bytes) as u64,
-                        Ordering::Relaxed,
-                    );
+                    let new_bytes = idle.allocated_bytes();
+                    if new_bytes >= old_bytes {
+                        shared
+                            .pool_bytes
+                            .fetch_add((new_bytes - old_bytes) as u64, Ordering::Relaxed);
+                    } else {
+                        shared
+                            .pool_bytes
+                            .fetch_sub((old_bytes - new_bytes) as u64, Ordering::Relaxed);
+                    }
                     let _ = shared.free.push(idle_index);
                 }
             }
@@ -753,6 +815,42 @@ fn spool_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_rename_retries_only_transient_errors_before_deadline() {
+        for code in [5, 32] {
+            let error = io::Error::from_raw_os_error(code);
+            assert_eq!(
+                status_rename_retry_delay(&error, Duration::ZERO),
+                Some(Duration::from_millis(1))
+            );
+            assert_eq!(
+                status_rename_retry_delay(&error, Duration::from_micros(29_500)),
+                Some(Duration::from_micros(500))
+            );
+            assert_eq!(
+                status_rename_retry_delay(&error, STATUS_RENAME_RETRY_BUDGET),
+                None
+            );
+            assert_eq!(
+                status_rename_retry_delay(&error, Duration::from_millis(31)),
+                None
+            );
+        }
+        for code in [2, 3, 87, 112] {
+            assert_eq!(
+                status_rename_retry_delay(&io::Error::from_raw_os_error(code), Duration::ZERO),
+                None
+            );
+        }
+        assert_eq!(
+            status_rename_retry_delay(
+                &io::Error::from(io::ErrorKind::PermissionDenied),
+                Duration::ZERO
+            ),
+            None
+        );
+    }
 
     #[test]
     fn recovered_warnings_do_not_become_terminal_drain_failures() {

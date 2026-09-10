@@ -1,6 +1,5 @@
 mod app;
 mod document;
-mod inspector;
 mod playback;
 mod render;
 

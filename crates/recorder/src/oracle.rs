@@ -242,6 +242,9 @@ struct Report {
     provinces: usize,
     states: usize,
     divisions: usize,
+    war_relations: usize,
+    factions: usize,
+    faction_members: usize,
     scalar_checks: usize,
     differences: Vec<String>,
     limitations: BTreeMap<String, Vec<String>>,
@@ -289,8 +292,15 @@ impl Report {
 
     fn print(&self) {
         println!(
-            "Compared: {} provinces, {} states, {} divisions, {} countries, {} exact scalar values (/100000)",
-            self.provinces, self.states, self.divisions, self.countries, self.scalar_checks
+            "Compared: {} provinces, {} states, {} divisions, {} war relations, {} factions, {} faction members, {} countries, {} exact scalar values (/100000)",
+            self.provinces,
+            self.states,
+            self.divisions,
+            self.war_relations,
+            self.factions,
+            self.faction_members,
+            self.countries,
+            self.scalar_checks
         );
         println!("Differences: {}", self.differences.len());
         for difference in self.differences.iter().take(100) {
@@ -342,7 +352,7 @@ fn compare(
     );
     report.limitation(
         "saves retain country tags but erase raw country-link and canonical-slot identities",
-        "countries / country links / province, state and division country references",
+        "countries / country links / province, state, division, war relation and faction member country references",
     );
     report.limitation("save serializer omits owner-equivalent and nonpositive controller references; these compare by resolved control", "provinces with no explicit saved controller");
     let mut by_tag = BTreeMap::new();
@@ -542,7 +552,277 @@ fn compare(
         "states with no explicit saved controller",
     );
     compare_divisions(frame, save, membership, &links, &mut report)?;
+    compare_war_relations(frame, save, &links, &mut report)?;
+    compare_factions(frame, save, &links, &mut report)?;
     Ok(report)
+}
+
+fn required_country_tag<'a>(
+    reference: u32,
+    links: &BTreeMap<u32, &'a CountryRow>,
+) -> io::Result<&'a [u8]> {
+    country_tag(reference, links)?.ok_or_else(|| invalid("null country reference"))
+}
+
+fn saved_country_slot(
+    tag: &[u8],
+    save: &Save,
+    links: &BTreeMap<u32, &CountryRow>,
+) -> io::Result<u32> {
+    if !save.countries.contains_key(tag) {
+        return Err(invalid(format!(
+            "unknown saved country {}",
+            String::from_utf8_lossy(tag)
+        )));
+    }
+    links
+        .values()
+        .find(|country| country.tag == tag)
+        .map(|country| country.canonical_slot)
+        .ok_or_else(|| {
+            invalid(format!(
+                "saved country {} has no captured country link",
+                String::from_utf8_lossy(tag)
+            ))
+        })
+}
+
+fn compare_war_relations(
+    frame: &DecodedFrame,
+    save: &Save,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut relations = BTreeMap::new();
+    for row in complete(frame, TableId::WarRelations)? {
+        let Row::WarRelation(relation) = row else {
+            return Err(invalid("non-war-relation row in war relation table"));
+        };
+        let first = required_country_tag(relation.first_country, links)?;
+        let second = required_country_tag(relation.second_country, links)?;
+        if first == second || relations.insert((first, second), relation).is_some() {
+            return Err(invalid("self or duplicate resolved ordered war relation"));
+        }
+        if relation.cancel > 1 || relation.first_was_instigator > 1 {
+            return Err(invalid(
+                "war relation has a raw flag outside 0/1; yes/no save fields cannot verify these bits",
+            ));
+        }
+    }
+    let mut saved_pairs = BTreeSet::new();
+    for expected in &save.war_relations {
+        let first_slot = saved_country_slot(&expected.first, save, links)?;
+        let second_slot = saved_country_slot(&expected.second, save, links)?;
+        if first_slot == second_slot
+            || saved_country_slot(&expected.roster_owner, save, links)? != first_slot
+            || saved_country_slot(&expected.target, save, links)? != second_slot
+        {
+            return Err(invalid(
+                "saved war relation endpoints disagree with their country/target envelope or resolve to one country",
+            ));
+        }
+        if !saved_pairs.insert((first_slot, second_slot)) {
+            return Err(invalid("duplicate resolved ordered war relation in save"));
+        }
+        let label = format!(
+            "war relation {} -> {}",
+            String::from_utf8_lossy(&expected.first),
+            String::from_utf8_lossy(&expected.second)
+        );
+        let key = (expected.first.as_slice(), expected.second.as_slice());
+        let Some(actual) = relations.remove(&key) else {
+            report.difference(&label, "absent", "present");
+            continue;
+        };
+        report.war_relations += 1;
+        if (actual.cancel != 0) != expected.cancel {
+            report.difference(format!("{label}.cancel"), actual.cancel, expected.cancel);
+        }
+        if let Some(start) = expected.start_date {
+            let start = start.engine_hour()?;
+            if actual.start_hour != start {
+                report.difference(format!("{label}.start_hour"), actual.start_hour, start);
+            }
+        } else {
+            report.limitation(
+                "cancelled relation serializer omits its raw start hour",
+                label.clone(),
+            );
+        }
+        let emits_end = actual.start_hour < actual.end_hour;
+        if emits_end != expected.end_date.is_some() {
+            report.difference(
+                format!("{label}.end_date presence (start < end)"),
+                emits_end,
+                expected.end_date.is_some(),
+            );
+        }
+        if let Some(end) = expected.end_date {
+            let end = end.engine_hour()?;
+            if actual.end_hour != end {
+                report.difference(format!("{label}.end_hour"), actual.end_hour, end);
+            }
+        } else {
+            report.limitation("omitted relation end_date proves end_hour <= start_hour, not one exact raw end hour; the inequality is checked", label.clone());
+        }
+        for (field, captured, saved) in [
+            (
+                "first_casualties",
+                actual.first_casualties,
+                expected.first_casualties,
+            ),
+            (
+                "second_casualties",
+                actual.second_casualties,
+                expected.second_casualties,
+            ),
+            (
+                "first_unknown_casualties",
+                actual.first_unknown_casualties,
+                expected.first_unknown_casualties,
+            ),
+            (
+                "second_unknown_casualties",
+                actual.second_unknown_casualties,
+                expected.second_unknown_casualties,
+            ),
+        ] {
+            if captured != saved {
+                report.difference(format!("{label}.{field}"), captured, saved);
+            }
+        }
+        if (actual.first_was_instigator != 0) != expected.first_was_instigator {
+            report.difference(
+                format!("{label}.first_was_instigator"),
+                actual.first_was_instigator,
+                expected.first_was_instigator,
+            );
+        }
+    }
+    for (first, second) in relations.keys() {
+        report.difference(
+            format!(
+                "war relation {} -> {}",
+                String::from_utf8_lossy(first),
+                String::from_utf8_lossy(second)
+            ),
+            "present",
+            "absent",
+        );
+    }
+    report.limitation("war rows identify ordered country relations; grouped-war identities, names and participants are not recorded", "war relations");
+    report.limitation("capture includes only non-retired war relations; the save writes first-owned relations without their retirement flag, so extra saved relations still fail and are never silently filtered", "war relations");
+    Ok(())
+}
+
+fn compare_factions(
+    frame: &DecodedFrame,
+    save: &Save,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut factions = BTreeMap::new();
+    for row in complete(frame, TableId::Factions)? {
+        let Row::Faction(faction) = row else {
+            return Err(invalid("non-faction row in faction table"));
+        };
+        if faction.id == 0 || factions.insert(faction.id, faction).is_some() {
+            return Err(invalid("null or duplicate full faction handle in replay"));
+        }
+    }
+    let mut members: BTreeMap<u64, BTreeMap<u32, &[u8]>> = BTreeMap::new();
+    let mut member_countries = BTreeSet::new();
+    for row in complete(frame, TableId::FactionMembers)? {
+        let Row::FactionMember(member) = row else {
+            return Err(invalid("non-member row in faction member table"));
+        };
+        let tag = required_country_tag(member.country, links)?;
+        if !factions.contains_key(&member.faction) {
+            return Err(invalid("faction member references an absent faction"));
+        }
+        if !member_countries.insert(tag)
+            || members
+                .entry(member.faction)
+                .or_default()
+                .insert(member.ordinal, tag)
+                .is_some()
+        {
+            return Err(invalid(
+                "duplicate resolved country or ordinal in faction members",
+            ));
+        }
+    }
+    for ordered in members.values() {
+        if ordered
+            .keys()
+            .enumerate()
+            .any(|(index, &ordinal)| index != ordinal as usize)
+        {
+            return Err(invalid(
+                "faction member ordinals must be contiguous from zero",
+            ));
+        }
+    }
+    let mut saved_members = BTreeSet::new();
+    for (&id, expected) in &save.factions {
+        if id == 0 || id != expected.id {
+            return Err(invalid("invalid saved full faction identity"));
+        }
+        for tag in &expected.members {
+            if !saved_members.insert(saved_country_slot(tag, save, links)?) {
+                return Err(invalid(
+                    "duplicate resolved country in saved faction membership",
+                ));
+            }
+        }
+        let label = format!("faction type={} id={}", id as u32, id >> 32);
+        let Some(actual) = factions.remove(&id) else {
+            report.difference(&label, "absent", "present");
+            continue;
+        };
+        report.factions += 1;
+        if actual.name != expected.name {
+            report.difference(
+                format!("{label}.literal_name"),
+                &actual.name,
+                &expected.name,
+            );
+        }
+        let actual_members = members.remove(&id).unwrap_or_default();
+        for (ordinal, expected_tag) in expected.members.iter().enumerate() {
+            let ordinal_key = u32::try_from(ordinal)
+                .map_err(|_| invalid("saved faction membership exceeds u32 ordinals"))?;
+            let actual_tag = actual_members.get(&ordinal_key).copied();
+            if actual_tag.is_some() {
+                report.faction_members += 1;
+            }
+            if actual_tag != Some(expected_tag.as_slice()) {
+                report.difference(
+                    format!("{label}.members[{ordinal}]"),
+                    tag_text(actual_tag),
+                    tag_text(Some(expected_tag)),
+                );
+            }
+        }
+        for (&ordinal, &tag) in &actual_members {
+            if ordinal as usize >= expected.members.len() {
+                report.difference(
+                    format!("{label}.members[{ordinal}]"),
+                    tag_text(Some(tag)),
+                    "absent",
+                );
+            }
+        }
+    }
+    for id in factions.keys() {
+        report.difference(
+            format!("faction type={} id={}", *id as u32, id >> 32),
+            "present",
+            "absent",
+        );
+    }
+    report.limitation("faction names compare only literal bytes; templates, localization fallback and rendered friendly names are not recorded", "factions");
+    Ok(())
 }
 
 fn compare_divisions(
@@ -769,7 +1049,10 @@ mod tests {
     use super::*;
     use replay::{
         frame::Metrics,
-        rows::{CampaignRow, ClockRow, CountryLinkRow, DivisionRow, ProvinceRow, StateRow},
+        rows::{
+            CampaignRow, ClockRow, CountryLinkRow, DivisionRow, FactionMemberRow, FactionRow,
+            ProvinceRow, StateRow, WarRelationRow,
+        },
     };
 
     fn fixture() -> (
@@ -837,6 +1120,9 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                     owner: 102,
                     controller: 101,
                 })]),
+                TableView::Complete(Vec::new()),
+                TableView::Complete(Vec::new()),
+                TableView::Complete(Vec::new()),
                 TableView::Complete(Vec::new()),
             ],
         };
@@ -915,6 +1201,357 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             unreachable!()
         };
         row
+    }
+
+    fn relations_fixture() -> (
+        DecodedFrame,
+        Save,
+        save::MapMembership,
+        save::EquipmentTypes,
+    ) {
+        let (mut frame, mut save, membership, equipment) = fixture();
+        add_country(&mut frame, &mut save, 201, 8, b"ENG");
+        let start = save::GameDate::parse(b"1935.6.1.1").unwrap();
+        save.war_relations.push(save::WarRelation {
+            roster_owner: b"GER".to_vec(),
+            target: b"ENG".to_vec(),
+            first: b"GER".to_vec(),
+            second: b"ENG".to_vec(),
+            start_date: Some(start),
+            end_date: None,
+            cancel: false,
+            first_casualties: 9_007_199_254_740_993,
+            second_casualties: i64::MAX,
+            first_unknown_casualties: i64::MIN,
+            second_unknown_casualties: -17,
+            first_was_instigator: false,
+        });
+        frame.tables[TableId::WarRelations.index()] =
+            TableView::Complete(vec![Row::WarRelation(WarRelationRow {
+                first_country: 102,
+                second_country: 201,
+                start_hour: start.engine_hour().unwrap(),
+                end_hour: 43_808_760,
+                cancel: 0,
+                first_casualties: 9_007_199_254_740_993,
+                second_casualties: i64::MAX,
+                first_unknown_casualties: i64::MIN,
+                second_unknown_casualties: -17,
+                first_was_instigator: 0,
+            })]);
+        // Both partial-zero handles are valid; do not collapse them to null or a shared type.
+        save.factions.insert(
+            88,
+            save::Faction {
+                id: 88,
+                name: Vec::new(),
+                members: vec![b"ENG".to_vec(), b"GER".to_vec()],
+            },
+        );
+        save.factions.insert(
+            1_u64 << 63,
+            save::Faction {
+                id: 1_u64 << 63,
+                name: b"Literal".to_vec(),
+                members: Vec::new(),
+            },
+        );
+        frame.tables[TableId::Factions.index()] = TableView::Complete(vec![
+            Row::Faction(FactionRow {
+                id: 88,
+                name: Vec::new(),
+            }),
+            Row::Faction(FactionRow {
+                id: 1_u64 << 63,
+                name: b"Literal".to_vec(),
+            }),
+        ]);
+        frame.tables[TableId::FactionMembers.index()] = TableView::Complete(vec![
+            Row::FactionMember(FactionMemberRow {
+                country: 102,
+                faction: 88,
+                ordinal: 1,
+            }),
+            Row::FactionMember(FactionMemberRow {
+                country: 201,
+                faction: 88,
+                ordinal: 0,
+            }),
+        ]);
+        (frame, save, membership, equipment)
+    }
+
+    fn war_row_mut(frame: &mut DecodedFrame) -> &mut WarRelationRow {
+        let TableView::Complete(rows) = &mut frame.tables[TableId::WarRelations.index()] else {
+            unreachable!()
+        };
+        let Row::WarRelation(row) = &mut rows[0] else {
+            unreachable!()
+        };
+        row
+    }
+
+    #[test]
+    fn relations_compare_full_integer_precision_aliases_and_ordered_faction_members() {
+        let (mut frame, save, membership, equipment) = relations_fixture();
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(
+            (
+                report.war_relations,
+                report.factions,
+                report.faction_members
+            ),
+            (1, 2, 2)
+        );
+        let row = war_row_mut(&mut frame);
+        row.first_casualties -= 1;
+        row.second_casualties -= 1;
+        row.first_unknown_casualties += 1;
+        row.second_unknown_casualties += 1;
+        row.first_was_instigator = 1;
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 5, "{:?}", report.differences);
+    }
+
+    #[test]
+    fn omitted_relation_dates_check_the_proven_writer_conditions() {
+        let (mut frame, mut save, membership, equipment) = relations_fixture();
+        // Omission permits any end <= start, not only the constructor sentinel.
+        let row = war_row_mut(&mut frame);
+        row.end_hour = row.start_hour - 1;
+        assert!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap()
+                .differences
+                .is_empty()
+        );
+        let row = war_row_mut(&mut frame);
+        row.end_hour = row.start_hour + 1;
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        assert!(report.differences[0].contains("end_date presence"));
+        save.war_relations[0].end_date = Some(save.date);
+        war_row_mut(&mut frame).end_hour = save.date.engine_hour().unwrap();
+        assert!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap()
+                .differences
+                .is_empty()
+        );
+        save.war_relations[0].cancel = true;
+        save.war_relations[0].start_date = None;
+        war_row_mut(&mut frame).cancel = 1;
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("raw start hour"))
+        );
+        war_row_mut(&mut frame).cancel = 0;
+        assert_eq!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap()
+                .differences
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn war_pair_direction_missing_rows_and_saved_envelopes_are_not_guessed() {
+        let (mut frame, mut save, membership, equipment) = relations_fixture();
+        let row = war_row_mut(&mut frame);
+        std::mem::swap(&mut row.first_country, &mut row.second_country);
+        assert_eq!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap()
+                .differences
+                .len(),
+            2
+        );
+        save.war_relations[0].roster_owner = b"ENG".to_vec();
+        assert!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("envelope")
+        );
+        save.war_relations[0].roster_owner = b"UNKNOWN".to_vec();
+        assert!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown saved country")
+        );
+    }
+
+    #[test]
+    fn war_flags_and_duplicate_alias_pairs_that_saves_cannot_verify_are_refused() {
+        let (frame, save, membership, equipment) = relations_fixture();
+        for (cancel, instigator) in [(2, 0), (0, 255)] {
+            let mut changed = frame.clone();
+            let row = war_row_mut(&mut changed);
+            row.cancel = cancel;
+            row.first_was_instigator = instigator;
+            assert!(
+                compare(&changed, &save, &membership, &equipment)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("cannot verify these bits")
+            );
+        }
+        let mut changed = frame.clone();
+        let TableView::Complete(rows) = &mut changed.tables[TableId::WarRelations.index()] else {
+            unreachable!()
+        };
+        let Row::WarRelation(mut duplicate) = rows[0].clone() else {
+            unreachable!()
+        };
+        duplicate.first_country = 101;
+        rows.push(Row::WarRelation(duplicate));
+        assert!(
+            compare(&changed, &save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate resolved")
+        );
+        let mut duplicate_save = save.clone();
+        duplicate_save
+            .war_relations
+            .push(save.war_relations[0].clone());
+        assert!(compare(&frame, &duplicate_save, &membership, &equipment).is_err());
+    }
+
+    #[test]
+    fn faction_names_handles_and_membership_order_are_exact() {
+        let (mut frame, save, membership, equipment) = relations_fixture();
+        let TableView::Complete(rows) = &mut frame.tables[TableId::Factions.index()] else {
+            unreachable!()
+        };
+        let Row::Faction(row) = &mut rows[0] else {
+            unreachable!()
+        };
+        row.name = b"Axis".to_vec();
+        let TableView::Complete(rows) = &mut frame.tables[TableId::FactionMembers.index()] else {
+            unreachable!()
+        };
+        for row in rows {
+            let Row::FactionMember(row) = row else {
+                unreachable!()
+            };
+            row.ordinal = 1 - row.ordinal;
+        }
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+        let (mut frame, save, membership, equipment) = relations_fixture();
+        let TableView::Complete(rows) = &mut frame.tables[TableId::Factions.index()] else {
+            unreachable!()
+        };
+        let Row::Faction(row) = &mut rows[1] else {
+            unreachable!()
+        };
+        row.id ^= 1;
+        assert_eq!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap()
+                .differences
+                .len(),
+            2
+        );
+        let (mut frame, save, membership, equipment) = relations_fixture();
+        frame.tables[TableId::FactionMembers.index()] = TableView::Complete(Vec::new());
+        assert_eq!(
+            compare(&frame, &save, &membership, &equipment)
+                .unwrap()
+                .differences
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn faction_members_cannot_duplicate_aliases_skip_ordinals_or_reference_absent_factions() {
+        let (frame, save, membership, equipment) = relations_fixture();
+        for member in [
+            FactionMemberRow {
+                country: 101,
+                faction: 88,
+                ordinal: 2,
+            },
+            FactionMemberRow {
+                country: 301,
+                faction: 88,
+                ordinal: 2,
+            },
+            FactionMemberRow {
+                country: 102,
+                faction: 777,
+                ordinal: 0,
+            },
+        ] {
+            let mut changed = frame.clone();
+            let TableView::Complete(rows) = &mut changed.tables[TableId::FactionMembers.index()]
+            else {
+                unreachable!()
+            };
+            rows.push(Row::FactionMember(member));
+            assert!(compare(&changed, &save, &membership, &equipment).is_err());
+        }
+        let mut changed = frame.clone();
+        let TableView::Complete(rows) = &mut changed.tables[TableId::FactionMembers.index()] else {
+            unreachable!()
+        };
+        let Row::FactionMember(row) = &mut rows[0] else {
+            unreachable!()
+        };
+        row.ordinal = 3;
+        assert!(
+            compare(&changed, &save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("contiguous")
+        );
+        let mut duplicate_save = save.clone();
+        duplicate_save
+            .factions
+            .get_mut(&(1_u64 << 63))
+            .unwrap()
+            .members
+            .push(b"GER".to_vec());
+        assert!(
+            compare(&frame, &duplicate_save, &membership, &equipment)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate resolved country")
+        );
+    }
+
+    #[test]
+    fn incomplete_or_wrong_relation_and_faction_tables_never_pass() {
+        let (frame, save, membership, equipment) = relations_fixture();
+        for table in [
+            TableId::WarRelations,
+            TableId::Factions,
+            TableId::FactionMembers,
+        ] {
+            for view in [
+                TableView::Unavailable {
+                    reason: "unreadable".into(),
+                },
+                TableView::Truncated {
+                    rows: Vec::new(),
+                    missing: 1,
+                },
+                TableView::Complete(vec![Row::Province(ProvinceRow::default())]),
+            ] {
+                let mut changed = frame.clone();
+                changed.tables[table.index()] = view;
+                assert!(compare(&changed, &save, &membership, &equipment).is_err());
+            }
+        }
     }
 
     #[test]

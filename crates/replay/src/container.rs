@@ -439,7 +439,7 @@ impl Replay {
             if frame.hour > hour {
                 break;
             }
-            let decoded = match decoder.apply(&frame) {
+            let decoded = match decoder.advance(&frame) {
                 Ok(decoded) => decoded,
                 Err(error) => {
                     return Ok(gap(format!(
@@ -448,11 +448,11 @@ impl Replay {
                     )));
                 }
             };
-            if let Err(error) = validate_campaign(&decoded, &self.campaign_id) {
+            if let Err(error) = validate_campaign(decoded, &self.campaign_id) {
                 return Ok(gap(error.to_string()));
             }
             if frame.hour == hour {
-                return Ok(SeekResult::Frame(Box::new(decoded)));
+                return Ok(SeekResult::Frame(Box::new(decoded.clone())));
             }
         }
         Ok(gap(self.gap_reason(branch, hour)))
@@ -950,10 +950,10 @@ fn collect(
                     if i64::from(frame.hour) - i64::from(block.first_hour) >= i64::from(interval) {
                         return Err(invalid("block exceeds its keyframe hour interval"));
                     }
-                    let decoded = frame_decoder.apply(frame)?;
-                    validate_campaign(&decoded, campaign_id)?;
+                    let decoded = frame_decoder.advance(frame)?;
+                    validate_campaign(decoded, campaign_id)?;
                     let sizes = block.push(frame)?;
-                    observe(frame, &decoded, sizes)?;
+                    observe(frame, decoded, sizes)?;
                     last_hours.insert(frame.branch, frame.hour);
                     needs_keyframe = false;
                 }
@@ -1098,7 +1098,7 @@ mod tests {
     use super::*;
     use crate::{
         branches::Parentage,
-        frame::{FrameEncoder, Metrics},
+        frame::{FrameEncoder, Metrics, TableUpdate},
         identity::Roster,
         rows::{CampaignRow, ClockRow},
         spool::{encode_record, recover_prefix},
@@ -1155,6 +1155,9 @@ mod tests {
                 TableView::Complete(vec![Row::Campaign(CampaignRow {
                     id: CAMPAIGN.into(),
                 })]),
+                TableView::Complete(Vec::new()),
+                TableView::Complete(Vec::new()),
+                TableView::Complete(Vec::new()),
                 TableView::Complete(Vec::new()),
                 TableView::Complete(Vec::new()),
                 TableView::Complete(Vec::new()),
@@ -1253,12 +1256,53 @@ mod tests {
     }
 
     #[test]
+    fn seek_rejects_an_intermediate_campaign_change_even_when_target_is_valid() {
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2, 3])]).unwrap();
+        let mut frames = replay.read_block(&replay.index[0]).unwrap();
+        frames[1].tables[TableId::Campaign.index()] =
+            TableUpdate::Snapshot(vec![Row::Campaign(CampaignRow {
+                id: b"different-campaign".to_vec(),
+            })]);
+        frames[2].tables[TableId::Campaign.index()] =
+            TableUpdate::Snapshot(vec![Row::Campaign(CampaignRow {
+                id: CAMPAIGN.to_vec(),
+            })]);
+
+        // The malformed identity is inside a structurally valid compressed block.
+        let mut raw = RawBlock::new(&frames[0]);
+        let mut sequential = FrameDecoder::new();
+        for frame in &frames {
+            raw.push(frame).unwrap();
+            let decoded = sequential.apply(frame).unwrap();
+            assert_eq!(
+                validate_campaign(&decoded, CAMPAIGN).is_err(),
+                frame.hour == 2
+            );
+        }
+        let mut prefix = replay.bytes[..replay.header_end].to_vec();
+        let mut index = Vec::new();
+        append_blocks(&mut prefix, &mut index, &[raw]).unwrap();
+        let malformed = Replay::open(rebuild(&replay, prefix, &index)).unwrap();
+        assert!(matches!(
+            malformed.seek(1, 1).unwrap(),
+            SeekResult::Frame(_)
+        ));
+        for hour in [2, 3] {
+            assert!(matches!(
+                malformed.seek(1, hour).unwrap(),
+                SeekResult::Gap { reason, .. }
+                    if reason == "frame campaign identity differs from replay header"
+            ));
+        }
+    }
+
+    #[test]
     fn old_replay_version_is_refused_before_decoding_frames() {
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
         let mut bytes = replay.bytes().to_vec();
-        bytes[4..6].copy_from_slice(&3_u16.to_le_bytes());
+        bytes[4..6].copy_from_slice(&4_u16.to_le_bytes());
         let error = Replay::open(bytes).err().unwrap().to_string();
-        assert_eq!(error, "unsupported replay format version 3; expected 4");
+        assert_eq!(error, "unsupported replay format version 4; expected 5");
     }
 
     #[test]
@@ -1413,11 +1457,22 @@ mod tests {
 
     #[test]
     fn finalization_observer_sees_decoded_failures_and_identical_wire_sizes() {
-        let mut input = records(1, &[1, 2, 3]);
+        let mut input = records(1, &[1, 2, 3, 4]);
         if let Record::Frame(frame) = &mut input[3] {
             frame.tables[TableId::Provinces.index()] =
                 crate::frame::TableUpdate::Unchanged { baseline: 999 };
         }
+        if let Record::Frame(frame) = &mut input[5] {
+            frame.tables[TableId::Provinces.index()] = TableUpdate::Snapshot(Vec::new());
+        }
+        let mut sequential = FrameDecoder::new();
+        let expected: Vec<_> = input
+            .iter()
+            .filter_map(|record| match record {
+                Record::Frame(frame) => Some(sequential.apply(frame).unwrap()),
+                _ => None,
+            })
+            .collect();
         let segments = [(
             0,
             Recovery {
@@ -1434,15 +1489,20 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        assert_eq!(observed, expected);
         assert_eq!(
             observed.iter().map(|frame| frame.hour).collect::<Vec<_>>(),
-            [1, 2, 3]
+            [1, 2, 3, 4]
         );
         assert!(
             matches!(&observed[1].tables[TableId::Provinces.index()], TableView::Unavailable { reason } if reason.contains("999"))
         );
         assert!(
             matches!(&observed[2].tables[TableId::Provinces.index()], TableView::Unavailable { reason } if reason.contains("2"))
+        );
+        assert_eq!(
+            observed[3].tables[TableId::Provinces.index()],
+            TableView::Complete(Vec::new())
         );
         for frame in &observed {
             assert!(
