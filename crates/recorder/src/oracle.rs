@@ -2060,7 +2060,11 @@ fn compare_boundary_counters(
 
 /// One row per pair whose cached opinion dword is nonzero, which is exactly the
 /// native emission rule, so an absent saved `cached_sum` is an exact zero and an
-/// unexpected recorded row is a difference rather than a silent extra.
+/// unexpected recorded row is a difference rather than a silent extra. A country
+/// holds a relation with itself: the 2026-09-11 live save serializes a self
+/// `active_relations` entry with its own `cached_sum` for 93 of its 439
+/// countries, and the collector reads the matching self rows, so a self pair is
+/// ordinary state here and only a repeated resolved pair is uncomparable.
 fn compare_relation_opinions(
     frame: &DecodedFrame,
     save: &Save,
@@ -2076,18 +2080,16 @@ fn compare_relation_opinions(
                 "recorded relation opinion is zero; the native serializer omits a zero cached_sum",
             ));
         }
-        if owner == target || opinions.insert((owner, target), row.opinion).is_some() {
-            return Err(invalid("self or duplicate resolved relation opinion pair"));
+        if opinions.insert((owner, target), row.opinion).is_some() {
+            return Err(invalid("duplicate resolved relation opinion pair"));
         }
     }
     let mut saved_pairs = BTreeSet::new();
     for expected in &save.relation_opinions {
         let owner_slot = saved_country_slot(&expected.owner, save, links)?;
         let target_slot = saved_country_slot(&expected.target, save, links)?;
-        if owner_slot == target_slot || !saved_pairs.insert((owner_slot, target_slot)) {
-            return Err(invalid(
-                "saved relation opinion is a self pair or repeats a resolved pair",
-            ));
+        if !saved_pairs.insert((owner_slot, target_slot)) {
+            return Err(invalid("saved relation opinion repeats a resolved pair"));
         }
         let label = format!(
             "relation opinion {} -> {}",
@@ -4523,6 +4525,45 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             differences
                 .iter()
                 .any(|line| line.contains("D01 -> GER") && line.contains("\"absent\""))
+        );
+    }
+
+    /// A country's relation with itself is ordinary state: the live 2026-09-11
+    /// save serializes a self `active_relations` entry with its own cached sum,
+    /// so the comparator must compare it instead of refusing the whole group.
+    #[test]
+    fn a_self_relation_opinion_is_compared_like_any_other_pair() {
+        let (mut frame, mut save, membership, equipment) = relation_fixture();
+        saved_relation(&mut save, b"GER", b"GER", Some(-100), &[]);
+        saved_relation(&mut save, b"GER", b"D01", Some(-35), &[]);
+        opinions(
+            &mut frame,
+            vec![
+                replay::rows::RelationOpinionRow {
+                    owner_country: 102,
+                    target_country: 102,
+                    opinion: -100,
+                },
+                replay::rows::RelationOpinionRow {
+                    owner_country: 102,
+                    target_country: 201,
+                    opinion: -35,
+                },
+            ],
+        );
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert!(differences(&report).is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["RelationOpinions"], 2);
+
+        // A wrong self opinion is still an ordinary difference, not a refusal.
+        let mut save = save.clone();
+        save.relation_opinions[0].cached_sum = -99;
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        let differences = differences(&report);
+        assert_eq!(differences.len(), 1, "{differences:?}");
+        assert!(
+            differences[0].contains("GER -> GER") && differences[0].contains("cached_sum"),
+            "{differences:?}"
         );
     }
 

@@ -420,6 +420,27 @@ fn orders_groups(theatre: &[Item]) -> io::Result<Vec<OrdersGroup>> {
         .collect()
 }
 
+/// The saved controller-area representatives of one theatre, in stored order.
+/// CTheatre serializer EED430 emits a single unkeyed id array; an absent field
+/// is an empty list and a keyed entry inside it is refused rather than skipped.
+fn area_representatives(fields: &[Item]) -> io::Result<Vec<u32>> {
+    let mut representatives = Vec::new();
+    for entry in fields
+        .iter()
+        .filter(|entry| entry.key.as_deref() == Some(b"area"))
+    {
+        for item in block(&entry.value)? {
+            if item.key.is_some() {
+                return Err(invalid(
+                    "saved theatre area must be an unkeyed representative-province list",
+                ));
+            }
+            representatives.push(integer::<i32>(scalar(&item.value)?)? as u32);
+        }
+    }
+    Ok(representatives)
+}
+
 fn theatre_countries(items: &[Item]) -> io::Result<Option<BTreeMap<Vec<u8>, TheatreCountry>>> {
     let Some(countries) = field(items, b"countries")? else {
         return Ok(None);
@@ -465,12 +486,10 @@ fn theatre_countries(items: &[Item]) -> io::Result<Option<BTreeMap<Vec<u8>, Thea
                         .map(|entry| typed_handle(&entry.value))
                         .collect::<io::Result<_>>()?,
                     // EED430 emits one representative province per controller
-                    // area, through area+0x28, not each area's membership.
-                    area_representatives: fields
-                        .iter()
-                        .filter(|entry| entry.key.as_deref() == Some(b"area"))
-                        .map(|entry| Ok(integer::<i32>(scalar(&entry.value)?)? as u32))
-                        .collect::<io::Result<_>>()?,
+                    // area, through area+0x28, not each area's membership, and
+                    // it writes them as one unkeyed `area={ id id ... }` array
+                    // rather than one `area=` field per area.
+                    area_representatives: area_representatives(fields)?,
                     definitions: orders_groups(fields)?,
                 });
             }
@@ -952,12 +971,14 @@ mod tests {
 
     #[test]
     fn stationed_units_and_area_representatives_keep_save_order() {
+        // EED430 writes the representatives as one unkeyed array, the form the
+        // 2026-09-11 live saves use; an empty array is a theatre without areas.
         let pack = parse_text(
             br#"countries={GER={theatres={
                 theatre={id={id=5 type=67} volunteers_theatre=SOV
                     unit={id=9 type=4919} unit={id=9 type=4919}
-                    area=21 area=22}
-                theatre={id={id=6 type=67}}}}}"#,
+                    area={ 21 22 }}
+                theatre={id={id=6 type=67} area={ }}}}}"#,
         )
         .unwrap();
         let land = &pack.theatre_countries.unwrap()[b"GER".as_slice()].land;
@@ -969,6 +990,33 @@ mod tests {
         );
         // A theatre outside the volunteer scope still parses with empty lists.
         assert!(land[1].units.is_empty() && land[1].area_representatives.is_empty());
+    }
+
+    #[test]
+    fn theatre_area_arrays_append_in_order_and_refuse_keyed_or_scalar_forms() {
+        let pack = parse_text(
+            br#"countries={GER={theatres={theatre={id={id=5 type=67}
+                area={ 7 } area={ 8 9 }}}}}"#,
+        )
+        .unwrap();
+        let land = &pack.theatre_countries.unwrap()[b"GER".as_slice()].land;
+        assert_eq!(land[0].area_representatives, [7, 8, 9]);
+        let keyed =
+            parse_text(br#"countries={GER={theatres={theatre={id={id=5 type=67} area={ x=7 }}}}}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(
+            keyed.contains("unkeyed representative-province list"),
+            "{keyed}"
+        );
+        let scalar =
+            parse_text(br#"countries={GER={theatres={theatre={id={id=5 type=67} area=7}}}}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(
+            scalar.contains("expected an ordinary save block"),
+            "{scalar}"
+        );
     }
 
     #[test]

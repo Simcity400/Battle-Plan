@@ -396,7 +396,7 @@ countries={
   units={ division={ id={id=9 type=4919} logical_country=GER strength=0 organisation=0
     country_intel={ 2 0 4 -1 0 -1 } } }
   theatres={ theatre={ id={id=5 type=67} volunteers_theatre=SOV
-    unit={id=9 type=4919} area=21 area=22 } }
+    unit={id=9 type=4919} area={ 21 22 } } }
  }
  SOV={}
 }

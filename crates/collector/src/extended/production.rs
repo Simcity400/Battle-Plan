@@ -694,7 +694,6 @@ impl Captured {
                     ordinal: r.ordinal,
                     name_order: r.name_order,
                     amount: r.amount,
-                    template: r.template,
                     training_raw: r.training_raw,
                     max_training_raw: r.max_training_raw,
                     max_manpower: r.max_manpower,
@@ -1203,7 +1202,6 @@ mod tests {
             ordinal: u32::MAX,
             name_order: i32::MIN,
             amount: i32::MAX,
-            template: u64::MAX - 1,
             training_raw: 0,
             max_training_raw: i64::MIN,
             max_manpower: i32::MIN,
@@ -1502,8 +1500,8 @@ mod tests {
         );
         put(
             &mut bytes,
-            DEPLOYMENT + cmilitary_deployment::TEMPLATE,
-            &(TEMPLATE as u64).to_le_bytes(),
+            DEPLOYMENT + cmilitary_deployment::OWNING_LINE,
+            &(LINE as u64).to_le_bytes(),
         );
         for offset in [
             cmilitary_deployment::MANPOWER_HAVE,
