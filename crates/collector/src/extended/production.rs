@@ -75,6 +75,7 @@ pub struct Capacities {
     pub module_bytes: usize,
     pub upgrade_bytes: usize,
     pub conveyor_name_bytes: usize,
+    pub line_custom_name_bytes: usize,
     pub license_handles: usize,
 }
 
@@ -89,6 +90,7 @@ impl Default for Capacities {
             module_bytes: 128 * 1024,
             upgrade_bytes: 128 * 1024,
             conveyor_name_bytes: 128 * 1024,
+            line_custom_name_bytes: 16 * 1024,
             license_handles: 4096,
         }
     }
@@ -115,6 +117,7 @@ pub struct Captured {
     pub module_bytes: Arena<u8>,
     pub upgrade_bytes: Arena<u8>,
     pub conveyor_name_bytes: Arena<u8>,
+    pub line_custom_name_bytes: Arena<u8>,
     pub license_records: CaptureRows<cproduction_status::LicenseRecordRow>,
     pub license_handles: Arena<u64>,
 }
@@ -145,6 +148,7 @@ impl Captured {
             module_bytes: Arena::new(capacities.module_bytes, successful[4]),
             upgrade_bytes: Arena::new(capacities.upgrade_bytes, successful[6]),
             conveyor_name_bytes: Arena::new(capacities.conveyor_name_bytes, deployment),
+            line_custom_name_bytes: Arena::new(capacities.line_custom_name_bytes, deployment),
             license_records: CaptureRows::new(capacities.rows[16], successful[16]),
             license_handles: Arena::new(capacities.license_handles, successful[16]),
         }
@@ -171,6 +175,7 @@ impl Captured {
         self.module_bytes.reset();
         self.upgrade_bytes.reset();
         self.conveyor_name_bytes.reset();
+        self.line_custom_name_bytes.reset();
         self.license_records.reset();
         self.license_handles.reset();
     }
@@ -196,6 +201,7 @@ impl Captured {
             + self.module_bytes.allocated_bytes()
             + self.upgrade_bytes.allocated_bytes()
             + self.conveyor_name_bytes.allocated_bytes()
+            + self.line_custom_name_bytes.allocated_bytes()
             + self.license_records.allocated_bytes()
             + self.license_handles.allocated_bytes()
     }
@@ -233,6 +239,8 @@ impl Captured {
             .grow(&mut capacities.upgrade_bytes, successful[6]);
         self.conveyor_name_bytes
             .grow(&mut capacities.conveyor_name_bytes, deployment);
+        self.line_custom_name_bytes
+            .grow(&mut capacities.line_custom_name_bytes, deployment);
         self.license_records
             .grow(&mut capacities.rows[16], successful[16]);
         self.license_handles
@@ -400,6 +408,8 @@ impl Captured {
         self.deployment_equipment.outcome = first.equipment;
         self.conveyor_name_bytes.len = first.name_bytes;
         self.conveyor_name_bytes.required = first.required_name_bytes;
+        self.line_custom_name_bytes.len = first.custom_name_bytes;
+        self.line_custom_name_bytes.required = first.required_custom_name_bytes;
         self.conveyors.checked = needed[12];
         self.deployment_lines.checked = needed[13];
         self.deployment_manpower.checked = needed[14];
@@ -411,12 +421,17 @@ impl Captured {
             let names_matched = self
                 .conveyor_name_bytes
                 .compare(second.name_bytes, second.required_name_bytes);
+            let custom_matched = self.line_custom_name_bytes.compare(
+                second.custom_name_bytes,
+                second.required_custom_name_bytes,
+            );
+            let arenas_matched = names_matched && custom_matched;
             let check = |index: usize, rows: &mut dyn DeploymentRows, outcome| {
                 let matched_rows = rows.compare(outcome);
-                if !names_matched {
+                if !arenas_matched {
                     rows.add_mismatch();
                 }
-                needed[index] && matched_rows && names_matched
+                needed[index] && matched_rows && arenas_matched
             };
             matched[12] = check(12, &mut self.conveyors, second.conveyors);
             matched[13] = check(13, &mut self.deployment_lines, second.lines);
@@ -436,13 +451,14 @@ impl Captured {
         game_state: usize,
         second: bool,
     ) -> cdeployment_status::Outcomes {
-        let (conveyors, lines, manpower, equipment, names) = if second {
+        let (conveyors, lines, manpower, equipment, names, custom) = if second {
             (
                 &mut self.conveyors.second,
                 &mut self.deployment_lines.second,
                 &mut self.deployment_manpower.second,
                 &mut self.deployment_equipment.second,
                 &mut self.conveyor_name_bytes.second,
+                &mut self.line_custom_name_bytes.second,
             )
         } else {
             (
@@ -451,10 +467,11 @@ impl Captured {
                 &mut self.deployment_manpower.rows,
                 &mut self.deployment_equipment.rows,
                 &mut self.conveyor_name_bytes.first,
+                &mut self.line_custom_name_bytes.first,
             )
         };
         cdeployment_status::walk(
-            memory, base, game_state, conveyors, lines, manpower, equipment, names,
+            memory, base, game_state, conveyors, lines, manpower, equipment, names, custom,
         )
     }
 
@@ -684,25 +701,9 @@ impl Captured {
                 },
             ),
             conveyors(&self.conveyors, &self.conveyor_name_bytes),
-            table::<tables::DeploymentLines, _>(
-                outcome(&self.deployment_lines),
-                &self.deployment_lines.rows,
-                |r| rows::DeploymentLineRow {
-                    handle: r.handle,
-                    conveyor: r.conveyor,
-                    country: r.country,
-                    ordinal: r.ordinal,
-                    name_order: r.name_order,
-                    amount: r.amount,
-                    training_raw: r.training_raw,
-                    max_training_raw: r.max_training_raw,
-                    max_manpower: r.max_manpower,
-                    allow_zero_entries: r.allow_zero_entries,
-                    equipment_allocations: r.equipment_allocations,
-                    distributable_priority: r.distributable_priority,
-                    halting_reason_present: r.halting_reason_present,
-                    halting_reason: r.halting_reason,
-                },
+            deployment_lines(
+                &self.deployment_lines,
+                &self.line_custom_name_bytes,
             ),
             table::<tables::DeploymentManpower, _>(
                 outcome(&self.deployment_manpower),
@@ -822,6 +823,52 @@ fn conveyors(
         role_token: r.role_token,
         closed: r.closed,
         name: name(bytes, r.name_start, r.name_len).unwrap().to_vec(),
+        exile_country: r.exile_country,
+    })
+}
+
+/// Line custom names live in a shared arena; a span outside it fails the table
+/// rather than publishing a truncated or borrowed-from-elsewhere name.
+fn deployment_lines(
+    rows: &CaptureRows<cdeployment_status::LineRow>,
+    arena: &Arena<u8>,
+) -> TableView {
+    let result = outcome(rows);
+    if let Outcome::Unavailable { reason } = result {
+        return unavailable(reason);
+    }
+    let Some(source) = rows.rows.get(..result.len()) else {
+        return unavailable("walker row count exceeds allocated buffer");
+    };
+    let Some(bytes) = arena.first.get(..arena.len) else {
+        return unavailable("deployment line custom names lie outside captured arena");
+    };
+    if source
+        .iter()
+        .any(|row| name(bytes, row.custom_name_start, row.custom_name_len).is_none())
+    {
+        return unavailable("deployment line custom names lie outside captured arena");
+    }
+    table::<tables::DeploymentLines, _>(result, source, |r| rows::DeploymentLineRow {
+        handle: r.handle,
+        conveyor: r.conveyor,
+        country: r.country,
+        ordinal: r.ordinal,
+        name_order: r.name_order,
+        amount: r.amount,
+        training_raw: r.training_raw,
+        max_training_raw: r.max_training_raw,
+        max_manpower: r.max_manpower,
+        allow_zero_entries: r.allow_zero_entries,
+        equipment_allocations: r.equipment_allocations,
+        distributable_priority: r.distributable_priority,
+        halting_reason_present: r.halting_reason_present,
+        halting_reason: r.halting_reason,
+        custom_name: name(bytes, r.custom_name_start, r.custom_name_len)
+            .unwrap()
+            .to_vec(),
+        custom_flag_a: r.custom_flag_a,
+        custom_flag_b: r.custom_flag_b,
     })
 }
 
@@ -1016,6 +1063,7 @@ mod tests {
             module_bytes: 16,
             upgrade_bytes: 16,
             conveyor_name_bytes: 16,
+            line_custom_name_bytes: 16,
             license_handles: 4,
         }
     }
@@ -1193,8 +1241,11 @@ mod tests {
             closed: 0xaa,
             name_start: 0,
             name_len: 6,
+            exile_country: Some(u32::MAX),
         };
         captured.deployment_lines.outcome = Outcome::Rows { len: 1 };
+        captured.line_custom_name_bytes.first[..6].copy_from_slice(b"Custom");
+        captured.line_custom_name_bytes.len = 6;
         captured.deployment_lines.rows[0] = cdeployment_status::LineRow {
             handle: line,
             conveyor,
@@ -1210,6 +1261,10 @@ mod tests {
             distributable_priority: i32::MIN,
             halting_reason_present: 0xaa,
             halting_reason: i32::MIN,
+            custom_name_start: 0,
+            custom_name_len: 6,
+            custom_flag_a: 1,
+            custom_flag_b: 0xbb,
         };
         captured.deployment_manpower.outcome = Outcome::Rows { len: 2 };
         captured.deployment_manpower.rows[0] = cdeployment_status::ManpowerRow {
@@ -1248,6 +1303,7 @@ mod tests {
         let entry = &complete::<tables::DeploymentConveyors>(&views[12])[0];
         assert_eq!(entry.key(), u128::from(conveyor));
         assert_eq!(entry.name, b"Panzer");
+        assert_eq!(entry.exile_country, Some(u32::MAX));
         assert_eq!(
             (
                 entry.amount,
@@ -1260,6 +1316,8 @@ mod tests {
         );
         let queued = &complete::<tables::DeploymentLines>(&views[13])[0];
         assert_eq!(queued.key(), u128::from(line));
+        assert_eq!(queued.custom_name, b"Custom");
+        assert_eq!((queued.custom_flag_a, queued.custom_flag_b), (1, 0xbb));
         assert_eq!(
             (
                 queued.name_order,
@@ -1485,6 +1543,21 @@ mod tests {
         );
         put(
             &mut bytes,
+            NAME_OBJECT + cname_group_member::OVERRIDE_NAME + msvc_string::LENGTH,
+            &0_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            NAME_OBJECT + cname_group_member::OVERRIDE_NAME + msvc_string::CAPACITY,
+            &msvc_string::INLINE_CAPACITY.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            NAME_OBJECT + cname_group_member::FLAG_A,
+            &[1],
+        );
+        put(
+            &mut bytes,
             DEPLOYMENT,
             &(cmilitary_deployment::VTABLE_RVA as u64).to_le_bytes(),
         );
@@ -1639,6 +1712,23 @@ mod tests {
         let views = captured.tables();
         assert!(matches!(views[12], TableView::Unavailable { .. }));
         assert!(matches!(views[13], TableView::Complete(_)));
+    }
+
+    #[test]
+    fn a_line_custom_name_outside_the_arena_fails_only_its_own_table() {
+        let mut captured = Captured::with_capacities(&capacities(), &[0; N]);
+        captured.conveyors.outcome = Outcome::Rows { len: 0 };
+        captured.deployment_lines.outcome = Outcome::Rows { len: 1 };
+        captured.deployment_lines.rows[0] = cdeployment_status::LineRow {
+            handle: 1,
+            custom_name_start: 4,
+            custom_name_len: 99,
+            ..Default::default()
+        };
+        captured.line_custom_name_bytes.len = 6;
+        let views = captured.tables();
+        assert!(matches!(views[12], TableView::Complete(_)));
+        assert!(matches!(views[13], TableView::Unavailable { .. }));
     }
 
     #[test]

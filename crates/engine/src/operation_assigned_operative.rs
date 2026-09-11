@@ -8,6 +8,7 @@ pub const HANDLE: usize = 0x00;
 pub const REFERENCE_TYPE: u32 = 4_713;
 /// Assigned-operative raw selection word; 13EDEE0 stores its fourth argument at slot+8.
 pub const SELECTION: usize = 0x08;
+pub const WRITER_RVA: usize = 0x01bd_1cd0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -17,4 +18,15 @@ pub struct Row {
     pub operative: u64,
     /// Opaque native bits; no inferred enum or display projection.
     pub selection: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proved_writer_rva_matches_ghidra_verified_address() {
+        assert_eq!(WRITER_RVA, 0x1BD1CD0);
+        assert_eq!((STRIDE, HANDLE, SELECTION), (0x38, 0x00, 0x08));
+    }
 }
