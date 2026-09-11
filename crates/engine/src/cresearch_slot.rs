@@ -47,51 +47,100 @@ pub(crate) fn row(
     status: usize,
     country: u32,
 ) -> Result<Row, &'static str> {
+    let mut raw = Raw::default();
+    let completed = copy_raw(memory, pointer, &mut raw)?;
+    if completed != 4 {
+        return Err("research slot fields unreadable");
+    }
+    let technology_u64 = u64::from_le_bytes(raw.owner[8..].try_into().unwrap());
+    let linked = if technology_u64 == 0 {
+        None
+    } else {
+        let technology =
+            usize::try_from(technology_u64).map_err(|_| "research technology address overflow")?;
+        let mut bytes = [0; crate::ctechnology::INSTANCE_BYTES];
+        if crate::ctechnology::copy_one(memory, technology, &mut bytes)
+            != crate::ctechnology::FIELDS.len()
+        {
+            return Err("technology fields unreadable");
+        }
+        Some(bytes)
+    };
+    decode_raw(base, status, country, &raw, linked.as_ref())
+}
+
+/// Game-thread raw copy with no validation beyond address bounds.
+/// Returns completed scattered fields; failed field may be partial.
+pub fn copy_raw(
+    memory: &impl crate::Memory,
+    pointer: usize,
+    out: &mut Raw,
+) -> Result<usize, &'static str> {
     let at = |offset| {
         pointer
             .checked_add(offset)
             .ok_or("research slot address overflow")
     };
-    let mut header = [0; 12];
-    let mut owner = [0; 16];
-    let mut speed_index = [0; 12];
-    let mut days = [0; 16];
-    if memory.copy_scattered(
+    let mut header: &mut [u8] = &mut out.header;
+    let mut owner: &mut [u8] = &mut out.owner;
+    let mut speed_index: &mut [u8] = &mut out.speed_index;
+    let mut days: &mut [u8] = &mut out.days;
+    Ok(memory.copy_scattered(
         [pointer, at(STATUS)?, at(RESEARCH_SPEED)?, at(BANKED_DAYS)?],
         &mut [&mut header, &mut owner, &mut speed_index, &mut days],
-    ) != 4
-    {
-        return Err("research slot fields unreadable");
-    }
+    ))
+}
+
+/// Decode-side interpretation of already-copied slot bytes with identical faults.
+pub fn decode_raw(
+    base: usize,
+    status: usize,
+    country: u32,
+    raw: &Raw,
+    linked: Option<&[u8; crate::ctechnology::INSTANCE_BYTES]>,
+) -> Result<Row, &'static str> {
     let expected = base
         .checked_add(VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
-    if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected {
+    if u64::from_le_bytes(raw.header[..8].try_into().unwrap()) != expected {
         return Err("research slot vtable mismatch");
     }
-    if u64::from_le_bytes(owner[..8].try_into().unwrap()) != status as u64 {
+    if u64::from_le_bytes(raw.owner[..8].try_into().unwrap()) != status as u64 {
         return Err("research slot status backlink mismatch");
     }
-    let technology_handle = u32::from_le_bytes(header[8..].try_into().unwrap());
-    let technology = usize::try_from(u64::from_le_bytes(owner[8..].try_into().unwrap()))
+    let technology_handle = u32::from_le_bytes(raw.header[8..].try_into().unwrap());
+    let technology = usize::try_from(u64::from_le_bytes(raw.owner[8..].try_into().unwrap()))
         .map_err(|_| "research technology address overflow")?;
     if technology == 0 {
         if technology_handle != IDLE_HANDLE {
             return Err("idle research slot handle mismatch");
         }
     } else {
-        let instance = crate::ctechnology::instance(memory, base, technology, status, country)?;
+        let Some(bytes) = linked else {
+            return Err("technology fields unreadable");
+        };
+        let instance = crate::ctechnology::decode_one(base, status, country, bytes)?;
         if instance.row.technology_handle != technology_handle {
             return Err("research slot technology handle mismatch");
         }
     }
     Ok(Row {
         country,
-        index: u32::from_le_bytes(speed_index[8..].try_into().unwrap()),
+        index: u32::from_le_bytes(raw.speed_index[8..].try_into().unwrap()),
         technology_handle,
         technology_present: u8::from(technology != 0),
-        research_speed_raw: i64::from_le_bytes(speed_index[..8].try_into().unwrap()),
-        banked_days_raw: i64::from_le_bytes(days[..8].try_into().unwrap()),
-        applied_days_raw: i64::from_le_bytes(days[8..].try_into().unwrap()),
+        research_speed_raw: i64::from_le_bytes(raw.speed_index[..8].try_into().unwrap()),
+        banked_days_raw: i64::from_le_bytes(raw.days[..8].try_into().unwrap()),
+        applied_days_raw: i64::from_le_bytes(raw.days[8..].try_into().unwrap()),
     })
+}
+
+/// Flat raw spans for one slot plus its linked-technology presence.
+/// Game thread fills header/owner/speed/days via guarded copies only.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Raw {
+    pub header: [u8; 12],
+    pub owner: [u8; 16],
+    pub speed_index: [u8; 12],
+    pub days: [u8; 16],
 }

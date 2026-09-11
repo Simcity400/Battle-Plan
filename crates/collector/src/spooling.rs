@@ -918,6 +918,14 @@ impl Processor {
             "campaign": stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
             "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
             "max_ns": callback.max_ns, "table_ns": stats.table_ns.as_slice(),
+            // Pilot copy/decode split: per-frame copy-only nanoseconds for the
+            // research family, mirroring the game-thread `table_ns` slots.
+            // Monotonic decode totals live in the runtime status instead.
+            "research_copy_ns": [
+                stats.table_ns[replay::rows::TableId::ResearchTechnologies.index()],
+                stats.table_ns[replay::rows::TableId::ResearchSlots.index()],
+                stats.table_ns[replay::rows::TableId::TechnologyDefinitions.index()],
+            ],
             "staggered_skipped": stats.staggered_skipped.as_slice(),
             "staggered_walked": stats.staggered_walked.as_slice(),
             "hours_per_second": if stats.interval_qpc == 0 { 0.0 } else {
@@ -1461,6 +1469,27 @@ mod tests {
         assert_eq!(resumed["p95_ns"], 300);
         assert_eq!(resumed["max_ns"], 300);
         assert_eq!(resumed["last_error"], failed["last_error"]);
+    }
+
+    #[test]
+    fn status_reports_pilot_copy_ns_additively() {
+        let mut processor = Processor {
+            root: PathBuf::new(),
+            history: PreparedCampaigns::default(),
+            session: session(),
+            campaigns: BTreeMap::new(),
+            stats: Statistics::default(),
+            unknown_pending: 0,
+            suppress_origin: false,
+        };
+        processor.stats.table_ns[replay::rows::TableId::ResearchTechnologies.index()] = 11;
+        processor.stats.table_ns[replay::rows::TableId::ResearchSlots.index()] = 22;
+        processor.stats.table_ns[replay::rows::TableId::TechnologyDefinitions.index()] = 33;
+        let status = processor.status();
+        assert_eq!(status["research_copy_ns"], json!([11, 22, 33]));
+        // Existing keys survive the additive merge.
+        assert!(status["table_ns"].is_array());
+        assert_eq!(status["hours"], 0);
     }
 
     use engine::msvc_string::Text;

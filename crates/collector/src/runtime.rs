@@ -1,6 +1,7 @@
 //! Loader worker, spool thread, and restore/drain/self-unload lifecycle.
 
 use crate::{
+    decode,
     history::PreparedCampaigns,
     hook::{Hook, Threads},
     sampling::{self, ACTIVE, SHARED, Shared},
@@ -430,6 +431,11 @@ fn run(module: HMODULE) -> Result<(), String> {
     // Keep sampling until even callbacks already in the relay have returned.
     // A delayed restore therefore never silently stops recording hours.
     shared.recording.store(false, Ordering::Release);
+    // Decode drain first: pending refreshes decode in FIFO hour order into
+    // their pooled frames and hand off to the spool ready queue; the existing
+    // spool drain below then consumes them in order. Undrainable items use the
+    // existing LossBatch gap path with no new reason strings.
+    decode::detach_drain();
     // Callback writers are now quiescent. The spool thread can take the final loss batch.
     shared.stop_spool.store(true, Ordering::Release);
     let spool_outcome = spool
@@ -545,6 +551,15 @@ fn set_drain_status(status: &mut Value, result: &Result<(), String>) {
     if let Err(error) = result {
         status["error"] = json!(error);
     }
+}
+
+/// Additive decode-worker calibration for status. Existing keys survive; the
+/// counters are monotonic since attach (see `crate::decode`).
+fn add_decode_status(status: &mut Value) {
+    if !status.is_object() {
+        *status = json!({});
+    }
+    status["research_decode"] = decode::calibration_json();
 }
 
 fn wait_quiet(
@@ -821,6 +836,7 @@ fn spool_loop(
             if let Some(error) = &last_warning {
                 status["warning"] = json!(error);
             }
+            add_decode_status(&mut status);
             work.add_status(&mut status, shared.frequency);
             if let Err(error) = write_status(status_path, &status) {
                 last_warning = Some(error.to_string());
@@ -880,6 +896,7 @@ fn spool_loop(
             if let Err(error) = &drain_result {
                 status["error"] = json!(error);
             }
+            add_decode_status(&mut status);
             work.add_status(&mut status, shared.frequency);
             if let Err(error) = write_status(status_path, &status) {
                 // The loader still publishes the authoritative detached
@@ -967,5 +984,22 @@ mod tests {
             "final sync failed; terminal status unavailable"
         );
         assert_eq!(status["warning"], "earlier failure recovered");
+    }
+
+    #[test]
+    fn decode_status_merge_is_additive_and_keeps_existing_keys() {
+        let mut status = json!({"state": "recording", "hours": 3});
+        add_decode_status(&mut status);
+        assert_eq!(status["state"], "recording");
+        assert_eq!(status["hours"], 3);
+        assert!(status["research_decode"].is_object());
+        assert_eq!(
+            status["research_decode"]["tables"][0],
+            "ResearchTechnologies"
+        );
+        assert_eq!(
+            status["research_decode"]["tables"][2],
+            "TechnologyDefinitions"
+        );
     }
 }

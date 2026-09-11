@@ -1,7 +1,7 @@
 //! The sole game-thread callback. Buffers are allocated before publication to its free queue.
 
 use crate::{
-    extended,
+    decode, extended,
     map_capture::{MapCapacities, MapCaptured},
     roster::Roster,
     table_capture::{comparison_rows, grow_capacity},
@@ -509,6 +509,10 @@ pub struct Shared {
     pub pool_buffers: AtomicUsize,
     pub free: ArrayQueue<usize>,
     pub ready: ArrayQueue<usize>,
+    /// Single FIFO decode queue between the game thread and the spool ready
+    /// queue. Every frame transits it in hour order (lightweight jobs; raw
+    /// payloads are bounded recycled boxes, never pool memory).
+    pub decode_queue: decode::DecodeQueue,
     pub dropped: AtomicU64,
     pub pool_bytes: AtomicU64,
     pub recording: AtomicBool,
@@ -547,6 +551,7 @@ impl Shared {
             pool_buffers: AtomicUsize::new(0),
             free: ArrayQueue::new(BUFFERS),
             ready: ArrayQueue::new(BUFFERS),
+            decode_queue: decode::new_queue(),
             dropped: AtomicU64::new(0),
             pool_bytes: AtomicU64::new(pool_bytes as u64),
             recording: AtomicBool::new(true),
@@ -635,6 +640,19 @@ fn pool_growth(free: usize, allocated: usize) -> usize {
     } else {
         0
     }
+}
+
+/// Whole-frame drop for an owned buffer: restores the witnesses the frame
+/// already absorbed, records the gap through the existing `LossBatch` path
+/// with the existing counters, and returns the buffer to the free queue.
+/// Shared by every queue-full branch; no new loss reasons.
+fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize, entry: Option<Clock>) {
+    unsafe {
+        *shared.pending.get() = frame.dropped_before;
+        (&mut *shared.pending.get()).push(entry, frame.clock_after);
+    }
+    shared.dropped.fetch_add(1, Ordering::Relaxed);
+    let _ = shared.free.push(index);
 }
 
 impl Drop for Shared {
@@ -733,6 +751,12 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             let mut matched = [false; CONSISTENCY_TABLES.len()];
             let mut extended_matched = [false; TABLE_COUNT];
             let mut matrix_complete = false;
+            // Research pilot handoff state: produced inside the clock block
+            // below, consumed by the decode enqueue after it.
+            let mut pilot_payload: Option<extended::governance::ResearchJob> = None;
+            let mut pilot_report = extended::governance::CopyReport::default();
+            let mut decode_hour = 0;
+            let mut decode_force_full = false;
             if let Some(clock) = frame.clock_before {
                 let force_full = unsafe { (&mut *shared.cadence.get()).force_full(&clock) };
                 let state = clock.game_state as usize;
@@ -940,6 +964,40 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 for (total, ticks) in frame.table_ns[10..].iter_mut().zip(map_ticks) {
                     *total = shared.ns(ticks as i64);
                 }
+                // Research pilot (copy/decode split): raw copies only on the
+                // game thread. Refresh hours stage the payload and hand the
+                // frame to the decode FIFO; the worker decodes before the
+                // spool ready handoff. Staging overflow falls back to the
+                // typed walk below with no payload enqueued.
+                let pilot_refresh = decode::pilot_refresh_hour(clock.hour, force_full);
+                decode_hour = clock.hour;
+                decode_force_full = force_full;
+                if pilot_refresh {
+                    let needed_any = decode::PILOT
+                        .iter()
+                        .any(|table| extended_needed[table.index()]);
+                    let mut first = decode::acquire_job();
+                    let mut second = needed_any.then(decode::acquire_job);
+                    let pilot = frame.extended.research_pilot();
+                    let ctx = extended::governance::CopyContext {
+                        base: shared.base,
+                        game_state: state,
+                        tech_cap: pilot.tech_rows_cap(),
+                        slot_cap: pilot.slot_rows_cap(),
+                        needed: extended_needed,
+                    };
+                    pilot_report =
+                        pilot.copy_research_refresh(&memory, ctx, &mut first, second.as_mut());
+                    frame.extended.research_pilot().raw_mode = pilot_report.raw_ok;
+                    if pilot_report.raw_ok {
+                        pilot_payload = Some(first);
+                    } else {
+                        decode::recycle_job(first);
+                    }
+                    if let Some(second) = second {
+                        decode::recycle_job(second);
+                    }
+                }
                 let (checks, ticks) = frame.extended.capture(
                     &cached,
                     shared.base,
@@ -959,6 +1017,20 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     } else {
                         0
                     };
+                }
+                // Pilot tables measured copy-only above; install the raw-copy
+                // costs and raw-compare verdicts, and publish the additive
+                // calibration counters for status. Runs after the loop above
+                // so copy-only nanoseconds survive for the pilot tables.
+                if pilot_report.raw_ok {
+                    for (slot, table) in decode::PILOT.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = pilot_report.matched[slot];
+                        let ns = shared.ns(pilot_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_copy_ns(slot, ns);
+                        decode::add_raw_bytes(slot, pilot_report.raw_bytes[slot]);
+                    }
                 }
                 let cache_verify_begin = qpc();
                 frame.country_cache_error = cached.verify().err();
@@ -984,30 +1056,47 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             frame.pool_bytes = shared.pool_bytes.load(Ordering::Relaxed);
             frame.dropped_frames = shared.dropped.load(Ordering::Relaxed);
             shared.completed[index].store(0, Ordering::Relaxed);
-            // With 256 buffers and 256 queue slots, an owned buffer guarantees space.
-            if shared.ready.push(index).is_ok() {
-                let stable = stable_clock(frame.clock_before, frame.clock_after);
-                frame.consistency_successful =
-                    unsafe { (&mut *shared.consistency.get()).commit(matched, stable, true) };
-                frame.extended_successful = unsafe {
-                    (&mut *shared.extended_consistency.get()).commit(extended_matched, stable, true)
-                };
-                if matrix_complete && stable {
-                    shared.war_matrix_remaining.fetch_sub(1, Ordering::Relaxed);
+            // Every frame transits the single decode FIFO in hour order; the
+            // worker hands it to the spool ready queue after decoding any
+            // refresh payload. With 256 buffers and 256 queue slots, an owned
+            // buffer guarantees space, exactly as the ready push did before.
+            let decode_job = decode::DecodeJob {
+                index,
+                seq: decode::next_seq(),
+                hour: decode_hour,
+                pilot_refresh: pilot_report.raw_ok,
+                force_full: decode_force_full,
+                game_elapsed: (qpc() - entered - (original_end - original_begin)).max(1),
+                payload: pilot_payload,
+            };
+            match decode::enqueue(shared, decode_job) {
+                None => {
+                    let stable = stable_clock(frame.clock_before, frame.clock_after);
+                    frame.consistency_successful =
+                        unsafe { (&mut *shared.consistency.get()).commit(matched, stable, true) };
+                    frame.extended_successful = unsafe {
+                        (&mut *shared.extended_consistency.get()).commit(
+                            extended_matched,
+                            stable,
+                            true,
+                        )
+                    };
+                    if matrix_complete && stable {
+                        shared.war_matrix_remaining.fetch_sub(1, Ordering::Relaxed);
+                    }
+                    // The decode worker stores the game-thread elapsed time
+                    // after handing the frame to the spool ready queue; the
+                    // spool thread waits for that Release before accessing the
+                    // frame, including the just-committed comparison snapshots.
                 }
-                // The spool thread waits for this Release before accessing the
-                // frame, including the just-committed comparison snapshots.
-                shared.completed[index].store(
-                    (qpc() - entered - (original_end - original_begin)).max(1),
-                    Ordering::Release,
-                );
-            } else {
-                unsafe {
-                    *shared.pending.get() = frame.dropped_before;
-                    (&mut *shared.pending.get()).push(entry, frame.clock_after);
+                Some(returned) => {
+                    if let Some(payload) = returned.payload {
+                        decode::recycle_job(payload);
+                    }
+                    // Existing whole-frame drop plus gap path, unchanged
+                    // counters and no new loss reasons.
+                    drop_owned_frame(shared, frame, index, entry);
                 }
-                shared.dropped.fetch_add(1, Ordering::Relaxed);
-                let _ = shared.free.push(index);
             }
         } else {
             let after = cgame_state::read_clock(&memory, shared.base);
@@ -1032,6 +1121,62 @@ mod tests {
         assert_eq!(pool_growth(0, BUFFERS - 1), 1);
         assert_eq!(pool_growth(0, BUFFERS), 0);
         assert_eq!(pool_growth(0, BUFFERS + 1), 0);
+    }
+
+    #[test]
+    fn decode_queue_bound_matches_pool_invariant() {
+        let shared = Shared::new(0, 0, 1);
+        assert_eq!(shared.decode_queue.capacity(), BUFFERS);
+        assert_eq!(shared.free.capacity(), BUFFERS);
+        assert_eq!(shared.ready.capacity(), BUFFERS);
+    }
+
+    #[test]
+    fn decode_queue_full_takes_the_existing_gap_branch_with_existing_counters() {
+        let shared = Shared::new(0, 0, 1);
+        let index = shared.free.pop().expect("pooled buffer");
+        for seq in 0..BUFFERS {
+            shared
+                .decode_queue
+                .push(decode::DecodeJob {
+                    index,
+                    seq: seq as u64,
+                    hour: 0,
+                    pilot_refresh: false,
+                    force_full: false,
+                    game_elapsed: 1,
+                    payload: None,
+                })
+                .unwrap();
+        }
+        // The game thread never blocks: a full decode FIFO drops the whole
+        // frame through the existing gap path with the existing counters and
+        // no new loss reasons.
+        let extra = decode::DecodeJob {
+            index,
+            seq: u64::MAX,
+            hour: 0,
+            pilot_refresh: false,
+            force_full: false,
+            game_elapsed: 1,
+            payload: None,
+        };
+        assert!(shared.decode_queue.push(extra).is_err());
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        frame.clock_after = Some(clock(42, 7));
+        let dropped_before = shared.dropped.load(Ordering::Relaxed);
+        drop_owned_frame(&shared, frame, index, Some(clock(41, 7)));
+        assert_eq!(shared.dropped.load(Ordering::Relaxed), dropped_before + 1);
+        assert_eq!(shared.ready.len(), 0);
+        assert_eq!(shared.free.len(), INITIAL_BUFFERS);
+        let pending = unsafe { &*shared.pending.get() };
+        let runs: Vec<_> = pending.iter().collect();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            (runs[0].first_hour, runs[0].last_hour, runs[0].count),
+            (42, 42, 1)
+        );
+        assert_eq!(runs[0].loaded_hour, Some(41));
     }
 
     #[test]

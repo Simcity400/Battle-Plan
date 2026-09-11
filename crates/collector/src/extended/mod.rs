@@ -160,6 +160,16 @@ packs!(
 );
 
 impl Captured {
+    /// Decode-worker handoff for the research pilot family (copy/decode split).
+    /// Sole cross-thread entry to the governance research buffers: the game
+    /// thread stages raw-copy state through it on refresh hours and the single
+    /// FIFO decode worker decodes the staged payload into these pooled typed
+    /// rows before the spool ready-queue handoff. No other extended state
+    /// crosses threads here.
+    pub(crate) fn research_pilot(&mut self) -> &mut governance::Captured {
+        &mut self.governance
+    }
+
     pub fn source_checks(needed: &[bool]) -> SourceChecks {
         let air = local(&air::TABLES, needed);
         let naval = local(&naval_history::TABLES, needed);
@@ -750,5 +760,14 @@ mod tests {
             unread_rows: 9,
         };
         assert_eq!(bounded_registry(truncated, 1), truncated);
+    }
+
+    #[test]
+    fn research_pilot_handoff_reaches_the_governance_pack() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0u16; TABLE_COUNT]);
+        captured.research_pilot().raw_mode = true;
+        assert!(captured.governance.raw_mode);
+        captured.research_pilot().raw_mode = false;
+        assert!(!captured.governance.raw_mode);
     }
 }
