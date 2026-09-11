@@ -1,5 +1,6 @@
 //! Conversion, differencing and durable output. Nothing here runs on the game thread.
 
+use crate::decode;
 use crate::history::PreparedCampaigns;
 use crate::sampling::{
     CONSISTENCY_TABLES, CONSISTENCY_TARGET, Captured, LossBatch, LostObservation,
@@ -431,6 +432,7 @@ struct Statistics {
     total_ns: u64,
     callback: Distribution,
     table_ns: [u64; TABLE_COUNT],
+    war_matrix_ns: u64,
     dropped_frames: u64,
     truncated_tables: usize,
     links_mismatches: u64,
@@ -478,6 +480,7 @@ impl Default for Statistics {
             total_ns: 0,
             callback: Distribution::default(),
             table_ns: [0; TABLE_COUNT],
+            war_matrix_ns: 0,
             dropped_frames: 0,
             truncated_tables: 0,
             links_mismatches: 0,
@@ -810,6 +813,7 @@ impl Processor {
         stats.total_ns = captured.total_ns;
         stats.callback.record_ns(captured.total_ns);
         stats.table_ns = captured.table_ns;
+        stats.war_matrix_ns = captured.war_matrix_ns;
         stats.pool_bytes = captured.pool_bytes;
         stats.sampled_buffer_bytes = captured.allocated_bytes();
         stats.sampled_buffer_parts = captured.extended.allocated_by_pack();
@@ -914,23 +918,57 @@ impl Processor {
             .filter_map(|entry| entry.metadata().ok())
             .map(|metadata| metadata.len())
             .sum();
-        json!({
+        // Per-family copy-only mirrors, built outside the status `json!` so
+        // the macro stays under its recursion limit as families move over.
+        let research_copy_ns = [
+            stats.table_ns[replay::rows::TableId::ResearchTechnologies.index()],
+            stats.table_ns[replay::rows::TableId::ResearchSlots.index()],
+            stats.table_ns[replay::rows::TableId::TechnologyDefinitions.index()],
+        ];
+        let relations_copy_ns = [
+            stats.table_ns[replay::rows::TableId::RelationOpinions.index()],
+            stats.table_ns[replay::rows::TableId::RelationTuples.index()],
+        ];
+        let characters_copy_ns = [
+            stats.table_ns[replay::rows::TableId::Characters.index()],
+            stats.table_ns[replay::rows::TableId::CountryLeaderRoles.index()],
+            stats.table_ns[replay::rows::TableId::AdvisorRoles.index()],
+            stats.table_ns[replay::rows::TableId::UnitLeaders.index()],
+            stats.table_ns[replay::rows::TableId::UnitLeaderTraits.index()],
+            stats.table_ns[replay::rows::TableId::UnitLeaderTraitExperience.index()],
+        ];
+        let projects_copy_ns = [
+            stats.table_ns[replay::rows::TableId::ProjectPrograms.index()],
+            stats.table_ns[replay::rows::TableId::Projects.index()],
+            stats.table_ns[replay::rows::TableId::ProjectHistory.index()],
+            stats.table_ns[replay::rows::TableId::ProjectBreakthroughs.index()],
+        ];
+        let lexical_copy_ns = [stats.table_ns[replay::rows::TableId::LexicalTokens.index()]];
+        let variants_copy_ns = [
+            stats.table_ns[replay::rows::TableId::VariantDefinitions.index()],
+            stats.table_ns[replay::rows::TableId::VariantModules.index()],
+            stats.table_ns[replay::rows::TableId::VariantStats.index()],
+            stats.table_ns[replay::rows::TableId::VariantUpgrades.index()],
+        ];
+        let buildings_copy_ns = [
+            stats.table_ns[replay::rows::TableId::StateBuildings.index()],
+            stats.table_ns[replay::rows::TableId::ProvinceBuildings.index()],
+        ];
+        // Wars hourly copy mirror: the owned walk shares the WarRelations
+        // slot; the matrix census has no game-thread table slot of its own.
+        let wars_copy_ns = [stats.table_ns[decode::WARS[0].index()], stats.war_matrix_ns];
+        let divisions_copy_ns = [
+            stats.table_ns[decode::DIVISIONS[0].index()],
+            stats.table_ns[decode::DIVISIONS[1].index()],
+            stats.table_ns[decode::DIVISIONS[2].index()],
+            stats.table_ns[decode::DIVISIONS[3].index()],
+            stats.table_ns[decode::DIVISIONS[4].index()],
+            stats.table_ns[decode::DIVISIONS[5].index()],
+        ];
+        let value = json!({
             "campaign": stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
             "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
             "max_ns": callback.max_ns, "table_ns": stats.table_ns.as_slice(),
-            // Pilot copy/decode split: per-frame copy-only nanoseconds for the
-            // research family, mirroring the game-thread `table_ns` slots.
-            // Monotonic decode totals live in the runtime status instead.
-            "research_copy_ns": [
-                stats.table_ns[replay::rows::TableId::ResearchTechnologies.index()],
-                stats.table_ns[replay::rows::TableId::ResearchSlots.index()],
-                stats.table_ns[replay::rows::TableId::TechnologyDefinitions.index()],
-            ],
-            // Relations copy/decode split: same per-frame copy-only mirror.
-            "relations_copy_ns": [
-                stats.table_ns[replay::rows::TableId::RelationOpinions.index()],
-                stats.table_ns[replay::rows::TableId::RelationTuples.index()],
-            ],
             "staggered_skipped": stats.staggered_skipped.as_slice(),
             "staggered_walked": stats.staggered_walked.as_slice(),
             "hours_per_second": if stats.interval_qpc == 0 { 0.0 } else {
@@ -980,7 +1018,23 @@ impl Processor {
                 "record_writes": stats.record_writes.json(),
                 "table_rows_storage_bytes": std::mem::size_of::<TableRows>(),
             },
-        })
+        });
+        // Copy/decode splits: per-frame copy-only nanoseconds per moved
+        // family, mirroring the game-thread `table_ns` slots. Monotonic
+        // decode totals live in the runtime status instead. Inserted outside
+        // the status `json!` so the macro stays under its recursion limit as
+        // families move over.
+        let mut value = value;
+        value["research_copy_ns"] = json!(research_copy_ns.as_slice());
+        value["relations_copy_ns"] = json!(relations_copy_ns.as_slice());
+        value["characters_copy_ns"] = json!(characters_copy_ns.as_slice());
+        value["projects_copy_ns"] = json!(projects_copy_ns.as_slice());
+        value["lexical_copy_ns"] = json!(lexical_copy_ns.as_slice());
+        value["variants_copy_ns"] = json!(variants_copy_ns.as_slice());
+        value["buildings_copy_ns"] = json!(buildings_copy_ns.as_slice());
+        value["wars_copy_ns"] = json!(wars_copy_ns.as_slice());
+        value["divisions_copy_ns"] = json!(divisions_copy_ns.as_slice());
+        value
     }
 }
 

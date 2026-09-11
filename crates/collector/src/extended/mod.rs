@@ -179,6 +179,146 @@ impl Captured {
         &mut self.intel
     }
 
+    /// Decode-worker handoff for the characters family (copy/decode split).
+    /// Sole cross-thread entry to the characters slot-0 buffers: the game
+    /// thread stages raw-copy state through it on refresh hours and the single
+    /// FIFO decode worker decodes the staged payload into these pooled typed
+    /// rows before the spool ready-queue handoff. No other extended state
+    /// crosses threads here.
+    pub(crate) fn characters_pilot(&mut self) -> &mut characters::Captured {
+        &mut self.characters
+    }
+
+    /// Decode-worker handoff for the projects family (copy/decode split).
+    /// Sole cross-thread entry to the projects slot-3 buffers: the game
+    /// thread stages raw-copy state through it on refresh hours and the single
+    /// FIFO decode worker decodes the staged payload into these pooled typed
+    /// rows before the spool ready-queue handoff.
+    pub(crate) fn projects_pilot(&mut self) -> &mut projects::Captured {
+        &mut self.projects
+    }
+
+    /// Decode-worker handoff for the lexical family (copy/decode split).
+    /// Sole cross-thread entry to the lexical slot-3 buffers: the game
+    /// thread stages raw-copy state through it on refresh hours and the single
+    /// FIFO decode worker decodes the staged payload into these pooled typed
+    /// rows before the spool ready-queue handoff.
+    pub(crate) fn lexical_pilot(&mut self) -> &mut lexical::Captured {
+        &mut self.lexical
+    }
+
+    /// Decode-worker handoff for the variants family (copy/decode split).
+    /// Game-side entry to the production variant buffers (raw-mode gate and
+    /// copy staging); the registry census itself always runs game-side and
+    /// feeds both production (as today) and the copy.
+    #[cfg(test)]
+    pub(crate) fn variants_pilot(&mut self) -> &mut production::Captured {
+        &mut self.production
+    }
+
+    /// Decode-worker handoff for the buildings family (copy/decode split).
+    /// Sole cross-thread entry to the construction slot-3 buffers: the game
+    /// thread stages raw-copy state through it on refresh hours and the single
+    /// FIFO decode worker decodes the staged payload into these pooled typed
+    /// rows before the spool ready-queue handoff.
+    pub(crate) fn buildings_pilot(&mut self) -> &mut construction::Captured {
+        &mut self.construction
+    }
+
+    /// Game-thread raw copy for a slot-3 variants refresh. Runs after the
+    /// game-side registry census, which feeds both production (as today) and
+    /// this copy. Returns the pilot-style report for sampling's install.
+    pub(crate) fn copy_variants_refresh(
+        &mut self,
+        memory: &impl engine::Memory,
+        needed: &[bool],
+        first: &mut production::VariantsJob,
+        second: Option<&mut production::VariantsJob>,
+    ) -> production::VariantsCopyReport {
+        let needed = [
+            needed[VARIANT_TABLES[0].index()],
+            needed[VARIANT_TABLES[1].index()],
+            needed[VARIANT_TABLES[2].index()],
+            needed[VARIANT_TABLES[3].index()],
+        ];
+        let ctx = production::VariantsCopyContext { needed };
+        let variants = self.registry.sources();
+        self.production
+            .copy_variants_refresh(memory, ctx, &variants, first, second)
+    }
+
+    /// Decode-worker interpretation of a raw variants payload. Combines the
+    /// frame's pooled registry rows (game-side census) with the staged
+    /// detail spans; disjoint borrows keep both inputs alive at once.
+    pub(crate) fn decode_variants_payload(
+        &mut self,
+        base: usize,
+        job: &production::VariantsJob,
+        decode_ticks: &mut [u64; 4],
+    ) {
+        let source_outcome = self.registry.rows.outcome;
+        let (rows, outcome) = (&self.registry.rows.rows, source_outcome);
+        self.production
+            .decode_variants_payload(base, rows, outcome, job, decode_ticks);
+    }
+
+    /// Test-only staging for the decode-worker harness: runs the game-side
+    /// registry census into this frame's pooled rows, mirroring the tick.
+    #[cfg(test)]
+    pub(crate) fn test_seed_variant_registry(
+        &mut self,
+        memory: &impl engine::Memory,
+        base: usize,
+        game_state: usize,
+    ) {
+        self.registry.acquire(memory, base, game_state, true);
+    }
+
+    /// Game-thread raw-mode gate for the hourly divisions group. Set every
+    /// hour from the divisions copy report before `capture` runs the
+    /// production acquire below.
+    pub(crate) fn set_divisions_raw_mode(&mut self, raw: bool) {
+        self.production.divisions_raw_mode = raw;
+    }
+
+    /// Decode-worker interpretation of a raw divisions-group payload, in
+    /// dependency order: equipment first, then the upgrade graph, both
+    /// against the frame's decoded division sources (replayed by the caller
+    /// through the division visitor just before). Disjoint borrows keep the
+    /// sources and the production buffers alive at once.
+    pub(crate) fn decode_divisions_payload(
+        &mut self,
+        base: usize,
+        log: &crate::raw::RawLog<6>,
+        decode_ticks: &mut [u64; 6],
+    ) {
+        let recorded = crate::raw::Recorded::build(log);
+        let sources = self.divisions.sources();
+        self.production
+            .decode_division_detail(base, &sources, &recorded, decode_ticks);
+    }
+
+    /// Test-only buffer resize for the divisions-group decode harness:
+    /// shrinks the pooled row buffers to the harness lengths, mirroring a
+    /// truncated production frame. Capacities are untouched.
+    #[cfg(test)]
+    pub(crate) fn test_resize_division_buffers(&mut self, lens: [usize; 6]) {
+        use engine::{army_upgrade_request_row, carmy_upgrades_requests, cupgrade_delivery};
+        self.production.division_equipment.rows =
+            vec![engine::cequipment_variant_pool::DivisionRow::default(); lens[1]];
+        self.production.groups.rows = vec![carmy_upgrades_requests::Row::default(); lens[2]];
+        self.production.requests.rows = vec![army_upgrade_request_row::Row::default(); lens[3]];
+        self.production.deliveries.rows = vec![cupgrade_delivery::Row::default(); lens[4]];
+        self.production.produced.rows = vec![cupgrade_delivery::ProducedRow::default(); lens[5]];
+    }
+
+    /// Test-only read of the production division-detail buffers for the
+    /// divisions-group decode harness.
+    #[cfg(test)]
+    pub(crate) fn test_division_detail(&mut self) -> &mut production::Captured {
+        &mut self.production
+    }
+
     pub fn source_checks(needed: &[bool]) -> SourceChecks {
         let air = local(&air::TABLES, needed);
         let naval = local(&naval_history::TABLES, needed);
@@ -224,7 +364,12 @@ impl Captured {
         }
     }
     /// Run after root division acquisition and map.sample. All returned arrays
-    /// use global TableId indices. Core slots remain zero.
+    /// use global TableId indices. Core slots remain zero. The optional
+    /// variants jobs stage the slot-3 detail copy right after the game-side
+    /// registry census (which still runs always); the report comes back for
+    /// sampling's calibration install, while matched rows and costs install
+    /// into the returned arrays like every other table.
+    #[allow(clippy::too_many_arguments)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -233,7 +378,15 @@ impl Captured {
         current_hour: i32,
         needed: &[bool],
         force_full: bool,
-    ) -> ([bool; TABLE_COUNT], [u64; TABLE_COUNT]) {
+        variants_jobs: Option<(
+            &mut production::VariantsJob,
+            Option<&mut production::VariantsJob>,
+        )>,
+    ) -> (
+        [bool; TABLE_COUNT],
+        [u64; TABLE_COUNT],
+        Option<production::VariantsCopyReport>,
+    ) {
         assert_eq!(needed.len(), TABLE_COUNT);
         let mut matched = [false; TABLE_COUNT];
         let mut ticks = [0; TABLE_COUNT];
@@ -297,6 +450,21 @@ impl Captured {
         } else {
             self.registry.mark_skipped();
         }
+        // Slot-3 variant details move to the decode worker. The census above
+        // still ran game-side and feeds both production (as today) and the
+        // copy below; the worker decodes against the frame's pooled rows.
+        let variants_report = if let Some((first, second)) = variants_jobs {
+            let report = self.copy_variants_refresh(memory, needed, first, second);
+            self.production.raw_mode = report.raw_ok;
+            for (slot, table) in VARIANT_TABLES.iter().enumerate() {
+                matched[table.index()] = report.matched[slot];
+                ticks[table.index()] += report.copy_ticks[slot];
+            }
+            Some(report)
+        } else {
+            self.production.raw_mode = false;
+            None
+        };
         let (pass, cost) = self.production.finish_variants(
             memory,
             base,
@@ -316,7 +484,7 @@ impl Captured {
             matched[table.index()] &= needed[table.index()]
                 && replay::cadence::should_walk(table, current_hour, force_full);
         }
-        (matched, ticks)
+        (matched, ticks, variants_report)
     }
 }
 
@@ -787,5 +955,50 @@ mod tests {
         assert!(captured.intel.relations_raw_mode);
         captured.relations_pilot().relations_raw_mode = false;
         assert!(!captured.intel.relations_raw_mode);
+    }
+
+    #[test]
+    fn characters_pilot_handoff_reaches_the_characters_pack() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0u16; TABLE_COUNT]);
+        captured.characters_pilot().raw_mode = true;
+        assert!(captured.characters.raw_mode);
+        captured.characters_pilot().raw_mode = false;
+        assert!(!captured.characters.raw_mode);
+    }
+
+    #[test]
+    fn projects_pilot_handoff_reaches_the_projects_pack() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0u16; TABLE_COUNT]);
+        captured.projects_pilot().raw_mode = true;
+        assert!(captured.projects.raw_mode);
+        captured.projects_pilot().raw_mode = false;
+        assert!(!captured.projects.raw_mode);
+    }
+
+    #[test]
+    fn lexical_pilot_handoff_reaches_the_lexical_pack() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0u16; TABLE_COUNT]);
+        captured.lexical_pilot().raw_mode = true;
+        assert!(captured.lexical.raw_mode);
+        captured.lexical_pilot().raw_mode = false;
+        assert!(!captured.lexical.raw_mode);
+    }
+
+    #[test]
+    fn variants_pilot_handoff_reaches_the_production_pack() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0u16; TABLE_COUNT]);
+        captured.variants_pilot().raw_mode = true;
+        assert!(captured.production.raw_mode);
+        captured.variants_pilot().raw_mode = false;
+        assert!(!captured.production.raw_mode);
+    }
+
+    #[test]
+    fn buildings_pilot_handoff_reaches_the_construction_pack() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0u16; TABLE_COUNT]);
+        captured.buildings_pilot().raw_mode = true;
+        assert!(captured.construction.raw_mode);
+        captured.buildings_pilot().raw_mode = false;
+        assert!(!captured.construction.raw_mode);
     }
 }

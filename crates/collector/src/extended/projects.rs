@@ -1,17 +1,20 @@
 //! Strategic state acquisition. Replay conversion and buffer growth run off-thread.
 
 use crate::{
+    raw::RawLog,
     sampling::{full_match, qpc},
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
 use engine::{
-    Memory, ccountry_raid_status, cnuke, craid_instance, craid_system,
-    nproject_cbreakthrough_progress, nproject_cprogram, nproject_cproject,
-    nproject_sproject_history, peace_conference, scientist_roster, walk::Outcome,
+    Memory, ccountry, ccountry_raid_status, cgame_state, cnuke, cpdx_array::Array, craid_instance,
+    craid_system, msvc_string, nproject_breakthrough_node, nproject_cbreakthrough_progress,
+    nproject_cprogram, nproject_cprogram_status, nproject_cproject, nproject_cproject_pool,
+    nproject_cproject_state_machine, nproject_sproject_context, nproject_sproject_history,
+    peace_conference, scientist_roster, walk::Outcome,
 };
 use replay::{
-    frame::TableView,
+    frame::{TABLE_COUNT, TableView},
     rows::{self, TableId, tables},
 };
 use std::mem::size_of;
@@ -69,6 +72,13 @@ pub struct Captured {
     names: Arena<u8>,
     candidates: Vec<usize>,
     required_candidates: usize,
+    /// Raw-copy split gate for the Tier-4 slot-3 project tables (0..4).
+    /// Set by the game thread on refresh hours with a valid raw payload;
+    /// `capture` then skips the typed slot-3 walks and the decode worker
+    /// fills these rows before the ready handoff. Preserved across `reset`
+    /// (set per refresh, cleared by the worker after decode). Hourly tables
+    /// are never gated by this flag.
+    pub(crate) raw_mode: bool,
 }
 
 impl Captured {
@@ -88,6 +98,7 @@ impl Captured {
             names: Arena::new(capacity.program_names, successful[0]),
             candidates: vec![0; capacity.program_candidates],
             required_candidates: 0,
+            raw_mode: false,
         }
     }
 
@@ -164,12 +175,21 @@ impl Captured {
         let mut matched = [false; N];
         let mut ticks = [0; N];
         // Tier-4 projects share slot3; off-hours skip all four walks.
+        // Raw-copy split: on refresh hours the game thread stages raw bytes
+        // via `copy_projects_refresh` and the decode worker fills the typed
+        // rows before the ready handoff, so the typed slot-3 walks are
+        // skipped here. Matched flags and costs come from the raw compare,
+        // applied by the caller after this returns. Hourly tables below
+        // always run.
         let walk = replay::cadence::should_walk(
             replay::rows::TableId::Projects,
             hour,
             force_full,
-        );
-        if !walk {
+        ) && !self.raw_mode;
+        if self.raw_mode {
+            // Refresh payload staged: leave the reset outcomes for the decode
+            // worker, which installs identical rows, outcomes and arenas.
+        } else if !walk {
             let skipped = Outcome::Unavailable {
                 reason: replay::cadence::SKIPPED_REASON,
             };
@@ -460,6 +480,1193 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
+// ===========================================================================
+// Tier-4 slot-3 raw-copy split (ProjectPrograms, Projects, ProjectHistory,
+// ProjectBreakthroughs; hourly tables stay game-side typed).
+//
+// The game thread copies raw bytes only: one shared country census, program
+// pointers/rows/strings, project pool records with state machines and
+// history entries, and breakthrough tree nodes. No row is decoded on the
+// game thread. The single FIFO decode worker replays the existing typed
+// walks against the recorded spans (`crate::raw::Recorded`), so typed rows,
+// ordinals, skips, truncation counts and failure reasons are identical by
+// construction (see `crate::raw` for the mirror rules).
+//
+// Census sharing: the three typed walks each run their own country census,
+// but the read sets are identical, so the mirror records one census and all
+// three replays read it from the log. Inner `resolve` calls likewise reuse
+// the census's authentication spans and record only their link span.
+// ===========================================================================
+
+/// Fault-attribution bits, one per slot-3 table in `TABLES[0..4]` order.
+const M_PROGRAMS: u32 = 0x01;
+const M_PROJECTS: u32 = 0x02;
+const M_HISTORY: u32 = 0x04;
+const M_BREAKTHROUGH: u32 = 0x08;
+const M_ALL: u32 = 0x0f;
+const M_PROJECT_TABLES: u32 = M_PROJECTS | M_HISTORY;
+
+/// Project identity header length (`HISTORY_COUNT + 4`); the engine keeps
+/// this private, so the mirror derives it from the public count constant.
+const PROJECT_HEADER_LEN: usize = nproject_cproject::HISTORY_COUNT + 4;
+/// Project lifecycle flag length (`RECORD_SIZE - HEADER_LEN`).
+const PROJECT_FLAG_LEN: usize = 2;
+/// Project batch size; the engine documents it as error-precedence state.
+const PROJECT_BATCH: u32 = 16;
+
+/// One refresh of raw project payload. The census scratch is reused across
+/// passes without allocation; growth happens on the decode side only (see
+/// `crate::decode::recycle_projects_job`).
+#[derive(Debug)]
+pub(crate) struct ProjectsJob {
+    pub log: RawLog<4>,
+    pub game_state: usize,
+    census: Vec<CensusEntry>,
+    pointers: Vec<usize>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct CensusEntry {
+    pointer: usize,
+    id: u32,
+    slot: u32,
+    canonical: bool,
+}
+
+/// Shared census borrowed by every slot-3 walk mirror.
+#[derive(Clone, Copy)]
+struct ProjectCensus<'a> {
+    links: &'a Array,
+    countries: u32,
+    census: &'a [CensusEntry],
+}
+
+impl ProjectsJob {
+    pub fn new() -> Self {
+        Self {
+            // Late-campaign worst case is about 21k projects with state
+            // machines plus history rows; both pools start above that so
+            // steady state never overflows.
+            log: RawLog::new(1 << 20, 48 << 20),
+            game_state: 0,
+            census: Vec::with_capacity(512),
+            pointers: Vec::with_capacity(32768),
+        }
+    }
+
+    /// Reset lengths for reuse, keeping every capacity. No allocation.
+    pub fn clear(&mut self) {
+        self.log.clear();
+        self.game_state = 0;
+        self.census.clear();
+        self.pointers.clear();
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.log.grow_for_next()
+    }
+
+    /// Double every pool off the game thread until copies fit. Converges like
+    /// the typed capacity growth; overflowed refreshes fall back to the typed
+    /// walk in the meantime, so sizing is a pure performance knob.
+    pub fn grow(&mut self) {
+        self.log.grow();
+        self.census.reserve_exact(self.census.capacity().max(1));
+        self.pointers.reserve_exact(self.pointers.capacity().max(1));
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ProjectsCopyReport {
+    /// False when staging overflowed: the caller falls back to the typed walk
+    /// (identical rows through the existing path) and enqueues no payload.
+    pub raw_ok: bool,
+    /// Whole-log raw equality gated by live-fault conservatism, in
+    /// [programs, projects, history, breakthroughs] order.
+    pub matched: [bool; 4],
+    pub copy_ticks: [u64; 4],
+    pub raw_bytes: [u64; 4],
+}
+
+/// Game-thread copy parameters, bundled to keep the refresh entry small.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProjectsCopyContext {
+    pub base: usize,
+    pub game_state: usize,
+    pub needed: [bool; TABLE_COUNT],
+}
+
+fn pool_u32(log: &RawLog<4>, start: usize) -> u32 {
+    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
+}
+
+fn pool_u64(log: &RawLog<4>, start: usize) -> u64 {
+    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+}
+
+/// One mirrored span read. `None` addrs (address arithmetic overflow) record
+/// nothing because the typed walk fails locally without reads; every other
+/// failure is logged with the affected-table mask.
+fn span(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take(memory, addr?, len, mask)
+}
+
+/// Mirror of `walk_tables`' read set for one country: pool header, batched
+/// identity/flag records, state machines and history entries. Pooled
+/// capacities are ignored (a superset is recorded); validation, precedence
+/// and error scope are local parses, so any failure aborts the walk exactly
+/// like the typed error.
+fn copy_project_tables(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    base: usize,
+    links: &Array,
+    countries: u32,
+    census: &[CensusEntry],
+) {
+    let expected = match base.checked_add(nproject_cproject::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return,
+    };
+    let shared = ProjectCensus {
+        links,
+        countries,
+        census,
+    };
+    for country in census.iter().filter(|entry| entry.canonical) {
+        let Some(status) = copy_status(log, memory, base, shared, country, M_PROJECT_TABLES)
+        else {
+            return;
+        };
+        let Some(pool_start) = span(
+            log,
+            memory,
+            status.checked_add(nproject_cprogram_status::PROJECT_POOL),
+            8,
+            M_PROJECT_TABLES,
+        ) else {
+            return;
+        };
+        let pool = match usize::try_from(pool_u64(log, pool_start)).ok().filter(|&p| p != 0)
+        {
+            Some(pool) => pool,
+            None => return,
+        };
+        let Some(pool_vtable) = span(log, memory, Some(pool), 8, M_PROJECT_TABLES) else {
+            return;
+        };
+        if pool_u64(log, pool_vtable) != base.checked_add(nproject_cproject_pool::VTABLE_RVA).unwrap_or(0) as u64
+        {
+            return;
+        }
+        let Some(pool_array) = span(
+            log,
+            memory,
+            pool.checked_add(nproject_cproject_pool::PROJECTS),
+            16,
+            M_PROJECT_TABLES,
+        ) else {
+            return;
+        };
+        let mut raw = [0u8; 16];
+        raw.copy_from_slice(&log.bytes[pool_array..pool_array + 16]);
+        let pool_array = match Array::from_header(raw, nproject_cproject::POOL_STRIDE) {
+            Some(array) => array,
+            None => return,
+        };
+        let mut authenticated_owner = country.id;
+        let mut hist_dead = false;
+        let mut index = 0u32;
+        while index < pool_array.count {
+            let count = (pool_array.count - index).min(PROJECT_BATCH);
+            // Identity gather in row-major order with the walk's completed-
+            // field precedence. The mirror always gathers both fields; the
+            // replay's truncated passes request a prefix subset.
+            let mut headers = [0usize; PROJECT_BATCH as usize];
+            let mut copied = 0u32;
+            let mut stopped = false;
+            for ordinal in 0..count {
+                let ptr = match ((index + ordinal) as usize)
+                    .checked_mul(nproject_cproject::POOL_STRIDE)
+                    .and_then(|offset| pool_array.data.checked_add(offset))
+                {
+                    Some(ptr) => ptr,
+                    // Typed address overflow aborts the whole walk.
+                    None => return,
+                };
+                match span(log, memory, Some(ptr), PROJECT_HEADER_LEN, M_PROJECTS) {
+                    Some(start) => {
+                        headers[ordinal as usize] = start;
+                        copied += 1;
+                    }
+                    None => {
+                        stopped = true;
+                        break;
+                    }
+                }
+                match span(
+                    log,
+                    memory,
+                    ptr.checked_add(nproject_cproject::STARTED),
+                    PROJECT_FLAG_LEN,
+                    M_PROJECTS,
+                ) {
+                    Some(_) => copied += 1,
+                    None => {
+                        stopped = true;
+                        break;
+                    }
+                }
+                if log.overflowed {
+                    return;
+                }
+            }
+            if copied < count * 2 && copied.is_multiple_of(2) {
+                return;
+            }
+            let header_count = copied.div_ceil(2);
+            if header_count == 0 {
+                return;
+            }
+            let _ = stopped;
+            for ordinal in 0..header_count {
+                let header = headers[ordinal as usize];
+                if pool_u64(log, header) != expected
+                    || pool_u32(log, header + nproject_cproject::TYPE)
+                        != nproject_cproject::REFERENCE_TYPE
+                    || pool_u32(log, header + nproject_cproject::ID) == 0
+                {
+                    return;
+                }
+                let owner = pool_u32(log, header + nproject_cproject::OWNER);
+                if owner != authenticated_owner {
+                    match copy_resolve(log, memory, shared, owner, M_PROJECT_TABLES) {
+                        Some(pointer) if pointer == country.pointer => {
+                            authenticated_owner = owner;
+                        }
+                        _ => return,
+                    }
+                }
+                let machine = match usize::try_from(pool_u64(log, header + nproject_cproject::STATE_MACHINE)).ok()
+                {
+                    Some(machine) => machine,
+                    None => return,
+                };
+                if span(log, memory, Some(machine), nproject_cproject_state_machine::SIZE, M_PROJECTS).is_none()
+                    && !log.overflowed
+                {
+                    // A failed machine gather fails projects only; history
+                    // continues below exactly like the typed walk.
+                }
+                if log.overflowed {
+                    return;
+                }
+                if !hist_dead {
+                    copy_project_history(log, memory, base, header, owner, &mut hist_dead);
+                    if log.overflowed {
+                        return;
+                    }
+                }
+            }
+            index += header_count;
+        }
+    }
+}
+
+/// Mirror of one record's history read set: array header plus every entry's
+/// row and context spans. Sets `hist_dead` on the first typed abort point;
+/// later history takes are skipped exactly like the filtered walk.
+fn copy_project_history(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    base: usize,
+    header: usize,
+    owner: u32,
+    hist_dead: &mut bool,
+) {
+    let id = pool_u32(log, header + nproject_cproject::ID);
+    let data = match usize::try_from(pool_u64(log, header + nproject_cproject::HISTORY)) {
+        Ok(data) => data,
+        Err(_) => {
+            *hist_dead = true;
+            return;
+        }
+    };
+    let capacity = pool_u32(log, header + nproject_cproject::HISTORY_CAPACITY);
+    let count = pool_u32(log, header + nproject_cproject::HISTORY_COUNT);
+    if capacity > i32::MAX as u32
+        || count > capacity
+        || (count != 0 && data == 0)
+        || (count as usize)
+            .checked_mul(nproject_sproject_history::STRIDE)
+            .and_then(|len| data.checked_add(len))
+            .is_none()
+    {
+        *hist_dead = true;
+        return;
+    }
+    let expected = match base.checked_add(nproject_sproject_history::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => {
+            *hist_dead = true;
+            return;
+        }
+    };
+    let context_expected = match base.checked_add(nproject_sproject_context::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => {
+            *hist_dead = true;
+            return;
+        }
+    };
+    for ordinal in 0..count {
+        let address = (ordinal as usize)
+            .checked_mul(nproject_sproject_history::STRIDE)
+            .and_then(|offset| data.checked_add(offset));
+        let Some(address) = address else {
+            *hist_dead = true;
+            return;
+        };
+        let Some(vtable) = span(log, memory, Some(address), 8, M_HISTORY) else {
+            *hist_dead = true;
+            return;
+        };
+        if pool_u64(log, vtable) != expected {
+            *hist_dead = true;
+            return;
+        }
+        let handles = span(
+            log,
+            memory,
+            address.checked_add(nproject_sproject_history::PROTOTYPE_REWARD_HANDLE),
+            8,
+            M_HISTORY,
+        );
+        let date = span(
+            log,
+            memory,
+            address.checked_add(nproject_sproject_history::DATE),
+            4,
+            M_HISTORY,
+        );
+        if handles.is_none() || date.is_none() {
+            *hist_dead = true;
+            return;
+        }
+        let context = match address.checked_add(nproject_sproject_history::CONTEXT) {
+            Some(context) => context,
+            None => {
+                *hist_dead = true;
+                return;
+            }
+        };
+        if !copy_project_context(log, memory, context_expected, context) {
+            *hist_dead = true;
+            return;
+        }
+        let _ = (owner, id, ordinal);
+    }
+}
+
+/// Mirror of `SProjectContext::read_row`: vtable, fixed scatter and optional
+/// payloads by presence byte. Presence is parsed from the recorded bytes, so
+/// the optional read set matches the typed walk exactly.
+fn copy_project_context(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    expected: u64,
+    address: usize,
+) -> bool {
+    let Some(vtable) = span(log, memory, Some(address), 8, M_HISTORY) else {
+        return false;
+    };
+    if pool_u64(log, vtable) != expected {
+        return false;
+    }
+    let fixed = span(
+        log,
+        memory,
+        address.checked_add(nproject_sproject_context::PROVINCE),
+        16,
+        M_HISTORY,
+    );
+    let country_present = span(
+        log,
+        memory,
+        address.checked_add(nproject_sproject_context::COUNTRY_PRESENT),
+        1,
+        M_HISTORY,
+    );
+    let scientist_present = span(
+        log,
+        memory,
+        address.checked_add(nproject_sproject_context::SCIENTIST_PRESENT),
+        1,
+        M_HISTORY,
+    );
+    let state_present = span(
+        log,
+        memory,
+        address.checked_add(nproject_sproject_context::STATE_PRESENT),
+        1,
+        M_HISTORY,
+    );
+    let (Some(fixed), Some(country_present), Some(scientist_present), Some(state_present)) =
+        (fixed, country_present, scientist_present, state_present)
+    else {
+        return false;
+    };
+    for (present_start, offset) in [
+        (country_present, nproject_sproject_context::COUNTRY_REFERENCE),
+        (
+            scientist_present,
+            nproject_sproject_context::SCIENTIST_REFERENCE,
+        ),
+        (state_present, nproject_sproject_context::STATE_REFERENCE),
+    ] {
+        if log.bytes[present_start] != 0
+            && span(log, memory, address.checked_add(offset), 4, M_HISTORY).is_none()
+        {
+            return false;
+        }
+    }
+    let _ = fixed;
+    true
+}
+
+/// Parsed breakthrough tree links for the traversal mirror.
+#[derive(Clone, Copy)]
+struct BreakthroughLinks {
+    left: usize,
+    parent: usize,
+    right: usize,
+    nil: bool,
+}
+
+/// Mirror of `Links::read`: the 24-byte link span plus the nil byte.
+fn copy_breakthrough_links(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    address: usize,
+) -> Option<BreakthroughLinks> {
+    if address == 0 {
+        return None;
+    }
+    let pointers = span(log, memory, Some(address), 24, M_BREAKTHROUGH)?;
+    let nil = span(
+        log,
+        memory,
+        address.checked_add(nproject_breakthrough_node::IS_NIL),
+        1,
+        M_BREAKTHROUGH,
+    )?;
+    if log.bytes[nil] > 1 {
+        return None;
+    }
+    let pointer = |offset: usize| {
+        usize::try_from(u64::from_le_bytes(
+            log.bytes[pointers + offset..pointers + offset + 8]
+                .try_into()
+                .unwrap(),
+        ))
+        .ok()
+    };
+    Some(BreakthroughLinks {
+        left: pointer(nproject_breakthrough_node::LEFT)?,
+        parent: pointer(nproject_breakthrough_node::PARENT)?,
+        right: pointer(nproject_breakthrough_node::RIGHT)?,
+        nil: log.bytes[nil] != 0,
+    })
+}
+
+/// Brent-style cycle guard with no reads, mirroring the typed `Chain`.
+struct BreakthroughChain {
+    checkpoint: usize,
+    power: u64,
+    distance: u64,
+}
+
+impl BreakthroughChain {
+    fn new(start: usize) -> Self {
+        Self {
+            checkpoint: start,
+            power: 1,
+            distance: 0,
+        }
+    }
+
+    fn visit(&mut self, address: usize) -> bool {
+        self.distance += 1;
+        if address == self.checkpoint {
+            return false;
+        }
+        if self.distance == self.power {
+            self.checkpoint = address;
+            self.power = self.power.saturating_mul(2);
+            self.distance = 0;
+        }
+        true
+    }
+}
+
+/// Mirror of `successor`: the identical link-following sequence with local
+/// cycle detection. Any failure aborts the breakthroughs walk.
+fn copy_breakthrough_successor(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    header: usize,
+    mut current: usize,
+    links: BreakthroughLinks,
+) -> Option<usize> {
+    if links.right != header {
+        let mut candidate = links.right;
+        let mut chain = BreakthroughChain::new(current);
+        loop {
+            if !chain.visit(candidate) {
+                return None;
+            }
+            let child = copy_breakthrough_links(log, memory, candidate)?;
+            if child.nil || child.parent != current {
+                return None;
+            }
+            if child.left == header {
+                return Some(candidate);
+            }
+            current = candidate;
+            candidate = child.left;
+        }
+    }
+    let mut parent = links.parent;
+    let mut chain = BreakthroughChain::new(current);
+    loop {
+        if parent == header {
+            return Some(header);
+        }
+        if !chain.visit(parent) {
+            return None;
+        }
+        let ancestor = copy_breakthrough_links(log, memory, parent)?;
+        if ancestor.nil {
+            return None;
+        }
+        if ancestor.left == current {
+            return Some(parent);
+        }
+        if ancestor.right != current {
+            return None;
+        }
+        current = parent;
+        parent = ancestor.parent;
+    }
+}
+
+/// Mirror of `walk_progress`'s read set: vtable, tree header, sentinel,
+/// root and the in-order node/payload sequence. Capacity truncation is
+/// ignored (a superset is recorded); order and coherence checks are local.
+fn copy_breakthrough_tree(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    base: usize,
+    status: usize,
+) -> bool {
+    let address = match status.checked_add(nproject_cprogram_status::BREAKTHROUGH) {
+        Some(address) => address,
+        None => return false,
+    };
+    let expected = match base.checked_add(nproject_cbreakthrough_progress::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    let Some(vtable) = span(log, memory, Some(address), 8, M_BREAKTHROUGH) else {
+        return false;
+    };
+    if pool_u64(log, vtable) != expected {
+        return false;
+    }
+    let Some(header_start) = span(
+        log,
+        memory,
+        address.checked_add(nproject_cbreakthrough_progress::TREE_HEADER),
+        16,
+        M_BREAKTHROUGH,
+    ) else {
+        return false;
+    };
+    let header = match usize::try_from(pool_u64(log, header_start)).ok() {
+        Some(header) => header,
+        None => return false,
+    };
+    let count = match u32::try_from(u64::from_le_bytes(
+        log.bytes[header_start + 8..header_start + 16]
+            .try_into()
+            .unwrap(),
+    )) {
+        Ok(count) => count,
+        Err(_) => return false,
+    };
+    let Some(sentinel) = copy_breakthrough_links(log, memory, header) else {
+        return false;
+    };
+    if !sentinel.nil {
+        return false;
+    }
+    if count == 0 {
+        return sentinel.left == header && sentinel.parent == header && sentinel.right == header;
+    }
+    let Some(root) = copy_breakthrough_links(log, memory, sentinel.parent) else {
+        return false;
+    };
+    if root.nil || root.parent != header {
+        return false;
+    }
+    let mut current = sentinel.left;
+    let mut previous_key = None;
+    for ordinal in 0..count {
+        if current == header {
+            return false;
+        }
+        let Some(links) = copy_breakthrough_links(log, memory, current) else {
+            return false;
+        };
+        if links.nil {
+            return false;
+        }
+        let Some(value) = span(
+            log,
+            memory,
+            current.checked_add(nproject_breakthrough_node::SPECIALIZATION_HANDLE),
+            8,
+            M_BREAKTHROUGH,
+        ) else {
+            return false;
+        };
+        let specialization = pool_u32(log, value);
+        if previous_key.is_some_and(|key| key >= specialization as i32) {
+            return false;
+        }
+        previous_key = Some(specialization as i32);
+        let last = current;
+        let Some(next) = copy_breakthrough_successor(log, memory, header, current, links) else {
+            return false;
+        };
+        if ordinal + 1 == count && (next != header || sentinel.right != last) {
+            return false;
+        }
+        current = next;
+    }
+    true
+}
+
+/// Mirror of `walk`'s read set for breakthroughs across the shared census.
+fn copy_breakthroughs(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    base: usize,
+    links: &Array,
+    countries: u32,
+    census: &[CensusEntry],
+) {
+    for country in census.iter().filter(|entry| entry.canonical) {
+        let shared = ProjectCensus {
+            links,
+            countries,
+            census,
+        };
+        let Some(status) = copy_status(log, memory, base, shared, country, M_BREAKTHROUGH)
+        else {
+            return;
+        };
+        if !copy_breakthrough_tree(log, memory, base, status) {
+            return;
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+/// One structural pass over the slot-3 read set: shared census first, then
+/// the three walk mirrors in typed order. Failures stop only the affected
+/// walk; the replay derives every outcome from the same recorded spans.
+fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut ProjectsJob) {
+    job.game_state = game_state;
+    job.census.clear();
+    let (links, countries) = match copy_census(&mut job.log, memory, base, game_state, &mut job.census) {
+        Some(census) => census,
+        None => return,
+    };
+    if job.log.overflowed {
+        return;
+    }
+    copy_programs(&mut job.log, memory, base, &links, countries, &job.census, &mut job.pointers);
+    if job.log.overflowed {
+        return;
+    }
+    copy_project_tables(&mut job.log, memory, base, &links, countries, &job.census);
+    if job.log.overflowed {
+        return;
+    }
+    copy_breakthroughs(&mut job.log, memory, base, &links, countries, &job.census);
+}
+
+/// Shared census plus the tables it authenticates. The walks replayed at
+/// decode time re-derive everything else from the recorded spans.
+fn copy_census(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    census: &mut Vec<CensusEntry>,
+) -> Option<(Array, u32)> {
+    let countries_start = span(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRIES),
+        16,
+        M_ALL,
+    )?;
+    let links_start = span(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRY_LINKS),
+        16,
+        M_ALL,
+    )?;
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
+    let countries = Array::from_header(raw, 8)?;
+    raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
+    let links = Array::from_header(raw, 4)?;
+    if countries.count < 2 || links.count == 0 {
+        return None;
+    }
+    let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
+    for slot in 1..countries.count {
+        // Full `read_at` authentication in walk order.
+        let pointer_addr = (slot as usize)
+            .checked_mul(8)
+            .and_then(|offset| countries.data.checked_add(offset));
+        let pointer_start = span(log, memory, pointer_addr, 8, M_ALL)?;
+        let pointer = match usize::try_from(pool_u64(log, pointer_start))
+            .ok()
+            .filter(|&pointer| pointer != 0)
+        {
+            Some(pointer) => pointer,
+            // Null slots are skipped without reads, like the typed walk.
+            None => continue,
+        };
+        let vtable_start = span(log, memory, Some(pointer), 8, M_ALL)?;
+        let id_start = span(log, memory, pointer.checked_add(ccountry::ID), 4, M_ALL)?;
+        if pool_u64(log, vtable_start) != vtable {
+            return None;
+        }
+        let id = pool_u32(log, id_start);
+        let Some(Some(canonical)) = copy_link(log, memory, &links, countries.count, id) else {
+            return None;
+        };
+        let Some(Some(canonical_slot)) = copy_link(log, memory, &links, countries.count, slot)
+        else {
+            return None;
+        };
+        if canonical_slot != canonical {
+            return None;
+        }
+        let Some(Some(check)) = copy_link(log, memory, &links, countries.count, canonical)
+        else {
+            return None;
+        };
+        if check != canonical {
+            return None;
+        }
+        let canonical_addr = (canonical as usize)
+            .checked_mul(8)
+            .and_then(|offset| countries.data.checked_add(offset));
+        let canonical_pointer = span(log, memory, canonical_addr, 8, M_ALL)?;
+        if pool_u64(log, canonical_pointer) != pointer as u64 {
+            return None;
+        }
+        if census.len() == census.capacity() {
+            log.overflowed = true;
+            return None;
+        }
+        census.push(CensusEntry {
+            pointer,
+            id,
+            slot,
+            canonical: canonical == slot,
+        });
+    }
+    Some((links, countries.count))
+}
+
+impl Captured {
+    /// Game-thread raw copy for a slot-3 refresh hour. Copies `first` always
+    /// and `second` while any family table still needs double-read checks,
+    /// compares the raw logs, and records copy-only costs plus the existing
+    /// checked/mismatches bookkeeping. Returns whether the payload is
+    /// complete (`raw_ok`); on staging overflow the caller falls back to the
+    /// typed walk and enqueues nothing.
+    pub(crate) fn copy_projects_refresh(
+        &mut self,
+        memory: &impl Memory,
+        ctx: ProjectsCopyContext,
+        first: &mut ProjectsJob,
+        second: Option<&mut ProjectsJob>,
+    ) -> ProjectsCopyReport {
+        let needed = |local: usize| ctx.needed[TABLES[local].index()];
+        let started = qpc();
+        copy_pass(memory, ctx.base, ctx.game_state, first);
+        let mut ticks = [0u64; 4];
+        ticks[0] = elapsed(started);
+        let mut matched = [true; 4];
+        if let Some(second_job) = second {
+            let second_started = qpc();
+            copy_pass(memory, ctx.base, ctx.game_state, second_job);
+            ticks[0] += elapsed(second_started);
+            let equal =
+                first.log.logs_equal(&second_job.log) && !first.log.overflowed && !second_job.log.overflowed;
+            for (slot, matched) in matched.iter_mut().enumerate() {
+                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+            }
+        }
+        self.programs.checked = needed(0);
+        self.programs.mismatches = usize::from(needed(0) && !matched[0]);
+        self.projects.checked = needed(1);
+        self.projects.mismatches = usize::from(needed(1) && !matched[1]);
+        self.history.checked = needed(2);
+        self.history.mismatches = usize::from(needed(2) && !matched[2]);
+        self.breakthroughs.checked = needed(3);
+        self.breakthroughs.mismatches = usize::from(needed(3) && !matched[3]);
+        let raw_ok = !first.log.overflowed;
+        ProjectsCopyReport {
+            raw_ok,
+            matched,
+            copy_ticks: ticks,
+            raw_bytes: first.log.raw_bytes,
+        }
+    }
+
+    /// Decode-worker interpretation of a raw refresh payload into the pooled
+    /// typed rows. Outcomes, arena bytes and candidate counts match the typed
+    /// walk exactly because the identical walks run against the recorded
+    /// spans; checked/mismatches set by the raw compare survive. Clears
+    /// `raw_mode` so the next capture starts clean.
+    pub(crate) fn decode_projects_payload(
+        &mut self,
+        base: usize,
+        job: &ProjectsJob,
+        decode_ticks: &mut [u64; 4],
+    ) {
+        let started = qpc();
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let first = nproject_cprogram::walk(
+            &recorded,
+            base,
+            job.game_state,
+            &mut self.candidates,
+            &mut self.programs.rows,
+            &mut self.names.first,
+        );
+        self.programs.outcome = program_outcome(first, &self.programs.rows, &self.names.first);
+        self.names.len = first.bytes_len;
+        self.names.required = first.required_bytes;
+        self.required_candidates = first.required_candidates;
+        let (projects, histories) = nproject_cproject::walk_with_history(
+            &recorded,
+            base,
+            job.game_state,
+            &mut self.projects.rows,
+            &mut self.history.rows,
+        );
+        self.projects.outcome = bounded(projects, self.projects.rows.len());
+        self.history.outcome = bounded(histories, self.history.rows.len());
+        self.breakthroughs.outcome = bounded(
+            nproject_cbreakthrough_progress::walk(&recorded, base, job.game_state, &mut self.breakthroughs.rows),
+            self.breakthroughs.rows.len(),
+        );
+        decode_ticks[0] += elapsed(started);
+        self.raw_mode = false;
+    }
+}
+
+/// Mirror of `Reader::link`: one link-table span with local bounds checks.
+/// Outer `None` aborts the walk; inner `None` is a readable absence (which
+/// the typed callers also turn into a walk error). Either way the replay
+/// derives the identical reason from the same recorded span.
+fn copy_link(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    links: &Array,
+    countries: u32,
+    raw: u32,
+) -> Option<Option<u32>> {
+    if raw == 0 || raw >= links.count {
+        return None;
+    }
+    let offset = (raw as usize).checked_mul(4)?;
+    let start = span(log, memory, links.data.checked_add(offset), 4, M_ALL)?;
+    let slot = pool_u32(log, start);
+    if slot == 0 {
+        return Some(None);
+    }
+    if slot >= countries {
+        return None;
+    }
+    Some(Some(slot))
+}
+
+/// Mirror of `Reader::resolve` without re-reading authentication: the link
+/// span is recorded here and the `read_at` spans come from the shared
+/// census, which covered every slot. Local checks match the walk exactly.
+fn copy_resolve(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    census: ProjectCensus<'_>,
+    raw: u32,
+    mask: u32,
+) -> Option<usize> {
+    if raw == 0 || raw >= census.links.count {
+        return None;
+    }
+    let offset = (raw as usize).checked_mul(4)?;
+    let start = span(log, memory, census.links.data.checked_add(offset), 4, mask)?;
+    let slot = pool_u32(log, start);
+    if slot == 0 || slot >= census.countries {
+        return None;
+    }
+    let entry = census.census.iter().find(|entry| entry.slot == slot)?;
+    if !entry.canonical {
+        return None;
+    }
+    Some(entry.pointer)
+}
+
+/// Mirror of `from_country`: status pointer, 20-byte header and owner
+/// resolution. `None` aborts the calling walk exactly like the typed error.
+fn copy_status(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    base: usize,
+    census: ProjectCensus<'_>,
+    country: &CensusEntry,
+    mask: u32,
+) -> Option<usize> {
+    let pointer_start = span(
+        log,
+        memory,
+        country.pointer.checked_add(ccountry::PROGRAM_STATUS),
+        8,
+        mask,
+    )?;
+    let status = usize::try_from(pool_u64(log, pointer_start))
+        .ok()
+        .filter(|&status| status != 0)?;
+    let header_start = span(log, memory, Some(status), 20, mask)?;
+    let mut header = [0u8; 20];
+    header.copy_from_slice(&log.bytes[header_start..header_start + 20]);
+    let expected = base.checked_add(nproject_cprogram_status::VTABLE_RVA)? as u64;
+    let secondary = base.checked_add(nproject_cprogram_status::SECONDARY_VTABLE_RVA)? as u64;
+    if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected
+        || u64::from_le_bytes(header[8..16].try_into().unwrap()) != secondary
+    {
+        return None;
+    }
+    let owner = u32::from_le_bytes(header[16..20].try_into().unwrap());
+    if copy_resolve(log, memory, census, owner, mask)? != country.pointer {
+        return None;
+    }
+    Some(status)
+}
+
+/// Mirror of one program row's read set: identity, field scatter, optional
+/// active-project handle, building terminator and payload, owner link.
+/// String parses are local; any failure aborts the programs walk.
+fn copy_program_row(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    base: usize,
+    census: ProjectCensus<'_>,
+    pointer: usize,
+) -> bool {
+    let expected = match base.checked_add(nproject_cprogram::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    let Some(identity) = span(log, memory, Some(pointer), 16, M_PROGRAMS) else {
+        return false;
+    };
+    if pool_u64(log, identity) != expected
+        || pool_u32(log, identity + nproject_cprogram::TYPE) != nproject_cprogram::REFERENCE_TYPE
+    {
+        return false;
+    }
+    let id = pool_u32(log, identity + nproject_cprogram::ID);
+    if id == 0 {
+        return false;
+    }
+    let at = |offset| pointer.checked_add(offset);
+    let mut spans = [0usize; 5];
+    for (slot, (offset, len)) in [
+        (nproject_cprogram::OWNER_PRIMARY, 8),
+        (nproject_cprogram::OWNER_COPY, 12),
+        (nproject_cprogram::SCIENTIST_REFERENCE_TYPE, 8),
+        (nproject_cprogram::ACTIVE_FLAG, 1),
+        (nproject_cprogram::BUILDING, 32),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let Some(start) = span(log, memory, at(*offset), *len, M_PROGRAMS) else {
+            return false;
+        };
+        spans[slot] = start;
+    }
+    if log.bytes[spans[0]..spans[0] + 8] != log.bytes[spans[1]..spans[1] + 8] {
+        return false;
+    }
+    let owner = pool_u32(log, spans[0]);
+    if log.bytes[spans[3]] > 1 {
+        return false;
+    }
+    if log.bytes[spans[3]] == 1
+        && span(
+            log,
+            memory,
+            at(nproject_cprogram::ACTIVE_PROJECT_HANDLE),
+            4,
+            M_PROGRAMS,
+        )
+        .is_none()
+    {
+        return false;
+    }
+    let mut building = [0u8; 32];
+    building.copy_from_slice(&log.bytes[spans[4]..spans[4] + 32]);
+    let name_len = u64::from_le_bytes(building[16..24].try_into().unwrap());
+    let name_capacity = u64::from_le_bytes(building[24..32].try_into().unwrap());
+    if name_capacity < msvc_string::INLINE_CAPACITY || name_len > name_capacity {
+        return false;
+    }
+    let Ok(building_len) = usize::try_from(name_len) else {
+        return false;
+    };
+    let source = if name_capacity == msvc_string::INLINE_CAPACITY {
+        at(nproject_cprogram::BUILDING)
+    } else {
+        usize::try_from(u64::from_le_bytes(building[..8].try_into().unwrap()))
+            .ok()
+            .filter(|&source| source != 0)
+    };
+    let Some(source) = source else {
+        return false;
+    };
+    if span(
+        log,
+        memory,
+        source.checked_add(building_len),
+        1,
+        M_PROGRAMS,
+    )
+    .is_none()
+    {
+        return false;
+    }
+    if building_len != 0
+        && name_capacity != msvc_string::INLINE_CAPACITY
+        && span(log, memory, Some(source), building_len, M_PROGRAMS).is_none()
+    {
+        return false;
+    }
+    copy_resolve(log, memory, census, owner, M_PROGRAMS).is_some()
+}
+
+/// Mirror of `nproject_cprogram::walk`'s read set across the shared census.
+/// The walk runs in two phases — a pointer census over every country, then
+/// row reads — so a row failure must not skip later countries' census
+/// spans: the replay censuses everything before decoding the first row.
+fn copy_programs(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    base: usize,
+    links: &Array,
+    countries: u32,
+    census: &[CensusEntry],
+    pointers: &mut Vec<usize>,
+) {
+    // Phase 1: pointer census. Only census-span failures abort the walk;
+    // row failures below never reach back into this phase.
+    pointers.clear();
+    let shared = ProjectCensus {
+        links,
+        countries,
+        census,
+    };
+    let mut census_ok = true;
+    for country in census.iter().filter(|entry| entry.canonical) {
+        let Some(status) = copy_status(log, memory, base, shared, country, M_PROGRAMS) else {
+            census_ok = false;
+            break;
+        };
+        let Some(array_start) = span(
+            log,
+            memory,
+            status.checked_add(nproject_cprogram_status::PROGRAMS),
+            16,
+            M_PROGRAMS,
+        ) else {
+            census_ok = false;
+            break;
+        };
+        let mut raw = [0u8; 16];
+        raw.copy_from_slice(&log.bytes[array_start..array_start + 16]);
+        let Some(array) = Array::from_header(raw, 8) else {
+            census_ok = false;
+            break;
+        };
+        for index in 0..array.count {
+            let addr = (index as usize)
+                .checked_mul(8)
+                .and_then(|offset| array.data.checked_add(offset));
+            let pointer = addr
+                .and_then(|addr| span(log, memory, Some(addr), 8, M_PROGRAMS))
+                .and_then(|start| usize::try_from(pool_u64(log, start)).ok())
+                .filter(|&pointer| pointer != 0);
+            let Some(pointer) = pointer else {
+                census_ok = false;
+                break;
+            };
+            if pointers.len() == pointers.capacity() {
+                log.overflowed = true;
+                census_ok = false;
+                break;
+            }
+            pointers.push(pointer);
+        }
+        if !census_ok || log.overflowed {
+            break;
+        }
+    }
+    if !census_ok {
+        return;
+    }
+    // Phase 2: row reads in census order (a superset of the walk's sorted
+    // deduplicated order; duplicates record identical spans harmlessly).
+    for &pointer in pointers.iter() {
+        if !copy_program_row(log, memory, base, shared, pointer) {
+            return;
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
 fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
     if outcome.len() > capacity {
         Outcome::Unavailable {
@@ -568,6 +1775,428 @@ fn valid_names(
                     .is_some_and(|end| end <= len)
             })
         })
+}
+
+/// Shared synthetic address space for the projects copy/decode split
+/// harness: two countries, one program with a heap building string, one
+/// project with a valid state machine and history context, and a single
+/// breakthrough node.
+#[cfg(test)]
+pub(crate) mod projects_test_kit {
+    use super::{
+        Capacities, Captured, N, ProjectsCopyContext, ProjectsCopyReport, ProjectsJob, bounded,
+        program_outcome,
+    };
+    use crate::table_capture::CaptureRows;
+    use engine::{
+        ccountry, cgame_state, msvc_string, nproject_breakthrough_node,
+        nproject_cbreakthrough_progress, nproject_cprogram, nproject_cprogram_status,
+        nproject_cproject, nproject_cproject_pool, nproject_cproject_state_machine,
+        nproject_cprototype_project_state as prototype, nproject_sproject_context,
+        nproject_sproject_history, nproject_csimple_project_state as simple,
+    };
+    use replay::frame::TABLE_COUNT;
+
+    pub(crate) const BASE: usize = 0x140000000;
+    pub(crate) const GAME_STATE: usize = 0x10000;
+    const ADDRESS: usize = 0x10000;
+    const CTAB: usize = 0x2000;
+    const LTAB: usize = 0x2100;
+    pub(crate) const C1: usize = 0x3000;
+    const C2: usize = 0x3100;
+    pub(crate) const S1: usize = 0x4000;
+    const PARR: usize = 0x5000;
+    pub(crate) const PROG1: usize = 0x5100;
+    const POOL1: usize = 0x6000;
+    pub(crate) const PROJ1: usize = 0x6200;
+    pub(crate) const MACH1: usize = 0x7000;
+    pub(crate) const HIST1: usize = 0x8000;
+    const BT_HEAD: usize = 0x9100;
+    pub(crate) const BT_NODE: usize = 0x9200;
+    pub(crate) const HEAP: usize = 0xA000;
+
+    pub(crate) fn memory(bytes: &[u8]) -> engine::memory::SliceMemory<'_> {
+        engine::memory::SliceMemory { base: ADDRESS, bytes }
+    }
+
+    fn put<const COUNT: usize>(bytes: &mut [u8], offset: usize, value: [u8; COUNT]) {
+        bytes[offset..offset + COUNT].copy_from_slice(&value);
+    }
+
+    fn pointer(bytes: &mut [u8], offset: usize, target: usize) {
+        put(bytes, offset, ((ADDRESS + target) as u64).to_le_bytes());
+    }
+
+    fn array(bytes: &mut [u8], offset: usize, data: usize, count: u32) {
+        pointer(bytes, offset, data);
+        put(bytes, offset + 8, count.to_le_bytes());
+        put(bytes, offset + 12, count.to_le_bytes());
+    }
+
+    fn heap_string(bytes: &mut [u8], header: usize, payload: usize, value: &[u8]) {
+        assert!(value.len() > msvc_string::INLINE_CAPACITY as usize);
+        put(bytes, header, ((ADDRESS + payload) as u64).to_le_bytes());
+        put(bytes, header + 16, (value.len() as u64).to_le_bytes());
+        put(bytes, header + 24, (value.len() as u64).to_le_bytes());
+        bytes[payload..payload + value.len()].copy_from_slice(value);
+        bytes[payload + value.len()] = 0;
+    }
+
+    fn country(bytes: &mut [u8], slot: u32, id: u32, object: usize, status: usize) {
+        pointer(bytes, CTAB + slot as usize * 8, object);
+        put(bytes, LTAB + id as usize * 4, id.to_le_bytes());
+        put(
+            bytes,
+            object,
+            ((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(bytes, object + ccountry::ID, id.to_le_bytes());
+        pointer(bytes, object + ccountry::PROGRAM_STATUS, status);
+        put(
+            bytes,
+            status,
+            ((BASE + nproject_cprogram_status::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(
+            bytes,
+            status + nproject_cprogram_status::SECONDARY_VTABLE,
+            ((BASE + nproject_cprogram_status::SECONDARY_VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(
+            bytes,
+            status + nproject_cprogram_status::OWNER,
+            id.to_le_bytes(),
+        );
+    }
+
+    fn empty_status(bytes: &mut [u8], status: usize, id: u32, pool: usize) {
+        put(
+            bytes,
+            status,
+            ((BASE + nproject_cprogram_status::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(
+            bytes,
+            status + nproject_cprogram_status::SECONDARY_VTABLE,
+            ((BASE + nproject_cprogram_status::SECONDARY_VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(bytes, status + nproject_cprogram_status::OWNER, id.to_le_bytes());
+        pointer(bytes, status + nproject_cprogram_status::PROJECT_POOL, pool);
+        put(
+            bytes,
+            pool,
+            ((BASE + nproject_cproject_pool::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        array(bytes, pool + nproject_cproject_pool::PROJECTS, 0, 0);
+        array(bytes, status + nproject_cprogram_status::PROGRAMS, 0, 0);
+        // Empty breakthrough tree, inline in the status object.
+        let tree = status + nproject_cprogram_status::BREAKTHROUGH;
+        put(bytes, tree, ((BASE + nproject_cbreakthrough_progress::VTABLE_RVA) as u64).to_le_bytes());
+        let head = tree + 0x40;
+        pointer(bytes, tree + nproject_cbreakthrough_progress::TREE_HEADER, head);
+        put(bytes, tree + nproject_cbreakthrough_progress::TREE_SIZE, 0_u64.to_le_bytes());
+        for link in [0, 8, 16] {
+            pointer(bytes, head + link, head);
+        }
+        bytes[head + nproject_breakthrough_node::IS_NIL] = 1;
+    }
+
+    pub(crate) fn fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 0xB000];
+        // The game-state object lives at the image base here, so census
+        // headers sit at the raw engine offsets.
+        array(&mut bytes, cgame_state::COUNTRIES, CTAB, 3);
+        array(&mut bytes, cgame_state::COUNTRY_LINKS, LTAB, 3);
+        country(&mut bytes, 1, 1, C1, S1);
+        country(&mut bytes, 2, 2, C2, S1 + 0x200);
+        pointer(&mut bytes, S1 + nproject_cprogram_status::PROJECT_POOL, POOL1);
+        put(
+            &mut bytes,
+            POOL1,
+            ((BASE + nproject_cproject_pool::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        array(&mut bytes, POOL1 + nproject_cproject_pool::PROJECTS, PROJ1, 1);
+        array(&mut bytes, S1 + nproject_cprogram_status::PROGRAMS, PARR, 1);
+        pointer(&mut bytes, PARR, PROG1);
+        // Program with a heap building string and an active project.
+        put(
+            &mut bytes,
+            PROG1,
+            ((BASE + nproject_cprogram::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            PROG1 + nproject_cprogram::TYPE,
+            nproject_cprogram::REFERENCE_TYPE.to_le_bytes(),
+        );
+        put(&mut bytes, PROG1 + nproject_cprogram::ID, 5_u32.to_le_bytes());
+        put(&mut bytes, PROG1 + nproject_cprogram::OWNER_PRIMARY, 1_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            PROG1 + nproject_cprogram::PROVINCE_PRIMARY,
+            13413_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            PROG1 + nproject_cprogram::OWNER_COPY,
+            1_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            PROG1 + nproject_cprogram::PROVINCE_COPY,
+            13413_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            PROG1 + nproject_cprogram::SCIENTIST_REFERENCE_TYPE,
+            0x1122334455667788_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            PROG1 + nproject_cprogram::UNREAD_PROTOTYPE_REWARDS,
+            7_i32.to_le_bytes(),
+        );
+        bytes[PROG1 + nproject_cprogram::ACTIVE_FLAG] = 1;
+        put(
+            &mut bytes,
+            PROG1 + nproject_cprogram::ACTIVE_PROJECT_HANDLE,
+            9_u32.to_le_bytes(),
+        );
+        heap_string(&mut bytes, PROG1 + nproject_cprogram::BUILDING, HEAP, b"program-building-01");
+        // Project with a valid state machine and one history entry.
+        put(
+            &mut bytes,
+            PROJ1,
+            ((BASE + nproject_cproject::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            PROJ1 + nproject_cproject::TYPE,
+            nproject_cproject::REFERENCE_TYPE.to_le_bytes(),
+        );
+        put(&mut bytes, PROJ1 + nproject_cproject::ID, 3_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            PROJ1 + nproject_cproject::DEFINITION_HANDLE,
+            45_u32.to_le_bytes(),
+        );
+        put(&mut bytes, PROJ1 + nproject_cproject::OWNER, 1_u32.to_le_bytes());
+        pointer(&mut bytes, PROJ1 + nproject_cproject::STATE_MACHINE, MACH1);
+        put(
+            &mut bytes,
+            PROJ1 + nproject_cproject::PROGRAM_REFERENCE_TYPE,
+            0x99_u64.to_le_bytes(),
+        );
+        array(&mut bytes, PROJ1 + nproject_cproject::HISTORY, HIST1, 1);
+        bytes[PROJ1 + nproject_cproject::STARTED] = 1;
+        // State machine with the current simple state first.
+        put(
+            &mut bytes,
+            MACH1,
+            ((BASE + nproject_cproject_state_machine::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        pointer(
+            &mut bytes,
+            MACH1 + nproject_cproject_state_machine::CURRENT_STATE,
+            MACH1 + nproject_cproject_state_machine::SIMPLE_STATE_1,
+        );
+        bytes[MACH1 + nproject_cproject_state_machine::NOT_COMPLETED] = 1;
+        for (index, offset) in [
+            nproject_cproject_state_machine::PROTOTYPE_STATE,
+            nproject_cproject_state_machine::SIMPLE_STATE_1,
+            nproject_cproject_state_machine::SIMPLE_STATE_2,
+            nproject_cproject_state_machine::SIMPLE_STATE_3,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let vtable = if index == 0 {
+                prototype::VTABLE_RVA
+            } else {
+                simple::VTABLE_RVA
+            };
+            put(&mut bytes, MACH1 + offset, ((BASE + vtable) as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                MACH1 + offset + simple::STATE_ENUM,
+                (index as u32 + 10).to_le_bytes(),
+            );
+        }
+        // History entry with country and state references present.
+        put(
+            &mut bytes,
+            HIST1,
+            ((BASE + nproject_sproject_history::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            HIST1 + nproject_sproject_history::PROTOTYPE_REWARD_HANDLE,
+            11_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            HIST1 + nproject_sproject_history::OPTION_HANDLE,
+            22_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            HIST1 + nproject_sproject_history::DATE,
+            333_i32.to_le_bytes(),
+        );
+        let context = HIST1 + nproject_sproject_history::CONTEXT;
+        put(
+            &mut bytes,
+            context,
+            ((BASE + nproject_sproject_context::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            context + nproject_sproject_context::PROVINCE,
+            (-5_i32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            context + nproject_sproject_context::PROGRESS,
+            6_i32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            context + nproject_sproject_context::CHARACTER_REFERENCE,
+            0x77_u64.to_le_bytes(),
+        );
+        bytes[context + nproject_sproject_context::COUNTRY_PRESENT] = 1;
+        put(
+            &mut bytes,
+            context + nproject_sproject_context::COUNTRY_REFERENCE,
+            1_u32.to_le_bytes(),
+        );
+        bytes[context + nproject_sproject_context::STATE_PRESENT] = 1;
+        put(
+            &mut bytes,
+            context + nproject_sproject_context::STATE_REFERENCE,
+            9_u32.to_le_bytes(),
+        );
+        // Single-node breakthrough tree, inline in the status object.
+        put(
+            &mut bytes,
+            S1 + nproject_cprogram_status::BREAKTHROUGH,
+            ((BASE + nproject_cbreakthrough_progress::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        pointer(
+            &mut bytes,
+            S1 + nproject_cprogram_status::BREAKTHROUGH + nproject_cbreakthrough_progress::TREE_HEADER,
+            BT_HEAD,
+        );
+        put(
+            &mut bytes,
+            S1 + nproject_cprogram_status::BREAKTHROUGH + nproject_cbreakthrough_progress::TREE_SIZE,
+            1_u64.to_le_bytes(),
+        );
+        pointer(&mut bytes, BT_HEAD, BT_NODE);
+        pointer(&mut bytes, BT_HEAD + 8, BT_NODE);
+        pointer(&mut bytes, BT_HEAD + 16, BT_NODE);
+        bytes[BT_HEAD + nproject_breakthrough_node::IS_NIL] = 1;
+        pointer(&mut bytes, BT_NODE, BT_HEAD);
+        pointer(&mut bytes, BT_NODE + 8, BT_HEAD);
+        pointer(&mut bytes, BT_NODE + 16, BT_HEAD);
+        bytes[BT_NODE + nproject_breakthrough_node::IS_NIL] = 0;
+        put(
+            &mut bytes,
+            BT_NODE + nproject_breakthrough_node::SPECIALIZATION_HANDLE,
+            77_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            BT_NODE + nproject_breakthrough_node::POINTS,
+            (-8_i32).to_le_bytes(),
+        );
+        empty_status(&mut bytes, S1 + 0x200, 2, 0x6100);
+        bytes
+    }
+
+    /// Reference typed walks with identical pooled buffers, outcomes and
+    /// arenas installed exactly like `decode_projects_payload` installs them.
+    pub(crate) fn direct(
+        memory: &impl engine::Memory,
+        capacities: &Capacities,
+    ) -> Captured {
+        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+        let first = nproject_cprogram::walk(
+            memory,
+            BASE,
+            GAME_STATE,
+            &mut captured.candidates,
+            &mut captured.programs.rows,
+            &mut captured.names.first,
+        );
+        captured.programs.outcome = program_outcome(first, &captured.programs.rows, &captured.names.first);
+        captured.names.len = first.bytes_len;
+        captured.names.required = first.required_bytes;
+        captured.required_candidates = first.required_candidates;
+        let (projects, histories) = nproject_cproject::walk_with_history(
+            memory,
+            BASE,
+            GAME_STATE,
+            &mut captured.projects.rows,
+            &mut captured.history.rows,
+        );
+        captured.projects.outcome = bounded(projects, captured.projects.rows.len());
+        captured.history.outcome = bounded(histories, captured.history.rows.len());
+        captured.breakthroughs.outcome = bounded(
+            nproject_cbreakthrough_progress::walk(memory, BASE, GAME_STATE, &mut captured.breakthroughs.rows),
+            captured.breakthroughs.rows.len(),
+        );
+        captured
+    }
+
+    /// Raw-copy split: two raw passes compared, then the first payload
+    /// decoded into fresh pooled buffers of the same capacities.
+    pub(crate) fn split(
+        memory: &impl engine::Memory,
+        capacities: &Capacities,
+    ) -> (Captured, ProjectsCopyReport, ProjectsJob) {
+        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+        let ctx = ProjectsCopyContext {
+            base: BASE,
+            game_state: GAME_STATE,
+            needed: [true; TABLE_COUNT],
+        };
+        let mut first = ProjectsJob::new();
+        let mut second = ProjectsJob::new();
+        let report = captured.copy_projects_refresh(memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        let mut ticks = [0u64; 4];
+        captured.decode_projects_payload(BASE, &first, &mut ticks);
+        (captured, report, first)
+    }
+
+    fn assert_rows<R: PartialEq + std::fmt::Debug>(
+        name: &str,
+        split: &CaptureRows<R>,
+        direct: &CaptureRows<R>,
+    ) {
+        assert_eq!(split.outcome, direct.outcome, "{name} outcome");
+        let len = split.outcome.len();
+        assert_eq!(direct.outcome.len(), len, "{name} length");
+        assert_eq!(&split.rows[..len], &direct.rows[..len], "{name} rows");
+    }
+
+    pub(crate) fn assert_matches_direct(split: &Captured, direct: &Captured) {
+        assert_rows("programs", &split.programs, &direct.programs);
+        assert_rows("projects", &split.projects, &direct.projects);
+        assert_rows("history", &split.history, &direct.history);
+        assert_rows("breakthroughs", &split.breakthroughs, &direct.breakthroughs);
+        assert_eq!(
+            &split.names.first[..split.names.len],
+            &direct.names.first[..direct.names.len],
+            "program names arena"
+        );
+        assert_eq!(split.names.required, direct.names.required, "names required");
+        assert_eq!(
+            split.required_candidates, direct.required_candidates,
+            "required candidates"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -952,5 +2581,197 @@ mod tests {
         assert!(captured.raid_countries.second.is_empty() && !captured.raids.second.is_empty());
         assert!(captured.allocated_bytes() < before);
         assert_eq!(captured.checked_mismatches(), [0; N]);
+    }
+
+    fn split_capacities() -> Capacities {
+        Capacities {
+            rows: [256; N],
+            program_names: 8192,
+            program_candidates: 1024,
+        }
+    }
+
+    #[test]
+    fn split_copy_matches_direct_walk() {
+        use super::projects_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let capacities = split_capacities();
+        let direct = kit::direct(&memory, &capacities);
+        let (split, report, _) = kit::split(&memory, &capacities);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 4]);
+        kit::assert_matches_direct(&split, &direct);
+        // Spot-checks: program identity with heap building bytes, project
+        // lifecycle and state, history context, breakthrough payload.
+        assert_eq!(split.programs.outcome, Outcome::Rows { len: 1 });
+        let program = &split.programs.rows[0];
+        assert_eq!((program.id, program.owner, program.province), (5, 1, 13413));
+        assert_eq!(program.active_project, Some(9));
+        assert_eq!(
+            &split.names.first[program.building_start..program.building_start + program.building_len],
+            b"program-building-01"
+        );
+        assert_eq!(split.projects.outcome, Outcome::Rows { len: 1 });
+        let project = &split.projects.rows[0];
+        assert_eq!((project.owner, project.local_id, project.definition_id), (1, 3, 45));
+        assert_eq!((project.started, project.completed), (1, 0));
+        assert_eq!(split.history.outcome, Outcome::Rows { len: 1 });
+        let history = &split.history.rows[0];
+        assert_eq!(
+            (
+                history.owner,
+                history.project,
+                history.prototype_reward_handle,
+                history.option_handle,
+                history.date
+            ),
+            (1, 3, 11, 22, 333)
+        );
+        assert_eq!(
+            (
+                history.context.province,
+                history.context.country_reference,
+                history.context.state_reference
+            ),
+            (-5, Some(1), Some(9))
+        );
+        assert_eq!(split.breakthroughs.outcome, Outcome::Rows { len: 1 });
+        let breakthrough = &split.breakthroughs.rows[0];
+        assert_eq!((breakthrough.owner, breakthrough.specialization, breakthrough.points), (1, 77, -8));
+    }
+
+    #[test]
+    fn split_copy_matches_direct_walk_under_truncation() {
+        use super::projects_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let capacities = Capacities {
+            rows: [1; N],
+            program_names: 4,
+            program_candidates: 1,
+        };
+        let direct = kit::direct(&memory, &capacities);
+        let (split, report, _) = kit::split(&memory, &capacities);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 4]);
+        kit::assert_matches_direct(&split, &direct);
+    }
+
+    #[test]
+    fn split_copy_matches_direct_walk_on_fault_matrix() {
+        use super::projects_test_kit as kit;
+        use engine::memory::SliceMemory;
+        struct Fault<'a> {
+            memory: SliceMemory<'a>,
+            fault: std::ops::Range<usize>,
+        }
+        impl engine::Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let Some(end) = address.checked_add(output.len()) else {
+                    return false;
+                };
+                if address < self.fault.end && end > self.fault.start {
+                    return false;
+                }
+                self.memory.copy(address, output)
+            }
+        }
+        // (fault offset from the image base, expected raw-compare verdicts in
+        // family order). Outcomes including reason strings must match the
+        // typed walk exactly; verdicts follow the fault-attribution masks.
+        for (offset, matched) in [
+            (cgame_state::COUNTRIES, [false, false, false, false]),
+            (kit::C1, [false, false, false, false]),
+            (kit::S1, [false, false, false, false]),
+            (kit::PROG1, [false, true, true, true]),
+            (kit::HEAP, [false, true, true, true]),
+            // A whole-walk abort in the project pool fails history's rows
+            // identically, but history's own partition holds no live fault,
+            // so its check still advances per the pilot's deterministic-fault
+            // rule (live tearing always blocks via fault bits instead).
+            (kit::PROJ1, [true, false, true, true]),
+            (kit::MACH1, [true, false, true, true]),
+            (kit::HIST1, [true, true, false, true]),
+            (
+                kit::HIST1 + nproject_sproject_history::CONTEXT,
+                [true, true, false, true],
+            ),
+            (kit::BT_NODE, [true, true, true, false]),
+        ] {
+            let bytes = kit::fixture();
+            let fault = kit::GAME_STATE + offset;
+            let memory = Fault {
+                memory: SliceMemory {
+                    base: kit::GAME_STATE,
+                    bytes: &bytes,
+                },
+                fault: fault..fault + 1,
+            };
+            let capacities = split_capacities();
+            let direct = kit::direct(&memory, &capacities);
+            let (split, report, _) = kit::split(&memory, &capacities);
+            assert!(report.raw_ok, "offset={offset:x}");
+            kit::assert_matches_direct(&split, &direct);
+            assert_eq!(report.matched, matched, "offset={offset:x}");
+        }
+    }
+
+    #[test]
+    fn double_copy_compare_blocks_checks_on_tearing() {
+        use super::projects_test_kit as kit;
+        use replay::frame::TABLE_COUNT;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let capacities = split_capacities();
+        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let ctx = ProjectsCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; TABLE_COUNT],
+        };
+        let mut first = ProjectsJob::new();
+        let mut second = ProjectsJob::new();
+        let report =
+            captured.copy_projects_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 4]);
+        // Same-hour tearing between the passes changes the log.
+        let mut torn = bytes.clone();
+        torn[kit::PROJ1 + nproject_cproject::ID] ^= 0xff;
+        let torn_memory = kit::memory(&torn);
+        let mut after = ProjectsJob::new();
+        copy_pass(&memory, kit::BASE, kit::GAME_STATE, &mut after);
+        let mut after_torn = ProjectsJob::new();
+        copy_pass(&torn_memory, kit::BASE, kit::GAME_STATE, &mut after_torn);
+        assert!(!after.log.logs_equal(&after_torn.log));
+        let mut repeat = ProjectsJob::new();
+        copy_pass(&memory, kit::BASE, kit::GAME_STATE, &mut repeat);
+        assert!(after.log.logs_equal(&repeat.log));
+    }
+
+    #[test]
+    fn staging_overflow_falls_back_to_typed_walk() {
+        use super::projects_test_kit as kit;
+        use replay::frame::TABLE_COUNT;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let capacities = split_capacities();
+        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let ctx = ProjectsCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; TABLE_COUNT],
+        };
+        let mut tiny = ProjectsJob {
+            log: crate::raw::RawLog::new(8, 8),
+            game_state: 0,
+            census: Vec::with_capacity(1),
+            pointers: Vec::with_capacity(1),
+        };
+        let report = captured.copy_projects_refresh(&memory, ctx, &mut tiny, None);
+        assert!(!report.raw_ok);
+        assert!(tiny.log.overflowed);
+        assert!(tiny.grow_for_next());
     }
 }

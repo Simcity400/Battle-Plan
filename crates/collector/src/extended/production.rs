@@ -2,18 +2,20 @@
 //! allocate; the callback fills typed buffers and measures shared graph work.
 
 use crate::{
+    raw::RawLog,
     sampling::{full_match, qpc},
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
 use engine::{
     Memory, army_upgrade_request_row, carmy_upgrades_requests, carmy_upgrades_status,
-    cdeployment_status, cequipment_production_line, cequipment_upgrades_instance,
-    cequipment_variant, cequipment_variant_pool, cproduction_status, cupgrade_delivery,
-    equipment_module_container, walk::Outcome,
+    cdeployment_status, cequipment_module, cequipment_production_line, cequipment_type,
+    cequipment_upgrade, cequipment_upgrades_instance, cequipment_variant, cequipment_variant_pool,
+    cpdx_array::Array, cproduction_status, cupgrade_delivery, equipment_module_container,
+    equipment_module_entry, equipment_upgrade_entry, msvc_string, walk::Outcome,
 };
 use replay::{
-    frame::TableView,
+    frame::{TableView},
     rows::{self, TableId, tables},
 };
 
@@ -120,6 +122,20 @@ pub struct Captured {
     pub line_custom_name_bytes: Arena<u8>,
     pub license_records: CaptureRows<cproduction_status::LicenseRecordRow>,
     pub license_handles: Arena<u64>,
+    /// Raw-copy split gate for the Tier-4 slot-3 variant tables (3..7).
+    /// Set by the game thread on refresh hours with a valid raw payload;
+    /// `finish_variants` then skips the typed detail walks and the decode
+    /// worker fills these rows before the ready handoff. Preserved across
+    /// `reset` (set per refresh, cleared by the worker after decode). The
+    /// registry census itself always runs game-side and is never gated.
+    pub(crate) raw_mode: bool,
+    /// Raw-copy split gate for the hourly divisions group (equipment table
+    /// 2 plus the upgrade graph 7..11). Set by the game thread every hour
+    /// with a valid raw payload; `acquire` then skips those typed detail
+    /// walks and the decode worker fills the rows before the ready handoff.
+    /// Preserved across `reset` (set per hour, cleared by the worker after
+    /// decode). Lines, stockpiles, licences and deployment stay game-side.
+    pub(crate) divisions_raw_mode: bool,
 }
 
 impl Captured {
@@ -151,6 +167,8 @@ impl Captured {
             line_custom_name_bytes: Arena::new(capacities.line_custom_name_bytes, deployment),
             license_records: CaptureRows::new(capacities.rows[16], successful[16]),
             license_handles: Arena::new(capacities.license_handles, successful[16]),
+            raw_mode: false,
+            divisions_raw_mode: false,
         }
     }
 
@@ -274,6 +292,14 @@ impl Captured {
             cequipment_variant_pool::walk_stockpiles(memory, base, game_state, rows)
         });
         ticks[1] = elapsed(begin);
+        // Divisions group (copy/decode split): on hours with a staged raw
+        // payload the decode worker fills equipment and upgrade rows before
+        // the ready handoff, so the typed detail walks are skipped here,
+        // leaving the reset outcomes for the worker. Matched flags and costs
+        // come from the raw compare, applied by the caller after this
+        // returns. Lines, stockpiles, licences and deployment below always
+        // run game-side (independent walks).
+        if !self.divisions_raw_mode {
         let begin = qpc();
         let first_sources = complete_source(divisions.first, divisions.first_outcome);
         let second_sources = complete_source(divisions.second, divisions.second_outcome);
@@ -365,6 +391,7 @@ impl Captured {
             }
         }
         ticks[7] = elapsed(begin);
+        }
 
         let begin = qpc();
         matched[11] = capture_rows(&mut self.licenses, needed[11], |rows| {
@@ -445,6 +472,52 @@ impl Captured {
         (matched, ticks)
     }
 
+    /// Decode-worker interpretation of a raw divisions-group payload, in
+    /// dependency order: equipment first, then the upgrade graph, both
+    /// against the decoded division sources. Outcomes and rows match the
+    /// typed walks exactly because the identical walks run against the
+    /// recorded spans; checked/mismatches set by the raw compare survive.
+    /// Clears `divisions_raw_mode` so the next capture starts clean.
+    pub(crate) fn decode_division_detail(
+        &mut self,
+        base: usize,
+        sources: &Sources<'_, cequipment_variant_pool::DivisionSource>,
+        recorded: &crate::raw::Recorded<'_>,
+        decode_ticks: &mut [u64; 6],
+    ) {
+        let started = qpc();
+        let first_sources = complete_source(sources.first, sources.first_outcome);
+        self.division_equipment.outcome = match first_sources {
+            Ok(source) => cequipment_variant_pool::walk_divisions(
+                recorded,
+                base,
+                source,
+                &mut self.division_equipment.rows,
+            ),
+            Err(reason) => Outcome::Unavailable { reason },
+        };
+        decode_ticks[1] += elapsed(started);
+        let started = qpc();
+        let result = match first_sources {
+            Ok(source) => carmy_upgrades_status::walk(
+                recorded,
+                base,
+                source,
+                &mut self.groups.rows,
+                &mut self.requests.rows,
+                &mut self.deliveries.rows,
+                &mut self.produced.rows,
+            ),
+            Err(reason) => carmy_upgrades_status::Outcomes::unavailable(reason),
+        };
+        self.groups.outcome = result.groups;
+        self.requests.outcome = result.requests;
+        self.deliveries.outcome = result.deliveries;
+        self.produced.outcome = result.produced;
+        decode_ticks[2] += elapsed(started);
+        self.divisions_raw_mode = false;
+    }
+
     /// One shared traversal fills all four deployment buffers. The second pass
     /// writes the comparison buffers, which are empty once the window closes.
     fn deployment(
@@ -495,11 +568,22 @@ impl Captured {
         let mut matched = [false; N];
         let mut ticks = [0; N];
         // Tier-4 variants share slot3; off-hours skip the whole walk.
+        // Raw-copy split: on refresh hours the registry census still runs
+        // game-side (production consumes it here), but the per-variant
+        // detail walks move to the decode worker via `copy_variants_refresh`.
+        // Matched flags and costs come from the raw compare, applied by the
+        // caller after this returns.
         let walk = replay::cadence::should_walk(
             replay::rows::TableId::VariantDefinitions,
             hour,
             force_full,
-        );
+        ) && !self.raw_mode;
+        if self.raw_mode {
+            // Refresh payload staged: leave the reset outcomes for the decode
+            // worker, which installs identical rows, outcomes and arenas.
+            // The registry census above already ran game-side as always.
+            return (matched, ticks);
+        }
         if !walk {
             let skipped = Outcome::Unavailable {
                 reason: replay::cadence::SKIPPED_REASON,
@@ -901,8 +985,513 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
-fn complete_source<T>(source: &[T], outcome: Outcome) -> Result<&[T], &'static str> {
-    match outcome {
+// ===========================================================================
+// Tier-4 slot-3 raw-copy split (VariantDefinitions, VariantModules,
+// VariantStats, VariantUpgrades; all other production tables stay typed).
+//
+// The registry census always runs game-side (production consumes it here,
+// per the coordinator ruling — no duplicated census). On refresh hours the
+// game thread additionally copies per-variant detail bytes — definition
+// fields, equipment identity, module/upgrade entries and strings — into the
+// job, keyed by the census's own pointers. The single FIFO decode worker
+// replays the existing detail walks against the recorded spans
+// (`crate::raw::Recorded`) with the frame's pooled registry rows as the
+// source, so rows, ordinals, skips, truncation and failure reasons are
+// identical by construction (see `crate::raw` for the mirror rules).
+//
+// The mirror traverses structurally and records every discoverable span,
+// never aborting except on overflow: the replay derives every outcome,
+// precedence and error scope from the same recorded spans, so later extras
+// are harmless.
+// ===========================================================================
+
+/// Fault-attribution bits, one per variant table in family order.
+const M_DEFINITIONS: u32 = 0x01;
+const M_MODULES: u32 = 0x02;
+const M_STATS: u32 = 0x04;
+const M_UPGRADES: u32 = 0x08;
+
+/// One refresh of raw variant detail payload. Flat pools recycle capacities
+/// and the steady state allocates on neither thread; growth happens on the
+/// decode side only (see `crate::decode::recycle_variants_job`).
+#[derive(Debug)]
+pub(crate) struct VariantsJob {
+    pub log: RawLog<4>,
+}
+
+impl VariantsJob {
+    pub fn new() -> Self {
+        Self {
+            // Late-campaign worst case is about 6.4k variants with modules,
+            // stats and upgrades; both pools start above that so steady
+            // state never overflows.
+            log: RawLog::new(1 << 20, 32 << 20),
+        }
+    }
+
+    /// Reset lengths for reuse, keeping every capacity. No allocation.
+    pub fn clear(&mut self) {
+        self.log.clear();
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.log.grow_for_next()
+    }
+
+    /// Double every pool off the game thread until copies fit. Converges like
+    /// the typed capacity growth; overflowed refreshes fall back to the typed
+    /// walk in the meantime, so sizing is a pure performance knob.
+    pub fn grow(&mut self) {
+        self.log.grow();
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct VariantsCopyReport {
+    /// False when staging overflowed: the caller falls back to the typed walk
+    /// (identical rows through the existing path) and enqueues no payload.
+    pub raw_ok: bool,
+    /// Whole-log raw equality gated by live-fault conservatism, in
+    /// [definitions, modules, stats, upgrades] order.
+    pub matched: [bool; 4],
+    pub copy_ticks: [u64; 4],
+    pub raw_bytes: [u64; 4],
+}
+
+/// Game-thread copy parameters, bundled to keep the refresh entry small.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct VariantsCopyContext {
+    pub needed: [bool; 4],
+}
+
+fn pool_u64(log: &RawLog<4>, start: usize) -> u64 {
+    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+}
+
+/// One mirrored span read. `None` addresses (arithmetic overflow) record
+/// nothing because the typed walk fails locally without reads.
+fn vspan(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take(memory, addr?, len, mask)
+}
+
+/// Parsed equipment string header: payload length, source and inline flag.
+/// Mirrors the engine literal rules; `None` means the typed walk fails the
+/// enclosing row from the same header bytes.
+struct VLit {
+    len: usize,
+    source: usize,
+    inline: bool,
+}
+
+fn parse_variant_literal(header: &[u8; 32], header_addr: usize) -> Option<VLit> {
+    let len = u64::from_le_bytes(header[16..24].try_into().unwrap());
+    let capacity = u64::from_le_bytes(header[24..32].try_into().unwrap());
+    if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
+        return None;
+    }
+    let len = usize::try_from(len).ok()?;
+    let inline = capacity == msvc_string::INLINE_CAPACITY;
+    if inline {
+        if header[len] != 0 {
+            return None;
+        }
+        Some(VLit {
+            len,
+            source: header_addr,
+            inline: true,
+        })
+    } else {
+        let source = usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
+            .ok()
+            .filter(|&source| source != 0)?;
+        source.checked_add(len)?;
+        Some(VLit {
+            len,
+            source,
+            inline: false,
+        })
+    }
+}
+
+/// Heap payload and terminator takes for one parsed literal. Inline strings
+/// ride in the already-copied header span.
+fn copy_variant_literal(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    literal: &VLit,
+    mask: u32,
+) {
+    if literal.inline {
+        return;
+    }
+    if literal.len != 0 {
+        let _ = vspan(log, memory, Some(literal.source), literal.len, mask);
+    }
+    let _ = vspan(log, memory, literal.source.checked_add(literal.len), 1, mask);
+}
+
+/// Mirror of `walk_definitions`' read set for the registry census: fixed
+/// field gathers, equipment identity and the three string literals per
+/// variant. Takes are unconditional (a superset); the replay derives the
+/// batch precedence and every outcome from the same recorded spans.
+fn copy_variant_definitions(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    variants: &[cequipment_variant::RegistryRow],
+) {
+    for variant in variants {
+        let pointer = variant.pointer();
+        let token = vspan(log, memory, pointer.checked_add(cequipment_variant::EQUIPMENT_TOKEN), 13, M_DEFINITIONS);
+        let definition = vspan(log, memory, pointer.checked_add(cequipment_variant::DEFINITION), 8, M_DEFINITIONS);
+        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::OBSOLETE), 1, M_DEFINITIONS);
+        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::CLASSIFIER_FLAGS), 12, M_DEFINITIONS);
+        let display = vspan(log, memory, pointer.checked_add(cequipment_variant::DISPLAY_NAME), 64, M_DEFINITIONS);
+        let (Some(_), Some(definition), Some(display)) = (token, definition, display) else {
+            continue;
+        };
+        let mut headers = [0u8; 64];
+        headers.copy_from_slice(&log.bytes[display..display + 64]);
+        let equipment = usize::try_from(pool_u64(log, definition)).ok().filter(|&e| e != 0);
+        let Some(equipment) = equipment else {
+            continue;
+        };
+        let identity = vspan(log, memory, Some(equipment), 12, M_DEFINITIONS);
+        let name = vspan(log, memory, equipment.checked_add(cequipment_type::NAME), 32, M_DEFINITIONS);
+        let (Some(_), Some(name)) = (identity, name) else {
+            continue;
+        };
+        let mut name_header = [0u8; 32];
+        name_header.copy_from_slice(&log.bytes[name..name + 32]);
+        let display_a: &[u8; 32] = headers[..32].try_into().unwrap();
+        let display_b: &[u8; 32] = headers[32..].try_into().unwrap();
+        for header in [display_a, display_b] {
+            if let Some(literal) = parse_variant_literal(header, 0) {
+                copy_variant_literal(log, memory, &literal, M_DEFINITIONS);
+            }
+        }
+        if let Some(literal) = parse_variant_literal(&name_header, 0) {
+            copy_variant_literal(log, memory, &literal, M_DEFINITIONS);
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+/// Mirror of `equipment_module_container::walk`'s read set: array header,
+/// contiguous entry block, definition fields and the name literal per entry.
+fn copy_variant_modules(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    variants: &[cequipment_variant::RegistryRow],
+) {
+    for variant in variants {
+        let pointer = variant.pointer();
+        let header = vspan(
+            log,
+            memory,
+            pointer.checked_add(cequipment_variant::MODULES + equipment_module_container::ENTRIES_CANDIDATE),
+            16,
+            M_MODULES,
+        );
+        let Some(header) = header else {
+            continue;
+        };
+        let mut raw = [0u8; 16];
+        raw.copy_from_slice(&log.bytes[header..header + 16]);
+        let array = match Array::from_header(raw, equipment_module_entry::STRIDE) {
+            Some(array) => array,
+            None => continue,
+        };
+        let block = (array.count as usize).checked_mul(equipment_module_entry::STRIDE);
+        let entries = block.and_then(|len| {
+            if len == 0 {
+                Some(0)
+            } else {
+                vspan(log, memory, Some(array.data), len, M_MODULES)
+            }
+        });
+        let Some(entries) = entries else {
+            continue;
+        };
+        for index in 0..array.count as usize {
+            let entry = entries + index * equipment_module_entry::STRIDE;
+            let definition = usize::try_from(pool_u64(log, entry + 8)).ok().filter(|&d| d != 0);
+            let Some(definition) = definition else {
+                continue;
+            };
+            let identity = vspan(log, memory, Some(definition), 12, M_MODULES);
+            let _ = vspan(log, memory, definition.checked_add(cequipment_module::ACTIVE), 1, M_MODULES);
+            let name = vspan(log, memory, definition.checked_add(cequipment_module::NAME), 32, M_MODULES);
+            let (Some(_), Some(name)) = (identity, name) else {
+                continue;
+            };
+            let mut name_header = [0u8; 32];
+            name_header.copy_from_slice(&log.bytes[name..name + 32]);
+            if let Some(literal) = parse_variant_literal(&name_header, 0) {
+                copy_variant_literal(log, memory, &literal, M_MODULES);
+            }
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+/// Mirror of `walk_stats`' read set: the five fixed stat-cache gathers per
+/// variant. No discovery beyond the census pointers.
+fn copy_variant_stats(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    variants: &[cequipment_variant::RegistryRow],
+) {
+    for variant in variants {
+        let pointer = variant.pointer();
+        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::SPEED_CACHE_CANDIDATE), 32, M_STATS);
+        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::MAXIMUM_SPEED_CACHE_CANDIDATE), 8, M_STATS);
+        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::RELIABILITY_CACHE_CANDIDATE), 8, M_STATS);
+        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::AIR_DEFENSE_CACHE_CANDIDATE), 24, M_STATS);
+        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::BUILD_COST_CACHE_CANDIDATE), 8, M_STATS);
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+/// Mirror of `cequipment_upgrades_instance::walk`'s read set: instance
+/// header, entry records, definition fields and the name literal.
+fn copy_variant_upgrades(
+    log: &mut RawLog<4>,
+    memory: &impl Memory,
+    variants: &[cequipment_variant::RegistryRow],
+) {
+    for variant in variants {
+        let pointer = variant.pointer();
+        let header = vspan(log, memory, pointer.checked_add(cequipment_variant::UPGRADES), 24, M_UPGRADES);
+        let Some(header) = header else {
+            continue;
+        };
+        let mut raw = [0u8; 16];
+        raw.copy_from_slice(&log.bytes[header + 8..header + 24]);
+        let array = match Array::from_header(raw, equipment_upgrade_entry::STRIDE) {
+            Some(array) => array,
+            None => continue,
+        };
+        for index in 0..array.count as usize {
+            let entry_addr = (index.checked_mul(equipment_upgrade_entry::STRIDE))
+                .and_then(|offset| array.data.checked_add(offset));
+            let entry = vspan(log, memory, entry_addr, 9, M_UPGRADES);
+            let Some(entry) = entry else {
+                continue;
+            };
+            let definition = usize::try_from(pool_u64(log, entry)).ok().filter(|&d| d != 0);
+            let Some(definition) = definition else {
+                continue;
+            };
+            let identity = vspan(log, memory, Some(definition), 12, M_UPGRADES);
+            let name = vspan(log, memory, definition.checked_add(cequipment_upgrade::NAME), 32, M_UPGRADES);
+            let (Some(_), Some(name)) = (identity, name) else {
+                continue;
+            };
+            let mut name_header = [0u8; 32];
+            name_header.copy_from_slice(&log.bytes[name..name + 32]);
+            if let Some(literal) = parse_variant_literal(&name_header, 0) {
+                copy_variant_literal(log, memory, &literal, M_UPGRADES);
+            }
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+impl Captured {
+    /// Game-thread raw copy for a slot-3 refresh hour. The registry census
+    /// already ran game-side and feeds both production (as always) and this
+    /// copy. Copies `first` always and `second` while any variant table still
+    /// needs double-read checks, compares the raw logs, and records
+    /// copy-only costs plus the existing checked/mismatches bookkeeping.
+    /// Returns whether the payload is complete (`raw_ok`); on staging
+    /// overflow the caller falls back to the typed walk and enqueues nothing.
+    pub(crate) fn copy_variants_refresh(
+        &mut self,
+        memory: &impl Memory,
+        ctx: VariantsCopyContext,
+        variants: &Sources<'_, cequipment_variant::RegistryRow>,
+        first: &mut VariantsJob,
+        second: Option<&mut VariantsJob>,
+    ) -> VariantsCopyReport {
+        let started = qpc();
+        // A failed or incomplete census blocks every detail check exactly
+        // like the typed walk: without a comparable source there is no
+        // evidence of stability, even when both detail logs agree empty.
+        let first_ok = complete_source(variants.first, variants.first_outcome).is_ok();
+        if let Ok(source) = complete_source(variants.first, variants.first_outcome) {
+            copy_variant_definitions(&mut first.log, memory, source);
+            if !first.log.overflowed {
+                copy_variant_modules(&mut first.log, memory, source);
+            }
+            if !first.log.overflowed {
+                copy_variant_stats(&mut first.log, memory, source);
+            }
+            if !first.log.overflowed {
+                copy_variant_upgrades(&mut first.log, memory, source);
+            }
+        }
+        let mut ticks = [0u64; 4];
+        ticks[0] = elapsed(started);
+        let mut matched = [true; 4];
+        if let Some(second_job) = second {
+            let second_started = qpc();
+            if let Ok(source) = complete_source(variants.second, variants.second_outcome) {
+                copy_variant_definitions(&mut second_job.log, memory, source);
+                if !second_job.log.overflowed {
+                    copy_variant_modules(&mut second_job.log, memory, source);
+                }
+                if !second_job.log.overflowed {
+                    copy_variant_stats(&mut second_job.log, memory, source);
+                }
+                if !second_job.log.overflowed {
+                    copy_variant_upgrades(&mut second_job.log, memory, source);
+                }
+            }
+            ticks[0] += elapsed(second_started);
+            let equal =
+                first.log.logs_equal(&second_job.log) && !first.log.overflowed && !second_job.log.overflowed;
+            for (slot, matched) in matched.iter_mut().enumerate() {
+                *matched =
+                    first_ok && equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+            }
+        }
+        self.definitions.checked = ctx.needed[0];
+        self.definitions.mismatches = usize::from(ctx.needed[0] && !matched[0]);
+        self.modules.checked = ctx.needed[1];
+        self.modules.mismatches = usize::from(ctx.needed[1] && !matched[1]);
+        self.stats.checked = ctx.needed[2];
+        self.stats.mismatches = usize::from(ctx.needed[2] && !matched[2]);
+        self.upgrades.checked = ctx.needed[3];
+        self.upgrades.mismatches = usize::from(ctx.needed[3] && !matched[3]);
+        if sources_changed(
+            complete_source(variants.first, variants.first_outcome),
+            complete_source(variants.second, variants.second_outcome),
+        ) {
+            // A changed parent census is a mismatch even when both child
+            // tables are empty, exactly like the typed walk.
+            for (slot, mismatches) in [
+                (0, &mut self.definitions.mismatches),
+                (1, &mut self.modules.mismatches),
+                (2, &mut self.stats.mismatches),
+                (3, &mut self.upgrades.mismatches),
+            ] {
+                if ctx.needed[slot] {
+                    *mismatches += 1;
+                    matched[slot] = false;
+                }
+            }
+        }
+        let raw_ok = !first.log.overflowed;
+        VariantsCopyReport {
+            raw_ok,
+            matched,
+            copy_ticks: ticks,
+            raw_bytes: first.log.raw_bytes,
+        }
+    }
+
+    /// Decode-worker interpretation of a raw refresh payload into the pooled
+    /// typed rows. Outcomes and arena bytes match the typed walks exactly
+    /// because the identical walks run against the recorded spans with the
+    /// frame's pooled registry rows as the source; checked/mismatches set by
+    /// the raw compare survive. Clears `raw_mode` so the next capture starts
+    /// clean.
+    pub(crate) fn decode_variants_payload(
+        &mut self,
+        base: usize,
+        source_rows: &[cequipment_variant::RegistryRow],
+        source_outcome: Outcome,
+        job: &VariantsJob,
+        decode_ticks: &mut [u64; 4],
+    ) {
+        use cequipment_variant::TextOutcome;
+        let started = qpc();
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let source: Result<&[cequipment_variant::RegistryRow], &'static str> =
+            match source_outcome {
+                Outcome::Rows { len } => source_rows
+                    .get(..len)
+                    .ok_or("source row count exceeds acquired buffer"),
+                Outcome::Unavailable { reason } => Err(reason),
+                Outcome::Truncated { .. } => Err("source census incomplete"),
+            };
+        let result = match source {
+            Ok(source) => cequipment_variant::walk_definitions(
+                &recorded,
+                base,
+                source,
+                &mut self.definitions.rows,
+                &mut self.definition_bytes.first,
+            ),
+            Err(reason) => TextOutcome {
+                outcome: Outcome::Unavailable { reason },
+                bytes_len: 0,
+                required_bytes: 0,
+            },
+        };
+        self.definitions.outcome = result.outcome;
+        self.definition_bytes.len = result.bytes_len;
+        self.definition_bytes.required = result.required_bytes;
+        let result = match source {
+            Ok(source) => equipment_module_container::walk(
+                &recorded,
+                base,
+                source,
+                &mut self.modules.rows,
+                &mut self.module_bytes.first,
+            ),
+            Err(reason) => TextOutcome {
+                outcome: Outcome::Unavailable { reason },
+                bytes_len: 0,
+                required_bytes: 0,
+            },
+        };
+        self.modules.outcome = result.outcome;
+        self.module_bytes.len = result.bytes_len;
+        self.module_bytes.required = result.required_bytes;
+        self.stats.outcome = match source {
+            Ok(source) => {
+                cequipment_variant::walk_stats(&recorded, source, &mut self.stats.rows)
+            }
+            Err(reason) => Outcome::Unavailable { reason },
+        };
+        let result = match source {
+            Ok(source) => cequipment_upgrades_instance::walk(
+                &recorded,
+                base,
+                source,
+                &mut self.upgrades.rows,
+                &mut self.upgrade_bytes.first,
+            ),
+            Err(reason) => TextOutcome {
+                outcome: Outcome::Unavailable { reason },
+                bytes_len: 0,
+                required_bytes: 0,
+            },
+        };
+        self.upgrades.outcome = result.outcome;
+        self.upgrade_bytes.len = result.bytes_len;
+        self.upgrade_bytes.required = result.required_bytes;
+        decode_ticks[0] += elapsed(started);
+        self.raw_mode = false;
+    }
+}
+
+pub(crate) fn complete_source<T>(source: &[T], outcome: Outcome) -> Result<&[T], &'static str> {    match outcome {
         Outcome::Rows { len } => source
             .get(..len)
             .ok_or("source row count exceeds acquired buffer"),
@@ -1069,6 +1658,332 @@ fn upgrades(rows: &CaptureRows<cequipment_upgrades_instance::Row>, arena: &Arena
         level: r.level,
         definition_name: text(bytes, r.definition_name).unwrap().to_vec(),
     })
+}
+
+/// Shared synthetic address space for the variants copy/decode split
+/// harness: two registry variants with definitions, modules, stats,
+/// upgrades and mixed inline/heap strings.
+#[cfg(test)]
+pub(crate) mod variants_test_kit {
+    use super::{
+        Capacities, Captured, Sources, VariantsCopyContext, VariantsCopyReport, VariantsJob, N,
+    };
+    use engine::{
+        cequipment_module, cequipment_type, cequipment_upgrade, cequipment_upgrades_instance,
+        cequipment_variant, cgame_state, equipment_module_container, msvc_string, walk::Outcome,
+    };
+
+    pub(crate) const BASE: usize = 0x140000000;
+    /// Game-state object lives at fixture offset GSTATE in the image.
+    pub(crate) const GAME_STATE: usize = 0x11000;
+    const ADDRESS: usize = 0x10000;
+
+    const GSTATE: usize = 0x1000;
+    const VARR: usize = 0x2000;
+    pub(crate) const V1: usize = 0x3000;
+    const V2: usize = 0x4000;
+    const EQ1: usize = 0x5000;
+    const MOD_ENTRY: usize = 0x6100;
+    const MOD_DEF: usize = 0x6200;
+    const UPG_ENTRY: usize = 0x6400;
+    const UPG_DEF: usize = 0x6500;
+    pub(crate) const HEAP: usize = 0x7000;
+
+    pub(crate) fn memory(bytes: &[u8]) -> KitMemory<'_> {
+        KitMemory {
+            inner: engine::memory::SliceMemory { base: ADDRESS, bytes },
+            fault: None,
+        }
+    }
+
+    /// Routes the image-base singleton read to the game-state value; every
+    /// other read lands in the small fixture image. An optional fault range
+    /// fails overlapping reads for double-read divergence tests.
+    pub(crate) struct KitMemory<'a> {
+        inner: engine::memory::SliceMemory<'a>,
+        pub(crate) fault: Option<(usize, usize)>,
+    }
+
+    impl engine::Memory for KitMemory<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if let Some((start, len)) = self.fault {
+                let end = address.checked_add(destination.len());
+                if end.is_some_and(|end| address < start + len && end > start) {
+                    return false;
+                }
+            }
+            if address == BASE + cgame_state::SINGLETON_RVA && destination.len() == 8 {
+                destination.copy_from_slice(&(GAME_STATE as u64).to_le_bytes());
+                return true;
+            }
+            self.inner.copy(address, destination)
+        }
+    }
+
+    fn put<const COUNT: usize>(bytes: &mut [u8], offset: usize, value: [u8; COUNT]) {
+        bytes[offset..offset + COUNT].copy_from_slice(&value);
+    }
+
+    fn pointer(bytes: &mut [u8], offset: usize, target: usize) {
+        put(bytes, offset, ((ADDRESS + target) as u64).to_le_bytes());
+    }
+
+    fn array(bytes: &mut [u8], offset: usize, data: usize, count: u32) {
+        pointer(bytes, offset, data);
+        put(bytes, offset + 8, count.to_le_bytes());
+        put(bytes, offset + 12, count.to_le_bytes());
+    }
+
+    fn heap_string(bytes: &mut [u8], header: usize, payload: usize, value: &[u8]) {
+        assert!(value.len() > msvc_string::INLINE_CAPACITY as usize);
+        put(bytes, header, ((ADDRESS + payload) as u64).to_le_bytes());
+        put(bytes, header + 16, (value.len() as u64).to_le_bytes());
+        put(bytes, header + 24, (value.len() as u64).to_le_bytes());
+        bytes[payload..payload + value.len()].copy_from_slice(value);
+        bytes[payload + value.len()] = 0;
+    }
+
+    fn inline_string(bytes: &mut [u8], header: usize, value: &[u8]) {
+        assert!(value.len() <= msvc_string::INLINE_CAPACITY as usize);
+        bytes[header..header + 32].fill(0);
+        bytes[header..header + value.len()].copy_from_slice(value);
+        put(bytes, header + 16, (value.len() as u64).to_le_bytes());
+        put(bytes, header + 24, 15_u64.to_le_bytes());
+    }
+
+    fn identity(bytes: &mut [u8], object: usize, id: u64) {
+        put(
+            bytes,
+            object,
+            ((BASE + cequipment_variant::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(bytes, object + 8, id.to_le_bytes());
+    }
+
+    pub(crate) fn fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 0x8000];
+        array(&mut bytes, GSTATE + cgame_state::EQUIPMENT_VARIANTS, VARR, 2);
+        pointer(&mut bytes, VARR, V1);
+        pointer(&mut bytes, VARR + 8, V2);
+        for (variant, id) in [
+            (V1, 0x1100_0000_0046_u64),
+            (V2, 0x2200_0000_0046_u64),
+        ] {
+            // Low u32 equals the reference type for the census.
+            identity(&mut bytes, variant, id);
+            put(
+                &mut bytes,
+                variant + cequipment_variant::EQUIPMENT_TOKEN,
+                0x1234_5678_u32.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                variant + cequipment_variant::EQUIPMENT_TOKEN + 4,
+                0x1111_2222_u32.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                variant + cequipment_variant::EQUIPMENT_TOKEN + 8,
+                0x3333_4444_u32.to_le_bytes(),
+            );
+            bytes[variant + cequipment_variant::EQUIPMENT_TOKEN + 12] = 1;
+            // Both variants share the equipment definition; V2 exercises
+            // shared definitions with inline-only strings.
+            pointer(&mut bytes, variant + cequipment_variant::DEFINITION, EQ1);
+            bytes[variant + cequipment_variant::OBSOLETE] = 0;
+            put(
+                &mut bytes,
+                variant + cequipment_variant::CLASSIFIER_FLAGS,
+                0x0102030405060708_u64.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                variant + cequipment_variant::CLASSIFIER_FLAGS + 8,
+                0x99aa_bbcc_u32.to_le_bytes(),
+            );
+        }
+        inline_string(&mut bytes, V1 + cequipment_variant::DISPLAY_NAME, b"disp");
+        heap_string(
+            &mut bytes,
+            V1 + cequipment_variant::DISPLAY_NAME + 32,
+            HEAP,
+            b"variant-heap-string!",
+        );
+        inline_string(&mut bytes, V2 + cequipment_variant::DISPLAY_NAME, b"d2");
+        inline_string(&mut bytes, V2 + cequipment_variant::DISPLAY_NAME + 32, b"v2");
+        // Equipment type for V1 with a heap name.
+        put(
+            &mut bytes,
+            EQ1,
+            ((BASE + cequipment_type::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(&mut bytes, EQ1 + 8, 0x1234_5678_u32.to_le_bytes());
+        heap_string(&mut bytes, EQ1 + cequipment_type::NAME, HEAP + 64, b"equipment-heap-name!");
+        // One module on V1.
+        array(
+            &mut bytes,
+            V1 + cequipment_variant::MODULES + equipment_module_container::ENTRIES_CANDIDATE,
+            MOD_ENTRY,
+            1,
+        );
+        put(&mut bytes, MOD_ENTRY, 0xdead_beef_u32.to_le_bytes());
+        pointer(&mut bytes, MOD_ENTRY + 8, MOD_DEF);
+        put(
+            &mut bytes,
+            MOD_DEF,
+            ((BASE + cequipment_module::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(&mut bytes, MOD_DEF + 8, 0x5555_6666_u32.to_le_bytes());
+        bytes[MOD_DEF + cequipment_module::ACTIVE] = 1;
+        inline_string(&mut bytes, MOD_DEF + cequipment_module::NAME, b"mod");
+        // Empty module array on V2.
+        array(
+            &mut bytes,
+            V2 + cequipment_variant::MODULES + equipment_module_container::ENTRIES_CANDIDATE,
+            0,
+            0,
+        );
+        // Stat caches: distinct first qwords per variant.
+        for (variant, base_value) in [(V1, 100_i64), (V2, 200_i64)] {
+            let mut value = base_value;
+            for (offset, len) in [
+                (cequipment_variant::SPEED_CACHE_CANDIDATE, 32),
+                (cequipment_variant::MAXIMUM_SPEED_CACHE_CANDIDATE, 8),
+                (cequipment_variant::RELIABILITY_CACHE_CANDIDATE, 8),
+                (cequipment_variant::AIR_DEFENSE_CACHE_CANDIDATE, 24),
+                (cequipment_variant::BUILD_COST_CACHE_CANDIDATE, 8),
+            ] {
+                for chunk in (0..len).step_by(8) {
+                    put(
+                        &mut bytes,
+                        variant + offset + chunk,
+                        value.to_le_bytes(),
+                    );
+                    value += 1;
+                }
+            }
+        }
+        // One upgrade on V1, none on V2.
+        put(
+            &mut bytes,
+            V1 + cequipment_variant::UPGRADES,
+            ((BASE + cequipment_upgrades_instance::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        array(&mut bytes, V1 + cequipment_variant::UPGRADES + 8, UPG_ENTRY, 1);
+        pointer(&mut bytes, UPG_ENTRY, UPG_DEF);
+        put(
+            &mut bytes,
+            UPG_DEF,
+            ((BASE + cequipment_upgrade::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(&mut bytes, UPG_DEF + 8, (-5_i32).to_le_bytes());
+        inline_string(&mut bytes, UPG_DEF + cequipment_upgrade::NAME, b"upg");
+        put(
+            &mut bytes,
+            V2 + cequipment_variant::UPGRADES,
+            ((BASE + cequipment_upgrades_instance::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        array(&mut bytes, V2 + cequipment_variant::UPGRADES + 8, 0, 0);
+        bytes
+    }
+
+    pub(crate) fn registry(
+        memory: &impl engine::Memory,
+    ) -> (Vec<cequipment_variant::RegistryRow>, Outcome) {
+        let mut rows = vec![cequipment_variant::RegistryRow::default(); 8];
+        let outcome = cequipment_variant::walk_registry(memory, BASE, GAME_STATE, &mut rows);
+        (rows, outcome)
+    }
+
+    fn sources<'a>(
+        rows: &'a [cequipment_variant::RegistryRow],
+        outcome: Outcome,
+    ) -> Sources<'a, cequipment_variant::RegistryRow> {
+        Sources {
+            first: rows,
+            first_outcome: outcome,
+            second: rows,
+            second_outcome: outcome,
+        }
+    }
+
+    /// Reference typed detail walks with identical pooled buffers.
+    pub(crate) fn direct(
+        memory: &impl engine::Memory,
+        capacities: &Capacities,
+    ) -> Captured {
+        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+        let (rows, outcome) = registry(memory);
+        let sources = sources(&rows, outcome);
+        let needed = [true; N];
+        let _ = captured.finish_variants(memory, BASE, &needed, sources, 3, true);
+        captured
+    }
+
+    /// Raw-copy split: registry census feeds both production and the copy;
+    /// two detail passes compared, then the first payload decoded.
+    pub(crate) fn split(
+        memory: &impl engine::Memory,
+        capacities: &Capacities,
+    ) -> (Captured, VariantsCopyReport, VariantsJob) {
+        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+        let (rows, outcome) = registry(memory);
+        let sources = sources(&rows, outcome);
+        let ctx = VariantsCopyContext { needed: [true; 4] };
+        let mut first = VariantsJob::new();
+        let mut second = VariantsJob::new();
+        let report =
+            captured.copy_variants_refresh(memory, ctx, &sources, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        let mut ticks = [0u64; 4];
+        captured.decode_variants_payload(BASE, &rows, outcome, &first, &mut ticks);
+        (captured, report, first)
+    }
+
+    pub(crate) fn assert_matches_direct(split: &Captured, direct: &Captured) {
+        assert_eq!(
+            split.definitions.outcome, direct.definitions.outcome,
+            "definitions outcome"
+        );
+        assert_eq!(split.modules.outcome, direct.modules.outcome, "modules outcome");
+        assert_eq!(split.stats.outcome, direct.stats.outcome, "stats outcome");
+        assert_eq!(split.upgrades.outcome, direct.upgrades.outcome, "upgrades outcome");
+        assert_eq!(
+            &split.definitions.rows[..split.definitions.outcome.len()],
+            &direct.definitions.rows[..direct.definitions.outcome.len()],
+            "definition rows"
+        );
+        assert_eq!(
+            &split.modules.rows[..split.modules.outcome.len()],
+            &direct.modules.rows[..direct.modules.outcome.len()],
+            "module rows"
+        );
+        assert_eq!(
+            &split.stats.rows[..split.stats.outcome.len()],
+            &direct.stats.rows[..direct.stats.outcome.len()],
+            "stat rows"
+        );
+        assert_eq!(
+            &split.upgrades.rows[..split.upgrades.outcome.len()],
+            &direct.upgrades.rows[..direct.upgrades.outcome.len()],
+            "upgrade rows"
+        );
+        assert_eq!(
+            &split.definition_bytes.first[..split.definition_bytes.len],
+            &direct.definition_bytes.first[..direct.definition_bytes.len],
+            "definition arena"
+        );
+        assert_eq!(
+            &split.module_bytes.first[..split.module_bytes.len],
+            &direct.module_bytes.first[..direct.module_bytes.len],
+            "module arena"
+        );
+        assert_eq!(
+            &split.upgrade_bytes.first[..split.upgrade_bytes.len],
+            &direct.upgrade_bytes.first[..direct.upgrade_bytes.len],
+            "upgrade arena"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2070,5 +2985,188 @@ mod tests {
         successful[4] += 1;
         captured.grow(&mut capacities, &successful);
         assert!(captured.modules.second.is_empty());
+    }
+
+    fn split_capacities() -> Capacities {
+        Capacities {
+            rows: [256; N],
+            definition_bytes: 8192,
+            module_bytes: 8192,
+            upgrade_bytes: 8192,
+            conveyor_name_bytes: 64,
+            line_custom_name_bytes: 64,
+            license_handles: 64,
+        }
+    }
+
+    #[test]
+    fn split_copy_matches_direct_walk() {
+        use super::variants_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let capacities = split_capacities();
+        let direct = kit::direct(&memory, &capacities);
+        let (split, report, _) = kit::split(&memory, &capacities);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 4]);
+        kit::assert_matches_direct(&split, &direct);
+        // Spot-checks: definition identity and heap strings, module and
+        // upgrade rows, and stat values.
+        assert_eq!(split.definitions.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(split.definitions.rows[0].identity.equipment_token, 0x1234_5678);
+        assert_eq!(
+            &split.definition_bytes.first[split.definitions.rows[0].variant_name.start
+                ..split.definitions.rows[0].variant_name.start
+                    + split.definitions.rows[0].variant_name.len],
+            b"variant-heap-string!"
+        );
+        assert_eq!(split.modules.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.modules.rows[0].definition_token, 0x5555_6666);
+        assert_eq!(split.stats.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(split.stats.rows[0].values[0], 100);
+        assert_eq!(split.stats.rows[1].values[0], 200);
+        assert_eq!(split.upgrades.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.upgrades.rows[0].definition_token, -5);
+    }
+
+    #[test]
+    fn split_copy_matches_direct_walk_under_truncation() {
+        use super::variants_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let capacities = Capacities {
+            rows: [1; N],
+            definition_bytes: 8,
+            module_bytes: 8,
+            upgrade_bytes: 8,
+            conveyor_name_bytes: 0,
+            line_custom_name_bytes: 0,
+            license_handles: 0,
+        };
+        let direct = kit::direct(&memory, &capacities);
+        let (split, report, _) = kit::split(&memory, &capacities);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 4]);
+        kit::assert_matches_direct(&split, &direct);
+    }
+
+    #[test]
+    fn split_copy_matches_direct_walk_on_fault_matrix() {
+        use super::variants_test_kit as kit;
+        // (fault offset from the image base, expected raw-compare verdicts in
+        // family order). Outcomes including reason strings must match the
+        // typed walk exactly; verdicts follow the fault-attribution masks.
+        for (offset, matched) in [
+            (0x1708, [false, false, false, false]),
+            (kit::V1, [false, false, false, false]),
+            (
+                kit::V1 + cequipment_variant::DEFINITION,
+                [false, true, true, true],
+            ),
+            (kit::HEAP, [false, true, true, true]),
+            (
+                kit::V1 + cequipment_variant::MODULES + 8,
+                [true, false, true, true],
+            ),
+            (
+                kit::V1 + cequipment_variant::SPEED_CACHE_CANDIDATE,
+                [true, true, false, true],
+            ),
+            (
+                kit::V1 + cequipment_variant::UPGRADES,
+                [true, true, true, false],
+            ),
+        ] {
+            let bytes = kit::fixture();
+            // Fixture offsets address the image base directly.
+            let fault = 0x10000 + offset;
+            let mut memory = kit::memory(&bytes);
+            memory.fault = Some((fault, 1));
+            let capacities = split_capacities();
+            let direct = kit::direct(&memory, &capacities);
+            let (split, report, _) = kit::split(&memory, &capacities);
+            assert!(report.raw_ok, "offset={offset:x}");
+            kit::assert_matches_direct(&split, &direct);
+            assert_eq!(report.matched, matched, "offset={offset:x}");
+        }
+    }
+
+    #[test]
+    fn double_copy_compare_blocks_checks_on_tearing() {
+        use super::variants_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let capacities = split_capacities();
+        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let (rows, outcome) = kit::registry(&memory);
+        let sources = Sources {
+            first: rows.as_slice(),
+            first_outcome: outcome,
+            second: rows.as_slice(),
+            second_outcome: outcome,
+        };
+        let ctx = VariantsCopyContext {
+            needed: [true; 4],
+        };
+        let mut first = VariantsJob::new();
+        let mut second = VariantsJob::new();
+        let report =
+            captured.copy_variants_refresh(&memory, ctx, &sources, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 4]);
+        // Same-hour tearing between the passes changes the log.
+        let mut torn = bytes.clone();
+        torn[kit::V1 + cequipment_variant::OBSOLETE] ^= 0xff;
+        let torn_memory = kit::memory(&torn);
+        let (torn_rows, torn_outcome) = kit::registry(&torn_memory);
+        let torn_sources = Sources {
+            first: torn_rows.as_slice(),
+            first_outcome: torn_outcome,
+            second: torn_rows.as_slice(),
+            second_outcome: torn_outcome,
+        };
+        let ctx = VariantsCopyContext {
+            needed: [false; 4],
+        };
+        let mut after = VariantsJob::new();
+        let after_report =
+            captured.copy_variants_refresh(&memory, ctx, &sources, &mut after, None);
+        assert!(after_report.raw_ok);
+        let mut after_torn = VariantsJob::new();
+        let torn_report =
+            captured.copy_variants_refresh(&torn_memory, ctx, &torn_sources, &mut after_torn, None);
+        assert!(torn_report.raw_ok);
+        assert!(!after.log.logs_equal(&after_torn.log));
+        let mut repeat = VariantsJob::new();
+        let repeat_report =
+            captured.copy_variants_refresh(&memory, ctx, &sources, &mut repeat, None);
+        assert!(repeat_report.raw_ok);
+        assert!(after.log.logs_equal(&repeat.log));
+    }
+
+    #[test]
+    fn staging_overflow_falls_back_to_typed_walk() {
+        use super::variants_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let capacities = split_capacities();
+        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let (rows, outcome) = kit::registry(&memory);
+        let sources = Sources {
+            first: rows.as_slice(),
+            first_outcome: outcome,
+            second: rows.as_slice(),
+            second_outcome: outcome,
+        };
+        let ctx = VariantsCopyContext {
+            needed: [true; 4],
+        };
+        let mut tiny = VariantsJob {
+            log: crate::raw::RawLog::new(8, 8),
+        };
+        let report = captured.copy_variants_refresh(&memory, ctx, &sources, &mut tiny, None);
+        assert!(!report.raw_ok);
+        assert!(tiny.log.overflowed);
+        assert!(tiny.grow_for_next());
     }
 }

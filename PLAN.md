@@ -4,7 +4,7 @@ This is the plan of record. Only the owner changes the decisions in section 2. A
 
 ## 1. Status
 
-Snapshot 2026-09-11. Branch `t3code/23d29856`. Replay format 14 (spool magic `H4SE`), 148 typed tables, 1,090 tests, 867 tracked files. Pinned game build Operation Postern v1.19.2.0.a729.
+Snapshot 2026-09-11. Branch `t3code/23d29856`. Replay format 14 (spool magic `H4SE`), 148 typed tables, 1,162 tests, 867 tracked files. Pinned game build Operation Postern v1.19.2.0.a729.
 
 | Phase | Status | Evidence |
 |---|---|---|
@@ -31,7 +31,7 @@ Snapshot 2026-09-11. Branch `t3code/23d29856`. Replay format 14 (spool magic `H4
 
 ### What is left, in order
 
-1. Phase 1 done (committed c73a500a0 and pushed). Stagger done (committed 2f293a899 and pushed; 1,071 tests green); projected about 29 to 30 ms average, still above 16 ms. Raw-copy pilot wired and green (single FIFO decode worker for the Research family, byte-identical rows, 1,090 tests; copy/decode/bytes timers readable from status). Full rollout to all families in progress (autonomous scope; no UX change: same tables, same cadences, same rows). Next: live-measure with the defined protocol (game required); deeper measures only if numbers demand; record the 2.1 verdict after both goals are met.
+1. Phase 1 done (c73a500a0 pushed). Stagger done (2f293a899 pushed; 1,071 tests green); projected about 29 to 30 ms average. Raw-copy pilot wired (1bb8f72cb pushed), Relations moved (5d9cc5b6e pushed, 1,101 tests), Characters/Projects/Lexical/Variants/WarRelations/Divisions-group moved (uncommitted, 1,162 tests; about 41 of 57 ms walk cost off the game thread structurally). Remaining: map-pack super-family, Focus, hourly packs, core roots. Next: finish rollout, independent review, live-measure with the defined protocol (game required); deeper measures only if numbers demand; record the 2.1 verdict after both goals are met.
 2. Milestone 2.2: terrain blend, state borders, localisation names, DDS textures, DLC folder and archive layers, mod layers with `replace_path`, layer hash verification; second reference pair (1936 start map from state history alone).
 3. Milestone 2.3: run and record the map-playback check on a 2.1 replay. Custom panels and the generic inspector stay out of scope.
 4. Milestone 2.4: the end-to-end `tools/smoke.ps1` action and five reference pairs.
