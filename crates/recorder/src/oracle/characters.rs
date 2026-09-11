@@ -115,25 +115,64 @@ pub(super) fn compare(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut complete = true;
+    // Tier-4 slot0; cadence table is the single source of truth.
+    let staggered = !replay::cadence::is_refresh(replay::rows::TableId::Characters, frame.hour);
+    if staggered {
+        for table in [
+            replay::rows::TableId::Characters,
+            replay::rows::TableId::CountryLeaderRoles,
+            replay::rows::TableId::AdvisorRoles,
+            replay::rows::TableId::UnitLeaders,
+            replay::rows::TableId::UnitLeaderTraits,
+            replay::rows::TableId::UnitLeaderTraitExperience,
+        ] {
+            report.limitation(
+                "Characters family refreshed every 4th hour; off-hours replay holds last refresh",
+                format!(
+                    "{table:?} refreshes on {} (oracle hour {})",
+                    replay::cadence::refresh_text(table),
+                    frame.hour
+                ),
+            );
+        }
+    }
     if let Some(manager) = &pack.manager {
         complete &= report.attempt("Characters", |report| {
+            if staggered {
+                return Ok(());
+            }
             compare_characters(frame, manager, links, tokens, report)
         });
         complete &= report.attempt("CountryLeaderRoles", |report| {
+            if staggered {
+                return Ok(());
+            }
             compare_country_leader_roles(frame, manager, links, report)
         });
         complete &= report.attempt("AdvisorRoles", |report| {
+            if staggered {
+                return Ok(());
+            }
             compare_advisors(frame, manager, links, report)
         });
         let mut unrepresented = None;
         complete &= report.attempt("UnitLeaders", |report| {
+            if staggered {
+                return Ok(());
+            }
             unrepresented = Some(compare_leaders(frame, manager, report)?);
             Ok(())
         });
         complete &= report.attempt("UnitLeaderTraits", |report| {
+            if staggered {
+                return Ok(());
+            }
             compare_traits(frame, manager, tokens, unrepresented.as_ref(), report)
         });
         complete &= report.attempt("UnitLeaderTraitExperience", |report| {
+            if staggered {
+                return Ok(());
+            }
             compare_trait_experience(frame, manager, tokens, unrepresented.as_ref(), report)
         });
     } else {
@@ -1076,6 +1115,39 @@ mod tests {
                 .limitations
                 .keys()
                 .any(|reason| reason.contains("native category cannot establish"))
+        );
+    }
+
+    #[test]
+    fn staggered_off_hours_skips_compare_and_prints_refresh_hour() {
+        let (mut frame, pack, country) = fixture();
+        frame.hour = 1;
+        let mut report = Report::default();
+        compare(
+            &frame,
+            &pack,
+            &BTreeMap::from([(102, &country)]),
+            &BTreeMap::new(),
+            &mut report,
+        )
+        .unwrap();
+        assert!(report.differences.is_empty());
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains(replay::cadence::STAGGER_LIMITATION)),
+            "{:?}",
+            report.limitations.keys()
+        );
+        assert!(
+            report
+                .limitations
+                .values()
+                .flatten()
+                .any(|subject| subject.contains("H%4==0")),
+            "{:?}",
+            report.limitations.values()
         );
     }
 }

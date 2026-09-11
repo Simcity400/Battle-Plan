@@ -114,6 +114,44 @@ impl<const N: usize> ConsistencyWindow<N> {
     }
 }
 
+// Staggered cadence branch/keyframe state. Game thread only.
+#[derive(Clone, Copy, Debug, Default)]
+struct CadenceState {
+    initialized: bool,
+    prev_hour: i32,
+    prev_signal: i64,
+    prev_campaign: Text<128>,
+    base_hour: i32,
+}
+
+impl CadenceState {
+    // New branches never open on stale data: first, signal, campaign,
+    // discontinuity and 720-hour keyframes all force a full refresh.
+    fn force_full(&mut self, clock: &Clock) -> bool {
+        if !self.initialized {
+            self.initialized = true;
+            self.prev_hour = clock.hour;
+            self.prev_signal = clock.play_session_started_at;
+            self.prev_campaign = clock.campaign_id;
+            self.base_hour = clock.hour;
+            return true;
+        }
+        let signal = self.prev_signal != clock.play_session_started_at;
+        let campaign = self.prev_campaign != clock.campaign_id;
+        let gap = self.prev_hour.checked_add(1) != Some(clock.hour);
+        let keyframe = i64::from(clock.hour) - i64::from(self.base_hour)
+            >= i64::from(replay::KEYFRAME_INTERVAL);
+        let force = signal || campaign || gap || keyframe;
+        if force {
+            self.base_hour = clock.hour;
+        }
+        self.prev_hour = clock.hour;
+        self.prev_signal = clock.play_session_started_at;
+        self.prev_campaign = clock.campaign_id;
+        force
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LostObservation {
     pub campaign_id: Text<128>,
@@ -484,6 +522,7 @@ pub struct Shared {
     /// Only the sole game-thread callback updates these per-attach counts.
     consistency: UnsafeCell<ConsistencyWindow<{ CONSISTENCY_TABLES.len() }>>,
     extended_consistency: UnsafeCell<ConsistencyWindow<TABLE_COUNT>>,
+    cadence: UnsafeCell<CadenceState>,
     /// Fresh country authentication per callback, verified directly before publication.
     country_cache: UnsafeCell<Cache>,
     /// Independent matrix census supplements the owned-vector double read for 200 full walks.
@@ -517,6 +556,7 @@ impl Shared {
             pending: UnsafeCell::new(LossBatch::default()),
             consistency: UnsafeCell::new(ConsistencyWindow::default()),
             extended_consistency: UnsafeCell::new(ConsistencyWindow::default()),
+            cadence: UnsafeCell::new(CadenceState::default()),
             country_cache: UnsafeCell::new(country_cache),
             war_matrix_remaining: AtomicUsize::new(200),
         };
@@ -694,6 +734,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             let mut extended_matched = [false; TABLE_COUNT];
             let mut matrix_complete = false;
             if let Some(clock) = frame.clock_before {
+                let force_full = unsafe { (&mut *shared.cadence.get()).force_full(&clock) };
                 let state = clock.game_state as usize;
                 let cache_begin = qpc();
                 let cached = unsafe { &mut *shared.country_cache.get() }.prepare(
@@ -905,12 +946,19 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     state,
                     clock.hour,
                     &extended_needed,
+                    force_full,
                 );
                 extended_matched = checks;
                 for table in extended::TABLES {
                     let index = table.index();
-                    frame.extended_checked[index] = extended_needed[index];
-                    frame.table_ns[index] = shared.ns(ticks[index] as i64);
+                    let walk = replay::cadence::should_walk(table, clock.hour, force_full);
+                    frame.extended_checked[index] = extended_needed[index] && walk;
+                    // Skipped tables keep zero game-thread cost for measurement.
+                    frame.table_ns[index] = if walk {
+                        shared.ns(ticks[index] as i64)
+                    } else {
+                        0
+                    };
                 }
                 let cache_verify_begin = qpc();
                 frame.country_cache_error = cached.verify().err();
@@ -1377,5 +1425,71 @@ mod tests {
                 .into_iter()
                 .all(|capacity| capacity != 0)
         );
+    }
+
+    fn cadence_clock(hour: i32, signal: i64) -> Clock {
+        clock(hour, signal)
+    }
+
+    #[test]
+    fn cadence_rotation_walks_expected_families_on_hours_h_through_h_plus_7() {
+        use replay::cadence::{is_refresh, refresh_slot};
+        use replay::rows::TableId;
+        for base in [0, 1, 60_820_531] {
+            for offset in 0..8 {
+                let hour: i32 = base + offset;
+                let slot = hour.rem_euclid(4);
+                for table in TableId::ALL {
+                    let expected = match refresh_slot(table) {
+                        None => true,
+                        Some(s) => s as i32 == slot,
+                    };
+                    assert_eq!(is_refresh(table, hour), expected, "{table:?} at {hour}");
+                    let walk = replay::cadence::should_walk(table, hour, false);
+                    assert_eq!(walk, expected, "{table:?} walk at {hour}");
+                    assert!(replay::cadence::should_walk(table, hour, true));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn branch_starts_keyframes_and_gaps_force_full_refresh() {
+        let mut cadence = CadenceState::default();
+        assert!(cadence.force_full(&cadence_clock(100, 1)));
+        assert!(!cadence.force_full(&cadence_clock(101, 1)));
+        assert!(!cadence.force_full(&cadence_clock(102, 1)));
+        assert!(cadence.force_full(&cadence_clock(103, 2)));
+        assert!(cadence.force_full(&cadence_clock(500, 2)));
+        assert!(!cadence.force_full(&cadence_clock(501, 2)));
+        assert!(cadence.force_full(&cadence_clock(500 + 720, 2)));
+        let mut fresh = CadenceState::default();
+        assert!(fresh.force_full(&cadence_clock(10, 1)));
+        let mut changed = cadence_clock(11, 1);
+        changed.campaign_id.bytes[0] ^= 1;
+        assert!(fresh.force_full(&changed));
+    }
+
+    #[test]
+    fn consistency_windows_count_refreshes_not_wall_hours() {
+        use replay::cadence::should_walk;
+        use replay::rows::TableId;
+        let mut window = ConsistencyWindow::<TABLE_COUNT>::default();
+        let table = TableId::Characters.index();
+        let mut successes = 0;
+        for hour in 0..16 {
+            let walk = should_walk(TableId::Characters, hour, false);
+            let mut matched = [false; TABLE_COUNT];
+            matched[table] = walk;
+            let counts = window.commit(matched, true, true);
+            if walk {
+                successes += 1;
+                assert_eq!(counts[table], successes);
+            } else {
+                assert_eq!(counts[table], successes);
+            }
+        }
+        assert_eq!(successes, 4);
+        assert_eq!(window.successful[table], 4);
     }
 }

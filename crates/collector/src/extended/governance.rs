@@ -406,9 +406,14 @@ impl Captured {
         base: usize,
         game_state: usize,
         needed: &[bool],
+        hour: i32,
+        force_full: bool,
     ) -> ([bool; N], [u64; N]) {
         self.reset();
-        let mut first = acquire(memory, base, game_state, self.buffers(false), &[true; N]);
+        let walk: [bool; N] = std::array::from_fn(|i| {
+            replay::cadence::should_walk(TABLES[i], hour, force_full)
+        });
+        let mut first = acquire(memory, base, game_state, self.buffers(false), &walk);
         self.focus.outcome = first.outcomes[0];
         self.completed.outcome = first.outcomes[1];
         self.technologies.outcome = first.outcomes[2];
@@ -453,11 +458,24 @@ impl Captured {
         self.decision_countries.len = first.lens[11];
         self.decision_countries.required = first.required[11];
         self.dictionary_required = first.dictionary_required;
+        // Off-hours staggered tables hold last refresh; mark skipped for spool.
+        let skipped = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
+        };
+        if !walk[2] {
+            self.technologies.outcome = skipped;
+        }
+        if !walk[3] {
+            self.slots.outcome = skipped;
+        }
+        if !walk[4] {
+            self.definitions.outcome = skipped;
+        }
         let mut check = [false; N];
         for (_, _, group) in READ_GROUPS {
-            if group.iter().any(|&i| needed[i]) {
+            if group.iter().any(|&i| needed[i]) && group.iter().any(|&i| walk[i]) {
                 for &i in *group {
-                    check[i] = true;
+                    check[i] = walk[i];
                 }
             }
         }

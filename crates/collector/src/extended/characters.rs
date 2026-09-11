@@ -208,46 +208,66 @@ impl Captured {
         base: usize,
         game_state: usize,
         needed: &[bool],
+        hour: i32,
+        force_full: bool,
     ) -> ([bool; N], [u64; N]) {
         self.reset();
         let check = |index| needed.get(index).copied().unwrap_or(false);
         let mut matched = [false; N];
         let mut ticks = [0; N];
-        let begin = qpc();
-        let first = walk_family(memory, base, game_state, self.family(false, [true; 6]));
-        self.characters.primary(first[0]);
-        self.leaders.primary(first[1]);
-        self.advisors.primary(first[2]);
-        self.units.primary(first[3]);
-        self.traits.primary(first[4]);
-        self.trait_experience.primary(first[5]);
-        if (0..6).any(check) {
-            let second = walk_family(
-                memory,
-                base,
-                game_state,
-                self.family(true, std::array::from_fn(check)),
-            );
-            if check(0) {
-                matched[0] = self.characters.compare(second[0]);
+        // Tier-4 family shares one traversal; off-hours skip the whole walk.
+        let walk = replay::cadence::should_walk(
+            replay::rows::TableId::Characters,
+            hour,
+            force_full,
+        );
+        if !walk {
+            let skipped = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+            self.characters.rows.outcome = skipped;
+            self.leaders.rows.outcome = skipped;
+            self.advisors.rows.outcome = skipped;
+            self.units.rows.outcome = skipped;
+            self.traits.rows.outcome = skipped;
+            self.trait_experience.rows.outcome = skipped;
+        } else {
+            let begin = qpc();
+            let first = walk_family(memory, base, game_state, self.family(false, [true; 6]));
+            self.characters.primary(first[0]);
+            self.leaders.primary(first[1]);
+            self.advisors.primary(first[2]);
+            self.units.primary(first[3]);
+            self.traits.primary(first[4]);
+            self.trait_experience.primary(first[5]);
+            if (0..6).any(check) {
+                let second = walk_family(
+                    memory,
+                    base,
+                    game_state,
+                    self.family(true, std::array::from_fn(check)),
+                );
+                if check(0) {
+                    matched[0] = self.characters.compare(second[0]);
+                }
+                if check(1) {
+                    matched[1] = self.leaders.compare(second[1]);
+                }
+                if check(2) {
+                    matched[2] = self.advisors.compare(second[2]);
+                }
+                if check(3) {
+                    matched[3] = self.units.compare(second[3]);
+                }
+                if check(4) {
+                    matched[4] = self.traits.compare(second[4]);
+                }
+                if check(5) {
+                    matched[5] = self.trait_experience.compare(second[5]);
+                }
             }
-            if check(1) {
-                matched[1] = self.leaders.compare(second[1]);
-            }
-            if check(2) {
-                matched[2] = self.advisors.compare(second[2]);
-            }
-            if check(3) {
-                matched[3] = self.units.compare(second[3]);
-            }
-            if check(4) {
-                matched[4] = self.traits.compare(second[4]);
-            }
-            if check(5) {
-                matched[5] = self.trait_experience.compare(second[5]);
-            }
+            ticks[0] = elapsed(begin);
         }
-        ticks[0] = elapsed(begin);
         (matched[6], ticks[6]) = self.abilities.capture(check(6), |rows, bytes| {
             walk_abilities(memory, base, game_state, rows, bytes)
         });

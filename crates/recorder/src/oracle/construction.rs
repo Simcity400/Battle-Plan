@@ -67,7 +67,24 @@ pub(super) fn buildings(
     membership: &installed_content::save::MapMembership,
     names: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
+    hour: replay::Hour,
 ) -> io::Result<()> {
+    let table = if province_scope {
+        replay::rows::TableId::ProvinceBuildings
+    } else {
+        replay::rows::TableId::StateBuildings
+    };
+    // Tier-4 slot3; cadence table is the single source of truth.
+    if !replay::cadence::is_refresh(table, hour) {
+        report.limitation(
+            "StateBuildings/ProvinceBuildings refreshed every 4th hour; off-hours replay holds last refresh",
+            format!(
+                "{table:?} refreshes on {} (oracle hour {hour})",
+                replay::cadence::refresh_text(table)
+            ),
+        );
+        return Ok(());
+    }
     let table = if province_scope {
         "ProvinceBuildings"
     } else {
@@ -880,6 +897,7 @@ mod tests {
             &Default::default(),
             &names,
             &mut report,
+            3,
         )
         .unwrap();
         railway_construction(&[rail.clone()], &saved, &links, &mut report).unwrap();
@@ -1043,6 +1061,7 @@ mod tests {
             &membership,
             &BTreeMap::new(),
             &mut report,
+            3,
         )
         .unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
@@ -1068,6 +1087,7 @@ mod tests {
             &membership,
             &BTreeMap::new(),
             &mut report,
+            3,
         )
         .unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
@@ -1138,6 +1158,7 @@ mod tests {
             &membership,
             &names,
             &mut report,
+            3,
         )
         .unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
@@ -1246,6 +1267,7 @@ mod tests {
             &membership,
             &names,
             &mut report,
+            3,
         )
         .unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -1263,6 +1285,7 @@ mod tests {
             &membership,
             &names,
             &mut report,
+            3,
         )
         .unwrap();
         assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
@@ -1276,6 +1299,7 @@ mod tests {
             &membership,
             &wrong_names,
             &mut report,
+            3,
         )
         .unwrap();
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
@@ -1289,6 +1313,7 @@ mod tests {
                 &membership,
                 &names,
                 &mut Report::default(),
+                3,
             )
             .is_err()
         );
@@ -1537,5 +1562,32 @@ mod tests {
             .is_err()
         );
         assert!(manpower(&mut report, "unresolved", [(0, 999, 7)], &saved, &links).is_err());
+    }
+
+    #[test]
+    fn staggered_off_hours_skips_buildings_and_prints_refresh_hour() {
+        let mut report = Report::default();
+        buildings(
+            &[replay::rows::BuildingRow {
+                location: 1,
+                ..Default::default()
+            }],
+            &std::collections::BTreeMap::new(),
+            false,
+            &Default::default(),
+            &std::collections::BTreeMap::new(),
+            &mut report,
+            0,
+        )
+        .unwrap();
+        assert!(report.differences.is_empty());
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains(replay::cadence::STAGGER_LIMITATION)),
+            "{:?}",
+            report.limitations.keys()
+        );
     }
 }

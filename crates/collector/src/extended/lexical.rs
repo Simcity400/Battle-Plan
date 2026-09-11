@@ -64,8 +64,17 @@ impl Captured {
         base: usize,
         _game_state: usize,
         needed: &[bool],
+        hour: i32,
+        force_full: bool,
     ) -> ([bool; N], [u64; N]) {
         self.reset();
+        // Tier-4 fallback: witness cannot prove staleness-free static caching.
+        if !replay::cadence::should_walk(TableId::LexicalTokens, hour, force_full) {
+            self.rows.outcome = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+            return ([false], [0]);
+        }
         let start = qpc();
         let first = cpdx_lexer::walk(memory, base, &mut self.rows.rows, &mut self.text.first);
         self.rows.outcome = first.outcome;
@@ -177,7 +186,7 @@ mod tests {
     #[test]
     fn lexical_pack_preserves_exact_bytes_and_compares_the_arena() {
         let mut captured = Captured::with_capacities(&Capacities { rows: 2, text: 32 }, &[0]);
-        let (matched, _) = captured.capture(&fixture(false), 0, 0, &[true]);
+        let (matched, _) = captured.capture(&fixture(false), 0, 0, &[true], 3, true);
         assert_eq!(matched, [true]);
         let views = captured.tables();
         let TableView::Complete(rows) = &views[0] else {
@@ -186,7 +195,7 @@ mod tests {
         let row = &rows.rows::<tables::LexicalTokens>().unwrap()[0];
         assert_eq!(row.literal, [255]);
         assert_eq!(row.token, 0);
-        let (matched, _) = captured.capture(&fixture(true), 0, 0, &[true]);
+        let (matched, _) = captured.capture(&fixture(true), 0, 0, &[true], 3, true);
         assert_eq!(matched, [false]);
         assert_eq!(captured.checked_mismatches(), [1]);
         assert!(matches!(
@@ -199,7 +208,7 @@ mod tests {
     fn lexical_pool_grows_after_stable_truncation_and_releases_comparison_storage() {
         let mut capacity = Capacities { rows: 1, text: 0 };
         let mut captured = Captured::with_capacities(&capacity, &[0]);
-        captured.capture(&fixture(false), 0, 0, &[false]);
+        captured.capture(&fixture(false), 0, 0, &[false], 3, true);
         assert_eq!(
             captured.outcomes()[0],
             Outcome::Truncated {
@@ -210,7 +219,21 @@ mod tests {
         captured.grow(&mut capacity, &[CONSISTENCY_TARGET]);
         assert!(capacity.text >= 1);
         assert!(captured.rows.second.is_empty() && captured.text.second.is_empty());
-        captured.capture(&fixture(false), 0, 0, &[false]);
+        captured.capture(&fixture(false), 0, 0, &[false], 3, true);
         assert_eq!(captured.outcomes()[0], Outcome::Rows { len: 1 });
+    }
+
+    #[test]
+    fn lexical_off_hours_skips_walk_and_marks_carry_forward() {
+        let mut captured = Captured::with_capacities(&Capacities { rows: 2, text: 32 }, &[0]);
+        let (matched, ticks) = captured.capture(&fixture(false), 0, 0, &[true], 0, false);
+        assert_eq!(matched, [false]);
+        assert_eq!(ticks, [0]);
+        assert_eq!(
+            captured.outcomes()[0],
+            Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            }
+        );
     }
 }

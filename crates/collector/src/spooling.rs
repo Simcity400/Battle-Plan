@@ -129,6 +129,8 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     disk_branch: Option<BranchId>,
     last_written: Option<i32>,
     pending: Vec<PendingBranch>,
+    staggered_cache: BTreeMap<replay::rows::TableId, TableView>,
+    staggered_branch: Option<BranchId>,
     _history_file: Option<File>,
 }
 
@@ -162,6 +164,8 @@ impl Campaign {
             disk_branch: None,
             last_written: None,
             pending: Vec::new(),
+            staggered_cache: BTreeMap::new(),
+            staggered_branch: None,
             _history_file: history_file,
         })
     }
@@ -218,6 +222,40 @@ impl<B: SegmentBackend> Campaign<B> {
         let observation = self.tracker.observe(loaded, hour, signal, gaps)?;
         self.pending_branch(observation.branch);
         Ok(observation.branch)
+    }
+
+    // Spool-internal carry-forward keeps format-neutral byte-identical output.
+    fn apply_staggered_cache(&mut self, source: &mut DecodedFrame) -> [bool; TABLE_COUNT] {
+        if self.staggered_branch != Some(source.branch) {
+            self.staggered_cache.clear();
+            self.staggered_branch = Some(source.branch);
+        }
+        let mut skipped = [false; TABLE_COUNT];
+        for table in replay::rows::TableId::ALL {
+            let index = table.index();
+            if replay::cadence::refresh_slot(table).is_none() {
+                continue;
+            }
+            let is_skip = matches!(
+                &source.tables[index],
+                TableView::Unavailable { reason }
+                if reason == replay::cadence::SKIPPED_REASON
+            );
+            if is_skip {
+                skipped[index] = true;
+                if let Some(cached) = self.staggered_cache.get(&table) {
+                    source.tables[index] = cached.clone();
+                } else {
+                    source.tables[index] = TableView::Unavailable {
+                        reason: "staggered cache empty on new branch; full refresh required".into(),
+                    };
+                }
+            } else {
+                self.staggered_cache
+                    .insert(table, source.tables[index].clone());
+            }
+        }
+        skipped
     }
 
     fn lost(&mut self, loss: &LostObservation, suppress_origin: bool) -> io::Result<()> {
@@ -418,6 +456,8 @@ struct Statistics {
     pool_bytes: u64,
     sampled_buffer_bytes: usize,
     sampled_buffer_parts: Vec<(&'static str, usize)>,
+    staggered_skipped: [u64; TABLE_COUNT],
+    staggered_walked: [u64; TABLE_COUNT],
     previous: Option<(String, BranchId, i32, i64)>,
     interval_hours: u64,
     interval_qpc: u64,
@@ -466,6 +506,8 @@ impl Default for Statistics {
             sampled_buffer_bytes: 0,
             sampled_buffer_parts: Vec::new(),
             previous: None,
+            staggered_skipped: [0; TABLE_COUNT],
+            staggered_walked: [0; TABLE_COUNT],
             interval_hours: 0,
             interval_qpc: 0,
             errors: 0,
@@ -720,7 +762,8 @@ impl Processor {
         };
         let branch = campaign.observe(origin, clock.hour, Some(clock.play_session_started_at))?;
         let conversion_started = current_qpc();
-        let (source, pack_ticks) = decoded_with_costs(captured, clock, branch);
+        let (mut source, pack_ticks) = decoded_with_costs(captured, clock, branch);
+        let skipped = campaign.apply_staggered_cache(&mut source);
         let mut work = WorkSample {
             conversion: current_qpc() - conversion_started,
             ..WorkSample::default()
@@ -732,6 +775,16 @@ impl Processor {
             unknown,
             &mut work,
         );
+        for table in replay::rows::TableId::ALL {
+            let index = table.index();
+            if replay::cadence::is_staggered(table) {
+                if skipped[index] {
+                    self.stats.staggered_skipped[index] += 1;
+                } else {
+                    self.stats.staggered_walked[index] += 1;
+                }
+            }
+        }
         let frequency = self.session.qpc_frequency;
         self.stats
             .conversion
@@ -865,6 +918,8 @@ impl Processor {
             "campaign": stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
             "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
             "max_ns": callback.max_ns, "table_ns": stats.table_ns.as_slice(),
+            "staggered_skipped": stats.staggered_skipped.as_slice(),
+            "staggered_walked": stats.staggered_walked.as_slice(),
             "hours_per_second": if stats.interval_qpc == 0 { 0.0 } else {
                 stats.interval_hours as f64 * self.session.qpc_frequency as f64 / stats.interval_qpc as f64
             },
@@ -2170,6 +2225,8 @@ mod tests {
                 disk_branch: None,
                 last_written: None,
                 pending: Vec::new(),
+                staggered_cache: BTreeMap::new(),
+                staggered_branch: None,
                 _history_file: None,
             },
             store,
@@ -2353,5 +2410,145 @@ mod tests {
         assert_eq!(processor.unknown_pending, 4);
         assert!(processor.suppress_origin);
         assert!(processor.campaigns.is_empty());
+    }
+
+    fn staggered_frame(branch: BranchId, hour: i32, skip: bool) -> DecodedFrame {
+        use replay::rows::{
+            CampaignRow, ClockRow, SunkShipsRow, TableId, TableRows, WeatherLimitsRow,
+            WorldTensionRow,
+        };
+        let mut tables =
+            std::array::from_fn(|index| TableView::Complete(TableRows::empty(TableId::ALL[index])));
+        tables[TableId::Clock.index()] = TableView::Complete(TableRows::Clock(vec![ClockRow {
+            hour,
+            ..Default::default()
+        }]));
+        tables[TableId::Campaign.index()] =
+            TableView::Complete(TableRows::Campaign(vec![CampaignRow {
+                id: b"test".to_vec(),
+            }]));
+        tables[TableId::SunkShips.index()] =
+            TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow::default()]));
+        tables[TableId::WeatherLimits.index()] =
+            TableView::Complete(TableRows::WeatherLimits(vec![WeatherLimitsRow::default()]));
+        tables[TableId::WorldTension.index()] =
+            TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow::default()]));
+        if skip {
+            for table in TableId::ALL {
+                if replay::cadence::is_staggered(table) {
+                    tables[table.index()] = TableView::Unavailable {
+                        reason: replay::cadence::SKIPPED_REASON.into(),
+                    };
+                }
+            }
+        }
+        DecodedFrame {
+            branch,
+            hour,
+            tables,
+            metrics: Metrics::default(),
+        }
+    }
+
+    #[test]
+    fn staggered_off_hours_emit_unchanged_and_hold_last_refresh() {
+        use replay::frame::{FrameDecoder, TableUpdate};
+        use replay::rows::TableId;
+        let (mut campaign, _) = campaign();
+        let branch = 1;
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        let mut first = staggered_frame(branch, 0, false);
+        let skipped = campaign.apply_staggered_cache(&mut first);
+        assert!(!skipped[TableId::Characters.index()]);
+        let frame = encoder.encode(first.clone(), false).unwrap();
+        assert!(matches!(
+            frame.tables[TableId::Characters.index()],
+            TableUpdate::Snapshot(_)
+        ));
+        assert_eq!(decoder.apply(&frame).unwrap(), first);
+        let mut second = staggered_frame(branch, 1, true);
+        let skipped = campaign.apply_staggered_cache(&mut second);
+        assert!(skipped[TableId::Characters.index()]);
+        assert!(!skipped[TableId::Clock.index()]);
+        assert_eq!(second, first.clone_with_hour(1));
+        let frame = encoder.encode(second.clone(), false).unwrap();
+        assert_eq!(
+            frame.tables[TableId::Characters.index()],
+            TableUpdate::Unchanged { baseline: 0 }
+        );
+        assert_eq!(decoder.apply(&frame).unwrap(), second);
+    }
+
+    trait WithHour {
+        fn clone_with_hour(&self, hour: i32) -> Self;
+    }
+
+    impl WithHour for DecodedFrame {
+        fn clone_with_hour(&self, hour: i32) -> Self {
+            let mut next = self.clone();
+            next.hour = hour;
+            if let TableView::Complete(TableRows::Clock(rows)) =
+                &mut next.tables[replay::rows::TableId::Clock.index()]
+            {
+                rows[0].hour = hour;
+            }
+            next
+        }
+    }
+
+    #[test]
+    fn refresh_hour_decode_equals_hourly_baseline() {
+        use replay::frame::FrameDecoder;
+        use replay::rows::TableId;
+        let branch = 7;
+        let mut hourly_encoder = FrameEncoder::new();
+        let mut hourly_decoder = FrameDecoder::new();
+        let mut staggered_encoder = FrameEncoder::new();
+        let mut staggered_decoder = FrameDecoder::new();
+        let (mut campaign, _) = campaign();
+        for hour in 0..8 {
+            let hourly = staggered_frame(branch, hour, false);
+            let hourly_frame = hourly_encoder.encode(hourly.clone(), false).unwrap();
+            let hourly_decoded = hourly_decoder.apply(&hourly_frame).unwrap().clone();
+            let mut staggered = staggered_frame(
+                branch,
+                hour,
+                !replay::cadence::is_refresh(TableId::Characters, hour),
+            );
+            campaign.apply_staggered_cache(&mut staggered);
+            let staggered_frame = staggered_encoder.encode(staggered.clone(), false).unwrap();
+            let staggered_decoded = staggered_decoder.apply(&staggered_frame).unwrap().clone();
+            if replay::cadence::is_refresh(TableId::Characters, hour) {
+                assert_eq!(
+                    hourly_decoded.tables, staggered_decoded.tables,
+                    "hour {hour}"
+                );
+            } else {
+                assert_eq!(
+                    staggered_decoded.tables[TableId::Characters.index()],
+                    hourly_decoded.tables[TableId::Characters.index()],
+                    "static data holds at hour {hour}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn branch_start_clears_staggered_cache() {
+        use replay::rows::TableId;
+        let (mut campaign, _) = campaign();
+        let mut first = staggered_frame(1, 0, false);
+        campaign.apply_staggered_cache(&mut first);
+        let mut second = staggered_frame(2, 1, true);
+        let skipped = campaign.apply_staggered_cache(&mut second);
+        assert!(skipped[TableId::Characters.index()]);
+        assert!(
+            matches!(
+                &second.tables[TableId::Characters.index()],
+                TableView::Unavailable { reason } if reason.contains("full refresh required")
+            ),
+            "new branch must not carry stale rows"
+        );
     }
 }

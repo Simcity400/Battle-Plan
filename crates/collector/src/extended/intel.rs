@@ -247,6 +247,8 @@ impl Captured {
         base: usize,
         state: usize,
         needed: &[bool],
+        hour: i32,
+        force_full: bool,
     ) -> ([bool; N], [u64; N]) {
         self.reset();
         let mut matched = [false; N];
@@ -368,38 +370,52 @@ impl Captured {
         );
 
         let begin = qpc();
-        let first = crelation_status::walk(
-            memory,
-            base,
-            state,
-            &mut self.relation_opinions.rows,
-            &mut self.relation_tuples.rows,
+        // Tier-4 relations share one matrix pass; off-hours skip the walk.
+        let relation_walk = replay::cadence::should_walk(
+            replay::rows::TableId::RelationOpinions,
+            hour,
+            force_full,
         );
-        self.relation_opinions.outcome =
-            bounded(first.opinions, self.relation_opinions.rows.len());
-        self.relation_tuples.outcome = bounded(first.tuples, self.relation_tuples.rows.len());
-        if needed[13] || needed[14] {
-            let second = crelation_status::walk(
+        if !relation_walk {
+            let skipped = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+            self.relation_opinions.outcome = skipped;
+            self.relation_tuples.outcome = skipped;
+        } else {
+            let first = crelation_status::walk(
                 memory,
                 base,
                 state,
-                &mut self.relation_opinions.second,
-                &mut self.relation_tuples.second,
+                &mut self.relation_opinions.rows,
+                &mut self.relation_tuples.rows,
             );
-            if needed[13] {
-                self.relation_opinions.checked = true;
-                matched[13] = self
-                    .relation_opinions
-                    .compare(bounded(second.opinions, self.relation_opinions.second.len()));
-            }
-            if needed[14] {
-                self.relation_tuples.checked = true;
-                matched[14] = self
-                    .relation_tuples
-                    .compare(bounded(second.tuples, self.relation_tuples.second.len()));
+            self.relation_opinions.outcome =
+                bounded(first.opinions, self.relation_opinions.rows.len());
+            self.relation_tuples.outcome = bounded(first.tuples, self.relation_tuples.rows.len());
+            if needed[13] || needed[14] {
+                let second = crelation_status::walk(
+                    memory,
+                    base,
+                    state,
+                    &mut self.relation_opinions.second,
+                    &mut self.relation_tuples.second,
+                );
+                if needed[13] {
+                    self.relation_opinions.checked = true;
+                    matched[13] = self
+                        .relation_opinions
+                        .compare(bounded(second.opinions, self.relation_opinions.second.len()));
+                }
+                if needed[14] {
+                    self.relation_tuples.checked = true;
+                    matched[14] = self
+                        .relation_tuples
+                        .compare(bounded(second.tuples, self.relation_tuples.second.len()));
+                }
             }
         }
-        ticks[13] = elapsed(begin);
+        ticks[13] = if relation_walk { elapsed(begin) } else { 0 };
         // ticks[14] stays zero because the named group above owns its reads.
 
         let begin = qpc();

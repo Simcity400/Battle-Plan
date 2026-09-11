@@ -213,6 +213,7 @@ impl Captured {
         game_state: usize,
         current_hour: i32,
         needed: &[bool],
+        force_full: bool,
     ) -> ([bool; TABLE_COUNT], [u64; TABLE_COUNT]) {
         assert_eq!(needed.len(), TABLE_COUNT);
         let mut matched = [false; TABLE_COUNT];
@@ -224,17 +225,15 @@ impl Captured {
                 scatter(&$pack::TABLES, cost, &mut ticks);
             )+};
         }
-        ordinary!(
-            characters,
-            construction,
-            economy,
-            fog,
-            governance,
-            intel,
-            projects,
-            session,
-            weather
-        );
+        macro_rules! staggered {
+            ($($pack:ident),+ $(,)?) => {$(
+                let (pass, cost) = self.$pack.capture(memory, base, game_state, &local(&$pack::TABLES, needed), current_hour, force_full);
+                scatter(&$pack::TABLES, pass, &mut matched);
+                scatter(&$pack::TABLES, cost, &mut ticks);
+            )+};
+        }
+        ordinary!(economy, fog, session, weather);
+        staggered!(characters, construction, governance, intel, projects);
         let air_needed = local(&air::TABLES, needed);
         self.air.finish_wings(
             self.air_roots[0].unwrap_or(MISSING),
@@ -261,31 +260,42 @@ impl Captured {
             game_state,
             &production_needed,
             self.divisions.sources(),
+            current_hour,
+            force_full,
         );
         scatter(&production::TABLES, pass, &mut matched);
         scatter(&production::TABLES, cost, &mut ticks);
         // The saved campaign registry is authoritative. It includes variants
         // absent from units, current production and stockpiles. Preserve every
         // native entry and duplicate for shared off-thread key rejection.
-        let begin = qpc();
-        self.registry
-            .acquire(memory, base, game_state, variant_needed(needed));
-        ticks[TableId::VariantDefinitions.index()] += elapsed(begin);
+        let variant_walk =
+            replay::cadence::should_walk(TableId::VariantDefinitions, current_hour, force_full);
+        if variant_walk {
+            let begin = qpc();
+            self.registry
+                .acquire(memory, base, game_state, variant_needed(needed));
+            ticks[TableId::VariantDefinitions.index()] += elapsed(begin);
+        } else {
+            self.registry.mark_skipped();
+        }
         let (pass, cost) = self.production.finish_variants(
             memory,
             base,
             &production_needed,
             self.registry.sources(),
+            current_hour,
+            force_full,
         );
         for (index, table) in production::TABLES.iter().enumerate() {
             matched[table.index()] |= pass[index];
             ticks[table.index()] = ticks[table.index()].saturating_add(cost[index]);
         }
-        ordinary!(lexical);
+        staggered!(lexical);
         for table in TABLES {
             ticks[table.index()] =
                 ticks[table.index()].saturating_add(self.overhead[table.index()]);
-            matched[table.index()] &= needed[table.index()];
+            matched[table.index()] &= needed[table.index()]
+                && replay::cadence::should_walk(table, current_hour, force_full);
         }
         (matched, ticks)
     }
@@ -546,6 +556,13 @@ impl Registry {
                 }; 2];
             }
         }
+    }
+    // Off-hours carry-forward hint keeps byte-identical spool output.
+    fn mark_skipped(&mut self) {
+        self.rows.outcome = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
+        };
+        self.outcomes = [self.rows.outcome; 2];
     }
     fn sources(&self) -> production::Sources<'_, cequipment_variant::RegistryRow> {
         production::Sources {

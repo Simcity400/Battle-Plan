@@ -250,6 +250,7 @@ impl Captured {
     /// Acquire non-variant tables. Each table requests its own consistency
     /// reads; variants use the independently acquired registry census.
     /// Durations are QPC ticks and include comparison work.
+    #[allow(clippy::too_many_arguments)]
     pub fn acquire(
         &mut self,
         memory: &impl Memory,
@@ -257,6 +258,8 @@ impl Captured {
         game_state: usize,
         needed: &[bool],
         divisions: Sources<'_, cequipment_variant_pool::DivisionSource>,
+        _hour: i32,
+        _force_full: bool,
     ) -> ([bool; N], [u64; N]) {
         assert_eq!(needed.len(), N);
         let mut matched = [false; N];
@@ -485,10 +488,28 @@ impl Captured {
         base: usize,
         needed: &[bool],
         variants: Sources<'_, cequipment_variant::RegistryRow>,
+        hour: i32,
+        force_full: bool,
     ) -> ([bool; N], [u64; N]) {
         assert_eq!(needed.len(), N);
         let mut matched = [false; N];
         let mut ticks = [0; N];
+        // Tier-4 variants share slot3; off-hours skip the whole walk.
+        let walk = replay::cadence::should_walk(
+            replay::rows::TableId::VariantDefinitions,
+            hour,
+            force_full,
+        );
+        if !walk {
+            let skipped = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+            self.definitions.outcome = skipped;
+            self.modules.outcome = skipped;
+            self.stats.outcome = skipped;
+            self.upgrades.outcome = skipped;
+            return (matched, ticks);
+        }
         let begin = qpc();
         let first = complete_source(variants.first, variants.first_outcome);
         let second = complete_source(variants.second, variants.second_outcome);
@@ -1632,6 +1653,8 @@ mod tests {
                 second: &[],
                 second_outcome: Outcome::Rows { len: 0 },
             },
+            0,
+            true,
         );
         assert_eq!(&matched[12..16], &[true; 4]);
         assert_eq!(captured.conveyors.outcome, Outcome::Rows { len: 1 });
@@ -1652,6 +1675,8 @@ mod tests {
                 second: &[],
                 second_outcome: Outcome::Rows { len: 0 },
             },
+            0,
+            true,
         );
         // Only the line row's own word moved, so the shared traversal reports the
         // mismatch on the line table alone and leaves the other three matched.
@@ -1687,6 +1712,8 @@ mod tests {
                 second: &[],
                 second_outcome: Outcome::Rows { len: 0 },
             },
+            0,
+            true,
         );
         assert_eq!(&matched[12..16], &[false; 4]);
         for index in 12..16 {
@@ -1925,6 +1952,8 @@ mod tests {
                     second: &first,
                     second_outcome: failed,
                 },
+                0,
+                true,
             );
             assert_eq!(&matched[7..11], &[false; 4]);
             assert_eq!(
@@ -1949,6 +1978,8 @@ mod tests {
                     second: &second,
                     second_outcome: Outcome::Rows { len: 1 },
                 },
+                0,
+                true,
             );
             assert!(!matched[table]);
             assert_eq!(captured.checked_mismatches()[table], 1);

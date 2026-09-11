@@ -157,16 +157,56 @@ impl Captured {
         base: usize,
         game_state: usize,
         needed: &[bool],
+        hour: i32,
+        force_full: bool,
     ) -> ([bool; N], [u64; N]) {
         self.reset();
         let mut matched = [false; N];
         let mut ticks = [0; N];
-        let begin = qpc();
-        matched[0] = self.capture_programs(needed[0], |candidates, rows, names| {
-            nproject_cprogram::walk(memory, base, game_state, candidates, rows, names)
-        });
-        ticks[0] = elapsed(begin);
+        // Tier-4 projects share slot3; off-hours skip all four walks.
+        let walk = replay::cadence::should_walk(
+            replay::rows::TableId::Projects,
+            hour,
+            force_full,
+        );
+        if !walk {
+            let skipped = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+            self.programs.outcome = skipped;
+            self.projects.outcome = skipped;
+            self.history.outcome = skipped;
+            self.breakthroughs.outcome = skipped;
+        } else {
+            let begin = qpc();
+            matched[0] = self.capture_programs(needed[0], |candidates, rows, names| {
+                nproject_cprogram::walk(memory, base, game_state, candidates, rows, names)
+            });
+            ticks[0] = elapsed(begin);
 
+            let begin = qpc();
+            let project_matches = capture_pair(
+                &mut self.projects,
+                &mut self.history,
+                [needed[1], needed[2]],
+                |projects, histories| {
+                    nproject_cproject::walk_with_history(
+                        memory,
+                        base,
+                        game_state,
+                        projects,
+                        histories,
+                    )
+                },
+            );
+            matched[1..3].copy_from_slice(&project_matches);
+            ticks[1] = elapsed(begin);
+            let begin = qpc();
+            matched[3] = capture_rows(&mut self.breakthroughs, needed[3], |rows| {
+                nproject_cbreakthrough_progress::walk(memory, base, game_state, rows)
+            });
+            ticks[3] = elapsed(begin);
+        }
         macro_rules! plain {
             ($field:ident, $index:literal, $module:ident) => {{
                 let begin = qpc();
@@ -176,18 +216,6 @@ impl Captured {
                 ticks[$index] = elapsed(begin);
             }};
         }
-        let begin = qpc();
-        let project_matches = capture_pair(
-            &mut self.projects,
-            &mut self.history,
-            [needed[1], needed[2]],
-            |projects, histories| {
-                nproject_cproject::walk_with_history(memory, base, game_state, projects, histories)
-            },
-        );
-        matched[1..3].copy_from_slice(&project_matches);
-        ticks[1] = elapsed(begin);
-        plain!(breakthroughs, 3, nproject_cbreakthrough_progress);
         plain!(nukes, 4, cnuke);
 
         let begin = qpc();

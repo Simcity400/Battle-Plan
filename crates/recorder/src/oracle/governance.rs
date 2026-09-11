@@ -492,6 +492,24 @@ fn compare_research(
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
+    // Tier-4 slot2; cadence table is the single source of truth.
+    if !replay::cadence::is_refresh(replay::rows::TableId::ResearchTechnologies, frame.hour) {
+        for table in [
+            replay::rows::TableId::ResearchTechnologies,
+            replay::rows::TableId::ResearchSlots,
+            replay::rows::TableId::TechnologyDefinitions,
+        ] {
+            report.limitation(
+                "Research family refreshed every 4th hour; off-hours replay holds last refresh",
+                format!(
+                    "{table:?} refreshes on {} (oracle hour {})",
+                    replay::cadence::refresh_text(table),
+                    frame.hour
+                ),
+            );
+        }
+        return Ok(());
+    }
     let definitions = complete::<tables::TechnologyDefinitions>(frame)?;
     let mut dictionary = BTreeMap::new();
     let mut tokens = BTreeSet::new();
@@ -2044,5 +2062,28 @@ mod tests {
         compare_literal(&mut report, "token", b"name\0native_tail", b"name");
         assert_eq!(report.differences.len(), 1);
         assert_eq!(report.limitations.len(), 1);
+    }
+
+    #[test]
+    fn staggered_off_hours_skips_research_and_prints_refresh_hour() {
+        let (mut frame, pack, country) = fixture();
+        frame.hour = 0;
+        let mut report = Report::default();
+        compare_research(
+            &frame,
+            &pack,
+            &BTreeMap::from([(11, &country)]),
+            &mut report,
+        )
+        .unwrap();
+        assert!(report.differences.is_empty());
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains(replay::cadence::STAGGER_LIMITATION)),
+            "{:?}",
+            report.limitations.keys()
+        );
     }
 }

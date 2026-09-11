@@ -981,6 +981,7 @@ fn compare_extended(
             required_context("verified map membership", &membership)?,
             required_context("lexical dictionary", &tokens)?,
             report,
+            frame.hour,
         )
     });
     report.attempt("construction ProvinceBuildings", |report| {
@@ -991,6 +992,7 @@ fn compare_extended(
             required_context("verified map membership", &membership)?,
             required_context("lexical dictionary", &tokens)?,
             report,
+            frame.hour,
         )
     });
     report.attempt("construction StateBaseResources", |report| {
@@ -2071,6 +2073,18 @@ fn compare_relation_opinions(
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
+    // Tier-4 slot1; cadence table is the single source of truth.
+    if !replay::cadence::is_refresh(replay::rows::TableId::RelationOpinions, frame.hour) {
+        report.limitation(
+            "RelationOpinions refreshed every 4th hour; off-hours replay holds last refresh",
+            format!(
+                "RelationOpinions refreshes on {} (oracle hour {})",
+                replay::cadence::refresh_text(replay::rows::TableId::RelationOpinions),
+                frame.hour
+            ),
+        );
+        return Ok(());
+    }
     let mut opinions = BTreeMap::new();
     for row in frame.complete::<tables::RelationOpinions>()? {
         let owner = required_country_tag(row.owner_country, links)?;
@@ -2134,6 +2148,18 @@ fn compare_relation_tuples(
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
+    // Tier-4 slot1; cadence table is the single source of truth.
+    if !replay::cadence::is_refresh(replay::rows::TableId::RelationTuples, frame.hour) {
+        report.limitation(
+            "RelationTuples refreshed every 4th hour; off-hours replay holds last refresh",
+            format!(
+                "RelationTuples refreshes on {} (oracle hour {})",
+                replay::cadence::refresh_text(replay::rows::TableId::RelationTuples),
+                frame.hour
+            ),
+        );
+        return Ok(());
+    }
     let mut tuples = BTreeMap::new();
     for row in frame.complete::<tables::RelationTuples>()? {
         let owner = required_country_tag(row.owner_country, links)?;
@@ -4393,6 +4419,14 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         save::EquipmentTypes,
     ) {
         let (mut frame, mut save, membership, equipment) = fixture();
+        // Tier-4 slot1 refresh hour: advance save and frame together to slot1.
+        save.date.hour = 2;
+        frame.hour = save.date.engine_hour().unwrap();
+        if let TableView::Complete(TableRows::Clock(rows)) =
+            &mut frame.tables[TableId::Clock.index()]
+        {
+            rows[0].hour = frame.hour;
+        }
         add_country(&mut frame, &mut save, 201, 8, b"D01");
         add_country(&mut frame, &mut save, 301, 9, b"SOV");
         (frame, save, membership, equipment)
@@ -4665,6 +4699,45 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         });
         let report = tuple_report(&raw, &save, named);
         assert!(report.failed_comparisons["RelationTuples"].contains("outside 0/1"));
+    }
+
+    #[test]
+    fn staggered_off_hours_skips_relations_and_prints_refresh_hour() {
+        let (mut frame, mut save, _, _) = relation_fixture();
+        frame.hour = 0;
+        saved_relation(&mut save, b"GER", b"D01", Some(5), &[]);
+        opinions(
+            &mut frame,
+            vec![replay::rows::RelationOpinionRow {
+                owner_country: 102,
+                target_country: 201,
+                opinion: 999,
+            }],
+        );
+        let mut report = Report::default();
+        let context = country_context(&frame).unwrap();
+        compare_relation_opinions(&frame, &save, &context.links, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains(replay::cadence::STAGGER_LIMITATION)),
+            "{:?}",
+            report.limitations.keys()
+        );
+        let _report = Report::default();
+        tuple_report(&frame, &save, &[]);
+        let skipped = tuple_report(&frame, &save, &[]);
+        assert!(skipped.differences.is_empty());
+        assert!(
+            skipped
+                .limitations
+                .keys()
+                .any(|reason| reason.contains(replay::cadence::STAGGER_LIMITATION)),
+            "{:?}",
+            skipped.limitations.keys()
+        );
     }
 
     #[test]

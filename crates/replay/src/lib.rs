@@ -1,6 +1,7 @@
 //! The shared, deliberately incompatible spool and replay format.
 
 pub mod branches;
+pub mod cadence;
 pub mod codec;
 pub mod container;
 pub mod frame;

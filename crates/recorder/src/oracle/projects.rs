@@ -109,16 +109,47 @@ pub(super) fn compare(
     let mut succeeded = report.attempt("projects Nukes", |report| {
         compare_nukes(frame, pack, countries, report)
     });
+    // Tier-4 slot3; cadence table is the single source of truth.
+    let staggered = !replay::cadence::is_refresh(replay::rows::TableId::Projects, frame.hour);
+    if staggered {
+        for table in [
+            replay::rows::TableId::ProjectPrograms,
+            replay::rows::TableId::Projects,
+            replay::rows::TableId::ProjectHistory,
+            replay::rows::TableId::ProjectBreakthroughs,
+        ] {
+            report.limitation(
+                "Projects refreshed every 4th hour; off-hours replay holds last refresh",
+                format!(
+                    "{table:?} refreshes on {} (oracle hour {})",
+                    replay::cadence::refresh_text(table),
+                    frame.hour
+                ),
+            );
+        }
+    }
     succeeded &= report.attempt("projects ProjectPrograms", |report| {
+        if staggered {
+            return Ok(());
+        }
         compare_programs(frame, pack, countries, tokens, report)
     });
     succeeded &= report.attempt("projects Projects", |report| {
+        if staggered {
+            return Ok(());
+        }
         compare_projects(frame, pack, countries, tokens, report)
     });
     succeeded &= report.attempt("projects ProjectHistory", |report| {
+        if staggered {
+            return Ok(());
+        }
         compare_history(frame, pack, countries, tokens, report)
     });
     succeeded &= report.attempt("projects ProjectBreakthroughs", |report| {
+        if staggered {
+            return Ok(());
+        }
         compare_breakthroughs(frame, pack, countries, tokens, report)
     });
     succeeded &= report.attempt("projects RaidCountries", |report| {
@@ -1020,7 +1051,7 @@ mod tests {
     fn scientist_frame() -> DecodedFrame {
         let mut frame = DecodedFrame {
             branch: 1,
-            hour: 0,
+            hour: 3,
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
             }),
@@ -1250,7 +1281,7 @@ mod tests {
     fn raid_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
         let mut frame = DecodedFrame {
             branch: 1,
-            hour: 0,
+            hour: 3,
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
             }),
@@ -1723,5 +1754,38 @@ mod tests {
         assert_eq!(reconstructed_turn(&conference), Some(4));
         conference.history_turns.insert(b"SOV".to_vec(), 5);
         assert_eq!(reconstructed_turn(&conference), None);
+    }
+
+    #[test]
+    fn staggered_off_hours_skips_projects_and_prints_refresh_hour() {
+        use replay::{
+            frame::{Metrics, TableView},
+            rows::{TableId, TableRows},
+        };
+        let frame = DecodedFrame {
+            branch: 1,
+            hour: 0,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index]))
+            }),
+        };
+        let mut report = Report::default();
+        let _ = compare(
+            &frame,
+            &saved::Pack::default(),
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+            &mut report,
+        );
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains(replay::cadence::STAGGER_LIMITATION)),
+            "{:?}",
+            report.limitations.keys()
+        );
     }
 }

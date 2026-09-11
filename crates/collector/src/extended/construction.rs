@@ -205,12 +205,20 @@ impl Captured {
         base: usize,
         game_state: usize,
         needed: &[bool],
+        hour: i32,
+        force_full: bool,
     ) -> ([bool; N], [u64; N]) {
         self.reset();
         let mut matched = [false; N];
         let mut ticks = [0; N];
-        self.state_buildings.checked = needed[0];
-        self.province_buildings.checked = needed[1];
+        // Tier-4 finished-buildings catalog shares one walk; off-hours skip.
+        let walk = replay::cadence::should_walk(
+            replay::rows::TableId::StateBuildings,
+            hour,
+            force_full,
+        );
+        self.state_buildings.checked = needed[0] && walk;
+        self.province_buildings.checked = needed[1] && walk;
         self.base_resources.checked = needed[2];
         self.building_construction.checked = needed[3];
         self.railway_construction.checked = needed[4];
@@ -223,31 +231,40 @@ impl Captured {
         self.collaboration.checked = needed[11];
 
         let begin = qpc();
-        let buildings = cbuilding_status::walk(
-            memory,
-            base,
-            game_state,
-            &mut self.state_buildings.rows,
-            &mut self.province_buildings.rows,
-        );
-        self.state_buildings.outcome = buildings.states;
-        self.province_buildings.outcome = buildings.provinces;
-        if needed[0] || needed[1] {
-            let second = cbuilding_status::walk(
+        if !walk {
+            let skipped = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+            self.state_buildings.outcome = skipped;
+            self.province_buildings.outcome = skipped;
+            ticks[0] = 0;
+        } else {
+            let buildings = cbuilding_status::walk(
                 memory,
                 base,
                 game_state,
-                &mut self.state_buildings.second,
-                &mut self.province_buildings.second,
+                &mut self.state_buildings.rows,
+                &mut self.province_buildings.rows,
             );
-            if needed[0] {
-                matched[0] = self.state_buildings.compare(second.states);
+            self.state_buildings.outcome = buildings.states;
+            self.province_buildings.outcome = buildings.provinces;
+            if needed[0] || needed[1] {
+                let second = cbuilding_status::walk(
+                    memory,
+                    base,
+                    game_state,
+                    &mut self.state_buildings.second,
+                    &mut self.province_buildings.second,
+                );
+                if needed[0] {
+                    matched[0] = self.state_buildings.compare(second.states);
+                }
+                if needed[1] {
+                    matched[1] = self.province_buildings.compare(second.provinces);
+                }
             }
-            if needed[1] {
-                matched[1] = self.province_buildings.compare(second.provinces);
-            }
+            ticks[0] = elapsed(begin);
         }
-        ticks[0] = elapsed(begin);
         (matched[2], ticks[2]) = single(&mut self.base_resources, needed[2], |output| {
             state_resource_entry::walk(memory, base, game_state, output)
         });
