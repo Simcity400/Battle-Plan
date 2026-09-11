@@ -8,7 +8,7 @@ use crate::{
 use engine::{
     Memory, ccountry_raid_status, cnuke, craid_instance, craid_system,
     nproject_cbreakthrough_progress, nproject_cprogram, nproject_cproject,
-    nproject_sproject_history, peace_conference, walk::Outcome,
+    nproject_sproject_history, peace_conference, scientist_roster, walk::Outcome,
 };
 use replay::{
     frame::TableView,
@@ -16,7 +16,7 @@ use replay::{
 };
 use std::mem::size_of;
 
-pub const N: usize = 8;
+pub const N: usize = 10;
 pub const TABLES: [TableId; N] = [
     TableId::ProjectPrograms,
     TableId::Projects,
@@ -26,6 +26,8 @@ pub const TABLES: [TableId; N] = [
     TableId::RaidCountries,
     TableId::Raids,
     TableId::PeaceConferences,
+    TableId::Scientists,
+    TableId::ScientistSkills,
 ];
 
 /// Each rooted walk produces two tables with independent consistency windows.
@@ -33,6 +35,7 @@ pub const TABLES: [TableId; N] = [
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("project pool and reward histories", 1, &[1, 2]),
     ("raid countries and instances", 5, &[5, 6]),
+    ("scientist rosters and specializations", 8, &[8, 9]),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -45,7 +48,7 @@ pub struct Capacities {
 impl Default for Capacities {
     fn default() -> Self {
         Self {
-            rows: [256, 32768, 1024, 2048, 1024, 512, 256, 32],
+            rows: [256, 32768, 1024, 2048, 1024, 512, 256, 32, 2048, 8192],
             program_names: 8192,
             program_candidates: 1024,
         }
@@ -61,6 +64,8 @@ pub struct Captured {
     raid_countries: CaptureRows<ccountry_raid_status::Row>,
     raids: CaptureRows<craid_instance::Row>,
     peace: CaptureRows<peace_conference::Row>,
+    scientists: CaptureRows<scientist_roster::Row>,
+    scientist_skills: CaptureRows<scientist_roster::SkillRow>,
     names: Arena<u8>,
     candidates: Vec<usize>,
     required_candidates: usize,
@@ -78,6 +83,8 @@ impl Captured {
             raid_countries: CaptureRows::new(capacity.rows[5], successful[5]),
             raids: CaptureRows::new(capacity.rows[6], successful[6]),
             peace: CaptureRows::new(capacity.rows[7], successful[7]),
+            scientists: CaptureRows::new(capacity.rows[8], successful[8]),
+            scientist_skills: CaptureRows::new(capacity.rows[9], successful[9]),
             names: Arena::new(capacity.program_names, successful[0]),
             candidates: vec![0; capacity.program_candidates],
             required_candidates: 0,
@@ -93,6 +100,8 @@ impl Captured {
         self.raid_countries.reset();
         self.raids.reset();
         self.peace.reset();
+        self.scientists.reset();
+        self.scientist_skills.reset();
         self.names.reset();
         self.required_candidates = 0;
     }
@@ -106,6 +115,8 @@ impl Captured {
             + self.raid_countries.allocated_bytes()
             + self.raids.allocated_bytes()
             + self.peace.allocated_bytes()
+            + self.scientists.allocated_bytes()
+            + self.scientist_skills.allocated_bytes()
             + self.names.allocated_bytes()
             + self.candidates.capacity() * size_of::<usize>()
     }
@@ -121,6 +132,9 @@ impl Captured {
             .grow(&mut capacity.rows[5], successful[5]);
         self.raids.grow(&mut capacity.rows[6], successful[6]);
         self.peace.grow(&mut capacity.rows[7], successful[7]);
+        self.scientists.grow(&mut capacity.rows[8], successful[8]);
+        self.scientist_skills
+            .grow(&mut capacity.rows[9], successful[9]);
         self.names.grow(&mut capacity.program_names, successful[0]);
         grow_capacity(&mut capacity.program_candidates, self.required_candidates);
         if self.required_candidates > 0
@@ -186,6 +200,27 @@ impl Captured {
         matched[5..7].copy_from_slice(&raid_matches);
         ticks[5] = elapsed(begin);
         plain!(peace, 7, peace_conference);
+
+        // One roster traversal fills both scientist tables. Their consistency
+        // windows stay independent, so a full skill buffer cannot shorten the
+        // roster census or silently drop a scientist's remaining records.
+        let begin = qpc();
+        let scientist_matches = capture_pair(
+            &mut self.scientists,
+            &mut self.scientist_skills,
+            [needed[8], needed[9]],
+            |scientists, skills| {
+                let walk = scientist_roster::walk(
+                    memory,
+                    base,
+                    game_state,
+                    &mut scientist_roster::Buffers { scientists, skills },
+                );
+                (walk.scientists, walk.skills)
+            },
+        );
+        matched[8..10].copy_from_slice(&scientist_matches);
+        ticks[8] = elapsed(begin);
         (matched, ticks)
     }
 
@@ -236,6 +271,8 @@ impl Captured {
             self.raid_countries.mismatches,
             self.raids.mismatches,
             self.peace.mismatches,
+            self.scientists.mismatches,
+            self.scientist_skills.mismatches,
         ]
     }
 
@@ -249,6 +286,8 @@ impl Captured {
             effective(&self.raid_countries),
             effective(&self.raids),
             effective(&self.peace),
+            effective(&self.scientists),
+            effective(&self.scientist_skills),
         ]
     }
 
@@ -340,6 +379,24 @@ impl Captured {
                     ordinal: r.ordinal,
                     current_turn: r.current_turn,
                     finalized: r.finalized,
+                }
+            }),
+            table::<tables::Scientists, _>(outcomes[8], &self.scientists.rows, |r| {
+                rows::ScientistRow {
+                    character: r.character,
+                    country: r.country,
+                    ordinal: r.ordinal,
+                    trait_count: r.trait_count,
+                    skill_count: r.skill_count,
+                }
+            }),
+            table::<tables::ScientistSkills, _>(outcomes[9], &self.scientist_skills.rows, |r| {
+                rows::ScientistSkillRow {
+                    character: r.character,
+                    ordinal: r.ordinal,
+                    token: r.token,
+                    level: r.level,
+                    experience_raw: r.experience_raw,
                 }
             }),
         ]

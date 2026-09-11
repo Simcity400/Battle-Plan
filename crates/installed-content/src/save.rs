@@ -2395,11 +2395,11 @@ faction={id={id=0 type=88} members={} name=""}"#,
         let saved = parse(br#"HOI4txt
 date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0
 states={} provinces={} countries={GER={theatres={theatre={id={id=1 type=67}
-orders_group={id={type=53 id=1}
+orders_group={id={type=53 id=1} name="Army 1" field_marshal_group=no motorization_level=0
  order_instance={instance_id=4294967295 type=4 can_execute=-128 invasion_source=-1 path={2 1 2 -1} states={3 3}}
  fallback={instance_id=2 type=2}
  virtual_fallback={instance_id=3 type=-1}}
-field_marshal_group={id={type=53 id=2} field_marshal_group=yes orders_group={id={id=1 type=53}}
+field_marshal_group={id={type=53 id=2} name="Army Group 1" motorization_level=0 field_marshal_group=yes orders_group={id=1 type=53}
  order_instance={instance_id=2 type=3 invasion_source=4}}
 }}}}
 "#).unwrap();

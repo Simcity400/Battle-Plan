@@ -278,6 +278,9 @@ pub struct LandTheatre {
     pub units: Vec<u64>,
     /// One representative province per controller area, in area order.
     pub area_representatives: Vec<u32>,
+    /// Serialized COrdersGroup/CArmyGroup definitions in this theatre, in the
+    /// order the writer emits them. Their theatre membership is the nesting.
+    pub definitions: Vec<OrdersGroup>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -302,6 +305,30 @@ pub struct AirGroup {
     pub theatre: u64,
     pub name: Vec<u8>,
     pub wings: Vec<u64>,
+}
+
+/// One serialized COrdersGroup or CArmyGroup definition inside a land theatre.
+///
+/// member-vector order, then `leader_unit` only when the HQ provider is
+/// non-null, then `leader` only when the leader pointer is non-null, and always
+/// `field_marshal_group` and `motorization_level`. An army group additionally
+/// lists its ordered child `orders_group={ id type }` references.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OrdersGroup {
+    pub id: u64,
+    pub name: Vec<u8>,
+    /// Written unconditionally from the raw +0x39 discriminator byte.
+    pub is_army_group: bool,
+    /// Written unconditionally from the raw +0x38 byte.
+    pub motorization_level: i32,
+    /// Omission proves the native +0x88 leader pointer is null.
+    pub leader: Option<u64>,
+    /// Omission proves the native +0x68 HQ-provider pointer is null.
+    pub leader_unit: Option<u64>,
+    /// Ordered member unit handles; both native id spaces occur.
+    pub members: Vec<u64>,
+    /// Ordered child orders-group references of an army group.
+    pub children: Vec<u64>,
 }
 
 fn railways(items: &[Item]) -> io::Result<Option<BTreeMap<u32, Railway>>> {
@@ -344,6 +371,53 @@ fn railways(items: &[Item]) -> io::Result<Option<BTreeMap<u32, Railway>>> {
         }
     }
     Ok(Some(result))
+}
+
+/// Both definition kinds share one serializer, so they parse identically; the
+/// saved `field_marshal_group` boolean, not the block key, decides the kind.
+fn orders_groups(theatre: &[Item]) -> io::Result<Vec<OrdersGroup>> {
+    theatre
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.key.as_deref(),
+                Some(b"orders_group" | b"field_marshal_group")
+            )
+        })
+        .map(|entry| {
+            let fields = block(&entry.value)?;
+            let members = fields
+                .iter()
+                .filter(|entry| entry.key.as_deref() == Some(b"member"))
+                .map(|entry| {
+                    let member = block(&entry.value)?;
+                    typed_handle(
+                        field(member, b"unit")?
+                            .ok_or_else(|| invalid("saved orders group member lacks its unit"))?,
+                    )
+                })
+                .collect::<io::Result<Vec<_>>>()?;
+            let children = fields
+                .iter()
+                .filter(|entry| entry.key.as_deref() == Some(b"orders_group"))
+                .map(|entry| typed_handle(&entry.value))
+                .collect::<io::Result<Vec<_>>>()?;
+            Ok(OrdersGroup {
+                id: object_id(fields)?,
+                name: required_bytes(fields, b"name")?,
+                is_army_group: boolean(field(fields, b"field_marshal_group")?.ok_or_else(
+                    || invalid("saved orders group lacks its unconditional field_marshal_group"),
+                )?)?,
+                motorization_level: integer(&required_bytes(fields, b"motorization_level")?)?,
+                leader: field(fields, b"leader")?.map(typed_handle).transpose()?,
+                leader_unit: field(fields, b"leader_unit")?
+                    .map(typed_handle)
+                    .transpose()?,
+                members,
+                children,
+            })
+        })
+        .collect()
 }
 
 fn theatre_countries(items: &[Item]) -> io::Result<Option<BTreeMap<Vec<u8>, TheatreCountry>>> {
@@ -397,6 +471,7 @@ fn theatre_countries(items: &[Item]) -> io::Result<Option<BTreeMap<Vec<u8>, Thea
                         .filter(|entry| entry.key.as_deref() == Some(b"area"))
                         .map(|entry| Ok(integer::<i32>(scalar(&entry.value)?)? as u32))
                         .collect::<io::Result<_>>()?,
+                    definitions: orders_groups(fields)?,
                 });
             }
         }
@@ -730,6 +805,85 @@ mod tests {
 
     fn parse_text(bytes: &[u8]) -> io::Result<Pack> {
         parse(&crate::parser::parse(bytes)?.items)
+    }
+
+    /// One theatre with an army group, its child army, the army's ordered
+    /// members and the theatre group that lists both.
+    const ORDER_OF_BATTLE: &[u8] = br#"countries={GER={theatres={theatre={
+        id={ id=2 type=67 }
+        orders_group={
+            id={ id=57 type=53 }
+            name="Army 1"
+            member={ unit={ id=12456 type=4713 } }
+            member={ unit={ id=111 type=51 } }
+            leader_unit={ id=12456 type=4713 }
+            leader={ id=279 type=4713 }
+            field_marshal_group=no
+            motorization_level=0
+        }
+        field_marshal_group={
+            orders_group={ id=57 type=53 }
+            id={ id=431 type=53 }
+            name="Army Group 1"
+            field_marshal_group=yes
+            motorization_level=-1
+        }
+        theater_group={
+            id={ id=45 type=68 }
+            priority=1
+            name="British Theater 1"
+            orders_group={ id=57 type=53 }
+            orders_group={ id=431 type=53 }
+        }
+    }}}}"#;
+
+    #[test]
+    fn orders_group_definitions_keep_native_order_kind_and_conditional_pointers() {
+        let pack = parse_text(ORDER_OF_BATTLE).unwrap();
+        let theatre = &pack.theatre_countries.as_ref().unwrap()[b"GER".as_slice()].land[0];
+        assert_eq!(theatre.definitions.len(), 2);
+        let army = &theatre.definitions[0];
+        assert_eq!(army.id, (57 << 32) | 53);
+        assert_eq!(army.name, b"Army 1");
+        assert!(!army.is_army_group);
+        assert_eq!(army.motorization_level, 0);
+        assert_eq!(army.leader, Some((279 << 32) | 4713));
+        assert_eq!(army.leader_unit, Some((12456 << 32) | 4713));
+        // Both native unit id spaces occur and their order is preserved.
+        assert_eq!(army.members, [(12456 << 32) | 4713, (111 << 32) | 51]);
+        assert!(army.children.is_empty());
+        let group = &theatre.definitions[1];
+        assert_eq!(group.id, (431 << 32) | 53);
+        assert!(group.is_army_group);
+        assert_eq!(group.motorization_level, -1);
+        // An army group has no leader, no HQ provider and no direct units.
+        assert_eq!((group.leader, group.leader_unit), (None, None));
+        assert!(group.members.is_empty());
+        assert_eq!(group.children, [(57 << 32) | 53]);
+        // The theatre-group listing still parses as references, not definitions.
+        assert_eq!(
+            theatre.groups[0].members,
+            [(57 << 32) | 53, (431 << 32) | 53]
+        );
+    }
+
+    #[test]
+    fn an_orders_group_without_its_unconditional_fields_is_refused() {
+        for removed in [
+            "name=\"Army 1\"",
+            "field_marshal_group=no",
+            "motorization_level=0",
+        ] {
+            let text = String::from_utf8(ORDER_OF_BATTLE.to_vec())
+                .unwrap()
+                .replace(removed, "");
+            assert!(parse_text(text.as_bytes()).is_err(), "{removed}");
+        }
+        // A member block without its unit reference is malformed, not empty.
+        let text = String::from_utf8(ORDER_OF_BATTLE.to_vec())
+            .unwrap()
+            .replace("member={ unit={ id=111 type=51 } }", "member={ }");
+        assert!(parse_text(text.as_bytes()).is_err());
     }
 
     fn adjacency_content() -> (Vec<u8>, Vec<u8>) {

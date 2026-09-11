@@ -272,6 +272,7 @@ pub mod copy_object_1401594f0;
 pub mod cor_trigger;
 pub mod corder_instance;
 pub mod corders_group;
+pub mod corders_group_member;
 pub mod country_control_recovery_layout;
 pub mod country_icon_presentation_functions;
 pub mod country_intel_row;

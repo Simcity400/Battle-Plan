@@ -710,6 +710,7 @@ mod tests {
                         name: Some(b"saved literal name".to_vec()),
                         country_leaders: Vec::new(),
                         advisors: Vec::new(),
+                        scientist: None,
                     },
                 )]),
                 unit_leaders: BTreeMap::from([(

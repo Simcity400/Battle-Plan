@@ -16,7 +16,7 @@ use replay::{
 };
 use std::collections::BTreeMap;
 
-pub const N: usize = 14;
+pub const N: usize = 17;
 pub const TABLES: [TableId; N] = [
     TableId::NavalSupremacy,
     TableId::SunkConvoys,
@@ -32,6 +32,9 @@ pub const TABLES: [TableId; N] = [
     TableId::NavalResultMembers,
     TableId::NavalResultCountries,
     TableId::SunkShips,
+    TableId::OrdersGroups,
+    TableId::OrdersGroupMembers,
+    TableId::ArmyGroupMembers,
 ];
 
 /// Shared traversals are charged once to their first table; comparison costs
@@ -40,10 +43,14 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("railway state", 2, &[2, 3]),
     ("land and air theatres", 4, &[4, 5, 6, 7, 8, 9]),
     ("retained naval results", 10, &[10, 11, 12]),
+    ("army order of battle", 14, &[14, 15, 16]),
 ];
 
 pub fn needs_order_sources(needed: &[bool]) -> bool {
-    needed[6]
+    // The shared authenticated registry census feeds both the theatre reverse
+    // membership and the order of battle, so any of them can request the second
+    // pass. A table that does not need it still keeps its own outcome.
+    needed[6] || needed[14] || needed[15] || needed[16]
 }
 pub fn needs_wing_sources(needed: &[bool]) -> bool {
     needed[9]
@@ -62,6 +69,7 @@ impl Default for Capacities {
         Self {
             rows: [
                 4096, 1024, 16384, 32768, 512, 1024, 4096, 512, 2048, 8192, 512, 8192, 4096, 2048,
+                2048, 8192, 2048,
             ],
             theatre_names: 128 * 1024,
             sunk_names: 256 * 1024,
@@ -86,6 +94,13 @@ pub struct Captured {
     result_members: CaptureRows<cnaval_combat_results::MemberRow>,
     result_countries: CaptureRows<cnaval_combat_results::CountryRow>,
     sunk: CaptureRows<csunk_ship_info::Record>,
+    groups: CaptureRows<corders_group::GroupRow>,
+    group_members: CaptureRows<corders_group::MemberRow>,
+    group_children: CaptureRows<corders_group::ChildRow>,
+    /// Second-pass outcomes of the order-of-battle read, kept beside the
+    /// primary CaptureRows outcomes so each table compares independently.
+    oob_second: [Outcome; 3],
+    oob_finished: [bool; 2],
     theatre_names: Arena<u8>,
     sunk_names: Arena<u8>,
     orders_sources: CaptureRows<ctheatre::OrdersMembership>,
@@ -96,7 +111,7 @@ pub struct Captured {
     wings_second: Outcome,
     orders_finished: [bool; 2],
     wings_finished: [bool; 2],
-    source_ticks: [u64; 2],
+    source_ticks: [u64; 3],
 }
 
 impl Captured {
@@ -119,6 +134,11 @@ impl Captured {
             result_members: CaptureRows::new(capacity.rows[11], result_success),
             result_countries: CaptureRows::new(capacity.rows[12], result_success),
             sunk: CaptureRows::new(capacity.rows[13], successful[13]),
+            groups: CaptureRows::new(capacity.rows[14], successful[14]),
+            group_members: CaptureRows::new(capacity.rows[15], successful[15]),
+            group_children: CaptureRows::new(capacity.rows[16], successful[16]),
+            oob_second: [source_unavailable(); 3],
+            oob_finished: [false; 2],
             theatre_names: Arena::new(capacity.theatre_names, theatre_success),
             sunk_names: Arena::new(capacity.sunk_names, successful[13]),
             orders_sources: CaptureRows::new(capacity.orders_sources, successful[6]),
@@ -129,7 +149,7 @@ impl Captured {
             wings_second: source_unavailable(),
             orders_finished: [false; 2],
             wings_finished: [false; 2],
-            source_ticks: [0; 2],
+            source_ticks: [0; 3],
         }
     }
 
@@ -138,13 +158,18 @@ impl Captured {
         self.reset_tables();
         self.orders_sources.reset();
         self.wing_sources.reset();
+        self.groups.reset();
+        self.group_members.reset();
+        self.group_children.reset();
+        self.oob_second = [source_unavailable(); 3];
+        self.oob_finished = [false; 2];
         self.orders_sources.outcome = Outcome::Rows { len: 0 };
         self.wing_sources.outcome = Outcome::Rows { len: 0 };
         self.orders_second = Outcome::Rows { len: 0 };
         self.wings_second = Outcome::Rows { len: 0 };
         self.orders_finished = [false; 2];
         self.wings_finished = [false; 2];
-        self.source_ticks = [0; 2];
+        self.source_ticks = [0; 3];
     }
 
     fn reset_tables(&mut self) {
@@ -181,6 +206,9 @@ impl Captured {
             + self.result_members.allocated_bytes()
             + self.result_countries.allocated_bytes()
             + self.sunk.allocated_bytes()
+            + self.groups.allocated_bytes()
+            + self.group_members.allocated_bytes()
+            + self.group_children.allocated_bytes()
             + self.theatre_names.allocated_bytes()
             + self.sunk_names.allocated_bytes()
             + self.orders_sources.allocated_bytes()
@@ -212,6 +240,11 @@ impl Captured {
         self.result_countries
             .grow(&mut capacity.rows[12], result_success);
         self.sunk.grow(&mut capacity.rows[13], successful[13]);
+        self.groups.grow(&mut capacity.rows[14], successful[14]);
+        self.group_members
+            .grow(&mut capacity.rows[15], successful[15]);
+        self.group_children
+            .grow(&mut capacity.rows[16], successful[16]);
         self.theatre_names
             .grow(&mut capacity.theatre_names, theatre_success);
         self.sunk_names
@@ -228,9 +261,10 @@ impl Captured {
         comparison(&mut self.wings_seen, capacity.wing_sources, successful[9]);
     }
 
-    /// Already included in the pack's returned times, in [orders, wings] order.
-    /// The shared adapter subtracts these from enclosing map acquisition times.
-    pub fn source_ticks(&self) -> [u64; 2] {
+    /// Already included in the pack's returned times, in
+    /// [theatre membership, wings, order of battle] order. The shared adapter
+    /// subtracts these from the enclosing map acquisition times.
+    pub fn source_ticks(&self) -> [u64; 3] {
         self.source_ticks
     }
 
@@ -279,6 +313,97 @@ impl Captured {
         }
         self.orders_finished[usize::from(second)] = true;
         self.source_ticks[0] = self.source_ticks[0].saturating_add(elapsed(begin));
+        self.set_order_of_battle(memory, base, roots, source, second);
+    }
+
+    /// Reads every group's identity, its ordered member vector and, for army
+    /// groups, its ordered child vector from the same authenticated census.
+    /// A truncated or unavailable registry cannot establish a complete order of
+    /// battle, so it fails all three tables with that reason.
+    fn set_order_of_battle(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        roots: &[corders_group::Root],
+        source: Outcome,
+        second: bool,
+    ) {
+        let begin = qpc();
+        let outcomes = match source {
+            Outcome::Rows { len } if len <= roots.len() => {
+                let (groups, members, children) = if second {
+                    (
+                        &mut self.groups.second,
+                        &mut self.group_members.second,
+                        &mut self.group_children.second,
+                    )
+                } else {
+                    (
+                        &mut self.groups.rows,
+                        &mut self.group_members.rows,
+                        &mut self.group_children.rows,
+                    )
+                };
+                let capacity = [groups.len(), members.len(), children.len()];
+                let walk = corders_group::walk_order_of_battle(
+                    memory,
+                    base,
+                    &roots[..len],
+                    &mut corders_group::OrderOfBattle {
+                        groups,
+                        members,
+                        children,
+                    },
+                );
+                [
+                    bounded(walk.groups, capacity[0]),
+                    bounded(walk.members, capacity[1]),
+                    bounded(walk.children, capacity[2]),
+                ]
+            }
+            Outcome::Unavailable { reason } => [Outcome::Unavailable { reason }; 3],
+            Outcome::Truncated { .. } => [Outcome::Unavailable {
+                reason: "orders registry census truncated",
+            }; 3],
+            _ => [Outcome::Unavailable {
+                reason: "orders registry census exceeds captured roots",
+            }; 3],
+        };
+        if second {
+            self.oob_second = outcomes;
+        } else {
+            self.groups.outcome = outcomes[0];
+            self.group_members.outcome = outcomes[1];
+            self.group_children.outcome = outcomes[2];
+        }
+        self.oob_finished[usize::from(second)] = true;
+        self.source_ticks[2] = self.source_ticks[2].saturating_add(elapsed(begin));
+    }
+
+    /// The order-of-battle tables are filled by the shared source callback, so
+    /// their comparisons and their dependence on a finished first pass are
+    /// settled here rather than inside a walker.
+    fn finish_order_of_battle(&mut self, needed: &[bool], matched: &mut [bool; N]) {
+        let others = if self.oob_finished[1] {
+            self.oob_second
+        } else {
+            [source_unavailable(); 3]
+        };
+        if needed[14] {
+            matched[14] = compare(&mut self.groups, others[0], true);
+        }
+        if needed[15] {
+            matched[15] = compare(&mut self.group_members, others[1], true);
+        }
+        if needed[16] {
+            matched[16] = compare(&mut self.group_children, others[2], true);
+        }
+        if !self.oob_finished[0] {
+            self.groups.outcome = source_unavailable();
+            self.group_members.outcome = source_unavailable();
+            self.group_children.outcome = source_unavailable();
+            matched[14..17].fill(false);
+        }
     }
 
     pub fn visit_wing(
@@ -386,6 +511,8 @@ impl Captured {
         ticks[4] = elapsed(begin);
         ticks[6] = self.source_ticks[0];
         ticks[9] = self.source_ticks[1];
+        ticks[14] = self.source_ticks[2];
+        self.finish_order_of_battle(needed, &mut matched);
 
         let begin = qpc();
         let first = cnaval_combat_results::walk(
@@ -676,6 +803,9 @@ impl Captured {
             self.result_members.mismatches,
             self.result_countries.mismatches,
             self.sunk.mismatches,
+            self.groups.mismatches,
+            self.group_members.mismatches,
+            self.group_children.mismatches,
         ]
     }
 
@@ -695,6 +825,9 @@ impl Captured {
             effective(&self.result_members),
             effective(&self.result_countries),
             effective(&self.sunk),
+            effective(&self.groups),
+            effective(&self.group_members),
+            effective(&self.group_children),
         ];
         if !complete_source(&self.orders_sources, self.orders_finished[0]) {
             result[6] = source_unavailable();
@@ -824,6 +957,33 @@ impl Captured {
                 },
             ),
             self.sunk_table(),
+            table::<tables::OrdersGroups, _>(outcomes[14], &self.groups.rows, |r| {
+                rows::OrdersGroupRow {
+                    handle: r.handle,
+                    country: r.country,
+                    is_army_group: r.is_army_group,
+                    motorization_level: r.motorization_level,
+                    theatre: r.theatre,
+                    theater_group: r.theater_group,
+                    parent: r.parent,
+                    leader: r.leader,
+                    hq_provider: r.hq_provider,
+                }
+            }),
+            table::<tables::OrdersGroupMembers, _>(outcomes[15], &self.group_members.rows, |r| {
+                rows::OrdersGroupMemberRow {
+                    group: r.group,
+                    ordinal: r.ordinal,
+                    unit: r.unit,
+                }
+            }),
+            table::<tables::ArmyGroupMembers, _>(outcomes[16], &self.group_children.rows, |r| {
+                rows::ArmyGroupMemberRow {
+                    group: r.group,
+                    ordinal: r.ordinal,
+                    child: r.child,
+                }
+            }),
         ]
     }
 

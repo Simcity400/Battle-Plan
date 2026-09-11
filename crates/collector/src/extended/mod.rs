@@ -373,7 +373,8 @@ impl<M: Memory> MapSources for Sources<'_, M> {
             return 0;
         }
         let begin = qpc();
-        let before = self.captured.naval_history.source_ticks()[0];
+        let ticks = self.captured.naval_history.source_ticks();
+        let before = ticks[0] + ticks[2];
         self.captured.naval_history.set_order_sources(
             self.memory,
             self.base,
@@ -381,7 +382,8 @@ impl<M: Memory> MapSources for Sources<'_, M> {
             outcome,
             second,
         );
-        let charged = self.captured.naval_history.source_ticks()[0].saturating_sub(before);
+        let ticks = self.captured.naval_history.source_ticks();
+        let charged = (ticks[0] + ticks[2]).saturating_sub(before);
         self.attribute_overhead(TableId::LandTheatres, begin, charged)
     }
 }
@@ -580,7 +582,7 @@ mod tests {
 
     #[test]
     fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership() {
-        assert_eq!(N, 119);
+        assert_eq!(N, 125);
         let actual: BTreeSet<_> = TABLES.into_iter().collect();
         assert_eq!(actual.len(), N);
         let expected: BTreeSet<_> = TableId::ALL

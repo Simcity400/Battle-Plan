@@ -367,6 +367,7 @@ mod tests {
                         template: (2_u64 << 32) | 52,
                         hit_points: 26_429_000,
                         organisation: 6_000_001,
+                        orders_group: (57_u64 << 32) | 53,
                     }])),
                     TableView::Complete(TableRows::WarRelations(vec![WarRelationRow {
                         first_country: 1,

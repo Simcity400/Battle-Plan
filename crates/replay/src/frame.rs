@@ -747,6 +747,7 @@ mod tests {
             template: 0xfedc_ba98_0000_002b,
             hit_points,
             organisation,
+            orders_group: 0x0000_0039_0000_0035,
         }
     }
 
@@ -798,7 +799,7 @@ mod tests {
     #[test]
     fn padded_snapshot_counts_are_rejected_before_allocating_or_reading_rows() {
         let claimed = 16_384_u32;
-        assert_eq!(TableId::Divisions.minimum_row_bytes(), 41);
+        assert_eq!(TableId::Divisions.minimum_row_bytes(), 49);
         assert_eq!(TableId::Campaign.minimum_row_bytes(), 5);
         for table in TableId::ALL {
             let padding = claimed as usize * table.minimum_row_bytes() - 1;

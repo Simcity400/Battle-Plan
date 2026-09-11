@@ -315,6 +315,9 @@ struct Report {
     army_orders: usize,
     scalar_checks: usize,
     differences: Vec<String>,
+    /// The comparison group each difference belongs to, in lockstep with
+    /// `differences`, so every group can print all of its own rows.
+    difference_owners: Vec<String>,
     limitations: BTreeMap<String, Vec<String>>,
     compared_tables: BTreeMap<String, usize>,
     recorded_tables: BTreeMap<TableId, Result<usize, String>>,
@@ -394,10 +397,37 @@ impl Report {
         } else {
             self.difference_groups.insert(group.into(), 1);
         }
+        self.difference_owners.push(group.to_owned());
         self.differences.push(format!(
             "{}: replay {replay:?}, save {save:?}",
             field.as_ref()
         ));
+    }
+
+    /// Every difference is printed, grouped by its comparison, with a count
+    /// line per group. The former hard hundred-line cap silently dropped whole
+    /// groups, including ones whose only difference it hid, which left them
+    /// undiagnosable from the report alone. There is no cap now.
+    fn difference_lines(&self) -> Vec<String> {
+        if self.differences.is_empty() {
+            return Vec::new();
+        }
+        let mut grouped = BTreeMap::<&str, Vec<&str>>::new();
+        for (group, difference) in self.difference_owners.iter().zip(&self.differences) {
+            grouped
+                .entry(group.as_str())
+                .or_default()
+                .push(difference.as_str());
+        }
+        let mut lines = vec![format!(
+            "All {} differences, by group:",
+            self.differences.len()
+        )];
+        for (group, differences) in grouped {
+            lines.push(format!("  {group}: {} differences", differences.len()));
+            lines.extend(differences.iter().map(|line| format!("    {line}")));
+        }
+        lines
     }
 
     fn limitation(&mut self, reason: &str, subject: impl Into<String>) {
@@ -478,14 +508,8 @@ impl Report {
         for (group, reason) in &self.failed_comparisons {
             println!("  Comparison {group} incomplete: {reason}");
         }
-        for difference in self.differences.iter().take(100) {
-            println!("  {difference}");
-        }
-        if self.differences.len() > 100 {
-            println!(
-                "  {} additional differences omitted",
-                self.differences.len() - 100
-            );
+        for line in self.difference_lines() {
+            println!("{line}");
         }
         println!("Limitations:");
         for (reason, subjects) in &self.limitations {
@@ -1067,6 +1091,15 @@ fn compare_extended(
             report,
         )
     });
+    report.attempt("army order of battle", |report| {
+        naval_history::compare_order_of_battle(
+            frame,
+            &save.divisions,
+            &save.naval_history,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
     report.attempt("RailEdges", |report| {
         naval_history::compare_rail_edges(
             frame,
@@ -1089,6 +1122,15 @@ fn compare_extended(
             frame,
             save,
             &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
+    report.attempt("projects Scientists", |report| {
+        projects::compare_scientists(
+            frame,
+            &save.characters,
+            &required_context("country links", &countries)?.links,
+            required_context("lexical dictionary", &tokens)?,
             report,
         )
     });
@@ -2164,6 +2206,50 @@ fn default_game_directory() -> io::Result<PathBuf> {
 }
 
 #[cfg(test)]
+mod reporting_tests {
+    use super::*;
+
+    #[test]
+    fn every_difference_prints_under_its_own_comparison_group() {
+        let mut report = Report::default();
+        for group in ["alpha", "beta"] {
+            report.attempt(group, |report| {
+                for index in 0..80 {
+                    report.difference(format!("{group}.field{index}"), index, index + 1);
+                }
+                Ok(())
+            });
+        }
+        assert_eq!(report.differences.len(), 160);
+        assert_eq!(report.difference_owners.len(), 160);
+        let lines = report.difference_lines();
+        // One header, one count line per group, and every single difference.
+        assert_eq!(lines.len(), 1 + 2 + 160);
+        assert!(lines[0].contains("All 160 differences"));
+        assert!(lines.contains(&"  alpha: 80 differences".to_owned()));
+        assert!(lines.contains(&"  beta: 80 differences".to_owned()));
+        for group in ["alpha", "beta"] {
+            for index in 0..80 {
+                let expected = format!(
+                    "    {group}.field{index}: replay {index}, save {}",
+                    index + 1
+                );
+                assert!(lines.contains(&expected), "{expected} was not printed");
+            }
+        }
+        assert_eq!(
+            report.difference_groups,
+            BTreeMap::from([("alpha".to_owned(), 80), ("beta".to_owned(), 80)])
+        );
+    }
+
+    #[test]
+    fn a_report_without_differences_prints_no_difference_section() {
+        assert!(Report::default().difference_lines().is_empty());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use replay::{
@@ -2378,6 +2464,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 template,
                 hit_points: 9_007_199_254_740_993,
                 organisation: 5_345_454,
+                orders_group: 0,
             }]));
         (frame, save, membership, equipment)
     }

@@ -1172,6 +1172,7 @@ fn decoded_with_costs(
                         template: division.template,
                         hit_points: division.hit_points,
                         organisation: division.organisation,
+                        orders_group: division.orders_group,
                     },
                 )
             },
@@ -1496,6 +1497,7 @@ mod tests {
             template: u64::MAX,
             hit_points: i64::MIN,
             organisation: 9_007_199_254_740_993,
+            orders_group: (57_u64 << 32) | 53,
         };
         captured.divisions[1] = engine::carmy::Row {
             id: (u64::from(u32::MAX) << 32) | 51,
@@ -1537,6 +1539,7 @@ mod tests {
             assert_eq!(division.organisation, 9_007_199_254_740_993);
             assert_eq!(division.template, u64::MAX);
             assert_eq!(division.expeditionary_owner, 0);
+            assert_eq!(division.orders_group, (57_u64 << 32) | 53);
         }
         assert_eq!(
             frame.tables[3],

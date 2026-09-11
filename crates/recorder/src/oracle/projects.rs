@@ -1,6 +1,6 @@
 //! Exact comparisons for saved project, nuclear, raid and conference fields.
-use super::{Report, complete, invalid, required_country_tag};
-use installed_content::save::projects as saved;
+use super::{Report, complete, country_tag, invalid, required_country_tag};
+use installed_content::save::{characters as characters_saved, projects as saved};
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, tables},
@@ -138,6 +138,166 @@ pub(super) fn compare(
             "project comparisons incomplete; see individual table failures",
         ))
     }
+}
+
+/// Scientist roster membership and its specialization records.
+///
+/// The roster itself is `CCountry +0xff0`, which no writer serializes: the save
+/// carries a scientist only as the `scientist={...}` block of its own
+/// `character={...}`, whose `country=` is `CCharacter +0x68`. F913A0 emits that
+/// tag only while the raw reference is strictly positive, so a saved scientist
+/// without one has no country at all and cannot be in a country roster. Every
+/// recorded roster entry is therefore compared against its saved character, and
+/// every saved scientist that does carry a country is required to be recorded.
+pub(super) fn compare_scientists(
+    frame: &DecodedFrame,
+    characters: &characters_saved::Pack,
+    links: &BTreeMap<u32, &CountryRow>,
+    tokens: &TokenNames<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let manager = characters
+        .manager
+        .as_ref()
+        .ok_or_else(|| invalid("save lacks the character manager roster"))?;
+    let mut expected = BTreeMap::new();
+    for (&handle, character) in &manager.characters {
+        let Some(scientist) = &character.scientist else {
+            continue;
+        };
+        if handle as u32 != 73 {
+            return Err(invalid("saved character handle is not a type-73 reference"));
+        }
+        if expected
+            .insert((handle >> 32) as u32, (character, scientist))
+            .is_some()
+        {
+            return Err(invalid("duplicate saved scientist character id"));
+        }
+    }
+    let mut recorded = BTreeMap::new();
+    for row in complete::<tables::Scientists>(frame)? {
+        if recorded.insert(row.character, row).is_some() {
+            return Err(invalid("duplicate recorded scientist character id"));
+        }
+    }
+    let mut skills = BTreeMap::<u32, Vec<_>>::new();
+    for row in complete::<tables::ScientistSkills>(frame)? {
+        let records = skills.entry(row.character).or_default();
+        if row.ordinal as usize != records.len() {
+            return Err(invalid(
+                "recorded scientist specialization ordinals are not contiguous from zero",
+            ));
+        }
+        records.push(row);
+    }
+    if let Some(character) = skills.keys().find(|id| !recorded.contains_key(id)) {
+        return Err(invalid(format!(
+            "recorded specialization records reference unrostered scientist {character}"
+        )));
+    }
+    let mut compared = 0;
+    let mut compared_skills = 0;
+    let mut nonpositive_levels = 0;
+    let mut nonpositive_experience = 0;
+    for (&id, actual) in &recorded {
+        let label = format!("scientist {id}");
+        let Some((character, saved)) = expected.get(&id) else {
+            report.difference(&label, "present", "absent or not a scientist");
+            continue;
+        };
+        compared += 1;
+        // The roster country and CCharacter +0x68 are two different native
+        // fields; the save carries only the second one.
+        equal(
+            report,
+            format!("{label}.roster country"),
+            country_tag(actual.country, links)?,
+            character.country.as_deref(),
+        );
+        equal(
+            report,
+            format!("{label}.trait_count"),
+            actual.trait_count,
+            saved
+                .traits
+                .as_ref()
+                .map_or(0, |traits| traits.len() as i32),
+        );
+        equal(
+            report,
+            format!("{label}.skill_count"),
+            actual.skill_count,
+            saved.skills.len() as i32,
+        );
+        let records = skills.get(&id).map(Vec::as_slice).unwrap_or_default();
+        equal(
+            report,
+            format!("{label}.specialization records"),
+            records.len(),
+            actual.skill_count.max(0) as usize,
+        );
+        for (ordinal, expected_skill) in saved.skills.iter().enumerate() {
+            let label = format!("{label}.specialization[{ordinal}]");
+            let Some(actual) = records.get(ordinal) else {
+                report.difference(label, "absent", &expected_skill.name);
+                continue;
+            };
+            compare_token(report, &label, tokens, actual.token, &expected_skill.name);
+            match expected_skill.level {
+                Some(level) => equal(report, format!("{label}.level"), actual.level, level),
+                None if actual.level > 0 => report.difference(
+                    format!("{label}.level"),
+                    actual.level,
+                    "omitted nonpositive level",
+                ),
+                None => nonpositive_levels += 1,
+            }
+            // 14144E480 guards the record's i64 at +0x10 the same way.
+            match &expected_skill.experience {
+                Some(experience) => equal(
+                    report,
+                    format!("{label}.experience"),
+                    actual.experience_raw,
+                    experience.raw,
+                ),
+                None if actual.experience_raw > 0 => report.difference(
+                    format!("{label}.experience"),
+                    actual.experience_raw,
+                    "omitted nonpositive experience",
+                ),
+                None => nonpositive_experience += 1,
+            }
+            compared_skills += 1;
+        }
+        for (ordinal, extra) in records.iter().enumerate().skip(saved.skills.len()) {
+            report.difference(
+                format!("{label}.specialization[{ordinal}]"),
+                extra.token,
+                "absent",
+            );
+        }
+    }
+    for (&id, (character, _)) in &expected {
+        if character.country.is_some() && !recorded.contains_key(&id) {
+            report.difference(format!("scientist {id}"), "absent", "present");
+        }
+    }
+    if nonpositive_levels != 0 || nonpositive_experience != 0 {
+        report.limitation(
+            "14144E480 emits a specialization level and its experience only while each is strictly positive; an omitted field proves a nonpositive raw value but cannot distinguish zero from a negative one",
+            format!(
+                "{nonpositive_levels} omitted specialization levels and {nonpositive_experience} omitted experience values"
+            ),
+        );
+    }
+    report.limitation(
+        "no writer serializes the CCountry +0xff0 scientist roster itself, so its native membership order is recorded but has no saved counterpart; saved scientists without a positive country reference cannot belong to a roster and are not required to be recorded",
+        "Scientists.ordinal and unowned saved scientists",
+    );
+    report.compared("Scientists", compared);
+    report.compared("ScientistSkills", compared_skills);
+    Ok(())
 }
 
 fn compare_nukes(
@@ -838,6 +998,254 @@ mod tests {
             ProjectRow, ProjectState, RaidCountryRow, RaidRow, RaidSource, TableId, TableRows,
         },
     };
+
+    fn scientist_pack() -> characters_saved::Pack {
+        characters_saved::parse(
+            &installed_content::parser::parse(
+                br#"character_manager={ historical={
+                    character={ id={ id=265 type=73 } token="a" country="GER"
+                        scientist={ traits={ "t1" "t2" }
+                            skills={ specialization_nuclear={ level=2 }
+                                     specialization_naval={ experience=219.18 } } } }
+                    character={ id={ id=266 type=73 } token="b"
+                        scientist={ skills={ specialization_nuclear={ } } } }
+                }} countries={}"#,
+            )
+            .unwrap()
+            .items,
+        )
+        .unwrap()
+    }
+
+    fn scientist_frame() -> DecodedFrame {
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 0,
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index]))
+            }),
+            metrics: Default::default(),
+        };
+        frame.tables[TableId::Scientists.index()] =
+            TableView::Complete(TableRows::Scientists(vec![replay::rows::ScientistRow {
+                character: 265,
+                country: 7,
+                ordinal: 0,
+                trait_count: 2,
+                skill_count: 2,
+            }]));
+        frame.tables[TableId::ScientistSkills.index()] =
+            TableView::Complete(TableRows::ScientistSkills(vec![
+                replay::rows::ScientistSkillRow {
+                    character: 265,
+                    ordinal: 0,
+                    token: 0x56c6,
+                    level: 2,
+                    experience_raw: 0,
+                },
+                replay::rows::ScientistSkillRow {
+                    character: 265,
+                    ordinal: 1,
+                    token: 0x56c7,
+                    level: 0,
+                    experience_raw: 21_918_000,
+                },
+            ]));
+        frame
+    }
+
+    fn run_scientists(frame: &DecodedFrame) -> Report {
+        let germany = CountryRow {
+            id: 7,
+            canonical_slot: 1,
+            tag: b"GER".to_vec(),
+            ..CountryRow::default()
+        };
+        let links = BTreeMap::from([(7, &germany)]);
+        let tokens: TokenNames<'_> = BTreeMap::from([
+            (0x56c6, b"specialization_nuclear".as_slice()),
+            (0x56c7, b"specialization_naval"),
+        ]);
+        let mut report = Report::default();
+        compare_scientists(frame, &scientist_pack(), &links, &tokens, &mut report).unwrap();
+        report
+    }
+
+    #[test]
+    fn a_matching_scientist_roster_compares_counts_tokens_and_levels() {
+        let report = run_scientists(&scientist_frame());
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["Scientists"], 1);
+        assert_eq!(report.compared_tables["ScientistSkills"], 2);
+        // The naval record's omitted level proves only a nonpositive value.
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("14144E480"))
+        );
+    }
+
+    #[test]
+    fn count_token_and_level_disagreements_are_each_reported() {
+        for (mutate, expected) in [
+            (
+                (|frame: &mut DecodedFrame| {
+                    let TableView::Complete(TableRows::Scientists(rows)) =
+                        &mut frame.tables[TableId::Scientists.index()]
+                    else {
+                        unreachable!()
+                    };
+                    rows[0].trait_count = 1;
+                }) as fn(&mut DecodedFrame),
+                "trait_count",
+            ),
+            (
+                |frame| {
+                    let TableView::Complete(TableRows::ScientistSkills(rows)) =
+                        &mut frame.tables[TableId::ScientistSkills.index()]
+                    else {
+                        unreachable!()
+                    };
+                    rows[0].level = 3;
+                },
+                "level",
+            ),
+            (
+                |frame| {
+                    let TableView::Complete(TableRows::ScientistSkills(rows)) =
+                        &mut frame.tables[TableId::ScientistSkills.index()]
+                    else {
+                        unreachable!()
+                    };
+                    rows[1].level = 1;
+                },
+                "level",
+            ),
+            (
+                |frame| {
+                    let TableView::Complete(TableRows::ScientistSkills(rows)) =
+                        &mut frame.tables[TableId::ScientistSkills.index()]
+                    else {
+                        unreachable!()
+                    };
+                    rows[1].token = 0x56c6;
+                },
+                "specialization[1]",
+            ),
+            (
+                |frame| {
+                    let TableView::Complete(TableRows::ScientistSkills(rows)) =
+                        &mut frame.tables[TableId::ScientistSkills.index()]
+                    else {
+                        unreachable!()
+                    };
+                    rows[1].experience_raw = 1;
+                },
+                "experience",
+            ),
+            (
+                |frame| {
+                    let TableView::Complete(TableRows::ScientistSkills(rows)) =
+                        &mut frame.tables[TableId::ScientistSkills.index()]
+                    else {
+                        unreachable!()
+                    };
+                    // A positive experience where the writer omitted the field.
+                    rows[0].experience_raw = 5;
+                },
+                "experience",
+            ),
+            (
+                |frame| {
+                    let TableView::Complete(TableRows::Scientists(rows)) =
+                        &mut frame.tables[TableId::Scientists.index()]
+                    else {
+                        unreachable!()
+                    };
+                    // Zero is the engine's own "no country", which the save omits.
+                    rows[0].country = 0;
+                },
+                "roster country",
+            ),
+        ] {
+            let mut frame = scientist_frame();
+            mutate(&mut frame);
+            let report = run_scientists(&frame);
+            let text = report.differences.join("\n");
+            assert!(text.contains(expected), "{expected} missing from {text}");
+        }
+    }
+
+    #[test]
+    fn a_saved_scientist_with_a_country_must_be_recorded_and_an_extra_row_is_reported() {
+        // Character 266 has no saved country, so no roster row is required.
+        let report = run_scientists(&scientist_frame());
+        assert!(report.differences.is_empty());
+        // Recording it anyway is compared against its saved character, which
+        // has no country tag at all.
+        let mut frame = scientist_frame();
+        let TableView::Complete(TableRows::Scientists(rows)) =
+            &mut frame.tables[TableId::Scientists.index()]
+        else {
+            unreachable!()
+        };
+        rows.push(replay::rows::ScientistRow {
+            character: 266,
+            country: 7,
+            ordinal: 1,
+            trait_count: 0,
+            skill_count: 1,
+        });
+        let TableView::Complete(TableRows::ScientistSkills(skills)) =
+            &mut frame.tables[TableId::ScientistSkills.index()]
+        else {
+            unreachable!()
+        };
+        skills.push(replay::rows::ScientistSkillRow {
+            character: 266,
+            ordinal: 0,
+            token: 0x56c6,
+            level: 0,
+            experience_raw: 0,
+        });
+        let report = run_scientists(&frame);
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|line| line.contains("scientist 266.roster country"))
+        );
+    }
+
+    #[test]
+    fn an_unresolved_roster_country_reference_fails_the_group_instead_of_comparing() {
+        let mut frame = scientist_frame();
+        let TableView::Complete(TableRows::Scientists(rows)) =
+            &mut frame.tables[TableId::Scientists.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].country = 9;
+        let germany = CountryRow {
+            id: 7,
+            canonical_slot: 1,
+            tag: b"GER".to_vec(),
+            ..CountryRow::default()
+        };
+        let links = BTreeMap::from([(7, &germany)]);
+        let mut report = Report::default();
+        assert!(
+            compare_scientists(
+                &frame,
+                &scientist_pack(),
+                &links,
+                &BTreeMap::new(),
+                &mut report
+            )
+            .is_err()
+        );
+    }
 
     fn raid_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
         let mut frame = DecodedFrame {

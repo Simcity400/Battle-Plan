@@ -347,6 +347,8 @@ fn compare_focus(
     let rows = complete::<tables::Focus>(frame)?;
     let mut captured = BTreeSet::new();
     let mut count = 0;
+    let mut paused_checks = 0_usize;
+    let mut focusless_paused_checks = 0_usize;
     for row in rows {
         let (tag, country) = country(pack, links, row.country)?;
         if !captured.insert(tag) {
@@ -376,13 +378,22 @@ fn compare_focus(
             row.progress,
             saved.progress.as_ref().map_or(0, |v| v.raw),
         );
-        // 2DC4E0 writes paused=no only when the native byte is zero.
+        // 2DC4E0's `paused` write is the function's last statement and is
+        // guarded only by `*(char *)(progress + 0xb0) == 0`. It is not nested
+        // inside the `current` or `current_continuous` branches, which are
+        // separate `if (pointer != 0)` writes earlier in the same body. The
+        // comparison therefore applies to every country with a focus-progress
+        // object, including the ones that have selected no focus at all.
         equal(
             report,
             format!("{subject}.paused"),
             row.paused == 0,
             saved.paused == Some(false),
         );
+        paused_checks += 1;
+        if saved.current.is_none() && saved.continuous.is_none() {
+            focusless_paused_checks += 1;
+        }
         if row.paused > 1 {
             report.limitation("focus serializer omits every nonzero paused byte; it cannot prove its exact nonzero bits", &subject);
         }
@@ -406,6 +417,16 @@ fn compare_focus(
             report.difference(label(tag, "focus"), "missing captured country", "present");
         }
     }
+    // The applicability of the paused comparison is a printed result, not an
+    // assumption: 2DC4E0 guards that write on the native byte alone, so the
+    // focus-less countries below are genuinely compared rather than skipped.
+    report.limitation(
+        "2DC4E0 writes paused only while the native +0xb0 byte is zero, and that write is not nested inside the selected-focus branches; an omitted paused therefore proves a nonzero byte for every country with a focus-progress object, without proving its exact bits",
+        format!(
+            "{paused_checks} paused comparisons, of which {focusless_paused_checks} are countries with neither a current nor a continuous focus"
+        ),
+    );
+    report.compared("Focus.paused", paused_checks);
     report.compared("Focus", count);
     Ok(())
 }

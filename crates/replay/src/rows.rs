@@ -78,6 +78,10 @@ pub struct DivisionRow {
     pub hit_points: i64,
     /// Native signed fixed-point organisation, with denominator 100,000.
     pub organisation: i64,
+    /// Full COrdersGroup handle of the army holding this division, or zero for
+    /// the engine's own null parent. It is an independent second source for
+    /// OrdersGroupMembers, never a substitute for that ordered vector.
+    pub orders_group: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -493,6 +497,12 @@ WorldTension = 135 => WorldTension(WorldTensionRow),
 ThreatSources = 136 => ThreatSource(ThreatSourceRow),
 ThreatCountryAggregates = 137 => ThreatCountryAggregate(ThreatCountryAggregateRow),
 ProductionLicenseRecords = 138 => ProductionLicenseRecord(ProductionLicenseRecordRow),
+OrdersGroups = 139 => OrdersGroup(OrdersGroupRow),
+OrdersGroupMembers = 140 => OrdersGroupMember(OrdersGroupMemberRow),
+ArmyGroupMembers = 141 => ArmyGroupMember(ArmyGroupMemberRow),
+IncomingDiplomaticActions = 142 => IncomingDiplomaticAction(IncomingDiplomaticActionRow),
+Scientists = 143 => Scientist(ScientistRow),
+ScientistSkills = 144 => ScientistSkill(ScientistSkillRow),
 }
 impl TableId {
     pub const fn index(self) -> usize {
@@ -869,7 +879,7 @@ row_codec!(CountryRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 =>
 row_codec!(CountryLinkRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32}, |_row| Ok(()));
 row_codec!(ProvinceRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => state: U32, 1 => owner: U32, 2 => controller: U32, 3 => victory_points: I32}, |_row| Ok(()));
 row_codec!(StateRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32}, |_row| Ok(()));
-row_codec!(DivisionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => roster_owner: U32, 1 => logical_owner: U32, 2 => expeditionary_owner: U32, 3 => province: U32, 4 => template: U64, 5 => hit_points: I64, 6 => organisation: I64}, |_row| Ok(()));
+row_codec!(DivisionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => roster_owner: U32, 1 => logical_owner: U32, 2 => expeditionary_owner: U32, 3 => province: U32, 4 => template: U64, 5 => hit_points: I64, 6 => organisation: I64, 7 => orders_group: U64}, |_row| Ok(()));
 row_codec!(WarRelationRow, 64, |row| (row.first_country as u128) << 32 | row.second_country as u128, |key| { first_country: (key >> 32) as u32, second_country: key as u32 }, {0 => start_hour: I32, 1 => end_hour: I32, 2 => cancel: U8, 3 => first_casualties: I64, 4 => second_casualties: I64, 5 => first_unknown_casualties: I64, 6 => second_unknown_casualties: I64, 7 => first_was_instigator: U8}, |_row| Ok(()));
 row_codec!(FactionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => name: Bytes}, |_row| Ok(()));
 row_codec!(FactionMemberRow, 32, |row| row.country as u128, |key| { country: key as u32 }, {0 => faction: U64, 1 => ordinal: U32}, |_row| Ok(()));
@@ -1395,6 +1405,7 @@ mod tests {
             template: 0x8000_0002_0000_002a,
             hit_points: -9_007_199_254_740_993,
             organisation: 100_001,
+            orders_group: 0x0000_0039_0000_0035,
         }
     }
     fn war_relation() -> WarRelationRow {
@@ -1466,6 +1477,7 @@ mod tests {
                 template: u64::MAX,
                 hit_points: i64::MIN,
                 organisation: i64::MAX,
+                orders_group: u64::MAX,
             },
         );
         round_trip(
@@ -1732,7 +1744,7 @@ mod tests {
             let mut bytes = Vec::new();
             encode_row(&row, 0, &mut bytes).unwrap();
             let key_len = if id == 0 { 1 } else { 10 };
-            assert_eq!(bytes.len(), key_len + 40);
+            assert_eq!(bytes.len(), key_len + 48);
             assert_eq!(
                 &bytes[key_len + 16..key_len + 24],
                 &division().template.to_le_bytes()
@@ -1745,6 +1757,10 @@ mod tests {
                 &bytes[key_len + 32..key_len + 40],
                 &division().organisation.to_le_bytes()
             );
+            assert_eq!(
+                &bytes[key_len + 40..key_len + 48],
+                &division().orders_group.to_le_bytes()
+            );
             let mut input = Decoder::new(&bytes);
             assert_eq!(decode_row::<DivisionRow>(0, &mut input).unwrap(), row);
             input.finish().unwrap();
@@ -1755,7 +1771,7 @@ mod tests {
             bytes.clear();
             encode_delta(TableId::Divisions, &delta, 0, &mut bytes).unwrap();
             assert_eq!(bytes.len(), key_len + 1 + delta.values.len());
-            assert_eq!(bytes[key_len], 0x7f);
+            assert_eq!(bytes[key_len], 0xff);
             assert_eq!(delta.apply::<DivisionRow>(None).unwrap(), row);
         }
     }
@@ -1786,6 +1802,9 @@ mod tests {
             }
             if mask & 64 != 0 {
                 updated.organisation = i64::MAX;
+            }
+            if mask & 128 != 0 {
+                updated.orders_group = u64::MAX;
             }
             let new = updated;
             let delta = new.delta(Some(&old)).unwrap().unwrap();

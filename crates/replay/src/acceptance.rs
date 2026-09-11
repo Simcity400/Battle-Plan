@@ -34,7 +34,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 132] = [
+const DOMAIN_TABLES: [TableId; 138] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
@@ -167,6 +167,12 @@ const DOMAIN_TABLES: [TableId; 132] = [
     TableId::ThreatSources,
     TableId::ThreatCountryAggregates,
     TableId::ProductionLicenseRecords,
+    TableId::OrdersGroups,
+    TableId::OrdersGroupMembers,
+    TableId::ArmyGroupMembers,
+    TableId::IncomingDiplomaticActions,
+    TableId::Scientists,
+    TableId::ScientistSkills,
 ];
 /// The fault campaign drives every table except the six the clock, campaign,
 /// country, province and state fixtures build directly, so a new table cannot
@@ -554,6 +560,10 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             // Alternating ticks isolate the HP and organisation field masks.
             hit_points: native_value(index / 2),
             organisation: native_value(index.div_ceil(2)),
+            // Zero is the engine's own unassigned division, and it must reach
+            // the codec as a real value alongside full 64-bit group handles.
+            orders_group: [0, (57_u64 << 32) | 53, (u32::MAX as u64) << 32 | 53]
+                [(index / 23 + ordinal) % 3],
         }
     };
     let mut divisions = vec![division(DIVISION_A, 0), division(DIVISION_B, 1)];

@@ -12,7 +12,7 @@ use engine::{
     cpdx_array::Array,
     cscript_flag, cstate,
     csubject_relation::{self, Name},
-    cvariables, operation_assigned_operative, read, read_slice,
+    cvariables, incoming_diplomatic_action_queue, operation_assigned_operative, read, read_slice,
     walk::Outcome,
 };
 use replay::{
@@ -21,7 +21,7 @@ use replay::{
 };
 use std::mem::size_of;
 
-pub const N: usize = 12;
+pub const N: usize = 13;
 pub const TABLES: [TableId; N] = [
     TableId::Capitulation,
     TableId::Subjects,
@@ -35,6 +35,7 @@ pub const TABLES: [TableId; N] = [
     TableId::Operations,
     TableId::OperationAssignments,
     TableId::OperationTokens,
+    TableId::IncomingDiplomaticActions,
 ];
 /// The operation walker supplies both tables in one census. Its entire cost,
 /// including whichever independent second reads are needed, is charged once.
@@ -59,7 +60,7 @@ impl Default for Capacities {
     fn default() -> Self {
         Self {
             rows: [
-                512, 256, 256, 512, 4096, 4096, 16_384, 8192, 2048, 2048, 8192, 4096,
+                512, 256, 256, 512, 4096, 4096, 16_384, 8192, 2048, 2048, 8192, 4096, 512,
             ],
             subject_names: 16_384,
             autonomy_names: 32_768,
@@ -90,6 +91,7 @@ pub struct Captured {
     operations: CaptureRows<coperation_instance::Row>,
     assignments: CaptureRows<operation_assigned_operative::Row>,
     operation_tokens: CaptureRows<ccountry_operation_token_manager::Row>,
+    incoming_actions: CaptureRows<incoming_diplomatic_action_queue::Row>,
     subject_names: Arena<u8>,
     autonomy_names: Arena<u8>,
     variable_entries: Arena<cvariables::Row>,
@@ -115,6 +117,7 @@ impl Captured {
             operations: CaptureRows::new(capacity.rows[9], operations_successful),
             assignments: CaptureRows::new(capacity.rows[10], operations_successful),
             operation_tokens: CaptureRows::new(capacity.rows[11], successful[11]),
+            incoming_actions: CaptureRows::new(capacity.rows[12], successful[12]),
             subject_names: Arena::new(capacity.subject_names, successful[1]),
             autonomy_names: Arena::new(capacity.autonomy_names, successful[2]),
             variable_entries: Arena::new(capacity.variable_entries, successful[8]),
@@ -137,6 +140,7 @@ impl Captured {
         self.operations.reset();
         self.assignments.reset();
         self.operation_tokens.reset();
+        self.incoming_actions.reset();
         self.subject_names.reset();
         self.autonomy_names.reset();
         self.variable_entries.reset();
@@ -157,6 +161,7 @@ impl Captured {
             + self.operations.allocated_bytes()
             + self.assignments.allocated_bytes()
             + self.operation_tokens.allocated_bytes()
+            + self.incoming_actions.allocated_bytes()
             + self.subject_names.allocated_bytes()
             + self.autonomy_names.allocated_bytes()
             + self.variable_entries.allocated_bytes()
@@ -182,6 +187,8 @@ impl Captured {
             .grow(&mut capacity.rows[10], operations_successful);
         self.operation_tokens
             .grow(&mut capacity.rows[11], successful[11]);
+        self.incoming_actions
+            .grow(&mut capacity.rows[12], successful[12]);
         self.subject_names
             .grow(&mut capacity.subject_names, successful[1]);
         self.autonomy_names
@@ -315,6 +322,11 @@ impl Captured {
             },
         );
         ticks[11] = elapsed(begin);
+        plain!(
+            12,
+            incoming_actions,
+            incoming_diplomatic_action_queue::walk
+        );
         (matched, ticks)
     }
 
@@ -332,6 +344,7 @@ impl Captured {
             effective(&self.operations),
             effective(&self.assignments),
             effective(&self.operation_tokens),
+            effective(&self.incoming_actions),
         ]
     }
 
@@ -349,6 +362,7 @@ impl Captured {
             self.operations.mismatches,
             self.assignments.mismatches,
             self.operation_tokens.mismatches,
+            self.incoming_actions.mismatches,
         ]
     }
 
@@ -425,6 +439,23 @@ impl Captured {
                 }
             }),
             self.operation_tokens_table(outcomes[11]),
+            table::<tables::IncomingDiplomaticActions, _>(
+                outcomes[12],
+                &self.incoming_actions.rows,
+                |r| rows::IncomingDiplomaticActionRow {
+                    country: r.country,
+                    ordinal: r.ordinal,
+                    handle: r.handle,
+                    status: r.status,
+                    action_type: r.action_type,
+                    actor: r.actor,
+                    original_actor: r.original_actor,
+                    recipient: r.recipient,
+                    original_recipient: r.original_recipient,
+                    hour: r.hour,
+                    last_command_hour: r.last_command_hour,
+                },
+            ),
         ]
     }
 }

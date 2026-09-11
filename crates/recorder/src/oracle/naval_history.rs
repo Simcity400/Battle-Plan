@@ -5,7 +5,7 @@ use std::{
     io,
 };
 
-use installed_content::save::naval_history as saved;
+use installed_content::save::{Division, naval_history as saved};
 use replay::{
     frame::DecodedFrame,
     rows::{CountryRow, NavalSupremacyRow, SunkConvoyRow, SunkShipEntry, tables},
@@ -907,6 +907,271 @@ fn compare_theatres(
     }
 }
 
+/// The serialized order of battle, joined once for all four comparisons.
+///
+/// The save carries each group's identity and ordered membership inside its
+/// theatre, its theatre-group membership in the enclosing `theater_group`
+/// listings, and its parent army group in the enclosing `field_marshal_group`
+/// child listing. None of those is a field of the definition block, so they are
+/// reconstructed here from the exact serialized structure rather than guessed.
+struct OrderOfBattle<'a> {
+    definitions: BTreeMap<u64, (&'a [u8], u64, &'a saved::OrdersGroup)>,
+    theater_group: BTreeMap<u64, u64>,
+    parent: BTreeMap<u64, u64>,
+    unit_parent: BTreeMap<u64, u64>,
+}
+
+fn order_of_battle(saved: &saved::Pack) -> io::Result<OrderOfBattle<'_>> {
+    let mut result = OrderOfBattle {
+        definitions: BTreeMap::new(),
+        theater_group: BTreeMap::new(),
+        parent: BTreeMap::new(),
+        unit_parent: BTreeMap::new(),
+    };
+    for (country, rows) in theatre_countries(saved)? {
+        for theatre in &rows.land {
+            for group in &theatre.groups {
+                for &member in &group.members {
+                    if result.theater_group.insert(member, group.id).is_some() {
+                        return Err(invalid(
+                            "a saved orders group belongs to more than one theatre group",
+                        ));
+                    }
+                }
+            }
+            for definition in &theatre.definitions {
+                if result
+                    .definitions
+                    .insert(definition.id, (country.as_slice(), theatre.id, definition))
+                    .is_some()
+                {
+                    return Err(invalid("duplicate saved orders group definition"));
+                }
+                for &child in &definition.children {
+                    if result.parent.insert(child, definition.id).is_some() {
+                        return Err(invalid(
+                            "a saved orders group is a child of more than one army group",
+                        ));
+                    }
+                }
+                for &unit in &definition.members {
+                    if result.unit_parent.insert(unit, definition.id).is_some() {
+                        return Err(invalid(
+                            "a saved unit belongs to more than one orders group",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    for (child, parent) in &result.parent {
+        if !result.definitions.contains_key(child) {
+            return Err(invalid(
+                "a saved army group lists a child with no definition block",
+            ));
+        }
+        if !result.definitions.contains_key(parent) {
+            return Err(invalid(
+                "a saved army group child lists an undefined parent",
+            ));
+        }
+    }
+    Ok(result)
+}
+
+/// COrdersGroup identity, its ordered unit membership, an army group's ordered
+/// child membership, and the divisions' independent parent pointers.
+pub(super) fn compare_order_of_battle(
+    frame: &DecodedFrame,
+    divisions: &BTreeMap<u64, Division>,
+    saved: &saved::Pack,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut passed = report.attempt("army OrdersGroups", |report| {
+        let oob = order_of_battle(saved)?;
+        compare_theatre_table(
+            "OrdersGroups",
+            complete::<tables::OrdersGroups>(frame)?,
+            |row| row.handle,
+            oob.definitions
+                .iter()
+                .map(|(&id, entry)| Ok((id, (entry, &oob)))),
+            report,
+            |actual, ((country, theatre, expected), oob), report| {
+                let label = format!("orders group {}", expected.id);
+                equal(
+                    report,
+                    format!("{label}.country"),
+                    tag(actual.country, links)?,
+                    *country,
+                );
+                equal(report, format!("{label}.theatre"), actual.theatre, *theatre);
+                equal(
+                    report,
+                    format!("{label}.field_marshal_group"),
+                    actual.is_army_group != 0,
+                    expected.is_army_group,
+                );
+                if actual.is_army_group > 1 {
+                    report.limitation(
+                        "BE8100 writes the raw +0x39 discriminator through the boolean writer; a nonzero byte other than one cannot be distinguished from one in the save",
+                        label.clone(),
+                    );
+                }
+                equal(
+                    report,
+                    format!("{label}.motorization_level"),
+                    i32::from(actual.motorization_level),
+                    expected.motorization_level,
+                );
+                equal(
+                    report,
+                    format!("{label}.theater_group"),
+                    actual.theater_group,
+                    oob.theater_group.get(&expected.id).copied().unwrap_or(0),
+                );
+                equal(
+                    report,
+                    format!("{label}.parent"),
+                    actual.parent,
+                    oob.parent.get(&expected.id).copied().unwrap_or(0),
+                );
+                // BE8100 emits leader and leader_unit only for a non-null
+                // pointer, so an omission proves the native pointer is null.
+                equal(
+                    report,
+                    format!("{label}.leader"),
+                    actual.leader,
+                    expected.leader.unwrap_or(0),
+                );
+                equal(
+                    report,
+                    format!("{label}.leader_unit"),
+                    actual.hq_provider,
+                    expected.leader_unit.unwrap_or(0),
+                );
+                Ok(())
+            },
+        )
+    });
+    passed &= report.attempt("army OrdersGroupMembers", |report| {
+        let oob = order_of_battle(saved)?;
+        compare_theatre_table(
+            "OrdersGroupMembers",
+            complete::<tables::OrdersGroupMembers>(frame)?,
+            |row| (row.group, row.ordinal),
+            oob.definitions.values().flat_map(|(_, _, definition)| {
+                definition
+                    .members
+                    .iter()
+                    .enumerate()
+                    .map(move |(ordinal, &unit)| Ok(((definition.id, ordinal as u32), unit)))
+            }),
+            report,
+            |actual, unit, report| {
+                equal(
+                    report,
+                    format!("orders group {} member {}", actual.group, actual.ordinal),
+                    actual.unit,
+                    unit,
+                );
+                Ok(())
+            },
+        )
+    });
+    passed &= report.attempt("army ArmyGroupMembers", |report| {
+        let oob = order_of_battle(saved)?;
+        compare_theatre_table(
+            "ArmyGroupMembers",
+            complete::<tables::ArmyGroupMembers>(frame)?,
+            |row| (row.group, row.ordinal),
+            oob.definitions.values().flat_map(|(_, _, definition)| {
+                definition
+                    .children
+                    .iter()
+                    .enumerate()
+                    .map(move |(ordinal, &child)| Ok(((definition.id, ordinal as u32), child)))
+            }),
+            report,
+            |actual, child, report| {
+                equal(
+                    report,
+                    format!("army group {} child {}", actual.group, actual.ordinal),
+                    actual.child,
+                    child,
+                );
+                Ok(())
+            },
+        )
+    });
+    passed &= report.attempt("army division orders group parents", |report| {
+        let oob = order_of_battle(saved)?;
+        compare_division_parents(frame, divisions, &oob, report)
+    });
+    if passed {
+        Ok(())
+    } else {
+        Err(invalid("an order-of-battle comparison group failed"))
+    }
+}
+
+/// The group's own member vector and each division's `+0xc0` back-pointer are
+/// two independent native sources for the same membership. Both are recorded;
+/// this compares the division pointers against the save and reports any
+/// disagreement between the two recorded sources without resolving it.
+fn compare_division_parents(
+    frame: &DecodedFrame,
+    divisions: &BTreeMap<u64, Division>,
+    oob: &OrderOfBattle<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut members = BTreeMap::new();
+    for row in complete::<tables::OrdersGroupMembers>(frame)? {
+        if members.insert(row.unit, row.group).is_some() {
+            return Err(invalid(
+                "a unit occurs in more than one recorded orders group member vector",
+            ));
+        }
+    }
+    let mut compared = 0;
+    let mut cross_checked = 0;
+    for division in complete::<tables::Divisions>(frame)? {
+        let label = format!(
+            "division type={} id={}",
+            division.id as u32,
+            division.id >> 32
+        );
+        let recorded = members.get(&division.id).copied().unwrap_or(0);
+        if recorded != division.orders_group {
+            report.difference(
+                format!("{label}.orders_group recorded member vector"),
+                division.orders_group,
+                recorded,
+            );
+        }
+        cross_checked += 1;
+        // A division the save does not contain has no saved parent to compare
+        // against; its absence is already reported by the divisions group.
+        if !divisions.contains_key(&division.id) {
+            continue;
+        }
+        equal(
+            report,
+            format!("{label}.orders_group"),
+            division.orders_group,
+            oob.unit_parent.get(&division.id).copied().unwrap_or(0),
+        );
+        compared += 1;
+    }
+    report.compared("Divisions.orders_group", compared);
+    report.compared(
+        "OrdersGroupMembers against division parent pointers",
+        cross_checked,
+    );
+    Ok(())
+}
+
 fn theatre_countries(saved: &saved::Pack) -> io::Result<&BTreeMap<Vec<u8>, saved::TheatreCountry>> {
     saved
         .theatre_countries
@@ -1060,13 +1325,14 @@ fn compare_supremacy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::save::GameDate;
+    use installed_content::save::{Decimal, GameDate};
     use replay::{
         frame::{Metrics, TableView},
         rows::{
-            AirTheatreGroupRow, AirTheatreMemberRow, AirTheatreRow, LandTheatreGroupRow,
-            LandTheatreMemberRow, LandTheatreRow, NavalResultCountryRow, NavalResultMemberRow,
-            NavalResultRow, RailCooldownRow, RailEdgeRow, SunkShipsRow, TableId, TableRows,
+            AirTheatreGroupRow, AirTheatreMemberRow, AirTheatreRow, ArmyGroupMemberRow,
+            DivisionRow, LandTheatreGroupRow, LandTheatreMemberRow, LandTheatreRow,
+            NavalResultCountryRow, NavalResultMemberRow, NavalResultRow, OrdersGroupMemberRow,
+            OrdersGroupRow, RailCooldownRow, RailEdgeRow, SunkShipsRow, TableId, TableRows,
         },
     };
 
@@ -1082,6 +1348,197 @@ mod tests {
         frame.tables[TableId::NavalSupremacy.index()] =
             TableView::Complete(TableRows::NavalSupremacy(rows));
         frame
+    }
+
+    const OOB_SAVE: &[u8] = br#"countries={GER={theatres={theatre={
+        id={ id=2 type=67 }
+        orders_group={
+            id={ id=57 type=53 } name="Army 1"
+            member={ unit={ id=12456 type=4713 } }
+            member={ unit={ id=111 type=51 } }
+            leader_unit={ id=12456 type=4713 }
+            leader={ id=279 type=4713 }
+            field_marshal_group=no motorization_level=0
+        }
+        field_marshal_group={
+            orders_group={ id=57 type=53 }
+            id={ id=431 type=53 } name="Army Group 1"
+            field_marshal_group=yes motorization_level=0
+        }
+        theater_group={ id={ id=45 type=68 } priority=1 name="t"
+            orders_group={ id=57 type=53 } orders_group={ id=431 type=53 } }
+    }}}}"#;
+
+    fn oob_handle(id: u64, kind: u64) -> u64 {
+        (id << 32) | kind
+    }
+
+    fn oob_frame() -> DecodedFrame {
+        let mut frame = supremacy_frame(Vec::new());
+        frame.tables[TableId::OrdersGroups.index()] =
+            TableView::Complete(TableRows::OrdersGroups(vec![
+                OrdersGroupRow {
+                    handle: oob_handle(57, 53),
+                    country: 7,
+                    is_army_group: 0,
+                    motorization_level: 0,
+                    theatre: oob_handle(2, 67),
+                    theater_group: oob_handle(45, 68),
+                    parent: oob_handle(431, 53),
+                    leader: oob_handle(279, 4713),
+                    hq_provider: oob_handle(12456, 4713),
+                },
+                OrdersGroupRow {
+                    handle: oob_handle(431, 53),
+                    country: 7,
+                    is_army_group: 1,
+                    motorization_level: 0,
+                    theatre: oob_handle(2, 67),
+                    theater_group: oob_handle(45, 68),
+                    parent: 0,
+                    leader: 0,
+                    hq_provider: 0,
+                },
+            ]));
+        frame.tables[TableId::OrdersGroupMembers.index()] =
+            TableView::Complete(TableRows::OrdersGroupMembers(vec![
+                OrdersGroupMemberRow {
+                    group: oob_handle(57, 53),
+                    ordinal: 0,
+                    unit: oob_handle(12456, 4713),
+                },
+                OrdersGroupMemberRow {
+                    group: oob_handle(57, 53),
+                    ordinal: 1,
+                    unit: oob_handle(111, 51),
+                },
+            ]));
+        frame.tables[TableId::ArmyGroupMembers.index()] =
+            TableView::Complete(TableRows::ArmyGroupMembers(vec![ArmyGroupMemberRow {
+                group: oob_handle(431, 53),
+                ordinal: 0,
+                child: oob_handle(57, 53),
+            }]));
+        frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(vec![
+            DivisionRow {
+                id: oob_handle(111, 51),
+                orders_group: oob_handle(57, 53),
+                ..DivisionRow::default()
+            },
+            DivisionRow {
+                id: oob_handle(12456, 4713),
+                orders_group: oob_handle(57, 53),
+                ..DivisionRow::default()
+            },
+        ]));
+        frame
+    }
+
+    fn oob_divisions() -> BTreeMap<u64, Division> {
+        [oob_handle(111, 51), oob_handle(12456, 4713)]
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    Division {
+                        id,
+                        roster_owner: b"GER".to_vec(),
+                        logical_owner: b"GER".to_vec(),
+                        expeditionary_owner: None,
+                        province: None,
+                        template: None,
+                        hit_points: Decimal::parse(b"0").unwrap(),
+                        organisation: Decimal::parse(b"0").unwrap(),
+                        country_intel: Vec::new(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn run_oob(frame: &DecodedFrame, divisions: &BTreeMap<u64, Division>) -> Report {
+        let germany = CountryRow {
+            id: 7,
+            canonical_slot: 1,
+            tag: b"GER".to_vec(),
+            ..CountryRow::default()
+        };
+        let links = BTreeMap::from([(7, &germany)]);
+        let saved = saved::parse(&installed_content::parser::parse(OOB_SAVE).unwrap().items).unwrap();
+        let mut report = Report::default();
+        let _ = compare_order_of_battle(frame, divisions, &saved, &links, &mut report);
+        report
+    }
+
+    #[test]
+    fn a_matching_order_of_battle_has_no_differences() {
+        let report = run_oob(&oob_frame(), &oob_divisions());
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(
+            report.failed_comparisons.is_empty(),
+            "{:?}",
+            report.failed_comparisons
+        );
+    }
+
+    #[test]
+    fn identity_membership_and_parent_disagreements_are_each_reported_once() {
+        let mut frame = oob_frame();
+        let TableView::Complete(TableRows::OrdersGroups(groups)) =
+            &mut frame.tables[TableId::OrdersGroups.index()]
+        else {
+            unreachable!()
+        };
+        groups[0].leader = 0;
+        groups[0].theater_group = 0;
+        groups[0].motorization_level = 4;
+        groups[1].parent = oob_handle(57, 53);
+        let TableView::Complete(TableRows::OrdersGroupMembers(members)) =
+            &mut frame.tables[TableId::OrdersGroupMembers.index()]
+        else {
+            unreachable!()
+        };
+        members[1].unit = oob_handle(999, 4713);
+        let report = run_oob(&frame, &oob_divisions());
+        let differences = report.differences.join("\n");
+        assert!(
+            differences.contains("orders group 244813135925.leader"),
+            "{differences}"
+        );
+        assert!(differences.contains("theater_group"), "{differences}");
+        assert!(differences.contains("motorization_level"), "{differences}");
+        assert!(differences.contains("parent"), "{differences}");
+        assert!(differences.contains("member 1"), "{differences}");
+        // The division parent pointers disagree with the recorded member
+        // vector for the unit that moved, and with the save for both.
+        assert!(
+            differences.contains("recorded member vector"),
+            "{differences}"
+        );
+    }
+
+    #[test]
+    fn a_division_parent_pointer_is_compared_only_where_the_save_has_that_division() {
+        let mut frame = oob_frame();
+        let TableView::Complete(TableRows::Divisions(divisions)) =
+            &mut frame.tables[TableId::Divisions.index()]
+        else {
+            unreachable!()
+        };
+        // A division the save does not contain still cross-checks against the
+        // recorded member vector, but has no saved parent to compare with.
+        divisions.push(DivisionRow {
+            id: oob_handle(65580, 4713),
+            orders_group: 0,
+            ..DivisionRow::default()
+        });
+        let report = run_oob(&frame, &oob_divisions());
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["Divisions.orders_group"], 2);
+        assert_eq!(
+            report.compared_tables["OrdersGroupMembers against division parent pointers"],
+            3
+        );
     }
 
     #[test]
