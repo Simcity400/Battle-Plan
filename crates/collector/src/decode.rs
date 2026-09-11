@@ -42,7 +42,7 @@
 //! existing `table_ns` slots for the pilot tables.
 
 use crate::{
-    extended::governance::ResearchJob,
+    extended::{governance::ResearchJob, intel::RelationsJob},
     sampling::{self, BUFFERS, Shared},
 };
 use crossbeam_queue::ArrayQueue;
@@ -60,6 +60,9 @@ pub const PILOT: [TableId; 3] = [
     TableId::TechnologyDefinitions,
 ];
 
+/// Relations family in calibration/report order: [opinions, tuples].
+pub const RELATIONS: [TableId; 2] = [TableId::RelationOpinions, TableId::RelationTuples];
+
 /// Live raw payloads beyond this count are not retained; further refreshes
 /// take the existing gap path until the worker catches up (see module docs).
 const JOB_POOL_KEEP: usize = 2;
@@ -73,14 +76,20 @@ pub struct DecodeJob {
     pub seq: u64,
     pub hour: i32,
     pub pilot_refresh: bool,
+    pub relations_refresh: bool,
     pub force_full: bool,
     pub game_elapsed: i64,
     pub payload: Option<ResearchJob>,
+    pub relations_payload: Option<RelationsJob>,
 }
 
 static COPY_NS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 static DECODE_NS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 static RAW_BYTES: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static RELATIONS_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static RELATIONS_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static RELATIONS_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static QUEUE_HIGH_WATER: AtomicU64 = AtomicU64::new(0);
 static JOBS: AtomicU64 = AtomicU64::new(0);
 static REFRESH_JOBS: AtomicU64 = AtomicU64::new(0);
 static FULL_REFRESH_JOBS: AtomicU64 = AtomicU64::new(0);
@@ -91,6 +100,7 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 static STOP: AtomicBool = AtomicBool::new(false);
 static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 static JOB_POOL: Mutex<Vec<ResearchJob>> = Mutex::new(Vec::new());
+static RELATIONS_JOB_POOL: Mutex<Vec<RelationsJob>> = Mutex::new(Vec::new());
 
 /// Pilot refresh gate: the whole family shares stagger slot 2 (`H%4==2`);
 /// branch starts and keyframes force a full refresh like every other table.
@@ -103,6 +113,17 @@ pub fn pilot_refresh_hour(hour: i32, force_full: bool) -> bool {
     debug_assert_eq!(
         walk,
         replay::cadence::should_walk(PILOT[2], hour, force_full)
+    );
+    walk
+}
+
+/// Relations refresh gate: the whole family shares stagger slot 1 (`H%4==1`);
+/// branch starts and keyframes force a full refresh like every other table.
+pub fn relations_refresh_hour(hour: i32, force_full: bool) -> bool {
+    let walk = replay::cadence::should_walk(RELATIONS[0], hour, force_full);
+    debug_assert_eq!(
+        walk,
+        replay::cadence::should_walk(RELATIONS[1], hour, force_full)
     );
     walk
 }
@@ -139,6 +160,31 @@ pub fn recycle_job(mut job: ResearchJob) {
     }
 }
 
+/// Recycled relations raw-payload job. Cold calls allocate; steady state
+/// reuses jobs with their capacities, so neither thread allocates per refresh.
+pub fn acquire_relations_job() -> RelationsJob {
+    if let Ok(mut pool) = RELATIONS_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    RelationsJob::new()
+}
+
+/// Return a relations payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_relations_job(mut job: RelationsJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = RELATIONS_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
 /// Enqueue a frame for decode (or ordered forwarding for skip hours).
 /// Starts the worker lazily; never blocks. A full queue returns the job for
 /// the existing gap path and counts the drop on the existing counters.
@@ -147,6 +193,10 @@ pub fn enqueue(shared: &Shared, job: DecodeJob) -> Option<DecodeJob> {
     match shared.decode_queue.push(job) {
         Ok(()) => {
             JOBS.fetch_add(1, Ordering::Relaxed);
+            // Decode-queue depth high-water for live backlog visibility.
+            // Records the deepest observed FIFO occupancy (bounded by BUFFERS).
+            let depth = shared.decode_queue.len() as u64;
+            QUEUE_HIGH_WATER.fetch_max(depth, Ordering::Relaxed);
             None
         }
         Err(job) => {
@@ -218,6 +268,23 @@ pub fn process_job(shared: &Shared, job: &DecodeJob) {
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
+    if job.relations_refresh
+        && let Some(payload) = job.relations_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 2];
+        frame.extended.relations_pilot().decode_relations_payload(
+            shared.base,
+            payload,
+            &mut decode_ticks,
+        );
+        for (total, ticks) in RELATIONS_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
     // Pool invariant: this frame is owned by the worker, so it occupies no
     // ready slot and the push below always has room while the spool thread
     // lives. The worker may wait (only the game thread must never block).
@@ -266,6 +333,16 @@ pub fn calibration() -> Calibration {
         raw_bytes: RAW_BYTES
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
+        relations_copy_ns: RELATIONS_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        relations_decode_ns: RELATIONS_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        relations_raw_bytes: RELATIONS_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        queue_high_water: QUEUE_HIGH_WATER.load(Ordering::Relaxed),
     }
 }
 
@@ -280,6 +357,10 @@ pub struct Calibration {
     pub copy_ns: [u64; 3],
     pub decode_ns: [u64; 3],
     pub raw_bytes: [u64; 3],
+    pub relations_copy_ns: [u64; 2],
+    pub relations_decode_ns: [u64; 2],
+    pub relations_raw_bytes: [u64; 2],
+    pub queue_high_water: u64,
 }
 
 impl Calibration {
@@ -296,6 +377,12 @@ impl Calibration {
             "decode_ns": self.decode_ns.as_slice(),
             "raw_bytes": self.raw_bytes.as_slice(),
             "tables": ["ResearchTechnologies", "ResearchSlots", "TechnologyDefinitions"],
+            "relations_copy_ns": self.relations_copy_ns.as_slice(),
+            "relations_decode_ns": self.relations_decode_ns.as_slice(),
+            "relations_raw_bytes": self.relations_raw_bytes.as_slice(),
+            "relations_tables": ["RelationOpinions", "RelationTuples"],
+            "queue_high_water": self.queue_high_water,
+            "queue_capacity": BUFFERS,
         })
     }
 }
@@ -313,6 +400,14 @@ pub(crate) fn add_raw_bytes(table: usize, bytes: u64) {
     RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
 }
 
+pub(crate) fn add_relations_copy_ns(table: usize, ns: u64) {
+    RELATIONS_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_relations_raw_bytes(table: usize, bytes: u64) {
+    RELATIONS_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
 /// Bounded raw FIFO type shared with sampling's pool (indices only).
 pub type DecodeQueue = ArrayQueue<DecodeJob>;
 
@@ -326,9 +421,13 @@ pub(crate) fn reset_calibration_for_test() {
         .iter()
         .chain(DECODE_NS.iter())
         .chain(RAW_BYTES.iter())
+        .chain(RELATIONS_COPY_NS.iter())
+        .chain(RELATIONS_DECODE_NS.iter())
+        .chain(RELATIONS_RAW_BYTES.iter())
     {
         cell.store(0, Ordering::Relaxed);
     }
+    QUEUE_HIGH_WATER.store(0, Ordering::Relaxed);
     JOBS.store(0, Ordering::Relaxed);
     REFRESH_JOBS.store(0, Ordering::Relaxed);
     FULL_REFRESH_JOBS.store(0, Ordering::Relaxed);
@@ -361,6 +460,17 @@ mod tests {
     }
 
     #[test]
+    fn relations_gate_matches_stagger_slot_one_and_force_full() {
+        // Slot 1 refreshes exactly on H%4==1; branch starts and keyframes
+        // force a full refresh regardless of hour.
+        for hour in -8..8i32 {
+            let refresh = hour.rem_euclid(4) == 1;
+            assert_eq!(relations_refresh_hour(hour, false), refresh, "hour {hour}");
+            assert!(relations_refresh_hour(hour, true), "forced hour {hour}");
+        }
+    }
+
+    #[test]
     fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
         let shared = Shared::new(0, 0, 1);
         let mut indices = Vec::new();
@@ -375,9 +485,11 @@ mod tests {
                 seq: 100 + order as u64,
                 hour: 200 + order as i32,
                 pilot_refresh: false,
+                relations_refresh: false,
                 force_full: false,
                 game_elapsed: 7,
                 payload: None,
+                relations_payload: None,
             };
             shared.decode_queue.push(job).unwrap();
         }
@@ -405,9 +517,11 @@ mod tests {
                 seq: seq as u64,
                 hour: 0,
                 pilot_refresh: false,
+                relations_refresh: false,
                 force_full: false,
                 game_elapsed: 1,
                 payload: None,
+                relations_payload: None,
             };
             assert!(shared.decode_queue.push(job).is_ok());
         }
@@ -417,9 +531,11 @@ mod tests {
             seq: u64::MAX,
             hour: 0,
             pilot_refresh: false,
+            relations_refresh: false,
             force_full: false,
             game_elapsed: 1,
             payload: None,
+            relations_payload: None,
         };
         assert!(enqueue(&shared, job).is_some());
         assert_eq!(DROPS.load(Ordering::Relaxed), before + 1);
@@ -470,14 +586,79 @@ mod tests {
             seq: next_seq(),
             hour: 2,
             pilot_refresh: true,
+            relations_refresh: false,
             force_full: false,
             game_elapsed: 13,
             payload: Some(first),
+            relations_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
         assert_eq!(shared.completed[index].load(Ordering::Acquire), 13);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         research_test_kit::assert_matches_direct(frame.extended.research_pilot(), &direct);
+    }
+
+    #[test]
+    fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
+        use crate::extended::intel::relations_test_kit;
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        let bytes = relations_test_kit::opinionated_fixture();
+        let memory = relations_test_kit::memory(&bytes);
+        let shared = Shared::new(relations_test_kit::BASE, 0, 1);
+        let index = shared.free.pop().expect("pooled buffer");
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        // Reference with the pooled caps so truncation behavior matches.
+        let opinion_cap = frame.extended.relations_pilot().opinion_rows_cap();
+        let tuple_cap = frame.extended.relations_pilot().tuple_rows_cap();
+        let direct = relations_test_kit::direct(&memory, opinion_cap, tuple_cap);
+        let (report, first) =
+            relations_test_kit::split(&memory, frame.extended.relations_pilot(), true);
+        assert!(report.raw_ok);
+        shared.completed[index].store(0, Ordering::Relaxed);
+        let job = DecodeJob {
+            index,
+            seq: next_seq(),
+            hour: 1,
+            pilot_refresh: false,
+            relations_refresh: true,
+            force_full: false,
+            game_elapsed: 17,
+            payload: None,
+            relations_payload: Some(first),
+        };
+        process_job(&shared, &job);
+        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.completed[index].load(Ordering::Acquire), 17);
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        relations_test_kit::assert_matches_direct(frame.extended.relations_pilot(), &direct);
+    }
+
+    #[test]
+    fn queue_high_water_tracks_the_deepest_observed_fifo_occupancy() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        let shared = Shared::new(0, 0, 1);
+        let index = shared.free.pop().expect("pooled buffer");
+        for _ in 0..3 {
+            let job = DecodeJob {
+                index,
+                seq: next_seq(),
+                hour: 0,
+                pilot_refresh: false,
+                relations_refresh: false,
+                force_full: false,
+                game_elapsed: 1,
+                payload: None,
+                relations_payload: None,
+            };
+            assert!(enqueue(&shared, job).is_none());
+        }
+        let snapshot = calibration();
+        assert_eq!(snapshot.queue_high_water, 3);
+        assert_eq!(snapshot.json()["queue_high_water"], 3);
+        assert_eq!(snapshot.json()["queue_capacity"], BUFFERS);
+        while shared.decode_queue.pop().is_some() {}
     }
 }

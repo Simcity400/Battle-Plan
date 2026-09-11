@@ -755,6 +755,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             // below, consumed by the decode enqueue after it.
             let mut pilot_payload: Option<extended::governance::ResearchJob> = None;
             let mut pilot_report = extended::governance::CopyReport::default();
+            // Relations handoff state: same FIFO, same ordering guarantees.
+            let mut relations_payload: Option<extended::intel::RelationsJob> = None;
+            let mut relations_report = extended::intel::RelationsCopyReport::default();
             let mut decode_hour = 0;
             let mut decode_force_full = false;
             if let Some(clock) = frame.clock_before {
@@ -998,6 +1001,41 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::recycle_job(second);
                     }
                 }
+                // Relations family (copy/decode split): raw copies only on the
+                // game thread. Refresh hours stage the payload and hand the
+                // frame to the decode FIFO; the worker decodes before the
+                // spool ready handoff. Staging overflow falls back to the
+                // typed walk below with no payload enqueued.
+                let relations_refresh = decode::relations_refresh_hour(clock.hour, force_full);
+                if relations_refresh {
+                    let needed_any = decode::RELATIONS
+                        .iter()
+                        .any(|table| extended_needed[table.index()]);
+                    let mut first = decode::acquire_relations_job();
+                    let mut second = needed_any.then(decode::acquire_relations_job);
+                    let relations = frame.extended.relations_pilot();
+                    let ctx = extended::intel::RelationsCopyContext {
+                        base: shared.base,
+                        game_state: state,
+                        opinion_cap: relations.opinion_rows_cap(),
+                        tuple_cap: relations.tuple_rows_cap(),
+                        needed: [
+                            extended_needed[decode::RELATIONS[0].index()],
+                            extended_needed[decode::RELATIONS[1].index()],
+                        ],
+                    };
+                    relations_report =
+                        relations.copy_relations_refresh(&memory, ctx, &mut first, second.as_mut());
+                    frame.extended.relations_pilot().relations_raw_mode = relations_report.raw_ok;
+                    if relations_report.raw_ok {
+                        relations_payload = Some(first);
+                    } else {
+                        decode::recycle_relations_job(first);
+                    }
+                    if let Some(second) = second {
+                        decode::recycle_relations_job(second);
+                    }
+                }
                 let (checks, ticks) = frame.extended.capture(
                     &cached,
                     shared.base,
@@ -1030,6 +1068,17 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         frame.table_ns[index] = ns;
                         decode::add_copy_ns(slot, ns);
                         decode::add_raw_bytes(slot, pilot_report.raw_bytes[slot]);
+                    }
+                }
+                // Relations tables measured copy-only above; same install.
+                if relations_report.raw_ok {
+                    for (slot, table) in decode::RELATIONS.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = relations_report.matched[slot];
+                        let ns = shared.ns(relations_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_relations_copy_ns(slot, ns);
+                        decode::add_relations_raw_bytes(slot, relations_report.raw_bytes[slot]);
                     }
                 }
                 let cache_verify_begin = qpc();
@@ -1065,9 +1114,11 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 seq: decode::next_seq(),
                 hour: decode_hour,
                 pilot_refresh: pilot_report.raw_ok,
+                relations_refresh: relations_report.raw_ok,
                 force_full: decode_force_full,
                 game_elapsed: (qpc() - entered - (original_end - original_begin)).max(1),
                 payload: pilot_payload,
+                relations_payload,
             };
             match decode::enqueue(shared, decode_job) {
                 None => {
@@ -1092,6 +1143,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 Some(returned) => {
                     if let Some(payload) = returned.payload {
                         decode::recycle_job(payload);
+                    }
+                    if let Some(payload) = returned.relations_payload {
+                        decode::recycle_relations_job(payload);
                     }
                     // Existing whole-frame drop plus gap path, unchanged
                     // counters and no new loss reasons.
@@ -1143,9 +1197,11 @@ mod tests {
                     seq: seq as u64,
                     hour: 0,
                     pilot_refresh: false,
+                    relations_refresh: false,
                     force_full: false,
                     game_elapsed: 1,
                     payload: None,
+                    relations_payload: None,
                 })
                 .unwrap();
         }
@@ -1157,9 +1213,11 @@ mod tests {
             seq: u64::MAX,
             hour: 0,
             pilot_refresh: false,
+            relations_refresh: false,
             force_full: false,
             game_elapsed: 1,
             payload: None,
+            relations_payload: None,
         };
         assert!(shared.decode_queue.push(extra).is_err());
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };

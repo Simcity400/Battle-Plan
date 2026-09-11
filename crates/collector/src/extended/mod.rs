@@ -170,6 +170,15 @@ impl Captured {
         &mut self.governance
     }
 
+    /// Decode-worker handoff for the relations family (copy/decode split).
+    /// Sole cross-thread entry to the intel relations buffers: the game thread
+    /// stages raw-copy state through it on refresh hours and the single FIFO
+    /// decode worker decodes the staged payload into these pooled typed rows
+    /// before the spool ready-queue handoff.
+    pub(crate) fn relations_pilot(&mut self) -> &mut intel::Captured {
+        &mut self.intel
+    }
+
     pub fn source_checks(needed: &[bool]) -> SourceChecks {
         let air = local(&air::TABLES, needed);
         let naval = local(&naval_history::TABLES, needed);
@@ -769,5 +778,14 @@ mod tests {
         assert!(captured.governance.raw_mode);
         captured.research_pilot().raw_mode = false;
         assert!(!captured.governance.raw_mode);
+    }
+
+    #[test]
+    fn relations_pilot_handoff_reaches_the_intel_pack() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0u16; TABLE_COUNT]);
+        captured.relations_pilot().relations_raw_mode = true;
+        assert!(captured.intel.relations_raw_mode);
+        captured.relations_pilot().relations_raw_mode = false;
+        assert!(!captured.intel.relations_raw_mode);
     }
 }

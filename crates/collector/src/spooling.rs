@@ -926,6 +926,11 @@ impl Processor {
                 stats.table_ns[replay::rows::TableId::ResearchSlots.index()],
                 stats.table_ns[replay::rows::TableId::TechnologyDefinitions.index()],
             ],
+            // Relations copy/decode split: same per-frame copy-only mirror.
+            "relations_copy_ns": [
+                stats.table_ns[replay::rows::TableId::RelationOpinions.index()],
+                stats.table_ns[replay::rows::TableId::RelationTuples.index()],
+            ],
             "staggered_skipped": stats.staggered_skipped.as_slice(),
             "staggered_walked": stats.staggered_walked.as_slice(),
             "hours_per_second": if stats.interval_qpc == 0 { 0.0 } else {
