@@ -788,6 +788,12 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             let mut wars_payload: Option<WarsJob> = None;
             let mut wars_report = WarsCopyReport::default();
             let mut wars_matrix_check = false;
+            // Focus handoff state: same FIFO, same ordering guarantees. The
+            // hourly payload carries the summary walk plus the completed
+            // roster; staging overflow falls back to the typed walk inside
+            // governance capture with no payload enqueued.
+            let mut focus_payload: Option<extended::governance::FocusJob> = None;
+            let mut focus_report = extended::governance::FocusCopyReport::default();
             let mut decode_hour = 0;
             let mut decode_force_full = false;
             if let Some(clock) = frame.clock_before {
@@ -1283,6 +1289,38 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::recycle_buildings_job(second);
                     }
                 }
+                // Focus pair (copy/decode split): raw copies only on the game
+                // thread. Every hour stages the payload and hands the frame
+                // to the decode FIFO; the worker decodes before the spool
+                // ready handoff. Staging overflow falls back to the typed
+                // walk inside governance capture with no payload enqueued.
+                let mut focus_first = decode::acquire_focus_job();
+                let mut focus_second = (extended_needed[decode::FOCUS[0].index()]
+                    || extended_needed[decode::FOCUS[1].index()])
+                .then(decode::acquire_focus_job);
+                let focus_ctx = extended::governance::FocusCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                    needed: [
+                        extended_needed[decode::FOCUS[0].index()],
+                        extended_needed[decode::FOCUS[1].index()],
+                    ],
+                };
+                focus_report = frame.extended.focus_pilot().copy_focus_refresh(
+                    &memory,
+                    focus_ctx,
+                    &mut focus_first,
+                    focus_second.as_mut(),
+                );
+                frame.extended.focus_pilot().focus_raw_mode = focus_report.raw_ok;
+                if focus_report.raw_ok {
+                    focus_payload = Some(focus_first);
+                } else {
+                    decode::recycle_focus_job(focus_first);
+                }
+                if let Some(second) = focus_second {
+                    decode::recycle_focus_job(second);
+                }
                 // Variants family (copy/decode split): the registry census
                 // runs game-side inside the capture below (production
                 // consumes it there); the detail copy stages right after the
@@ -1426,6 +1464,20 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::add_divisions_raw_bytes(slot, divisions_report.raw_bytes[slot]);
                     }
                 }
+                // Focus pair measured copy-only above; same install for the
+                // calibration counters. The single copy pass is
+                // anchor-charged to the focus slot, matching the read-group
+                // convention.
+                if focus_report.raw_ok {
+                    for (slot, table) in decode::FOCUS.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = focus_report.matched[slot];
+                        let ns = shared.ns(focus_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_focus_copy_ns(slot, ns);
+                        decode::add_focus_raw_bytes(slot, focus_report.raw_bytes[slot]);
+                    }
+                }
                 let cache_verify_begin = qpc();
                 frame.country_cache_error = cached.verify().err();
                 frame.country_cache_ns =
@@ -1467,6 +1519,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 buildings_refresh: buildings_report.raw_ok,
                 wars_refresh: wars_report.raw_ok,
                 divisions_refresh: divisions_report.raw_ok,
+                focus_refresh: focus_report.raw_ok,
                 force_full: decode_force_full,
                 game_elapsed: (qpc() - entered - (original_end - original_begin)).max(1),
                 payload: pilot_payload,
@@ -1478,6 +1531,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 buildings_payload,
                 wars_payload,
                 divisions_payload,
+                focus_payload,
             };
             match decode::enqueue(shared, decode_job) {
                 None => {
@@ -1526,6 +1580,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     }
                     if let Some(payload) = returned.divisions_payload {
                         decode::recycle_divisions_job(payload);
+                    }
+                    if let Some(payload) = returned.focus_payload {
+                        decode::recycle_focus_job(payload);
                     }
                     // Existing whole-frame drop plus gap path, unchanged
                     // counters and no new loss reasons.
@@ -4065,6 +4122,7 @@ mod tests {
                     buildings_refresh: false,
                     wars_refresh: false,
                     divisions_refresh: false,
+                    focus_refresh: false,
                     force_full: false,
                     game_elapsed: 1,
                     payload: None,
@@ -4076,6 +4134,7 @@ mod tests {
                     buildings_payload: None,
                     wars_payload: None,
                     divisions_payload: None,
+                    focus_payload: None,
                 })
                 .unwrap();
         }
@@ -4095,6 +4154,7 @@ mod tests {
             buildings_refresh: false,
             wars_refresh: false,
             divisions_refresh: false,
+            focus_refresh: false,
             force_full: false,
             game_elapsed: 1,
             payload: None,
@@ -4106,6 +4166,7 @@ mod tests {
             buildings_payload: None,
             wars_payload: None,
             divisions_payload: None,
+            focus_payload: None,
         };
         assert!(shared.decode_queue.push(extra).is_err());
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };

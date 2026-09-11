@@ -965,6 +965,10 @@ impl Processor {
             stats.table_ns[decode::DIVISIONS[4].index()],
             stats.table_ns[decode::DIVISIONS[5].index()],
         ];
+        let focus_copy_ns = [
+            stats.table_ns[decode::FOCUS[0].index()],
+            stats.table_ns[decode::FOCUS[1].index()],
+        ];
         let value = json!({
             "campaign": stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
             "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
@@ -1034,6 +1038,7 @@ impl Processor {
         value["buildings_copy_ns"] = json!(buildings_copy_ns.as_slice());
         value["wars_copy_ns"] = json!(wars_copy_ns.as_slice());
         value["divisions_copy_ns"] = json!(divisions_copy_ns.as_slice());
+        value["focus_copy_ns"] = json!(focus_copy_ns.as_slice());
         value
     }
 }

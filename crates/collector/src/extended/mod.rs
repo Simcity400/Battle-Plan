@@ -170,6 +170,15 @@ impl Captured {
         &mut self.governance
     }
 
+    /// Decode-worker handoff for the hourly focus pair (copy/decode split).
+    /// Sole cross-thread entry to the governance focus buffers: the game
+    /// thread stages raw-copy state through it every hour and the single FIFO
+    /// decode worker decodes the staged payload into these pooled typed rows
+    /// before the spool ready-queue handoff.
+    pub(crate) fn focus_pilot(&mut self) -> &mut governance::Captured {
+        &mut self.governance
+    }
+
     /// Decode-worker handoff for the relations family (copy/decode split).
     /// Sole cross-thread entry to the intel relations buffers: the game thread
     /// stages raw-copy state through it on refresh hours and the single FIFO
@@ -946,6 +955,15 @@ mod tests {
         assert!(captured.governance.raw_mode);
         captured.research_pilot().raw_mode = false;
         assert!(!captured.governance.raw_mode);
+    }
+
+    #[test]
+    fn focus_pilot_handoff_reaches_the_governance_pack() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0u16; TABLE_COUNT]);
+        captured.focus_pilot().focus_raw_mode = true;
+        assert!(captured.governance.focus_raw_mode);
+        captured.focus_pilot().focus_raw_mode = false;
+        assert!(!captured.governance.focus_raw_mode);
     }
 
     #[test]

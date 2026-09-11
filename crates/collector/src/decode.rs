@@ -43,8 +43,13 @@
 
 use crate::{
     extended::{
-        characters::CharactersJob, construction::BuildingsJob, governance::ResearchJob,
-        intel::RelationsJob, lexical::LexicalJob, production::VariantsJob, projects::ProjectsJob,
+        characters::CharactersJob,
+        construction::BuildingsJob,
+        governance::{FocusJob, ResearchJob},
+        intel::RelationsJob,
+        lexical::LexicalJob,
+        production::VariantsJob,
+        projects::ProjectsJob,
     },
     sampling::{self, BUFFERS, DivisionsJob, Shared, WarsJob},
 };
@@ -62,6 +67,13 @@ pub const PILOT: [TableId; 3] = [
     TableId::ResearchSlots,
     TableId::TechnologyDefinitions,
 ];
+
+/// Focus pair in calibration/report order: [focus, completed]. Hourly like
+/// every Tier-H table (no refresh gate): the game thread stages a raw payload
+/// every hour and the worker replays it before the ready handoff. The single
+/// copy pass is anchor-charged to the focus slot, matching the read-group
+/// convention.
+pub const FOCUS: [TableId; 2] = [TableId::Focus, TableId::CompletedFocuses];
 
 /// Relations family in calibration/report order: [opinions, tuples].
 pub const RELATIONS: [TableId; 2] = [TableId::RelationOpinions, TableId::RelationTuples];
@@ -143,6 +155,7 @@ pub struct DecodeJob {
     pub buildings_refresh: bool,
     pub wars_refresh: bool,
     pub divisions_refresh: bool,
+    pub focus_refresh: bool,
     pub force_full: bool,
     pub game_elapsed: i64,
     pub payload: Option<ResearchJob>,
@@ -154,6 +167,7 @@ pub struct DecodeJob {
     pub buildings_payload: Option<BuildingsJob>,
     pub wars_payload: Option<WarsJob>,
     pub divisions_payload: Option<DivisionsJob>,
+    pub focus_payload: Option<FocusJob>,
 }
 
 static COPY_NS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
@@ -255,6 +269,9 @@ static DIVISIONS_RAW_BYTES: [AtomicU64; 6] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
+static FOCUS_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static FOCUS_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static FOCUS_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static QUEUE_HIGH_WATER: AtomicU64 = AtomicU64::new(0);
 static JOBS: AtomicU64 = AtomicU64::new(0);
 static REFRESH_JOBS: AtomicU64 = AtomicU64::new(0);
@@ -274,6 +291,7 @@ static VARIANTS_JOB_POOL: Mutex<Vec<VariantsJob>> = Mutex::new(Vec::new());
 static BUILDINGS_JOB_POOL: Mutex<Vec<BuildingsJob>> = Mutex::new(Vec::new());
 static WARS_JOB_POOL: Mutex<Vec<WarsJob>> = Mutex::new(Vec::new());
 static DIVISIONS_JOB_POOL: Mutex<Vec<DivisionsJob>> = Mutex::new(Vec::new());
+static FOCUS_JOB_POOL: Mutex<Vec<FocusJob>> = Mutex::new(Vec::new());
 
 /// Pilot refresh gate: the whole family shares stagger slot 2 (`H%4==2`);
 /// branch starts and keyframes force a full refresh like every other table.
@@ -586,6 +604,31 @@ pub fn recycle_divisions_job(mut job: DivisionsJob) {
     }
 }
 
+/// Recycled hourly focus raw-payload job. Cold calls allocate; steady state
+/// reuses jobs with their capacities, so neither thread allocates per hour.
+pub fn acquire_focus_job() -> FocusJob {
+    if let Ok(mut pool) = FOCUS_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    FocusJob::new()
+}
+
+/// Return a focus payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_focus_job(mut job: FocusJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = FOCUS_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
 /// Enqueue a frame for decode (or ordered forwarding for skip hours).
 /// Starts the worker lazily; never blocks. A full queue returns the job for
 /// the existing gap path and counts the drop on the existing counters.
@@ -795,6 +838,22 @@ pub fn process_job(shared: &Shared, job: &DecodeJob) {
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
+    if job.focus_refresh
+        && let Some(payload) = job.focus_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 2];
+        frame
+            .extended
+            .focus_pilot()
+            .decode_focus_payload(shared.base, payload, &mut decode_ticks);
+        for (total, ticks) in FOCUS_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
     // Pool invariant: this frame is owned by the worker, so it occupies no
     // ready slot and the push below always has room while the spool thread
     // lives. The worker may wait (only the game thread must never block).
@@ -915,6 +974,15 @@ pub fn calibration() -> Calibration {
         divisions_raw_bytes: DIVISIONS_RAW_BYTES
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
+        focus_copy_ns: FOCUS_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        focus_decode_ns: FOCUS_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        focus_raw_bytes: FOCUS_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
         queue_high_water: QUEUE_HIGH_WATER.load(Ordering::Relaxed),
     }
 }
@@ -954,6 +1022,9 @@ pub struct Calibration {
     pub divisions_copy_ns: [u64; 6],
     pub divisions_decode_ns: [u64; 6],
     pub divisions_raw_bytes: [u64; 6],
+    pub focus_copy_ns: [u64; 2],
+    pub focus_decode_ns: [u64; 2],
+    pub focus_raw_bytes: [u64; 2],
     pub queue_high_water: u64,
 }
 
@@ -1003,6 +1074,10 @@ impl Calibration {
             "divisions_decode_ns": self.divisions_decode_ns.as_slice(),
             "divisions_raw_bytes": self.divisions_raw_bytes.as_slice(),
             "divisions_tables": ["Divisions", "DivisionEquipment", "ArmyUpgradeGroups", "ArmyUpgradeRequests", "ArmyUpgradeDeliveries", "ArmyUpgradeProduced"],
+            "focus_copy_ns": self.focus_copy_ns.as_slice(),
+            "focus_decode_ns": self.focus_decode_ns.as_slice(),
+            "focus_raw_bytes": self.focus_raw_bytes.as_slice(),
+            "focus_tables": ["Focus", "CompletedFocuses"],
             "queue_high_water": self.queue_high_water,
             "queue_capacity": BUFFERS,
         })
@@ -1086,6 +1161,14 @@ pub(crate) fn add_divisions_raw_bytes(table: usize, bytes: u64) {
     DIVISIONS_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
 }
 
+pub(crate) fn add_focus_copy_ns(table: usize, ns: u64) {
+    FOCUS_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_focus_raw_bytes(table: usize, bytes: u64) {
+    FOCUS_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
 /// Bounded raw FIFO type shared with sampling's pool (indices only).
 pub type DecodeQueue = ArrayQueue<DecodeJob>;
 
@@ -1123,6 +1206,9 @@ pub(crate) fn reset_calibration_for_test() {
         .chain(DIVISIONS_COPY_NS.iter())
         .chain(DIVISIONS_DECODE_NS.iter())
         .chain(DIVISIONS_RAW_BYTES.iter())
+        .chain(FOCUS_COPY_NS.iter())
+        .chain(FOCUS_DECODE_NS.iter())
+        .chain(FOCUS_RAW_BYTES.iter())
     {
         cell.store(0, Ordering::Relaxed);
     }
@@ -1244,6 +1330,7 @@ mod tests {
                 buildings_refresh: false,
                 wars_refresh: false,
                 divisions_refresh: false,
+                focus_refresh: false,
                 force_full: false,
                 game_elapsed: 7,
                 payload: None,
@@ -1255,6 +1342,7 @@ mod tests {
                 buildings_payload: None,
                 wars_payload: None,
                 divisions_payload: None,
+                focus_payload: None,
             };
             shared.decode_queue.push(job).unwrap();
         }
@@ -1290,6 +1378,7 @@ mod tests {
                 buildings_refresh: false,
                 wars_refresh: false,
                 divisions_refresh: false,
+                focus_refresh: false,
                 force_full: false,
                 game_elapsed: 1,
                 payload: None,
@@ -1301,6 +1390,7 @@ mod tests {
                 buildings_payload: None,
                 wars_payload: None,
                 divisions_payload: None,
+                focus_payload: None,
             };
             assert!(shared.decode_queue.push(job).is_ok());
         }
@@ -1318,6 +1408,7 @@ mod tests {
             buildings_refresh: false,
             wars_refresh: false,
             divisions_refresh: false,
+            focus_refresh: false,
             force_full: false,
             game_elapsed: 1,
             payload: None,
@@ -1329,6 +1420,7 @@ mod tests {
             buildings_payload: None,
             wars_payload: None,
             divisions_payload: None,
+            focus_payload: None,
         };
         assert!(enqueue(&shared, job).is_some());
         assert_eq!(DROPS.load(Ordering::Relaxed), before + 1);
@@ -1387,6 +1479,7 @@ mod tests {
             buildings_refresh: false,
             wars_refresh: false,
             divisions_refresh: false,
+            focus_refresh: false,
             force_full: false,
             game_elapsed: 13,
             payload: Some(first),
@@ -1398,6 +1491,7 @@ mod tests {
             buildings_payload: None,
             wars_payload: None,
             divisions_payload: None,
+            focus_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -1437,6 +1531,7 @@ mod tests {
             buildings_refresh: false,
             wars_refresh: false,
             divisions_refresh: false,
+            focus_refresh: false,
             force_full: false,
             game_elapsed: 17,
             payload: None,
@@ -1448,6 +1543,7 @@ mod tests {
             buildings_payload: None,
             wars_payload: None,
             divisions_payload: None,
+            focus_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -1502,6 +1598,7 @@ mod tests {
             buildings_refresh: false,
             wars_refresh: false,
             divisions_refresh: false,
+            focus_refresh: false,
             force_full: false,
             game_elapsed: 19,
             payload: None,
@@ -1513,6 +1610,7 @@ mod tests {
             buildings_payload: None,
             wars_payload: None,
             divisions_payload: None,
+            focus_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -1570,6 +1668,7 @@ mod tests {
             buildings_refresh: false,
             wars_refresh: false,
             divisions_refresh: false,
+            focus_refresh: false,
             force_full: false,
             game_elapsed: 23,
             payload: None,
@@ -1581,6 +1680,7 @@ mod tests {
             buildings_payload: None,
             wars_payload: None,
             divisions_payload: None,
+            focus_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -1635,6 +1735,7 @@ mod tests {
             buildings_refresh: false,
             wars_refresh: false,
             divisions_refresh: false,
+            focus_refresh: false,
             force_full: false,
             game_elapsed: 29,
             payload: None,
@@ -1646,6 +1747,7 @@ mod tests {
             buildings_payload: None,
             wars_payload: None,
             divisions_payload: None,
+            focus_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -1698,6 +1800,7 @@ mod tests {
             buildings_refresh: false,
             wars_refresh: false,
             divisions_refresh: false,
+            focus_refresh: false,
             force_full: false,
             game_elapsed: 31,
             payload: None,
@@ -1709,6 +1812,7 @@ mod tests {
             buildings_payload: None,
             wars_payload: None,
             divisions_payload: None,
+            focus_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -1760,6 +1864,7 @@ mod tests {
             buildings_refresh: true,
             wars_refresh: false,
             divisions_refresh: false,
+            focus_refresh: false,
             force_full: false,
             game_elapsed: 37,
             payload: None,
@@ -1771,6 +1876,7 @@ mod tests {
             buildings_payload: Some(first),
             wars_payload: None,
             divisions_payload: None,
+            focus_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -1817,6 +1923,7 @@ mod tests {
             buildings_refresh: false,
             wars_refresh: true,
             divisions_refresh: false,
+            focus_refresh: false,
             force_full: false,
             game_elapsed: 43,
             payload: None,
@@ -1828,6 +1935,7 @@ mod tests {
             buildings_payload: None,
             wars_payload: Some(first),
             divisions_payload: None,
+            focus_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -1881,6 +1989,7 @@ mod tests {
             buildings_refresh: false,
             wars_refresh: false,
             divisions_refresh: true,
+            focus_refresh: false,
             force_full: false,
             game_elapsed: 47,
             payload: None,
@@ -1892,6 +2001,7 @@ mod tests {
             buildings_payload: None,
             wars_payload: None,
             divisions_payload: Some(first),
+            focus_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2001,6 +2111,11 @@ mod tests {
         let divisions = crate::sampling::DivisionsJob::new();
         assert!(divisions.log.spans.capacity() >= 150_000);
         assert!(divisions.log.bytes.capacity() >= 4 << 20);
+        // Hourly focus worst case is 439 countries with about 3.9k completed
+        // rows plus token bytes (the appendix census proves the shape).
+        let focus = FocusJob::new();
+        assert!(focus.log.spans.capacity() >= 18_000);
+        assert!(focus.log.bytes.capacity() >= 1 << 20);
         // Combined worst-case live set (one staged job per family, as on a
         // force-full hour) stays under half the measured pool peak.
         let combined = research.tech_pool.capacity()
@@ -2013,7 +2128,9 @@ mod tests {
             + variants.log.bytes.capacity()
             + buildings.log.bytes.capacity()
             + wars.log.bytes.capacity()
-            + divisions.log.bytes.capacity();
+            + divisions.log.bytes.capacity()
+            + focus.log.spans.capacity()
+            + focus.log.bytes.capacity();
         assert!(combined < 256 << 20, "combined caps {combined}");
         // The FIFO holds one lightweight job per pooled buffer by
         // construction (see the pool-invariant test); 256 slots absorb any
@@ -2041,6 +2158,7 @@ mod tests {
                 buildings_refresh: false,
                 wars_refresh: false,
                 divisions_refresh: false,
+                focus_refresh: false,
                 force_full: false,
                 game_elapsed: 1,
                 payload: None,
@@ -2052,6 +2170,7 @@ mod tests {
                 buildings_payload: None,
                 wars_payload: None,
                 divisions_payload: None,
+                focus_payload: None,
             };
             assert!(enqueue(&shared, job).is_none());
         }
@@ -2060,5 +2179,88 @@ mod tests {
         assert_eq!(snapshot.json()["queue_high_water"], 3);
         assert_eq!(snapshot.json()["queue_capacity"], BUFFERS);
         while shared.decode_queue.pop().is_some() {}
+    }
+
+    #[test]
+    fn worker_decodes_an_hourly_focus_payload_into_the_same_typed_rows() {
+        use crate::extended::governance::focus_test_kit;
+        use replay::frame::TABLE_COUNT;
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        let fixture = focus_test_kit::Fixture::world();
+        let memory = fixture.memory();
+        let shared = Shared::new(focus_test_kit::BASE, 0, 1);
+        let index = shared.free.pop().expect("pooled buffer");
+        let needed = [true; TABLE_COUNT];
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let mut typed = focus_test_kit::Fixture::captured();
+        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        frame.extended.focus_pilot().focus_raw_mode = true;
+        let (report, first) =
+            focus_test_kit::Fixture::copy_first(frame.extended.focus_pilot(), &memory, None);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true, true]);
+        shared.completed[index].store(0, Ordering::Relaxed);
+        let job = DecodeJob {
+            index,
+            seq: next_seq(),
+            hour: 7,
+            pilot_refresh: false,
+            relations_refresh: false,
+            characters_refresh: false,
+            projects_refresh: false,
+            lexical_refresh: false,
+            variants_refresh: false,
+            buildings_refresh: false,
+            wars_refresh: false,
+            divisions_refresh: false,
+            focus_refresh: true,
+            force_full: false,
+            game_elapsed: 23,
+            payload: None,
+            relations_payload: None,
+            characters_payload: None,
+            projects_payload: None,
+            lexical_payload: None,
+            variants_payload: None,
+            buildings_payload: None,
+            wars_payload: None,
+            divisions_payload: None,
+            focus_payload: Some(first),
+        };
+        process_job(&shared, &job);
+        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.completed[index].load(Ordering::Acquire), 23);
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let pilot = frame.extended.focus_pilot();
+        assert!(!pilot.focus_raw_mode);
+        focus_test_kit::Fixture::assert_matches_typed(pilot, &typed);
+        let snapshot = calibration();
+        assert_eq!(snapshot.focus_copy_ns, [0, 0]);
+        assert!(snapshot.refresh_jobs >= 1);
+        assert_eq!(snapshot.json()["focus_tables"][0], "Focus");
+        assert_eq!(snapshot.json()["focus_tables"][1], "CompletedFocuses");
+    }
+
+    #[test]
+    fn focus_calibration_counters_are_monotonic_and_additive_per_table() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        add_focus_copy_ns(0, 11);
+        add_focus_copy_ns(0, 4);
+        add_focus_copy_ns(1, 0);
+        add_focus_raw_bytes(1, 100);
+        let snapshot = calibration();
+        assert_eq!(snapshot.focus_copy_ns, [15, 0]);
+        assert_eq!(snapshot.focus_raw_bytes, [0, 100]);
+        assert_eq!(snapshot.json()["focus_copy_ns"][0], 15);
+        assert_eq!(snapshot.json()["focus_tables"][0], "Focus");
+        // Recycled jobs keep their capacities for the next hour.
+        let job = acquire_focus_job();
+        assert!(job.log.spans.capacity() >= 1 << 16);
+        recycle_focus_job(job);
+        let again = acquire_focus_job();
+        assert!(again.log.spans.capacity() >= 1 << 16);
+        recycle_focus_job(again);
     }
 }

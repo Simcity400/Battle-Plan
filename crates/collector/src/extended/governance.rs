@@ -2,15 +2,17 @@
 //! Shared-walk costs are charged once to each READ_GROUPS leader, in QPC ticks.
 
 use crate::{
+    raw::RawLog,
     sampling::{CONSISTENCY_TARGET, qpc},
     table_capture::{Arena, CaptureRows, comparison, grow_capacity, grow_vec},
 };
 use engine::{
-    Memory, ccombat_tactic, ccountry, cdecision_status, cdynamic_modifier_container,
-    cnational_focus_progress, cpolitical_party, cpolitical_status, cresearch_slot, ctechnology,
+    Memory, ccombat_tactic, ccontinuous_national_focus, ccountry, cdecision_status,
+    cdynamic_modifier_container, cgame_state, cnational_focus, cnational_focus_progress,
+    cnational_focus_tree, cpolitical_party, cpolitical_status, cresearch_slot, ctechnology,
     ctechnology_sharing_group, ctechnology_status, ctechnology_template, cpdx_array::Array,
-    power_balance_gfx_override, power_balance_manager, power_balance_range, power_balance_record,
-    read, read_slice,
+    msvc_string, power_balance_gfx_override, power_balance_manager, power_balance_range,
+    power_balance_record, read, read_slice,
     walk::Outcome,
 };
 use replay::{
@@ -149,6 +151,12 @@ pub struct Captured {
     /// ready handoff. Preserved across `reset` (set per refresh, cleared by
     /// the worker after decode).
     pub(crate) raw_mode: bool,
+    /// Raw-copy split gate for the hourly focus pair (Focus,
+    /// CompletedFocuses). Set by the game thread every hour with a valid raw
+    /// payload; `capture` then skips the typed focus walks and the decode
+    /// worker fills these rows before the ready handoff. Preserved across
+    /// `reset` (set per hour, cleared by the worker after decode).
+    pub(crate) focus_raw_mode: bool,
 }
 
 impl Captured {
@@ -194,6 +202,7 @@ impl Captured {
             },
             dictionary_required: 0,
             raw_mode: false,
+            focus_raw_mode: false,
         }
     }
     pub fn reset(&mut self) {
@@ -431,6 +440,15 @@ impl Captured {
             walk[3] = false;
             walk[4] = false;
         }
+        // Raw-copy split (hourly focus pair): every hour the game thread
+        // stages raw bytes via `copy_focus_refresh` and the decode worker
+        // fills the typed rows before the ready handoff, so both typed passes
+        // skip the focus tables here. Matched flags and costs for the pair
+        // come from the raw compare, applied by the caller after this returns.
+        if self.focus_raw_mode {
+            walk[0] = false;
+            walk[1] = false;
+        }
         let mut first = acquire(memory, base, game_state, self.buffers(false), &walk);
         self.focus.outcome = first.outcomes[0];
         self.completed.outcome = first.outcomes[1];
@@ -504,6 +522,10 @@ impl Captured {
             check[2] = false;
             check[3] = false;
             check[4] = false;
+        }
+        if self.focus_raw_mode {
+            check[0] = false;
+            check[1] = false;
         }
         let mut matched = [false; N];
         if check.iter().any(|&value| value) {
@@ -1199,6 +1221,10 @@ fn required_rows(outcome: Outcome) -> usize {
 // Test-only re-export so the decode worker tests can reuse the same harness.
 #[cfg(test)]
 pub(crate) use tests::research_test_kit;
+
+// Test-only re-export so the decode worker tests can reuse the focus harness.
+#[cfg(test)]
+pub(crate) use tests::focus_test_kit;
 
 // ===========================================================================
 // Research copy/decode split (pilot family: technologies, slots, definitions).
@@ -2707,6 +2733,576 @@ impl Captured {
     }
 }
 
+// ===========================================================================
+// Hourly Tier-H raw-copy split (Focus, CompletedFocuses).
+//
+// The game thread copies raw bytes only, every hour: one shared country
+// census (mirroring `ccountry::Reader`), per-country focus-status roots with
+// vtable checks, summary fields, three token headers with heap payloads and
+// terminators, and the completed-focus roster with per-entry pointers and
+// tokens. No row is decoded on the game thread. The single FIFO decode worker
+// replays the existing `cnational_focus_progress::walk` per country against
+// the recorded spans (`crate::raw::Recorded`), so rows, ordinals, skips,
+// truncation counts and failure reasons are identical by construction (see
+// `crate::raw` for the mirror rules).
+//
+// The mirror traverses structurally and records every discoverable span,
+// never aborting except on overflow: validation, precedence and error scope
+// are local parses, so the replay derives every outcome from the same
+// recorded spans and later extras are harmless. Pooled row and arena
+// capacities are ignored while copying (a superset is recorded and the replay
+// truncates identically against the real pooled buffers).
+// ===========================================================================
+
+/// Fault-attribution bits: summary walk (Focus) and completed-roster walk
+/// (CompletedFocuses). The shared census and focus-status roots block both
+/// slots: a fault there fails the per-country walk, which makes both outcomes
+/// unavailable with the same reason.
+const FOCUS_MASK: u32 = 0x01;
+const COMPLETED_MASK: u32 = 0x02;
+const FOCUS_CENSUS_MASK: u32 = 0x03;
+
+#[derive(Debug, Default, Clone, Copy)]
+struct FocusCountry {
+    pointer: usize,
+}
+
+/// One hour of raw focus payload: the shared census plus every country's
+/// summary and completed spans. Flat pools recycle capacities and the steady
+/// state allocates on neither thread; growth happens on the decode side only
+/// (see `crate::decode::recycle_focus_job`).
+#[derive(Debug)]
+pub(crate) struct FocusJob {
+    pub log: RawLog<2>,
+    pub game_state: usize,
+    census: Vec<FocusCountry>,
+}
+
+impl FocusJob {
+    pub fn new() -> Self {
+        Self {
+            // Steady state is 439 countries with about 3.9k completed rows
+            // plus token bytes; both pools start above that so steady state
+            // never overflows.
+            log: RawLog::new(1 << 16, 4 << 20),
+            game_state: 0,
+            census: Vec::with_capacity(512),
+        }
+    }
+
+    /// Reset lengths for reuse, keeping every capacity. No allocation.
+    pub fn clear(&mut self) {
+        self.log.clear();
+        self.game_state = 0;
+        self.census.clear();
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.log.grow_for_next()
+    }
+
+    /// Double every pool off the game thread until copies fit. Converges like
+    /// the typed capacity growth; overflowed hours fall back to the typed
+    /// walk in the meantime, so sizing is a pure performance knob.
+    pub fn grow(&mut self) {
+        self.log.grow();
+        self.census.reserve_exact(self.census.capacity().max(1));
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct FocusCopyReport {
+    /// False when staging overflowed: the caller falls back to the typed walk
+    /// (identical rows through the existing path) and enqueues no payload.
+    pub raw_ok: bool,
+    /// Whole-log raw equality gated by live-fault conservatism, in
+    /// [focus, completed] order.
+    pub matched: [bool; 2],
+    /// Single-pass copy ticks anchor-charged to the Focus slot, matching the
+    /// read-group convention (the completed slot keeps zero game-thread cost).
+    pub copy_ticks: [u64; 2],
+    pub raw_bytes: [u64; 2],
+}
+
+/// Game-thread copy parameters, bundled to keep the tick entry small.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FocusCopyContext {
+    pub base: usize,
+    pub game_state: usize,
+    pub needed: [bool; 2],
+}
+
+fn focus_pool_u64(log: &RawLog<2>, start: usize) -> u64 {
+    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+}
+
+fn focus_pool_u32(log: &RawLog<2>, start: usize) -> u32 {
+    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
+}
+
+/// One mirrored span read. `None` addresses (arithmetic overflow) record
+/// nothing because the typed walk fails locally without reads.
+fn fspan(
+    log: &mut RawLog<2>,
+    memory: &impl engine::Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take(memory, addr?, len, mask)
+}
+
+/// Authenticated census shared by the focus walks. Records the exact read set
+/// of `ccountry::Reader::new` plus one full `read_at` per slot. Returns
+/// `false` when the typed census fails, in which case every per-country walk
+/// fails identically from the same recorded spans.
+fn copy_focus_census(
+    log: &mut RawLog<2>,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    census: &mut Vec<FocusCountry>,
+) -> Option<(Array, u32)> {
+    let countries_start = fspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRIES),
+        16,
+        FOCUS_CENSUS_MASK,
+    )?;
+    let links_start = fspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRY_LINKS),
+        16,
+        FOCUS_CENSUS_MASK,
+    )?;
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
+    let countries = Array::from_header(raw, 8)?;
+    raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
+    let links = Array::from_header(raw, 4)?;
+    if countries.count < 2 || links.count == 0 {
+        return None;
+    }
+    let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
+    for slot in 1..countries.count {
+        let pointer_addr = (slot as usize)
+            .checked_mul(8)
+            .and_then(|offset| countries.data.checked_add(offset));
+        let pointer_start = fspan(log, memory, pointer_addr, 8, FOCUS_CENSUS_MASK)?;
+        let pointer = match usize::try_from(focus_pool_u64(log, pointer_start))
+            .ok()
+            .filter(|&pointer| pointer != 0)
+        {
+            Some(pointer) => pointer,
+            None => continue,
+        };
+        let vtable_start = fspan(log, memory, Some(pointer), 8, FOCUS_CENSUS_MASK)?;
+        let id_start = fspan(
+            log,
+            memory,
+            pointer.checked_add(ccountry::ID),
+            4,
+            FOCUS_CENSUS_MASK,
+        )?;
+        if focus_pool_u64(log, vtable_start) != vtable {
+            return None;
+        }
+        let id = focus_pool_u32(log, id_start);
+        let canonical = match focus_link(log, memory, &links, countries.count, id) {
+            Some(Some(canonical)) => canonical,
+            _ => return None,
+        };
+        let canonical_slot = match focus_link(log, memory, &links, countries.count, slot) {
+            Some(Some(canonical_slot)) => canonical_slot,
+            _ => return None,
+        };
+        if canonical_slot != canonical {
+            return None;
+        }
+        let check = match focus_link(log, memory, &links, countries.count, canonical) {
+            Some(Some(check)) => check,
+            _ => return None,
+        };
+        if check != canonical {
+            return None;
+        }
+        let canonical_addr = (canonical as usize)
+            .checked_mul(8)
+            .and_then(|offset| countries.data.checked_add(offset));
+        let canonical_pointer = fspan(log, memory, canonical_addr, 8, FOCUS_CENSUS_MASK)?;
+        if focus_pool_u64(log, canonical_pointer) != pointer as u64 {
+            return None;
+        }
+        if census.len() == census.capacity() {
+            log.overflowed = true;
+            return None;
+        }
+        census.push(FocusCountry { pointer });
+    }
+    Some((links, countries.count))
+}
+
+/// Mirror of a link-table read with local bounds checks. Outer `None`
+/// aborts the walk; inner `None` is a readable absence the typed callers
+/// also turn into a walk error.
+fn focus_link(
+    log: &mut RawLog<2>,
+    memory: &impl engine::Memory,
+    links: &Array,
+    countries: u32,
+    raw: u32,
+) -> Option<Option<u32>> {
+    if raw == 0 || raw >= links.count {
+        return None;
+    }
+    let offset = (raw as usize).checked_mul(4)?;
+    let start = fspan(
+        log,
+        memory,
+        links.data.checked_add(offset),
+        4,
+        FOCUS_CENSUS_MASK,
+    )?;
+    let slot = focus_pool_u32(log, start);
+    if slot == 0 {
+        return Some(None);
+    }
+    if slot >= countries {
+        return None;
+    }
+    Some(Some(slot))
+}
+
+/// Mirror of one focus token's string reads: header, terminator and heap
+/// payload takes. Takes run unconditionally over parseable addresses; the
+/// replay validates the header and terminator itself from the same recorded
+/// spans, so later extras are harmless.
+fn copy_focus_token(
+    log: &mut RawLog<2>,
+    memory: &impl engine::Memory,
+    pointer: u64,
+    offset: usize,
+    mask: u32,
+) {
+    if pointer == 0 {
+        return;
+    }
+    let Ok(pointer) = usize::try_from(pointer) else {
+        return;
+    };
+    let Some(string) = pointer.checked_add(offset) else {
+        return;
+    };
+    let Some(header_start) = fspan(log, memory, Some(string), 32, mask) else {
+        return;
+    };
+    let mut header = [0u8; 32];
+    header.copy_from_slice(&log.bytes[header_start..header_start + 32]);
+    let len = match usize::try_from(u64::from_le_bytes(
+        header[msvc_string::LENGTH..msvc_string::CAPACITY]
+            .try_into()
+            .unwrap(),
+    )) {
+        Ok(len) => len,
+        Err(_) => return,
+    };
+    let capacity = u64::from_le_bytes(header[msvc_string::CAPACITY..].try_into().unwrap());
+    if len as u64 > capacity || capacity < msvc_string::INLINE_CAPACITY {
+        return;
+    }
+    let source = if capacity == msvc_string::INLINE_CAPACITY {
+        string
+    } else {
+        match usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
+            .ok()
+            .filter(|&source| source != 0)
+        {
+            Some(source) => source,
+            None => return,
+        }
+    };
+    let Some(end) = source.checked_add(len) else {
+        return;
+    };
+    if fspan(log, memory, Some(end), 1, mask).is_none() {
+        return;
+    }
+    // Inline payloads live inside the header span, but the replay requests
+    // the exact (address, length) range, so record it exactly like a heap
+    // payload: service is exact-match, never sub-range.
+    if len != 0 {
+        let _ = fspan(log, memory, Some(source), len, mask);
+    }
+}
+
+/// Mirror of one country's focus read set: status root and vtable, tree
+/// pointer, scattered summary fields, three token takes, and the completed
+/// roster with per-entry pointers and tokens. Takes are unconditional over
+/// discoverable addresses (a superset); the replay derives every outcome.
+fn copy_focus_country(
+    log: &mut RawLog<2>,
+    memory: &impl engine::Memory,
+    country: &FocusCountry,
+) {
+    let root = match fspan(
+        log,
+        memory,
+        country.pointer.checked_add(ccountry::FOCUS_PROGRESS),
+        8,
+        FOCUS_CENSUS_MASK,
+    )
+    .and_then(|start| {
+        usize::try_from(focus_pool_u64(log, start))
+            .ok()
+            .filter(|&root| root != 0)
+    }) {
+        Some(root) => root,
+        None => return,
+    };
+    let _ = fspan(log, memory, Some(root), 8, FOCUS_CENSUS_MASK);
+    let tree = match fspan(
+        log,
+        memory,
+        country.pointer.checked_add(ccountry::FOCUS_TREE),
+        8,
+        FOCUS_MASK,
+    ) {
+        Some(start) => focus_pool_u64(log, start),
+        None => return,
+    };
+    // Scattered summary fields exactly like the typed walk: one 16-byte
+    // destination at CURRENT (covering CURRENT and CONTINUOUS contiguously),
+    // then progress, paused and completed count.
+    let selections_start = fspan(
+        log,
+        memory,
+        root.checked_add(cnational_focus_progress::CURRENT),
+        16,
+        FOCUS_MASK,
+    );
+    let progress_start = fspan(
+        log,
+        memory,
+        root.checked_add(cnational_focus_progress::PROGRESS),
+        8,
+        FOCUS_MASK,
+    );
+    let paused_start = fspan(
+        log,
+        memory,
+        root.checked_add(cnational_focus_progress::PAUSED),
+        1,
+        FOCUS_MASK,
+    );
+    let count_start = fspan(
+        log,
+        memory,
+        root.checked_add(cnational_focus_progress::COMPLETED_COUNT),
+        4,
+        FOCUS_MASK,
+    );
+    let (Some(selections_start), Some(_), Some(_), Some(_)) =
+        (selections_start, progress_start, paused_start, count_start)
+    else {
+        return;
+    };
+    let current = focus_pool_u64(log, selections_start);
+    let continuous = focus_pool_u64(log, selections_start + 8);
+    copy_focus_token(log, memory, tree, cnational_focus_tree::TOKEN, FOCUS_MASK);
+    copy_focus_token(log, memory, current, cnational_focus::TOKEN, FOCUS_MASK);
+    copy_focus_token(
+        log,
+        memory,
+        continuous,
+        ccontinuous_national_focus::TOKEN,
+        FOCUS_MASK,
+    );
+    if log.overflowed {
+        return;
+    }
+    // Completed roster: header plus per-entry pointers and tokens.
+    let header_start = match fspan(
+        log,
+        memory,
+        root.checked_add(cnational_focus_progress::COMPLETED_DATA),
+        16,
+        COMPLETED_MASK,
+    ) {
+        Some(start) => start,
+        None => return,
+    };
+    let mut header = [0u8; 16];
+    header.copy_from_slice(&log.bytes[header_start..header_start + 16]);
+    let roster = match Array::from_header(header, 8) {
+        Some(roster) => roster,
+        None => return,
+    };
+    for ordinal in 0..roster.count {
+        let entry_addr = roster
+            .data
+            .checked_add((ordinal as usize).saturating_mul(8));
+        let pointer = match fspan(log, memory, entry_addr, 8, COMPLETED_MASK).and_then(|start| {
+            usize::try_from(focus_pool_u64(log, start))
+                .ok()
+                .filter(|&pointer| pointer != 0)
+        }) {
+            Some(pointer) => pointer,
+            None => continue,
+        };
+        copy_focus_token(
+            log,
+            memory,
+            pointer as u64,
+            cnational_focus::TOKEN,
+            COMPLETED_MASK,
+        );
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+/// One structural copy pass: shared census plus every country's summary and
+/// completed takes. The job is cleared on entry so pooled refreshes never
+/// accumulate spans across hours.
+fn copy_focus_pass(
+    job: &mut FocusJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    ticks: &mut [u64; 2],
+) {
+    job.clear();
+    job.game_state = game_state;
+    let started = qpc();
+    if copy_focus_census(&mut job.log, memory, base, game_state, &mut job.census).is_some() {
+        for index in 0..job.census.len() {
+            let country = job.census[index];
+            copy_focus_country(&mut job.log, memory, &country);
+            if job.log.overflowed {
+                break;
+            }
+        }
+    }
+    ticks[0] += elapsed(started);
+}
+
+impl Captured {
+    /// Game-thread raw copy for one hour: shared census plus every country's
+    /// summary and completed takes. Compares raw logs while either focus
+    /// table still needs double-read checks.
+    pub(crate) fn copy_focus_refresh(
+        &mut self,
+        memory: &impl engine::Memory,
+        ctx: FocusCopyContext,
+        first: &mut FocusJob,
+        second: Option<&mut FocusJob>,
+    ) -> FocusCopyReport {
+        let needed = ctx.needed;
+        let mut ticks = [0u64; 2];
+        copy_focus_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
+        let mut matched = [true; 2];
+        if let Some(second_job) = second {
+            let mut second_ticks = [0u64; 2];
+            copy_focus_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
+            ticks[0] += second_ticks[0];
+            let equal = first.log.logs_equal(&second_job.log)
+                && !first.log.overflowed
+                && !second_job.log.overflowed;
+            for (slot, matched) in matched.iter_mut().enumerate() {
+                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+            }
+        }
+        self.focus.checked = needed[0];
+        self.focus.mismatches = usize::from(needed[0] && !matched[0]);
+        self.completed.checked = needed[1];
+        self.completed.mismatches = usize::from(needed[1] && !matched[1]);
+        let raw_ok = !first.log.overflowed;
+        FocusCopyReport {
+            raw_ok,
+            matched,
+            copy_ticks: ticks,
+            raw_bytes: first.log.raw_bytes,
+        }
+    }
+
+    /// Decode-worker interpretation of a raw focus payload. Replays the
+    /// existing per-country walk against the recorded spans, installing
+    /// identical rows, truncation counts and failure reasons into the frame's
+    /// pooled buffers. The census spans serve the walk's own country
+    /// authentication, so no live memory is touched. Clears `focus_raw_mode`
+    /// so the next capture starts clean.
+    pub(crate) fn decode_focus_payload(
+        &mut self,
+        base: usize,
+        job: &FocusJob,
+        decode_ticks: &mut [u64; 2],
+    ) {
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let started = qpc();
+        let mut focus_total = Outcome::Rows { len: 0 };
+        let mut completed_total = Outcome::Rows { len: 0 };
+        let mut text_len = 0usize;
+        let mut text_required = 0usize;
+        match ccountry::Reader::new(&recorded, base, job.game_state) {
+            Err(reason) => {
+                focus_total = Outcome::Unavailable { reason };
+                completed_total = Outcome::Unavailable { reason };
+            }
+            Ok(countries) => {
+                for slot in 1..countries.count() {
+                    let country = match countries.at(slot) {
+                        Ok(Some(country)) => country,
+                        Ok(None) => continue,
+                        Err(reason) => {
+                            focus_total = Outcome::Unavailable { reason };
+                            completed_total = Outcome::Unavailable { reason };
+                            break;
+                        }
+                    };
+                    let first = focus_total.len();
+                    let completed = completed_total.len();
+                    let text = text_len;
+                    let result = cnational_focus_progress::walk(
+                        &recorded,
+                        base,
+                        country.pointer,
+                        country.id,
+                        &mut self.focus.rows[first..],
+                        &mut self.completed.rows[completed..],
+                        &mut self.focus_text.first[text..],
+                    );
+                    for row in &mut self.focus.rows[first..first + result.outcome.len()] {
+                        for span in [&mut row.tree, &mut row.current, &mut row.continuous]
+                            .into_iter()
+                            .flatten()
+                        {
+                            span.start += text;
+                        }
+                    }
+                    for row in &mut self.completed.rows
+                        [completed..completed + result.completed_outcome.len()]
+                    {
+                        row.token.start += text;
+                    }
+                    append(&mut focus_total, result.outcome);
+                    append(&mut completed_total, result.completed_outcome);
+                    text_len += result.bytes_len;
+                    text_required = text_required.saturating_add(result.required_bytes);
+                }
+            }
+        }
+        self.focus.outcome = focus_total;
+        self.completed.outcome = completed_total;
+        self.focus_text.len = text_len;
+        self.focus_text.required = text_required;
+        decode_ticks[0] += elapsed(started);
+        self.focus_raw_mode = false;
+    }
+}
+
 fn decode_country_status_for_slots(base: usize, meta: &CountryMeta) -> Result<usize, &'static str> {
     meta.status_result?;
     let status_raw = ctechnology_status::StatusRaw {
@@ -3891,5 +4487,482 @@ mod tests {
         // The typed path still reads the same fixture cleanly.
         let direct = kit::direct(&memory, &layout, 8, 4, 8, 32, 64);
         assert_eq!(direct.tech_outcome, Outcome::Rows { len: 3 });
+    }
+
+    /// Shared synthetic address space for the hourly focus copy/decode split
+    /// harness: two authenticated countries with inline, absent and heap focus
+    /// tokens plus one- and two-entry completed rosters.
+    pub(crate) mod focus_test_kit {
+        use super::{Capacities, Captured, FocusCopyContext, FocusJob};
+        use engine::memory::SliceMemory;
+        use engine::{
+            ccountry, ccontinuous_national_focus, cgame_state, cnational_focus,
+            cnational_focus_progress, cnational_focus_tree,
+        };
+        use replay::frame::TABLE_COUNT;
+
+        pub(crate) const BASE: usize = 0x1400_0000;
+        const MEM: usize = 0x1_0000;
+        const GS: usize = 0x1_0000;
+        const CTAB: usize = 0x1_1000;
+        const LTAB: usize = 0x1_1200;
+        const C1: usize = 0x1_2000;
+        const C2: usize = 0x1_4000;
+        const R1: usize = 0x1_6000;
+        const R2: usize = 0x1_7000;
+        const TT1: usize = 0x1_8000;
+        const FC1: usize = 0x1_8200;
+        const FC2: usize = 0x1_8300;
+        const CC1: usize = 0x1_8400;
+        const FA: usize = 0x1_8500;
+        const FB: usize = 0x1_8600;
+        const FC: usize = 0x1_8700;
+        const RS1: usize = 0x1_8800;
+        const RS2: usize = 0x1_8900;
+        const HB: usize = 0x1_8a00;
+        const HEAP_TOKEN: &[u8] = b"completed_heap_token_longer_than_fifteen";
+
+        pub(crate) struct Fixture {
+            pub bytes: Vec<u8>,
+        }
+
+        impl Fixture {
+            pub(crate) fn w64(&mut self, addr: usize, value: u64) {
+                let at = addr - MEM;
+                self.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+            }
+
+            pub(crate) fn w32(&mut self, addr: usize, value: u32) {
+                let at = addr - MEM;
+                self.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            }
+
+            fn inline(&mut self, addr: usize, value: &[u8]) {
+                assert!(value.len() <= 15);
+                let at = addr - MEM;
+                self.bytes[at..at + 32].fill(0);
+                self.bytes[at..at + value.len()].copy_from_slice(value);
+                self.w64(addr + 16, value.len() as u64);
+                self.w64(addr + 24, 15);
+            }
+
+            fn heap_token(&mut self, addr: usize, value: &[u8]) {
+                let at = addr - MEM;
+                self.bytes[at..at + 32].fill(0);
+                self.w64(addr, HB as u64);
+                self.w64(addr + 16, value.len() as u64);
+                self.w64(addr + 24, value.len() as u64);
+                let heap = HB - MEM;
+                self.bytes[heap..heap + value.len()].copy_from_slice(value);
+                self.bytes[heap + value.len()] = 0;
+            }
+
+            fn country(&mut self, country: usize, id: u32, tree: usize, root: usize) {
+                self.w64(country, (BASE + ccountry::VTABLE_RVA) as u64);
+                self.w32(country + ccountry::ID, id);
+                self.w64(country + ccountry::FOCUS_TREE, tree as u64);
+                self.w64(country + ccountry::FOCUS_PROGRESS, root as u64);
+            }
+
+            #[allow(clippy::too_many_arguments)]
+            fn root(
+                &mut self,
+                root: usize,
+                current: usize,
+                continuous: usize,
+                progress: i64,
+                paused: u8,
+                count: i32,
+                roster: usize,
+                roster_count: u32,
+            ) {
+                self.w64(root, (BASE + cnational_focus_progress::VTABLE_RVA) as u64);
+                self.w64(root + cnational_focus_progress::CURRENT, current as u64);
+                self.w64(
+                    root + cnational_focus_progress::CURRENT + 8,
+                    continuous as u64,
+                );
+                self.w64(root + cnational_focus_progress::PROGRESS, progress as u64);
+                self.bytes[root - MEM + cnational_focus_progress::PAUSED] = paused;
+                self.w32(root + cnational_focus_progress::COMPLETED_COUNT, count as u32);
+                self.w64(root + cnational_focus_progress::COMPLETED_DATA, roster as u64);
+                self.w32(
+                    root + cnational_focus_progress::COMPLETED_DATA + 8,
+                    roster_count,
+                );
+                self.w32(
+                    root + cnational_focus_progress::COMPLETED_DATA + 12,
+                    roster_count,
+                );
+            }
+
+            pub(crate) fn world() -> Self {
+                let mut fixture = Self {
+                    bytes: vec![0; 0x1_0000],
+                };
+                fixture.w64(GS + cgame_state::COUNTRIES, CTAB as u64);
+                fixture.w32(GS + cgame_state::COUNTRIES + 8, 4);
+                fixture.w32(GS + cgame_state::COUNTRIES + 12, 3);
+                fixture.w64(GS + cgame_state::COUNTRY_LINKS, LTAB as u64);
+                fixture.w32(GS + cgame_state::COUNTRY_LINKS + 8, 4);
+                fixture.w32(GS + cgame_state::COUNTRY_LINKS + 12, 3);
+                fixture.w64(CTAB, 0);
+                fixture.w64(CTAB + 8, C1 as u64);
+                fixture.w64(CTAB + 16, C2 as u64);
+                fixture.w32(LTAB, 0);
+                fixture.w32(LTAB + 4, 1);
+                fixture.w32(LTAB + 8, 2);
+                fixture.country(C1, 1, TT1, R1);
+                fixture.country(C2, 2, 0, R2);
+                fixture.inline(TT1 + cnational_focus_tree::TOKEN, b"tree_one");
+                fixture.root(R1, FC1, CC1, 12_345, 1, 1, RS1, 1);
+                fixture.inline(FC1 + cnational_focus::TOKEN, b"active_one");
+                fixture.inline(CC1 + ccontinuous_national_focus::TOKEN, b"cont_one");
+                fixture.inline(FA + cnational_focus::TOKEN, b"done_a");
+                fixture.w64(RS1, FA as u64);
+                fixture.root(R2, FC2, 0, -7, 0, 2, RS2, 2);
+                fixture.inline(FC2 + cnational_focus::TOKEN, b"active_two");
+                fixture.heap_token(FB + cnational_focus::TOKEN, HEAP_TOKEN);
+                fixture.inline(FC + cnational_focus::TOKEN, b"done_c");
+                fixture.w64(RS2, FB as u64);
+                fixture.w64(RS2 + 8, FC as u64);
+                fixture
+            }
+
+            pub(crate) fn memory(&self) -> SliceMemory<'_> {
+                SliceMemory {
+                    base: MEM,
+                    bytes: &self.bytes,
+                }
+            }
+
+            pub(crate) fn captured() -> Captured {
+                Captured::with_capacities(&Capacities::default(), &[0u16; TABLE_COUNT])
+            }
+
+            pub(crate) fn copy_first(
+                captured: &mut Captured,
+                memory: &impl engine::Memory,
+                second: Option<&mut FocusJob>,
+            ) -> (super::FocusCopyReport, FocusJob) {
+                let mut first = FocusJob::new();
+                let ctx = FocusCopyContext {
+                    base: BASE,
+                    game_state: GS,
+                    needed: [true, true],
+                };
+                let report = captured.copy_focus_refresh(memory, ctx, &mut first, second);
+                (report, first)
+            }
+
+            /// Byte-identity assertion for the decode worker tests: typed
+            /// rows, outcomes and arena bytes match exactly.
+            pub(crate) fn assert_matches_typed(decoded: &Captured, typed: &Captured) {
+                assert_eq!(decoded.focus.outcome, typed.focus.outcome);
+                assert_eq!(decoded.completed.outcome, typed.completed.outcome);
+                let focus_len = typed.focus.outcome.len();
+                assert_eq!(
+                    &decoded.focus.rows[..focus_len],
+                    &typed.focus.rows[..focus_len]
+                );
+                let completed_len = typed.completed.outcome.len();
+                assert_eq!(
+                    &decoded.completed.rows[..completed_len],
+                    &typed.completed.rows[..completed_len]
+                );
+                assert_eq!(decoded.focus_text.len, typed.focus_text.len);
+                assert_eq!(decoded.focus_text.required, typed.focus_text.required);
+                assert_eq!(
+                    &decoded.focus_text.first[..decoded.focus_text.len],
+                    &typed.focus_text.first[..typed.focus_text.len]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn focus_copy_decode_is_byte_identical_with_truncation() {
+        use focus_test_kit::Fixture;
+        let fixture = Fixture::world();
+        let memory = fixture.memory();
+        let needed = [true; TABLE_COUNT];
+        let mut typed = Fixture::captured();
+        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        assert_eq!(typed.focus.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(typed.completed.outcome, Outcome::Rows { len: 3 });
+        assert_eq!(typed.focus_text.len, 88);
+        assert_eq!(typed.focus_text.required, 88);
+        // Heap token bytes survive exactly, including the long payload.
+        let heap = b"completed_heap_token_longer_than_fifteen";
+        assert!(
+            typed.focus_text.first[..88]
+                .windows(heap.len())
+                .any(|window| window == heap)
+        );
+
+        let mut replayed = Fixture::captured();
+        replayed.focus_raw_mode = true;
+        let (report, first) = Fixture::copy_first(&mut replayed, &memory, None);
+        assert!(report.raw_ok);
+        replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        let mut ticks = [0; 2];
+        replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
+        assert!(!replayed.focus_raw_mode);
+        assert_eq!(replayed.focus.outcome, typed.focus.outcome);
+        assert_eq!(replayed.completed.outcome, typed.completed.outcome);
+        let focus_len = typed.focus.outcome.len();
+        assert_eq!(
+            &typed.focus.rows[..focus_len],
+            &replayed.focus.rows[..focus_len]
+        );
+        let completed_len = typed.completed.outcome.len();
+        assert_eq!(
+            &typed.completed.rows[..completed_len],
+            &replayed.completed.rows[..completed_len]
+        );
+        assert_eq!(replayed.focus_text.len, typed.focus_text.len);
+        assert_eq!(replayed.focus_text.required, typed.focus_text.required);
+        assert_eq!(
+            &replayed.focus_text.first[..replayed.focus_text.len],
+            &typed.focus_text.first[..typed.focus_text.len]
+        );
+
+        // Truncated pooled buffers truncate identically with exact demand.
+        let mut small = Capacities::default();
+        small.rows[0] = 1;
+        small.rows[1] = 1;
+        small.focus_text = 20;
+        let mut typed_small =
+            Captured::with_capacities(&small, &[0u16; TABLE_COUNT]);
+        typed_small.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        let mut replayed_small =
+            Captured::with_capacities(&small, &[0u16; TABLE_COUNT]);
+        replayed_small.focus_raw_mode = true;
+        let (_, small_first) = Fixture::copy_first(&mut replayed_small, &memory, None);
+        replayed_small.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        let mut small_ticks = [0; 2];
+        replayed_small.decode_focus_payload(focus_test_kit::BASE, &small_first, &mut small_ticks);
+        assert_eq!(replayed_small.focus.outcome, typed_small.focus.outcome);
+        assert_eq!(
+            replayed_small.completed.outcome,
+            typed_small.completed.outcome
+        );
+        assert!(matches!(
+            replayed_small.focus.outcome,
+            Outcome::Truncated { .. }
+        ));
+        assert_eq!(
+            replayed_small.focus_text.required,
+            typed_small.focus_text.required
+        );
+        assert_eq!(replayed_small.focus_text.len, typed_small.focus_text.len);
+    }
+
+    #[test]
+    fn focus_copy_decode_matches_faults_with_identical_reasons() {
+        use focus_test_kit::Fixture;
+        let needed = [true; TABLE_COUNT];
+        // Null status root fails both tables with the same reason.
+        let mut broken = Fixture::world();
+        broken.w64(0x1_2000 + ccountry::FOCUS_PROGRESS, 0);
+        let memory = broken.memory();
+        let mut typed = Fixture::captured();
+        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        assert!(matches!(
+            typed.focus.outcome,
+            Outcome::Unavailable { .. }
+        ));
+        let mut replayed = Fixture::captured();
+        replayed.focus_raw_mode = true;
+        let (report, first) = Fixture::copy_first(&mut replayed, &memory, None);
+        assert!(report.raw_ok);
+        replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        let mut ticks = [0; 2];
+        replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
+        assert_eq!(replayed.focus.outcome, typed.focus.outcome);
+        assert_eq!(replayed.completed.outcome, typed.completed.outcome);
+
+        // Vtable mismatch fails both tables together.
+        let mut broken = Fixture::world();
+        broken.w64(0x1_6000, 0);
+        let memory = broken.memory();
+        let mut typed = Fixture::captured();
+        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        let mut replayed = Fixture::captured();
+        replayed.focus_raw_mode = true;
+        let (_, first) = Fixture::copy_first(&mut replayed, &memory, None);
+        replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        let mut ticks = [0; 2];
+        replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
+        assert_eq!(replayed.focus.outcome, typed.focus.outcome);
+        assert_eq!(replayed.completed.outcome, typed.completed.outcome);
+        assert!(matches!(
+            typed.focus.outcome,
+            Outcome::Unavailable {
+                reason: "focus status vtable mismatch"
+            }
+        ));
+
+        // A bad summary token fails only the summary; completions survive.
+        let mut broken = Fixture::world();
+        broken.w64(0x1_8200 + cnational_focus::TOKEN + 16, 99);
+        let memory = broken.memory();
+        let mut typed = Fixture::captured();
+        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        assert!(matches!(
+            typed.focus.outcome,
+            Outcome::Unavailable { .. }
+        ));
+        let mut replayed = Fixture::captured();
+        replayed.focus_raw_mode = true;
+        let (_, first) = Fixture::copy_first(&mut replayed, &memory, None);
+        replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        let mut ticks = [0; 2];
+        replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
+        assert_eq!(replayed.focus.outcome, typed.focus.outcome);
+        assert_eq!(replayed.completed.outcome, typed.completed.outcome);
+        assert_eq!(typed.completed.outcome, Outcome::Rows { len: 3 });
+
+        // A null completed entry fails only the roster; the summary survives.
+        let mut broken = Fixture::world();
+        broken.w64(0x1_8800, 0);
+        let memory = broken.memory();
+        let mut typed = Fixture::captured();
+        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        assert_eq!(typed.focus.outcome, Outcome::Rows { len: 2 });
+        assert!(matches!(
+            typed.completed.outcome,
+            Outcome::Unavailable { .. }
+        ));
+        let mut replayed = Fixture::captured();
+        replayed.focus_raw_mode = true;
+        let (_, first) = Fixture::copy_first(&mut replayed, &memory, None);
+        replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        let mut ticks = [0; 2];
+        replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
+        assert_eq!(replayed.focus.outcome, typed.focus.outcome);
+        assert_eq!(replayed.completed.outcome, typed.completed.outcome);
+    }
+
+    #[test]
+    fn focus_raw_compare_counts_checks_and_blocks_tearing() {
+        use focus_test_kit::Fixture;
+        let fixture = Fixture::world();
+        let memory = fixture.memory();
+        let mut captured = Fixture::captured();
+        let mut second = FocusJob::new();
+        let (report, _) = Fixture::copy_first(&mut captured, &memory, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true, true]);
+        assert!(captured.focus.checked && captured.completed.checked);
+        assert_eq!(captured.focus.mismatches, 0);
+        assert_eq!(captured.completed.mismatches, 0);
+
+        // A torn second copy (one progress byte flips) mismatches both logs.
+        let mut torn = Fixture::world();
+        torn.bytes[0x1_6000 + cnational_focus_progress::PROGRESS - 0x1_0000] ^= 0xff;
+        let torn_memory = torn.memory();
+        let mut after = FocusJob::new();
+        let mut after_ticks = [0; 2];
+        copy_focus_pass(
+            &mut after,
+            &memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            &mut after_ticks,
+        );
+        let mut after_torn = FocusJob::new();
+        let mut torn_ticks = [0; 2];
+        copy_focus_pass(
+            &mut after_torn,
+            &torn_memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            &mut torn_ticks,
+        );
+        assert!(!after.log.logs_equal(&after_torn.log));
+        // Identical images agree byte-for-byte.
+        let mut repeat = FocusJob::new();
+        let mut repeat_ticks = [0; 2];
+        copy_focus_pass(
+            &mut repeat,
+            &memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            &mut repeat_ticks,
+        );
+        assert!(after.log.logs_equal(&repeat.log));
+
+        // A readable-but-invalid refresh in both copies still counts its
+        // check while emitting the identical unavailable outcome.
+        let mut invalid = Fixture::world();
+        invalid.w64(0x1_6000, 0);
+        let invalid_memory = invalid.memory();
+        let mut captured = Fixture::captured();
+        let mut second = FocusJob::new();
+        let (report, first) =
+            Fixture::copy_first(&mut captured, &invalid_memory, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true, true]);
+        let needed = [true; TABLE_COUNT];
+        let mut replayed = Fixture::captured();
+        replayed.focus_raw_mode = true;
+        replayed.capture(&invalid_memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        let mut ticks = [0; 2];
+        replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
+        let mut typed = Fixture::captured();
+        typed.capture(&invalid_memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        assert_eq!(replayed.focus.outcome, typed.focus.outcome);
+    }
+
+    #[test]
+    fn focus_staging_overflow_reports_fallback_without_blocking() {
+        use focus_test_kit::Fixture;
+        let fixture = Fixture::world();
+        let memory = fixture.memory();
+        let mut captured = Fixture::captured();
+        // Zero-capacity staging cannot hold any copy: the report declines the
+        // payload so the caller falls back to the typed walk.
+        let mut tiny = FocusJob {
+            log: RawLog::new(0, 0),
+            game_state: 0,
+            census: Vec::new(),
+        };
+        let ctx = FocusCopyContext {
+            base: focus_test_kit::BASE,
+            game_state: 0x1_0000,
+            needed: [true, true],
+        };
+        let report = captured.copy_focus_refresh(&memory, ctx, &mut tiny, None);
+        assert!(!report.raw_ok);
+        // The typed path still reads the same fixture cleanly.
+        let needed = [true; TABLE_COUNT];
+        let mut typed = Fixture::captured();
+        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        assert_eq!(typed.focus.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(typed.completed.outcome, Outcome::Rows { len: 3 });
+    }
+
+    #[test]
+    fn focus_walks_hourly_like_every_tier_h_table() {
+        // Focus and CompletedFocuses are hourly Tier-H tables: every hour
+        // walks, and branch starts and keyframes force a full refresh like
+        // every other table.
+        for hour in -8..8i32 {
+            assert!(
+                replay::cadence::should_walk(TableId::Focus, hour, false),
+                "hour {hour}"
+            );
+            assert!(
+                replay::cadence::should_walk(TableId::CompletedFocuses, hour, false),
+                "hour {hour}"
+            );
+            assert!(replay::cadence::should_walk(TableId::Focus, hour, true));
+            assert!(replay::cadence::should_walk(
+                TableId::CompletedFocuses,
+                hour,
+                true
+            ));
+        }
     }
 }
