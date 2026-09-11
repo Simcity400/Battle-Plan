@@ -1099,6 +1099,7 @@ fn decoded_with_costs(
                 play_time: clock.play_time,
                 play_session_started_at: clock.play_session_started_at,
                 seed: clock.seed,
+                speed: clock.speed,
             }])),
             TableView::Complete(TableRows::Campaign(vec![CampaignRow {
                 id: clock.campaign_id.as_bytes().to_vec(),

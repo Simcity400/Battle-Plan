@@ -34,7 +34,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 123] = [
+const DOMAIN_TABLES: [TableId; 132] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
@@ -158,6 +158,15 @@ const DOMAIN_TABLES: [TableId; 123] = [
     TableId::StationedUnits,
     TableId::UnitIntel,
     TableId::AirBaseRegistrations,
+    TableId::WorldTension,
+    TableId::ProductionLicenses,
+    TableId::DeploymentConveyors,
+    TableId::DeploymentLines,
+    TableId::DeploymentManpower,
+    TableId::DeploymentEquipment,
+    TableId::ThreatSources,
+    TableId::ThreatCountryAggregates,
+    TableId::ProductionLicenseRecords,
 ];
 /// The fault campaign drives every table except the six the clock, campaign,
 /// country, province and state fixtures build directly, so a new table cannot
@@ -616,6 +625,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             play_time: (1_u64 << 40) + index as u64,
             play_session_started_at: signal,
             seed: i32::MIN,
+            speed: (index % 5) as i32,
         }])),
         TableView::Complete(TableRows::Campaign(vec![CampaignRow {
             id: CAMPAIGN.to_vec(),

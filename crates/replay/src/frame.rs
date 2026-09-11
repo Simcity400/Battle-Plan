@@ -653,6 +653,7 @@ mod tests {
                         play_time: u64::MAX,
                         play_session_started_at: 123_456,
                         seed: -789,
+                        speed: 4,
                     }])),
                     TableView::Complete(TableRows::Campaign(vec![CampaignRow {
                         id: b"campaign".to_vec(),

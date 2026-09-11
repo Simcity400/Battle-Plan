@@ -50,3 +50,67 @@ pub const MODEL_ENTITY: usize = 0x210;
 pub const LOCKED: usize = 0x235;
 /// CReferencedDivisionTemplate obsolete flag byte, bit0; old native_design_catalog.rs:507.
 pub const OBSOLETE_FLAGS: usize = 0x236;
+
+use crate::{Memory, read};
+
+/// Authenticates a template pointer and returns its full native handle: the
+/// reference type in the low word and the id in the high word. Callers that
+/// accept a null pointer must test for it before calling.
+pub(crate) fn identity(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+) -> Result<u64, &'static str> {
+    let expected = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("division template module address overflow")?;
+    let bytes = read::<[u8; 16]>(memory, pointer).ok_or("division template identity unreadable")?;
+    let handle = u64::from_le_bytes(bytes[8..].try_into().unwrap());
+    if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != expected as u64
+        || handle as u32 != REFERENCE_TYPE
+    {
+        return Err("division template vtable or reference type mismatch");
+    }
+    Ok(handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+
+    #[test]
+    fn full_handle_survives_and_a_wrong_type_word_fails() {
+        let mut bytes = vec![0; 16];
+        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[8..].copy_from_slice(&0xffff_ffff_0000_0034_u64.to_le_bytes());
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        assert_eq!(identity(&memory, 0, 0x1000), Ok(0xffff_ffff_0000_0034));
+        bytes[8] = 0x33;
+        assert_eq!(
+            identity(
+                &SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes
+                },
+                0,
+                0x1000
+            ),
+            Err("division template vtable or reference type mismatch")
+        );
+        assert_eq!(
+            identity(
+                &SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes[..8]
+                },
+                0,
+                0x1000
+            ),
+            Err("division template identity unreadable")
+        );
+    }
+}

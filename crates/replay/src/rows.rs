@@ -9,6 +9,9 @@ pub struct ClockRow {
     pub play_time: u64,
     pub play_session_started_at: i64,
     pub seed: i32,
+    /// Native `CGameState+0x4bc` speed index, clamped to 0..=4 by setter
+    /// the application object behind a virtual call and is not recorded.
+    pub speed: i32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -481,6 +484,15 @@ TheatreAreas = 126 => TheatreArea(TheatreAreaRow),
 StationedUnits = 127 => StationedUnit(StationedUnitRow),
 UnitIntel = 128 => UnitIntel(UnitIntelRow),
 AirBaseRegistrations = 129 => AirBaseRegistration(AirBaseRegistrationRow),
+ProductionLicenses = 130 => ProductionLicense(ProductionLicenseRow),
+DeploymentConveyors = 131 => DeploymentConveyor(DeploymentConveyorRow),
+DeploymentLines = 132 => DeploymentLine(DeploymentLineRow),
+DeploymentManpower = 133 => DeploymentManpower(DeploymentManpowerRow),
+DeploymentEquipment = 134 => DeploymentEquipment(DeploymentEquipmentRow),
+WorldTension = 135 => WorldTension(WorldTensionRow),
+ThreatSources = 136 => ThreatSource(ThreatSourceRow),
+ThreatCountryAggregates = 137 => ThreatCountryAggregate(ThreatCountryAggregateRow),
+ProductionLicenseRecords = 138 => ProductionLicenseRecord(ProductionLicenseRecordRow),
 }
 impl TableId {
     pub const fn index(self) -> usize {
@@ -851,7 +863,7 @@ macro_rules! row_codec {
             { $($index => ($field): $kind),+ }, |$checked| $check);
     };
 }
-row_codec!(ClockRow, 0, |_row| 0, |_key| {  }, {0 => hour: I32, 1 => play_time: U64, 2 => play_session_started_at: I64, 3 => seed: I32}, |_row| Ok(()));
+row_codec!(ClockRow, 0, |_row| 0, |_key| {  }, {0 => hour: I32, 1 => play_time: U64, 2 => play_session_started_at: I64, 3 => seed: I32, 4 => speed: I32}, |_row| Ok(()));
 row_codec!(CampaignRow, 0, |_row| 0, |_key| {  }, {0 => id: Bytes}, |_row| Ok(()));
 row_codec!(CountryRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32, 1 => tag: Bytes, 2 => name: Bytes, 3 => political_power_raw: OptionalI64, 4 => command_power_raw: I64, 5 => stability_raw: I64, 6 => war_support_raw: I64, 7 => convoys_raw: OptionalI64}, |_row| Ok(()));
 row_codec!(CountryLinkRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32}, |_row| Ok(()));
@@ -1408,6 +1420,7 @@ mod tests {
                 play_time: u64::MAX,
                 play_session_started_at: i64::MIN,
                 seed: i32::MAX,
+                speed: i32::MIN,
             },
         );
         round_trip(
@@ -2049,12 +2062,14 @@ mod tests {
                 play_time: 0,
                 play_session_started_at: i64::MIN,
                 seed: i32::MIN,
+                speed: i32::MIN,
             },
             ClockRow {
                 hour: i32::MAX,
                 play_time: u64::MAX,
                 play_session_started_at: i64::MAX,
                 seed: i32::MAX,
+                speed: i32::MAX,
             },
         );
         pair(

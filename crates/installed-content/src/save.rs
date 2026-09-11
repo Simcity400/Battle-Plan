@@ -10,6 +10,7 @@ pub mod intel;
 pub mod naval_history;
 pub mod production;
 pub mod projects;
+pub mod session;
 pub mod weather;
 
 use std::{
@@ -423,6 +424,7 @@ pub struct Save {
     pub naval_history: naval_history::Pack,
     pub production: production::Pack,
     pub projects: projects::Pack,
+    pub session: session::Pack,
     pub weather: weather::Pack,
 }
 
@@ -1349,6 +1351,7 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
             .map_err(|error| pack_error("naval history", error))?,
         production: production::parse(items).map_err(|error| pack_error("production", error))?,
         projects: projects::parse(items).map_err(|error| pack_error("projects", error))?,
+        session: session::parse(items).map_err(|error| pack_error("session", error))?,
         weather: weather::parse(items).map_err(|error| pack_error("weather", error))?,
     })
 }

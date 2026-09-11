@@ -15,7 +15,7 @@ use crate::{
     identity::SessionStart,
 };
 
-pub const RECORD_MAGIC: [u8; 4] = *b"H4S9";
+pub const RECORD_MAGIC: [u8; 4] = *b"H4SA";
 pub const RECORD_HEADER_BYTES: usize = 12;
 pub const MAX_RECORD_BYTES: usize = 128 * 1024 * 1024;
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
@@ -651,7 +651,7 @@ mod tests {
         assert!(recovered.records.is_empty());
         let reason = recovered.damage.unwrap();
         assert!(reason.contains("unsupported spool record magic \"H4S7\""));
-        assert!(reason.contains("expected \"H4S9\""));
+        assert!(reason.contains("expected \"H4SA\""));
     }
 
     #[test]

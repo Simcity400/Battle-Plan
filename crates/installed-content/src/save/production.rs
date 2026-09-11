@@ -4,8 +4,8 @@
 use std::{collections::BTreeMap, io};
 
 use super::{
-    Decimal, block, boolean, bytes, decimal, field, integer, invalid, object_id, required_block,
-    required_bytes, scalar, typed_handle,
+    Decimal, GameDate, block, boolean, bytes, decimal, field, integer, invalid, object_id,
+    required_block, required_bytes, scalar, typed_handle,
 };
 use crate::parser::Item;
 
@@ -24,6 +24,9 @@ pub struct Pack {
 pub struct Country {
     /// CCountry70C580 writes this wrapper unconditionally.
     pub production: Option<Production>,
+    /// CDeploymentStatus writes the whole `deployment` wrapper, which also
+    /// carries configuration fields. An absent wrapper is not an empty queue.
+    pub deployment: Option<Vec<Conveyor>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +35,95 @@ pub struct Production {
     pub lines: Vec<Line>,
     /// E5D3B0 always emits its primary+200 pool under equipments.
     pub stockpile: Option<Pool>,
+    /// E5D3B0 writes the +190 licence container under token 0x37B2 through
+    /// 1424ABB40, so an absent block is malformed rather than an empty licence
+    /// set. Container serializer 141429400 writes two arrays into it: this one
+    /// as bare `available=` typed variant handles in container order (repeated
+    /// handles stay distinct entries), and the licence relations below.
+    pub licenses: Option<Vec<u64>>,
+    /// `owned_license=` entries, in the same container order. Present exactly
+    /// when `licenses` is: the two arrays share one wrapper.
+    pub license_records: Option<Vec<LicenseRecord>>,
+}
+
+/// One CEquipmentProductionLicense as serializer 141429310 writes it. Every
+/// field is unconditional, so a missing one is a malformed save.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LicenseRecord {
+    pub lended_cic: i32,
+    pub required_cic: i32,
+    /// Licensee tag, the country whose roster stores this record.
+    pub owner: Vec<u8>,
+    /// Licensor tag.
+    pub giver: Vec<u8>,
+    pub start_date: GameDate,
+    pub parent: u64,
+    /// Ordered produced-variant handles; repeated handles stay distinct.
+    pub equipment: Vec<u64>,
+}
+
+/// One CMilitaryDeploymentConveyor as serializer 1414247D0 writes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Conveyor {
+    pub id: u64,
+    /// Written by dereferencing +0x20, so a saved conveyor always has one.
+    pub template: u64,
+    pub name: Vec<u8>,
+    pub amount: i32,
+    pub location: u32,
+    pub priority: u32,
+    /// Literal role text from the engine lexer; token zero has its own spelling.
+    pub role: Option<Vec<u8>>,
+    pub closed: Option<bool>,
+    /// 1414247D0 writes the +0x98 country reference under token 0x3ABA only
+    /// when it is positive. The reference is identified but not recorded.
+    pub government_in_exile_tag: Option<Vec<u8>>,
+    pub lines: Vec<DeploymentLine>,
+}
+
+/// One CMilitaryDeploymentLine and the CMilitaryDeployment it owns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeploymentLine {
+    pub id: u64,
+    /// `division_name` block. Serializer 1409BCC70 writes the order word only
+    /// when it is nonzero, so an omitted `name_order` proves a stored zero.
+    pub name_order: Option<i32>,
+    /// Name-object `type` word at +0x08, which 1409BCC70 writes unconditionally.
+    pub name_type: Option<i32>,
+    /// Custom division name held in the name object's +0x88 string. Identified
+    /// but not recorded; its presence is retained so the oracle can say so.
+    pub name_override: Option<Vec<u8>>,
+    pub name_override_programmatic: Option<bool>,
+    pub amount: Option<i32>,
+    pub deployment: Option<Deployment>,
+}
+
+/// CMilitaryDeployment's own saved scalars and containers. Serializer
+/// 1414246F0 omits training, max_training and max_manpower unless the stored
+/// word is strictly positive, the equipment wrapper unless gate 140FFB8F0
+/// finds a nonzero allocation row, the halting reason unless its optional flag
+/// is set and the priority at its default of one, so every field is optional
+/// here and the comparator applies those rules.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Deployment {
+    pub training: Option<Decimal>,
+    pub max_training: Option<Decimal>,
+    pub max_manpower: Option<i32>,
+    pub manpower_have: Option<Vec<ManpowerValue>>,
+    pub manpower_need: Option<Vec<ManpowerValue>>,
+    pub equipment: Option<Pool>,
+    /// `halting_reason` word; 1414246F0 writes it only when the optional's
+    /// `_bIsSet` byte at CMilitaryDeployment+0xc4 is set.
+    pub halting_reason: Option<i32>,
+    /// CEquipmentDistributable priority; 141595070 omits the default of one.
+    pub priority: Option<i32>,
+}
+
+/// One CArmyManpowerValues entry: a country tag and a signed count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManpowerValue {
+    pub tag: Vec<u8>,
+    pub value: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -224,10 +316,23 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
                     .key
                     .as_ref()
                     .ok_or_else(|| invalid("country has no tag"))?;
-                let production = field(block(&country.value)?, b"production")?
+                let fields = block(&country.value)?;
+                let production = field(fields, b"production")?
                     .map(|value| parse_production(block(value)?))
                     .transpose()?;
-                if result.insert(tag.clone(), Country { production }).is_some() {
+                let deployment = field(fields, b"deployment")?
+                    .map(|value| parse_deployment(block(value)?))
+                    .transpose()?;
+                if result
+                    .insert(
+                        tag.clone(),
+                        Country {
+                            production,
+                            deployment,
+                        },
+                    )
+                    .is_some()
+                {
                     return Err(invalid("duplicate production country tag"));
                 }
             }
@@ -242,6 +347,23 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
 }
 
 fn parse_production(items: &[Item]) -> io::Result<Production> {
+    let container = field(items, b"production_licenses")?
+        .map(block)
+        .transpose()?;
+    if let Some(container) = container {
+        // Both published arrays share this wrapper; an unmodelled key would be
+        // a third array this parser cannot account for.
+        if let Some(key) = container.iter().find_map(|item| {
+            item.key
+                .as_deref()
+                .filter(|key| !matches!(*key, b"available" | b"owned_license"))
+        }) {
+            return Err(invalid(format!(
+                "saved licence container holds unmodelled key {}",
+                String::from_utf8_lossy(key)
+            )));
+        }
+    }
     let mut lines = Vec::new();
     for item in items {
         let kind = match item.key.as_deref() {
@@ -270,7 +392,157 @@ fn parse_production(items: &[Item]) -> io::Result<Production> {
         stockpile: field(items, b"equipments")?
             .map(|value| parse_pool(block(value)?))
             .transpose()?,
+        licenses: container
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| item.key.as_deref() == Some(b"available"))
+                    .map(|item| typed_handle(&item.value))
+                    .collect::<io::Result<Vec<_>>>()
+            })
+            .transpose()?,
+        license_records: container
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| item.key.as_deref() == Some(b"owned_license"))
+                    .map(|item| parse_license_record(block(&item.value)?))
+                    .collect::<io::Result<Vec<_>>>()
+            })
+            .transpose()?,
     })
+}
+
+fn parse_license_record(items: &[Item]) -> io::Result<LicenseRecord> {
+    let mut equipment = Vec::new();
+    for item in items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"equipment"))
+    {
+        equipment.push(typed_handle(&item.value)?);
+    }
+    Ok(LicenseRecord {
+        lended_cic: integer(&required_bytes(items, b"lended_cic")?)?,
+        required_cic: integer(&required_bytes(items, b"required_cic")?)?,
+        owner: required_bytes(items, b"owner")?,
+        giver: required_bytes(items, b"giver")?,
+        start_date: GameDate::parse(&required_bytes(items, b"start_date")?)?,
+        parent: typed_handle(
+            field(items, b"parent")?
+                .ok_or_else(|| invalid("saved licence record lacks its parent variant"))?,
+        )?,
+        equipment,
+    })
+}
+
+/// The `deployment` wrapper also carries configuration blocks; only the
+/// conveyor entries are queue state, and their native order is preserved.
+fn parse_deployment(items: &[Item]) -> io::Result<Vec<Conveyor>> {
+    let mut conveyors = Vec::new();
+    for item in items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"military_deployment_conveyor"))
+    {
+        let fields = block(&item.value)?;
+        let mut lines = Vec::new();
+        for line in fields
+            .iter()
+            .filter(|line| line.key.as_deref() == Some(b"military_deployment_line"))
+        {
+            lines.push(parse_deployment_line(block(&line.value)?)?);
+        }
+        conveyors.push(Conveyor {
+            id: object_id(fields)?,
+            template: typed_handle(
+                field(fields, b"division_template_id")?
+                    .ok_or_else(|| invalid("saved conveyor lacks its division template"))?,
+            )?,
+            name: bytes(fields, b"name")?.unwrap_or_default(),
+            amount: integer(&required_bytes(fields, b"amount")?)?,
+            location: integer(&required_bytes(fields, b"location")?)?,
+            priority: integer(&required_bytes(fields, b"priority")?)?,
+            role: bytes(fields, b"role")?,
+            closed: field(fields, b"closed")?.map(boolean).transpose()?,
+            government_in_exile_tag: bytes(fields, b"government_in_exile_tag")?,
+            lines,
+        });
+    }
+    Ok(conveyors)
+}
+
+fn parse_deployment_line(items: &[Item]) -> io::Result<DeploymentLine> {
+    let name = field(items, b"division_name")?.map(block).transpose()?;
+    Ok(DeploymentLine {
+        id: object_id(items)?,
+        name_order: name
+            .map(|name| field(name, b"name_order"))
+            .transpose()?
+            .flatten()
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        name_type: name
+            .map(|name| field(name, b"type"))
+            .transpose()?
+            .flatten()
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        name_override: name
+            .map(|name| bytes(name, b"override"))
+            .transpose()?
+            .flatten(),
+        name_override_programmatic: name
+            .map(|name| field(name, b"override_set_programmatically"))
+            .transpose()?
+            .flatten()
+            .map(boolean)
+            .transpose()?,
+        amount: field(items, b"amount")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        deployment: field(items, b"military_deployment")?
+            .map(|value| parse_deployment_object(block(value)?))
+            .transpose()?,
+    })
+}
+
+fn parse_deployment_object(items: &[Item]) -> io::Result<Deployment> {
+    Ok(Deployment {
+        training: decimal(items, b"training")?,
+        max_training: decimal(items, b"max_training")?,
+        max_manpower: field(items, b"max_manpower")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        manpower_have: parse_manpower(items, b"army_manpower_value")?,
+        manpower_need: parse_manpower(items, b"army_manpower_need")?,
+        equipment: field(items, b"equipment")?
+            .map(|value| parse_pool(block(value)?))
+            .transpose()?,
+        halting_reason: field(items, b"halting_reason")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        priority: field(items, b"priority")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+    })
+}
+
+fn parse_manpower(items: &[Item], key: &[u8]) -> io::Result<Option<Vec<ManpowerValue>>> {
+    field(items, key)?
+        .map(|value| {
+            let mut values = Vec::new();
+            for entry in block(value)? {
+                if entry.key.as_deref() != Some(b"value") {
+                    return Err(invalid("saved manpower container holds a foreign key"));
+                }
+                let entry = block(&entry.value)?;
+                values.push(ManpowerValue {
+                    tag: required_bytes(entry, b"tag")?,
+                    value: integer(&required_bytes(entry, b"value")?)?,
+                });
+            }
+            Ok(values)
+        })
+        .transpose()
 }
 
 fn parse_variant(id: u64, definition: &[u8], items: &[Item]) -> io::Result<Variant> {
@@ -623,5 +895,210 @@ mod tests {
             group.deliveries[0].produced.equipment[0].amount.raw,
             i64::MIN
         );
+    }
+
+    fn pack(text: &[u8]) -> io::Result<Pack> {
+        parse(&crate::parser::parse(text)?.items)
+    }
+
+    const QUEUE: &[u8] = br#"countries={
+GER={
+production={
+    production_licenses={
+        available={ id=5061 type=70 }
+        available={ id=5061 type=70 }
+        owned_license={ lended_cic=-1 required_cic=2147483647 owner="LAT" giver="ENG"
+                        start_date="1939.5.10.1" parent={ id=1441 type=70 }
+                        equipment={ id=5061 type=70 } equipment={ id=5061 type=70 } }
+    }
+}
+deployment={
+    unlocked_subunits={ { infantry yes} }
+    military_deployment_conveyor={
+        id={ id=433 type=64 }
+        division_template_id={ id=2526 type=52 }
+        name="Medium Tank 1942 C"
+        amount=-1
+        location=6103
+        priority=1
+        role=armor
+        closed=no
+        military_deployment_line={
+            id={ id=7067 type=63 }
+            division_name={ type=0 override="1. Light Tank" override_set_programmatically=yes }
+            amount=1
+            military_deployment={
+                army_manpower_value={ }
+                army_manpower_need={ }
+                halting_reason=1
+                priority=3
+            }
+        }
+        military_deployment_line={
+            id={ id=7066 type=63 }
+            division_name={ type=0 name_order=4 }
+            amount=1
+            military_deployment={
+                training=0.00001
+                max_training=0.98799
+                army_manpower_value={ value={ tag="ENG" value=10620 } value={ tag="GER" value=1 } }
+                army_manpower_need={ }
+                equipment={
+                    equipment={ id={ id=5553 type=70 } amount=16 }
+                    allow_zero_entries=no
+                }
+                max_manpower=10620
+            }
+        }
+    }
+    military_deployment_conveyor={
+        id={ id=434 type=64 }
+        division_template_id={ id=1 type=52 }
+        name=""
+        amount=0
+        location=0
+        priority=0
+        role=infantry
+        closed=yes
+        government_in_exile_tag="ETH"
+    }
+}
+}
+}"#;
+
+    #[test]
+    fn licences_and_the_deployment_queue_keep_order_duplicates_and_signed_words() {
+        let saved = pack(QUEUE).unwrap();
+        let country = &saved.countries.unwrap()[b"GER".as_slice()];
+        let licenses = country
+            .production
+            .as_ref()
+            .unwrap()
+            .licenses
+            .clone()
+            .unwrap();
+        assert_eq!(licenses.len(), 2);
+        assert_eq!(licenses[0], (5061_u64 << 32) | 70);
+        assert_eq!(licenses[0], licenses[1]);
+
+        let records = country
+            .production
+            .as_ref()
+            .unwrap()
+            .license_records
+            .clone()
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].lended_cic, -1);
+        assert_eq!(records[0].required_cic, i32::MAX);
+        assert_eq!(records[0].owner, b"LAT");
+        assert_eq!(records[0].giver, b"ENG");
+        assert_eq!(records[0].parent, (1441_u64 << 32) | 70);
+        assert_eq!(records[0].equipment, vec![(5061_u64 << 32) | 70; 2]);
+        assert_eq!(records[0].start_date.year, 1939);
+
+        let queue = country.deployment.clone().unwrap();
+        assert_eq!(queue.len(), 2);
+        assert_eq!(
+            queue[1].government_in_exile_tag.as_deref(),
+            Some(b"ETH".as_slice())
+        );
+        // A custom-named line omits name_order and carries an override name;
+        // an untrained deployment omits training, max_training and equipment.
+        let custom = &queue[0].lines[0];
+        assert_eq!(custom.name_order, None);
+        assert_eq!(
+            custom.name_override.as_deref(),
+            Some(b"1. Light Tank".as_slice())
+        );
+        assert_eq!(custom.name_override_programmatic, Some(true));
+        let untrained = custom.deployment.as_ref().unwrap();
+        assert_eq!(untrained.training, None);
+        assert_eq!(untrained.max_training, None);
+        assert_eq!(untrained.equipment, None);
+        assert_eq!(untrained.max_manpower, None);
+        assert_eq!(untrained.halting_reason, Some(1));
+        assert_eq!(untrained.priority, Some(3));
+        assert_eq!(queue[0].id, (433_u64 << 32) | 64);
+        assert_eq!(queue[0].template, (2526_u64 << 32) | 52);
+        assert_eq!(queue[0].name, b"Medium Tank 1942 C");
+        assert_eq!(queue[0].amount, -1);
+        assert_eq!(queue[0].location, 6103);
+        assert_eq!(queue[0].priority, 1);
+        assert_eq!(queue[0].role.as_deref(), Some(b"armor".as_slice()));
+        assert_eq!(queue[0].closed, Some(false));
+        assert_eq!(queue[1].closed, Some(true));
+        assert!(queue[1].lines.is_empty());
+        assert_eq!(queue[1].name, b"");
+
+        let line = &queue[0].lines[1];
+        assert_eq!(line.id, (7066_u64 << 32) | 63);
+        assert_eq!(line.name_order, Some(4));
+        assert_eq!(line.name_type, Some(0));
+        assert_eq!(line.amount, Some(1));
+        let deployment = line.deployment.as_ref().unwrap();
+        assert_eq!(deployment.training.as_ref().unwrap().raw, 1);
+        assert_eq!(deployment.max_training.as_ref().unwrap().raw, 98_799);
+        assert_eq!(deployment.max_manpower, Some(10_620));
+        assert_eq!(
+            deployment.manpower_have.as_ref().unwrap(),
+            &[
+                ManpowerValue {
+                    tag: b"ENG".to_vec(),
+                    value: 10_620
+                },
+                ManpowerValue {
+                    tag: b"GER".to_vec(),
+                    value: 1
+                },
+            ]
+        );
+        assert_eq!(deployment.manpower_need.as_ref().unwrap(), &Vec::new());
+        assert_eq!(deployment.priority, None);
+        let pool = deployment.equipment.as_ref().unwrap();
+        assert_eq!(pool.allow_zero_entries, Some(false));
+        assert_eq!(pool.equipment[0].variant, (5553_u64 << 32) | 70);
+        assert_eq!(pool.equipment[0].amount.raw, 1_600_000);
+    }
+
+    #[test]
+    fn absent_containers_stay_absent_and_foreign_keys_are_refused() {
+        let saved = pack(b"countries={GER={production={}}}").unwrap();
+        let country = &saved.countries.unwrap()[b"GER".as_slice()];
+        assert_eq!(country.production.as_ref().unwrap().licenses, None);
+        assert_eq!(country.production.as_ref().unwrap().license_records, None);
+        assert_eq!(country.deployment, None);
+        let empty = pack(b"countries={GER={production={production_licenses={}} deployment={}}}")
+            .unwrap()
+            .countries
+            .unwrap();
+        let country = &empty[b"GER".as_slice()];
+        assert_eq!(
+            country.production.as_ref().unwrap().licenses,
+            Some(Vec::new())
+        );
+        assert_eq!(
+            country.production.as_ref().unwrap().license_records,
+            Some(Vec::new())
+        );
+        assert_eq!(country.deployment, Some(Vec::new()));
+        for text in [
+            "countries={GER={production={production_licenses={ owned={ id=1 type=70 } }}}}",
+            r#"countries={GER={production={production_licenses={ owned_license={
+                required_cic=0 owner="A" giver="B" start_date="1936.1.1.1"
+                parent={ id=1 type=70 } }}}}}"#,
+            r#"countries={GER={production={production_licenses={ owned_license={
+                lended_cic=0 required_cic=0 owner="A" giver="B" start_date="1936.1.1.1" }}}}}"#,
+            "countries={GER={deployment={military_deployment_conveyor={ name=x }}}}",
+            r#"countries={GER={deployment={military_deployment_conveyor={
+                id={ id=1 type=64 } name=x amount=0 location=0 priority=0 }}}}"#,
+            r#"countries={GER={deployment={military_deployment_conveyor={
+                id={ id=1 type=64 } division_template_id={ id=1 type=52 }
+                name=x amount=0 location=0 priority=0
+                military_deployment_line={ id={ id=2 type=63 } military_deployment={
+                    army_manpower_value={ tag={ tag="ENG" value=1 } } } } }}}}"#,
+        ] {
+            assert!(pack(text.as_bytes()).is_err(), "{text}");
+        }
     }
 }

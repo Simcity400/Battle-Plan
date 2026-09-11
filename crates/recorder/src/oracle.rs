@@ -29,6 +29,7 @@ mod intel;
 mod naval_history;
 mod production;
 mod projects;
+mod session;
 mod weather;
 
 type TokenNames<'a> = BTreeMap<u32, &'a [u8]>;
@@ -1080,6 +1081,14 @@ fn compare_extended(
             &save.projects,
             &required_context("country links", &countries)?.links,
             required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
+    report.attempt("session", |report| {
+        session::compare(
+            frame,
+            save,
+            &required_context("country links", &countries)?.links,
             report,
         )
     });
