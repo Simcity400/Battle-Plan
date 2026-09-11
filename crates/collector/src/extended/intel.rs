@@ -6,11 +6,12 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_vec},
 };
 use engine::{
-    Memory, ccountry, ccountry_intel_network, ccountry_operation_manager,
+    Memory, ccountry, ccountry_intel, ccountry_intel_network, ccountry_operation_manager,
     ccountry_operation_token_manager, ccryptology, ccurrent_autonomy_status, cdiplomacy_status,
     cflag_manager, cgame_state, cintelligence_agency, coperation_instance, coperative_leader,
+    country_intel_row,
     cpdx_array::Array,
-    cscript_flag, cstate,
+    crelation_status, cscript_flag, cstate,
     csubject_relation::{self, Name},
     cvariables, incoming_diplomatic_action_queue, operation_assigned_operative, read, read_slice,
     walk::Outcome,
@@ -21,7 +22,7 @@ use replay::{
 };
 use std::mem::size_of;
 
-pub const N: usize = 13;
+pub const N: usize = 16;
 pub const TABLES: [TableId; N] = [
     TableId::Capitulation,
     TableId::Subjects,
@@ -36,11 +37,18 @@ pub const TABLES: [TableId; N] = [
     TableId::OperationAssignments,
     TableId::OperationTokens,
     TableId::IncomingDiplomaticActions,
+    TableId::RelationOpinions,
+    TableId::RelationTuples,
+    TableId::CountryIntel,
 ];
-/// The operation walker supplies both tables in one census. Its entire cost,
-/// including whichever independent second reads are needed, is charged once.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("operations and assigned slots", 9, &[9, 10])];
+/// The operation walker supplies both tables in one census, and one relation
+/// matrix pass supplies the cached opinions and the typed tuples. Each group's
+/// entire cost, including whichever independent second reads are needed, is
+/// charged once to its anchor.
+pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
+    ("operations and assigned slots", 9, &[9, 10]),
+    ("relation opinions and typed tuples", 13, &[13, 14]),
+];
 
 pub const GLOBAL_SCOPE: u8 = 0;
 pub const COUNTRY_SCOPE: u8 = 1;
@@ -49,6 +57,9 @@ pub const STATE_SCOPE: u8 = 2;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: [usize; N],
+    /// Bytes of caller-owned scratch for the bulk intel-record copies. This is a
+    /// fixed copy window, not a row capacity, so `grow` never raises it.
+    pub intel_scratch: usize,
     pub subject_names: usize,
     pub autonomy_names: usize,
     pub variable_entries: usize,
@@ -60,8 +71,10 @@ impl Default for Capacities {
     fn default() -> Self {
         Self {
             rows: [
-                512, 256, 256, 512, 4096, 4096, 16_384, 8192, 2048, 2048, 8192, 4096, 512,
+                512, 256, 256, 512, 4096, 4096, 16_384, 8192, 2048, 2048, 8192, 4096, 512, 16_384,
+                4096, 65_536,
             ],
+            intel_scratch: 16_384,
             subject_names: 16_384,
             autonomy_names: 32_768,
             variable_entries: 16_384,
@@ -92,6 +105,10 @@ pub struct Captured {
     assignments: CaptureRows<operation_assigned_operative::Row>,
     operation_tokens: CaptureRows<ccountry_operation_token_manager::Row>,
     incoming_actions: CaptureRows<incoming_diplomatic_action_queue::Row>,
+    relation_opinions: CaptureRows<crelation_status::OpinionRow>,
+    relation_tuples: CaptureRows<crelation_status::TupleRow>,
+    country_intel: CaptureRows<country_intel_row::Row>,
+    intel_scratch: Vec<u8>,
     subject_names: Arena<u8>,
     autonomy_names: Arena<u8>,
     variable_entries: Arena<cvariables::Row>,
@@ -104,6 +121,7 @@ impl Captured {
     /// Every slice and returned array uses local TABLES order.
     pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
         let operations_successful = successful[9].min(successful[10]);
+        let relations_successful = successful[13].min(successful[14]);
         Self {
             capitulation: CaptureRows::new(capacity.rows[0], successful[0]),
             subjects: CaptureRows::new(capacity.rows[1], successful[1]),
@@ -118,6 +136,10 @@ impl Captured {
             assignments: CaptureRows::new(capacity.rows[10], operations_successful),
             operation_tokens: CaptureRows::new(capacity.rows[11], successful[11]),
             incoming_actions: CaptureRows::new(capacity.rows[12], successful[12]),
+            relation_opinions: CaptureRows::new(capacity.rows[13], relations_successful),
+            relation_tuples: CaptureRows::new(capacity.rows[14], relations_successful),
+            country_intel: CaptureRows::new(capacity.rows[15], successful[15]),
+            intel_scratch: vec![0; capacity.intel_scratch],
             subject_names: Arena::new(capacity.subject_names, successful[1]),
             autonomy_names: Arena::new(capacity.autonomy_names, successful[2]),
             variable_entries: Arena::new(capacity.variable_entries, successful[8]),
@@ -141,6 +163,9 @@ impl Captured {
         self.assignments.reset();
         self.operation_tokens.reset();
         self.incoming_actions.reset();
+        self.relation_opinions.reset();
+        self.relation_tuples.reset();
+        self.country_intel.reset();
         self.subject_names.reset();
         self.autonomy_names.reset();
         self.variable_entries.reset();
@@ -162,6 +187,10 @@ impl Captured {
             + self.assignments.allocated_bytes()
             + self.operation_tokens.allocated_bytes()
             + self.incoming_actions.allocated_bytes()
+            + self.relation_opinions.allocated_bytes()
+            + self.relation_tuples.allocated_bytes()
+            + self.country_intel.allocated_bytes()
+            + self.intel_scratch.capacity()
             + self.subject_names.allocated_bytes()
             + self.autonomy_names.allocated_bytes()
             + self.variable_entries.allocated_bytes()
@@ -172,6 +201,7 @@ impl Captured {
 
     pub fn grow(&mut self, capacity: &mut Capacities, successful: &[u16]) {
         let operations_successful = successful[9].min(successful[10]);
+        let relations_successful = successful[13].min(successful[14]);
         self.capitulation.grow(&mut capacity.rows[0], successful[0]);
         self.subjects.grow(&mut capacity.rows[1], successful[1]);
         self.autonomy.grow(&mut capacity.rows[2], successful[2]);
@@ -189,6 +219,15 @@ impl Captured {
             .grow(&mut capacity.rows[11], successful[11]);
         self.incoming_actions
             .grow(&mut capacity.rows[12], successful[12]);
+        self.relation_opinions
+            .grow(&mut capacity.rows[13], relations_successful);
+        self.relation_tuples
+            .grow(&mut capacity.rows[14], relations_successful);
+        self.country_intel.grow(&mut capacity.rows[15], successful[15]);
+        // The intel scratch is a fixed copy window, not a row capacity: it bounds
+        // how many 0x20-byte records one bulk copy moves, and a country longer
+        // than the window is copied in several passes rather than truncated. It
+        // therefore never grows with observed row counts.
         self.subject_names
             .grow(&mut capacity.subject_names, successful[1]);
         self.autonomy_names
@@ -327,6 +366,47 @@ impl Captured {
             incoming_actions,
             incoming_diplomatic_action_queue::walk
         );
+
+        let begin = qpc();
+        let first = crelation_status::walk(
+            memory,
+            base,
+            state,
+            &mut self.relation_opinions.rows,
+            &mut self.relation_tuples.rows,
+        );
+        self.relation_opinions.outcome =
+            bounded(first.opinions, self.relation_opinions.rows.len());
+        self.relation_tuples.outcome = bounded(first.tuples, self.relation_tuples.rows.len());
+        if needed[13] || needed[14] {
+            let second = crelation_status::walk(
+                memory,
+                base,
+                state,
+                &mut self.relation_opinions.second,
+                &mut self.relation_tuples.second,
+            );
+            if needed[13] {
+                self.relation_opinions.checked = true;
+                matched[13] = self
+                    .relation_opinions
+                    .compare(bounded(second.opinions, self.relation_opinions.second.len()));
+            }
+            if needed[14] {
+                self.relation_tuples.checked = true;
+                matched[14] = self
+                    .relation_tuples
+                    .compare(bounded(second.tuples, self.relation_tuples.second.len()));
+            }
+        }
+        ticks[13] = elapsed(begin);
+        // ticks[14] stays zero because the named group above owns its reads.
+
+        let begin = qpc();
+        matched[15] = capture_rows(&mut self.country_intel, needed[15], |rows| {
+            ccountry_intel::walk(memory, base, state, rows, &mut self.intel_scratch)
+        });
+        ticks[15] = elapsed(begin);
         (matched, ticks)
     }
 
@@ -345,6 +425,9 @@ impl Captured {
             effective(&self.assignments),
             effective(&self.operation_tokens),
             effective(&self.incoming_actions),
+            effective(&self.relation_opinions),
+            effective(&self.relation_tuples),
+            effective(&self.country_intel),
         ]
     }
 
@@ -363,6 +446,9 @@ impl Captured {
             self.assignments.mismatches,
             self.operation_tokens.mismatches,
             self.incoming_actions.mismatches,
+            self.relation_opinions.mismatches,
+            self.relation_tuples.mismatches,
+            self.country_intel.mismatches,
         ]
     }
 
@@ -456,6 +542,24 @@ impl Captured {
                     last_command_hour: r.last_command_hour,
                 },
             ),
+            table::<tables::RelationOpinions, _>(outcomes[13], &self.relation_opinions.rows, |r| {
+                rows::RelationOpinionRow {
+                    owner_country: r.owner_country,
+                    target_country: r.target_country,
+                    opinion: r.opinion,
+                }
+            }),
+            self.relation_tuples_table(outcomes[14]),
+            table::<tables::CountryIntel, _>(outcomes[15], &self.country_intel.rows, |r| {
+                rows::CountryIntelRow {
+                    owner_country: r.owner_country,
+                    target_index: r.target_index,
+                    civilian: r.civilian,
+                    army: r.army,
+                    navy: r.navy,
+                    air: r.air,
+                }
+            }),
         ]
     }
 }
@@ -582,6 +686,32 @@ impl Captured {
             duration_days: r.duration_days,
             phase_count: r.phase_count,
             assigned_slots: r.assigned_slots,
+        })
+    }
+
+    /// The wire ordinal is the native serializable-vector index, so a native
+    /// vector longer than the wire width cannot be represented and refuses the
+    /// table rather than aliasing two relations onto one key.
+    fn relation_tuples_table(&self, outcome: Outcome) -> TableView {
+        if self.relation_tuples.rows[..outcome.len()]
+            .iter()
+            .any(|row| u16::try_from(row.ordinal).is_err())
+        {
+            return unavailable("relation tuple ordinal exceeds its wire width");
+        }
+        table::<tables::RelationTuples, _>(outcome, &self.relation_tuples.rows, |r| {
+            rows::RelationTupleRow {
+                owner_country: r.owner_country,
+                target_country: r.target_country,
+                type_id: r.type_id,
+                ordinal: r.ordinal as u16,
+                first_country: r.first_country,
+                second_country: r.second_country,
+                start_hour: r.start_hour,
+                end_hour: r.end_hour,
+                cancel: r.cancel,
+                retired: r.retired,
+            }
         })
     }
 
@@ -1064,6 +1194,7 @@ mod tests {
     fn small() -> (Capacities, Captured) {
         let capacities = Capacities {
             rows: [3; N],
+            intel_scratch: 2 * engine::country_intel_row::STRIDE,
             subject_names: 8,
             autonomy_names: 8,
             variable_entries: 4,
@@ -1465,7 +1596,10 @@ mod tests {
         assert!(capture.allocated_bytes() < before);
         assert_eq!(
             READ_GROUPS,
-            &[("operations and assigned slots", 9, &[9, 10][..])]
+            &[
+                ("operations and assigned slots", 9, &[9, 10][..]),
+                ("relation opinions and typed tuples", 13, &[13, 14][..]),
+            ]
         );
     }
 

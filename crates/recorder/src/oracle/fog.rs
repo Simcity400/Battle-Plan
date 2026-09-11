@@ -388,7 +388,7 @@ mod tests {
     fn saved() -> save::Save {
         parse(
             br#"HOI4txt
-date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0
+date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
 countries={
  GER={
   received_air_volunteer_permission={ tag=SOV count=3 }

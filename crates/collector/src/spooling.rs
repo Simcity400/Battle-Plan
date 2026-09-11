@@ -1078,6 +1078,7 @@ fn decoded_with_costs(
         (None, _) | (_, None) => Some("clock unreadable around table walk"),
         _ => None,
     };
+    let counters = captured.counters;
     let tables = if let Some(reason) = failure {
         std::array::from_fn(|_| unavailable(reason))
     } else {
@@ -1100,6 +1101,21 @@ fn decoded_with_costs(
                 play_session_started_at: clock.play_session_started_at,
                 seed: clock.seed,
                 speed: clock.speed,
+                debug_current_ref_id: counters.and_then(|c| c.debug_current_ref_id),
+                unit: counters.and_then(|c| c.unit),
+                order_index: counters.and_then(|c| c.order_index),
+                front_index: counters.and_then(|c| c.front_index),
+                theatre_index: counters.and_then(|c| c.theatre_index),
+                theater_group_index: counters.and_then(|c| c.theater_group_index),
+                military_deployment_line_index: counters
+                    .and_then(|c| c.military_deployment_line_index),
+                military_deployment_conveyor_index: counters
+                    .and_then(|c| c.military_deployment_conveyor_index),
+                equipment_variant_index: counters.and_then(|c| c.equipment_variant_index),
+                country_leader_index: counters.and_then(|c| c.country_leader_index),
+                navy_id: counters.and_then(|c| c.navy_id),
+                land_combat_id: counters.and_then(|c| c.land_combat_id),
+                multiplayer_random_count: counters.and_then(|c| c.multiplayer_random_count),
             }])),
             TableView::Complete(TableRows::Campaign(vec![CampaignRow {
                 id: clock.campaign_id.as_bytes().to_vec(),

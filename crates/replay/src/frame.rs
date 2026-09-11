@@ -654,6 +654,19 @@ mod tests {
                         play_session_started_at: 123_456,
                         seed: -789,
                         speed: 4,
+                        debug_current_ref_id: Some(u32::MAX),
+                        unit: Some(4012),
+                        order_index: Some(7693),
+                        front_index: Some(8230),
+                        theatre_index: Some(112),
+                        theater_group_index: Some(924),
+                        military_deployment_line_index: Some(7841),
+                        military_deployment_conveyor_index: Some(744),
+                        equipment_variant_index: Some(6295),
+                        country_leader_index: Some(1),
+                        navy_id: Some(8263),
+                        land_combat_id: Some(15_359),
+                        multiplayer_random_count: Some(-1_333_963_091),
                     }])),
                     TableView::Complete(TableRows::Campaign(vec![CampaignRow {
                         id: b"campaign".to_vec(),
@@ -843,16 +856,18 @@ mod tests {
         );
         assert_eq!(input.remaining(), padding);
 
-        let mut bytes = 2_u32.to_le_bytes().to_vec();
-        bytes.resize(68, 0);
         for table in [TableId::Clock, TableId::Campaign] {
+            // Enough payload for two rows, so the singleton rule is what refuses it.
+            let payload = 2 * table.minimum_row_bytes();
+            let mut bytes = 2_u32.to_le_bytes().to_vec();
+            bytes.resize(4 + payload, 0);
             let mut input = Decoder::new(&bytes);
             let error = decode_rows(table, &mut input).unwrap_err();
             assert_eq!(
                 error.to_string(),
                 "singleton table cannot contain multiple rows"
             );
-            assert_eq!(input.remaining(), 64);
+            assert_eq!(input.remaining(), payload);
         }
     }
 

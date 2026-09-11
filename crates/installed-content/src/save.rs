@@ -257,6 +257,67 @@ pub struct Division {
     pub country_intel: Vec<IntelEntry>,
 }
 
+/// The engine's monotonic allocation counters as the save header serializes
+/// absent key is a header change rather than a default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AllocationCounters {
+    /// Written through the unsigned formatter, unlike every other counter.
+    pub debug_current_ref_id: u32,
+    pub unit: i32,
+    pub order_index: i32,
+    pub front_index: i32,
+    pub theatre_index: i32,
+    pub theater_group_index: i32,
+    pub military_deployment_line_index: i32,
+    pub military_deployment_conveyor_index: i32,
+    pub equipment_variant_index: i32,
+    pub country_leader_index: i32,
+    pub navy_id: i32,
+    pub land_combat_id: i32,
+    pub multiplayer_random_count: i32,
+}
+
+/// One `countries.<tag>.diplomacy.active_relations.<target>` record's cached
+/// opinion. Relation-status writer D19300 emits `cached_sum` only when the
+/// native dword is nonzero, so an absent key proves an exact zero.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelationOpinion {
+    pub owner: Vec<u8>,
+    pub target: Vec<u8>,
+    pub cached_sum: i32,
+}
+
+/// One typed relation block under an `active_relations` target. The key spelling
+/// is the relation class's own token, so the comparator joins on it rather than
+/// on a reconstructed name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelationTuple {
+    pub owner: Vec<u8>,
+    pub target: Vec<u8>,
+    /// The literal block key, which is the CRelation type token's spelling.
+    pub kind: Vec<u8>,
+    /// Native order within this target's relation blocks.
+    pub ordinal: u32,
+    pub first: Vec<u8>,
+    pub second: Vec<u8>,
+    /// CRelation writer D19260 omits this exactly when cancel is set.
+    pub start_date: Option<GameDate>,
+    /// Omission proves end <= start, not a particular raw end-hour default.
+    pub end_date: Option<GameDate>,
+    pub cancel: bool,
+}
+
+/// One record of a country's positional four-lane intel list. Record writer
+/// 141085bf0 omits a lane exactly when its raw qword is zero and writes every
+/// present lane through the fixed5 path, so each lane's raw value is exact.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CountryIntelRecord {
+    pub civilian: i64,
+    pub army: i64,
+    pub navy: i64,
+    pub air: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WarRelation {
     /// Enclosing countries.<tag>, retained independently of the explicit first.
@@ -392,6 +453,8 @@ pub struct Save {
     pub campaign_id: Vec<u8>,
     pub version: Vec<u8>,
     pub seed: i32,
+    /// The save header's own allocation counters at the instant it was written.
+    pub counters: AllocationCounters,
     pub countries: BTreeMap<Vec<u8>, Country>,
     pub states: BTreeMap<u32, State>,
     /// Sparse: absent entries are not evidence of a missing engine province.
@@ -400,6 +463,14 @@ pub struct Save {
     pub divisions: BTreeMap<u64, Division>,
     /// One first-owned entry per ordered country pair, not a grouped war ID.
     pub war_relations: Vec<WarRelation>,
+    /// Every saved `cached_sum`; a pair without one held an exact zero opinion.
+    pub relation_opinions: Vec<RelationOpinion>,
+    /// Every typed relation block except `war_relation`, which has its own table.
+    pub relation_tuples: Vec<RelationTuple>,
+    /// Per-country positional intel list, indexed by the target's canonical
+    /// country-link slot; a country without a list held no records at all,
+    /// which is a different fact from a list of all-zero records.
+    pub country_intel: BTreeMap<Vec<u8>, Vec<CountryIntelRecord>>,
     pub factions: BTreeMap<u64, Faction>,
     /// The saved header preserves repeated country keys and may retain users
     /// absent from the live roster; it is not a current-player census.
@@ -805,6 +876,117 @@ fn parse_war_relation(
     })
 }
 
+/// The two relation classes whose rows belong to other recorded tables:
+/// `CWarRelation` (WarRelations) and `CSubjectRelation` (Subjects). They still
+/// occupy an ordinal because the native serializable vector holds them too.
+/// Every other relation-shaped block becomes a RelationTuple, so a class this
+/// build spells differently is reported as a difference rather than dropped.
+pub const OWN_TABLE_RELATION_KINDS: [&[u8]; 2] = [b"war_relation", b"puppet"];
+
+fn parse_allocation_counters(items: &[Item]) -> io::Result<AllocationCounters> {
+    let value = |key: &[u8]| -> io::Result<i32> { integer(&required_bytes(items, key)?) };
+    Ok(AllocationCounters {
+        debug_current_ref_id: integer(&required_bytes(items, b"debug_current_ref_id")?)?,
+        unit: value(b"unit")?,
+        order_index: value(b"order_index")?,
+        front_index: value(b"front_index")?,
+        theatre_index: value(b"theatre_index")?,
+        theater_group_index: value(b"theater_group_index")?,
+        military_deployment_line_index: value(b"military_deployment_line_index")?,
+        military_deployment_conveyor_index: value(b"military_deployment_conveyor_index")?,
+        equipment_variant_index: value(b"equipment_variant_index")?,
+        country_leader_index: value(b"country_leader_index")?,
+        navy_id: value(b"navy_id")?,
+        land_combat_id: value(b"land_combat_id")?,
+        multiplayer_random_count: value(b"multiplayer_random_count")?,
+    })
+}
+
+fn parse_relation_tuple(
+    owner: &[u8],
+    target: &[u8],
+    kind: &[u8],
+    ordinal: u32,
+    items: &[Item],
+) -> io::Result<RelationTuple> {
+    let cancel = field(items, b"cancel")?.map(boolean).transpose()?;
+    if cancel == Some(false) {
+        return Err(invalid(
+            "relation explicitly saves cancel=no; native writer omits an unset cancel flag",
+        ));
+    }
+    let cancel = cancel.unwrap_or(false);
+    let start_date = bytes(items, b"start_date")?
+        .map(|bytes| GameDate::parse(&bytes))
+        .transpose()?;
+    if cancel == start_date.is_some() {
+        return Err(invalid(
+            "relation must save start_date exactly when cancel is unset",
+        ));
+    }
+    let end_date = bytes(items, b"end_date")?
+        .map(|bytes| GameDate::parse(&bytes))
+        .transpose()?;
+    if let (Some(start), Some(end)) = (start_date, end_date)
+        && end.engine_hour()? <= start.engine_hour()?
+    {
+        return Err(invalid(
+            "relation saves end_date only when it is after start_date",
+        ));
+    }
+    Ok(RelationTuple {
+        owner: owner.to_vec(),
+        target: target.to_vec(),
+        kind: kind.to_vec(),
+        ordinal,
+        first: required_bytes(items, b"first")?,
+        second: required_bytes(items, b"second")?,
+        start_date,
+        end_date,
+        cancel,
+    })
+}
+
+/// The list is positional: every element is an anonymous block whose lanes the
+/// writer emits in a fixed order and only when their raw qword is nonzero, so
+/// an omitted lane is an exact zero and an empty block is four exact zeroes.
+fn parse_country_intel(items: &[Item]) -> io::Result<Vec<CountryIntelRecord>> {
+    let mut records = Vec::with_capacity(items.len());
+    for item in items {
+        if item.key.is_some() {
+            return Err(invalid("country intel list must be positional"));
+        }
+        let mut record = CountryIntelRecord::default();
+        let mut seen = [false; 4];
+        for entry in block(&item.value)? {
+            let lane = match entry.key.as_deref() {
+                Some(b"civilian") => 0,
+                Some(b"army") => 1,
+                Some(b"navy") => 2,
+                Some(b"airforce") => 3,
+                _ => return Err(invalid("country intel record has an unexpected field")),
+            };
+            if std::mem::replace(&mut seen[lane], true) {
+                return Err(invalid("country intel record repeats a lane"));
+            }
+            let raw = Decimal::parse(scalar(&entry.value)?)?.raw;
+            if raw == 0 {
+                return Err(invalid(
+                    "country intel record saves a zero lane; the native writer omits it",
+                ));
+            }
+            *[
+                &mut record.civilian,
+                &mut record.army,
+                &mut record.navy,
+                &mut record.air,
+            ][lane] = raw;
+        }
+        records.push(record);
+    }
+    Ok(records)
+}
+
 fn parse_faction(items: &[Item]) -> io::Result<Faction> {
     let id =
         typed_handle(field(items, b"id")?.ok_or_else(|| invalid("faction lacks its typed id"))?)?;
@@ -1123,6 +1305,7 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
     let campaign_id = required_bytes(items, b"game_unique_id")?;
     let version = required_bytes(items, b"version")?;
     let seed = integer(&required_bytes(items, b"game_unique_seed")?)?;
+    let counters = parse_allocation_counters(items)?;
     let mut countries = BTreeMap::new();
     let mut divisions = BTreeMap::new();
     let mut fleets = BTreeMap::new();
@@ -1131,6 +1314,9 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
     let mut army_orders = BTreeMap::new();
     let mut war_relations = Vec::new();
     let mut war_pairs = BTreeSet::new();
+    let mut relation_opinions = Vec::new();
+    let mut relation_tuples = Vec::new();
+    let mut country_intel: BTreeMap<Vec<u8>, Vec<CountryIntelRecord>> = BTreeMap::new();
     for item in required_block(items, b"countries")? {
         let tag = item
             .key
@@ -1203,19 +1389,80 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
                     .as_deref()
                     .filter(|tag| !tag.is_empty())
                     .ok_or_else(|| invalid("active relation has no target country tag"))?;
-                if let Some(war) = field(block(&item.value)?, b"war_relation")? {
-                    let war = parse_war_relation(tag, target, block(war)?).map_err(|error| {
-                        invalid(format!(
-                            "country {} relation {}: {error}",
-                            String::from_utf8_lossy(tag),
-                            String::from_utf8_lossy(target)
-                        ))
-                    })?;
+                let record = block(&item.value)?;
+                let context = |error: io::Error| {
+                    invalid(format!(
+                        "country {} relation {}: {error}",
+                        String::from_utf8_lossy(tag),
+                        String::from_utf8_lossy(target)
+                    ))
+                };
+                if let Some(war) = field(record, b"war_relation")? {
+                    let war = parse_war_relation(tag, target, block(war)?).map_err(context)?;
                     if !war_pairs.insert((war.first.clone(), war.second.clone())) {
                         return Err(invalid("duplicate ordered war relation pair in save"));
                     }
                     war_relations.push(war);
                 }
+                if let Some(sum) = field(record, b"cached_sum")? {
+                    relation_opinions.push(RelationOpinion {
+                        owner: tag.to_vec(),
+                        target: target.to_vec(),
+                        cached_sum: integer(scalar(sum)?).map_err(context)?,
+                    });
+                }
+                // Relation-status writer D19300 emits every serializable
+                // relation contiguously from one vector, so the ordinal counts
+                // every relation-shaped block, including the two families that
+                // have their own recorded tables. A block is recognised as a
+                // relation by the `first`/`second` pair that CRelation's base
+                // writer D19260 emits unconditionally for every class; that is
+                // a property of the writer, not an identification of +0xe8
+                // membership, and no other sub-block D19300 writes carries both
+                // keys in this build. A block is recognised as a
+                // relation by the `first`/`second` pair that CRelation's base
+                // writer D19260 emits unconditionally for every class; that is
+                // a property of the writer, not an identification of +0xe8
+                // membership, and no other sub-block D19300 writes carries both
+                // keys in this build.
+                let mut ordinal = 0;
+                for entry in record {
+                    let Some(kind) = entry.key.as_deref() else {
+                        continue;
+                    };
+                    let Value::Block(fields) = &entry.value else {
+                        continue;
+                    };
+                    if field(fields, b"first")?.is_none() || field(fields, b"second")?.is_none() {
+                        continue;
+                    }
+                    let this = ordinal;
+                    ordinal += 1;
+                    if kind == b"war_relation" || kind == OWN_TABLE_RELATION_KINDS[1] {
+                        continue;
+                    }
+                    relation_tuples.push(
+                        parse_relation_tuple(tag, target, kind, this, fields).map_err(context)?,
+                    );
+                }
+            }
+        }
+        if let Some(intel) = field(country_items, b"intel")?
+            && let Some(list) = field(block(intel)?, b"intel")?
+        {
+            let records = parse_country_intel(block(list)?).map_err(|error| {
+                invalid(format!(
+                    "country {} intel: {error}",
+                    String::from_utf8_lossy(tag)
+                ))
+            })?;
+            if records.is_empty() {
+                return Err(invalid(
+                    "save writes an intel list only for a positive count",
+                ));
+            }
+            if country_intel.insert(tag.to_vec(), records).is_some() {
+                return Err(invalid("duplicate country intel list in save"));
             }
         }
     }
@@ -1324,11 +1571,15 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
         campaign_id,
         version,
         seed,
+        counters,
         countries,
         states,
         provinces,
         divisions,
         war_relations,
+        relation_opinions,
+        relation_tuples,
+        country_intel,
         factions,
         players: parse_players(items)?,
         land_combats,
@@ -1691,7 +1942,7 @@ mod tests {
     #[test]
     fn extraction_does_not_confuse_nested_similarly_named_fields_or_invent_missing_values() {
         let save = parse(br#"HOI4txt
-date="1936.1.2.17" game_unique_id="campaign" version="build" game_unique_seed=-42
+date="1936.1.2.17" game_unique_id="campaign" version="build" game_unique_seed=-42 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
 countries={ GER={ command_power=78.1411 politics={ political_power=582.128 } stability=0.7 war_support=0.3
 flags={ stability={value=99 date=1936.1.2.17} } unrelated={stability=99}
 convoys={ equipment={ equipment={ id={ id=1 type=70 } amount=200 } } } } D01={} }
@@ -1740,7 +1991,7 @@ states={ 1={owner="GER"} } provinces={ 2={controller="D01"} 3={buildings={}} }
     fn province_victory_points_keep_signed_integers_and_literal_omission() {
         let text = |value: &str| {
             format!(
-                "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 countries={{}} states={{}} provinces={{1={{victory_points={value}}} 2={{}}}}"
+                "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={{}} states={{}} provinces={{1={{victory_points={value}}} 2={{}}}}"
             )
         };
         for value in [i32::MIN, -1, 0, i32::MAX] {
@@ -1762,7 +2013,7 @@ states={ 1={owner="GER"} } provinces={ 2={controller="D01"} 3={buildings={}} }
                 .contains("save_as_binary=no")
         );
         assert!(parse(b"HOI4txtbad").is_err());
-        let header = b"HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 countries={} states={} provinces={} ";
+        let header = b"HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={} states={} provinces={} ";
         let mut duplicate = header.to_vec();
         duplicate.extend_from_slice(b"date=1936.1.2.1");
         assert!(parse(&duplicate).is_err());
@@ -1794,7 +2045,7 @@ states={ 1={owner="GER"} } provinces={ 2={controller="D01"} 3={buildings={}} }
     fn full_province_control_uses_only_proven_defaults_and_refuses_missing_ownership() {
         let mut save = parse(
             br#"HOI4txt
-date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0
+date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
 countries={ GER={} D01={} } states={1={owner=GER}} provinces={2={controller=D01}}
 equipments={convoy_1={id={id=1 type=70}} convoy_1={id={id=2 type=70}}}
 "#,
@@ -1833,7 +2084,7 @@ equipments={convoy_1={id={id=1 type=70}} convoy_1={id={id=2 type=70}}}
     fn state_control_has_its_own_explicit_and_owner_equivalent_save_rules() {
         let save = parse(
             br#"HOI4txt
-date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0
+date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
 countries={ GER={} D01={} }
 states={1={owner=GER controller=D01} 2={owner=GER}}
 provinces={3={controller=D01}}
@@ -1861,7 +2112,7 @@ provinces={3={controller=D01}}
     fn state_comparison_refuses_missing_fields_unknown_tags_and_content_mismatch() {
         let save = parse(
             br#"HOI4txt
-date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0
+date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
 countries={ GER={} } states={1={owner=GER}} provinces={}
 "#,
         )
@@ -1970,7 +2221,7 @@ division={ id={id=2 type=4919} logical_country=SOV strength=0 organisation=0 }
     #[test]
     fn volunteer_permission_blocks_keep_save_order_and_repeated_tags() {
         let save = parse(
-            b"HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 countries={ SOV={ received_air_volunteer_permission={ tag=GER count=3 } received_air_volunteer_permission={ tag=GER count=-1 } } GER={} } states={} provinces={}",
+            b"HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={ SOV={ received_air_volunteer_permission={ tag=GER count=3 } received_air_volunteer_permission={ tag=GER count=-1 } } GER={} } states={} provinces={}",
         )
         .unwrap();
         let hosts = &save.countries[b"SOV".as_slice()].volunteer_permissions;
@@ -1994,7 +2245,7 @@ division={ id={id=2 type=4919} logical_country=SOV strength=0 organisation=0 }
         );
         assert!(
             parse(
-                b"HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 countries={ SOV={ received_air_volunteer_permission={ tag=GER } } } states={} provinces={}",
+                b"HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={ SOV={ received_air_volunteer_permission={ tag=GER } } } states={} provinces={}",
             )
             .is_err()
         );
@@ -2002,7 +2253,7 @@ division={ id={id=2 type=4919} logical_country=SOV strength=0 organisation=0 }
 
     fn division_save(units: &str) -> io::Result<Save> {
         parse(format!(
-            "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 countries={{ SOV={{ units={{ {units} }} }} D01={{}} GER={{}} }} states={{}} provinces={{}}"
+            "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={{ SOV={{ units={{ {units} }} }} D01={{}} GER={{}} }} states={{}} provinces={{}}"
         ).as_bytes())
     }
 
@@ -2109,7 +2360,7 @@ division={
     fn duplicate_division_handle_in_another_country_roster_is_refused() {
         let body = "division={id={id=1 type=51} logical_country=D01 strength=1 organisation=1}";
         let text = format!(
-            "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 countries={{ SOV={{units={{{body}}}}} D01={{units={{{body}}}}} }} states={{}} provinces={{}}"
+            "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={{ SOV={{units={{{body}}}}} D01={{units={{{body}}}}} }} states={{}} provinces={{}}"
         );
         assert!(
             parse(text.as_bytes())
@@ -2123,7 +2374,7 @@ division={
 
     fn diplomacy_save(relations: &str, factions: &str) -> io::Result<Save> {
         parse(format!(
-            "HOI4txt\ndate=1936.1.2.1 game_unique_id=c version=b game_unique_seed=0 countries={{ GER={{diplomacy={{active_relations={{{relations}}}}}}} SOV={{}} D01={{}} }} states={{}} provinces={{}} {factions}"
+            "HOI4txt\ndate=1936.1.2.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={{ GER={{diplomacy={{active_relations={{{relations}}}}}}} SOV={{}} D01={{}} }} states={{}} provinces={{}} {factions}"
         ).as_bytes())
     }
 
@@ -2393,7 +2644,7 @@ faction={id={id=0 type=88} members={} name=""}"#,
     #[test]
     fn army_orders_preserve_all_lists_marshal_ownership_and_signed_native_bits() {
         let saved = parse(br#"HOI4txt
-date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0
+date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
 states={} provinces={} countries={GER={theatres={theatre={id={id=1 type=67}
 orders_group={id={type=53 id=1} name="Army 1" field_marshal_group=no motorization_level=0
  order_instance={instance_id=4294967295 type=4 can_execute=-128 invasion_source=-1 path={2 1 2 -1} states={3 3}}
@@ -2514,7 +2765,7 @@ conflict={parent=tank archetype=convoy} variable={type=@type_from_script}
 
     fn naval_save(units: &str) -> io::Result<Save> {
         parse(format!(
-        "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 countries={{ GER={{units={{{units}}}}} SOV={{}} D01={{}} }} states={{}} provinces={{}}"
+        "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={{ GER={{units={{{units}}}}} SOV={{}} D01={{}} }} states={{}} provinces={{}}"
     ).as_bytes())
     }
 
@@ -2592,6 +2843,208 @@ conflict={parent=tank archetype=convoy} variable={type=@type_from_script}
             format!("{fleet} fleet={{id={{id=4 type=61}} {force}}}"),
         ] {
             assert!(naval_save(&invalid).is_err(), "{invalid}");
+        }
+    }
+    const HEADER: &str = concat!(
+        "HOI4txt\ndate=1936.1.2.1 game_unique_id=c version=b game_unique_seed=0",
+        " debug_current_ref_id=4294967295 unit=4012 order_index=7693 front_index=8230",
+        " theatre_index=112 theater_group_index=924 military_deployment_line_index=7841",
+        " military_deployment_conveyor_index=744 equipment_variant_index=6295",
+        " country_leader_index=1 navy_id=8263 land_combat_id=15359",
+        " multiplayer_random_count=-1333963091"
+    );
+
+    fn relations_save(relations: &str, intel: &str) -> io::Result<Save> {
+        parse(
+            format!(
+                "{HEADER} countries={{ GER={{ diplomacy={{ active_relations={{ {relations} }} }} {intel} }} SOV={{}} D01={{}} }} states={{}} provinces={{}}"
+            )
+            .as_bytes(),
+        )
+    }
+
+    #[test]
+    fn header_counters_keep_the_widths_their_writer_prints() {
+        let save = relations_save("", "").unwrap();
+        assert_eq!(
+            save.counters,
+            AllocationCounters {
+                debug_current_ref_id: u32::MAX,
+                unit: 4012,
+                order_index: 7693,
+                front_index: 8230,
+                theatre_index: 112,
+                theater_group_index: 924,
+                military_deployment_line_index: 7841,
+                military_deployment_conveyor_index: 744,
+                equipment_variant_index: 6295,
+                country_leader_index: 1,
+                navy_id: 8263,
+                land_combat_id: 15359,
+                multiplayer_random_count: -1_333_963_091,
+            }
+        );
+    }
+
+    #[test]
+    fn a_header_without_every_counter_is_refused_rather_than_defaulted() {
+        for key in [
+            "debug_current_ref_id=4294967295",
+            "navy_id=8263",
+            "multiplayer_random_count=-1333963091",
+        ] {
+            let header = HEADER.replace(key, "");
+            let error =
+                parse(format!("{header} countries={{}} states={{}} provinces={{}}").as_bytes())
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains("save lacks"), "{error}");
+        }
+        // The unsigned counter must not be narrowed into a signed reader.
+        let header = HEADER.replace("debug_current_ref_id=4294967295", "debug_current_ref_id=-1");
+        assert!(
+            parse(format!("{header} countries={{}} states={{}} provinces={{}}").as_bytes())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn relation_records_keep_cached_sums_native_ordinals_and_class_spellings() {
+        let save = relations_save(
+            r#"SOV={
+                opinion={ modifier=m date="1940.4.24.1" value=35 }
+                cached_sum=-100
+                last_send_diplomat="1940.6.14.1"
+                war_relation={ first="GER" second="SOV" start_date="1939.9.1.1"
+                    first_casualties=1 second_casualties=2 first_unknown_casualties=3
+                    second_unknown_casualties=4 first_was_instigator=yes }
+                market_access_rights={ first="GER" second="SOV" start_date="1940.6.13.1" }
+                improve_relation={ first="GER" second="SOV" cancel=yes end_date="1941.1.1.1" }
+                attitude="attitude_threatened"
+                border_friction_claim=0.2647
+            }
+            D01={ attitude="attitude_hostile" }"#,
+            "",
+        )
+        .unwrap();
+        assert_eq!(save.relation_opinions.len(), 1);
+        assert_eq!(save.relation_opinions[0].owner, b"GER");
+        assert_eq!(save.relation_opinions[0].target, b"SOV");
+        assert_eq!(save.relation_opinions[0].cached_sum, -100);
+        // war_relation takes ordinal zero even though it has its own table.
+        let kinds: Vec<_> = save
+            .relation_tuples
+            .iter()
+            .map(|tuple| (tuple.kind.clone(), tuple.ordinal, tuple.cancel))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (b"market_access_rights".to_vec(), 1, false),
+                (b"improve_relation".to_vec(), 2, true),
+            ]
+        );
+        assert_eq!(save.relation_tuples[0].first, b"GER");
+        assert_eq!(save.relation_tuples[0].second, b"SOV");
+        assert!(save.relation_tuples[0].start_date.is_some());
+        assert!(save.relation_tuples[1].start_date.is_none());
+        assert!(save.relation_tuples[1].end_date.is_some());
+        assert_eq!(save.war_relations.len(), 1);
+    }
+
+    #[test]
+    fn a_subject_relation_occupies_an_ordinal_without_becoming_a_tuple() {
+        let save = relations_save(
+            r#"SOV={
+                puppet={ autonomy_state="a" value=0.2 first="GER" second="SOV" start_date="1936.1.1.1" }
+                guarantee={ first="GER" second="SOV" start_date="1936.1.1.2" }
+            }"#,
+            "",
+        )
+        .unwrap();
+        assert_eq!(save.relation_tuples.len(), 1);
+        assert_eq!(save.relation_tuples[0].kind, b"guarantee");
+        assert_eq!(save.relation_tuples[0].ordinal, 1);
+    }
+
+    #[test]
+    fn relation_blocks_without_endpoints_are_not_relations() {
+        let save = relations_save(
+            r#"SOV={
+                rule_overrides={ override={ can_send_volunteers=yes desc="" } }
+                lend_lease_to_allies_history={ ic_given=375.2 fuel_given=0 }
+                guarantee={ first="GER" second="SOV" start_date="1936.1.1.2" }
+            }"#,
+            "",
+        )
+        .unwrap();
+        assert_eq!(save.relation_tuples.len(), 1);
+        assert_eq!(save.relation_tuples[0].ordinal, 0);
+    }
+
+    #[test]
+    fn relation_tuples_enforce_the_writers_conditional_date_rules() {
+        for body in [
+            // cancel=no is never written by the native writer.
+            r#"guarantee={ first="A" second="B" cancel=no start_date="1936.1.1.1" }"#,
+            // start_date and cancel are mutually exclusive.
+            r#"guarantee={ first="A" second="B" cancel=yes start_date="1936.1.1.1" }"#,
+            // neither is present.
+            r#"guarantee={ first="A" second="B" }"#,
+            // end_date is written only when it is after start_date.
+            r#"guarantee={ first="A" second="B" start_date="1936.1.2.1" end_date="1936.1.1.1" }"#,
+        ] {
+            let error = relations_save(&format!("SOV={{ {body} }}"), "")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("relation"), "{body}: {error}");
+        }
+    }
+
+    #[test]
+    fn country_intel_records_are_positional_and_omit_only_exact_zero_lanes() {
+        let save = relations_save(
+            "",
+            "intel={ intel={ { } { army=-15 navy=-10 airforce=-15 } { civilian=33.3102 army=6.79238 navy=27.27772 airforce=8.13062 } } }",
+        )
+        .unwrap();
+        let records = &save.country_intel[b"GER".as_slice()];
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0], CountryIntelRecord::default());
+        assert_eq!(
+            records[1],
+            CountryIntelRecord {
+                civilian: 0,
+                army: -1_500_000,
+                navy: -1_000_000,
+                air: -1_500_000,
+            }
+        );
+        assert_eq!(
+            records[2],
+            CountryIntelRecord {
+                civilian: 3_331_020,
+                army: 679_238,
+                navy: 2_727_772,
+                air: 813_062,
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_country_intel_lists_are_refused_rather_than_normalized() {
+        for (body, needle) in [
+            ("intel={ intel={ } }", "positive count"),
+            ("intel={ intel={ { civilian=0 } } }", "zero lane"),
+            (
+                "intel={ intel={ { civilian=1 civilian=2 } } }",
+                "repeats a lane",
+            ),
+            ("intel={ intel={ { land=1 } } }", "unexpected field"),
+            ("intel={ intel={ x={ civilian=1 } } }", "positional"),
+        ] {
+            let error = relations_save("", body).unwrap_err().to_string();
+            assert!(error.contains(needle), "{body}: {error}");
         }
     }
 }

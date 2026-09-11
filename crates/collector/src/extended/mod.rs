@@ -582,7 +582,7 @@ mod tests {
 
     #[test]
     fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership() {
-        assert_eq!(N, 125);
+        assert_eq!(N, 128);
         let actual: BTreeSet<_> = TABLES.into_iter().collect();
         assert_eq!(actual.len(), N);
         let expected: BTreeSet<_> = TableId::ALL

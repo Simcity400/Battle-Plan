@@ -34,7 +34,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 138] = [
+const DOMAIN_TABLES: [TableId; 141] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
@@ -173,6 +173,9 @@ const DOMAIN_TABLES: [TableId; 138] = [
     TableId::IncomingDiplomaticActions,
     TableId::Scientists,
     TableId::ScientistSkills,
+    TableId::RelationOpinions,
+    TableId::RelationTuples,
+    TableId::CountryIntel,
 ];
 /// The fault campaign drives every table except the six the clock, campaign,
 /// country, province and state fixtures build directly, so a new table cannot
@@ -636,6 +639,22 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             play_session_started_at: signal,
             seed: i32::MIN,
             speed: (index % 5) as i32,
+            // Counters advance most hours, hold on others, and go absent on
+            // every seventh hour so present/absent transitions are exercised.
+            debug_current_ref_id: (index % 7 != 3).then(|| u32::MAX - index as u32),
+            unit: (index % 7 != 3).then_some(4012 + index as i32 / 3),
+            order_index: (index % 7 != 3).then_some(i32::MAX - index as i32),
+            front_index: (index % 7 != 3).then_some(8230),
+            theatre_index: (index % 7 != 3).then_some(112),
+            theater_group_index: (index % 7 != 3).then_some(924),
+            military_deployment_line_index: (index % 7 != 3).then_some(7841),
+            military_deployment_conveyor_index: (index % 7 != 3).then_some(744),
+            equipment_variant_index: (index % 7 != 3).then_some(6295),
+            country_leader_index: (index % 7 != 3).then_some(1),
+            navy_id: (index % 7 != 3).then_some(8263),
+            land_combat_id: (index % 7 != 3).then_some(15_359),
+            multiplayer_random_count: (index % 7 != 3)
+                .then_some(i32::MIN.wrapping_add(index as i32 * 997)),
         }])),
         TableView::Complete(TableRows::Campaign(vec![CampaignRow {
             id: CAMPAIGN.to_vec(),

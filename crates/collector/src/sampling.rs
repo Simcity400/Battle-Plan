@@ -14,6 +14,7 @@ use engine::{
     cprovince, cstate, cwar_relation,
     memory::LiveMemory,
     msvc_string::Text,
+    save_allocation_counters::{self, AllocationCounters},
     walk::Outcome,
 };
 use replay::frame::TABLE_COUNT;
@@ -189,6 +190,8 @@ pub struct Captured {
     pub clock_entry: Option<Clock>,
     pub clock_before: Option<Clock>,
     pub clock_after: Option<Clock>,
+    /// The engine's monotonic allocation counters at this sampled tick.
+    pub counters: Option<AllocationCounters>,
     pub countries: Vec<ccountry::Row>,
     pub provinces: Vec<cprovince::Row>,
     provinces_second: Vec<cprovince::Row>,
@@ -280,6 +283,7 @@ impl Captured {
             clock_entry: None,
             clock_before: None,
             clock_after: None,
+            counters: None,
             countries: vec![ccountry::Row::default(); capacities[0]],
             provinces: vec![cprovince::Row::default(); capacities[1]],
             provinces_second: comparison_rows(capacities[1], successful[PROVINCE_CHECK]),
@@ -643,6 +647,14 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             frame.table_ns = [0; TABLE_COUNT];
             let before = qpc();
             frame.clock_before = cgame_state::read_clock(&memory, shared.base);
+            // Passive scalar reads of the same counters the save header emits.
+            frame.counters = frame.clock_before.map(|clock| {
+                save_allocation_counters::read_counters(
+                    &memory,
+                    shared.base,
+                    clock.game_state as usize,
+                )
+            });
             let mut clock_ticks = entry_ticks + qpc() - before;
             let unavailable = Outcome::Unavailable {
                 reason: "clock unavailable",

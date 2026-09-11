@@ -324,6 +324,10 @@ struct Report {
     failed_comparisons: BTreeMap<String, String>,
     difference_groups: BTreeMap<String, usize>,
     active_comparison: Option<String>,
+    /// One line per allocation counter: recorded value, saved value and gap.
+    boundary_witness: Vec<String>,
+    /// The explicit verdict on whether the save was taken at the sampled tick.
+    boundary_verdict: Option<String>,
 }
 
 impl Report {
@@ -511,6 +515,16 @@ impl Report {
         for line in self.difference_lines() {
             println!("{line}");
         }
+        println!("Boundary witness (engine allocation counters at the sampled tick):");
+        match &self.boundary_verdict {
+            Some(verdict) => println!("  {verdict}"),
+            None => println!(
+                "  not evaluated; the counter comparison itself failed and is listed above"
+            ),
+        }
+        for line in &self.boundary_witness {
+            println!("  {line}");
+        }
         println!("Limitations:");
         for (reason, subjects) in &self.limitations {
             const EXAMPLES: usize = 5;
@@ -599,9 +613,12 @@ fn compare_core(
         required_context("verified equipment types", &equipment_types).map(|_| ())
     });
     report.limitation(
-        "commands after the hourly callback can change state before saving without advancing the hour; matching hours do not prove the same command boundary, and differences still fail",
+        "commands after the hourly callback can change state before saving without advancing the hour; matching hours do not prove the same command boundary. The boundary witness below measures that gap from the engine's own allocation counters; differences still fail either way",
         "all captured tables",
     );
+    report.attempt("boundary counters", |report| {
+        compare_boundary_counters(frame, save, report)
+    });
     report.limitation(
         "save session time includes elapsed wall time; it is not the captured persisted play_time",
         "clock.play_time",
@@ -652,6 +669,12 @@ fn compare_core(
         });
         report.attempt("war relations", |report| {
             compare_war_relations(frame, save, links, report)
+        });
+        report.attempt("RelationOpinions", |report| {
+            compare_relation_opinions(frame, save, links, report)
+        });
+        report.attempt("CountryIntel", |report| {
+            compare_country_intel(frame, save, links, report)
         });
         report.attempt("factions", |report| {
             compare_factions(frame, save, links, report)
@@ -1055,6 +1078,15 @@ fn compare_extended(
         characters::compare(
             frame,
             &save.characters,
+            &required_context("country links", &countries)?.links,
+            required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
+    report.attempt("RelationTuples", |report| {
+        compare_relation_tuples(
+            frame,
+            save,
             &required_context("country links", &countries)?.links,
             required_context("lexical dictionary", &tokens)?,
             report,
@@ -1885,6 +1917,424 @@ fn compare_war_relations(
     Ok(())
 }
 
+/// Prints the engine's own allocation counters on both sides and states whether
+/// the save was written at the sampled tick. It never waives a difference: the
+/// witness measures the gap, and every other comparison still fails on its own.
+fn compare_boundary_counters(
+    frame: &DecodedFrame,
+    save: &Save,
+    report: &mut Report,
+) -> io::Result<()> {
+    let [clock] = frame.complete::<tables::Clock>()? else {
+        return Err(invalid("clock table must contain one clock"));
+    };
+    let saved = &save.counters;
+    let recorded: [(&str, Option<i64>, i64); 13] = [
+        (
+            "debug_current_ref_id",
+            clock.debug_current_ref_id.map(i64::from),
+            i64::from(saved.debug_current_ref_id),
+        ),
+        ("unit", clock.unit.map(i64::from), i64::from(saved.unit)),
+        (
+            "order_index",
+            clock.order_index.map(i64::from),
+            i64::from(saved.order_index),
+        ),
+        (
+            "front_index",
+            clock.front_index.map(i64::from),
+            i64::from(saved.front_index),
+        ),
+        (
+            "theatre_index",
+            clock.theatre_index.map(i64::from),
+            i64::from(saved.theatre_index),
+        ),
+        (
+            "theater_group_index",
+            clock.theater_group_index.map(i64::from),
+            i64::from(saved.theater_group_index),
+        ),
+        (
+            "military_deployment_line_index",
+            clock.military_deployment_line_index.map(i64::from),
+            i64::from(saved.military_deployment_line_index),
+        ),
+        (
+            "military_deployment_conveyor_index",
+            clock.military_deployment_conveyor_index.map(i64::from),
+            i64::from(saved.military_deployment_conveyor_index),
+        ),
+        (
+            "equipment_variant_index",
+            clock.equipment_variant_index.map(i64::from),
+            i64::from(saved.equipment_variant_index),
+        ),
+        (
+            "country_leader_index",
+            clock.country_leader_index.map(i64::from),
+            i64::from(saved.country_leader_index),
+        ),
+        (
+            "navy_id",
+            clock.navy_id.map(i64::from),
+            i64::from(saved.navy_id),
+        ),
+        (
+            "land_combat_id",
+            clock.land_combat_id.map(i64::from),
+            i64::from(saved.land_combat_id),
+        ),
+        (
+            "multiplayer_random_count",
+            clock.multiplayer_random_count.map(i64::from),
+            i64::from(saved.multiplayer_random_count),
+        ),
+    ];
+    let mut unreadable = 0;
+    let mut advanced = Vec::new();
+    let mut regressed = Vec::new();
+    for (name, captured, saved) in recorded {
+        match captured {
+            Some(captured) => {
+                let gap = saved - captured;
+                report.boundary_witness.push(format!(
+                    "{name}: recorded {captured}, save {saved}, gap {gap:+}"
+                ));
+                match gap.cmp(&0) {
+                    std::cmp::Ordering::Greater => advanced.push(format!("{name} {gap:+}")),
+                    std::cmp::Ordering::Less => regressed.push(format!("{name} {gap:+}")),
+                    std::cmp::Ordering::Equal => {}
+                }
+            }
+            None => {
+                unreadable += 1;
+                report
+                    .boundary_witness
+                    .push(format!("{name}: recorded unavailable, save {saved}"));
+            }
+        }
+    }
+    // A witness count, not an exact field comparison: the gap is printed and
+    // explained rather than turned into a difference.
+    report.compared(
+        "boundary counter witnesses (printed, never a difference)",
+        recorded.len() - unreadable,
+    );
+    let verdict = if unreadable == recorded.len() {
+        "no counter was recorded at the sampled tick, so the boundary is not measured; this comparison establishes nothing about when the save was written".to_string()
+    } else if advanced.is_empty() && regressed.is_empty() {
+        format!(
+            "every one of the {} recorded counters equals the save header, so the save was written at the sampled tick with no intervening engine allocation",
+            recorded.len() - unreadable
+        )
+    } else {
+        let mut verdict = format!(
+            "the save was written after further engine work: {} counter(s) advanced ({})",
+            advanced.len(),
+            advanced.join(", ")
+        );
+        if !regressed.is_empty() {
+            verdict.push_str(&format!(
+                "; {} counter(s) are lower in the save ({}), which a monotonic counter cannot do without a reload or a 32-bit wrap, so neither direction is treated as a difference",
+                regressed.len(),
+                regressed.join(", ")
+            ));
+        }
+        verdict
+    };
+    if unreadable != 0 && unreadable != recorded.len() {
+        report.limitation(
+            "the collector could not read some allocation counters at the sampled tick, so the boundary witness covers only the counters it did read",
+            format!("{unreadable} of {} counters", recorded.len()),
+        );
+    }
+    report.boundary_verdict = Some(verdict);
+    report.limitation(
+        "the boundary witness measures engine allocation between the sampled tick and the save; it never waives a difference and an equal witness does not prove that no non-allocating command ran",
+        "boundary counters",
+    );
+    Ok(())
+}
+
+/// One row per pair whose cached opinion dword is nonzero, which is exactly the
+/// native emission rule, so an absent saved `cached_sum` is an exact zero and an
+/// unexpected recorded row is a difference rather than a silent extra.
+fn compare_relation_opinions(
+    frame: &DecodedFrame,
+    save: &Save,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut opinions = BTreeMap::new();
+    for row in frame.complete::<tables::RelationOpinions>()? {
+        let owner = required_country_tag(row.owner_country, links)?;
+        let target = required_country_tag(row.target_country, links)?;
+        if row.opinion == 0 {
+            return Err(invalid(
+                "recorded relation opinion is zero; the native serializer omits a zero cached_sum",
+            ));
+        }
+        if owner == target || opinions.insert((owner, target), row.opinion).is_some() {
+            return Err(invalid("self or duplicate resolved relation opinion pair"));
+        }
+    }
+    let mut saved_pairs = BTreeSet::new();
+    for expected in &save.relation_opinions {
+        let owner_slot = saved_country_slot(&expected.owner, save, links)?;
+        let target_slot = saved_country_slot(&expected.target, save, links)?;
+        if owner_slot == target_slot || !saved_pairs.insert((owner_slot, target_slot)) {
+            return Err(invalid(
+                "saved relation opinion is a self pair or repeats a resolved pair",
+            ));
+        }
+        let label = format!(
+            "relation opinion {} -> {}",
+            String::from_utf8_lossy(&expected.owner),
+            String::from_utf8_lossy(&expected.target)
+        );
+        let key = (expected.owner.as_slice(), expected.target.as_slice());
+        match opinions.remove(&key) {
+            Some(actual) => {
+                report.compared("RelationOpinions", 1);
+                if actual != expected.cached_sum {
+                    report.difference(format!("{label}.cached_sum"), actual, expected.cached_sum);
+                }
+            }
+            None => report.difference(&label, "absent", "present"),
+        }
+    }
+    for (owner, target) in opinions.keys() {
+        report.difference(
+            format!(
+                "relation opinion {} -> {}",
+                String::from_utf8_lossy(owner),
+                String::from_utf8_lossy(target)
+            ),
+            "present",
+            "absent",
+        );
+    }
+    report.limitation(
+        "cached opinion is the engine's summed cache; the per-modifier opinion list is not recorded, so an equal sum does not verify its contributing modifiers",
+        "RelationOpinions",
+    );
+    Ok(())
+}
+
+/// Typed relation tuples join the save on the native serializable-vector ordinal
+/// and on the class's own token spelling from the recorded lexical dictionary.
+fn compare_relation_tuples(
+    frame: &DecodedFrame,
+    save: &Save,
+    links: &BTreeMap<u32, &CountryRow>,
+    tokens: &TokenNames<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut tuples = BTreeMap::new();
+    for row in frame.complete::<tables::RelationTuples>()? {
+        let owner = required_country_tag(row.owner_country, links)?;
+        let target = required_country_tag(row.target_country, links)?;
+        if owner == target {
+            return Err(invalid(
+                "recorded relation tuple endpoints resolve to one country",
+            ));
+        }
+        if tuples.insert((owner, target, row.ordinal), row).is_some() {
+            return Err(invalid("duplicate resolved relation tuple ordinal"));
+        }
+        if row.cancel > 1 {
+            return Err(invalid(
+                "relation tuple has a raw cancel byte outside 0/1; a yes/no save field cannot verify these bits",
+            ));
+        }
+    }
+    let mut unnamed = 0;
+    for expected in &save.relation_tuples {
+        saved_country_slot(&expected.owner, save, links)?;
+        saved_country_slot(&expected.target, save, links)?;
+        let ordinal = u16::try_from(expected.ordinal).map_err(|_| {
+            invalid("saved relation ordinal exceeds the recorded ordinal's wire width")
+        })?;
+        let label = format!(
+            "relation {} {} -> {} ordinal {}",
+            String::from_utf8_lossy(&expected.kind),
+            String::from_utf8_lossy(&expected.owner),
+            String::from_utf8_lossy(&expected.target),
+            expected.ordinal
+        );
+        let key = (
+            expected.owner.as_slice(),
+            expected.target.as_slice(),
+            ordinal,
+        );
+        let Some(actual) = tuples.remove(&key) else {
+            report.difference(&label, "absent", "present");
+            continue;
+        };
+        report.compared("RelationTuples", 1);
+        match tokens.get(&actual.type_id) {
+            Some(&spelling) => {
+                if spelling != expected.kind.as_slice() {
+                    report.difference(
+                        format!("{label}.kind"),
+                        String::from_utf8_lossy(spelling).into_owned(),
+                        String::from_utf8_lossy(&expected.kind).into_owned(),
+                    );
+                }
+            }
+            None => unnamed += 1,
+        }
+        for (field, captured, saved) in [
+            (
+                "first",
+                required_country_tag(actual.first_country, links)?,
+                expected.first.as_slice(),
+            ),
+            (
+                "second",
+                required_country_tag(actual.second_country, links)?,
+                expected.second.as_slice(),
+            ),
+        ] {
+            if captured != saved {
+                report.difference(
+                    format!("{label}.{field}"),
+                    String::from_utf8_lossy(captured).into_owned(),
+                    String::from_utf8_lossy(saved).into_owned(),
+                );
+            }
+        }
+        if (actual.cancel != 0) != expected.cancel {
+            report.difference(format!("{label}.cancel"), actual.cancel, expected.cancel);
+        }
+        if let Some(start) = expected.start_date {
+            let start = start.engine_hour()?;
+            if actual.start_hour != start {
+                report.difference(format!("{label}.start_hour"), actual.start_hour, start);
+            }
+        } else {
+            report.limitation(
+                "cancelled relation serializer omits its raw start hour",
+                label.clone(),
+            );
+        }
+        let emits_end = actual.start_hour < actual.end_hour;
+        if emits_end != expected.end_date.is_some() {
+            report.difference(
+                format!("{label}.end_date presence (start < end)"),
+                emits_end,
+                expected.end_date.is_some(),
+            );
+        }
+        if let Some(end) = expected.end_date {
+            let end = end.engine_hour()?;
+            if actual.end_hour != end {
+                report.difference(format!("{label}.end_hour"), actual.end_hour, end);
+            }
+        } else {
+            report.limitation(
+                "omitted relation end_date proves end_hour <= start_hour, not one exact raw end hour; the inequality is checked",
+                label.clone(),
+            );
+        }
+    }
+    for ((owner, target, ordinal), row) in &tuples {
+        report.difference(
+            format!(
+                "relation type {} {} -> {} ordinal {ordinal}",
+                row.type_id,
+                String::from_utf8_lossy(owner),
+                String::from_utf8_lossy(target)
+            ),
+            "present",
+            "absent",
+        );
+    }
+    if unnamed != 0 {
+        report.limitation(
+            "the recorded lexical dictionary has no spelling for some relation type tokens, so those rows compare their endpoints, hours and flags but not their class name",
+            format!("{unnamed} relation tuples"),
+        );
+    }
+    report.limitation(
+        "the retired byte is not serialized, and CWarRelation and CSubjectRelation rows belong to the WarRelations and Subjects tables while still occupying a native ordinal",
+        "RelationTuples",
+    );
+    Ok(())
+}
+
+/// The four raw lanes compare exactly: record writer 141085bf0 prints each lane
+/// through the fixed5 path and omits it only when the raw qword is zero, so an
+/// omitted lane is an exact zero rather than an unknown. The save writes the
+/// list positionally and the recorded key is the same native index, so the join
+/// is index to index and needs no country resolution on the target side.
+fn compare_country_intel(
+    frame: &DecodedFrame,
+    save: &Save,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut recorded: BTreeMap<&[u8], BTreeMap<u32, &replay::rows::CountryIntelRow>> =
+        BTreeMap::new();
+    for row in frame.complete::<tables::CountryIntel>()? {
+        let owner = required_country_tag(row.owner_country, links)?;
+        if recorded
+            .entry(owner)
+            .or_default()
+            .insert(row.target_index, row)
+            .is_some()
+        {
+            return Err(invalid("duplicate resolved country intel record index"));
+        }
+    }
+    for (tag, records) in &save.country_intel {
+        saved_country_slot(tag, save, links)?;
+        let owner = String::from_utf8_lossy(tag).into_owned();
+        let mut captured = recorded.remove(tag.as_slice()).unwrap_or_default();
+        for (index, expected) in records.iter().enumerate() {
+            let index = u32::try_from(index)
+                .map_err(|_| invalid("saved country intel index exceeds its wire width"))?;
+            let label = format!("{owner}.intel[{index}]");
+            let Some(actual) = captured.remove(&index) else {
+                report.difference(&label, "absent", "present");
+                continue;
+            };
+            report.compared("CountryIntel", 1);
+            for (field, captured, saved) in [
+                ("civilian", actual.civilian, expected.civilian),
+                ("army", actual.army, expected.army),
+                ("navy", actual.navy, expected.navy),
+                ("airforce", actual.air, expected.air),
+            ] {
+                if captured != saved {
+                    report.difference(format!("{label}.{field}"), captured, saved);
+                }
+            }
+        }
+        for index in captured.keys() {
+            report.difference(format!("{owner}.intel[{index}]"), "present", "absent");
+        }
+    }
+    for (tag, records) in &recorded {
+        report.difference(
+            format!(
+                "{}.intel ({} records)",
+                String::from_utf8_lossy(tag),
+                records.len()
+            ),
+            "present",
+            "absent",
+        );
+    }
+    report.limitation(
+        "the native list writer emits nothing for a country whose record count is not positive, so an absent saved list means no records at all, which is a different fact from a list of all-zero records",
+        "CountryIntel",
+    );
+    Ok(())
+}
+
 fn compare_factions(
     frame: &DecodedFrame,
     save: &Save,
@@ -2297,7 +2747,7 @@ mod tests {
         save::EquipmentTypes,
     ) {
         let save = save::parse(br#"HOI4txt
-date="1936.1.1.1" game_unique_id="campaign" game_unique_seed=7 version="build"
+date="1936.1.1.1" game_unique_id="campaign" game_unique_seed=7 debug_current_ref_id=65580 unit=4008 order_index=7484 front_index=8230 theatre_index=112 theater_group_index=910 military_deployment_line_index=7783 military_deployment_conveyor_index=736 equipment_variant_index=6284 country_leader_index=1 navy_id=8184 land_combat_id=15224 multiplayer_random_count=-1334833904 version="build"
 states={1={owner="GER"}} provinces={2={controller="GER"}}
 countries={GER={politics={political_power=10.00001} command_power=2 stability=0.7 war_support=0.3 convoys={equipment={}}}}
 "#).unwrap();
@@ -3931,5 +4381,394 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 .and_then(|report| report.outcome())
                 .is_err()
         );
+    }
+    /// A frame and save with two extra countries, so relation and intel rows can
+    /// use raw references that are aliases of a canonical slot.
+    fn relation_fixture() -> (
+        DecodedFrame,
+        Save,
+        save::MapMembership,
+        save::EquipmentTypes,
+    ) {
+        let (mut frame, mut save, membership, equipment) = fixture();
+        add_country(&mut frame, &mut save, 201, 8, b"D01");
+        add_country(&mut frame, &mut save, 301, 9, b"SOV");
+        (frame, save, membership, equipment)
+    }
+
+    fn saved_relation(
+        save: &mut Save,
+        owner: &[u8],
+        target: &[u8],
+        cached_sum: Option<i32>,
+        tuples: &[(&[u8], u32)],
+    ) {
+        if let Some(cached_sum) = cached_sum {
+            save.relation_opinions.push(save::RelationOpinion {
+                owner: owner.to_vec(),
+                target: target.to_vec(),
+                cached_sum,
+            });
+        }
+        for (kind, ordinal) in tuples {
+            save.relation_tuples.push(save::RelationTuple {
+                owner: owner.to_vec(),
+                target: target.to_vec(),
+                kind: kind.to_vec(),
+                ordinal: *ordinal,
+                first: owner.to_vec(),
+                second: target.to_vec(),
+                start_date: Some(save::GameDate {
+                    year: 1936,
+                    month: 1,
+                    day: 1,
+                    hour: 1,
+                }),
+                end_date: None,
+                cancel: false,
+            });
+        }
+    }
+
+    fn opinions(frame: &mut DecodedFrame, rows: Vec<replay::rows::RelationOpinionRow>) {
+        frame.tables[TableId::RelationOpinions.index()] =
+            TableView::Complete(TableRows::RelationOpinions(rows));
+    }
+
+    fn tuples(frame: &mut DecodedFrame, rows: Vec<replay::rows::RelationTupleRow>) {
+        frame.tables[TableId::RelationTuples.index()] =
+            TableView::Complete(TableRows::RelationTuples(rows));
+    }
+
+    fn tuple_row(owner: u32, target: u32, ordinal: u16) -> replay::rows::RelationTupleRow {
+        replay::rows::RelationTupleRow {
+            owner_country: owner,
+            target_country: target,
+            type_id: 0x28da,
+            ordinal,
+            first_country: owner,
+            second_country: target,
+            start_hour: save::GameDate {
+                year: 1936,
+                month: 1,
+                day: 1,
+                hour: 1,
+            }
+            .engine_hour()
+            .unwrap(),
+            end_hour: 0,
+            cancel: 0,
+            retired: 0,
+        }
+    }
+
+    fn differences(report: &Report) -> Vec<String> {
+        report.differences.clone()
+    }
+
+    /// RelationTuples is registered in the extended pass, which needs verified
+    /// content; the comparator itself is exercised directly with the same
+    /// country links and recorded dictionary that pass supplies.
+    fn tuple_report(frame: &DecodedFrame, save: &Save, tokens: &[(u32, &'static [u8])]) -> Report {
+        let mut report = Report::default();
+        let context = country_context(frame).unwrap();
+        let names: TokenNames<'static> = tokens.iter().copied().collect();
+        report.attempt("RelationTuples", |report| {
+            compare_relation_tuples(frame, save, &context.links, &names, report)
+        });
+        report
+    }
+
+    #[test]
+    fn relation_opinions_compare_exactly_and_report_both_one_sided_pairs() {
+        let (mut frame, mut save, membership, equipment) = relation_fixture();
+        saved_relation(&mut save, b"GER", b"D01", Some(-100), &[]);
+        opinions(
+            &mut frame,
+            vec![replay::rows::RelationOpinionRow {
+                owner_country: 102,
+                target_country: 201,
+                opinion: -100,
+            }],
+        );
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert!(differences(&report).is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["RelationOpinions"], 1);
+
+        // A changed value, a save-only pair and a replay-only pair all fail.
+        let mut save = save.clone();
+        save.relation_opinions[0].cached_sum = -35;
+        saved_relation(&mut save, b"D01", b"GER", Some(7), &[]);
+        let mut frame = frame.clone();
+        opinions(
+            &mut frame,
+            vec![
+                replay::rows::RelationOpinionRow {
+                    owner_country: 102,
+                    target_country: 201,
+                    opinion: -100,
+                },
+                replay::rows::RelationOpinionRow {
+                    owner_country: 201,
+                    target_country: 301,
+                    opinion: 5,
+                },
+            ],
+        );
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        let differences = differences(&report);
+        assert_eq!(differences.len(), 3, "{differences:?}");
+        assert!(differences.iter().any(|line| line.contains("cached_sum")));
+        assert!(
+            differences
+                .iter()
+                .any(|line| line.contains("D01 -> GER") && line.contains("\"absent\""))
+        );
+    }
+
+    #[test]
+    fn a_recorded_zero_opinion_or_duplicate_pair_fails_the_comparison() {
+        let (mut frame, save, membership, equipment) = relation_fixture();
+        opinions(
+            &mut frame,
+            vec![replay::rows::RelationOpinionRow {
+                owner_country: 102,
+                target_country: 201,
+                opinion: 0,
+            }],
+        );
+        let error = comparison_error(compare(&frame, &save, &membership, &equipment));
+        assert!(error.contains("omits a zero cached_sum"), "{error}");
+        // Aliases 101 and 102 resolve to the same tag, so this is one pair twice.
+        opinions(
+            &mut frame,
+            vec![
+                replay::rows::RelationOpinionRow {
+                    owner_country: 101,
+                    target_country: 201,
+                    opinion: 1,
+                },
+                replay::rows::RelationOpinionRow {
+                    owner_country: 102,
+                    target_country: 201,
+                    opinion: 2,
+                },
+            ],
+        );
+        let error = comparison_error(compare(&frame, &save, &membership, &equipment));
+        assert!(
+            error.contains("duplicate resolved relation opinion"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn relation_tuples_join_on_the_native_ordinal_and_the_recorded_token_spelling() {
+        let (mut frame, mut save, _, _) = relation_fixture();
+        saved_relation(&mut save, b"GER", b"D01", None, &[(b"guarantee", 3)]);
+        tuples(&mut frame, vec![tuple_row(102, 201, 3)]);
+        let named: &[(u32, &'static [u8])] = &[(0x28da, b"guarantee")];
+        let report = tuple_report(&frame, &save, named);
+        assert!(differences(&report).is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["RelationTuples"], 1);
+
+        // A different ordinal is a different row on both sides.
+        let mut moved = frame.clone();
+        tuples(&mut moved, vec![tuple_row(102, 201, 4)]);
+        let report = tuple_report(&moved, &save, named);
+        assert_eq!(differences(&report).len(), 2, "{:?}", report.differences);
+
+        // A spelling the dictionary contradicts is a named difference.
+        let renamed: &[(u32, &'static [u8])] = &[(0x28da, b"embargo")];
+        let report = tuple_report(&frame, &save, renamed);
+        assert!(
+            differences(&report)
+                .iter()
+                .any(|line| line.contains(".kind")),
+            "{:?}",
+            report.differences
+        );
+
+        // An unknown token compares every other field and prints the gap.
+        let report = tuple_report(&frame, &save, &[]);
+        assert!(differences(&report).is_empty(), "{:?}", report.differences);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("no spelling for some relation type tokens"))
+        );
+
+        // Endpoints, cancel and the conditional hours all compare exactly.
+        let mut changed = frame.clone();
+        tuples(&mut changed, {
+            let mut row = tuple_row(102, 201, 3);
+            row.second_country = 101;
+            row.cancel = 1;
+            row.end_hour = row.start_hour + 1;
+            vec![row]
+        });
+        let report = tuple_report(&changed, &save, named);
+        let lines = differences(&report);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines.iter().any(|line| line.contains(".second")));
+        assert!(lines.iter().any(|line| line.contains(".cancel")));
+        assert!(lines.iter().any(|line| line.contains("end_date presence")));
+
+        // A raw cancel byte outside 0/1 cannot be checked against yes/no.
+        let mut raw = frame.clone();
+        tuples(&mut raw, {
+            let mut row = tuple_row(102, 201, 3);
+            row.cancel = 0x80;
+            vec![row]
+        });
+        let report = tuple_report(&raw, &save, named);
+        assert!(report.failed_comparisons["RelationTuples"].contains("outside 0/1"));
+    }
+
+    #[test]
+    fn country_intel_compares_every_positional_record_and_both_one_sided_lists() {
+        let (mut frame, mut save, membership, equipment) = relation_fixture();
+        save.country_intel.insert(
+            b"GER".to_vec(),
+            vec![
+                save::CountryIntelRecord::default(),
+                save::CountryIntelRecord {
+                    civilian: 3_331_020,
+                    army: -1_500_000,
+                    navy: i64::MAX,
+                    air: i64::MIN,
+                },
+            ],
+        );
+        frame.tables[TableId::CountryIntel.index()] =
+            TableView::Complete(TableRows::CountryIntel(vec![
+                replay::rows::CountryIntelRow {
+                    owner_country: 102,
+                    target_index: 0,
+                    ..Default::default()
+                },
+                replay::rows::CountryIntelRow {
+                    owner_country: 102,
+                    target_index: 1,
+                    civilian: 3_331_020,
+                    army: -1_500_000,
+                    navy: i64::MAX,
+                    air: i64::MIN,
+                },
+            ]));
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert!(differences(&report).is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["CountryIntel"], 2);
+
+        // One changed lane, one save-only index and one replay-only country.
+        let mut save = save.clone();
+        save.country_intel
+            .get_mut(b"GER".as_slice())
+            .unwrap()
+            .push(save::CountryIntelRecord::default());
+        save.country_intel.get_mut(b"GER".as_slice()).unwrap()[1].navy = 0;
+        let mut frame = frame.clone();
+        let TableView::Complete(TableRows::CountryIntel(rows)) =
+            &mut frame.tables[TableId::CountryIntel.index()]
+        else {
+            unreachable!()
+        };
+        rows.push(replay::rows::CountryIntelRow {
+            owner_country: 201,
+            target_index: 0,
+            ..Default::default()
+        });
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        let differences = differences(&report);
+        assert_eq!(differences.len(), 3, "{differences:?}");
+        assert!(
+            differences
+                .iter()
+                .any(|line| line.contains("GER.intel[1].navy"))
+        );
+        assert!(differences.iter().any(|line| line.contains("GER.intel[2]")));
+        assert!(differences.iter().any(|line| line.contains("D01.intel")));
+    }
+
+    #[test]
+    fn the_boundary_witness_states_whether_the_save_was_written_at_the_sampled_tick() {
+        let (mut frame, save, membership, equipment) = relation_fixture();
+        let counters = save.counters;
+        let TableView::Complete(TableRows::Clock(rows)) = &mut frame.tables[TableId::Clock.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].debug_current_ref_id = Some(counters.debug_current_ref_id);
+        rows[0].unit = Some(counters.unit);
+        rows[0].order_index = Some(counters.order_index);
+        rows[0].front_index = Some(counters.front_index);
+        rows[0].theatre_index = Some(counters.theatre_index);
+        rows[0].theater_group_index = Some(counters.theater_group_index);
+        rows[0].military_deployment_line_index = Some(counters.military_deployment_line_index);
+        rows[0].military_deployment_conveyor_index =
+            Some(counters.military_deployment_conveyor_index);
+        rows[0].equipment_variant_index = Some(counters.equipment_variant_index);
+        rows[0].country_leader_index = Some(counters.country_leader_index);
+        rows[0].navy_id = Some(counters.navy_id);
+        rows[0].land_combat_id = Some(counters.land_combat_id);
+        rows[0].multiplayer_random_count = Some(counters.multiplayer_random_count);
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        let verdict = report.boundary_verdict.clone().unwrap();
+        assert!(verdict.contains("written at the sampled tick"), "{verdict}");
+        assert_eq!(report.boundary_witness.len(), 13);
+        assert!(differences(&report).is_empty());
+        assert_eq!(
+            report.compared_tables["boundary counter witnesses (printed, never a difference)"],
+            13
+        );
+
+        // Three objects allocated after the sample; the witness names them and
+        // the comparison still passes, because it never waives a difference.
+        let mut frame = frame.clone();
+        let TableView::Complete(TableRows::Clock(rows)) = &mut frame.tables[TableId::Clock.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].debug_current_ref_id = Some(counters.debug_current_ref_id - 3);
+        rows[0].navy_id = Some(counters.navy_id - 1);
+        rows[0].multiplayer_random_count = None;
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        let verdict = report.boundary_verdict.clone().unwrap();
+        assert!(verdict.contains("after further engine work"), "{verdict}");
+        assert!(verdict.contains("debug_current_ref_id +3"), "{verdict}");
+        assert!(verdict.contains("navy_id +1"), "{verdict}");
+        assert_eq!(
+            report.compared_tables["boundary counter witnesses (printed, never a difference)"],
+            12
+        );
+        assert!(
+            report
+                .boundary_witness
+                .iter()
+                .any(|line| line.contains("multiplayer_random_count: recorded unavailable"))
+        );
+        assert!(differences(&report).is_empty());
+
+        // Counters that are not recorded at all leave the boundary unmeasured.
+        let mut frame = frame.clone();
+        let TableView::Complete(TableRows::Clock(rows)) = &mut frame.tables[TableId::Clock.index()]
+        else {
+            unreachable!()
+        };
+        rows[0] = ClockRow {
+            hour: rows[0].hour,
+            seed: rows[0].seed,
+            ..Default::default()
+        };
+        let report = compare(&frame, &save, &membership, &equipment).unwrap();
+        assert!(
+            report
+                .boundary_verdict
+                .clone()
+                .unwrap()
+                .contains("not measured"),
+        );
+        assert!(differences(&report).is_empty());
     }
 }
