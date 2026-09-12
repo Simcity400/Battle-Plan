@@ -58,9 +58,10 @@ use crate::{
         air::{AirBasesJob, AirHistoryJob, AirStatsJob, AirWingJob},
         characters::CharactersJob,
         construction::{BuildingsJob, ConstructionRestJob},
+        economy::EconomyRestJob,
         fog::{IntelJob, RadarJob},
         governance::{FocusJob, ResearchJob},
-        intel::RelationsJob,
+        intel::{IntelRestJob, RelationsJob},
         lexical::LexicalJob,
         naval_history::{NavalJob, RailJob, SunkJob, SupremacyJob},
         production::{ProductionRestJob, VariantsJob},
@@ -292,6 +293,46 @@ pub const CONSTRUCTION_REST: [TableId; 10] = [
     TableId::CountryCollaboration,
 ];
 
+/// Economy hourly rest in calibration/report order: [fuel, experience,
+/// supply, hubs, disrupted, foreign, definitions, resources, exchanges,
+/// purchases]. Hourly like every Tier-H table (no refresh gate). The supply
+/// shared traversal is anchor-charged to the hubs slot; the resource
+/// dictionary to the definitions slot, matching the read-group convention.
+pub const ECONOMY_REST: [TableId; 10] = [
+    TableId::CountryFuel,
+    TableId::CountryExperience,
+    TableId::ProvinceSupply,
+    TableId::HubMotorization,
+    TableId::DisruptedSupply,
+    TableId::ForeignHomebases,
+    TableId::ResourceDefinitions,
+    TableId::CountryResources,
+    TableId::ResourceExchanges,
+    TableId::PurchaseContracts,
+];
+
+/// Intel hourly remainders in calibration/report order: [subjects, autonomy,
+/// agencies, operatives, cryptology, networks, flags, variables, operations,
+/// assignments, tokens, incoming, country intel]. Hourly like every Tier-H
+/// table (no refresh gate). The operation census is anchor-charged to the
+/// operations slot; flag/variable scopes to their own slots, matching the
+/// read-group convention.
+pub const INTEL_REST: [TableId; 13] = [
+    TableId::Subjects,
+    TableId::Autonomy,
+    TableId::IntelligenceAgencies,
+    TableId::OperativeMemberships,
+    TableId::Cryptology,
+    TableId::IntelNetworks,
+    TableId::ScriptFlags,
+    TableId::ScriptVariables,
+    TableId::Operations,
+    TableId::OperationAssignments,
+    TableId::OperationTokens,
+    TableId::IncomingDiplomaticActions,
+    TableId::CountryIntel,
+];
+
 /// Live raw payloads beyond this count are not retained; further refreshes
 /// take the existing gap path until the worker catches up (see module docs).
 const JOB_POOL_KEEP: usize = 2;
@@ -322,6 +363,8 @@ pub struct DecodeJob {
     pub session_refresh: bool,
     pub production_rest_refresh: bool,
     pub construction_rest_refresh: bool,
+    pub economy_rest_refresh: bool,
+    pub intel_rest_refresh: bool,
     pub air_bases_refresh: bool,
     pub air_history_refresh: bool,
     pub rail_refresh: bool,
@@ -349,6 +392,8 @@ pub struct DecodeJob {
     pub session_payload: Option<SessionJob>,
     pub production_rest_payload: Option<ProductionRestJob>,
     pub construction_rest_payload: Option<ConstructionRestJob>,
+    pub economy_rest_payload: Option<EconomyRestJob>,
+    pub intel_rest_payload: Option<IntelRestJob>,
     pub air_bases_payload: Option<AirBasesJob>,
     pub air_history_payload: Option<AirHistoryJob>,
     pub rail_payload: Option<RailJob>,
@@ -603,6 +648,87 @@ static CONSTRUCTION_REST_RAW_BYTES: [AtomicU64; 10] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
+static ECONOMY_REST_COPY_NS: [AtomicU64; 10] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+static ECONOMY_REST_DECODE_NS: [AtomicU64; 10] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+static ECONOMY_REST_RAW_BYTES: [AtomicU64; 10] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+static INTEL_REST_COPY_NS: [AtomicU64; 13] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+static INTEL_REST_DECODE_NS: [AtomicU64; 13] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+static INTEL_REST_RAW_BYTES: [AtomicU64; 13] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
 static AIR_BASES_COPY_NS: [AtomicU64; 3] =
     [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 static AIR_BASES_DECODE_NS: [AtomicU64; 3] =
@@ -655,6 +781,8 @@ static PLAYERS_JOB_POOL: Mutex<Vec<PlayersJob>> = Mutex::new(Vec::new());
 static SESSION_JOB_POOL: Mutex<Vec<SessionJob>> = Mutex::new(Vec::new());
 static PRODUCTION_REST_JOB_POOL: Mutex<Vec<ProductionRestJob>> = Mutex::new(Vec::new());
 static CONSTRUCTION_REST_JOB_POOL: Mutex<Vec<ConstructionRestJob>> = Mutex::new(Vec::new());
+static ECONOMY_REST_JOB_POOL: Mutex<Vec<EconomyRestJob>> = Mutex::new(Vec::new());
+static INTEL_REST_JOB_POOL: Mutex<Vec<IntelRestJob>> = Mutex::new(Vec::new());
 static AIR_BASES_JOB_POOL: Mutex<Vec<AirBasesJob>> = Mutex::new(Vec::new());
 static AIR_HISTORY_JOB_POOL: Mutex<Vec<AirHistoryJob>> = Mutex::new(Vec::new());
 static RAIL_JOB_POOL: Mutex<Vec<RailJob>> = Mutex::new(Vec::new());
@@ -1201,6 +1329,58 @@ pub fn recycle_construction_rest_job(mut job: ConstructionRestJob) {
         job.grow();
     }
     if let Ok(mut pool) = CONSTRUCTION_REST_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
+/// Recycled hourly economy-rest raw-payload job. Cold calls allocate; steady
+/// state reuses jobs with their capacities, so neither thread allocates
+/// per hour.
+pub fn acquire_economy_rest_job() -> EconomyRestJob {
+    if let Ok(mut pool) = ECONOMY_REST_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    EconomyRestJob::new()
+}
+
+/// Return an economy-rest payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_economy_rest_job(mut job: EconomyRestJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = ECONOMY_REST_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
+/// Recycled hourly intel-remainders raw-payload job. Cold calls allocate;
+/// steady state reuses jobs with their capacities, so neither thread allocates
+/// per hour.
+pub fn acquire_intel_rest_job() -> IntelRestJob {
+    if let Ok(mut pool) = INTEL_REST_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    IntelRestJob::new()
+}
+
+/// Return an intel-remainders payload job to the pool after clearing it.
+/// Growth decided here runs on the calling (off-game-thread) side.
+pub fn recycle_intel_rest_job(mut job: IntelRestJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = INTEL_REST_JOB_POOL.try_lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1758,6 +1938,39 @@ pub fn process_job(shared: &Shared, job: &DecodeJob) {
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
+    if job.economy_rest_refresh
+        && let Some(payload) = job.economy_rest_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 10];
+        frame
+            .extended
+            .economy_rest_pilot()
+            .decode_economy_rest_payload(shared.base, payload, &mut decode_ticks);
+        for (total, ticks) in ECONOMY_REST_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
+    if job.intel_rest_refresh
+        && let Some(payload) = job.intel_rest_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 13];
+        frame.extended.intel_rest_pilot().decode_intel_rest_payload(
+            shared.base,
+            payload,
+            &mut decode_ticks,
+        );
+        for (total, ticks) in INTEL_REST_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
     if job.air_bases_refresh
         && let Some(payload) = job.air_bases_payload.as_ref()
     {
@@ -2071,6 +2284,24 @@ pub fn calibration() -> Calibration {
         construction_rest_raw_bytes: CONSTRUCTION_REST_RAW_BYTES
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
+        economy_rest_copy_ns: ECONOMY_REST_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        economy_rest_decode_ns: ECONOMY_REST_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        economy_rest_raw_bytes: ECONOMY_REST_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        intel_rest_copy_ns: INTEL_REST_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        intel_rest_decode_ns: INTEL_REST_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        intel_rest_raw_bytes: INTEL_REST_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
         air_bases_copy_ns: AIR_BASES_COPY_NS
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
@@ -2200,6 +2431,12 @@ pub struct Calibration {
     pub construction_rest_copy_ns: [u64; 10],
     pub construction_rest_decode_ns: [u64; 10],
     pub construction_rest_raw_bytes: [u64; 10],
+    pub economy_rest_copy_ns: [u64; 10],
+    pub economy_rest_decode_ns: [u64; 10],
+    pub economy_rest_raw_bytes: [u64; 10],
+    pub intel_rest_copy_ns: [u64; 13],
+    pub intel_rest_decode_ns: [u64; 13],
+    pub intel_rest_raw_bytes: [u64; 13],
     pub air_bases_copy_ns: [u64; 3],
     pub air_bases_decode_ns: [u64; 3],
     pub air_bases_raw_bytes: [u64; 3],
@@ -2306,6 +2543,14 @@ impl Calibration {
             "construction_rest_decode_ns": self.construction_rest_decode_ns.as_slice(),
             "construction_rest_raw_bytes": self.construction_rest_raw_bytes.as_slice(),
             "construction_rest_tables": ["StateBaseResources", "BuildingConstruction", "RailwayConstruction", "OccupationSettings", "StateOccupationLaws", "StateGarrisons", "StateAssignedManpower", "CountryOccupationReserveManpower", "StateResistance", "CountryCollaboration"],
+            "economy_rest_copy_ns": self.economy_rest_copy_ns.as_slice(),
+            "economy_rest_decode_ns": self.economy_rest_decode_ns.as_slice(),
+            "economy_rest_raw_bytes": self.economy_rest_raw_bytes.as_slice(),
+            "economy_rest_tables": ["CountryFuel", "CountryExperience", "ProvinceSupply", "HubMotorization", "DisruptedSupply", "ForeignHomebases", "ResourceDefinitions", "CountryResources", "ResourceExchanges", "PurchaseContracts"],
+            "intel_rest_copy_ns": self.intel_rest_copy_ns.as_slice(),
+            "intel_rest_decode_ns": self.intel_rest_decode_ns.as_slice(),
+            "intel_rest_raw_bytes": self.intel_rest_raw_bytes.as_slice(),
+            "intel_rest_tables": ["Subjects", "Autonomy", "IntelligenceAgencies", "OperativeMemberships", "Cryptology", "IntelNetworks", "ScriptFlags", "ScriptVariables", "Operations", "OperationAssignments", "OperationTokens", "IncomingDiplomaticActions", "CountryIntel"],
             "air_bases_copy_ns": self.air_bases_copy_ns.as_slice(),
             "air_bases_decode_ns": self.air_bases_decode_ns.as_slice(),
             "air_bases_raw_bytes": self.air_bases_raw_bytes.as_slice(),
@@ -2489,6 +2734,22 @@ pub(crate) fn add_construction_rest_raw_bytes(table: usize, bytes: u64) {
     CONSTRUCTION_REST_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
 }
 
+pub(crate) fn add_economy_rest_copy_ns(table: usize, ns: u64) {
+    ECONOMY_REST_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_economy_rest_raw_bytes(table: usize, bytes: u64) {
+    ECONOMY_REST_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
+pub(crate) fn add_intel_rest_copy_ns(table: usize, ns: u64) {
+    INTEL_REST_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_intel_rest_raw_bytes(table: usize, bytes: u64) {
+    INTEL_REST_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
 pub(crate) fn add_air_bases_copy_ns(table: usize, ns: u64) {
     AIR_BASES_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
 }
@@ -2609,6 +2870,12 @@ pub(crate) fn reset_calibration_for_test() {
         .chain(CONSTRUCTION_REST_COPY_NS.iter())
         .chain(CONSTRUCTION_REST_DECODE_NS.iter())
         .chain(CONSTRUCTION_REST_RAW_BYTES.iter())
+        .chain(ECONOMY_REST_COPY_NS.iter())
+        .chain(ECONOMY_REST_DECODE_NS.iter())
+        .chain(ECONOMY_REST_RAW_BYTES.iter())
+        .chain(INTEL_REST_COPY_NS.iter())
+        .chain(INTEL_REST_DECODE_NS.iter())
+        .chain(INTEL_REST_RAW_BYTES.iter())
         .chain(AIR_BASES_COPY_NS.iter())
         .chain(AIR_BASES_DECODE_NS.iter())
         .chain(AIR_BASES_RAW_BYTES.iter())
@@ -2760,6 +3027,8 @@ mod tests {
                 session_refresh: false,
                 production_rest_refresh: false,
                 construction_rest_refresh: false,
+                economy_rest_refresh: false,
+                intel_rest_refresh: false,
                 air_bases_refresh: false,
                 air_history_refresh: false,
                 rail_refresh: false,
@@ -2787,6 +3056,8 @@ mod tests {
                 session_payload: None,
                 production_rest_payload: None,
                 construction_rest_payload: None,
+                economy_rest_payload: None,
+                intel_rest_payload: None,
                 air_bases_payload: None,
                 air_history_payload: None,
                 rail_payload: None,
@@ -2838,6 +3109,8 @@ mod tests {
                 session_refresh: false,
                 production_rest_refresh: false,
                 construction_rest_refresh: false,
+                economy_rest_refresh: false,
+                intel_rest_refresh: false,
                 air_bases_refresh: false,
                 air_history_refresh: false,
                 rail_refresh: false,
@@ -2865,6 +3138,8 @@ mod tests {
                 session_payload: None,
                 production_rest_payload: None,
                 construction_rest_payload: None,
+                economy_rest_payload: None,
+                intel_rest_payload: None,
                 air_bases_payload: None,
                 air_history_payload: None,
                 rail_payload: None,
@@ -2898,6 +3173,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -2925,6 +3202,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -2999,6 +3278,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3026,6 +3307,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3081,6 +3364,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3108,6 +3393,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3178,6 +3465,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3205,6 +3494,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3278,6 +3569,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3305,6 +3598,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3375,6 +3670,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3402,6 +3699,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3470,6 +3769,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3497,6 +3798,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3564,6 +3867,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3591,6 +3896,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3653,6 +3960,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3680,6 +3989,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3749,6 +4060,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3776,6 +4089,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3958,6 +4273,8 @@ mod tests {
                 session_refresh: false,
                 production_rest_refresh: false,
                 construction_rest_refresh: false,
+                economy_rest_refresh: false,
+                intel_rest_refresh: false,
                 air_bases_refresh: false,
                 air_history_refresh: false,
                 rail_refresh: false,
@@ -3985,6 +4302,8 @@ mod tests {
                 session_payload: None,
                 production_rest_payload: None,
                 construction_rest_payload: None,
+                economy_rest_payload: None,
+                intel_rest_payload: None,
                 air_bases_payload: None,
                 air_history_payload: None,
                 rail_payload: None,
@@ -4044,6 +4363,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4071,6 +4392,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4134,6 +4457,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4160,6 +4485,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4223,6 +4550,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4250,6 +4579,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4312,6 +4643,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4339,6 +4672,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4421,6 +4756,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4448,6 +4785,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4614,6 +4953,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: true,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4641,6 +4982,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: Some(first),
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4720,6 +5063,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: true,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4747,6 +5092,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: Some(first),
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4871,6 +5218,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4898,6 +5247,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4987,6 +5338,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -5014,6 +5367,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,

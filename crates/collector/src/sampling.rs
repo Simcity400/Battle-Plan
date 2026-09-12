@@ -839,6 +839,22 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 None;
             let mut construction_rest_report =
                 extended::construction::ConstructionRestCopyReport::default();
+            // Economy hourly rest handoff state: same FIFO, same ordering
+            // guarantees. The hourly payload carries fuel, experience,
+            // supply, hubs, disrupted, foreign, definitions, resources,
+            // exchanges and purchases with its own census and no
+            // cross-family decoded roots. Staging overflow falls back to the
+            // typed walks with no payload enqueued.
+            let mut economy_rest_payload: Option<extended::economy::EconomyRestJob> = None;
+            let mut economy_rest_report = extended::economy::EconomyRestCopyReport::default();
+            // Intel hourly remainders handoff state: same FIFO, same ordering
+            // guarantees. The hourly payload carries subjects, autonomy,
+            // agencies, operatives, cryptology, networks, flags, variables,
+            // operations, assignments, tokens, incoming and country intel
+            // with its own census and no cross-family decoded roots. Staging
+            // overflow falls back to the typed walks with no payload enqueued.
+            let mut intel_rest_payload: Option<extended::intel::IntelRestJob> = None;
+            let mut intel_rest_report = extended::intel::IntelRestCopyReport::default();
             // Shared hourly bases handoff state: same FIFO, same ordering
             // guarantees. The hourly payload carries the wing/manager census
             // once with bases, registrations and aces detail; all three
@@ -1859,6 +1875,98 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::recycle_construction_rest_job(second);
                     }
                 }
+                // Economy hourly rest (copy/decode split): raw copies only on
+                // the game thread. Every hour stages the payload and hands the
+                // frame to the decode FIFO; the worker replays fuel,
+                // experience, supply, hubs, disrupted, foreign, definitions,
+                // resources, exchanges and purchases before the spool ready
+                // handoff. Staging overflow falls back to the typed walks with
+                // no payload enqueued.
+                {
+                    let needed_any = decode::ECONOMY_REST
+                        .iter()
+                        .any(|table| extended_needed[table.index()]);
+                    let mut first = decode::acquire_economy_rest_job();
+                    let mut second = needed_any.then(decode::acquire_economy_rest_job);
+                    let ctx = extended::economy::EconomyRestCopyContext {
+                        base: shared.base,
+                        game_state: state,
+                        needed: [
+                            extended_needed[decode::ECONOMY_REST[0].index()],
+                            extended_needed[decode::ECONOMY_REST[1].index()],
+                            extended_needed[decode::ECONOMY_REST[2].index()],
+                            extended_needed[decode::ECONOMY_REST[3].index()],
+                            extended_needed[decode::ECONOMY_REST[4].index()],
+                            extended_needed[decode::ECONOMY_REST[5].index()],
+                            extended_needed[decode::ECONOMY_REST[6].index()],
+                            extended_needed[decode::ECONOMY_REST[7].index()],
+                            extended_needed[decode::ECONOMY_REST[8].index()],
+                            extended_needed[decode::ECONOMY_REST[9].index()],
+                        ],
+                    };
+                    economy_rest_report = frame
+                        .extended
+                        .economy_rest_pilot()
+                        .copy_economy_rest_refresh(&memory, ctx, &mut first, second.as_mut());
+                    frame.extended.economy_rest_pilot().rest_raw_mode = economy_rest_report.raw_ok;
+                    if economy_rest_report.raw_ok {
+                        economy_rest_payload = Some(first);
+                    } else {
+                        decode::recycle_economy_rest_job(first);
+                    }
+                    if let Some(second) = second {
+                        decode::recycle_economy_rest_job(second);
+                    }
+                }
+                // Intel hourly remainders (copy/decode split): raw copies only
+                // on the game thread. Every hour stages the payload and hands
+                // the frame to the decode FIFO; the worker replays subjects,
+                // autonomy, agencies, operatives, cryptology, networks, flags,
+                // variables, operations, assignments, tokens, incoming and
+                // country intel before the spool ready handoff. Staging
+                // overflow falls back to the typed walks with no payload
+                // enqueued.
+                {
+                    let needed_any = decode::INTEL_REST
+                        .iter()
+                        .any(|table| extended_needed[table.index()]);
+                    let mut first = decode::acquire_intel_rest_job();
+                    let mut second = needed_any.then(decode::acquire_intel_rest_job);
+                    let ctx = extended::intel::IntelRestCopyContext {
+                        base: shared.base,
+                        game_state: state,
+                        needed: [
+                            extended_needed[decode::INTEL_REST[0].index()],
+                            extended_needed[decode::INTEL_REST[1].index()],
+                            extended_needed[decode::INTEL_REST[2].index()],
+                            extended_needed[decode::INTEL_REST[3].index()],
+                            extended_needed[decode::INTEL_REST[4].index()],
+                            extended_needed[decode::INTEL_REST[5].index()],
+                            extended_needed[decode::INTEL_REST[6].index()],
+                            extended_needed[decode::INTEL_REST[7].index()],
+                            extended_needed[decode::INTEL_REST[8].index()],
+                            extended_needed[decode::INTEL_REST[9].index()],
+                            extended_needed[decode::INTEL_REST[10].index()],
+                            extended_needed[decode::INTEL_REST[11].index()],
+                            extended_needed[decode::INTEL_REST[12].index()],
+                        ],
+                    };
+                    intel_rest_report = frame.extended.intel_rest_pilot().copy_intel_rest_refresh(
+                        &memory,
+                        ctx,
+                        &mut first,
+                        second.as_mut(),
+                    );
+                    frame.extended.intel_rest_pilot().rest_raw_mode = intel_rest_report.raw_ok;
+                    if intel_rest_report.raw_ok {
+                        intel_rest_payload = Some(first);
+                    } else {
+                        decode::recycle_intel_rest_job(first);
+                    }
+                    if let Some(second) = second {
+                        decode::recycle_intel_rest_job(second);
+                    }
+                }
                 // Focus pair (copy/decode split): raw copies only on the game
                 // thread. Every hour stages the payload and hands the frame
                 // to the decode FIFO; the worker decodes before the spool
@@ -2168,6 +2276,38 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         );
                     }
                 }
+                // Economy hourly rest measured copy-only above; same install
+                // for the calibration counters. The supply shared traversal
+                // is anchor-charged to the hubs slot and the resource
+                // dictionary to the definitions slot, matching the read-group
+                // convention.
+                if economy_rest_report.raw_ok {
+                    for (slot, table) in decode::ECONOMY_REST.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = economy_rest_report.matched[slot];
+                        let ns = shared.ns(economy_rest_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_economy_rest_copy_ns(slot, ns);
+                        decode::add_economy_rest_raw_bytes(
+                            slot,
+                            economy_rest_report.raw_bytes[slot],
+                        );
+                    }
+                }
+                // Intel hourly remainders measured copy-only above; same
+                // install for the calibration counters. The operation census
+                // is anchor-charged to the operations slot, matching the
+                // read-group convention.
+                if intel_rest_report.raw_ok {
+                    for (slot, table) in decode::INTEL_REST.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = intel_rest_report.matched[slot];
+                        let ns = shared.ns(intel_rest_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_intel_rest_copy_ns(slot, ns);
+                        decode::add_intel_rest_raw_bytes(slot, intel_rest_report.raw_bytes[slot]);
+                    }
+                }
                 // Shared hourly bases measured copy-only above; same install
                 // for the calibration counters. The shared census is
                 // anchor-charged to the bases slot; registrations and aces
@@ -2309,6 +2449,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 session_refresh: session_report.raw_ok,
                 production_rest_refresh: production_rest_report.raw_ok,
                 construction_rest_refresh: construction_rest_report.raw_ok,
+                economy_rest_refresh: economy_rest_report.raw_ok,
+                intel_rest_refresh: intel_rest_report.raw_ok,
                 air_bases_refresh: air_bases_report.raw_ok,
                 air_history_refresh: air_history_report.raw_ok,
                 rail_refresh: rail_report.raw_ok,
@@ -2336,6 +2478,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 session_payload,
                 production_rest_payload,
                 construction_rest_payload,
+                economy_rest_payload,
+                intel_rest_payload,
                 air_bases_payload,
                 air_history_payload,
                 rail_payload,
@@ -2418,6 +2562,12 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     }
                     if let Some(payload) = returned.construction_rest_payload {
                         decode::recycle_construction_rest_job(payload);
+                    }
+                    if let Some(payload) = returned.economy_rest_payload {
+                        decode::recycle_economy_rest_job(payload);
+                    }
+                    if let Some(payload) = returned.intel_rest_payload {
+                        decode::recycle_intel_rest_job(payload);
                     }
                     if let Some(payload) = returned.air_bases_payload {
                         decode::recycle_air_bases_job(payload);
@@ -4998,6 +5148,8 @@ mod tests {
                     session_refresh: false,
                     production_rest_refresh: false,
                     construction_rest_refresh: false,
+                    economy_rest_refresh: false,
+                    intel_rest_refresh: false,
                     air_bases_refresh: false,
                     air_history_refresh: false,
                     rail_refresh: false,
@@ -5025,6 +5177,8 @@ mod tests {
                     session_payload: None,
                     production_rest_payload: None,
                     construction_rest_payload: None,
+                    economy_rest_payload: None,
+                    intel_rest_payload: None,
                     air_bases_payload: None,
                     air_history_payload: None,
                     rail_payload: None,
@@ -5060,6 +5214,8 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            economy_rest_refresh: false,
+            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -5087,6 +5243,8 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            economy_rest_payload: None,
+            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
