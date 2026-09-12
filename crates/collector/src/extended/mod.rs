@@ -234,6 +234,24 @@ impl Captured {
         &mut self.construction
     }
 
+    /// Decode-worker handoff for the wing-fed air pair (copy/decode split).
+    /// Sole cross-thread entry to the air wing-extension buffers: the game
+    /// thread stages raw-copy state through it every hour and the single
+    /// FIFO decode worker decodes the staged payload into these pooled typed
+    /// rows before the spool ready-queue handoff.
+    pub(crate) fn air_wing_pilot(&mut self) -> &mut air::Captured {
+        &mut self.air
+    }
+
+    /// Decode-worker handoff for the source-fed naval block (copy/decode
+    /// split). Sole cross-thread entry to the naval theatre/OOB buffers: the
+    /// game thread stages raw-copy state through it every hour and the
+    /// single FIFO decode worker decodes the staged payload into these
+    /// pooled typed rows before the spool ready-queue handoff.
+    pub(crate) fn naval_pilot(&mut self) -> &mut naval_history::Captured {
+        &mut self.naval_history
+    }
+
     /// Game-thread raw copy for a slot-3 variants refresh. Runs after the
     /// game-side registry census, which feeds both production (as today) and
     /// this copy. Returns the pilot-style report for sampling's install.

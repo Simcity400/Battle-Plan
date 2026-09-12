@@ -794,6 +794,18 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             // governance capture with no payload enqueued.
             let mut focus_payload: Option<extended::governance::FocusJob> = None;
             let mut focus_report = extended::governance::FocusCopyReport::default();
+            // Map-pack coupled unit handoff state: same FIFO, same ordering
+            // guarantees. The hourly payloads carry the eight map tables,
+            // the wing-fed air pair and the source-fed naval block, each
+            // with its own root refs from its own copies and no
+            // cross-family decoded roots. Staging overflow falls back to the
+            // typed walks with no payloads enqueued.
+            let mut map_payload: Option<crate::map_capture::MapJob> = None;
+            let mut map_report = crate::map_capture::MapCopyReport::default();
+            let mut air_wing_payload: Option<extended::air::AirWingJob> = None;
+            let mut air_wing_report = extended::air::AirWingCopyReport::default();
+            let mut naval_payload: Option<extended::naval_history::NavalJob> = None;
+            let mut naval_report = extended::naval_history::NavalCopyReport::default();
             let mut decode_hour = 0;
             let mut decode_force_full = false;
             if let Some(clock) = frame.clock_before {
@@ -1080,6 +1092,81 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     );
                 }
                 frame.table_ns[9] = shared.ns(qpc() - begin);
+                // Map-pack coupled unit (copy/decode split): raw copies only
+                // on the game thread. Every hour stages the three payloads
+                // and hands the frame to the decode FIFO; the worker replays
+                // map, wing and naval walks before the spool ready handoff.
+                // Staging overflow falls back to the typed walks below with
+                // no payloads enqueued.
+                let map_second_needed = needed[8..PROVINCE_CHECK].iter().any(|&n| n);
+                let mut map_first = decode::acquire_map_job();
+                let mut map_second = map_second_needed.then(decode::acquire_map_job);
+                let map_ctx = crate::map_capture::MapCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                };
+                map_report = crate::map_capture::copy_map_refresh(
+                    &memory,
+                    map_ctx,
+                    &mut map_first,
+                    map_second.as_mut(),
+                );
+                frame.map.raw_mode = map_report.raw_ok;
+                if map_report.raw_ok {
+                    map_payload = Some(map_first);
+                } else {
+                    decode::recycle_map_job(map_first);
+                }
+                if let Some(second) = map_second {
+                    decode::recycle_map_job(second);
+                }
+                let air_second_needed = decode::AIR_WING
+                    .iter()
+                    .any(|table| extended_needed[table.index()]);
+                let mut air_first = decode::acquire_air_wing_job();
+                let mut air_second = air_second_needed.then(decode::acquire_air_wing_job);
+                let air_ctx = extended::air::AirWingCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                };
+                air_wing_report = extended::air::copy_air_refresh(
+                    &memory,
+                    air_ctx,
+                    &mut air_first,
+                    air_second.as_mut(),
+                );
+                if air_wing_report.raw_ok {
+                    air_wing_payload = Some(air_first);
+                } else {
+                    decode::recycle_air_wing_job(air_first);
+                }
+                if let Some(second) = air_second {
+                    decode::recycle_air_wing_job(second);
+                }
+                let naval_second_needed = decode::NAVAL_ORDER
+                    .iter()
+                    .any(|table| extended_needed[table.index()]);
+                let mut naval_first = decode::acquire_naval_job();
+                let mut naval_second = naval_second_needed.then(decode::acquire_naval_job);
+                let naval_ctx = extended::naval_history::NavalCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                };
+                naval_report = extended::naval_history::copy_naval_refresh(
+                    &memory,
+                    naval_ctx,
+                    &mut naval_first,
+                    naval_second.as_mut(),
+                );
+                frame.extended.naval_pilot().raw_mode = naval_report.raw_ok;
+                if naval_report.raw_ok {
+                    naval_payload = Some(naval_first);
+                } else {
+                    decode::recycle_naval_job(naval_first);
+                }
+                if let Some(second) = naval_second {
+                    decode::recycle_naval_job(second);
+                }
                 let (map_matched, map_ticks) = frame.map.sample(
                     &cached,
                     shared.base,
@@ -1478,6 +1565,46 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::add_focus_raw_bytes(slot, focus_report.raw_bytes[slot]);
                     }
                 }
+                // Map-pack coupled unit measured copy-only above; same install
+                // for the calibration counters. Map tables use core
+                // consistency slots (matched[8..16]); wing/naval tables use
+                // extended slots. Shared walks are anchor-charged per the
+                // read-group convention (see decode::MAP_PACK docs).
+                if map_report.raw_ok {
+                    for (slot, table) in decode::MAP_PACK.iter().enumerate() {
+                        // Map tables live in the core consistency window by
+                        // CONSISTENCY_TABLES position (land=8 .. orders=15).
+                        let core = 8 + slot;
+                        matched[core] = map_report.matched[slot];
+                        if needed[core] {
+                            frame.consistency_checked[core] = true;
+                        }
+                        let ns = shared.ns(map_report.copy_ticks[slot] as i64);
+                        frame.table_ns[table.index()] = ns;
+                        decode::add_map_copy_ns(slot, ns);
+                        decode::add_map_raw_bytes(slot, map_report.raw_bytes[slot]);
+                    }
+                }
+                if air_wing_report.raw_ok {
+                    for (slot, table) in decode::AIR_WING.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = air_wing_report.matched[slot];
+                        let ns = shared.ns(air_wing_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_air_wing_copy_ns(slot, ns);
+                        decode::add_air_wing_raw_bytes(slot, air_wing_report.raw_bytes[slot]);
+                    }
+                }
+                if naval_report.raw_ok {
+                    for (slot, table) in decode::NAVAL_ORDER.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = naval_report.matched[slot];
+                        let ns = shared.ns(naval_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_naval_copy_ns(slot, ns);
+                        decode::add_naval_raw_bytes(slot, naval_report.raw_bytes[slot]);
+                    }
+                }
                 let cache_verify_begin = qpc();
                 frame.country_cache_error = cached.verify().err();
                 frame.country_cache_ns =
@@ -1520,6 +1647,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 wars_refresh: wars_report.raw_ok,
                 divisions_refresh: divisions_report.raw_ok,
                 focus_refresh: focus_report.raw_ok,
+                map_refresh: map_report.raw_ok,
+                air_wing_refresh: air_wing_report.raw_ok,
+                naval_refresh: naval_report.raw_ok,
                 force_full: decode_force_full,
                 game_elapsed: (qpc() - entered - (original_end - original_begin)).max(1),
                 payload: pilot_payload,
@@ -1532,6 +1662,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 wars_payload,
                 divisions_payload,
                 focus_payload,
+                map_payload,
+                air_wing_payload,
+                naval_payload,
             };
             match decode::enqueue(shared, decode_job) {
                 None => {
@@ -1583,6 +1716,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     }
                     if let Some(payload) = returned.focus_payload {
                         decode::recycle_focus_job(payload);
+                    }
+                    if let Some(payload) = returned.map_payload {
+                        decode::recycle_map_job(payload);
+                    }
+                    if let Some(payload) = returned.air_wing_payload {
+                        decode::recycle_air_wing_job(payload);
+                    }
+                    if let Some(payload) = returned.naval_payload {
+                        decode::recycle_naval_job(payload);
                     }
                     // Existing whole-frame drop plus gap path, unchanged
                     // counters and no new loss reasons.
@@ -4123,6 +4265,9 @@ mod tests {
                     wars_refresh: false,
                     divisions_refresh: false,
                     focus_refresh: false,
+                    map_refresh: false,
+                    air_wing_refresh: false,
+                    naval_refresh: false,
                     force_full: false,
                     game_elapsed: 1,
                     payload: None,
@@ -4135,6 +4280,9 @@ mod tests {
                     wars_payload: None,
                     divisions_payload: None,
                     focus_payload: None,
+                    map_payload: None,
+                    air_wing_payload: None,
+                    naval_payload: None,
                 })
                 .unwrap();
         }
@@ -4155,6 +4303,9 @@ mod tests {
             wars_refresh: false,
             divisions_refresh: false,
             focus_refresh: false,
+            map_refresh: false,
+            air_wing_refresh: false,
+            naval_refresh: false,
             force_full: false,
             game_elapsed: 1,
             payload: None,
@@ -4167,6 +4318,9 @@ mod tests {
             wars_payload: None,
             divisions_payload: None,
             focus_payload: None,
+            map_payload: None,
+            air_wing_payload: None,
+            naval_payload: None,
         };
         assert!(shared.decode_queue.push(extra).is_err());
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };

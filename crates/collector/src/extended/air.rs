@@ -1,12 +1,22 @@
 //! Pooled air state. Acquisition never allocates; conversion and growth are off-thread.
+//!
+//! Wing-fed split (copy/decode): WingEquipment and WingCumulative move to
+//! the single FIFO decode worker as part of the map-pack coupled unit (one
+//! task). Each stages its own wing-census copies with no cross-family
+//! decoded roots; zero-engine-change replay of the existing wing walk plus
+//! equipment/cumulative reads against `Recorded` spans. Choice per table:
+//! zero-engine-change (Wars/Divisions precedent for census walks). The other
+//! five air tables stay game-side.
 
 use crate::{
+    raw::RawLog,
     sampling::{full_match, qpc},
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
 use engine::{
-    Memory, cace, cair_base, cair_region_combat_data, cair_wing, cloop_history, equipment_entry,
+    Memory, cace, cair_base, cair_region_combat_data, cair_wing, cequipment_variant,
+    cequipment_variant_pool, cloop_history, cpdx_array::Array, equipment_entry,
     sair_wing_combat_data, sdamage_entry, walk::Outcome,
 };
 use replay::{
@@ -638,6 +648,356 @@ fn damage_table(outcome: Outcome, captured: &[sdamage_entry::Row]) -> TableView 
     })
 }
 
+pub(crate) const WING_PACK_N: usize = 2;
+const EQUIPMENT_MASK: u32 = 0x01;
+const CUMULATIVE_MASK: u32 = 0x02;
+const WING_CENSUS_MASK: u32 = 0x03;
+
+#[derive(Debug)]
+pub(crate) struct AirWingJob {
+    pub log: RawLog<WING_PACK_N>,
+    pub game_state: usize,
+}
+
+impl AirWingJob {
+    pub fn new() -> Self {
+        Self {
+            log: RawLog::new(1 << 16, 4 << 20),
+            game_state: 0,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.log.clear();
+        self.game_state = 0;
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.log.grow_for_next()
+    }
+
+    pub fn grow(&mut self) {
+        self.log.grow();
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct AirWingCopyReport {
+    pub raw_ok: bool,
+    pub matched: [bool; WING_PACK_N],
+    pub copy_ticks: [u64; WING_PACK_N],
+    pub raw_bytes: [u64; WING_PACK_N],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AirWingCopyContext {
+    pub base: usize,
+    pub game_state: usize,
+}
+
+fn wing_pool_u64(log: &RawLog<WING_PACK_N>, start: usize) -> u64 {
+    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+}
+
+fn wing_pool_u32(log: &RawLog<WING_PACK_N>, start: usize) -> u32 {
+    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
+}
+
+fn wspan(
+    log: &mut RawLog<WING_PACK_N>,
+    memory: &impl engine::Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take(memory, addr?, len, mask)
+}
+
+fn wing_link(
+    log: &mut RawLog<WING_PACK_N>,
+    memory: &impl engine::Memory,
+    links: &Array,
+    countries: u32,
+    raw: u32,
+) -> Option<u32> {
+    if raw == 0 || raw >= links.count {
+        return None;
+    }
+    let offset = (raw as usize).checked_mul(4)?;
+    let start = wspan(log, memory, links.data.checked_add(offset), 4, WING_CENSUS_MASK)?;
+    let slot = wing_pool_u32(log, start);
+    if slot == 0 || slot >= countries {
+        return None;
+    }
+    Some(slot)
+}
+
+fn copy_air_census(
+    log: &mut RawLog<WING_PACK_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+) -> Option<()> {
+    use engine::{cair_wing_pool, ccountry, cstrategic_air, cstrategic_air_manager};
+    let countries = wspan(log, memory, game_state.checked_add(engine::cgame_state::COUNTRIES), 16, WING_CENSUS_MASK)?;
+    let links = wspan(log, memory, game_state.checked_add(engine::cgame_state::COUNTRY_LINKS), 16, WING_CENSUS_MASK)?;
+    let manager_ptr = wspan(log, memory, game_state.checked_add(engine::cgame_state::STRATEGIC_AIR_MANAGER), 8, WING_CENSUS_MASK)
+        .and_then(|s| usize::try_from(wing_pool_u64(log, s)).ok().filter(|&p| p != 0))?;
+    let _ = wspan(log, memory, Some(manager_ptr), 8, WING_CENSUS_MASK)?;
+    let owners_header = wspan(log, memory, manager_ptr.checked_add(cstrategic_air_manager::COUNTRY_AIR), 16, WING_CENSUS_MASK)?;
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[countries..countries + 16]);
+    let countries_array = Array::from_header(raw, 8)?;
+    raw.copy_from_slice(&log.bytes[links..links + 16]);
+    let links_array = Array::from_header(raw, 4)?;
+    raw.copy_from_slice(&log.bytes[owners_header..owners_header + 16]);
+    let owners = Array::from_header(raw, 8)?;
+    if owners.count == 0 || countries_array.count < 2 || links_array.count == 0 {
+        return None;
+    }
+    let country_vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
+    for slot in 1..countries_array.count {
+        let pointer_addr = (slot as usize).checked_mul(8).and_then(|o| countries_array.data.checked_add(o));
+        let pointer = wspan(log, memory, pointer_addr, 8, WING_CENSUS_MASK)
+            .and_then(|s| usize::try_from(wing_pool_u64(log, s)).ok().filter(|&p| p != 0))?;
+        let vtable = wspan(log, memory, Some(pointer), 8, WING_CENSUS_MASK)?;
+        if wing_pool_u64(log, vtable) != country_vtable {
+            return None;
+        }
+        let id = wspan(log, memory, pointer.checked_add(ccountry::ID), 4, WING_CENSUS_MASK)?;
+        let id = wing_pool_u32(log, id);
+        let canonical = wing_link(log, memory, &links_array, countries_array.count, id)?;
+        if wing_link(log, memory, &links_array, countries_array.count, slot) != Some(canonical) {
+            return None;
+        }
+        if wing_link(log, memory, &links_array, countries_array.count, canonical) != Some(canonical) {
+            return None;
+        }
+        let canonical_addr = (canonical as usize).checked_mul(8).and_then(|o| countries_array.data.checked_add(o));
+        let canonical_pointer = wspan(log, memory, canonical_addr, 8, WING_CENSUS_MASK)?;
+        if wing_pool_u64(log, canonical_pointer) != pointer as u64 {
+            return None;
+        }
+    }
+    for slot in 0..owners.count {
+        let owner_addr = owners.data.checked_add((slot as usize).saturating_mul(8));
+        let owner_pointer = wspan(log, memory, owner_addr, 8, WING_CENSUS_MASK)
+            .and_then(|s| usize::try_from(wing_pool_u64(log, s)).ok())?;
+        if owner_pointer == 0 {
+            continue;
+        }
+        let _ = wspan(log, memory, Some(owner_pointer), 8, WING_CENSUS_MASK)?;
+        let owner_field = wspan(log, memory, owner_pointer.checked_add(cstrategic_air::COUNTRY), 4, WING_CENSUS_MASK)?;
+        let owner = wing_pool_u32(log, owner_field);
+        if owner != 0 && owner < links_array.count {
+            let offset = (owner as usize).checked_mul(4);
+            let _ = wspan(log, memory, offset.and_then(|o| links_array.data.checked_add(o)), 4, WING_CENSUS_MASK)?;
+        }
+        let pools_header = wspan(log, memory, owner_pointer.checked_add(cstrategic_air::POOLS), 16, WING_CENSUS_MASK)?;
+        let mut header = [0u8; 16];
+        header.copy_from_slice(&log.bytes[pools_header..pools_header + 16]);
+        let pools = match Array::from_header(header, 8) {
+            Some(array) => array,
+            None => continue,
+        };
+        for pool_index in 0..pools.count {
+            let pool_addr = pools.data.checked_add((pool_index as usize).saturating_mul(8));
+            let pool = wspan(log, memory, pool_addr, 8, WING_CENSUS_MASK)
+                .and_then(|s| usize::try_from(wing_pool_u64(log, s)).ok().filter(|&p| p != 0))?;
+            let _ = wspan(log, memory, Some(pool), 8, WING_CENSUS_MASK)?;
+            let _ = wspan(log, memory, pool.checked_add(cair_wing_pool::OWNER), 8, WING_CENSUS_MASK)?;
+            let wings_header = wspan(log, memory, pool.checked_add(cair_wing_pool::WINGS), 16, WING_CENSUS_MASK)?;
+            let _ = wspan(log, memory, pool.checked_add(cair_wing_pool::AIR_BASE_REFERENCE), 8, WING_CENSUS_MASK)?;
+            let mut wings_raw = [0u8; 16];
+            wings_raw.copy_from_slice(&log.bytes[wings_header..wings_header + 16]);
+            let wings = match Array::from_header(wings_raw, 8) {
+                Some(array) => array,
+                None => continue,
+            };
+            for wing_index in 0..wings.count {
+                let wing_addr = wings.data.checked_add((wing_index as usize).saturating_mul(8));
+                let wing = wspan(log, memory, wing_addr, 8, WING_CENSUS_MASK)
+                    .and_then(|s| usize::try_from(wing_pool_u64(log, s)).ok())?;
+                if wing == 0 {
+                    continue;
+                }
+                copy_air_wing(log, memory, base, wing);
+                if log.overflowed {
+                    return None;
+                }
+            }
+        }
+    }
+    Some(())
+}
+
+fn copy_air_wing(
+    log: &mut RawLog<WING_PACK_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    wing: usize,
+) {
+    use engine::{air_mission, cair_wing};
+    for (offset, len, mask) in [
+        (0usize, 8, WING_CENSUS_MASK),
+        (cair_wing::SECONDARY, 16, WING_CENSUS_MASK),
+        (cair_wing::POOL, 8, WING_CENSUS_MASK),
+        (cair_wing::BASE_OVERRIDE, 8, WING_CENSUS_MASK),
+        (cair_wing::PLANE_COUNT, 4, WING_CENSUS_MASK),
+        (cair_wing::EFFECTIVE_PLANES, 4, WING_CENSUS_MASK),
+        (cair_wing::MISSION + air_mission::ENABLED_MASK, 4, WING_CENSUS_MASK),
+        (cair_wing::MISSION + air_mission::REGION, 8, WING_CENSUS_MASK),
+        (cair_wing::COUNTRY_OVERRIDE, 4, WING_CENSUS_MASK),
+        (cair_wing::AIR_ACCIDENTS, 4, CUMULATIVE_MASK),
+        (cair_wing::EXPERIENCE, 8, CUMULATIVE_MASK),
+    ] {
+        let _ = wspan(log, memory, wing.checked_add(offset), len, mask);
+    }
+    // Equipment pool with per-entry variant identities (equipment table).
+    let pool = match wing.checked_add(cair_wing::EQUIPMENT_POOL) {
+        Some(pool) => pool,
+        None => return,
+    };
+    let expected = match base.checked_add(cequipment_variant_pool::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return,
+    };
+    let vtable = match wspan(log, memory, Some(pool), 8, EQUIPMENT_MASK) {
+        Some(start) => start,
+        None => return,
+    };
+    if wing_pool_u64(log, vtable) != expected {
+        return;
+    }
+    let header = match wspan(
+        log,
+        memory,
+        pool.checked_add(cequipment_variant_pool::ITEMS),
+        16,
+        EQUIPMENT_MASK,
+    ) {
+        Some(start) => start,
+        None => return,
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[header..header + 16]);
+    let array = match Array::from_header(raw, equipment_entry::STRIDE) {
+        Some(array) => array,
+        None => return,
+    };
+    for index in 0..array.count {
+        let entry_addr = array.data.checked_add((index as usize).saturating_mul(equipment_entry::STRIDE));
+        let entry = match wspan(log, memory, entry_addr, equipment_entry::STRIDE, EQUIPMENT_MASK) {
+            Some(start) => start,
+            None => return,
+        };
+        let variant = match usize::try_from(u64::from_le_bytes(
+            log.bytes[entry..entry + 8].try_into().unwrap(),
+        ))
+        .ok()
+        {
+            Some(variant) => variant,
+            None => return,
+        };
+        if wspan(log, memory, Some(variant), 16, EQUIPMENT_MASK).is_none() {
+            return;
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+    let _ = cequipment_variant::VTABLE_RVA;
+}
+
+fn copy_air_pass(
+    job: &mut AirWingJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    ticks: &mut [u64; WING_PACK_N],
+) {
+    job.clear();
+    job.game_state = game_state;
+    let started = qpc();
+    let _ = copy_air_census(&mut job.log, memory, base, game_state);
+    ticks[0] += qpc().saturating_sub(started).max(0) as u64;
+}
+
+pub(crate) fn copy_air_refresh(
+    memory: &impl engine::Memory,
+    ctx: AirWingCopyContext,
+    first: &mut AirWingJob,
+    second: Option<&mut AirWingJob>,
+) -> AirWingCopyReport {
+    let mut ticks = [0u64; WING_PACK_N];
+    copy_air_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
+    let mut matched = [true; WING_PACK_N];
+    if let Some(second_job) = second {
+        let mut second_ticks = [0u64; WING_PACK_N];
+        copy_air_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
+        for (total, extra) in ticks.iter_mut().zip(second_ticks) {
+            *total += extra;
+        }
+        let equal = first.log.logs_equal(&second_job.log)
+            && !first.log.overflowed
+            && !second_job.log.overflowed;
+        for (slot, matched) in matched.iter_mut().enumerate() {
+            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+        }
+    }
+    let raw_ok = !first.log.overflowed;
+    AirWingCopyReport { raw_ok, matched, copy_ticks: ticks, raw_bytes: first.log.raw_bytes }
+}
+
+pub(crate) fn decode_air_payload(
+    captured: &mut Captured,
+    base: usize,
+    job: &AirWingJob,
+    decode_ticks: &mut [u64; WING_PACK_N],
+) {
+    let recorded = crate::raw::Recorded::build(&job.log);
+    let started = qpc();
+    // Replay through the existing visitor path: begin, per-wing visit
+    // (equipment + cumulative into pooled buffers), finish. Mirrors the game
+    // thread's `Sources::air` sequence for byte identity. The Wing rows
+    // themselves live in the map job; only equipment/cumulative install here.
+    // The walk's Wing-row buffer grows worker-side until the census fits, so
+    // extension visits never truncate from a short census buffer (the game
+    // thread withholds extensions only when its own map AirWings truncates,
+    // via require_parent on the map outcome, which this payload does not
+    // share). Worker-side growth converges like pooled growth.
+    let needed = [true, false, true, false, false, false, false];
+    let mut wing_rows: Vec<cair_wing::Row> = Vec::new();
+    loop {
+        captured.begin_wings();
+        let mut collected: Vec<(usize, cair_wing::Row)> = Vec::new();
+        let outcome = cair_wing::walk_with(
+            &recorded,
+            base,
+            job.game_state,
+            &mut wing_rows,
+            |pointer, _, row| {
+                collected.push((pointer, *row));
+            },
+        );
+        match outcome {
+            Outcome::Truncated { .. } => {
+                wing_rows.resize(wing_rows.len() * 2 + 16, cair_wing::Row::default());
+                continue;
+            }
+            _ => {
+                for (pointer, row) in &collected {
+                    let source = WingSource { pointer: *pointer, row, second: false };
+                    captured.visit_wing(&recorded, base, source, &needed);
+                }
+                captured.finish_wings(outcome, None, &needed);
+                break;
+            }
+        }
+    }
+    decode_ticks[0] += qpc().saturating_sub(started).max(0) as u64;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -954,5 +1314,323 @@ mod tests {
         assert!(captured.equipment.second.is_empty());
         assert!(captured.names.second.is_empty());
         assert!(captured.allocated_bytes() < before);
+    }
+
+    #[test]
+    fn wing_pack_tables_are_hourly_tier_h_with_no_refresh_gate() {
+        use replay::rows::TableId;
+        for table in [TableId::WingEquipment, TableId::WingCumulative] {
+            assert!(!replay::cadence::is_staggered(table), "{table:?}");
+            for hour in [0, 1, 2, 3, 60_820_531] {
+                assert!(replay::cadence::is_refresh(table, hour), "{table:?} at {hour}");
+            }
+        }
+    }
+
+    #[test]
+    fn wing_split_copy_matches_direct_walk() {
+        use super::wing_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let (split, report, _) = kit::split(&memory);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 2]);
+        kit::assert_matches_direct(&split, &direct);
+        assert_eq!(split.equipment_outcome, Outcome::Rows { len: 3 });
+        assert_eq!(split.cumulative_outcome, Outcome::Rows { len: 2 });
+    }
+
+    #[test]
+    fn wing_split_copy_matches_direct_walk_under_truncation() {
+        use super::wing_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct_truncated(&memory);
+        let (split, report, _) = kit::split_truncated(&memory);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 2]);
+        kit::assert_matches_direct(&split, &direct);
+    }
+
+    #[test]
+    fn wing_split_copy_matches_direct_walk_on_fault_matrix() {
+        use super::wing_test_kit as kit;
+        use engine::memory::SliceMemory;
+        struct Fault<'a> {
+            memory: SliceMemory<'a>,
+            fault: std::ops::Range<usize>,
+        }
+        impl engine::Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let Some(end) = address.checked_add(output.len()) else {
+                    return false;
+                };
+                if address < self.fault.end && end > self.fault.start {
+                    return false;
+                }
+                self.memory.copy(address, output)
+            }
+        }
+        for (fault, matched) in [
+            (kit::GAME_STATE + engine::cgame_state::COUNTRIES, [false, false]),
+            (kit::WING, [false, false]),
+            (kit::WING + engine::cair_wing::EXPERIENCE, [true, false]),
+            (kit::WING + engine::cair_wing::EQUIPMENT_POOL, [false, true]),
+        ] {
+            let bytes = kit::fixture();
+            let memory = Fault {
+                memory: SliceMemory { base: 0, bytes: &bytes },
+                fault: fault..fault + 1,
+            };
+            let direct = kit::direct(&memory);
+            let (split, report, _) = kit::split(&memory);
+            assert!(report.raw_ok, "fault={fault:x}");
+            kit::assert_matches_direct(&split, &direct);
+            assert_eq!(report.matched, matched, "fault={fault:x}");
+        }
+    }
+
+    #[test]
+    fn wing_double_copy_compare_blocks_checks_on_tearing() {
+        use super::wing_test_kit as kit;
+        use super::{AirWingCopyContext, AirWingJob};
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = AirWingCopyContext { base: kit::BASE, game_state: kit::GAME_STATE };
+        let mut first = AirWingJob::new();
+        let mut second = AirWingJob::new();
+        let report = super::copy_air_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 2]);
+        second.log.bytes[100] ^= 0xff;
+        assert!(!first.log.logs_equal(&second.log));
+    }
+
+    #[test]
+    fn wing_staging_overflow_falls_back_to_typed_walk() {
+        use super::wing_test_kit as kit;
+        use super::{AirWingCopyContext, AirWingJob};
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = AirWingCopyContext { base: kit::BASE, game_state: kit::GAME_STATE };
+        let mut tiny = AirWingJob {
+            log: crate::raw::RawLog::new(1, 1),
+            game_state: 0,
+        };
+        let report = super::copy_air_refresh(&memory, ctx, &mut tiny, None);
+        assert!(!report.raw_ok);
+    }
+}
+
+/// Shared synthetic address space for the wing-pack copy/decode harness:
+/// one country, one pool, two wings with equipment entries and cumulative
+/// counters. Mirrors the engine wing/equipment fixture shapes.
+#[cfg(test)]
+pub(crate) mod wing_test_kit {
+    use super::{AirWingCopyContext, AirWingCopyReport, AirWingJob, Capacities, Captured};
+    use engine::{memory::SliceMemory, walk::Outcome, Memory};
+
+    pub(crate) const BASE: usize = 0;
+    pub(crate) const GAME_STATE: usize = 0x10000;
+    const CTAB: usize = 0x11000;
+    const LTAB: usize = 0x12000;
+    const C0: usize = 0x20000;
+    const MANAGER: usize = 0x30000;
+    const OWNER_AIR: usize = 0x31000;
+    const POOL: usize = 0x32000;
+    pub(crate) const WING: usize = 0x33000;
+    const WING2: usize = 0x34000;
+    pub(crate) const ENTRIES: usize = 0x35000;
+    const VARIANT: usize = 0x36000;
+    const VARIANT2: usize = 0x37000;
+
+    fn p32(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn p64(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+        p64(bytes, at, data as u64);
+        p32(bytes, at + 8, count);
+        p32(bytes, at + 12, count);
+    }
+
+    pub(crate) fn fixture() -> Vec<u8> {
+        use engine::{cair_wing, ccountry, cequipment_variant, cequipment_variant_pool, equipment_entry};
+        let mut bytes = vec![0; 0x40000];
+        header(&mut bytes, GAME_STATE + engine::cgame_state::COUNTRIES, CTAB, 3);
+        p64(&mut bytes, CTAB, 0);
+        p64(&mut bytes, CTAB + 8, C0 as u64);
+        p64(&mut bytes, CTAB + 16, C0 as u64);
+        header(&mut bytes, GAME_STATE + engine::cgame_state::COUNTRY_LINKS, LTAB, 3);
+        p32(&mut bytes, LTAB, 0);
+        p32(&mut bytes, LTAB + 4, 1);
+        p32(&mut bytes, LTAB + 8, 1);
+        p64(&mut bytes, C0, ccountry::VTABLE_RVA as u64);
+        p32(&mut bytes, C0 + ccountry::ID, 1);
+        p64(&mut bytes, GAME_STATE + engine::cgame_state::STRATEGIC_AIR_MANAGER, MANAGER as u64);
+        p64(&mut bytes, MANAGER, engine::cstrategic_air_manager::VTABLE_RVA as u64);
+        header(&mut bytes, MANAGER + engine::cstrategic_air_manager::COUNTRY_AIR, 0x38000, 2);
+        p64(&mut bytes, 0x38000, 0);
+        p64(&mut bytes, 0x38000 + 8, OWNER_AIR as u64);
+        p64(&mut bytes, OWNER_AIR, engine::cstrategic_air::VTABLE_RVA as u64);
+        p32(&mut bytes, OWNER_AIR + engine::cstrategic_air::COUNTRY, 1);
+        header(&mut bytes, OWNER_AIR + engine::cstrategic_air::POOLS, 0x38100, 1);
+        p64(&mut bytes, 0x38100, POOL as u64);
+        p64(&mut bytes, POOL, engine::cair_wing_pool::VTABLE_RVA as u64);
+        p64(&mut bytes, POOL + engine::cair_wing_pool::OWNER, OWNER_AIR as u64);
+        p64(&mut bytes, POOL + engine::cair_wing_pool::AIR_BASE_REFERENCE, 0x1234u64);
+        header(&mut bytes, POOL + engine::cair_wing_pool::WINGS, 0x38200, 2);
+        p64(&mut bytes, 0x38200, WING as u64);
+        p64(&mut bytes, 0x38200 + 8, WING2 as u64);
+        for (wing, id, accidents, exp) in [(WING, 0x4500_0001u64, 3i32, 1000i64), (WING2, 0x4500_0002u64, -5i32, i64::MAX)] {
+            p64(&mut bytes, wing, cair_wing::VTABLE_RVA as u64);
+            p64(&mut bytes, wing + cair_wing::SECONDARY, cair_wing::SECONDARY_VTABLE_RVA as u64);
+            p64(&mut bytes, wing + cair_wing::SECONDARY + 8, id);
+            p64(&mut bytes, wing + cair_wing::POOL, POOL as u64);
+            p64(&mut bytes, wing + cair_wing::BASE_OVERRIDE, 0);
+            p32(&mut bytes, wing + cair_wing::PLANE_COUNT, 10);
+            p32(&mut bytes, wing + cair_wing::EFFECTIVE_PLANES, 8);
+            p32(&mut bytes, wing + cair_wing::MISSION + engine::air_mission::ENABLED_MASK, 0xff);
+            p64(&mut bytes, wing + cair_wing::MISSION + engine::air_mission::REGION, 0);
+            p32(&mut bytes, wing + cair_wing::COUNTRY_OVERRIDE, 0);
+            p32(&mut bytes, wing + cair_wing::AIR_ACCIDENTS, accidents as u32);
+            p64(&mut bytes, wing + cair_wing::EXPERIENCE, exp as u64);
+            // Equipment pool: two entries on WING, one on WING2.
+            let (items, entries) = if wing == WING {
+                (0x39000usize, vec![(VARIANT, 100i64), (VARIANT2, -50i64)])
+            } else {
+                (0x39100usize, vec![(VARIANT, 7i64)])
+            };
+            let pool = wing + cair_wing::EQUIPMENT_POOL;
+            p64(&mut bytes, pool, cequipment_variant_pool::VTABLE_RVA as u64);
+            header(&mut bytes, pool + cequipment_variant_pool::ITEMS, items, entries.len() as u32);
+            for (index, (variant, amount)) in entries.into_iter().enumerate() {
+                p64(&mut bytes, items + index * equipment_entry::STRIDE, variant as u64);
+                p64(&mut bytes, items + index * equipment_entry::STRIDE + 8, amount as u64);
+            }
+        }
+        for (variant, id) in [(VARIANT, 11u32), (VARIANT2, 12u32)] {
+            p64(&mut bytes, variant, cequipment_variant::VTABLE_RVA as u64);
+            p64(&mut bytes, variant + 8, ((id as u64) << 32) | cequipment_variant::REFERENCE_TYPE as u64);
+        }
+        // Alias ENTRIES to the first wing's item vector for the fault test.
+        let _ = ENTRIES;
+        bytes
+    }
+
+    pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
+        SliceMemory { base: 0, bytes }
+    }
+
+    pub(crate) struct Split {
+        pub equipment_outcome: Outcome,
+        pub equipment: Vec<replay::rows::WingEquipmentRow>,
+        pub cumulative_outcome: Outcome,
+        pub cumulative: Vec<engine::cair_wing::CumulativeRow>,
+    }
+
+    fn collect_typed(memory: &impl Memory, capacity: &Capacities) -> Split {
+        use engine::cair_wing;
+        let mut captured = Captured::with_capacities(capacity, &[0; 7]);
+        // Typed reference: wing walk with visitor into pooled buffers,
+        // exactly like the game thread's Sources::air sequence.
+        captured.begin_wings();
+        let needed = [true, false, true, false, false, false, false];
+        // Re-walk collecting (pointer,row) for the visitor (typed, no raw).
+        let mut collected: Vec<(usize, cair_wing::Row)> = Vec::new();
+        let mut wing_rows = vec![cair_wing::Row::default(); 8192];
+        let outcome = cair_wing::walk_with(memory, BASE, GAME_STATE, &mut wing_rows, |pointer, _, row| {
+            collected.push((pointer, *row));
+        });
+        for (pointer, row) in &collected {
+            let source = super::WingSource { pointer: *pointer, row, second: false };
+            captured.visit_wing(memory, BASE, source, &needed);
+        }
+        captured.finish_wings(outcome, None, &needed);
+        let _ = outcome;
+        Split {
+            equipment_outcome: captured.equipment.outcome,
+            equipment: captured.equipment.rows.clone(),
+            cumulative_outcome: captured.cumulative.outcome,
+            cumulative: captured.cumulative.rows.clone(),
+        }
+    }
+
+    fn collect(memory: &impl Memory) -> Split {
+        collect_typed(memory, &Capacities::default())
+    }
+
+    pub(crate) fn direct(memory: &impl Memory) -> Split {
+        collect(memory)
+    }
+
+    pub(crate) fn split(memory: &impl Memory) -> (Split, AirWingCopyReport, AirWingJob) {
+        let ctx = AirWingCopyContext { base: BASE, game_state: GAME_STATE };
+        let mut first = AirWingJob::new();
+        let mut second = AirWingJob::new();
+        let report = super::copy_air_refresh(memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0; 7]);
+        let mut ticks = [0u64; 2];
+        super::decode_air_payload(&mut captured, BASE, &first, &mut ticks);
+        (
+            Split {
+                equipment_outcome: captured.equipment.outcome,
+                equipment: captured.equipment.rows.clone(),
+                cumulative_outcome: captured.cumulative.outcome,
+                cumulative: captured.cumulative.rows.clone(),
+            },
+            report,
+            first,
+        )
+    }
+
+    pub(crate) fn direct_truncated(memory: &impl Memory) -> Split {
+        let capacity = Capacities { rows: [1, 2048, 1, 8192, 16384, 1024, 2048], ace_names: 65536 };
+        collect_typed(memory, &capacity)
+    }
+
+    pub(crate) fn split_truncated(memory: &impl Memory) -> (Split, AirWingCopyReport, AirWingJob) {
+        let ctx = AirWingCopyContext { base: BASE, game_state: GAME_STATE };
+        let mut first = AirWingJob::new();
+        let mut second = AirWingJob::new();
+        let report = super::copy_air_refresh(memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        let capacity = Capacities { rows: [1, 2048, 1, 8192, 16384, 1024, 2048], ace_names: 65536 };
+        let mut captured = Captured::with_capacities(&capacity, &[0; 7]);
+        let mut ticks = [0u64; 2];
+        super::decode_air_payload(&mut captured, BASE, &first, &mut ticks);
+        (
+            Split {
+                equipment_outcome: captured.equipment.outcome,
+                equipment: captured.equipment.rows.clone(),
+                cumulative_outcome: captured.cumulative.outcome,
+                cumulative: captured.cumulative.rows.clone(),
+            },
+            report,
+            first,
+        )
+    }
+
+    pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
+        assert_eq!(split.equipment_outcome, direct.equipment_outcome, "equipment outcome");
+        assert_eq!(split.equipment, direct.equipment, "equipment rows");
+        assert_eq!(split.cumulative_outcome, direct.cumulative_outcome, "cumulative outcome");
+        assert_eq!(split.cumulative, direct.cumulative, "cumulative rows");
+    }
+
+    /// Decode-worker assertion against pooled buffers (same module, so
+    /// private rows are visible). Compares outcomes and rows with the typed
+    /// reference without cloning through public views.
+    pub(crate) fn assert_captured_matches_direct(captured: &super::Captured, direct: &Split) {
+        assert_eq!(captured.equipment.outcome, direct.equipment_outcome, "equipment outcome");
+        assert_eq!(&captured.equipment.rows, &direct.equipment, "equipment rows");
+        assert_eq!(captured.cumulative.outcome, direct.cumulative_outcome, "cumulative outcome");
+        assert_eq!(&captured.cumulative.rows, &direct.cumulative, "cumulative rows");
     }
 }
