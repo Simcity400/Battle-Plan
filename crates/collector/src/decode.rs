@@ -52,8 +52,9 @@ use crate::{
         naval_history::NavalJob,
         production::VariantsJob,
         projects::ProjectsJob,
+        session::SessionJob,
     },
-    map_capture::MapJob,
+    map_capture::{MapJob, PlayersJob},
     sampling::{self, BUFFERS, DivisionsJob, Shared, WarsJob},
 };
 use crossbeam_queue::ArrayQueue;
@@ -140,10 +141,11 @@ pub const DIVISIONS: [TableId; 6] = [
 /// Map-pack coupled unit in calibration/report order: [land, fleets,
 /// taskforces, ships, naval_combats, naval_participants, wings, orders].
 /// Hourly like every Tier-H table (no refresh gate). Players and
-/// HumanControllers stay game-side (independent roster walks, explicit
-/// reason in `map_capture`). The shared combat registry is anchor-charged
-/// to the land slot; fleet/taskforce/ship shared roots to fleets;
-/// naval roots to naval combats, matching the read-group convention.
+/// HumanControllers now move in their own hourly pair below (independent
+/// roster walks, own root refs, no cross-family decoded roots). The shared
+/// combat registry is anchor-charged to the land slot;
+/// fleet/taskforce/ship shared roots to fleets; naval roots to naval
+/// combats, matching the read-group convention.
 pub const MAP_PACK: [TableId; 8] = [
     TableId::LandCombats,
     TableId::Fleets,
@@ -153,6 +155,21 @@ pub const MAP_PACK: [TableId; 8] = [
     TableId::NavalCombatParticipants,
     TableId::AirWings,
     TableId::ArmyOrders,
+];
+
+/// Players pair in calibration/report order: [players, controllers].
+/// Hourly like every Tier-H table (no refresh gate). Each stages its own
+/// roster/census copies with no cross-family decoded roots.
+pub const PLAYERS: [TableId; 2] = [TableId::Players, TableId::HumanControllers];
+
+/// Session family in calibration/report order: [world, sources, aggregates].
+/// Hourly like every Tier-H table (no refresh gate). The shared manager
+/// header is anchor-charged to the world slot, matching the read-group
+/// convention.
+pub const SESSION: [TableId; 3] = [
+    TableId::WorldTension,
+    TableId::ThreatSources,
+    TableId::ThreatCountryAggregates,
 ];
 
 /// Wing-fed air pair in calibration/report order: [equipment, cumulative].
@@ -204,6 +221,8 @@ pub struct DecodeJob {
     pub map_refresh: bool,
     pub air_wing_refresh: bool,
     pub naval_refresh: bool,
+    pub players_refresh: bool,
+    pub session_refresh: bool,
     pub force_full: bool,
     pub game_elapsed: i64,
     pub payload: Option<ResearchJob>,
@@ -219,6 +238,8 @@ pub struct DecodeJob {
     pub map_payload: Option<MapJob>,
     pub air_wing_payload: Option<AirWingJob>,
     pub naval_payload: Option<NavalJob>,
+    pub players_payload: Option<PlayersJob>,
+    pub session_payload: Option<SessionJob>,
 }
 
 static COPY_NS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
@@ -389,6 +410,14 @@ static NAVAL_RAW_BYTES: [AtomicU64; 9] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
+static PLAYERS_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static PLAYERS_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static PLAYERS_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static SESSION_COPY_NS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static SESSION_DECODE_NS: [AtomicU64; 3] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static SESSION_RAW_BYTES: [AtomicU64; 3] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 static QUEUE_HIGH_WATER: AtomicU64 = AtomicU64::new(0);
 static JOBS: AtomicU64 = AtomicU64::new(0);
 static REFRESH_JOBS: AtomicU64 = AtomicU64::new(0);
@@ -412,6 +441,8 @@ static FOCUS_JOB_POOL: Mutex<Vec<FocusJob>> = Mutex::new(Vec::new());
 static MAP_JOB_POOL: Mutex<Vec<MapJob>> = Mutex::new(Vec::new());
 static AIR_WING_JOB_POOL: Mutex<Vec<AirWingJob>> = Mutex::new(Vec::new());
 static NAVAL_JOB_POOL: Mutex<Vec<NavalJob>> = Mutex::new(Vec::new());
+static PLAYERS_JOB_POOL: Mutex<Vec<PlayersJob>> = Mutex::new(Vec::new());
+static SESSION_JOB_POOL: Mutex<Vec<SessionJob>> = Mutex::new(Vec::new());
 
 /// Pilot refresh gate: the whole family shares stagger slot 2 (`H%4==2`);
 /// branch starts and keyframes force a full refresh like every other table.
@@ -827,6 +858,58 @@ pub fn recycle_naval_job(mut job: NavalJob) {
     }
 }
 
+/// Recycled hourly players-pair raw-payload job. Cold calls allocate; steady
+/// state reuses jobs with their capacities, so neither thread allocates
+/// per hour.
+pub fn acquire_players_job() -> PlayersJob {
+    if let Ok(mut pool) = PLAYERS_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    PlayersJob::new()
+}
+
+/// Return a players-pair payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_players_job(mut job: PlayersJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = PLAYERS_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
+/// Recycled hourly session-family raw-payload job. Cold calls allocate; steady
+/// state reuses jobs with their capacities, so neither thread allocates
+/// per hour.
+pub fn acquire_session_job() -> SessionJob {
+    if let Ok(mut pool) = SESSION_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    SessionJob::new()
+}
+
+/// Return a session-family payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_session_job(mut job: SessionJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = SESSION_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
 /// Enqueue a frame for decode (or ordered forwarding for skip hours).
 /// Starts the worker lazily; never blocks. A full queue returns the job for
 /// the existing gap path and counts the drop on the existing counters.
@@ -1106,6 +1189,38 @@ pub fn process_job(shared: &Shared, job: &DecodeJob) {
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
+    if job.players_refresh
+        && let Some(payload) = job.players_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 2];
+        frame
+            .map
+            .decode_players_payload(shared.base, payload, &mut decode_ticks);
+        for (total, ticks) in PLAYERS_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
+    if job.session_refresh
+        && let Some(payload) = job.session_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 3];
+        frame.extended.session_pilot().decode_session_payload(
+            shared.base,
+            payload,
+            &mut decode_ticks,
+        );
+        for (total, ticks) in SESSION_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
     // Pool invariant: this frame is owned by the worker, so it occupies no
     // ready slot and the push below always has room while the spool thread
     // lives. The worker may wait (only the game thread must never block).
@@ -1262,6 +1377,24 @@ pub fn calibration() -> Calibration {
         naval_raw_bytes: NAVAL_RAW_BYTES
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
+        players_copy_ns: PLAYERS_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        players_decode_ns: PLAYERS_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        players_raw_bytes: PLAYERS_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        session_copy_ns: SESSION_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        session_decode_ns: SESSION_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        session_raw_bytes: SESSION_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
         queue_high_water: QUEUE_HIGH_WATER.load(Ordering::Relaxed),
     }
 }
@@ -1313,6 +1446,12 @@ pub struct Calibration {
     pub naval_copy_ns: [u64; 9],
     pub naval_decode_ns: [u64; 9],
     pub naval_raw_bytes: [u64; 9],
+    pub players_copy_ns: [u64; 2],
+    pub players_decode_ns: [u64; 2],
+    pub players_raw_bytes: [u64; 2],
+    pub session_copy_ns: [u64; 3],
+    pub session_decode_ns: [u64; 3],
+    pub session_raw_bytes: [u64; 3],
     pub queue_high_water: u64,
 }
 
@@ -1378,6 +1517,14 @@ impl Calibration {
             "naval_decode_ns": self.naval_decode_ns.as_slice(),
             "naval_raw_bytes": self.naval_raw_bytes.as_slice(),
             "naval_tables": ["LandTheatres", "LandTheatreGroups", "LandTheatreMembers", "AirTheatres", "AirTheatreGroups", "AirTheatreMembers", "OrdersGroups", "OrdersGroupMembers", "ArmyGroupMembers"],
+            "players_copy_ns": self.players_copy_ns.as_slice(),
+            "players_decode_ns": self.players_decode_ns.as_slice(),
+            "players_raw_bytes": self.players_raw_bytes.as_slice(),
+            "players_tables": ["Players", "HumanControllers"],
+            "session_copy_ns": self.session_copy_ns.as_slice(),
+            "session_decode_ns": self.session_decode_ns.as_slice(),
+            "session_raw_bytes": self.session_raw_bytes.as_slice(),
+            "session_tables": ["WorldTension", "ThreatSources", "ThreatCountryAggregates"],
             "queue_high_water": self.queue_high_water,
             "queue_capacity": BUFFERS,
         })
@@ -1493,6 +1640,22 @@ pub(crate) fn add_naval_raw_bytes(table: usize, bytes: u64) {
     NAVAL_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
 }
 
+pub(crate) fn add_players_copy_ns(table: usize, ns: u64) {
+    PLAYERS_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_players_raw_bytes(table: usize, bytes: u64) {
+    PLAYERS_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
+pub(crate) fn add_session_copy_ns(table: usize, ns: u64) {
+    SESSION_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_session_raw_bytes(table: usize, bytes: u64) {
+    SESSION_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
 /// Bounded raw FIFO type shared with sampling's pool (indices only).
 pub type DecodeQueue = ArrayQueue<DecodeJob>;
 
@@ -1542,6 +1705,12 @@ pub(crate) fn reset_calibration_for_test() {
         .chain(NAVAL_COPY_NS.iter())
         .chain(NAVAL_DECODE_NS.iter())
         .chain(NAVAL_RAW_BYTES.iter())
+        .chain(PLAYERS_COPY_NS.iter())
+        .chain(PLAYERS_DECODE_NS.iter())
+        .chain(PLAYERS_RAW_BYTES.iter())
+        .chain(SESSION_COPY_NS.iter())
+        .chain(SESSION_DECODE_NS.iter())
+        .chain(SESSION_RAW_BYTES.iter())
     {
         cell.store(0, Ordering::Relaxed);
     }
@@ -1667,6 +1836,8 @@ mod tests {
                 map_refresh: false,
                 air_wing_refresh: false,
                 naval_refresh: false,
+                players_refresh: false,
+                session_refresh: false,
                 force_full: false,
                 game_elapsed: 7,
                 payload: None,
@@ -1682,6 +1853,8 @@ mod tests {
                 map_payload: None,
                 air_wing_payload: None,
                 naval_payload: None,
+                players_payload: None,
+                session_payload: None,
             };
             shared.decode_queue.push(job).unwrap();
         }
@@ -1721,6 +1894,8 @@ mod tests {
                 map_refresh: false,
                 air_wing_refresh: false,
                 naval_refresh: false,
+                players_refresh: false,
+                session_refresh: false,
                 force_full: false,
                 game_elapsed: 1,
                 payload: None,
@@ -1736,6 +1911,8 @@ mod tests {
                 map_payload: None,
                 air_wing_payload: None,
                 naval_payload: None,
+                players_payload: None,
+                session_payload: None,
             };
             assert!(shared.decode_queue.push(job).is_ok());
         }
@@ -1757,6 +1934,8 @@ mod tests {
             map_refresh: false,
             air_wing_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 1,
             payload: None,
@@ -1772,6 +1951,8 @@ mod tests {
             map_payload: None,
             air_wing_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
         };
         assert!(enqueue(&shared, job).is_some());
         assert_eq!(DROPS.load(Ordering::Relaxed), before + 1);
@@ -1834,6 +2015,8 @@ mod tests {
             map_refresh: false,
             air_wing_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 13,
             payload: Some(first),
@@ -1849,6 +2032,8 @@ mod tests {
             map_payload: None,
             air_wing_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -1892,6 +2077,8 @@ mod tests {
             map_refresh: false,
             air_wing_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 17,
             payload: None,
@@ -1907,6 +2094,8 @@ mod tests {
             map_payload: None,
             air_wing_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -1965,6 +2154,8 @@ mod tests {
             map_refresh: false,
             air_wing_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 19,
             payload: None,
@@ -1980,6 +2171,8 @@ mod tests {
             map_payload: None,
             air_wing_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2041,6 +2234,8 @@ mod tests {
             map_refresh: false,
             air_wing_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 23,
             payload: None,
@@ -2056,6 +2251,8 @@ mod tests {
             map_payload: None,
             air_wing_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2114,6 +2311,8 @@ mod tests {
             map_refresh: false,
             air_wing_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 29,
             payload: None,
@@ -2129,6 +2328,8 @@ mod tests {
             map_payload: None,
             air_wing_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2185,6 +2386,8 @@ mod tests {
             map_refresh: false,
             air_wing_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 31,
             payload: None,
@@ -2200,6 +2403,8 @@ mod tests {
             map_payload: None,
             air_wing_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2255,6 +2460,8 @@ mod tests {
             map_refresh: false,
             air_wing_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 37,
             payload: None,
@@ -2270,6 +2477,8 @@ mod tests {
             map_payload: None,
             air_wing_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2320,6 +2529,8 @@ mod tests {
             map_refresh: false,
             air_wing_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 43,
             payload: None,
@@ -2335,6 +2546,8 @@ mod tests {
             map_payload: None,
             air_wing_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2392,6 +2605,8 @@ mod tests {
             map_refresh: false,
             air_wing_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 47,
             payload: None,
@@ -2407,6 +2622,8 @@ mod tests {
             map_payload: None,
             air_wing_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2567,6 +2784,8 @@ mod tests {
                 map_refresh: false,
                 air_wing_refresh: false,
                 naval_refresh: false,
+                players_refresh: false,
+                session_refresh: false,
                 force_full: false,
                 game_elapsed: 1,
                 payload: None,
@@ -2582,6 +2801,8 @@ mod tests {
                 map_payload: None,
                 air_wing_payload: None,
                 naval_payload: None,
+                players_payload: None,
+                session_payload: None,
             };
             assert!(enqueue(&shared, job).is_none());
         }
@@ -2629,6 +2850,8 @@ mod tests {
             map_refresh: false,
             air_wing_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 23,
             payload: None,
@@ -2644,6 +2867,8 @@ mod tests {
             map_payload: None,
             air_wing_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2695,6 +2920,8 @@ mod tests {
             map_refresh: true,
             air_wing_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 29,
             payload: None,
@@ -2709,6 +2936,8 @@ mod tests {
             focus_payload: None,
             air_wing_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
             map_payload: Some(first),
         };
         process_job(&shared, &job);
@@ -2761,6 +2990,8 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             air_wing_refresh: true,
             force_full: false,
             game_elapsed: 31,
@@ -2776,6 +3007,8 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
             air_wing_payload: Some(first),
         };
         process_job(&shared, &job);
@@ -2825,6 +3058,8 @@ mod tests {
             map_refresh: false,
             air_wing_refresh: false,
             naval_refresh: true,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 37,
             payload: None,
@@ -2840,6 +3075,8 @@ mod tests {
             map_payload: None,
             air_wing_payload: None,
             naval_payload: Some(first),
+            players_payload: None,
+            session_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));

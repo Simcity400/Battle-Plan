@@ -252,6 +252,15 @@ impl Captured {
         &mut self.naval_history
     }
 
+    /// Decode-worker handoff for the hourly session family (copy/decode
+    /// split). Sole cross-thread entry to the session buffers: the game
+    /// thread stages raw-copy state through it every hour and the single FIFO
+    /// decode worker decodes the staged payload into these pooled typed rows
+    /// before the spool ready-queue handoff.
+    pub(crate) fn session_pilot(&mut self) -> &mut session::Captured {
+        &mut self.session
+    }
+
     /// Game-thread raw copy for a slot-3 variants refresh. Runs after the
     /// game-side registry census, which feeds both production (as today) and
     /// this copy. Returns the pilot-style report for sampling's install.

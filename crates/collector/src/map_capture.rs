@@ -140,6 +140,12 @@ pub struct MapCaptured {
     /// then walks only Players/HumanControllers and the decode worker
     /// replays the eight into these pooled buffers before the ready handoff.
     pub(crate) raw_mode: bool,
+    /// Raw-copy split gate for the hourly players pair (Players,
+    /// HumanControllers). Set by the game thread every hour with a valid raw
+    /// payload; `sample` then skips both typed walks and the decode worker
+    /// fills these rows before the ready handoff. Preserved across `reset`
+    /// via explicit clearing (set per hour, cleared by the worker).
+    pub(crate) players_raw_mode: bool,
     pub player_names: Vec<u8>,
     player_names_second: Vec<u8>,
     pub player_names_len: usize,
@@ -206,6 +212,7 @@ impl MapCaptured {
             naval_groups: vec![0; capacity.naval_groups],
             naval_groups_required: 0,
             raw_mode: false,
+            players_raw_mode: false,
         }
     }
 
@@ -253,6 +260,7 @@ impl MapCaptured {
         self.order_visits_required = 0;
         self.naval_groups_required = 0;
         self.raw_mode = false;
+        self.players_raw_mode = false;
     }
 
     pub fn outcomes(&self) -> [Outcome; MAP_TABLES] {
@@ -404,46 +412,58 @@ impl MapCaptured {
         self.naval_combat_participants.checked = needed[7];
         self.air_wings.checked = needed[8];
         self.army_orders.checked = needed[9];
-        let begin = qpc();
-        let names = chuman::walk(
-            memory,
-            base,
-            state,
-            &mut self.players.rows,
-            &mut self.player_names,
-        );
-        self.players.outcome = names.outcome;
-        self.player_names_len = names.bytes_len;
-        self.player_names_required = names.required_bytes;
-        if needed[0] {
-            let second = chuman::walk(
+        // Raw-copy split (hourly players pair): every hour the game thread
+        // stages raw bytes via `copy_players_refresh` and the decode worker
+        // fills both rows before the ready handoff. Skip both typed walks
+        // here; matched flags and costs install from the copy report in the
+        // tick. The 8-table walks below still run (or skip via their own
+        // gate) independently.
+        if !self.players_raw_mode {
+            let begin = qpc();
+            let names = chuman::walk(
                 memory,
                 base,
                 state,
-                &mut self.players.second,
-                &mut self.player_names_second,
+                &mut self.players.rows,
+                &mut self.player_names,
             );
-            self.players.compare(second.outcome);
-            self.players.mismatches += usize::from(
-                names.bytes_len != second.bytes_len
-                    || names.required_bytes != second.required_bytes
-                    || self.player_names[..names.bytes_len]
-                        != self.player_names_second[..second.bytes_len],
-            );
-            matched[0] = full_match(names.outcome, second.outcome, self.players.mismatches);
-            self.player_names_required = self.player_names_required.max(second.required_bytes);
-        }
-        ticks[0] = (qpc() - begin).max(0) as u64;
+            self.players.outcome = names.outcome;
+            self.player_names_len = names.bytes_len;
+            self.player_names_required = names.required_bytes;
+            if needed[0] {
+                let second = chuman::walk(
+                    memory,
+                    base,
+                    state,
+                    &mut self.players.second,
+                    &mut self.player_names_second,
+                );
+                self.players.compare(second.outcome);
+                self.players.mismatches += usize::from(
+                    names.bytes_len != second.bytes_len
+                        || names.required_bytes != second.required_bytes
+                        || self.player_names[..names.bytes_len]
+                            != self.player_names_second[..second.bytes_len],
+                );
+                matched[0] = full_match(names.outcome, second.outcome, self.players.mismatches);
+                self.player_names_required = self.player_names_required.max(second.required_bytes);
+            }
+            ticks[0] = (qpc() - begin).max(0) as u64;
 
-        let begin = qpc();
-        self.human_controllers.outcome =
-            chuman::walk_controllers(memory, base, state, &mut self.human_controllers.rows);
-        if needed[1] {
-            let second =
-                chuman::walk_controllers(memory, base, state, &mut self.human_controllers.second);
-            matched[1] = self.human_controllers.compare(second);
+            let begin = qpc();
+            self.human_controllers.outcome =
+                chuman::walk_controllers(memory, base, state, &mut self.human_controllers.rows);
+            if needed[1] {
+                let second = chuman::walk_controllers(
+                    memory,
+                    base,
+                    state,
+                    &mut self.human_controllers.second,
+                );
+                matched[1] = self.human_controllers.compare(second);
+            }
+            ticks[1] = (qpc() - begin).max(0) as u64;
         }
-        ticks[1] = (qpc() - begin).max(0) as u64;
 
         // Raw-copy split (hourly map-pack coupled unit): the game thread
         // staged raw bytes via `copy_map_refresh` and the decode worker
@@ -2631,6 +2651,790 @@ pub(crate) fn decode_map_payload(
     frame.order_visits_required = orders.minimum_visits.max(orders.visited.saturating_mul(2));
     decode_ticks[7] += elapsed(started);
     frame.raw_mode = false;
+}
+
+// ===========================================================================
+// Hourly players raw-copy split (Players, HumanControllers).
+//
+// The game thread copies raw bytes only: live roster header with per-player
+// identity/flag/string spans plus heap name bytes, and the human-status
+// array with an authenticated country census plus per-canonical count bytes.
+// No row is decoded on the game thread. The single FIFO decode worker replays
+// the existing `chuman::walk` and `walk_controllers` against the recorded
+// spans (`crate::raw::Recorded`), so rows, ordinals, arenas, truncation and
+// failure reasons are identical by construction (see `crate::raw`).
+//
+// The mirror traverses structurally and records every discoverable span,
+// never aborting except on overflow: validation, precedence and error scope
+// are local parses, so the replay derives every outcome from the same
+// recorded spans and later extras are harmless.
+// ===========================================================================
+
+/// Fault-attribution bits, one per players table in family order.
+const P_PLAYERS: u32 = 0x01;
+const P_CONTROLLERS: u32 = 0x02;
+
+/// One hour of raw players payload. Flat pools recycle capacities and the
+/// steady state allocates on neither thread; growth happens on the decode
+/// side only (see `crate::decode::recycle_players_job`).
+#[derive(Debug)]
+pub(crate) struct PlayersJob {
+    pub log: RawLog<2>,
+    pub game_state: usize,
+}
+
+impl PlayersJob {
+    pub fn new() -> Self {
+        Self {
+            // One player with two names plus 439 controllers with a country
+            // census; both pools start above that so steady state never
+            // overflows.
+            log: RawLog::new(1 << 15, 4 << 20),
+            game_state: 0,
+        }
+    }
+
+    /// Reset lengths for reuse, keeping every capacity. No allocation.
+    pub fn clear(&mut self) {
+        self.log.clear();
+        self.game_state = 0;
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.log.grow_for_next()
+    }
+
+    /// Double every pool off the game thread until copies fit. Converges like
+    /// the typed capacity growth; overflowed hours fall back to the typed
+    /// walk in the meantime, so sizing is a pure performance knob.
+    pub fn grow(&mut self) {
+        self.log.grow();
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct PlayersCopyReport {
+    /// False when staging overflowed: the caller falls back to the typed walk
+    /// (identical rows through the existing path) and enqueues no payload.
+    pub raw_ok: bool,
+    /// Whole-log raw equality gated by live-fault conservatism, in
+    /// [players, controllers] order.
+    pub matched: [bool; 2],
+    pub copy_ticks: [u64; 2],
+    pub raw_bytes: [u64; 2],
+}
+
+/// Game-thread copy parameters, bundled to keep the tick entry small.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PlayersCopyContext {
+    pub base: usize,
+    pub game_state: usize,
+    pub needed: [bool; 2],
+}
+
+fn ppool_u64(log: &RawLog<2>, start: usize) -> u64 {
+    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+}
+
+fn ppool_u32(log: &RawLog<2>, start: usize) -> u32 {
+    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
+}
+
+/// One mirrored span read. Bulk spans serve enclosed sub-reads (e.g., 4-byte
+/// keys inside roster elements) via `Recorded` containment.
+fn pspan(
+    log: &mut RawLog<2>,
+    memory: &impl engine::Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take_bulk(memory, addr?, len, mask)
+}
+
+/// Heap payload and terminator takes for one parsed player string. Inline
+/// strings ride in the already-copied header span.
+fn copy_player_string(
+    log: &mut RawLog<2>,
+    memory: &impl engine::Memory,
+    len: usize,
+    source: usize,
+    inline: bool,
+) {
+    if inline {
+        return;
+    }
+    if len != 0 {
+        let _ = pspan(log, memory, Some(source), len, P_PLAYERS);
+    }
+    let _ = pspan(log, memory, source.checked_add(len), 1, P_PLAYERS);
+}
+
+/// Mirror of one player's read set: vtable, key, country, flags, 64-byte
+/// string headers with heap payloads. Takes are unconditional; the replay
+/// validates vtables, keys, duplicate keys and string headers itself.
+fn copy_player(log: &mut RawLog<2>, memory: &impl engine::Memory, pointer: usize) {
+    use engine::{chuman, msvc_string};
+    let _ = pspan(log, memory, Some(pointer), 8, P_PLAYERS);
+    let _ = pspan(
+        log,
+        memory,
+        pointer.checked_add(chuman::PLAYER_KEY),
+        4,
+        P_PLAYERS,
+    );
+    let _ = pspan(
+        log,
+        memory,
+        pointer.checked_add(chuman::COUNTRY_TAG),
+        4,
+        P_PLAYERS,
+    );
+    let _ = pspan(
+        log,
+        memory,
+        pointer.checked_add(chuman::FLAGS),
+        1,
+        P_PLAYERS,
+    );
+    let strings = match pspan(
+        log,
+        memory,
+        pointer.checked_add(chuman::FIRST_STRING),
+        64,
+        P_PLAYERS,
+    ) {
+        Some(start) => start,
+        None => return,
+    };
+    let mut headers = [0u8; 64];
+    headers.copy_from_slice(&log.bytes[strings..strings + 64]);
+    for chunk in [&headers[..32], &headers[32..]] {
+        let len = u64::from_le_bytes(chunk[16..24].try_into().unwrap());
+        let capacity = u64::from_le_bytes(chunk[24..32].try_into().unwrap());
+        if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
+            continue;
+        }
+        let Ok(len) = usize::try_from(len) else {
+            continue;
+        };
+        let inline = capacity == msvc_string::INLINE_CAPACITY;
+        if inline {
+            continue;
+        }
+        let source = match usize::try_from(u64::from_le_bytes(chunk[..8].try_into().unwrap()))
+            .ok()
+            .filter(|&s| s != 0)
+        {
+            Some(s) => s,
+            None => continue,
+        };
+        if source.checked_add(len).is_none() {
+            continue;
+        }
+        copy_player_string(log, memory, len, source, false);
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+/// Mirror of one link-table read for the controller census with local bounds
+/// checks. Returns the resolved slot exactly when the typed resolve
+/// succeeds; the replay derives its own reason from the same recorded span.
+fn controller_link(
+    log: &mut RawLog<2>,
+    memory: &impl engine::Memory,
+    links: &Array,
+    countries: u32,
+    raw: u32,
+) -> Option<u32> {
+    if raw == 0 || raw >= links.count {
+        return None;
+    }
+    let offset = (raw as usize).checked_mul(4)?;
+    let start = pspan(
+        log,
+        memory,
+        links.data.checked_add(offset),
+        4,
+        P_CONTROLLERS,
+    )?;
+    let slot = ppool_u32(log, start);
+    if slot == 0 || slot >= countries {
+        return None;
+    }
+    Some(slot)
+}
+
+/// One structural pass: roster with players, then country census with
+/// controller counts. Stops at the first typed abort point; later extras
+/// are harmless.
+fn copy_players_pass(
+    log: &mut RawLog<2>,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+) {
+    use engine::{ccountry, cgame_state, chuman, cpdx_array::Array};
+    let _ = base;
+    log.has_bulk = true;
+    // Live roster.
+    let roster_start = match pspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::PLAYER_RECORDS),
+        16,
+        P_PLAYERS,
+    ) {
+        Some(start) => start,
+        None => return,
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[roster_start..roster_start + 16]);
+    let roster = match Array::from_header(raw, chuman::STRIDE) {
+        Some(a) => a,
+        None => return,
+    };
+    for index in 0..roster.count {
+        let addr = roster
+            .data
+            .checked_add((index as usize).saturating_mul(chuman::STRIDE));
+        // Roster elements are inline CHuman objects, not pointers.
+        if let Some(addr) = addr {
+            // Probe the vtable to discover live versus padding slots; the
+            // replay authenticates the same span and skips padding itself.
+            // Takes run unconditionally for every slot (a superset).
+            let vtable = pspan(log, memory, Some(addr), 8, P_PLAYERS);
+            if vtable.is_none() {
+                continue;
+            }
+            copy_player(log, memory, addr);
+            if log.overflowed {
+                return;
+            }
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+    // Human-status array header plus country census for controllers.
+    let counts_start = match pspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::HUMAN_STATUS),
+        16,
+        P_CONTROLLERS,
+    ) {
+        Some(start) => start,
+        None => return,
+    };
+    let mut counts_raw = [0u8; 16];
+    counts_raw.copy_from_slice(&log.bytes[counts_start..counts_start + 16]);
+    let counts = match Array::from_header(counts_raw, 1) {
+        Some(a) => a,
+        None => return,
+    };
+    let countries_start = match pspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRIES),
+        16,
+        P_CONTROLLERS,
+    ) {
+        Some(start) => start,
+        None => return,
+    };
+    let links_start = match pspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRY_LINKS),
+        16,
+        P_CONTROLLERS,
+    ) {
+        Some(start) => start,
+        None => return,
+    };
+    let mut countries_raw = [0u8; 16];
+    countries_raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
+    let mut links_raw = [0u8; 16];
+    links_raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
+    let countries_array = match Array::from_header(countries_raw, 8) {
+        Some(a) => a,
+        None => return,
+    };
+    let links_array = match Array::from_header(links_raw, 4) {
+        Some(a) => a,
+        None => return,
+    };
+    if countries_array.count < 2 || links_array.count == 0 {
+        return;
+    }
+    let country_vtable = match base.checked_add(ccountry::VTABLE_RVA) {
+        Some(v) => v as u64,
+        None => return,
+    };
+    for slot in 1..countries_array.count {
+        let ptr_addr = (slot as usize)
+            .checked_mul(8)
+            .and_then(|o| countries_array.data.checked_add(o));
+        let pointer = match pspan(log, memory, ptr_addr, 8, P_CONTROLLERS)
+            .and_then(|s| usize::try_from(ppool_u64(log, s)).ok().filter(|&p| p != 0))
+        {
+            Some(p) => p,
+            None => continue,
+        };
+        let vtable = match pspan(log, memory, Some(pointer), 8, P_CONTROLLERS) {
+            Some(s) => s,
+            None => continue,
+        };
+        if ppool_u64(log, vtable) != country_vtable {
+            return;
+        }
+        let id = match pspan(
+            log,
+            memory,
+            pointer.checked_add(ccountry::ID),
+            4,
+            P_CONTROLLERS,
+        ) {
+            Some(s) => ppool_u32(log, s),
+            None => continue,
+        };
+        let canonical = match controller_link(log, memory, &links_array, countries_array.count, id)
+        {
+            Some(c) => c,
+            None => return,
+        };
+        if controller_link(log, memory, &links_array, countries_array.count, slot)
+            != Some(canonical)
+        {
+            return;
+        }
+        if controller_link(log, memory, &links_array, countries_array.count, canonical)
+            != Some(canonical)
+        {
+            return;
+        }
+        let canon_addr = (canonical as usize)
+            .checked_mul(8)
+            .and_then(|o| countries_array.data.checked_add(o));
+        let canon_ptr = match pspan(log, memory, canon_addr, 8, P_CONTROLLERS) {
+            Some(s) => s,
+            None => continue,
+        };
+        if ppool_u64(log, canon_ptr) != pointer as u64 {
+            return;
+        }
+        // Controller count byte for the canonical slot. Null slots publish
+        // no row; the replay derives the same skip from the census.
+        if slot == canonical {
+            let count_addr = counts.data.checked_add(canonical as usize);
+            let _ = pspan(log, memory, count_addr, 1, P_CONTROLLERS);
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+impl MapCaptured {
+    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
+    /// `second` while either players table still needs double-read checks,
+    /// compares the raw logs, and records copy-only costs plus the existing
+    /// checked/mismatches bookkeeping. Returns whether the payload is
+    /// complete (`raw_ok`); on staging overflow the caller falls back to the
+    /// typed walk and enqueues nothing.
+    pub(crate) fn copy_players_refresh(
+        &mut self,
+        memory: &impl engine::Memory,
+        ctx: PlayersCopyContext,
+        first: &mut PlayersJob,
+        second: Option<&mut PlayersJob>,
+    ) -> PlayersCopyReport {
+        let started = qpc();
+        first.clear();
+        first.game_state = ctx.game_state;
+        copy_players_pass(&mut first.log, memory, ctx.base, ctx.game_state);
+        let mut ticks = [0u64; 2];
+        ticks[0] = elapsed(started);
+        let mut matched = [true; 2];
+        if let Some(second_job) = second {
+            let second_started = qpc();
+            second_job.clear();
+            second_job.game_state = ctx.game_state;
+            copy_players_pass(&mut second_job.log, memory, ctx.base, ctx.game_state);
+            ticks[0] += elapsed(second_started);
+            let equal = first.log.logs_equal(&second_job.log)
+                && !first.log.overflowed
+                && !second_job.log.overflowed;
+            for (slot, matched) in matched.iter_mut().enumerate() {
+                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+            }
+        }
+        self.players.checked = ctx.needed[0];
+        self.players.mismatches = usize::from(ctx.needed[0] && !matched[0]);
+        self.human_controllers.checked = ctx.needed[1];
+        self.human_controllers.mismatches = usize::from(ctx.needed[1] && !matched[1]);
+        let raw_ok = !first.log.overflowed;
+        PlayersCopyReport {
+            raw_ok,
+            matched,
+            copy_ticks: ticks,
+            raw_bytes: first.log.raw_bytes,
+        }
+    }
+
+    /// Decode-worker interpretation of a raw hourly payload into the pooled
+    /// typed rows. Outcomes and arena bytes match the typed walks exactly
+    /// because the identical walks run against the recorded spans;
+    /// checked/mismatches set by the raw compare survive. Clears
+    /// `players_raw_mode` so the next capture starts clean.
+    pub(crate) fn decode_players_payload(
+        &mut self,
+        base: usize,
+        job: &PlayersJob,
+        decode_ticks: &mut [u64; 2],
+    ) {
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let started = qpc();
+        let walked = chuman::walk(
+            &recorded,
+            base,
+            job.game_state,
+            &mut self.players.rows,
+            &mut self.player_names,
+        );
+        self.players.outcome = walked.outcome;
+        self.player_names_len = walked.bytes_len;
+        self.player_names_required = walked.required_bytes;
+        decode_ticks[0] += elapsed(started);
+        let started = qpc();
+        self.human_controllers.outcome = chuman::walk_controllers(
+            &recorded,
+            base,
+            job.game_state,
+            &mut self.human_controllers.rows,
+        );
+        decode_ticks[1] += elapsed(started);
+        self.players_raw_mode = false;
+    }
+}
+
+/// Hourly players split harness: one country with one inline player and one
+/// controller count, plus empty and fault-injection coverage.
+#[cfg(test)]
+pub(crate) mod players_split_tests {
+    use super::SourceChecks;
+    use super::{MapCapacities, MapCaptured, PlayersCopyContext, PlayersCopyReport, PlayersJob};
+    use engine::{ccountry, cgame_state, chuman, memory::SliceMemory, walk::Outcome};
+
+    const BASE: usize = 0;
+    const GS: usize = 0x10000;
+    const ROSTER: usize = 0x20000;
+    const COUNTRY_PTR: usize = 0x11000;
+    const LINKS: usize = 0x12000;
+    const COUNTRY: usize = 0x13000;
+    const COUNTS: usize = 0x14000;
+
+    fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
+        bytes[address - GS..address - GS + value.len()].copy_from_slice(value);
+    }
+
+    fn array(bytes: &mut [u8], header: usize, data: usize, count: u32) {
+        put(bytes, header, &(data as u64).to_le_bytes());
+        put(bytes, header + 8, &count.to_le_bytes());
+        put(bytes, header + 12, &count.to_le_bytes());
+    }
+
+    fn inline_string(bytes: &mut [u8], at: usize, value: &[u8]) {
+        assert!(value.len() <= 15);
+        let mut header = [0u8; 32];
+        header[..value.len()].copy_from_slice(value);
+        header[value.len()] = 0;
+        header[16..24].copy_from_slice(&(value.len() as u64).to_le_bytes());
+        header[24..32].copy_from_slice(&15_u64.to_le_bytes());
+        put(bytes, at, &header);
+    }
+
+    fn fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 0x20000];
+        // Country census: 1 canonical country (slot1, id1).
+        array(&mut bytes, GS + cgame_state::COUNTRIES, COUNTRY_PTR, 2);
+        put(&mut bytes, COUNTRY_PTR + 8, &(COUNTRY as u64).to_le_bytes());
+        array(&mut bytes, GS + cgame_state::COUNTRY_LINKS, LINKS, 2);
+        put(&mut bytes, LINKS + 4, &1_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            COUNTRY,
+            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(&mut bytes, COUNTRY + ccountry::ID, &1_u32.to_le_bytes());
+        array(&mut bytes, GS + cgame_state::HUMAN_STATUS, COUNTS, 2);
+        put(&mut bytes, COUNTS + 1, &[7]);
+        // One player with inline names.
+        array(&mut bytes, GS + cgame_state::PLAYER_RECORDS, ROSTER, 1);
+        put(
+            &mut bytes,
+            ROSTER,
+            &(chuman::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            ROSTER + chuman::PLAYER_KEY,
+            &42_i32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            ROSTER + chuman::COUNTRY_TAG,
+            &1_u32.to_le_bytes(),
+        );
+        put(&mut bytes, ROSTER + chuman::FLAGS, &[3]);
+        inline_string(&mut bytes, ROSTER + chuman::FIRST_STRING, b"ab");
+        inline_string(&mut bytes, ROSTER + chuman::NAME, b"c");
+        bytes
+    }
+
+    fn capacities() -> MapCapacities {
+        MapCapacities::default()
+    }
+
+    fn direct(memory: &SliceMemory<'_>) -> MapCaptured {
+        let mut captured = MapCaptured::with_capacities(
+            &capacities(),
+            &[0; super::MAP_TABLES],
+            SourceChecks::default(),
+        );
+        // Walk only players/controllers via sample with empty sources.
+        struct NoSources;
+        impl super::MapSources for NoSources {
+            fn checks(&self) -> super::SourceChecks {
+                super::SourceChecks::default()
+            }
+            fn begin_ships(&mut self, _: bool) -> u64 {
+                0
+            }
+            fn ship(&mut self, _: bool, _: usize, _: &engine::cship::Row) -> u64 {
+                0
+            }
+            fn finish_ships(&mut self, _: bool, _: Outcome) -> u64 {
+                0
+            }
+            fn begin_air(&mut self, _: bool) -> u64 {
+                0
+            }
+            fn air(&mut self, _: bool, _: usize, _: usize, _: &engine::cair_wing::Row) -> u64 {
+                0
+            }
+            fn finish_air(&mut self, _: bool, _: Outcome) -> u64 {
+                0
+            }
+            fn order_groups(
+                &mut self,
+                _: bool,
+                _: &[engine::corders_group::Root],
+                _: Outcome,
+            ) -> u64 {
+                0
+            }
+        }
+        let needed = [
+            true, true, false, false, false, false, false, false, false, false,
+        ];
+        let (matched, _) = captured.sample(memory, BASE, GS, &needed, &mut NoSources);
+        assert!(matched[0] && matched[1]);
+        captured
+    }
+
+    fn split(memory: &SliceMemory<'_>) -> (MapCaptured, PlayersCopyReport) {
+        let mut captured = MapCaptured::with_capacities(
+            &capacities(),
+            &[0; super::MAP_TABLES],
+            SourceChecks::default(),
+        );
+        let ctx = PlayersCopyContext {
+            base: BASE,
+            game_state: GS,
+            needed: [true, true],
+        };
+        let mut first = PlayersJob::new();
+        let mut second = PlayersJob::new();
+        let report = captured.copy_players_refresh(memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        captured.players_raw_mode = true;
+        let mut ticks = [0u64; 2];
+        captured.decode_players_payload(BASE, &first, &mut ticks);
+        (captured, report)
+    }
+
+    #[test]
+    fn players_split_copy_matches_direct_walk() {
+        let bytes = fixture();
+        let memory = SliceMemory {
+            base: GS,
+            bytes: &bytes,
+        };
+        let direct = direct(&memory);
+        let (split, report) = split(&memory);
+        assert_eq!(report.matched, [true, true]);
+        assert_eq!(split.players.outcome, direct.players.outcome);
+        assert_eq!(
+            split.human_controllers.outcome,
+            direct.human_controllers.outcome
+        );
+        assert_eq!(split.players.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.human_controllers.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.players.rows[0].id, 42);
+        assert_eq!(split.human_controllers.rows[0].count, 7);
+        assert_eq!(&split.player_names[..split.player_names_len], b"abc");
+    }
+
+    #[test]
+    fn players_split_copy_matches_direct_walk_under_truncation() {
+        let bytes = fixture();
+        let memory = SliceMemory {
+            base: GS,
+            bytes: &bytes,
+        };
+        let mut capacities = capacities();
+        capacities.rows[0] = 0;
+        let mut direct = MapCaptured::with_capacities(
+            &capacities,
+            &[0; super::MAP_TABLES],
+            SourceChecks::default(),
+        );
+        struct NoSources;
+        impl super::MapSources for NoSources {
+            fn checks(&self) -> super::SourceChecks {
+                super::SourceChecks::default()
+            }
+            fn begin_ships(&mut self, _: bool) -> u64 {
+                0
+            }
+            fn ship(&mut self, _: bool, _: usize, _: &engine::cship::Row) -> u64 {
+                0
+            }
+            fn finish_ships(&mut self, _: bool, _: Outcome) -> u64 {
+                0
+            }
+            fn begin_air(&mut self, _: bool) -> u64 {
+                0
+            }
+            fn air(&mut self, _: bool, _: usize, _: usize, _: &engine::cair_wing::Row) -> u64 {
+                0
+            }
+            fn finish_air(&mut self, _: bool, _: Outcome) -> u64 {
+                0
+            }
+            fn order_groups(
+                &mut self,
+                _: bool,
+                _: &[engine::corders_group::Root],
+                _: Outcome,
+            ) -> u64 {
+                0
+            }
+        }
+        let needed = [
+            true, true, false, false, false, false, false, false, false, false,
+        ];
+        let (matched, _) = direct.sample(&memory, BASE, GS, &needed, &mut NoSources);
+        assert!(!matched[0]);
+        let mut captured = MapCaptured::with_capacities(
+            &capacities,
+            &[0; super::MAP_TABLES],
+            SourceChecks::default(),
+        );
+        let ctx = PlayersCopyContext {
+            base: BASE,
+            game_state: GS,
+            needed: [true, true],
+        };
+        let mut first = PlayersJob::new();
+        let report = captured.copy_players_refresh(&memory, ctx, &mut first, None);
+        assert!(report.raw_ok);
+        captured.players_raw_mode = true;
+        let mut ticks = [0u64; 2];
+        captured.decode_players_payload(BASE, &first, &mut ticks);
+        assert_eq!(captured.players.outcome, direct.players.outcome);
+    }
+
+    #[test]
+    fn players_double_copy_compare_blocks_checks_on_tearing() {
+        let bytes = fixture();
+        let memory = SliceMemory {
+            base: GS,
+            bytes: &bytes,
+        };
+        let mut captured = MapCaptured::with_capacities(
+            &capacities(),
+            &[0; super::MAP_TABLES],
+            SourceChecks::default(),
+        );
+        let ctx = PlayersCopyContext {
+            base: BASE,
+            game_state: GS,
+            needed: [true, true],
+        };
+        let mut first = PlayersJob::new();
+        let mut second = PlayersJob::new();
+        let report = captured.copy_players_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true, true]);
+        let mut torn = fixture();
+        put(
+            &mut torn,
+            ROSTER + chuman::PLAYER_KEY,
+            &99_i32.to_le_bytes(),
+        );
+        let mut after = PlayersJob::new();
+        super::copy_players_pass(&mut after.log, &memory, BASE, GS);
+        let mut after_torn = PlayersJob::new();
+        super::copy_players_pass(
+            &mut after_torn.log,
+            &SliceMemory {
+                base: GS,
+                bytes: &torn,
+            },
+            BASE,
+            GS,
+        );
+        assert!(!after.log.logs_equal(&after_torn.log));
+    }
+
+    #[test]
+    fn players_staging_overflow_falls_back_to_typed_walk() {
+        let bytes = fixture();
+        let memory = SliceMemory {
+            base: GS,
+            bytes: &bytes,
+        };
+        let mut captured = MapCaptured::with_capacities(
+            &capacities(),
+            &[0; super::MAP_TABLES],
+            SourceChecks::default(),
+        );
+        let ctx = PlayersCopyContext {
+            base: BASE,
+            game_state: GS,
+            needed: [true, true],
+        };
+        let mut tiny = PlayersJob {
+            log: crate::raw::RawLog::new(8, 8),
+            game_state: 0,
+        };
+        let report = captured.copy_players_refresh(&memory, ctx, &mut tiny, None);
+        assert!(!report.raw_ok);
+        assert!(tiny.log.overflowed);
+        assert!(tiny.grow_for_next());
+    }
+
+    #[test]
+    fn players_worst_case_pools_start_above_late_campaign_caps() {
+        let job = PlayersJob::new();
+        assert!(job.log.spans.capacity() >= 16384);
+        assert!(job.log.bytes.capacity() >= (1 << 20));
+    }
 }
 
 /// Shared synthetic address space for the map-pack copy/decode harness.

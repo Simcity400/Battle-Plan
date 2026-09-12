@@ -806,6 +806,20 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             let mut air_wing_report = extended::air::AirWingCopyReport::default();
             let mut naval_payload: Option<extended::naval_history::NavalJob> = None;
             let mut naval_report = extended::naval_history::NavalCopyReport::default();
+            // Players pair handoff state: same FIFO, same ordering
+            // guarantees. The hourly payload carries the independent roster
+            // and controller walks with its own root refs and no
+            // cross-family decoded roots. Staging overflow falls back to the
+            // typed walks with no payload enqueued.
+            let mut players_payload: Option<crate::map_capture::PlayersJob> = None;
+            let mut players_report = crate::map_capture::PlayersCopyReport::default();
+            // Session family handoff state: same FIFO, same ordering
+            // guarantees. The hourly payload carries the manager, sources
+            // and aggregates with its own root refs and no cross-family
+            // decoded roots. Staging overflow falls back to the typed walks
+            // with no payload enqueued.
+            let mut session_payload: Option<extended::session::SessionJob> = None;
+            let mut session_report = extended::session::SessionCopyReport::default();
             let mut decode_hour = 0;
             let mut decode_force_full = false;
             if let Some(clock) = frame.clock_before {
@@ -1092,6 +1106,34 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     );
                 }
                 frame.table_ns[9] = shared.ns(qpc() - begin);
+                // Players pair (copy/decode split): raw copies only on the
+                // game thread. Every hour stages the payload and hands the
+                // frame to the decode FIFO; the worker replays both walks
+                // before the spool ready handoff. Staging overflow falls back
+                // to the typed walks below with no payload enqueued.
+                let players_second_needed = needed[6] || needed[7];
+                let mut players_first = decode::acquire_players_job();
+                let mut players_second = players_second_needed.then(decode::acquire_players_job);
+                let players_ctx = crate::map_capture::PlayersCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                    needed: [needed[6], needed[7]],
+                };
+                players_report = frame.map.copy_players_refresh(
+                    &memory,
+                    players_ctx,
+                    &mut players_first,
+                    players_second.as_mut(),
+                );
+                frame.map.players_raw_mode = players_report.raw_ok;
+                if players_report.raw_ok {
+                    players_payload = Some(players_first);
+                } else {
+                    decode::recycle_players_job(players_first);
+                }
+                if let Some(second) = players_second {
+                    decode::recycle_players_job(second);
+                }
                 // Map-pack coupled unit (copy/decode split): raw copies only
                 // on the game thread. Every hour stages the three payloads
                 // and hands the frame to the decode FIFO; the worker replays
@@ -1376,6 +1418,39 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::recycle_buildings_job(second);
                     }
                 }
+                // Session family (copy/decode split): raw copies only on the
+                // game thread. Every hour stages the payload and hands the
+                // frame to the decode FIFO; the worker replays all three
+                // walks before the spool ready handoff. Staging overflow falls
+                // back to the typed walks below with no payload enqueued.
+                {
+                    let needed_any = decode::SESSION
+                        .iter()
+                        .any(|table| extended_needed[table.index()]);
+                    let mut first = decode::acquire_session_job();
+                    let mut second = needed_any.then(decode::acquire_session_job);
+                    let session = frame.extended.session_pilot();
+                    let ctx = extended::session::SessionCopyContext {
+                        base: shared.base,
+                        game_state: state,
+                        needed: [
+                            extended_needed[decode::SESSION[0].index()],
+                            extended_needed[decode::SESSION[1].index()],
+                            extended_needed[decode::SESSION[2].index()],
+                        ],
+                    };
+                    session_report =
+                        session.copy_session_refresh(&memory, ctx, &mut first, second.as_mut());
+                    frame.extended.session_pilot().raw_mode = session_report.raw_ok;
+                    if session_report.raw_ok {
+                        session_payload = Some(first);
+                    } else {
+                        decode::recycle_session_job(first);
+                    }
+                    if let Some(second) = second {
+                        decode::recycle_session_job(second);
+                    }
+                }
                 // Focus pair (copy/decode split): raw copies only on the game
                 // thread. Every hour stages the payload and hands the frame
                 // to the decode FIFO; the worker decodes before the spool
@@ -1605,6 +1680,36 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::add_naval_raw_bytes(slot, naval_report.raw_bytes[slot]);
                     }
                 }
+                // Players pair measured copy-only above; same install for the
+                // calibration counters. Players tables use core consistency
+                // slots (players=6, controllers=7).
+                if players_report.raw_ok {
+                    for (slot, table) in decode::PLAYERS.iter().enumerate() {
+                        let core = 6 + slot;
+                        matched[core] = players_report.matched[slot];
+                        if needed[core] {
+                            frame.consistency_checked[core] = true;
+                        }
+                        let ns = shared.ns(players_report.copy_ticks[slot] as i64);
+                        frame.table_ns[table.index()] = ns;
+                        decode::add_players_copy_ns(slot, ns);
+                        decode::add_players_raw_bytes(slot, players_report.raw_bytes[slot]);
+                    }
+                }
+                // Session family measured copy-only above; same install for
+                // the calibration counters. The shared manager header is
+                // anchor-charged to the world slot, matching the read-group
+                // convention.
+                if session_report.raw_ok {
+                    for (slot, table) in decode::SESSION.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = session_report.matched[slot];
+                        let ns = shared.ns(session_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_session_copy_ns(slot, ns);
+                        decode::add_session_raw_bytes(slot, session_report.raw_bytes[slot]);
+                    }
+                }
                 let cache_verify_begin = qpc();
                 frame.country_cache_error = cached.verify().err();
                 frame.country_cache_ns =
@@ -1650,6 +1755,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 map_refresh: map_report.raw_ok,
                 air_wing_refresh: air_wing_report.raw_ok,
                 naval_refresh: naval_report.raw_ok,
+                players_refresh: players_report.raw_ok,
+                session_refresh: session_report.raw_ok,
                 force_full: decode_force_full,
                 game_elapsed: (qpc() - entered - (original_end - original_begin)).max(1),
                 payload: pilot_payload,
@@ -1665,6 +1772,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 map_payload,
                 air_wing_payload,
                 naval_payload,
+                players_payload,
+                session_payload,
             };
             match decode::enqueue(shared, decode_job) {
                 None => {
@@ -1725,6 +1834,12 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     }
                     if let Some(payload) = returned.naval_payload {
                         decode::recycle_naval_job(payload);
+                    }
+                    if let Some(payload) = returned.players_payload {
+                        decode::recycle_players_job(payload);
+                    }
+                    if let Some(payload) = returned.session_payload {
+                        decode::recycle_session_job(payload);
                     }
                     // Existing whole-frame drop plus gap path, unchanged
                     // counters and no new loss reasons.
@@ -4268,6 +4383,8 @@ mod tests {
                     map_refresh: false,
                     air_wing_refresh: false,
                     naval_refresh: false,
+                    players_refresh: false,
+                    session_refresh: false,
                     force_full: false,
                     game_elapsed: 1,
                     payload: None,
@@ -4283,6 +4400,8 @@ mod tests {
                     map_payload: None,
                     air_wing_payload: None,
                     naval_payload: None,
+                    players_payload: None,
+                    session_payload: None,
                 })
                 .unwrap();
         }
@@ -4306,6 +4425,8 @@ mod tests {
             map_refresh: false,
             air_wing_refresh: false,
             naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
             force_full: false,
             game_elapsed: 1,
             payload: None,
@@ -4321,6 +4442,8 @@ mod tests {
             map_payload: None,
             air_wing_payload: None,
             naval_payload: None,
+            players_payload: None,
+            session_payload: None,
         };
         assert!(shared.decode_queue.push(extra).is_err());
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
