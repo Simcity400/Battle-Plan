@@ -55,13 +55,14 @@
 
 use crate::{
     extended::{
-        air::{AirStatsJob, AirWingJob},
+        air::{AirBasesJob, AirHistoryJob, AirStatsJob, AirWingJob},
         characters::CharactersJob,
         construction::{BuildingsJob, ConstructionRestJob},
+        fog::{IntelJob, RadarJob},
         governance::{FocusJob, ResearchJob},
         intel::RelationsJob,
         lexical::LexicalJob,
-        naval_history::NavalJob,
+        naval_history::{NavalJob, RailJob, SunkJob, SupremacyJob},
         production::{ProductionRestJob, VariantsJob},
         projects::ProjectsJob,
         session::SessionJob,
@@ -194,6 +195,47 @@ pub const AIR_WING: [TableId; 2] = [TableId::WingEquipment, TableId::WingCumulat
 /// strategic-air census copies with no cross-family decoded roots.
 pub const AIR_STATS: [TableId; 1] = [TableId::AirStatistics];
 
+/// Shared hourly bases payload in calibration/report order: [bases,
+/// registrations, aces]. Hourly like every Tier-H table (no refresh gate).
+/// The wing/manager census is taken once into shared raw spans; the bases,
+/// registrations and aces decodes all read the shared spans (registrations
+/// rows live in the fog pack and decode from this same log).
+pub const AIR_BASES: [TableId; 3] = [
+    TableId::AirBases,
+    TableId::AirBaseRegistrations,
+    TableId::AirAces,
+];
+
+/// Shared hourly history payload in calibration/report order: [history,
+/// damage]. Hourly like every Tier-H table (no refresh gate). The single
+/// regional walk is anchor-charged to the history slot, matching the
+/// read-group convention.
+pub const AIR_HISTORY: [TableId; 2] = [TableId::AirRegionHistory, TableId::AirRegionDamage];
+
+/// Shared hourly railway payload in calibration/report order: [cooldowns,
+/// edges]. Hourly like every Tier-H table (no refresh gate). The single
+/// railway walk is anchor-charged to the cooldowns slot, matching the
+/// read-group convention.
+pub const RAIL: [TableId; 2] = [TableId::RailCooldowns, TableId::RailEdges];
+
+/// Hourly supremacy table in calibration/report order: [supremacy].
+/// Hourly like every Tier-H table (no refresh gate).
+pub const SUPREMACY: [TableId; 1] = [TableId::NavalSupremacy];
+
+/// Hourly sunk-ships table in calibration/report order: [sunk ships].
+/// Hourly like every Tier-H table (no refresh gate).
+pub const SUNK: [TableId; 1] = [TableId::SunkShips];
+
+/// Hourly radar table in calibration/report order: [radar]. Hourly like
+/// every Tier-H table (no refresh gate).
+pub const RADAR: [TableId; 1] = [TableId::RadarCoverage];
+
+/// Hourly intel table in calibration/report order: [intel]. Hourly like
+/// every Tier-H table (no refresh gate). The division/fleet census spans
+/// are the walk's own takes, shared once inside the payload between the
+/// division and fleet paths.
+pub const INTEL: [TableId; 1] = [TableId::UnitIntel];
+
 /// Source-fed naval block in calibration/report order: [land theatres, land
 /// groups, land members, air theatres, air groups, air members, orders
 /// groups, orders members, army members]. Hourly like every Tier-H table (no
@@ -280,6 +322,13 @@ pub struct DecodeJob {
     pub session_refresh: bool,
     pub production_rest_refresh: bool,
     pub construction_rest_refresh: bool,
+    pub air_bases_refresh: bool,
+    pub air_history_refresh: bool,
+    pub rail_refresh: bool,
+    pub supremacy_refresh: bool,
+    pub sunk_refresh: bool,
+    pub radar_refresh: bool,
+    pub intel_refresh: bool,
     pub force_full: bool,
     pub game_elapsed: i64,
     pub payload: Option<ResearchJob>,
@@ -300,6 +349,13 @@ pub struct DecodeJob {
     pub session_payload: Option<SessionJob>,
     pub production_rest_payload: Option<ProductionRestJob>,
     pub construction_rest_payload: Option<ConstructionRestJob>,
+    pub air_bases_payload: Option<AirBasesJob>,
+    pub air_history_payload: Option<AirHistoryJob>,
+    pub rail_payload: Option<RailJob>,
+    pub supremacy_payload: Option<SupremacyJob>,
+    pub sunk_payload: Option<SunkJob>,
+    pub radar_payload: Option<RadarJob>,
+    pub intel_payload: Option<IntelJob>,
 }
 
 static COPY_NS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
@@ -547,6 +603,30 @@ static CONSTRUCTION_REST_RAW_BYTES: [AtomicU64; 10] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
+static AIR_BASES_COPY_NS: [AtomicU64; 3] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static AIR_BASES_DECODE_NS: [AtomicU64; 3] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static AIR_BASES_RAW_BYTES: [AtomicU64; 3] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static AIR_HISTORY_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static AIR_HISTORY_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static AIR_HISTORY_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static RAIL_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static RAIL_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static RAIL_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static SUPREMACY_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
+static SUPREMACY_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
+static SUPREMACY_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
+static SUNK_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
+static SUNK_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
+static SUNK_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
+static RADAR_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
+static RADAR_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
+static RADAR_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
+static INTEL_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
+static INTEL_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
+static INTEL_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
 static QUEUE_HIGH_WATER: AtomicU64 = AtomicU64::new(0);
 static JOBS: AtomicU64 = AtomicU64::new(0);
 static REFRESH_JOBS: AtomicU64 = AtomicU64::new(0);
@@ -575,6 +655,13 @@ static PLAYERS_JOB_POOL: Mutex<Vec<PlayersJob>> = Mutex::new(Vec::new());
 static SESSION_JOB_POOL: Mutex<Vec<SessionJob>> = Mutex::new(Vec::new());
 static PRODUCTION_REST_JOB_POOL: Mutex<Vec<ProductionRestJob>> = Mutex::new(Vec::new());
 static CONSTRUCTION_REST_JOB_POOL: Mutex<Vec<ConstructionRestJob>> = Mutex::new(Vec::new());
+static AIR_BASES_JOB_POOL: Mutex<Vec<AirBasesJob>> = Mutex::new(Vec::new());
+static AIR_HISTORY_JOB_POOL: Mutex<Vec<AirHistoryJob>> = Mutex::new(Vec::new());
+static RAIL_JOB_POOL: Mutex<Vec<RailJob>> = Mutex::new(Vec::new());
+static SUPREMACY_JOB_POOL: Mutex<Vec<SupremacyJob>> = Mutex::new(Vec::new());
+static SUNK_JOB_POOL: Mutex<Vec<SunkJob>> = Mutex::new(Vec::new());
+static RADAR_JOB_POOL: Mutex<Vec<RadarJob>> = Mutex::new(Vec::new());
+static INTEL_JOB_POOL: Mutex<Vec<IntelJob>> = Mutex::new(Vec::new());
 
 /// Pilot refresh gate: the whole family shares stagger slot 2 (`H%4==2`);
 /// branch starts and keyframes force a full refresh like every other table.
@@ -1120,6 +1207,186 @@ pub fn recycle_construction_rest_job(mut job: ConstructionRestJob) {
     }
 }
 
+/// Recycled hourly shared-bases raw-payload job. Cold calls allocate; steady
+/// state reuses jobs with their capacities, so neither thread allocates
+/// per hour.
+pub fn acquire_air_bases_job() -> AirBasesJob {
+    if let Ok(mut pool) = AIR_BASES_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    AirBasesJob::new()
+}
+
+/// Return a shared-bases payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_air_bases_job(mut job: AirBasesJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = AIR_BASES_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
+/// Recycled hourly shared-history raw-payload job. Cold calls allocate;
+/// steady state reuses jobs with their capacities, so neither thread
+/// allocates per hour.
+pub fn acquire_air_history_job() -> AirHistoryJob {
+    if let Ok(mut pool) = AIR_HISTORY_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    AirHistoryJob::new()
+}
+
+/// Return a shared-history payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_air_history_job(mut job: AirHistoryJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = AIR_HISTORY_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
+/// Recycled hourly shared-railway raw-payload job. Cold calls allocate;
+/// steady state reuses jobs with their capacities, so neither thread
+/// allocates per hour.
+pub fn acquire_rail_job() -> RailJob {
+    if let Ok(mut pool) = RAIL_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    RailJob::new()
+}
+
+/// Return a shared-railway payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_rail_job(mut job: RailJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = RAIL_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
+/// Recycled hourly supremacy raw-payload job. Cold calls allocate; steady
+/// state reuses jobs with their capacities, so neither thread allocates
+/// per hour.
+pub fn acquire_supremacy_job() -> SupremacyJob {
+    if let Ok(mut pool) = SUPREMACY_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    SupremacyJob::new()
+}
+
+/// Return a supremacy payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_supremacy_job(mut job: SupremacyJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = SUPREMACY_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
+/// Recycled hourly sunk-ships raw-payload job. Cold calls allocate; steady
+/// state reuses jobs with their capacities, so neither thread allocates
+/// per hour.
+pub fn acquire_sunk_job() -> SunkJob {
+    if let Ok(mut pool) = SUNK_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    SunkJob::new()
+}
+
+/// Return a sunk-ships payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_sunk_job(mut job: SunkJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = SUNK_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
+/// Recycled hourly radar raw-payload job. Cold calls allocate; steady state
+/// reuses jobs with their capacities, so neither thread allocates per hour.
+pub fn acquire_radar_job() -> RadarJob {
+    if let Ok(mut pool) = RADAR_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    RadarJob::new()
+}
+
+/// Return a radar payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_radar_job(mut job: RadarJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = RADAR_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
+/// Recycled hourly intel raw-payload job. Cold calls allocate; steady state
+/// reuses jobs with their capacities, so neither thread allocates per hour.
+pub fn acquire_intel_job() -> IntelJob {
+    if let Ok(mut pool) = INTEL_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    IntelJob::new()
+}
+
+/// Return an intel payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_intel_job(mut job: IntelJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = INTEL_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
 /// Enqueue a frame for decode (or ordered forwarding for skip hours).
 /// Starts the worker lazily; never blocks. A full queue returns the job for
 /// the existing gap path and counts the drop on the existing counters.
@@ -1491,6 +1758,118 @@ pub fn process_job(shared: &Shared, job: &DecodeJob) {
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
+    if job.air_bases_refresh
+        && let Some(payload) = job.air_bases_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 3];
+        frame
+            .extended
+            .decode_air_bases_payload(shared.base, payload, &mut decode_ticks);
+        for (total, ticks) in AIR_BASES_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
+    if job.air_history_refresh
+        && let Some(payload) = job.air_history_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 2];
+        frame
+            .extended
+            .air_history_pilot()
+            .decode_air_history_payload(shared.base, payload, &mut decode_ticks);
+        for (total, ticks) in AIR_HISTORY_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
+    if job.rail_refresh
+        && let Some(payload) = job.rail_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 2];
+        frame
+            .extended
+            .rail_pilot()
+            .decode_rail_payload(shared.base, payload, &mut decode_ticks);
+        for (total, ticks) in RAIL_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
+    if job.supremacy_refresh
+        && let Some(payload) = job.supremacy_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 1];
+        frame.extended.supremacy_pilot().decode_supremacy_payload(
+            shared.base,
+            payload,
+            &mut decode_ticks,
+        );
+        for (total, ticks) in SUPREMACY_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
+    if job.sunk_refresh
+        && let Some(payload) = job.sunk_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 1];
+        frame
+            .extended
+            .sunk_pilot()
+            .decode_sunk_payload(shared.base, payload, &mut decode_ticks);
+        for (total, ticks) in SUNK_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
+    if job.radar_refresh
+        && let Some(payload) = job.radar_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 1];
+        frame
+            .extended
+            .radar_pilot()
+            .decode_radar_payload(shared.base, payload, &mut decode_ticks);
+        for (total, ticks) in RADAR_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
+    if job.intel_refresh
+        && let Some(payload) = job.intel_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 1];
+        frame
+            .extended
+            .intel_pilot()
+            .decode_intel_payload(shared.base, payload, &mut decode_ticks);
+        for (total, ticks) in INTEL_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
     // Pool invariant: this frame is owned by the worker, so it occupies no
     // ready slot and the push below always has room while the spool thread
     // lives. The worker may wait (only the game thread must never block).
@@ -1692,6 +2071,69 @@ pub fn calibration() -> Calibration {
         construction_rest_raw_bytes: CONSTRUCTION_REST_RAW_BYTES
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
+        air_bases_copy_ns: AIR_BASES_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        air_bases_decode_ns: AIR_BASES_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        air_bases_raw_bytes: AIR_BASES_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        air_history_copy_ns: AIR_HISTORY_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        air_history_decode_ns: AIR_HISTORY_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        air_history_raw_bytes: AIR_HISTORY_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        rail_copy_ns: RAIL_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        rail_decode_ns: RAIL_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        rail_raw_bytes: RAIL_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        supremacy_copy_ns: SUPREMACY_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        supremacy_decode_ns: SUPREMACY_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        supremacy_raw_bytes: SUPREMACY_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        sunk_copy_ns: SUNK_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        sunk_decode_ns: SUNK_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        sunk_raw_bytes: SUNK_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        radar_copy_ns: RADAR_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        radar_decode_ns: RADAR_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        radar_raw_bytes: RADAR_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        intel_copy_ns: INTEL_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        intel_decode_ns: INTEL_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        intel_raw_bytes: INTEL_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
         queue_high_water: QUEUE_HIGH_WATER.load(Ordering::Relaxed),
     }
 }
@@ -1758,6 +2200,27 @@ pub struct Calibration {
     pub construction_rest_copy_ns: [u64; 10],
     pub construction_rest_decode_ns: [u64; 10],
     pub construction_rest_raw_bytes: [u64; 10],
+    pub air_bases_copy_ns: [u64; 3],
+    pub air_bases_decode_ns: [u64; 3],
+    pub air_bases_raw_bytes: [u64; 3],
+    pub air_history_copy_ns: [u64; 2],
+    pub air_history_decode_ns: [u64; 2],
+    pub air_history_raw_bytes: [u64; 2],
+    pub rail_copy_ns: [u64; 2],
+    pub rail_decode_ns: [u64; 2],
+    pub rail_raw_bytes: [u64; 2],
+    pub supremacy_copy_ns: [u64; 1],
+    pub supremacy_decode_ns: [u64; 1],
+    pub supremacy_raw_bytes: [u64; 1],
+    pub sunk_copy_ns: [u64; 1],
+    pub sunk_decode_ns: [u64; 1],
+    pub sunk_raw_bytes: [u64; 1],
+    pub radar_copy_ns: [u64; 1],
+    pub radar_decode_ns: [u64; 1],
+    pub radar_raw_bytes: [u64; 1],
+    pub intel_copy_ns: [u64; 1],
+    pub intel_decode_ns: [u64; 1],
+    pub intel_raw_bytes: [u64; 1],
     pub queue_high_water: u64,
 }
 
@@ -1843,6 +2306,34 @@ impl Calibration {
             "construction_rest_decode_ns": self.construction_rest_decode_ns.as_slice(),
             "construction_rest_raw_bytes": self.construction_rest_raw_bytes.as_slice(),
             "construction_rest_tables": ["StateBaseResources", "BuildingConstruction", "RailwayConstruction", "OccupationSettings", "StateOccupationLaws", "StateGarrisons", "StateAssignedManpower", "CountryOccupationReserveManpower", "StateResistance", "CountryCollaboration"],
+            "air_bases_copy_ns": self.air_bases_copy_ns.as_slice(),
+            "air_bases_decode_ns": self.air_bases_decode_ns.as_slice(),
+            "air_bases_raw_bytes": self.air_bases_raw_bytes.as_slice(),
+            "air_bases_tables": ["AirBases", "AirBaseRegistrations", "AirAces"],
+            "air_history_copy_ns": self.air_history_copy_ns.as_slice(),
+            "air_history_decode_ns": self.air_history_decode_ns.as_slice(),
+            "air_history_raw_bytes": self.air_history_raw_bytes.as_slice(),
+            "air_history_tables": ["AirRegionHistory", "AirRegionDamage"],
+            "rail_copy_ns": self.rail_copy_ns.as_slice(),
+            "rail_decode_ns": self.rail_decode_ns.as_slice(),
+            "rail_raw_bytes": self.rail_raw_bytes.as_slice(),
+            "rail_tables": ["RailCooldowns", "RailEdges"],
+            "supremacy_copy_ns": self.supremacy_copy_ns.as_slice(),
+            "supremacy_decode_ns": self.supremacy_decode_ns.as_slice(),
+            "supremacy_raw_bytes": self.supremacy_raw_bytes.as_slice(),
+            "supremacy_tables": ["NavalSupremacy"],
+            "sunk_copy_ns": self.sunk_copy_ns.as_slice(),
+            "sunk_decode_ns": self.sunk_decode_ns.as_slice(),
+            "sunk_raw_bytes": self.sunk_raw_bytes.as_slice(),
+            "sunk_tables": ["SunkShips"],
+            "radar_copy_ns": self.radar_copy_ns.as_slice(),
+            "radar_decode_ns": self.radar_decode_ns.as_slice(),
+            "radar_raw_bytes": self.radar_raw_bytes.as_slice(),
+            "radar_tables": ["RadarCoverage"],
+            "intel_copy_ns": self.intel_copy_ns.as_slice(),
+            "intel_decode_ns": self.intel_decode_ns.as_slice(),
+            "intel_raw_bytes": self.intel_raw_bytes.as_slice(),
+            "intel_tables": ["UnitIntel"],
             "queue_high_water": self.queue_high_water,
             "queue_capacity": BUFFERS,
         })
@@ -1998,6 +2489,62 @@ pub(crate) fn add_construction_rest_raw_bytes(table: usize, bytes: u64) {
     CONSTRUCTION_REST_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
 }
 
+pub(crate) fn add_air_bases_copy_ns(table: usize, ns: u64) {
+    AIR_BASES_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_air_bases_raw_bytes(table: usize, bytes: u64) {
+    AIR_BASES_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
+pub(crate) fn add_air_history_copy_ns(table: usize, ns: u64) {
+    AIR_HISTORY_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_air_history_raw_bytes(table: usize, bytes: u64) {
+    AIR_HISTORY_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
+pub(crate) fn add_rail_copy_ns(table: usize, ns: u64) {
+    RAIL_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_rail_raw_bytes(table: usize, bytes: u64) {
+    RAIL_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
+pub(crate) fn add_supremacy_copy_ns(table: usize, ns: u64) {
+    SUPREMACY_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_supremacy_raw_bytes(table: usize, bytes: u64) {
+    SUPREMACY_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
+pub(crate) fn add_sunk_copy_ns(table: usize, ns: u64) {
+    SUNK_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_sunk_raw_bytes(table: usize, bytes: u64) {
+    SUNK_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
+pub(crate) fn add_radar_copy_ns(table: usize, ns: u64) {
+    RADAR_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_radar_raw_bytes(table: usize, bytes: u64) {
+    RADAR_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
+pub(crate) fn add_intel_copy_ns(table: usize, ns: u64) {
+    INTEL_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_intel_raw_bytes(table: usize, bytes: u64) {
+    INTEL_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
 /// Bounded raw FIFO type shared with sampling's pool (indices only).
 pub type DecodeQueue = ArrayQueue<DecodeJob>;
 
@@ -2062,6 +2609,27 @@ pub(crate) fn reset_calibration_for_test() {
         .chain(CONSTRUCTION_REST_COPY_NS.iter())
         .chain(CONSTRUCTION_REST_DECODE_NS.iter())
         .chain(CONSTRUCTION_REST_RAW_BYTES.iter())
+        .chain(AIR_BASES_COPY_NS.iter())
+        .chain(AIR_BASES_DECODE_NS.iter())
+        .chain(AIR_BASES_RAW_BYTES.iter())
+        .chain(AIR_HISTORY_COPY_NS.iter())
+        .chain(AIR_HISTORY_DECODE_NS.iter())
+        .chain(AIR_HISTORY_RAW_BYTES.iter())
+        .chain(RAIL_COPY_NS.iter())
+        .chain(RAIL_DECODE_NS.iter())
+        .chain(RAIL_RAW_BYTES.iter())
+        .chain(SUPREMACY_COPY_NS.iter())
+        .chain(SUPREMACY_DECODE_NS.iter())
+        .chain(SUPREMACY_RAW_BYTES.iter())
+        .chain(SUNK_COPY_NS.iter())
+        .chain(SUNK_DECODE_NS.iter())
+        .chain(SUNK_RAW_BYTES.iter())
+        .chain(RADAR_COPY_NS.iter())
+        .chain(RADAR_DECODE_NS.iter())
+        .chain(RADAR_RAW_BYTES.iter())
+        .chain(INTEL_COPY_NS.iter())
+        .chain(INTEL_DECODE_NS.iter())
+        .chain(INTEL_RAW_BYTES.iter())
     {
         cell.store(0, Ordering::Relaxed);
     }
@@ -2192,6 +2760,13 @@ mod tests {
                 session_refresh: false,
                 production_rest_refresh: false,
                 construction_rest_refresh: false,
+                air_bases_refresh: false,
+                air_history_refresh: false,
+                rail_refresh: false,
+                supremacy_refresh: false,
+                sunk_refresh: false,
+                radar_refresh: false,
+                intel_refresh: false,
                 force_full: false,
                 game_elapsed: 7,
                 payload: None,
@@ -2212,6 +2787,13 @@ mod tests {
                 session_payload: None,
                 production_rest_payload: None,
                 construction_rest_payload: None,
+                air_bases_payload: None,
+                air_history_payload: None,
+                rail_payload: None,
+                supremacy_payload: None,
+                sunk_payload: None,
+                radar_payload: None,
+                intel_payload: None,
             };
             shared.decode_queue.push(job).unwrap();
         }
@@ -2256,6 +2838,13 @@ mod tests {
                 session_refresh: false,
                 production_rest_refresh: false,
                 construction_rest_refresh: false,
+                air_bases_refresh: false,
+                air_history_refresh: false,
+                rail_refresh: false,
+                supremacy_refresh: false,
+                sunk_refresh: false,
+                radar_refresh: false,
+                intel_refresh: false,
                 force_full: false,
                 game_elapsed: 1,
                 payload: None,
@@ -2276,6 +2865,13 @@ mod tests {
                 session_payload: None,
                 production_rest_payload: None,
                 construction_rest_payload: None,
+                air_bases_payload: None,
+                air_history_payload: None,
+                rail_payload: None,
+                supremacy_payload: None,
+                sunk_payload: None,
+                radar_payload: None,
+                intel_payload: None,
             };
             assert!(shared.decode_queue.push(job).is_ok());
         }
@@ -2302,6 +2898,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 1,
             payload: None,
@@ -2322,6 +2925,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         assert!(enqueue(&shared, job).is_some());
         assert_eq!(DROPS.load(Ordering::Relaxed), before + 1);
@@ -2389,6 +2999,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 13,
             payload: Some(first),
@@ -2409,6 +3026,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2457,6 +3081,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 17,
             payload: None,
@@ -2477,6 +3108,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2540,6 +3178,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 19,
             payload: None,
@@ -2560,6 +3205,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2626,6 +3278,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 23,
             payload: None,
@@ -2646,6 +3305,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2709,6 +3375,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 29,
             payload: None,
@@ -2729,6 +3402,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2790,6 +3470,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 31,
             payload: None,
@@ -2810,6 +3497,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2870,6 +3564,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 37,
             payload: None,
@@ -2890,6 +3591,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -2945,6 +3653,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 43,
             payload: None,
@@ -2965,6 +3680,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3027,6 +3749,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 47,
             payload: None,
@@ -3047,6 +3776,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3222,6 +3958,13 @@ mod tests {
                 session_refresh: false,
                 production_rest_refresh: false,
                 construction_rest_refresh: false,
+                air_bases_refresh: false,
+                air_history_refresh: false,
+                rail_refresh: false,
+                supremacy_refresh: false,
+                sunk_refresh: false,
+                radar_refresh: false,
+                intel_refresh: false,
                 force_full: false,
                 game_elapsed: 1,
                 payload: None,
@@ -3242,6 +3985,13 @@ mod tests {
                 session_payload: None,
                 production_rest_payload: None,
                 construction_rest_payload: None,
+                air_bases_payload: None,
+                air_history_payload: None,
+                rail_payload: None,
+                supremacy_payload: None,
+                sunk_payload: None,
+                radar_payload: None,
+                intel_payload: None,
             };
             assert!(enqueue(&shared, job).is_none());
         }
@@ -3294,6 +4044,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 23,
             payload: None,
@@ -3314,6 +4071,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3370,6 +4134,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 29,
             payload: None,
@@ -3389,6 +4160,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
             map_payload: Some(first),
         };
         process_job(&shared, &job);
@@ -3445,6 +4223,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             air_wing_refresh: true,
             air_stats_refresh: false,
             force_full: false,
@@ -3465,6 +4250,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
             air_wing_payload: Some(first),
             air_stats_payload: None,
         };
@@ -3520,6 +4312,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 59,
             payload: None,
@@ -3540,6 +4339,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3615,6 +4421,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 37,
             payload: None,
@@ -3635,6 +4448,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3794,6 +4614,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: true,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 31,
             payload: None,
@@ -3814,6 +4641,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: Some(first),
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3886,6 +4720,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: true,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 37,
             payload: None,
@@ -3906,6 +4747,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: Some(first),
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -4023,6 +4871,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 53,
             payload: None,
@@ -4043,6 +4898,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -4097,5 +4959,487 @@ mod tests {
         let again = acquire_construction_rest_job();
         assert!(again.log.spans.capacity() >= 1 << 17);
         recycle_construction_rest_job(again);
+    }
+
+    /// Build a FIFO job carrying only the selected family payload (all other
+    /// families off). Every worker test below uses this shape with its own
+    /// kit-staged payload.
+    fn bare_job(index: usize, seq: u64, hour: i32, game_elapsed: i64) -> DecodeJob {
+        DecodeJob {
+            index,
+            seq,
+            hour,
+            pilot_refresh: false,
+            relations_refresh: false,
+            characters_refresh: false,
+            projects_refresh: false,
+            lexical_refresh: false,
+            variants_refresh: false,
+            buildings_refresh: false,
+            wars_refresh: false,
+            divisions_refresh: false,
+            focus_refresh: false,
+            map_refresh: false,
+            air_wing_refresh: false,
+            air_stats_refresh: false,
+            naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
+            production_rest_refresh: false,
+            construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
+            force_full: false,
+            game_elapsed,
+            payload: None,
+            relations_payload: None,
+            characters_payload: None,
+            projects_payload: None,
+            lexical_payload: None,
+            variants_payload: None,
+            buildings_payload: None,
+            wars_payload: None,
+            divisions_payload: None,
+            focus_payload: None,
+            map_payload: None,
+            air_wing_payload: None,
+            air_stats_payload: None,
+            naval_payload: None,
+            players_payload: None,
+            session_payload: None,
+            production_rest_payload: None,
+            construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
+        }
+    }
+
+    #[test]
+    fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
+        use crate::extended::air::air_bases_test_kit as kit;
+        use replay::frame::TableView;
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let shared = Shared::new(kit::BASE, 0, 1);
+        let index = shared.free.pop().expect("pooled buffer");
+        shared.completed[index].store(0, Ordering::Relaxed);
+        // Stage through the real game-thread entry point (cross-pack copy).
+        let ctx = crate::extended::air::AirBasesCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 3],
+        };
+        let mut first = acquire_air_bases_job();
+        let mut second = acquire_air_bases_job();
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let report =
+            frame
+                .extended
+                .copy_air_bases_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 3]);
+        recycle_air_bases_job(second);
+        let mut job = bare_job(index, next_seq(), 7, 41);
+        job.air_bases_refresh = true;
+        job.air_bases_payload = Some(first);
+        process_job(&shared, &job);
+        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.completed[index].load(Ordering::Acquire), 41);
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        // Both packs' views install identically: bases and aces in air,
+        // registrations in fog, with the worker clearing both raw gates.
+        let air = frame.extended.air_bases_pilot().tables();
+        let fog = frame.extended.radar_pilot().tables();
+        assert!(matches!(air[1], TableView::Complete(_)));
+        assert!(matches!(air[5], TableView::Complete(_)));
+        assert!(matches!(fog[5], TableView::Complete(_)));
+        assert_eq!(
+            frame.extended.air_bases_pilot().outcomes()[1],
+            direct.bases_outcome
+        );
+        assert_eq!(
+            frame.extended.air_bases_pilot().outcomes()[5],
+            direct.aces_outcome
+        );
+        assert!(!frame.extended.air_bases_pilot().bases_raw_mode);
+        let snapshot = calibration();
+        assert!(snapshot.refresh_jobs >= 1);
+        assert_eq!(snapshot.json()["air_bases_tables"][0], "AirBases");
+        assert_eq!(
+            snapshot.json()["air_bases_tables"][1],
+            "AirBaseRegistrations"
+        );
+        assert_eq!(snapshot.json()["air_bases_tables"][2], "AirAces");
+        recycle_air_bases_job(job.air_bases_payload.unwrap());
+    }
+
+    #[test]
+    fn worker_decodes_a_shared_history_payload_into_the_same_typed_rows() {
+        use crate::extended::air::air_history_test_kit as kit;
+        use replay::frame::TableView;
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let shared = Shared::new(kit::BASE, 0, 1);
+        let index = shared.free.pop().expect("pooled buffer");
+        shared.completed[index].store(0, Ordering::Relaxed);
+        let ctx = crate::extended::air::AirHistoryCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 2],
+        };
+        let mut first = acquire_air_history_job();
+        let mut second = acquire_air_history_job();
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let report = frame.extended.air_history_pilot().copy_air_history_refresh(
+            &memory,
+            ctx,
+            &mut first,
+            Some(&mut second),
+        );
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 2]);
+        recycle_air_history_job(second);
+        let mut job = bare_job(index, next_seq(), 7, 43);
+        job.air_history_refresh = true;
+        job.air_history_payload = Some(first);
+        process_job(&shared, &job);
+        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.completed[index].load(Ordering::Acquire), 43);
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let air = frame.extended.air_history_pilot().tables();
+        assert!(matches!(air[3], TableView::Complete(_)));
+        assert!(matches!(air[4], TableView::Complete(_)));
+        assert_eq!(
+            frame.extended.air_history_pilot().outcomes()[3],
+            direct.history_outcome
+        );
+        assert_eq!(
+            frame.extended.air_history_pilot().outcomes()[4],
+            direct.damage_outcome
+        );
+        assert!(!frame.extended.air_history_pilot().history_raw_mode);
+        let snapshot = calibration();
+        assert!(snapshot.refresh_jobs >= 1);
+        assert_eq!(snapshot.json()["air_history_tables"][0], "AirRegionHistory");
+        assert_eq!(snapshot.json()["air_history_tables"][1], "AirRegionDamage");
+        recycle_air_history_job(job.air_history_payload.unwrap());
+    }
+
+    #[test]
+    fn worker_decodes_a_shared_rail_payload_into_the_same_typed_rows() {
+        use crate::extended::naval_history::rail_test_kit as kit;
+        use replay::frame::TableView;
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let shared = Shared::new(kit::BASE, 0, 1);
+        let index = shared.free.pop().expect("pooled buffer");
+        shared.completed[index].store(0, Ordering::Relaxed);
+        let ctx = crate::extended::naval_history::RailCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 2],
+        };
+        let mut first = acquire_rail_job();
+        let mut second = acquire_rail_job();
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let report = frame.extended.rail_pilot().copy_rail_refresh(
+            &memory,
+            ctx,
+            &mut first,
+            Some(&mut second),
+        );
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 2]);
+        recycle_rail_job(second);
+        let mut job = bare_job(index, next_seq(), 7, 47);
+        job.rail_refresh = true;
+        job.rail_payload = Some(first);
+        process_job(&shared, &job);
+        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.completed[index].load(Ordering::Acquire), 47);
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        // The naval pack tables() order is the pack's TABLES order:
+        // supremacy=0, convoys=1, cooldowns=2, edges=3.
+        let naval = frame.extended.rail_pilot().tables();
+        assert!(matches!(naval[2], TableView::Complete(_)));
+        assert!(matches!(naval[3], TableView::Complete(_)));
+        assert_eq!(
+            frame.extended.rail_pilot().outcomes()[2],
+            direct.cooldowns_outcome
+        );
+        assert_eq!(
+            frame.extended.rail_pilot().outcomes()[3],
+            direct.edges_outcome
+        );
+        assert!(!frame.extended.rail_pilot().rail_raw_mode);
+        let snapshot = calibration();
+        assert!(snapshot.refresh_jobs >= 1);
+        assert_eq!(snapshot.json()["rail_tables"][0], "RailCooldowns");
+        assert_eq!(snapshot.json()["rail_tables"][1], "RailEdges");
+        recycle_rail_job(job.rail_payload.unwrap());
+    }
+
+    #[test]
+    fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
+        use crate::extended::naval_history::supremacy_test_kit as kit;
+        use replay::frame::TableView;
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let shared = Shared::new(kit::BASE, 0, 1);
+        let index = shared.free.pop().expect("pooled buffer");
+        shared.completed[index].store(0, Ordering::Relaxed);
+        let ctx = crate::extended::naval_history::SupremacyCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 1],
+        };
+        let mut first = acquire_supremacy_job();
+        let mut second = acquire_supremacy_job();
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let report = frame.extended.supremacy_pilot().copy_supremacy_refresh(
+            &memory,
+            ctx,
+            &mut first,
+            Some(&mut second),
+        );
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 1]);
+        recycle_supremacy_job(second);
+        let mut job = bare_job(index, next_seq(), 7, 53);
+        job.supremacy_refresh = true;
+        job.supremacy_payload = Some(first);
+        process_job(&shared, &job);
+        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.completed[index].load(Ordering::Acquire), 53);
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let naval = frame.extended.supremacy_pilot().tables();
+        assert!(matches!(naval[0], TableView::Complete(_)));
+        assert_eq!(
+            frame.extended.supremacy_pilot().outcomes()[0],
+            direct.outcome
+        );
+        assert!(!frame.extended.supremacy_pilot().supremacy_raw_mode);
+        let snapshot = calibration();
+        assert!(snapshot.refresh_jobs >= 1);
+        assert_eq!(snapshot.json()["supremacy_tables"][0], "NavalSupremacy");
+        recycle_supremacy_job(job.supremacy_payload.unwrap());
+    }
+
+    #[test]
+    fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
+        use crate::extended::naval_history::sunk_test_kit as kit;
+        use replay::frame::TableView;
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let shared = Shared::new(kit::BASE, 0, 1);
+        let index = shared.free.pop().expect("pooled buffer");
+        shared.completed[index].store(0, Ordering::Relaxed);
+        let ctx = crate::extended::naval_history::SunkCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            hour: kit::HOUR,
+            needed: [true; 1],
+        };
+        let mut first = acquire_sunk_job();
+        let mut second = acquire_sunk_job();
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let report = frame.extended.sunk_pilot().copy_sunk_refresh(
+            &memory,
+            ctx,
+            &mut first,
+            Some(&mut second),
+        );
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 1]);
+        recycle_sunk_job(second);
+        let mut job = bare_job(index, next_seq(), 7, 59);
+        job.sunk_refresh = true;
+        job.sunk_payload = Some(first);
+        process_job(&shared, &job);
+        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.completed[index].load(Ordering::Acquire), 59);
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        // The sunk table is pack slot 13; the singleton conversion owns the
+        // single row, so compare the converted view (one row, two entries).
+        // The raw walk holds two records; the singleton owns one row.
+        assert_eq!(direct.outcome, engine::walk::Outcome::Rows { len: 2 });
+        let naval = frame.extended.sunk_pilot().tables();
+        let entries = match &naval[13] {
+            TableView::Complete(replay::rows::TableRows::SunkShips(rows)) => {
+                assert_eq!(rows.len(), 1);
+                rows[0].entries.len()
+            }
+            other => panic!("expected complete sunk table, found {other:?}"),
+        };
+        assert_eq!(entries, 2);
+        assert!(!frame.extended.sunk_pilot().sunk_raw_mode);
+        let snapshot = calibration();
+        assert!(snapshot.refresh_jobs >= 1);
+        assert_eq!(snapshot.json()["sunk_tables"][0], "SunkShips");
+        recycle_sunk_job(job.sunk_payload.unwrap());
+    }
+
+    #[test]
+    fn worker_decodes_a_radar_payload_into_the_same_typed_rows() {
+        use crate::extended::fog::radar_test_kit as kit;
+        use replay::frame::TableView;
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let shared = Shared::new(kit::BASE, 0, 1);
+        let index = shared.free.pop().expect("pooled buffer");
+        shared.completed[index].store(0, Ordering::Relaxed);
+        let ctx = crate::extended::fog::RadarCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 1],
+        };
+        let mut first = acquire_radar_job();
+        let mut second = acquire_radar_job();
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let report = frame.extended.radar_pilot().copy_radar_refresh(
+            &memory,
+            ctx,
+            &mut first,
+            Some(&mut second),
+        );
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 1]);
+        recycle_radar_job(second);
+        let mut job = bare_job(index, next_seq(), 7, 61);
+        job.radar_refresh = true;
+        job.radar_payload = Some(first);
+        process_job(&shared, &job);
+        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.completed[index].load(Ordering::Acquire), 61);
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let fog = frame.extended.radar_pilot().tables();
+        assert!(matches!(fog[0], TableView::Complete(_)));
+        assert_eq!(frame.extended.radar_pilot().outcomes()[0], direct.outcome);
+        assert!(!frame.extended.radar_pilot().radar_raw_mode);
+        let snapshot = calibration();
+        assert!(snapshot.refresh_jobs >= 1);
+        assert_eq!(snapshot.json()["radar_tables"][0], "RadarCoverage");
+        recycle_radar_job(job.radar_payload.unwrap());
+    }
+
+    #[test]
+    fn worker_decodes_an_intel_payload_into_the_same_typed_rows() {
+        use crate::extended::fog::intel_test_kit as kit;
+        use replay::frame::TableView;
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let shared = Shared::new(kit::BASE, 0, 1);
+        let index = shared.free.pop().expect("pooled buffer");
+        shared.completed[index].store(0, Ordering::Relaxed);
+        let ctx = crate::extended::fog::IntelCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 1],
+        };
+        let mut first = acquire_intel_job();
+        let mut second = acquire_intel_job();
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let report = frame.extended.intel_pilot().copy_intel_refresh(
+            &memory,
+            ctx,
+            &mut first,
+            Some(&mut second),
+        );
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 1]);
+        recycle_intel_job(second);
+        let mut job = bare_job(index, next_seq(), 7, 67);
+        job.intel_refresh = true;
+        job.intel_payload = Some(first);
+        process_job(&shared, &job);
+        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.completed[index].load(Ordering::Acquire), 67);
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        // UnitIntel is fog pack slot 4.
+        let fog = frame.extended.intel_pilot().tables();
+        assert!(matches!(fog[4], TableView::Complete(_)));
+        assert_eq!(frame.extended.intel_pilot().outcomes()[4], direct.outcome);
+        assert!(!frame.extended.intel_pilot().intel_raw_mode);
+        let snapshot = calibration();
+        assert!(snapshot.refresh_jobs >= 1);
+        assert_eq!(snapshot.json()["intel_tables"][0], "UnitIntel");
+        recycle_intel_job(job.intel_payload.unwrap());
+    }
+
+    #[test]
+    fn new_family_calibration_counters_are_monotonic_and_additive_per_table() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        add_air_bases_copy_ns(0, 11);
+        add_air_bases_copy_ns(2, 7);
+        add_air_bases_raw_bytes(1, 100);
+        add_rail_copy_ns(0, 5);
+        add_rail_raw_bytes(1, 9);
+        add_supremacy_copy_ns(0, 3);
+        add_sunk_copy_ns(0, 4);
+        add_radar_copy_ns(0, 6);
+        add_intel_copy_ns(0, 8);
+        add_air_history_copy_ns(1, 2);
+        let snapshot = calibration();
+        assert_eq!(snapshot.air_bases_copy_ns, [11, 0, 7]);
+        assert_eq!(snapshot.air_bases_raw_bytes, [0, 100, 0]);
+        assert_eq!(snapshot.rail_copy_ns, [5, 0]);
+        assert_eq!(snapshot.rail_raw_bytes, [0, 9]);
+        assert_eq!(snapshot.supremacy_copy_ns, [3]);
+        assert_eq!(snapshot.sunk_copy_ns, [4]);
+        assert_eq!(snapshot.radar_copy_ns, [6]);
+        assert_eq!(snapshot.intel_copy_ns, [8]);
+        assert_eq!(snapshot.air_history_copy_ns, [0, 2]);
+        let json = snapshot.json();
+        assert_eq!(json["air_bases_copy_ns"][0], 11);
+        assert_eq!(json["air_bases_tables"][1], "AirBaseRegistrations");
+        assert_eq!(json["air_history_tables"][1], "AirRegionDamage");
+        assert_eq!(json["rail_tables"][1], "RailEdges");
+        assert_eq!(json["supremacy_tables"][0], "NavalSupremacy");
+        assert_eq!(json["sunk_tables"][0], "SunkShips");
+        assert_eq!(json["radar_tables"][0], "RadarCoverage");
+        assert_eq!(json["intel_tables"][0], "UnitIntel");
+        for acquire in [
+            acquire_air_bases_job().log.spans.capacity() >= 1 << 17,
+            acquire_air_history_job().log.spans.capacity() >= 1 << 15,
+            acquire_rail_job().log.spans.capacity() >= 1 << 17,
+            acquire_supremacy_job().log.spans.capacity() >= 1 << 12,
+            acquire_sunk_job().log.spans.capacity() >= 1 << 13,
+            acquire_radar_job().log.spans.capacity() >= 1 << 12,
+            acquire_intel_job().log.spans.capacity() >= 1 << 15,
+        ] {
+            assert!(acquire);
+        }
     }
 }

@@ -4,7 +4,7 @@ This is the plan of record. Only the owner changes the decisions in section 2. A
 
 ## 1. Status
 
-Snapshot 2026-09-11. Branch `t3code/23d29856`. Replay format 14 (spool magic `H4SE`), 148 typed tables, 1,259 tests, 867 tracked files. Pinned game build Operation Postern v1.19.2.0.a729.
+Snapshot 2026-09-11. Branch `t3code/23d29856`. Replay format 14 (spool magic `H4SE`), 148 typed tables, 1,328 tests, 867 tracked files. Pinned game build Operation Postern v1.19.2.0.a729.
 
 | Phase | Status | Evidence |
 |---|---|---|

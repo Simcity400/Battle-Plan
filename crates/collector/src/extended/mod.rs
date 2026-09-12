@@ -254,6 +254,26 @@ impl Captured {
         &mut self.air
     }
 
+    /// Decode-worker handoff for the shared hourly bases payload
+    /// (copy/decode split). Sole cross-thread entry to the air bases/aces
+    /// buffers: the game thread stages raw-copy state through it every hour
+    /// and the single FIFO decode worker decodes the staged payload into
+    /// these pooled typed rows before the spool ready-queue handoff. The fog
+    /// registrations half decodes from the same log (see below).
+    pub(crate) fn air_bases_pilot(&mut self) -> &mut air::Captured {
+        &mut self.air
+    }
+
+    /// Decode-worker handoff for the shared hourly history payload
+    /// (copy/decode split). Sole cross-thread entry to the air history and
+    /// damage buffers: the game thread stages raw-copy state through it
+    /// every hour and the single FIFO decode worker decodes the staged
+    /// payload into these pooled typed rows before the spool ready-queue
+    /// handoff.
+    pub(crate) fn air_history_pilot(&mut self) -> &mut air::Captured {
+        &mut self.air
+    }
+
     /// Decode-worker handoff for the source-fed naval block (copy/decode
     /// split). Sole cross-thread entry to the naval theatre/OOB buffers: the
     /// game thread stages raw-copy state through it every hour and the
@@ -270,6 +290,51 @@ impl Captured {
     /// before the spool ready-queue handoff.
     pub(crate) fn session_pilot(&mut self) -> &mut session::Captured {
         &mut self.session
+    }
+
+    /// Decode-worker handoff for the shared hourly railway payload
+    /// (copy/decode split). Sole cross-thread entry to the railway buffers:
+    /// the game thread stages raw-copy state through it every hour and the
+    /// single FIFO decode worker decodes the staged payload into these
+    /// pooled typed rows before the spool ready-queue handoff.
+    pub(crate) fn rail_pilot(&mut self) -> &mut naval_history::Captured {
+        &mut self.naval_history
+    }
+
+    /// Decode-worker handoff for the hourly supremacy payload (copy/decode
+    /// split). Sole cross-thread entry to the supremacy buffers: the game
+    /// thread stages raw-copy state through it every hour and the single
+    /// FIFO decode worker decodes the staged payload into these pooled typed
+    /// rows before the spool ready-queue handoff.
+    pub(crate) fn supremacy_pilot(&mut self) -> &mut naval_history::Captured {
+        &mut self.naval_history
+    }
+
+    /// Decode-worker handoff for the hourly sunk-ships payload (copy/decode
+    /// split). Sole cross-thread entry to the sunk buffers: the game thread
+    /// stages raw-copy state through it every hour and the single FIFO
+    /// decode worker decodes the staged payload into these pooled typed rows
+    /// before the spool ready-queue handoff.
+    pub(crate) fn sunk_pilot(&mut self) -> &mut naval_history::Captured {
+        &mut self.naval_history
+    }
+
+    /// Decode-worker handoff for the hourly radar payload (copy/decode
+    /// split). Sole cross-thread entry to the radar buffers: the game thread
+    /// stages raw-copy state through it every hour and the single FIFO
+    /// decode worker decodes the staged payload into these pooled typed rows
+    /// before the spool ready-queue handoff.
+    pub(crate) fn radar_pilot(&mut self) -> &mut fog::Captured {
+        &mut self.fog
+    }
+
+    /// Decode-worker handoff for the hourly intel payload (copy/decode
+    /// split). Sole cross-thread entry to the intel buffers: the game thread
+    /// stages raw-copy state through it every hour and the single FIFO
+    /// decode worker decodes the staged payload into these pooled typed rows
+    /// before the spool ready-queue handoff.
+    pub(crate) fn intel_pilot(&mut self) -> &mut fog::Captured {
+        &mut self.fog
     }
 
     /// Decode-worker handoff for the hourly production rest (copy/decode
@@ -290,9 +355,37 @@ impl Captured {
         &mut self.construction
     }
 
-    /// Game-thread raw copy for a slot-3 variants refresh. Runs after the
-    /// game-side registry census, which feeds both production (as today) and
-    /// this copy. Returns the pilot-style report for sampling's install.
+    /// Game-thread raw copy for the shared hourly bases payload. Runs the
+    /// air-hosted copy (country census, manager, bases, registrations,
+    /// aces) with disjoint borrows of both packs; the report comes back for
+    /// sampling's calibration install, while matched rows and costs install
+    /// into the returned report like every other family.
+    pub(crate) fn copy_air_bases_refresh(
+        &mut self,
+        memory: &impl engine::Memory,
+        ctx: air::AirBasesCopyContext,
+        first: &mut air::AirBasesJob,
+        second: Option<&mut air::AirBasesJob>,
+    ) -> air::AirBasesCopyReport {
+        self.air
+            .copy_air_bases_refresh(memory, ctx, &mut self.fog, first, second)
+    }
+
+    /// Decode-worker interpretation of a raw shared bases payload, in pack
+    /// order: bases and aces rows first, then the fog registrations half,
+    /// all from the same shared log. Disjoint borrows keep both packs alive
+    /// at once.
+    pub(crate) fn decode_air_bases_payload(
+        &mut self,
+        base: usize,
+        job: &air::AirBasesJob,
+        decode_ticks: &mut [u64; air::AIR_BASES_N],
+    ) {
+        self.air.decode_air_bases_payload(base, job, decode_ticks);
+        self.fog
+            .decode_registrations_payload(base, job, decode_ticks);
+    }
+
     pub(crate) fn copy_variants_refresh(
         &mut self,
         memory: &impl engine::Memory,

@@ -20,9 +20,11 @@ use crate::{
     table_capture::{Arena, CaptureRows, comparison, comparison_rows},
 };
 use engine::{
-    Memory, cair_group, cair_theatre, cair_wing, cnaval_combat_results, cnaval_region_dominance,
-    corders_group, cpdx_array::Array, cprovince_railway_info, crailway_manager, csunk_convoy_info,
-    csunk_ship_info, ctheater_group, ctheatre, rail_neighbor, walk::Outcome,
+    Memory, cair_group, cair_theatre, cair_wing, cdominance_values, cgame_date, cgame_state,
+    cnaval_combat_results, cnaval_region_dominance, corders_group, cpdx_array::Array, cprovince,
+    cprovince_railway_info, crailway_manager, csunk_convoy_info, csunk_ship_info,
+    cstrategic_region, csub_unit_definition, ctheater_group, ctheatre, msvc_string,
+    naval_dominance_entry, rail_neighbor, walk::Outcome,
 };
 use replay::{
     frame::TableView,
@@ -131,6 +133,24 @@ pub struct Captured {
     /// then skips the theatre/OOB walks and the decode worker replays them
     /// before the ready handoff.
     pub(crate) raw_mode: bool,
+    /// Raw-copy split gate for the shared hourly railway payload
+    /// (RailCooldowns, RailEdges). Set by the game thread every hour with a
+    /// valid raw payload; `capture` then skips the typed railway walk and
+    /// the decode worker fills both row sets before the ready handoff.
+    /// Preserved across resets, cleared by the worker after decode.
+    pub(crate) rail_raw_mode: bool,
+    /// Raw-copy split gate for the hourly supremacy payload
+    /// (NavalSupremacy). Set by the game thread every hour with a valid raw
+    /// payload; `capture` then skips the typed walk and the decode worker
+    /// fills the rows before the ready handoff. Preserved across resets,
+    /// cleared by the worker after decode.
+    pub(crate) supremacy_raw_mode: bool,
+    /// Raw-copy split gate for the hourly sunk-ships payload (SunkShips).
+    /// Set by the game thread every hour with a valid raw payload; `capture`
+    /// then skips the typed walk and the decode worker fills the rows before
+    /// the ready handoff. Preserved across resets, cleared by the worker
+    /// after decode.
+    pub(crate) sunk_raw_mode: bool,
 }
 
 impl Captured {
@@ -170,6 +190,9 @@ impl Captured {
             wings_finished: [false; 2],
             source_ticks: [0; 3],
             raw_mode: false,
+            rail_raw_mode: false,
+            supremacy_raw_mode: false,
+            sunk_raw_mode: false,
         }
     }
 
@@ -493,39 +516,63 @@ impl Captured {
         self.reset_tables();
         let mut matched = [false; N];
         let mut ticks = [0; N];
-        let begin = qpc();
-        matched[0] = capture_rows(&mut self.supremacy, needed[0], |rows| {
-            cnaval_region_dominance::walk(memory, base, game_state, rows)
-        });
-        ticks[0] = elapsed(begin);
+        // Hourly supremacy raw-copy split: on hours with a valid raw payload
+        // the game thread stages bytes via `copy_supremacy_refresh` and the
+        // decode worker fills the typed rows before the ready handoff, so
+        // the typed walk is skipped here. Matched flags and costs come from
+        // the raw compare, applied by the caller after this returns.
+        if self.supremacy_raw_mode {
+            // Refresh payload staged: leave the reset outcome for the decode
+            // worker, which installs identical rows and outcomes.
+            matched[0] = false;
+            ticks[0] = 0;
+        } else {
+            let begin = qpc();
+            matched[0] = capture_rows(&mut self.supremacy, needed[0], |rows| {
+                cnaval_region_dominance::walk(memory, base, game_state, rows)
+            });
+            ticks[0] = elapsed(begin);
+        }
         let begin = qpc();
         matched[1] = capture_rows(&mut self.convoys, needed[1], |rows| {
             csunk_convoy_info::walk(memory, base, game_state, rows)
         });
         ticks[1] = elapsed(begin);
 
-        let begin = qpc();
-        let first = crailway_manager::walk(
-            memory,
-            base,
-            game_state,
-            &mut self.cooldowns.rows,
-            &mut self.edges.rows,
-        );
-        self.cooldowns.outcome = bounded(first.provinces, self.cooldowns.rows.len());
-        self.edges.outcome = bounded(first.edges, self.edges.rows.len());
-        if needed[2] || needed[3] {
-            let second = crailway_manager::walk(
+        // Hourly railway raw-copy split: on hours with a valid raw payload
+        // the game thread stages bytes via `copy_rail_refresh` (one shared
+        // walk for cooldowns and edges) and the decode worker fills both row
+        // sets before the ready handoff, so the typed walk is skipped here.
+        if self.rail_raw_mode {
+            // Refresh payload staged: leave the reset outcomes for the
+            // decode worker, which installs identical rows and outcomes.
+            matched[2] = false;
+            matched[3] = false;
+            ticks[2] = 0;
+        } else {
+            let begin = qpc();
+            let first = crailway_manager::walk(
                 memory,
                 base,
                 game_state,
-                &mut self.cooldowns.second,
-                &mut self.edges.second,
+                &mut self.cooldowns.rows,
+                &mut self.edges.rows,
             );
-            matched[2] = compare(&mut self.cooldowns, second.provinces, needed[2]);
-            matched[3] = compare(&mut self.edges, second.edges, needed[3]);
+            self.cooldowns.outcome = bounded(first.provinces, self.cooldowns.rows.len());
+            self.edges.outcome = bounded(first.edges, self.edges.rows.len());
+            if needed[2] || needed[3] {
+                let second = crailway_manager::walk(
+                    memory,
+                    base,
+                    game_state,
+                    &mut self.cooldowns.second,
+                    &mut self.edges.second,
+                );
+                matched[2] = compare(&mut self.cooldowns, second.provinces, needed[2]);
+                matched[3] = compare(&mut self.edges, second.edges, needed[3]);
+            }
+            ticks[2] = elapsed(begin);
         }
-        ticks[2] = elapsed(begin);
 
         // Raw-copy split (hourly source-fed naval block): the game thread
         // staged raw bytes and the decode worker replays theatres/OOB before
@@ -569,8 +616,19 @@ impl Captured {
         ticks[10] = elapsed(begin);
 
         let begin = qpc();
-        matched[13] = self.capture_sunk(memory, base, game_state, current_hour, needed[13]);
-        ticks[13] = elapsed(begin);
+        // Hourly sunk-ships raw-copy split: on hours with a valid raw payload
+        // the game thread stages bytes via `copy_sunk_refresh` and the decode
+        // worker fills the typed rows before the ready handoff, so the typed
+        // walk is skipped here.
+        if self.sunk_raw_mode {
+            // Refresh payload staged: leave the reset outcome for the decode
+            // worker, which installs identical rows and outcomes.
+            matched[13] = false;
+            ticks[13] = 0;
+        } else {
+            matched[13] = self.capture_sunk(memory, base, game_state, current_hour, needed[13]);
+            ticks[13] = elapsed(begin);
+        }
         (matched, ticks)
     }
 
@@ -2152,6 +2210,1391 @@ pub(crate) fn decode_naval_payload(
     captured.raw_mode = false;
 }
 
+// ===========================================================================
+// Hourly shared railway split (RailCooldowns, RailEdges).
+//
+// The game thread copies raw bytes only: the rail manager with its
+// province-info table, the province roster, per-slot province
+// authentication with info identity and backlinks, per-slot cooldowns and
+// neighbor vectors. Shared spans (manager, tables, authentication) are taken
+// ONCE with the combined mask and serve both replays: Recorded spans are
+// address-keyed, so one railway walk feeds the cooldown and edge decodes
+// with no duplicated copy of the walk. No row is decoded on the game
+// thread. The single FIFO decode worker replays `crailway_manager::walk`
+// against the recorded spans, so rows, ordinals, skips, truncation counts
+// and failure reasons are identical by construction (see `crate::raw` for
+// the mirror rules).
+//
+// The neighbor pair blocks are cap-dependent (the typed walk reads a
+// capacity-truncated prefix in 64-entry chunks), so they are bulk spans:
+// the mirror takes each whole pair vector once and the replay serves any
+// enclosed chunk from it. Every other take is an exact span matching the
+// walk's decomposed reads. Takes follow walk order with per-table fault
+// scope: shared faults stop the whole pass (the typed walk fails both
+// tables), cooldown faults continue takes (the typed walk keeps edge rows),
+// edge faults set `edges_dead`, which skips later pair blocks while headers
+// and cooldown takes continue (the typed walk keeps cooldown rows).
+// Validation outcomes are replay-derived; the mirror never stops takes on
+// validation alone, only on take failures, overflow and undiscoverable
+// addresses.
+// ===========================================================================
+
+/// Shared hourly payload slots in calibration/report order: [cooldowns,
+/// edges]. The single railway walk fills both row sets at once.
+pub(crate) const RAIL_N: usize = 2;
+const COOLDOWNS_MASK: u32 = 0x01;
+const RAIL_EDGES_MASK: u32 = 0x02;
+/// Manager, tables and authentication spans gate both slots: a fault there
+/// fails the whole railway walk, exactly like the typed walk.
+const RAIL_SHARED_MASK: u32 = 0x03;
+
+/// Batch chunking for the province slot takes. Must match the engine walk's
+/// batching exactly; takes decompose per element in walk order.
+const RAIL_MIRROR_BATCH: usize = 64;
+
+/// One hour of raw shared railway payload. Flat pools recycle capacities
+/// and the steady state allocates on neither thread; growth happens on the
+/// decode side only (see `crate::decode::recycle_rail_job`).
+#[derive(Debug)]
+pub(crate) struct RailJob {
+    pub log: RawLog<RAIL_N>,
+    pub game_state: usize,
+}
+
+impl RailJob {
+    pub fn new() -> Self {
+        Self {
+            // Late-campaign worst case is 3,401 cooldown rows with 7,248
+            // directed edges (appendix census); both pools start above that
+            // so steady state never overflows (see the worst-case caps test).
+            log: RawLog::new(1 << 17, 4 << 20),
+            game_state: 0,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.log.clear();
+        self.game_state = 0;
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.log.grow_for_next()
+    }
+
+    pub fn grow(&mut self) {
+        self.log.grow();
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct RailCopyReport {
+    /// False when staging overflowed: the caller falls back to the typed
+    /// walk (identical rows through the existing path) and enqueues no
+    /// payload.
+    pub raw_ok: bool,
+    /// Per-partition raw equality gated by live-fault conservatism, in
+    /// [cooldowns, edges] order. Shared spans gate both slots; cooldown and
+    /// edge spans gate only their own slot.
+    pub matched: [bool; RAIL_N],
+    pub copy_ticks: [u64; RAIL_N],
+    pub raw_bytes: [u64; RAIL_N],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RailCopyContext {
+    pub base: usize,
+    pub game_state: usize,
+    pub needed: [bool; RAIL_N],
+}
+
+fn rail_pool_u64(log: &RawLog<RAIL_N>, start: usize) -> u64 {
+    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+}
+
+fn rail_pool_u32(log: &RawLog<RAIL_N>, start: usize) -> u32 {
+    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
+}
+
+/// One mirrored span read. `None` addresses (arithmetic overflow) record
+/// nothing because the typed walk fails locally without reads.
+fn rspan(
+    log: &mut RawLog<RAIL_N>,
+    memory: &impl engine::Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take(memory, addr?, len, mask)
+}
+
+/// Mirror of one live rail slot's authentication and field takes: province
+/// object with identity and definition, info identity with backlinks,
+/// cooldown and neighbor header. Shared takes carry the combined mask;
+/// cooldown takes the cooldowns mask; neighbor headers the edges mask.
+/// Returns false exactly when the typed walk fails the whole walk at this
+/// slot; sets `edges_dead` when only the edges table fails here.
+#[allow(clippy::too_many_arguments)]
+fn copy_rail_slot(
+    log: &mut RawLog<RAIL_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    provinces: &Array,
+    province_vtable: u64,
+    info_vtable: u64,
+    info: usize,
+    province: u32,
+    edges_dead: &mut bool,
+) -> bool {
+    // ProvinceBatch SLOT_FIELD + PROVINCE_FIELDS: object word twice (two
+    // gathers), then id and definition words.
+    let slot = match rspan(log, memory, provinces.element(province, 8), 8, RAIL_SHARED_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    let object = match usize::try_from(rail_pool_u64(log, slot))
+        .ok()
+        .filter(|&pointer| pointer != 0)
+    {
+        Some(object) => object,
+        None => return false,
+    };
+    let identity = match rspan(log, memory, Some(object), 8, RAIL_SHARED_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    let id_start = match rspan(
+        log,
+        memory,
+        object.checked_add(cprovince::ID),
+        4,
+        RAIL_SHARED_MASK,
+    ) {
+        Some(start) => start,
+        None => return false,
+    };
+    let definition_start = match rspan(
+        log,
+        memory,
+        object.checked_add(cprovince::DEFINITION),
+        8,
+        RAIL_SHARED_MASK,
+    ) {
+        Some(start) => start,
+        None => return false,
+    };
+    if province == 0
+        || rail_pool_u64(log, identity) != province_vtable
+        || rail_pool_u32(log, id_start) != province
+    {
+        return false;
+    }
+    let definition = match usize::try_from(rail_pool_u64(log, definition_start))
+        .ok()
+        .filter(|&pointer| pointer != 0)
+    {
+        Some(definition) => definition,
+        None => return false,
+    };
+    // DEFINITION_ID_FIELD: definition id word.
+    let definition_id = match rspan(
+        log,
+        memory,
+        definition.checked_add(engine::province_definition::ID),
+        4,
+        RAIL_SHARED_MASK,
+    ) {
+        Some(start) => rail_pool_u32(log, start),
+        None => return false,
+    };
+    if definition_id != province {
+        return false;
+    }
+    // INFO_FIELD: info identity and both backlinks.
+    let info_identity = match rspan(log, memory, Some(info), 24, RAIL_SHARED_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    if rail_pool_u64(log, info_identity) != info_vtable {
+        return false;
+    }
+    let province_status = match object.checked_add(cprovince::BUILDING_STATUS) {
+        Some(status) => status,
+        None => return false,
+    };
+    if rail_pool_u64(log, info_identity + 8) != definition as u64
+        || rail_pool_u64(log, info_identity + 16) != province_status as u64
+    {
+        return false;
+    }
+    // COOLDOWN_FIELD: cooldowns-scoped take; a fault here fails only the
+    // cooldowns table while edge takes continue, mirroring the walk.
+    let _ = rspan(
+        log,
+        memory,
+        info.checked_add(cprovince_railway_info::COOLDOWN_TICKS),
+        4,
+        COOLDOWNS_MASK,
+    );
+    // PAIRS_FIELD: edges-scoped header take; always issued, mirroring the
+    // walk's unconditional gather.
+    let pairs_header = match rspan(
+        log,
+        memory,
+        info.checked_add(cprovince_railway_info::NEIGHBOR_PAIRS),
+        16,
+        RAIL_EDGES_MASK,
+    ) {
+        Some(start) => start,
+        None => {
+            *edges_dead = true;
+            return true;
+        }
+    };
+    if *edges_dead {
+        return true;
+    }
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[pairs_header..pairs_header + 16]);
+    let pairs = match Array::from_header(raw, rail_neighbor::STRIDE) {
+        Some(array) => array,
+        None => {
+            *edges_dead = true;
+            return true;
+        }
+    };
+    // Whole pair vectors are bulk spans: the typed walk reads a
+    // capacity-truncated prefix in 64-entry chunks, and the replay serves
+    // any enclosed chunk from the bulk span. `take_bulk` returns the pool
+    // offset for local parsing below.
+    if pairs.count != 0 {
+        let bulk_start = log.take_bulk(
+            memory,
+            pairs.data,
+            pairs.count as usize * rail_neighbor::STRIDE,
+            RAIL_EDGES_MASK,
+        );
+        let Some(bulk_start) = bulk_start else {
+            *edges_dead = true;
+            return true;
+        };
+        // Stage and authenticate the valid prefix exactly like `read_edges`:
+        // sorted, non-self neighbors whose province objects authenticate.
+        // An invalid pair stops edge takes (the typed walk fails the edges
+        // table there); later headers and cooldown takes continue.
+        if !copy_rail_neighbors(
+            log,
+            memory,
+            bulk_start,
+            pairs.count,
+            province,
+            province_vtable,
+            provinces,
+        ) {
+            *edges_dead = true;
+            return true;
+        }
+    }
+    let _ = base;
+    true
+}
+
+/// Mirror of `read_edges` staging and authentication over the staged bulk
+/// bytes: parses the valid prefix locally and takes each neighbor's
+/// identity spans. Returns false exactly when the typed walk fails the
+/// edges table here.
+fn copy_rail_neighbors(
+    log: &mut RawLog<RAIL_N>,
+    memory: &impl engine::Memory,
+    bulk_start: usize,
+    count: u32,
+    province: u32,
+    province_vtable: u64,
+    provinces: &Array,
+) -> bool {
+    let mut ordered = 0u32;
+    for index in 0..count {
+        let at = bulk_start + index as usize * rail_neighbor::STRIDE;
+        let bytes = match log.bytes.get(at..at + rail_neighbor::STRIDE) {
+            Some(bytes) => bytes,
+            None => return false,
+        };
+        let neighbor = i32::from_le_bytes(bytes[..4].try_into().unwrap());
+        if neighbor <= 0 || neighbor as u32 <= ordered || neighbor as u32 == province {
+            return false;
+        }
+        ordered = neighbor as u32;
+        // NEIGHBOR_FIELDS gather: object word twice (two gathers) plus id
+        // word, mirroring the walk's slot-then-record reads per neighbor.
+        let slot_addr = provinces.element(ordered, 8);
+        let object_start = match rspan(log, memory, slot_addr, 8, RAIL_EDGES_MASK) {
+            Some(start) => start,
+            None => return false,
+        };
+        let object = match usize::try_from(rail_pool_u64(log, object_start))
+            .ok()
+            .filter(|&pointer| pointer != 0)
+        {
+            Some(object) => object,
+            None => return false,
+        };
+        let vtable_start = match rspan(log, memory, Some(object), 8, RAIL_EDGES_MASK) {
+            Some(start) => start,
+            None => return false,
+        };
+        let id_start = match rspan(
+            log,
+            memory,
+            object.checked_add(cprovince::ID),
+            4,
+            RAIL_EDGES_MASK,
+        ) {
+            Some(start) => start,
+            None => return false,
+        };
+        // Authentication mirrors `batch.authenticate`: reserved zero,
+        // vtable match and id agreement with the slot.
+        if rail_pool_u64(log, vtable_start) != province_vtable
+            || rail_pool_u32(log, id_start) != ordered
+        {
+            return false;
+        }
+        if log.overflowed {
+            return false;
+        }
+    }
+    true
+}
+
+/// One structural copy pass: manager, tables, per-slot authentication with
+/// cooldowns and bulk neighbor vectors. The job is cleared on entry so
+/// pooled refreshes never accumulate spans across hours.
+fn copy_rail_pass(
+    job: &mut RailJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    ticks: &mut [u64; RAIL_N],
+) {
+    job.clear();
+    job.game_state = game_state;
+    // Pair vectors are bulk spans (see above); the flag is set up front so
+    // both passes serve enclosed chunks identically.
+    job.log.has_bulk = true;
+    let started = qpc();
+    copy_rail_tables(job, memory, base, game_state);
+    // The single railway walk is anchor-charged to the cooldowns slot,
+    // matching the read-group convention.
+    ticks[0] += elapsed(started);
+}
+
+fn copy_rail_tables(
+    job: &mut RailJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+) {
+    let log = &mut job.log;
+    let manager = match rspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::RAIL_MANAGER),
+        8,
+        RAIL_SHARED_MASK,
+    )
+    .and_then(|start| {
+        usize::try_from(rail_pool_u64(log, start))
+            .ok()
+            .filter(|&pointer| pointer != 0)
+    }) {
+        Some(manager) => manager,
+        None => return,
+    };
+    let vtable_start = match rspan(log, memory, Some(manager), 8, RAIL_SHARED_MASK) {
+        Some(start) => start,
+        None => return,
+    };
+    let expected_manager = match base.checked_add(crailway_manager::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return,
+    };
+    if rail_pool_u64(log, vtable_start) != expected_manager {
+        return;
+    }
+    let rail_header = match rspan(
+        log,
+        memory,
+        manager.checked_add(crailway_manager::PROVINCE_INFO_TABLE),
+        16,
+        RAIL_SHARED_MASK,
+    ) {
+        Some(start) => start,
+        None => return,
+    };
+    let provinces_header = match rspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::PROVINCES),
+        16,
+        RAIL_SHARED_MASK,
+    ) {
+        Some(start) => start,
+        None => return,
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[rail_header..rail_header + 16]);
+    let rail = match Array::from_header(raw, crailway_manager::PROVINCE_INFO_STRIDE) {
+        Some(array) => array,
+        None => return,
+    };
+    raw.copy_from_slice(&log.bytes[provinces_header..provinces_header + 16]);
+    let provinces = match Array::from_header(raw, 8) {
+        Some(array) => array,
+        None => return,
+    };
+    if provinces.count < 2 || rail.count != provinces.count {
+        return;
+    }
+    let info_vtable = match base.checked_add(cprovince_railway_info::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return,
+    };
+    let province_vtable = match base.checked_add(cprovince::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return,
+    };
+    let mut edges_dead = false;
+    // Fixed-size stack staging for live slots: no allocation.
+    let mut infos = [0usize; RAIL_MIRROR_BATCH];
+    let mut ids = [0u32; RAIL_MIRROR_BATCH];
+    for first in (0..rail.count).step_by(RAIL_MIRROR_BATCH) {
+        let count = (rail.count - first).min(RAIL_MIRROR_BATCH as u32);
+        let address = rail.element(first, crailway_manager::PROVINCE_INFO_STRIDE);
+        let block_start = match rspan(
+            log,
+            memory,
+            address,
+            count as usize * crailway_manager::PROVINCE_INFO_STRIDE,
+            RAIL_SHARED_MASK,
+        ) {
+            Some(start) => start,
+            None => return,
+        };
+        // Live-compact the staged block exactly like the walk, copying the
+        // staged words out first so later takes can borrow the log.
+        let mut staged = [0u64; RAIL_MIRROR_BATCH];
+        for (offset, bytes) in log.bytes[block_start..block_start + count as usize * 8]
+            .chunks_exact(8)
+            .enumerate()
+        {
+            staged[offset] = u64::from_le_bytes(bytes.try_into().unwrap());
+        }
+        let mut live = 0usize;
+        for (offset, word) in staged.iter().enumerate().take(count as usize) {
+            // Borrow discipline: parse from the staged copy.
+            let pointer = match usize::try_from(*word).ok() {
+                Some(pointer) => pointer,
+                None => return,
+            };
+            if pointer == 0 {
+                continue;
+            }
+            if live == RAIL_MIRROR_BATCH {
+                log.overflowed = true;
+                return;
+            }
+            infos[live] = pointer;
+            ids[live] = first + offset as u32;
+            live += 1;
+        }
+        for entry in 0..live {
+            if !copy_rail_slot(
+                log,
+                memory,
+                base,
+                &provinces,
+                province_vtable,
+                info_vtable,
+                infos[entry],
+                ids[entry],
+                &mut edges_dead,
+            ) {
+                return;
+            }
+            if log.overflowed {
+                return;
+            }
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+impl Captured {
+    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
+    /// `second` while any rail table still needs double-read checks,
+    /// compares the raw logs, and records copy-only costs plus the existing
+    /// checked/mismatches bookkeeping. Returns whether the payload is
+    /// complete (`raw_ok`); on staging overflow the caller falls back to the
+    /// typed walk and enqueues nothing.
+    pub(crate) fn copy_rail_refresh(
+        &mut self,
+        memory: &impl Memory,
+        ctx: RailCopyContext,
+        first: &mut RailJob,
+        second: Option<&mut RailJob>,
+    ) -> RailCopyReport {
+        let mut ticks = [0u64; RAIL_N];
+        copy_rail_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
+        let mut matched = [true; RAIL_N];
+        if let Some(second_job) = second {
+            let mut second_ticks = [0u64; RAIL_N];
+            copy_rail_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
+            for (total, extra) in ticks.iter_mut().zip(second_ticks) {
+                *total += extra;
+            }
+            // Per-table partitions: shared spans gate both slots, private
+            // spans only their own table.
+            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+            for (slot, matched) in matched.iter_mut().enumerate() {
+                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+            }
+        }
+        // Conservative checked bookkeeping mirroring the typed paths.
+        self.cooldowns.checked = ctx.needed[0];
+        self.cooldowns.mismatches = usize::from(ctx.needed[0] && !matched[0]);
+        self.edges.checked = ctx.needed[1];
+        self.edges.mismatches = usize::from(ctx.needed[1] && !matched[1]);
+        let raw_ok = !first.log.overflowed;
+        RailCopyReport {
+            raw_ok,
+            matched,
+            copy_ticks: ticks,
+            raw_bytes: first.log.raw_bytes,
+        }
+    }
+
+    /// Decode-worker interpretation of a raw shared railway payload: replays
+    /// the railway walk against the recorded spans into the pooled buffers,
+    /// with the identical bounded/capacity handling the game thread applies.
+    /// Installs identical rows, truncation counts and failure reasons.
+    pub(crate) fn decode_rail_payload(
+        &mut self,
+        base: usize,
+        job: &RailJob,
+        decode_ticks: &mut [u64; RAIL_N],
+    ) {
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let started = qpc();
+        let walked = crailway_manager::walk(
+            &recorded,
+            base,
+            job.game_state,
+            &mut self.cooldowns.rows,
+            &mut self.edges.rows,
+        );
+        self.cooldowns.outcome = bounded(walked.provinces, self.cooldowns.rows.len());
+        self.edges.outcome = bounded(walked.edges, self.edges.rows.len());
+        decode_ticks[0] += elapsed(started);
+        self.rail_raw_mode = false;
+    }
+}
+
+// ===========================================================================
+// Hourly supremacy split (NavalSupremacy).
+//
+// The game thread copies raw bytes only: the strategic-region roster, per
+// region identity with its dominance container, and every dominance value
+// vector. No row is decoded on the game thread. The single FIFO decode
+// worker replays `cnaval_region_dominance::walk` against the recorded spans,
+// so rows, ordinals, skips, truncation counts and failure reasons are
+// identical by construction (see `crate::raw` for the mirror rules).
+//
+// The value vectors are cap-dependent (the typed walk reads a
+// capacity-truncated prefix in 32-entry chunks), so they are bulk spans:
+// the mirror takes each whole value vector once and the replay serves any
+// enclosed chunk from it. Every fault fails the whole table in the typed
+// walk, so bulk granularity is exact here: rows never publish past a fault.
+// ===========================================================================
+
+/// Hourly payload slots in calibration/report order: [supremacy].
+pub(crate) const SUPREMACY_N: usize = 1;
+const SUPREMACY_MASK: u32 = 0x01;
+
+/// Chunking of the typed walk's value reads (informational: bulk spans
+/// serve any enclosed chunk regardless of chunking).
+const SUPREMACY_MIRROR_BATCH: usize = 32;
+
+/// One hour of raw supremacy payload. Flat pools recycle capacities and the
+/// steady state allocates on neither thread; growth happens on the decode
+/// side only (see `crate::decode::recycle_supremacy_job`).
+#[derive(Debug)]
+pub(crate) struct SupremacyJob {
+    pub log: RawLog<SUPREMACY_N>,
+    pub game_state: usize,
+}
+
+impl SupremacyJob {
+    pub fn new() -> Self {
+        Self {
+            // Late-campaign worst case is 49 supremacy rows (appendix
+            // census); both pools start above that so steady state never
+            // overflows (see the worst-case caps test).
+            log: RawLog::new(1 << 12, 1 << 20),
+            game_state: 0,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.log.clear();
+        self.game_state = 0;
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.log.grow_for_next()
+    }
+
+    pub fn grow(&mut self) {
+        self.log.grow();
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct SupremacyCopyReport {
+    /// False when staging overflowed: the caller falls back to the typed
+    /// walk (identical rows through the existing path) and enqueues no
+    /// payload.
+    pub raw_ok: bool,
+    pub matched: [bool; SUPREMACY_N],
+    pub copy_ticks: [u64; SUPREMACY_N],
+    pub raw_bytes: [u64; SUPREMACY_N],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SupremacyCopyContext {
+    pub base: usize,
+    pub game_state: usize,
+    pub needed: [bool; SUPREMACY_N],
+}
+
+fn supremacy_pool_u64(log: &RawLog<SUPREMACY_N>, start: usize) -> u64 {
+    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+}
+
+/// One mirrored span read. `None` addresses (arithmetic overflow) record
+/// nothing because the typed walk fails locally without reads.
+fn sspan(
+    log: &mut RawLog<SUPREMACY_N>,
+    memory: &impl engine::Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take(memory, addr?, len, mask)
+}
+
+/// One structural copy pass: region roster, per-region identity with its
+/// dominance container, and every value vector as one bulk span. The job is
+/// cleared on entry so pooled refreshes never accumulate spans across hours.
+fn copy_supremacy_pass(
+    job: &mut SupremacyJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    ticks: &mut [u64; SUPREMACY_N],
+) {
+    job.clear();
+    job.game_state = game_state;
+    // Value vectors are bulk spans (see above); the flag is set up front so
+    // both passes serve enclosed chunks identically.
+    job.log.has_bulk = true;
+    let started = qpc();
+    copy_supremacy_tables(job, memory, base, game_state);
+    ticks[0] += elapsed(started);
+}
+
+fn copy_supremacy_tables(
+    job: &mut SupremacyJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+) {
+    let log = &mut job.log;
+    let regions_header = match sspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::STRATEGIC_REGIONS),
+        16,
+        SUPREMACY_MASK,
+    ) {
+        Some(start) => start,
+        None => return,
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[regions_header..regions_header + 16]);
+    let regions = match Array::from_header(raw, 8) {
+        Some(array) => array,
+        None => return,
+    };
+    if regions.count == 0 {
+        return;
+    }
+    let region_vtable = match base.checked_add(cstrategic_region::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return,
+    };
+    let secondary_vtable = match base.checked_add(cstrategic_region::SECONDARY_VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return,
+    };
+    let dominance_vtable = match base.checked_add(cnaval_region_dominance::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return,
+    };
+    let values_vtable = match base.checked_add(cdominance_values::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return,
+    };
+    for ordinal in 1..regions.count {
+        let addr = (ordinal as usize)
+            .checked_mul(8)
+            .and_then(|offset| regions.data.checked_add(offset));
+        let pointer_start = match sspan(log, memory, addr, 8, SUPREMACY_MASK) {
+            Some(start) => start,
+            None => return,
+        };
+        let pointer = match usize::try_from(supremacy_pool_u64(log, pointer_start))
+            .ok()
+            .filter(|&pointer| pointer != 0)
+        {
+            Some(pointer) => pointer,
+            None => continue,
+        };
+        // copy_scattered triple: vtables word, identity words, dominance word.
+        let vtables = match sspan(log, memory, Some(pointer), 16, SUPREMACY_MASK) {
+            Some(start) => start,
+            None => return,
+        };
+        let identity_len = cstrategic_region::RUNTIME_SLOT - cstrategic_region::ID + 4;
+        let identity = match sspan(
+            log,
+            memory,
+            pointer.checked_add(cstrategic_region::ID),
+            identity_len,
+            SUPREMACY_MASK,
+        ) {
+            Some(start) => start,
+            None => return,
+        };
+        let dominance_start = match sspan(
+            log,
+            memory,
+            pointer.checked_add(cstrategic_region::NAVAL_DOMINANCE),
+            8,
+            SUPREMACY_MASK,
+        ) {
+            Some(start) => start,
+            None => return,
+        };
+        if supremacy_pool_u64(log, vtables) != region_vtable
+            || supremacy_pool_u64(log, vtables + 8) != secondary_vtable
+        {
+            return;
+        }
+        let region_slot = u32::from_le_bytes(
+            log.bytes[identity + identity_len - 4..identity + identity_len]
+                .try_into()
+                .unwrap(),
+        );
+        if region_slot != ordinal {
+            return;
+        }
+        let dominance = match usize::try_from(supremacy_pool_u64(log, dominance_start))
+            .ok()
+            .filter(|&address| address != 0)
+        {
+            Some(dominance) => dominance,
+            None => return,
+        };
+        let owner = match sspan(log, memory, Some(dominance), 16, SUPREMACY_MASK) {
+            Some(start) => start,
+            None => return,
+        };
+        if supremacy_pool_u64(log, owner) != dominance_vtable
+            || supremacy_pool_u64(log, owner + cnaval_region_dominance::REGION) != pointer as u64
+        {
+            return;
+        }
+        let entries_header = match sspan(
+            log,
+            memory,
+            dominance.checked_add(cnaval_region_dominance::ENTRIES),
+            16,
+            SUPREMACY_MASK,
+        ) {
+            Some(start) => start,
+            None => return,
+        };
+        raw.copy_from_slice(&log.bytes[entries_header..entries_header + 16]);
+        let entries = match Array::from_header(raw, naval_dominance_entry::STRIDE) {
+            Some(array) => array,
+            None => return,
+        };
+        if entries.count != 0 {
+            let bulk_start = log.take_bulk(
+                memory,
+                entries.data,
+                entries.count as usize * naval_dominance_entry::STRIDE,
+                SUPREMACY_MASK,
+            );
+            let Some(bulk_start) = bulk_start else {
+                return;
+            };
+            // Validate every staged value locally, mirroring the walk: any
+            // invalid value fails the whole table there.
+            for index in 0..entries.count as usize {
+                let at = bulk_start + index * naval_dominance_entry::STRIDE;
+                let bytes = match log.bytes.get(at..at + naval_dominance_entry::STRIDE) {
+                    Some(bytes) => bytes,
+                    None => return,
+                };
+                let country = u32::from_le_bytes(
+                    bytes[naval_dominance_entry::COUNTRY_KEY..naval_dominance_entry::COUNTRY_KEY + 4]
+                        .try_into()
+                        .unwrap(),
+                );
+                let object = &bytes[naval_dominance_entry::VALUES..];
+                if u64::from_le_bytes(object[..8].try_into().unwrap()) != values_vtable
+                    || u32::from_le_bytes(
+                        object[cdominance_values::COUNTRY..cdominance_values::COUNTRY + 4]
+                            .try_into()
+                            .unwrap(),
+                    ) != country
+                    || u64::from_le_bytes(
+                        object[cdominance_values::REGION..cdominance_values::REGION + 8]
+                            .try_into()
+                            .unwrap(),
+                    ) != pointer as u64
+                {
+                    return;
+                }
+            }
+        }
+        if log.overflowed {
+            return;
+        }
+        let _ = SUPREMACY_MIRROR_BATCH;
+    }
+}
+
+impl Captured {
+    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
+    /// `second` while the supremacy table still needs double-read checks,
+    /// compares the raw logs, and records copy-only costs plus the existing
+    /// checked/mismatches bookkeeping. Returns whether the payload is
+    /// complete (`raw_ok`); on staging overflow the caller falls back to the
+    /// typed walk and enqueues nothing.
+    pub(crate) fn copy_supremacy_refresh(
+        &mut self,
+        memory: &impl Memory,
+        ctx: SupremacyCopyContext,
+        first: &mut SupremacyJob,
+        second: Option<&mut SupremacyJob>,
+    ) -> SupremacyCopyReport {
+        let mut ticks = [0u64; SUPREMACY_N];
+        copy_supremacy_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
+        let mut matched = [true; SUPREMACY_N];
+        if let Some(second_job) = second {
+            let mut second_ticks = [0u64; SUPREMACY_N];
+            copy_supremacy_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
+            for (total, extra) in ticks.iter_mut().zip(second_ticks) {
+                *total += extra;
+            }
+            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+            for (slot, matched) in matched.iter_mut().enumerate() {
+                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+            }
+        }
+        // Conservative checked bookkeeping mirroring the typed path.
+        self.supremacy.checked = ctx.needed[0];
+        self.supremacy.mismatches = usize::from(ctx.needed[0] && !matched[0]);
+        let raw_ok = !first.log.overflowed;
+        SupremacyCopyReport {
+            raw_ok,
+            matched,
+            copy_ticks: ticks,
+            raw_bytes: first.log.raw_bytes,
+        }
+    }
+
+    /// Decode-worker interpretation of a raw supremacy payload: replays the
+    /// supremacy walk against the recorded spans into the pooled buffers,
+    /// with the identical bounded/capacity handling the game thread applies.
+    /// Installs identical rows, truncation counts and failure reasons.
+    pub(crate) fn decode_supremacy_payload(
+        &mut self,
+        base: usize,
+        job: &SupremacyJob,
+        decode_ticks: &mut [u64; SUPREMACY_N],
+    ) {
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let started = qpc();
+        let walked =
+            cnaval_region_dominance::walk(&recorded, base, job.game_state, &mut self.supremacy.rows);
+        self.supremacy.outcome = bounded(walked, self.supremacy.rows.len());
+        decode_ticks[0] += elapsed(started);
+        self.supremacy_raw_mode = false;
+    }
+}
+
+// ===========================================================================
+// Hourly sunk-ships split (SunkShips).
+//
+// The game thread copies raw bytes only: the sunk-ship history vector, every
+// record with its class headers and name strings, and province links. No
+// row is decoded on the game thread. The single FIFO decode worker replays
+// `csunk_ship_info::walk` against the recorded spans, so rows, ordinals,
+// skips, truncation counts and failure reasons are identical by construction
+// (see `crate::raw` for the mirror rules).
+//
+// Record takes are exact spans with no batching (the typed walk reads one
+// record at a time and stops at pooled capacity, which the replay applies
+// identically against the real pooled buffers). Name headers parse locally
+// from the staged record bytes; only terminator and content bytes are taken.
+// ===========================================================================
+
+/// Hourly payload slots in calibration/report order: [sunk ships]. The
+/// singleton table carries one row with the retained entry list.
+pub(crate) const SUNK_N: usize = 1;
+const SUNK_MASK: u32 = 0x01;
+
+/// One hour of raw sunk-ships payload. Flat pools recycle capacities and the
+/// steady state allocates on neither thread; growth happens on the decode
+/// side only (see `crate::decode::recycle_sunk_job`).
+#[derive(Debug)]
+pub(crate) struct SunkJob {
+    pub log: RawLog<SUNK_N>,
+    pub game_state: usize,
+    pub hour: i32,
+}
+
+impl SunkJob {
+    pub fn new() -> Self {
+        Self {
+            // The retained list is one row with a few hundred entries and
+            // names (appendix census: 371 compared); both pools start above
+            // that so steady state never overflows (see the caps test).
+            log: RawLog::new(1 << 13, 2 << 20),
+            game_state: 0,
+            hour: 0,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.log.clear();
+        self.game_state = 0;
+        self.hour = 0;
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.log.grow_for_next()
+    }
+
+    pub fn grow(&mut self) {
+        self.log.grow();
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct SunkCopyReport {
+    /// False when staging overflowed: the caller falls back to the typed
+    /// walk (identical rows through the existing path) and enqueues no
+    /// payload.
+    pub raw_ok: bool,
+    pub matched: [bool; SUNK_N],
+    pub copy_ticks: [u64; SUNK_N],
+    pub raw_bytes: [u64; SUNK_N],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SunkCopyContext {
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub needed: [bool; SUNK_N],
+}
+
+fn sunk_pool_u64(log: &RawLog<SUNK_N>, start: usize) -> u64 {
+    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+}
+
+/// One mirrored span read. `None` addresses (arithmetic overflow) record
+/// nothing because the typed walk fails locally without reads.
+fn kspan(
+    log: &mut RawLog<SUNK_N>,
+    memory: &impl engine::Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take(memory, addr?, len, mask)
+}
+
+/// Mirror of one sunk-ship class reference: header take with vtable check
+/// plus the class name string takes. Returns false exactly when the typed
+/// class read fails.
+fn copy_sunk_class(
+    log: &mut RawLog<SUNK_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    pointer: u64,
+) -> bool {
+    let address = match usize::try_from(pointer).ok().filter(|&pointer| pointer != 0) {
+        Some(address) => address,
+        None => return false,
+    };
+    let header = match kspan(
+        log,
+        memory,
+        Some(address),
+        csub_unit_definition::NAME + msvc_string::STRIDE,
+        SUNK_MASK,
+    ) {
+        Some(start) => start,
+        None => return false,
+    };
+    let vtable = sunk_pool_u64(log, header);
+    let expected = match base.checked_add(csub_unit_definition::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    let expected_null = match base.checked_add(csub_unit_definition::NULL_VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    if vtable != expected && vtable != expected_null {
+        return false;
+    }
+    copy_sunk_string(
+        log,
+        memory,
+        address + csub_unit_definition::NAME,
+        header + csub_unit_definition::NAME,
+    )
+}
+
+/// Mirror of one sunk-ship text: header validation is a local parse over the
+/// staged header bytes, heap names take the terminator byte plus the content
+/// bytes. Returns false exactly when the typed text read fails.
+fn copy_sunk_string(
+    log: &mut RawLog<SUNK_N>,
+    memory: &impl engine::Memory,
+    address: usize,
+    head: usize,
+) -> bool {
+    // Copy the staged header out first so later takes can borrow the log.
+    let mut header = [0u8; msvc_string::STRIDE];
+    header.copy_from_slice(&log.bytes[head..head + msvc_string::STRIDE]);
+    let len = u64::from_le_bytes(header[msvc_string::LENGTH..msvc_string::LENGTH + 8].try_into().unwrap());
+    let capacity =
+        u64::from_le_bytes(header[msvc_string::CAPACITY..msvc_string::CAPACITY + 8].try_into().unwrap());
+    if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
+        return false;
+    }
+    let len = match usize::try_from(len) {
+        Ok(len) => len,
+        Err(_) => return false,
+    };
+    let source = if capacity == msvc_string::INLINE_CAPACITY {
+        address
+    } else {
+        match usize::try_from(u64::from_le_bytes(
+            header[msvc_string::DATA..msvc_string::DATA + 8].try_into().unwrap(),
+        ))
+        .ok()
+        .filter(|&source| source != 0)
+        {
+            Some(source) => source,
+            None => return false,
+        }
+    };
+    let terminator = match source.checked_add(len) {
+        Some(terminator) => terminator,
+        None => return false,
+    };
+    let term_start = match kspan(log, memory, Some(terminator), 1, SUNK_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    if log.bytes[term_start] != 0 {
+        return false;
+    }
+    if len != 0 && kspan(log, memory, Some(source), len, SUNK_MASK).is_none() {
+        return false;
+    }
+    true
+}
+
+/// Mirror of one sunk-ship record: full record take with local validation
+/// plus class and text takes. Returns false exactly when the typed walk
+/// fails at or before this record.
+fn copy_sunk_record(
+    log: &mut RawLog<SUNK_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    current_hour: i32,
+    pointer: usize,
+) -> bool {
+    let record = match kspan(log, memory, Some(pointer), csunk_ship_info::SIZE, SUNK_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    // Copy the staged record out first so later takes can borrow the log.
+    let mut staged = [0u8; csunk_ship_info::SIZE];
+    staged.copy_from_slice(&log.bytes[record..record + csunk_ship_info::SIZE]);
+    let u64_at = |offset: usize| {
+        u64::from_le_bytes(staged[offset..offset + 8].try_into().unwrap())
+    };
+    let u32_at = |offset: usize| {
+        u32::from_le_bytes(staged[offset..offset + 4].try_into().unwrap())
+    };
+    let expected = match base.checked_add(csunk_ship_info::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    if u64_at(0) != expected {
+        return false;
+    }
+    let expected_date = match base.checked_add(cgame_date::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    let expected_persistent = match base.checked_add(cgame_date::PERSISTENT_VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    if u64_at(csunk_ship_info::SINK_DATE) != expected_date
+        || u64_at(csunk_ship_info::SINK_DATE_PERSISTENT) != expected_persistent
+    {
+        return false;
+    }
+    let sink_hour = u32_at(csunk_ship_info::SINK_HOUR) as i32;
+    if sink_hour <= 0 || sink_hour > current_hour {
+        return false;
+    }
+    if staged[csunk_ship_info::CAUSE_RECORD] > 1
+        || staged[csunk_ship_info::ASSISTED_KILL] > 1
+    {
+        return false;
+    }
+    if !copy_sunk_class(log, memory, base, u64_at(csunk_ship_info::SHIP_CLASS)) {
+        return false;
+    }
+    let attribution = u64_at(csunk_ship_info::ATTRIBUTION_CLASS);
+    if attribution != 0 && !copy_sunk_class(log, memory, base, attribution) {
+        return false;
+    }
+    for offset in [
+        csunk_ship_info::SHIP_NAME,
+        csunk_ship_info::ATTRIBUTION_SOURCE_NAME,
+    ] {
+        if !copy_sunk_string(log, memory, pointer + offset, record + offset) {
+            return false;
+        }
+        if log.overflowed {
+            return false;
+        }
+    }
+    // Class names parse from the staged class headers above.
+    let province_pointer = u64_at(csunk_ship_info::PROVINCE);
+    if province_pointer != 0 {
+        let province = match usize::try_from(province_pointer).ok() {
+            Some(province) => province,
+            None => return false,
+        };
+        let vtable = match kspan(log, memory, Some(province), 8, SUNK_MASK) {
+            Some(start) => start,
+            None => return false,
+        };
+        let expected_province = match base.checked_add(cprovince::VTABLE_RVA) {
+            Some(expected) => expected as u64,
+            None => return false,
+        };
+        if sunk_pool_u64(log, vtable) != expected_province {
+            return false;
+        }
+        if kspan(
+            log,
+            memory,
+            province.checked_add(cprovince::ID),
+            4,
+            SUNK_MASK,
+        )
+        .is_none()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// One structural copy pass: history vector plus every record with class,
+/// text and province takes. The job is cleared on entry so pooled refreshes
+/// never accumulate spans across hours.
+fn copy_sunk_pass(
+    job: &mut SunkJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    current_hour: i32,
+    ticks: &mut [u64; SUNK_N],
+) {
+    job.clear();
+    job.game_state = game_state;
+    job.hour = current_hour;
+    let started = qpc();
+    copy_sunk_tables(job, memory, base, game_state, current_hour);
+    ticks[0] += elapsed(started);
+}
+
+fn copy_sunk_tables(
+    job: &mut SunkJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    current_hour: i32,
+) {
+    if game_state == 0 || current_hour <= 0 {
+        return;
+    }
+    let log = &mut job.log;
+    let header = match kspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::SUNK_SHIP_HISTORY),
+        16,
+        SUNK_MASK,
+    ) {
+        Some(start) => start,
+        None => return,
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[header..header + 16]);
+    let array = match Array::from_header(raw, 8) {
+        Some(array) => array,
+        None => return,
+    };
+    for index in 0..array.count {
+        let addr = (index as usize)
+            .checked_mul(8)
+            .and_then(|offset| array.data.checked_add(offset));
+        let slot = match kspan(log, memory, addr, 8, SUNK_MASK) {
+            Some(start) => start,
+            None => return,
+        };
+        let pointer = match usize::try_from(sunk_pool_u64(log, slot))
+            .ok()
+            .filter(|&pointer| pointer != 0)
+        {
+            Some(pointer) => pointer,
+            None => return,
+        };
+        if !copy_sunk_record(log, memory, base, current_hour, pointer) {
+            return;
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+impl Captured {
+    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
+    /// `second` while the sunk-ships table still needs double-read checks,
+    /// compares the raw logs, and records copy-only costs plus the existing
+    /// checked/mismatches bookkeeping. Returns whether the payload is
+    /// complete (`raw_ok`); on staging overflow the caller falls back to the
+    /// typed walk and enqueues nothing.
+    pub(crate) fn copy_sunk_refresh(
+        &mut self,
+        memory: &impl Memory,
+        ctx: SunkCopyContext,
+        first: &mut SunkJob,
+        second: Option<&mut SunkJob>,
+    ) -> SunkCopyReport {
+        let mut ticks = [0u64; SUNK_N];
+        copy_sunk_pass(first, memory, ctx.base, ctx.game_state, ctx.hour, &mut ticks);
+        let mut matched = [true; SUNK_N];
+        if let Some(second_job) = second {
+            let mut second_ticks = [0u64; SUNK_N];
+            copy_sunk_pass(
+                second_job,
+                memory,
+                ctx.base,
+                ctx.game_state,
+                ctx.hour,
+                &mut second_ticks,
+            );
+            for (total, extra) in ticks.iter_mut().zip(second_ticks) {
+                *total += extra;
+            }
+            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+            for (slot, matched) in matched.iter_mut().enumerate() {
+                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+            }
+        }
+        // Conservative checked bookkeeping mirroring the typed path.
+        self.sunk.checked = ctx.needed[0];
+        self.sunk.mismatches = usize::from(ctx.needed[0] && !matched[0]);
+        let raw_ok = !first.log.overflowed;
+        SunkCopyReport {
+            raw_ok,
+            matched,
+            copy_ticks: ticks,
+            raw_bytes: first.log.raw_bytes,
+        }
+    }
+
+    /// Decode-worker interpretation of a raw sunk-ships payload: replays the
+    /// sunk-ship walk against the recorded spans into the pooled buffers,
+    /// with the identical bounded/capacity handling the game thread applies.
+    /// Installs identical rows, truncation counts and failure reasons.
+    pub(crate) fn decode_sunk_payload(
+        &mut self,
+        base: usize,
+        job: &SunkJob,
+        decode_ticks: &mut [u64; SUNK_N],
+    ) {
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let started = qpc();
+        let first = csunk_ship_info::walk(
+            &recorded,
+            base,
+            job.game_state,
+            job.hour,
+            &mut self.sunk.rows,
+            &mut self.sunk_names.first,
+        );
+        self.sunk.outcome = bounded(first.outcome, self.sunk.rows.len());
+        self.sunk_names.len = first.bytes_len;
+        self.sunk_names.required = first.required_bytes;
+        if !valid_sunk(
+            self.sunk.outcome,
+            &self.sunk.rows,
+            &self.sunk_names.first,
+            first.bytes_len,
+            first.required_bytes,
+        ) {
+            self.sunk.outcome = invalid_names();
+        }
+        decode_ticks[0] += elapsed(started);
+        self.sunk_raw_mode = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2584,6 +4027,640 @@ mod tests {
         let report = super::copy_naval_refresh(&memory, ctx, &mut tiny, None);
         assert!(!report.raw_ok);
     }
+
+    #[test]
+    fn rail_tables_are_hourly_tier_h_with_no_refresh_gate() {
+        use replay::rows::TableId;
+        for table in [TableId::RailCooldowns, TableId::RailEdges] {
+            assert!(!replay::cadence::is_staggered(table), "{table:?}");
+            for hour in [0, 1, 2, 3, 60_820_531] {
+                assert!(replay::cadence::is_refresh(table, hour), "{table:?} at {hour}");
+            }
+        }
+    }
+
+    #[test]
+    fn rail_split_copy_matches_direct_walk() {
+        use super::rail_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let (split, report, _) = kit::split(&memory);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 2]);
+        kit::assert_matches_direct(&split, &direct);
+        // Two cooldown rows (one null slot absent) plus three directed edges.
+        assert_eq!(split.cooldowns_outcome, Outcome::Rows { len: 2 });
+        assert_eq!(split.edges_outcome, Outcome::Rows { len: 3 });
+        assert_eq!(
+            (split.cooldowns[0].province, split.cooldowns[0].cooldown_ticks),
+            (1, 5)
+        );
+        assert_eq!(
+            (split.cooldowns[1].province, split.cooldowns[1].cooldown_ticks),
+            (3, -1)
+        );
+        assert_eq!(
+            (split.edges[0].from_province, split.edges[0].to_province, split.edges[0].level),
+            (1, 2, 7)
+        );
+    }
+
+    #[test]
+    fn rail_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        use super::rail_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for (cooldowns, edges) in [(0, 0), (1, 1), (1, 2), (2, 3), (64, 64)] {
+            let direct = kit::direct_with(&memory, cooldowns, edges);
+            let (split, report, _) = kit::split_with(&memory, cooldowns, edges);
+            assert!(report.raw_ok, "cooldowns={cooldowns} edges={edges}");
+            assert_eq!(report.matched, [true; 2], "cooldowns={cooldowns} edges={edges}");
+            kit::assert_matches_direct(&split, &direct);
+        }
+        let direct = kit::direct_with(&memory, 2, 3);
+        assert_eq!(direct.cooldowns_outcome, Outcome::Rows { len: 2 });
+        assert_eq!(direct.edges_outcome, Outcome::Rows { len: 3 });
+    }
+
+    #[test]
+    fn rail_split_copy_matches_direct_walk_on_fault_matrix() {
+        // Every fault arm asserts byte-identical decode plus per-slot
+        // attribution: shared faults block both slots, cooldown faults block
+        // cooldowns while edges still decode, edge faults block edges while
+        // cooldowns still decode (the typed walk keeps the other table).
+        use super::rail_test_kit as kit;
+        use engine::memory::SliceMemory;
+        struct Fault<'a> {
+            memory: SliceMemory<'a>,
+            fault: std::ops::Range<usize>,
+        }
+        impl engine::Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let Some(end) = address.checked_add(output.len()) else {
+                    return false;
+                };
+                if address < self.fault.end && end > self.fault.start {
+                    return false;
+                }
+                self.memory.copy(address, output)
+            }
+        }
+        for (fault, matched) in [
+            (kit::GAME_STATE + engine::cgame_state::RAIL_MANAGER, [false, false]),
+            (kit::MANAGER, [false, false]),
+            (kit::ITAB, [false, false]),
+            (kit::P1, [false, false]),
+            (kit::INFO1, [false, false]),
+            // Cooldown-scoped fault: edges still decode identical rows.
+            (
+                kit::INFO1 + engine::cprovince_railway_info::COOLDOWN_TICKS,
+                [false, true],
+            ),
+            // Edge-scoped faults: cooldowns still decode identical rows.
+            (
+                kit::INFO1 + engine::cprovince_railway_info::NEIGHBOR_PAIRS,
+                [true, false],
+            ),
+            (kit::PAIRS1, [true, false]),
+            (kit::P2, [true, false]),
+        ] {
+            let bytes = kit::fixture();
+            let memory = Fault {
+                memory: SliceMemory { base: 0, bytes: &bytes },
+                fault: fault..fault + 1,
+            };
+            let direct = kit::direct(&memory);
+            let (split, report, _) = kit::split(&memory);
+            assert!(report.raw_ok, "fault={fault:x}");
+            kit::assert_matches_direct(&split, &direct);
+            assert_eq!(report.matched, matched, "fault={fault:x}");
+        }
+    }
+
+    #[test]
+    fn rail_double_copy_compare_blocks_checks_on_tearing() {
+        // Targeted tearing: a changed cooldown flips only the cooldowns
+        // partition, a changed edge level only the edges partition, a
+        // changed province id both.
+        use super::rail_test_kit as kit;
+        use super::{RailCopyContext, RailJob};
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = RailCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 2],
+        };
+        let capacities = super::Capacities::default();
+        let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
+        let mut first = RailJob::new();
+        let report = captured.copy_rail_refresh(&memory, ctx, &mut first, None);
+        assert!(report.raw_ok);
+        let mut torn = bytes.clone();
+        torn[kit::INFO1 + engine::cprovince_railway_info::COOLDOWN_TICKS] ^= 0xff;
+        let torn_memory = kit::memory(&torn);
+        let mut second = RailJob::new();
+        let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 17]);
+        let torn_report = captured2.copy_rail_refresh(&torn_memory, ctx, &mut second, None);
+        assert!(torn_report.raw_ok);
+        assert!(!first.log.partition_equal(&second.log, 0));
+        assert!(first.log.partition_equal(&second.log, 1));
+        let mut torn = bytes.clone();
+        torn[kit::PAIRS1] ^= 0xff;
+        let torn_memory = kit::memory(&torn);
+        let mut third = RailJob::new();
+        let mut captured3 = super::Captured::with_capacities(&capacities, &[0; 17]);
+        let torn_report = captured3.copy_rail_refresh(&torn_memory, ctx, &mut third, None);
+        assert!(torn_report.raw_ok);
+        assert!(first.log.partition_equal(&third.log, 0));
+        assert!(!first.log.partition_equal(&third.log, 1));
+        assert!(!first.log.logs_equal(&second.log));
+    }
+
+    #[test]
+    fn rail_shared_census_taken_once_for_both_tables() {
+        // Shared-copy proof: the manager and province-table headers are
+        // taken exactly once per pass while both tables decode from them.
+        use super::rail_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let (_split, report, first) = kit::split(&memory);
+        assert!(report.raw_ok);
+        for (addr, len) in [
+            (kit::GAME_STATE + engine::cgame_state::RAIL_MANAGER, 8),
+            (kit::MANAGER, 8),
+            (kit::GAME_STATE + engine::cgame_state::PROVINCES, 16),
+        ] {
+            let takes = first
+                .log
+                .spans
+                .iter()
+                .filter(|span| span.addr == addr && span.len == len as u32)
+                .count();
+            assert_eq!(takes, 1, "shared takes at {addr:x}/{len}");
+        }
+    }
+
+    #[test]
+    fn rail_staging_overflow_falls_back_to_typed_walk() {
+        use super::rail_test_kit as kit;
+        use super::{RailCopyContext, RailJob};
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = RailCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 2],
+        };
+        let mut tiny = RailJob {
+            log: crate::raw::RawLog::new(1, 1),
+            game_state: 0,
+        };
+        let capacities = super::Capacities::default();
+        let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
+        let report = captured.copy_rail_refresh(&memory, ctx, &mut tiny, None);
+        assert!(!report.raw_ok);
+    }
+
+    #[test]
+    fn rail_pools_cover_appendix_worst_case() {
+        // Worst-case caps proof: the steady-state pools exceed a
+        // conservative span/byte estimate built from the appendix census
+        // (3,401 cooldown rows, 7,248 directed edges, 13,413 provinces), so
+        // live refreshes never take the overflow fallback in steady state.
+        use super::RailJob;
+        let job = RailJob::new();
+        // Manager and tables: a handful of headers. Slots: 13,413 x 8-byte
+        // takes. Live slots (~3,401): authentication (~7 spans), cooldown
+        // and pairs headers, bulk pair vectors, neighbor identities (~3
+        // spans each for ~7,248 edges).
+        let spans = 4 + 13_413 + 3_401 * 9 + 3_401 + 7_248 * 3;
+        assert!(
+            job.log.spans.capacity() >= spans,
+            "span cap {} < worst case {spans}",
+            job.log.spans.capacity()
+        );
+        let bytes = 13_413 * 8 + 3_401 * 128 + 7_248 * 24;
+        assert!(
+            job.log.bytes.capacity() >= bytes,
+            "byte cap {} < worst case {bytes}",
+            job.log.bytes.capacity()
+        );
+    }
+
+    #[test]
+    fn rail_copy_sizes_cover_documented_read_set() {
+        // S3: every Memory::copy size the shared copy pass issues, recorded
+        // through the real pass. Manager/table words (8/16), slot words (8),
+        // province identity (8/4), definition id (4), info identity (24),
+        // cooldown (4), pair headers (16) and bulk pair blocks (chunked 8s).
+        use super::rail_test_kit as kit;
+        use engine::Memory;
+        use std::collections::BTreeSet;
+        struct Recorder<'a> {
+            inner: engine::memory::SliceMemory<'a>,
+            sizes: std::cell::RefCell<BTreeSet<usize>>,
+        }
+        impl Memory for Recorder<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.sizes.borrow_mut().insert(output.len());
+                self.inner.copy(address, output)
+            }
+        }
+        let bytes = kit::fixture();
+        let memory = Recorder {
+            inner: kit::memory(&bytes),
+            sizes: std::cell::RefCell::new(BTreeSet::new()),
+        };
+        let (_split, report, _) = kit::split(&memory);
+        assert!(report.raw_ok);
+        let sizes = memory.sizes.borrow().clone();
+        for required in [4, 8, 16, 24] {
+            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+        }
+    }
+
+    #[test]
+    fn supremacy_tables_are_hourly_tier_h_with_no_refresh_gate() {
+        use replay::rows::TableId;
+        assert!(!replay::cadence::is_staggered(TableId::NavalSupremacy));
+        for hour in [0, 1, 2, 3, 60_820_531] {
+            assert!(replay::cadence::is_refresh(TableId::NavalSupremacy, hour));
+        }
+    }
+
+    #[test]
+    fn supremacy_split_copy_matches_direct_walk() {
+        use super::supremacy_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let (split, report, _) = kit::split(&memory);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 1]);
+        kit::assert_matches_direct(&split, &direct);
+        assert_eq!(split.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(split.rows[0].country, u32::MAX);
+        assert_eq!(split.rows[0].current, 1000);
+        assert_eq!(split.rows[1].country, 1);
+    }
+
+    #[test]
+    fn supremacy_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit(2)/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // The bulk value vector serves every truncated prefix identically.
+        use super::supremacy_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for cap in [0, 1, 2, 64] {
+            let direct = kit::direct_with(&memory, cap);
+            let (split, report, _) = kit::split_with(&memory, cap);
+            assert!(report.raw_ok, "cap={cap}");
+            assert_eq!(report.matched, [true; 1], "cap={cap}");
+            kit::assert_matches_direct(&split, &direct);
+        }
+        let direct = kit::direct_with(&memory, 2);
+        assert_eq!(direct.outcome, Outcome::Rows { len: 2 });
+    }
+
+    #[test]
+    fn supremacy_split_copy_matches_direct_walk_on_fault_matrix() {
+        use super::supremacy_test_kit as kit;
+        use engine::memory::SliceMemory;
+        struct Fault<'a> {
+            memory: SliceMemory<'a>,
+            fault: std::ops::Range<usize>,
+        }
+        impl engine::Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let Some(end) = address.checked_add(output.len()) else {
+                    return false;
+                };
+                if address < self.fault.end && end > self.fault.start {
+                    return false;
+                }
+                self.memory.copy(address, output)
+            }
+        }
+        for fault in [
+            kit::GAME_STATE + engine::cgame_state::STRATEGIC_REGIONS,
+            kit::REGION_OBJECT,
+            kit::DOMINANCE,
+            kit::DOMINANCE + engine::cnaval_region_dominance::ENTRIES,
+        ] {
+            let bytes = kit::fixture();
+            let memory = Fault {
+                memory: SliceMemory { base: 0, bytes: &bytes },
+                fault: fault..fault + 1,
+            };
+            let direct = kit::direct(&memory);
+            let (split, report, _) = kit::split(&memory);
+            assert!(report.raw_ok, "fault={fault:x}");
+            kit::assert_matches_direct(&split, &direct);
+            assert_eq!(report.matched, [false; 1], "fault={fault:x}");
+        }
+    }
+
+    #[test]
+    fn supremacy_double_copy_compare_blocks_checks_on_tearing() {
+        use super::supremacy_test_kit as kit;
+        use super::{SupremacyCopyContext, SupremacyJob};
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = SupremacyCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 1],
+        };
+        let capacities = super::Capacities::default();
+        let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
+        let mut first = SupremacyJob::new();
+        let report = captured.copy_supremacy_refresh(&memory, ctx, &mut first, None);
+        assert!(report.raw_ok);
+        let mut torn = bytes.clone();
+        torn[kit::DOMINANCE + 0x100] ^= 0xff;
+        let torn_memory = kit::memory(&torn);
+        let mut second = SupremacyJob::new();
+        let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 17]);
+        let torn_report = captured2.copy_supremacy_refresh(&torn_memory, ctx, &mut second, None);
+        assert!(torn_report.raw_ok);
+        assert!(!first.log.partition_equal(&second.log, 0));
+        assert!(!first.log.logs_equal(&second.log));
+    }
+
+    #[test]
+    fn supremacy_staging_overflow_falls_back_to_typed_walk() {
+        use super::supremacy_test_kit as kit;
+        use super::{SupremacyCopyContext, SupremacyJob};
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = SupremacyCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 1],
+        };
+        let mut tiny = SupremacyJob {
+            log: crate::raw::RawLog::new(1, 1),
+            game_state: 0,
+        };
+        let capacities = super::Capacities::default();
+        let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
+        let report = captured.copy_supremacy_refresh(&memory, ctx, &mut tiny, None);
+        assert!(!report.raw_ok);
+    }
+
+    #[test]
+    fn supremacy_pools_cover_appendix_worst_case() {
+        // Worst-case caps proof: the steady-state pools exceed a
+        // conservative span/byte estimate built from the appendix census (49
+        // supremacy rows over a handful of regions), so live refreshes never
+        // take the overflow fallback in steady state.
+        use super::SupremacyJob;
+        let job = SupremacyJob::new();
+        let spans = 1 + 10 * 6 + 49 * 2;
+        assert!(
+            job.log.spans.capacity() >= spans,
+            "span cap {} < worst case {spans}",
+            job.log.spans.capacity()
+        );
+        let bytes = 10 * 64 + 49 * 128;
+        assert!(
+            job.log.bytes.capacity() >= bytes,
+            "byte cap {} < worst case {bytes}",
+            job.log.bytes.capacity()
+        );
+    }
+
+    #[test]
+    fn supremacy_copy_sizes_cover_documented_read_set() {
+        // S3: every Memory::copy size the supremacy copy pass issues,
+        // recorded through the real pass. Roster/identity words (8/12/16)
+        // and bulk value vectors (whole-vector takes, served in 32-entry
+        // chunks at replay).
+        use super::supremacy_test_kit as kit;
+        use engine::Memory;
+        use std::collections::BTreeSet;
+        struct Recorder<'a> {
+            inner: engine::memory::SliceMemory<'a>,
+            sizes: std::cell::RefCell<BTreeSet<usize>>,
+        }
+        impl Memory for Recorder<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.sizes.borrow_mut().insert(output.len());
+                self.inner.copy(address, output)
+            }
+        }
+        let bytes = kit::fixture();
+        let memory = Recorder {
+            inner: kit::memory(&bytes),
+            sizes: std::cell::RefCell::new(BTreeSet::new()),
+        };
+        let (_split, report, _) = kit::split(&memory);
+        assert!(report.raw_ok);
+        let sizes = memory.sizes.borrow().clone();
+        for required in [8, 12, 16] {
+            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+        }
+    }
+
+    #[test]
+    fn sunk_tables_are_hourly_tier_h_with_no_refresh_gate() {
+        use replay::rows::TableId;
+        assert!(!replay::cadence::is_staggered(TableId::SunkShips));
+        for hour in [0, 1, 2, 3, 60_820_531] {
+            assert!(replay::cadence::is_refresh(TableId::SunkShips, hour));
+        }
+    }
+
+    #[test]
+    fn sunk_split_copy_matches_direct_walk() {
+        use super::sunk_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let (split, report, _) = kit::split(&memory);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 1]);
+        kit::assert_matches_direct(&split, &direct);
+        // Two retained records: one with attribution class and province,
+        // one minimal with a long inline name and heap attribution name.
+        assert_eq!(split.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(split.rows[0].victim_country, 3);
+        assert_eq!(split.rows[0].province, 77);
+        assert_eq!(split.rows[0].attribution_class_present, 1);
+        assert_eq!(split.rows[1].victim_country, 5);
+        assert_eq!(split.rows[1].province_present, 0);
+        assert_eq!(split.rows[1].attribution_class_present, 0);
+    }
+
+    #[test]
+    fn sunk_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit(2)/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        use super::sunk_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for (rows, names) in [(0, 0), (1, 16), (2, 64), (64, 4096)] {
+            let direct = kit::direct_with(&memory, rows, names);
+            let (split, report, _) = kit::split_with(&memory, rows, names);
+            assert!(report.raw_ok, "rows={rows} names={names}");
+            assert_eq!(report.matched, [true; 1], "rows={rows} names={names}");
+            kit::assert_matches_direct(&split, &direct);
+        }
+        let direct = kit::direct_with(&memory, 2, 64);
+        assert_eq!(direct.outcome, Outcome::Rows { len: 2 });
+    }
+
+    #[test]
+    fn sunk_split_copy_matches_direct_walk_on_fault_matrix() {
+        use super::sunk_test_kit as kit;
+        use engine::memory::SliceMemory;
+        struct Fault<'a> {
+            memory: SliceMemory<'a>,
+            fault: std::ops::Range<usize>,
+        }
+        impl engine::Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let Some(end) = address.checked_add(output.len()) else {
+                    return false;
+                };
+                if address < self.fault.end && end > self.fault.start {
+                    return false;
+                }
+                self.memory.copy(address, output)
+            }
+        }
+        for fault in [
+            kit::GAME_STATE + engine::cgame_state::SUNK_SHIP_HISTORY,
+            kit::FIRST,
+            kit::FIRST + engine::csunk_ship_info::SINK_HOUR,
+            kit::CLASS,
+            kit::FIRST + engine::csunk_ship_info::SHIP_NAME,
+        ] {
+            let bytes = kit::fixture();
+            let memory = Fault {
+                memory: SliceMemory { base: 0, bytes: &bytes },
+                fault: fault..fault + 1,
+            };
+            let direct = kit::direct(&memory);
+            let (split, report, _) = kit::split(&memory);
+            assert!(report.raw_ok, "fault={fault:x}");
+            kit::assert_matches_direct(&split, &direct);
+            assert_eq!(report.matched, [false; 1], "fault={fault:x}");
+        }
+    }
+
+    #[test]
+    fn sunk_double_copy_compare_blocks_checks_on_tearing() {
+        use super::sunk_test_kit as kit;
+        use super::{SunkCopyContext, SunkJob};
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = SunkCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            hour: kit::HOUR,
+            needed: [true; 1],
+        };
+        let capacities = super::Capacities::default();
+        let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
+        let mut first = SunkJob::new();
+        let report = captured.copy_sunk_refresh(&memory, ctx, &mut first, None);
+        assert!(report.raw_ok);
+        let mut torn = bytes.clone();
+        torn[kit::FIRST + engine::csunk_ship_info::VICTIM_COUNTRY] ^= 0xff;
+        let torn_memory = kit::memory(&torn);
+        let mut second = SunkJob::new();
+        let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 17]);
+        let torn_report = captured2.copy_sunk_refresh(&torn_memory, ctx, &mut second, None);
+        assert!(torn_report.raw_ok);
+        assert!(!first.log.partition_equal(&second.log, 0));
+        assert!(!first.log.logs_equal(&second.log));
+    }
+
+    #[test]
+    fn sunk_staging_overflow_falls_back_to_typed_walk() {
+        use super::sunk_test_kit as kit;
+        use super::{SunkCopyContext, SunkJob};
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = SunkCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            hour: kit::HOUR,
+            needed: [true; 1],
+        };
+        let mut tiny = SunkJob {
+            log: crate::raw::RawLog::new(1, 1),
+            game_state: 0,
+            hour: 0,
+        };
+        let capacities = super::Capacities::default();
+        let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
+        let report = captured.copy_sunk_refresh(&memory, ctx, &mut tiny, None);
+        assert!(!report.raw_ok);
+    }
+
+    #[test]
+    fn sunk_pools_cover_appendix_worst_case() {
+        // Worst-case caps proof: the steady-state pools exceed a
+        // conservative span/byte estimate built from the appendix census
+        // (one row with ~371 retained entries and names), so live refreshes
+        // never take the overflow fallback in steady state.
+        use super::SunkJob;
+        let job = SunkJob::new();
+        let spans = 1 + 371 * 12;
+        assert!(
+            job.log.spans.capacity() >= spans,
+            "span cap {} < worst case {spans}",
+            job.log.spans.capacity()
+        );
+        let bytes = 371 * 512;
+        assert!(
+            job.log.bytes.capacity() >= bytes,
+            "byte cap {} < worst case {bytes}",
+            job.log.bytes.capacity()
+        );
+    }
+
+    #[test]
+    fn sunk_copy_sizes_cover_documented_read_set() {
+        // S3: every Memory::copy size the sunk copy pass issues, recorded
+        // through the real pass. Vector words (8/16), records (0xa8),
+        // class headers (0x38), name bytes (1 + content) and province
+        // words (8/4).
+        use super::sunk_test_kit as kit;
+        use engine::Memory;
+        use std::collections::BTreeSet;
+        struct Recorder<'a> {
+            inner: engine::memory::SliceMemory<'a>,
+            sizes: std::cell::RefCell<BTreeSet<usize>>,
+        }
+        impl Memory for Recorder<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.sizes.borrow_mut().insert(output.len());
+                self.inner.copy(address, output)
+            }
+        }
+        let bytes = kit::fixture();
+        let memory = Recorder {
+            inner: kit::memory(&bytes),
+            sizes: std::cell::RefCell::new(BTreeSet::new()),
+        };
+        let (_split, report, _) = kit::split(&memory);
+        assert!(report.raw_ok);
+        let sizes = memory.sizes.borrow().clone();
+        for required in [1, 4, 8, 16, 0xa8] {
+            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+        }
+    }
 }
 
 /// Shared synthetic address space for the naval-pack copy/decode harness:
@@ -2893,5 +4970,556 @@ pub(crate) mod naval_test_kit {
         assert_eq!(&captured.groups.rows, &direct.oob_groups, "oob groups rows");
         assert_eq!(captured.group_members.outcome, direct.oob_members_outcome, "oob members outcome");
         assert_eq!(&captured.group_members.rows, &direct.oob_members, "oob members rows");
+    }
+}
+
+/// Shared synthetic address space for the railway copy/decode harness: a
+/// rail manager with four province slots (two live, two absent), cooldowns
+/// and directed edges on the live slots. Mirrors the engine railway fixture
+/// shapes.
+#[cfg(test)]
+pub(crate) mod rail_test_kit {
+    use super::{Capacities, Captured, RailCopyContext, RailCopyReport, RailJob};
+    use engine::{memory::SliceMemory, walk::Outcome, Memory};
+
+    pub(crate) const BASE: usize = 0;
+    pub(crate) const GAME_STATE: usize = 0x1000;
+    pub(crate) const MANAGER: usize = 0x1400;
+    pub(crate) const ITAB: usize = 0x1500;
+    const PTAB: usize = 0x1540;
+    pub(crate) const P1: usize = 0x1600;
+    pub(crate) const P2: usize = 0x1900;
+    const P3: usize = 0x1c00;
+    const DEF1: usize = 0x2000;
+    const DEF2: usize = 0x2100;
+    const DEF3: usize = 0x2200;
+    pub(crate) const INFO1: usize = 0x3000;
+    const INFO3: usize = 0x3080;
+    pub(crate) const PAIRS1: usize = 0x3200;
+    const PAIRS3: usize = 0x3300;
+
+    fn put32(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put64(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+        put64(bytes, at, data as u64);
+        put32(bytes, at + 8, count);
+        put32(bytes, at + 12, count);
+    }
+
+    pub(crate) fn fixture() -> Vec<u8> {
+        use engine::{
+            cgame_state, cprovince, cprovince_railway_info, crailway_manager, province_definition,
+            rail_neighbor,
+        };
+        let mut bytes = vec![0; 0x4000];
+        put64(&mut bytes, GAME_STATE + cgame_state::RAIL_MANAGER, MANAGER as u64);
+        put64(&mut bytes, MANAGER, crailway_manager::VTABLE_RVA as u64);
+        header(&mut bytes, MANAGER + crailway_manager::PROVINCE_INFO_TABLE, ITAB, 4);
+        header(&mut bytes, GAME_STATE + cgame_state::PROVINCES, PTAB, 4);
+        put64(&mut bytes, ITAB, 0);
+        put64(&mut bytes, ITAB + 8, INFO1 as u64);
+        put64(&mut bytes, ITAB + 16, 0);
+        put64(&mut bytes, ITAB + 24, INFO3 as u64);
+        put64(&mut bytes, PTAB, 0);
+        put64(&mut bytes, PTAB + 8, P1 as u64);
+        put64(&mut bytes, PTAB + 16, P2 as u64);
+        put64(&mut bytes, PTAB + 24, P3 as u64);
+        for (id, province, definition) in [(1u32, P1, DEF1), (2, P2, DEF2), (3, P3, DEF3)] {
+            put64(&mut bytes, province, cprovince::VTABLE_RVA as u64);
+            put32(&mut bytes, province + cprovince::ID, id);
+            put64(&mut bytes, province + cprovince::DEFINITION, definition as u64);
+            put32(&mut bytes, definition + province_definition::ID, id);
+        }
+        for (info, definition, province, ticks, pairs, pairs_count) in [
+            (INFO1, DEF1, P1, 5i32, PAIRS1, 2u32),
+            (INFO3, DEF3, P3, -1i32, PAIRS3, 1u32),
+        ] {
+            put64(&mut bytes, info, cprovince_railway_info::VTABLE_RVA as u64);
+            put64(
+                &mut bytes,
+                info + cprovince_railway_info::PROVINCE_RECORD,
+                definition as u64,
+            );
+            put64(
+                &mut bytes,
+                info + cprovince_railway_info::BUILDING_STATUS,
+                (province + cprovince::BUILDING_STATUS) as u64,
+            );
+            put32(
+                &mut bytes,
+                info + cprovince_railway_info::COOLDOWN_TICKS,
+                ticks as u32,
+            );
+            header(&mut bytes, info + cprovince_railway_info::NEIGHBOR_PAIRS, pairs, pairs_count);
+        }
+        for (offset, neighbor, level) in [(PAIRS1, 2i32, 7i32), (PAIRS1 + 8, 3, 9), (PAIRS3, 1, 4)] {
+            put32(&mut bytes, offset, neighbor as u32);
+            put32(&mut bytes, offset + rail_neighbor::LEVEL, level as u32);
+        }
+        bytes
+    }
+
+    pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
+        SliceMemory { base: 0, bytes }
+    }
+
+    pub(crate) struct Split {
+        pub cooldowns_outcome: Outcome,
+        pub cooldowns: Vec<engine::cprovince_railway_info::Row>,
+        pub edges_outcome: Outcome,
+        pub edges: Vec<engine::rail_neighbor::Row>,
+    }
+
+    fn collect_typed(memory: &impl Memory, cooldowns_cap: usize, edges_cap: usize) -> Split {
+        use engine::crailway_manager;
+        let mut capacities = Capacities::default();
+        capacities.rows[2] = cooldowns_cap;
+        capacities.rows[3] = edges_cap;
+        let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
+        let walked = crailway_manager::walk(
+            memory,
+            BASE,
+            GAME_STATE,
+            &mut captured.cooldowns.rows,
+            &mut captured.edges.rows,
+        );
+        captured.cooldowns.outcome = super::bounded(walked.provinces, captured.cooldowns.rows.len());
+        captured.edges.outcome = super::bounded(walked.edges, captured.edges.rows.len());
+        Split {
+            cooldowns_outcome: captured.cooldowns.outcome,
+            cooldowns: captured.cooldowns.rows.clone(),
+            edges_outcome: captured.edges.outcome,
+            edges: captured.edges.rows.clone(),
+        }
+    }
+
+    fn collect_split(
+        memory: &impl Memory,
+        cooldowns_cap: usize,
+        edges_cap: usize,
+    ) -> (Split, RailCopyReport, RailJob) {
+        let ctx = RailCopyContext {
+            base: BASE,
+            game_state: GAME_STATE,
+            needed: [true; 2],
+        };
+        let mut capacities = Capacities::default();
+        capacities.rows[2] = cooldowns_cap;
+        capacities.rows[3] = edges_cap;
+        let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
+        let mut first = RailJob::new();
+        let mut second = RailJob::new();
+        let report = captured.copy_rail_refresh(memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        let mut ticks = [0u64; 2];
+        captured.decode_rail_payload(BASE, &first, &mut ticks);
+        (
+            Split {
+                cooldowns_outcome: captured.cooldowns.outcome,
+                cooldowns: captured.cooldowns.rows.clone(),
+                edges_outcome: captured.edges.outcome,
+                edges: captured.edges.rows.clone(),
+            },
+            report,
+            first,
+        )
+    }
+
+    pub(crate) fn direct(memory: &impl Memory) -> Split {
+        collect_typed(memory, 16_384, 32_768)
+    }
+
+    pub(crate) fn split(memory: &impl Memory) -> (Split, RailCopyReport, RailJob) {
+        collect_split(memory, 16_384, 32_768)
+    }
+
+    pub(crate) fn direct_with(memory: &impl Memory, cooldowns: usize, edges: usize) -> Split {
+        collect_typed(memory, cooldowns, edges)
+    }
+
+    pub(crate) fn split_with(
+        memory: &impl Memory,
+        cooldowns: usize,
+        edges: usize,
+    ) -> (Split, RailCopyReport, RailJob) {
+        collect_split(memory, cooldowns, edges)
+    }
+
+    pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
+        assert_eq!(split.cooldowns_outcome, direct.cooldowns_outcome, "cooldowns outcome");
+        assert_eq!(split.cooldowns, direct.cooldowns, "cooldowns rows");
+        assert_eq!(split.edges_outcome, direct.edges_outcome, "edges outcome");
+        assert_eq!(split.edges, direct.edges, "edges rows");
+    }
+}
+
+/// Shared synthetic address space for the supremacy copy/decode harness:
+/// two region slots (one null) with dominance containers and value entries.
+/// Mirrors the engine supremacy fixture shapes.
+#[cfg(test)]
+pub(crate) mod supremacy_test_kit {
+    use super::{Capacities, Captured, SupremacyCopyContext, SupremacyCopyReport, SupremacyJob};
+    use engine::{memory::SliceMemory, walk::Outcome, Memory};
+
+    pub(crate) const BASE: usize = 0;
+    pub(crate) const GAME_STATE: usize = 0x1000;
+    const REGIONS: usize = 0x1400;
+    pub(crate) const REGION_OBJECT: usize = 0x1500;
+    pub(crate) const DOMINANCE: usize = 0x1800;
+    const ROWS: usize = 0x1900;
+
+    fn put32(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put64(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+        put64(bytes, at, data as u64);
+        put32(bytes, at + 8, count);
+        put32(bytes, at + 12, count);
+    }
+
+    pub(crate) fn fixture() -> Vec<u8> {
+        use engine::{
+            cdominance_values, cgame_state, cnaval_region_dominance, cstrategic_region,
+            naval_dominance_entry,
+        };
+        let mut bytes = vec![0; 0x4000];
+        header(&mut bytes, GAME_STATE + cgame_state::STRATEGIC_REGIONS, REGIONS, 3);
+        put64(&mut bytes, REGIONS, 0);
+        put64(&mut bytes, REGIONS + 8, REGION_OBJECT as u64);
+        put64(&mut bytes, REGIONS + 16, 0);
+        put64(&mut bytes, REGION_OBJECT, cstrategic_region::VTABLE_RVA as u64);
+        put64(
+            &mut bytes,
+            REGION_OBJECT + cstrategic_region::SECONDARY,
+            cstrategic_region::SECONDARY_VTABLE_RVA as u64,
+        );
+        put32(&mut bytes, REGION_OBJECT + cstrategic_region::ID, 0x8765_4321);
+        put32(&mut bytes, REGION_OBJECT + cstrategic_region::RUNTIME_SLOT, 1);
+        put64(
+            &mut bytes,
+            REGION_OBJECT + cstrategic_region::NAVAL_DOMINANCE,
+            DOMINANCE as u64,
+        );
+        put64(&mut bytes, DOMINANCE, cnaval_region_dominance::VTABLE_RVA as u64);
+        put64(&mut bytes, DOMINANCE + cnaval_region_dominance::REGION, REGION_OBJECT as u64);
+        header(&mut bytes, DOMINANCE + cnaval_region_dominance::ENTRIES, ROWS, 2);
+        for (index, country) in [u32::MAX, 1].into_iter().enumerate() {
+            let outer = ROWS + index * naval_dominance_entry::STRIDE;
+            let object = outer + naval_dominance_entry::VALUES;
+            put32(&mut bytes, outer + naval_dominance_entry::COUNTRY_KEY, country);
+            put64(&mut bytes, object, cdominance_values::VTABLE_RVA as u64);
+            put32(&mut bytes, object + cdominance_values::COUNTRY, country);
+            put64(&mut bytes, object + cdominance_values::REGION, REGION_OBJECT as u64);
+            put64(&mut bytes, object + cdominance_values::CURRENT, (1000 + index) as u64);
+            put64(
+                &mut bytes,
+                object + cdominance_values::BASE_TARGET,
+                (2000 + index) as u64,
+            );
+        }
+        // Spare vector capacity holds poison and must not become live rows.
+        put64(&mut bytes, ROWS + 2 * naval_dominance_entry::STRIDE, u64::MAX);
+        bytes
+    }
+
+    pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
+        SliceMemory { base: 0, bytes }
+    }
+
+    pub(crate) struct Split {
+        pub outcome: Outcome,
+        pub rows: Vec<engine::cnaval_region_dominance::Row>,
+    }
+
+    fn collect_typed(memory: &impl Memory, cap: usize) -> Split {
+        use engine::cnaval_region_dominance;
+        let mut capacities = Capacities::default();
+        capacities.rows[0] = cap;
+        let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
+        let walked = cnaval_region_dominance::walk(memory, BASE, GAME_STATE, &mut captured.supremacy.rows);
+        captured.supremacy.outcome = super::bounded(walked, captured.supremacy.rows.len());
+        Split {
+            outcome: captured.supremacy.outcome,
+            rows: captured.supremacy.rows.clone(),
+        }
+    }
+
+    fn collect_split(memory: &impl Memory, cap: usize) -> (Split, SupremacyCopyReport, SupremacyJob) {
+        let ctx = SupremacyCopyContext {
+            base: BASE,
+            game_state: GAME_STATE,
+            needed: [true; 1],
+        };
+        let mut capacities = Capacities::default();
+        capacities.rows[0] = cap;
+        let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
+        let mut first = SupremacyJob::new();
+        let mut second = SupremacyJob::new();
+        let report = captured.copy_supremacy_refresh(memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        let mut ticks = [0u64; 1];
+        captured.decode_supremacy_payload(BASE, &first, &mut ticks);
+        (
+            Split {
+                outcome: captured.supremacy.outcome,
+                rows: captured.supremacy.rows.clone(),
+            },
+            report,
+            first,
+        )
+    }
+
+    pub(crate) fn direct(memory: &impl Memory) -> Split {
+        collect_typed(memory, 4096)
+    }
+
+    pub(crate) fn split(memory: &impl Memory) -> (Split, SupremacyCopyReport, SupremacyJob) {
+        collect_split(memory, 4096)
+    }
+
+    pub(crate) fn direct_with(memory: &impl Memory, cap: usize) -> Split {
+        collect_typed(memory, cap)
+    }
+
+    pub(crate) fn split_with(memory: &impl Memory, cap: usize) -> (Split, SupremacyCopyReport, SupremacyJob) {
+        collect_split(memory, cap)
+    }
+
+    pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
+        assert_eq!(split.outcome, direct.outcome, "supremacy outcome");
+        assert_eq!(split.rows, direct.rows, "supremacy rows");
+    }
+}
+
+/// Shared synthetic address space for the sunk-ships copy/decode harness:
+/// two retained records (one with an attribution class and province, one
+/// minimal) with inline and heap names. Mirrors the engine sunk-ship fixture
+/// shapes.
+#[cfg(test)]
+pub(crate) mod sunk_test_kit {
+    use super::{Capacities, Captured, SunkCopyContext, SunkCopyReport, SunkJob};
+    use engine::{memory::SliceMemory, walk::Outcome, Memory};
+
+    pub(crate) const BASE: usize = 0;
+    pub(crate) const GAME_STATE: usize = 0x100;
+    pub(crate) const HOUR: i32 = 100;
+    const VECTOR: usize = 0x800;
+    pub(crate) const FIRST: usize = 0x900;
+    const SECOND: usize = 0xb00;
+    pub(crate) const CLASS: usize = 0xd00;
+    const NULL_CLASS: usize = 0xe00;
+    const MAP_PROVINCE: usize = 0xf00;
+    const HEAP_NAMES: usize = 0x1000;
+
+    fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
+        bytes[at..at + value.len()].copy_from_slice(value);
+    }
+
+    fn short(bytes: &mut [u8], at: usize, value: &[u8]) {
+        put(bytes, at, value);
+        put(bytes, at + msvc_string::LENGTH, &(value.len() as u64).to_le_bytes());
+        put(bytes, at + msvc_string::CAPACITY, &15_u64.to_le_bytes());
+    }
+
+    use engine::msvc_string;
+
+    pub(crate) fn fixture() -> Vec<u8> {
+        use engine::{cgame_date, cgame_state, cprovince, csunk_ship_info, csub_unit_definition};
+        let mut bytes = vec![0_u8; 0x2000];
+        put(&mut bytes, GAME_STATE + cgame_state::SUNK_SHIP_HISTORY, &(VECTOR as u64).to_le_bytes());
+        put(&mut bytes, GAME_STATE + cgame_state::SUNK_SHIP_HISTORY_CAPACITY, &2_u32.to_le_bytes());
+        put(&mut bytes, GAME_STATE + cgame_state::SUNK_SHIP_HISTORY_COUNT, &2_u32.to_le_bytes());
+        put(&mut bytes, VECTOR, &(FIRST as u64).to_le_bytes());
+        put(&mut bytes, VECTOR + 8, &(SECOND as u64).to_le_bytes());
+        for (record, hour, class, attribution, province, victim, attacker) in [
+            (FIRST, 90u32, CLASS, NULL_CLASS, MAP_PROVINCE, 3u32, 4u32),
+            (SECOND, 100u32, CLASS, 0usize, 0usize, 5u32, 6u32),
+        ] {
+            put(&mut bytes, record, &(csunk_ship_info::VTABLE_RVA as u64).to_le_bytes());
+            put(&mut bytes, record + csunk_ship_info::SINK_DATE, &(cgame_date::VTABLE_RVA as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                record + csunk_ship_info::SINK_DATE_PERSISTENT,
+                &(cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
+            );
+            put(&mut bytes, record + csunk_ship_info::SINK_HOUR, &hour.to_le_bytes());
+            put(&mut bytes, record + csunk_ship_info::SHIP_CLASS, &(class as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                record + csunk_ship_info::ATTRIBUTION_CLASS,
+                &(attribution as u64).to_le_bytes(),
+            );
+            put(&mut bytes, record + csunk_ship_info::VICTIM_COUNTRY, &victim.to_le_bytes());
+            put(&mut bytes, record + csunk_ship_info::ATTACKER_COUNTRY, &attacker.to_le_bytes());
+            put(&mut bytes, record + csunk_ship_info::MODEL_LEVEL, &2_i32.to_le_bytes());
+            put(
+                &mut bytes,
+                record + csunk_ship_info::VICTIM_EQUIPMENT_VARIANT,
+                &0x1234_5678_9abc_def0u64.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                record + csunk_ship_info::DAMAGE_SOURCE_REFERENCE,
+                &0x0fed_cba9_8765_4321u64.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                record + csunk_ship_info::PROVINCE,
+                &(province as u64).to_le_bytes(),
+            );
+            put(&mut bytes, record + csunk_ship_info::BATTLE, &0x5555_6666_7777_8888u64.to_le_bytes());
+            bytes[record + csunk_ship_info::CAUSE_RECORD] = 1;
+            bytes[record + csunk_ship_info::ASSISTED_KILL] = 0;
+        }
+        // Inline ship/attribution names on both records.
+        short(&mut bytes, FIRST + csunk_ship_info::SHIP_NAME, b"Ship");
+        short(&mut bytes, FIRST + csunk_ship_info::ATTRIBUTION_SOURCE_NAME, b"Src");
+        short(&mut bytes, SECOND + csunk_ship_info::SHIP_NAME, b"SecondShip");
+        // Heap attribution name on the second record.
+        put(
+            &mut bytes,
+            SECOND + csunk_ship_info::ATTRIBUTION_SOURCE_NAME + msvc_string::DATA,
+            &(HEAP_NAMES as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            SECOND + csunk_ship_info::ATTRIBUTION_SOURCE_NAME + msvc_string::LENGTH,
+            &4_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            SECOND + csunk_ship_info::ATTRIBUTION_SOURCE_NAME + msvc_string::CAPACITY,
+            &16_u64.to_le_bytes(),
+        );
+        put(&mut bytes, HEAP_NAMES, b"Heap");
+        bytes[HEAP_NAMES + 4] = 0;
+        // Class definitions with inline names and tokens.
+        for (class, token, vtable) in [
+            (CLASS, 11u32, csub_unit_definition::VTABLE_RVA),
+            (NULL_CLASS, 0u32, csub_unit_definition::NULL_VTABLE_RVA),
+        ] {
+            put(&mut bytes, class, &(vtable as u64).to_le_bytes());
+            put(&mut bytes, class + csub_unit_definition::TOKEN, &token.to_le_bytes());
+            short(&mut bytes, class + csub_unit_definition::NAME, b"Cls");
+        }
+        put(&mut bytes, MAP_PROVINCE, &(cprovince::VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, MAP_PROVINCE + cprovince::ID, &77_u32.to_le_bytes());
+        bytes
+    }
+
+    pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
+        SliceMemory { base: 0, bytes }
+    }
+
+    pub(crate) struct Split {
+        pub outcome: Outcome,
+        pub rows: Vec<engine::csunk_ship_info::Record>,
+        pub bytes_len: usize,
+        pub required: usize,
+    }
+
+    fn collect_typed(memory: &impl Memory, rows_cap: usize, names_cap: usize) -> Split {
+        use engine::csunk_ship_info;
+        let mut capacities = Capacities::default();
+        capacities.rows[13] = rows_cap;
+        capacities.sunk_names = names_cap;
+        let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
+        let walked = csunk_ship_info::walk(
+            memory,
+            BASE,
+            GAME_STATE,
+            HOUR,
+            &mut captured.sunk.rows,
+            &mut captured.sunk_names.first,
+        );
+        captured.sunk.outcome = super::bounded(walked.outcome, captured.sunk.rows.len());
+        captured.sunk_names.len = walked.bytes_len;
+        captured.sunk_names.required = walked.required_bytes;
+        if !super::valid_sunk(
+            captured.sunk.outcome,
+            &captured.sunk.rows,
+            &captured.sunk_names.first,
+            walked.bytes_len,
+            walked.required_bytes,
+        ) {
+            captured.sunk.outcome = super::invalid_names();
+        }
+        Split {
+            outcome: captured.sunk.outcome,
+            rows: captured.sunk.rows.clone(),
+            bytes_len: captured.sunk_names.len,
+            required: captured.sunk_names.required,
+        }
+    }
+
+    fn collect_split(
+        memory: &impl Memory,
+        rows_cap: usize,
+        names_cap: usize,
+    ) -> (Split, SunkCopyReport, SunkJob) {
+        let ctx = SunkCopyContext {
+            base: BASE,
+            game_state: GAME_STATE,
+            hour: HOUR,
+            needed: [true; 1],
+        };
+        let mut capacities = Capacities::default();
+        capacities.rows[13] = rows_cap;
+        capacities.sunk_names = names_cap;
+        let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
+        let mut first = SunkJob::new();
+        let mut second = SunkJob::new();
+        let report = captured.copy_sunk_refresh(memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        let mut ticks = [0u64; 1];
+        captured.decode_sunk_payload(BASE, &first, &mut ticks);
+        (
+            Split {
+                outcome: captured.sunk.outcome,
+                rows: captured.sunk.rows.clone(),
+                bytes_len: captured.sunk_names.len,
+                required: captured.sunk_names.required,
+            },
+            report,
+            first,
+        )
+    }
+
+    pub(crate) fn direct(memory: &impl Memory) -> Split {
+        collect_typed(memory, 2048, 256 * 1024)
+    }
+
+    pub(crate) fn split(memory: &impl Memory) -> (Split, SunkCopyReport, SunkJob) {
+        collect_split(memory, 2048, 256 * 1024)
+    }
+
+    pub(crate) fn direct_with(memory: &impl Memory, rows: usize, names: usize) -> Split {
+        collect_typed(memory, rows, names)
+    }
+
+    pub(crate) fn split_with(
+        memory: &impl Memory,
+        rows: usize,
+        names: usize,
+    ) -> (Split, SunkCopyReport, SunkJob) {
+        collect_split(memory, rows, names)
+    }
+
+    pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
+        assert_eq!(split.outcome, direct.outcome, "sunk outcome");
+        assert_eq!(split.rows, direct.rows, "sunk rows");
+        assert_eq!(split.bytes_len, direct.bytes_len, "sunk bytes len");
+        assert_eq!(split.required, direct.required, "sunk required");
     }
 }

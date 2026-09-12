@@ -839,6 +839,49 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 None;
             let mut construction_rest_report =
                 extended::construction::ConstructionRestCopyReport::default();
+            // Shared hourly bases handoff state: same FIFO, same ordering
+            // guarantees. The hourly payload carries the wing/manager census
+            // once with bases, registrations and aces detail; all three
+            // decodes read the shared spans. Staging overflow falls back to
+            // the typed walks with no payload enqueued.
+            let mut air_bases_payload: Option<extended::air::AirBasesJob> = None;
+            let mut air_bases_report = extended::air::AirBasesCopyReport::default();
+            // Shared hourly history handoff state: same FIFO, same ordering
+            // guarantees. The hourly payload carries the regional walk once
+            // with history and damage detail; both decodes read the shared
+            // spans. Staging overflow falls back to the typed walk with no
+            // payload enqueued.
+            let mut air_history_payload: Option<extended::air::AirHistoryJob> = None;
+            let mut air_history_report = extended::air::AirHistoryCopyReport::default();
+            // Shared hourly railway handoff state: same FIFO, same ordering
+            // guarantees. The hourly payload carries the railway walk once
+            // with cooldown and edge detail; both decodes read the shared
+            // spans. Staging overflow falls back to the typed walk with no
+            // payload enqueued.
+            let mut rail_payload: Option<extended::naval_history::RailJob> = None;
+            let mut rail_report = extended::naval_history::RailCopyReport::default();
+            // Hourly supremacy handoff state: same FIFO, same ordering
+            // guarantees. Staging overflow falls back to the typed walk with
+            // no payload enqueued.
+            let mut supremacy_payload: Option<extended::naval_history::SupremacyJob> = None;
+            let mut supremacy_report = extended::naval_history::SupremacyCopyReport::default();
+            // Hourly sunk-ships handoff state: same FIFO, same ordering
+            // guarantees. Staging overflow falls back to the typed walk with
+            // no payload enqueued.
+            let mut sunk_payload: Option<extended::naval_history::SunkJob> = None;
+            let mut sunk_report = extended::naval_history::SunkCopyReport::default();
+            // Hourly radar handoff state: same FIFO, same ordering
+            // guarantees. Staging overflow falls back to the typed walk with
+            // no payload enqueued.
+            let mut radar_payload: Option<extended::fog::RadarJob> = None;
+            let mut radar_report = extended::fog::RadarCopyReport::default();
+            // Hourly intel handoff state: same FIFO, same ordering
+            // guarantees. The hourly payload carries the walk's own
+            // division/fleet census once with viewer detail; both unit paths
+            // decode from the shared spans. Staging overflow falls back to
+            // the typed walk with no payload enqueued.
+            let mut intel_payload: Option<extended::fog::IntelJob> = None;
+            let mut intel_report = extended::fog::IntelCopyReport::default();
             let mut decode_hour = 0;
             let mut decode_force_full = false;
             if let Some(clock) = frame.clock_before {
@@ -1261,6 +1304,233 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 }
                 if let Some(second) = naval_second {
                     decode::recycle_naval_job(second);
+                }
+                // Shared hourly bases (copy/decode split): raw copies only
+                // on the game thread, same FIFO and ordering guarantees as
+                // the packs above. The wing/manager census is staged once
+                // with bases, registrations and aces detail; all three
+                // decodes read the shared spans. Staging overflow falls back
+                // to the typed walks with no payload enqueued.
+                let air_bases_second_needed = decode::AIR_BASES
+                    .iter()
+                    .any(|table| extended_needed[table.index()]);
+                let mut air_bases_first = decode::acquire_air_bases_job();
+                let mut air_bases_second =
+                    air_bases_second_needed.then(decode::acquire_air_bases_job);
+                let air_bases_ctx = extended::air::AirBasesCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                    needed: [
+                        extended_needed[decode::AIR_BASES[0].index()],
+                        extended_needed[decode::AIR_BASES[1].index()],
+                        extended_needed[decode::AIR_BASES[2].index()],
+                    ],
+                };
+                air_bases_report = frame.extended.copy_air_bases_refresh(
+                    &memory,
+                    air_bases_ctx,
+                    &mut air_bases_first,
+                    air_bases_second.as_mut(),
+                );
+                frame.extended.air_bases_pilot().bases_raw_mode = air_bases_report.raw_ok;
+                // The registrations half lives in the fog pack and decodes
+                // from the same shared log.
+                frame.extended.radar_pilot().registrations_raw_mode = air_bases_report.raw_ok;
+                if air_bases_report.raw_ok {
+                    air_bases_payload = Some(air_bases_first);
+                } else {
+                    decode::recycle_air_bases_job(air_bases_first);
+                }
+                if let Some(second) = air_bases_second {
+                    decode::recycle_air_bases_job(second);
+                }
+                // Shared hourly history (copy/decode split): raw copies only
+                // on the game thread, same FIFO and ordering guarantees. The
+                // regional walk is staged once with history and damage
+                // detail; both decodes read the shared spans. Staging
+                // overflow falls back to the typed walk with no payload
+                // enqueued.
+                let air_history_second_needed = decode::AIR_HISTORY
+                    .iter()
+                    .any(|table| extended_needed[table.index()]);
+                let mut air_history_first = decode::acquire_air_history_job();
+                let mut air_history_second =
+                    air_history_second_needed.then(decode::acquire_air_history_job);
+                let air_history_ctx = extended::air::AirHistoryCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                    needed: [
+                        extended_needed[decode::AIR_HISTORY[0].index()],
+                        extended_needed[decode::AIR_HISTORY[1].index()],
+                    ],
+                };
+                air_history_report = frame.extended.air_history_pilot().copy_air_history_refresh(
+                    &memory,
+                    air_history_ctx,
+                    &mut air_history_first,
+                    air_history_second.as_mut(),
+                );
+                frame.extended.air_history_pilot().history_raw_mode = air_history_report.raw_ok;
+                if air_history_report.raw_ok {
+                    air_history_payload = Some(air_history_first);
+                } else {
+                    decode::recycle_air_history_job(air_history_first);
+                }
+                if let Some(second) = air_history_second {
+                    decode::recycle_air_history_job(second);
+                }
+                // Shared hourly railway (copy/decode split): raw copies only
+                // on the game thread, same FIFO and ordering guarantees. The
+                // railway walk is staged once with cooldown and edge detail;
+                // both decodes read the shared spans. Staging overflow falls
+                // back to the typed walk with no payload enqueued.
+                let rail_second_needed = decode::RAIL
+                    .iter()
+                    .any(|table| extended_needed[table.index()]);
+                let mut rail_first = decode::acquire_rail_job();
+                let mut rail_second = rail_second_needed.then(decode::acquire_rail_job);
+                let rail_ctx = extended::naval_history::RailCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                    needed: [
+                        extended_needed[decode::RAIL[0].index()],
+                        extended_needed[decode::RAIL[1].index()],
+                    ],
+                };
+                rail_report = frame.extended.rail_pilot().copy_rail_refresh(
+                    &memory,
+                    rail_ctx,
+                    &mut rail_first,
+                    rail_second.as_mut(),
+                );
+                frame.extended.rail_pilot().rail_raw_mode = rail_report.raw_ok;
+                if rail_report.raw_ok {
+                    rail_payload = Some(rail_first);
+                } else {
+                    decode::recycle_rail_job(rail_first);
+                }
+                if let Some(second) = rail_second {
+                    decode::recycle_rail_job(second);
+                }
+                // Hourly supremacy (copy/decode split): raw copies only on
+                // the game thread, same FIFO and ordering guarantees. Staging
+                // overflow falls back to the typed walk with no payload
+                // enqueued.
+                let supremacy_second_needed = decode::SUPREMACY
+                    .iter()
+                    .any(|table| extended_needed[table.index()]);
+                let mut supremacy_first = decode::acquire_supremacy_job();
+                let mut supremacy_second =
+                    supremacy_second_needed.then(decode::acquire_supremacy_job);
+                let supremacy_ctx = extended::naval_history::SupremacyCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                    needed: [extended_needed[decode::SUPREMACY[0].index()]],
+                };
+                supremacy_report = frame.extended.supremacy_pilot().copy_supremacy_refresh(
+                    &memory,
+                    supremacy_ctx,
+                    &mut supremacy_first,
+                    supremacy_second.as_mut(),
+                );
+                frame.extended.supremacy_pilot().supremacy_raw_mode = supremacy_report.raw_ok;
+                if supremacy_report.raw_ok {
+                    supremacy_payload = Some(supremacy_first);
+                } else {
+                    decode::recycle_supremacy_job(supremacy_first);
+                }
+                if let Some(second) = supremacy_second {
+                    decode::recycle_supremacy_job(second);
+                }
+                // Hourly sunk-ships (copy/decode split): raw copies only on
+                // the game thread, same FIFO and ordering guarantees. Staging
+                // overflow falls back to the typed walk with no payload
+                // enqueued.
+                let sunk_second_needed = decode::SUNK
+                    .iter()
+                    .any(|table| extended_needed[table.index()]);
+                let mut sunk_first = decode::acquire_sunk_job();
+                let mut sunk_second = sunk_second_needed.then(decode::acquire_sunk_job);
+                let sunk_ctx = extended::naval_history::SunkCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                    hour: clock.hour,
+                    needed: [extended_needed[decode::SUNK[0].index()]],
+                };
+                sunk_report = frame.extended.sunk_pilot().copy_sunk_refresh(
+                    &memory,
+                    sunk_ctx,
+                    &mut sunk_first,
+                    sunk_second.as_mut(),
+                );
+                frame.extended.sunk_pilot().sunk_raw_mode = sunk_report.raw_ok;
+                if sunk_report.raw_ok {
+                    sunk_payload = Some(sunk_first);
+                } else {
+                    decode::recycle_sunk_job(sunk_first);
+                }
+                if let Some(second) = sunk_second {
+                    decode::recycle_sunk_job(second);
+                }
+                // Hourly radar (copy/decode split): raw copies only on the
+                // game thread, same FIFO and ordering guarantees. Staging
+                // overflow falls back to the typed walk with no payload
+                // enqueued.
+                let radar_second_needed = decode::RADAR
+                    .iter()
+                    .any(|table| extended_needed[table.index()]);
+                let mut radar_first = decode::acquire_radar_job();
+                let mut radar_second = radar_second_needed.then(decode::acquire_radar_job);
+                let radar_ctx = extended::fog::RadarCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                    needed: [extended_needed[decode::RADAR[0].index()]],
+                };
+                radar_report = frame.extended.radar_pilot().copy_radar_refresh(
+                    &memory,
+                    radar_ctx,
+                    &mut radar_first,
+                    radar_second.as_mut(),
+                );
+                frame.extended.radar_pilot().radar_raw_mode = radar_report.raw_ok;
+                if radar_report.raw_ok {
+                    radar_payload = Some(radar_first);
+                } else {
+                    decode::recycle_radar_job(radar_first);
+                }
+                if let Some(second) = radar_second {
+                    decode::recycle_radar_job(second);
+                }
+                // Hourly intel (copy/decode split): raw copies only on the
+                // game thread, same FIFO and ordering guarantees. The walk's
+                // own division/fleet census is staged once with viewer
+                // detail; both unit paths decode from the shared spans.
+                // Staging overflow falls back to the typed walk with no
+                // payload enqueued.
+                let intel_second_needed = decode::INTEL
+                    .iter()
+                    .any(|table| extended_needed[table.index()]);
+                let mut intel_first = decode::acquire_intel_job();
+                let mut intel_second = intel_second_needed.then(decode::acquire_intel_job);
+                let intel_ctx = extended::fog::IntelCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                    needed: [extended_needed[decode::INTEL[0].index()]],
+                };
+                intel_report = frame.extended.intel_pilot().copy_intel_refresh(
+                    &memory,
+                    intel_ctx,
+                    &mut intel_first,
+                    intel_second.as_mut(),
+                );
+                frame.extended.intel_pilot().intel_raw_mode = intel_report.raw_ok;
+                if intel_report.raw_ok {
+                    intel_payload = Some(intel_first);
+                } else {
+                    decode::recycle_intel_job(intel_first);
+                }
+                if let Some(second) = intel_second {
+                    decode::recycle_intel_job(second);
                 }
                 let (map_matched, map_ticks) = frame.map.sample(
                     &cached,
@@ -1898,6 +2168,97 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         );
                     }
                 }
+                // Shared hourly bases measured copy-only above; same install
+                // for the calibration counters. The shared census is
+                // anchor-charged to the bases slot; registrations and aces
+                // carry their detail costs, matching the read-group
+                // convention.
+                if air_bases_report.raw_ok {
+                    for (slot, table) in decode::AIR_BASES.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = air_bases_report.matched[slot];
+                        let ns = shared.ns(air_bases_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_air_bases_copy_ns(slot, ns);
+                        decode::add_air_bases_raw_bytes(slot, air_bases_report.raw_bytes[slot]);
+                    }
+                }
+                // Shared hourly history measured copy-only above; same
+                // install for the calibration counters. The single regional
+                // walk is anchor-charged to the history slot, matching the
+                // read-group convention.
+                if air_history_report.raw_ok {
+                    for (slot, table) in decode::AIR_HISTORY.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = air_history_report.matched[slot];
+                        let ns = shared.ns(air_history_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_air_history_copy_ns(slot, ns);
+                        decode::add_air_history_raw_bytes(slot, air_history_report.raw_bytes[slot]);
+                    }
+                }
+                // Shared hourly railway measured copy-only above; same
+                // install for the calibration counters. The single railway
+                // walk is anchor-charged to the cooldowns slot, matching the
+                // read-group convention.
+                if rail_report.raw_ok {
+                    for (slot, table) in decode::RAIL.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = rail_report.matched[slot];
+                        let ns = shared.ns(rail_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_rail_copy_ns(slot, ns);
+                        decode::add_rail_raw_bytes(slot, rail_report.raw_bytes[slot]);
+                    }
+                }
+                // Hourly supremacy measured copy-only above; same install
+                // for the calibration counters.
+                if supremacy_report.raw_ok {
+                    for (slot, table) in decode::SUPREMACY.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = supremacy_report.matched[slot];
+                        let ns = shared.ns(supremacy_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_supremacy_copy_ns(slot, ns);
+                        decode::add_supremacy_raw_bytes(slot, supremacy_report.raw_bytes[slot]);
+                    }
+                }
+                // Hourly sunk-ships measured copy-only above; same install
+                // for the calibration counters.
+                if sunk_report.raw_ok {
+                    for (slot, table) in decode::SUNK.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = sunk_report.matched[slot];
+                        let ns = shared.ns(sunk_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_sunk_copy_ns(slot, ns);
+                        decode::add_sunk_raw_bytes(slot, sunk_report.raw_bytes[slot]);
+                    }
+                }
+                // Hourly radar measured copy-only above; same install for
+                // the calibration counters.
+                if radar_report.raw_ok {
+                    for (slot, table) in decode::RADAR.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = radar_report.matched[slot];
+                        let ns = shared.ns(radar_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_radar_copy_ns(slot, ns);
+                        decode::add_radar_raw_bytes(slot, radar_report.raw_bytes[slot]);
+                    }
+                }
+                // Hourly intel measured copy-only above; same install for
+                // the calibration counters.
+                if intel_report.raw_ok {
+                    for (slot, table) in decode::INTEL.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = intel_report.matched[slot];
+                        let ns = shared.ns(intel_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_intel_copy_ns(slot, ns);
+                        decode::add_intel_raw_bytes(slot, intel_report.raw_bytes[slot]);
+                    }
+                }
                 let cache_verify_begin = qpc();
                 frame.country_cache_error = cached.verify().err();
                 frame.country_cache_ns =
@@ -1948,6 +2309,13 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 session_refresh: session_report.raw_ok,
                 production_rest_refresh: production_rest_report.raw_ok,
                 construction_rest_refresh: construction_rest_report.raw_ok,
+                air_bases_refresh: air_bases_report.raw_ok,
+                air_history_refresh: air_history_report.raw_ok,
+                rail_refresh: rail_report.raw_ok,
+                supremacy_refresh: supremacy_report.raw_ok,
+                sunk_refresh: sunk_report.raw_ok,
+                radar_refresh: radar_report.raw_ok,
+                intel_refresh: intel_report.raw_ok,
                 force_full: decode_force_full,
                 game_elapsed: (qpc() - entered - (original_end - original_begin)).max(1),
                 payload: pilot_payload,
@@ -1968,6 +2336,13 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 session_payload,
                 production_rest_payload,
                 construction_rest_payload,
+                air_bases_payload,
+                air_history_payload,
+                rail_payload,
+                supremacy_payload,
+                sunk_payload,
+                radar_payload,
+                intel_payload,
             };
             match decode::enqueue(shared, decode_job) {
                 None => {
@@ -2043,6 +2418,27 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     }
                     if let Some(payload) = returned.construction_rest_payload {
                         decode::recycle_construction_rest_job(payload);
+                    }
+                    if let Some(payload) = returned.air_bases_payload {
+                        decode::recycle_air_bases_job(payload);
+                    }
+                    if let Some(payload) = returned.air_history_payload {
+                        decode::recycle_air_history_job(payload);
+                    }
+                    if let Some(payload) = returned.rail_payload {
+                        decode::recycle_rail_job(payload);
+                    }
+                    if let Some(payload) = returned.supremacy_payload {
+                        decode::recycle_supremacy_job(payload);
+                    }
+                    if let Some(payload) = returned.sunk_payload {
+                        decode::recycle_sunk_job(payload);
+                    }
+                    if let Some(payload) = returned.radar_payload {
+                        decode::recycle_radar_job(payload);
+                    }
+                    if let Some(payload) = returned.intel_payload {
+                        decode::recycle_intel_job(payload);
                     }
                     // Existing whole-frame drop plus gap path, unchanged
                     // counters and no new loss reasons.
@@ -4602,6 +4998,13 @@ mod tests {
                     session_refresh: false,
                     production_rest_refresh: false,
                     construction_rest_refresh: false,
+                    air_bases_refresh: false,
+                    air_history_refresh: false,
+                    rail_refresh: false,
+                    supremacy_refresh: false,
+                    sunk_refresh: false,
+                    radar_refresh: false,
+                    intel_refresh: false,
                     force_full: false,
                     game_elapsed: 1,
                     payload: None,
@@ -4622,6 +5025,13 @@ mod tests {
                     session_payload: None,
                     production_rest_payload: None,
                     construction_rest_payload: None,
+                    air_bases_payload: None,
+                    air_history_payload: None,
+                    rail_payload: None,
+                    supremacy_payload: None,
+                    sunk_payload: None,
+                    radar_payload: None,
+                    intel_payload: None,
                 })
                 .unwrap();
         }
@@ -4650,6 +5060,13 @@ mod tests {
             session_refresh: false,
             production_rest_refresh: false,
             construction_rest_refresh: false,
+            air_bases_refresh: false,
+            air_history_refresh: false,
+            rail_refresh: false,
+            supremacy_refresh: false,
+            sunk_refresh: false,
+            radar_refresh: false,
+            intel_refresh: false,
             force_full: false,
             game_elapsed: 1,
             payload: None,
@@ -4670,6 +5087,13 @@ mod tests {
             session_payload: None,
             production_rest_payload: None,
             construction_rest_payload: None,
+            air_bases_payload: None,
+            air_history_payload: None,
+            rail_payload: None,
+            supremacy_payload: None,
+            sunk_payload: None,
+            radar_payload: None,
+            intel_payload: None,
         };
         assert!(shared.decode_queue.push(extra).is_err());
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };

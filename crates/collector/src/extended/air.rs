@@ -15,9 +15,10 @@ use crate::{
     table_capture::{Arena, CaptureRows},
 };
 use engine::{
-    Memory, cace, cair_base, cair_region_combat_data, cair_wing, cequipment_variant,
-    cequipment_variant_pool, cloop_history, cpdx_array::Array, equipment_entry,
-    sair_wing_combat_data, sdamage_entry, walk::Outcome,
+    Memory, cace, cair_base, cair_region_combat_data, cair_wing, cair_wing_pool, ccountry,
+    ccountry_air_container, cequipment_variant, cequipment_variant_pool, cgame_state, cloop_history,
+    cpdx_array::Array, cprovince, cstate, cstrategic_air, cstrategic_air_manager, equipment_entry,
+    msvc_string, sair_wing_combat_data, sdamage_entry, walk::Outcome,
 };
 use replay::{
     frame::TableView,
@@ -83,6 +84,18 @@ pub struct Captured {
     /// before the ready handoff. Preserved across `reset` (set per hour,
     /// cleared by the worker after decode).
     pub(crate) stats_raw_mode: bool,
+    /// Raw-copy split gate for the shared bases/registrations/aces payload
+    /// (copy/decode split). Set by the game thread every hour with a valid
+    /// raw payload; `capture` then skips the typed bases and aces walks and
+    /// the decode worker fills those rows (plus the fog registrations) before
+    /// the ready handoff. Preserved across `reset`, cleared by the worker.
+    pub(crate) bases_raw_mode: bool,
+    /// Raw-copy split gate for the shared history/damage payload
+    /// (copy/decode split). Set by the game thread every hour with a valid
+    /// raw payload; `capture` then skips the typed regional walk and the
+    /// decode worker fills both row sets before the ready handoff. Preserved
+    /// across `reset`, cleared by the worker.
+    pub(crate) history_raw_mode: bool,
 }
 
 const NO_WING_SOURCE: Outcome = Outcome::Unavailable {
@@ -104,6 +117,8 @@ impl Captured {
             wing_matched: [false; 2],
             wing_ticks: [0; 2],
             stats_raw_mode: false,
+            bases_raw_mode: false,
+            history_raw_mode: false,
         }
     }
 
@@ -276,79 +291,111 @@ impl Captured {
         ticks[0] = self.wing_ticks[0];
         ticks[2] = self.wing_ticks[1];
         let begin = qpc();
-        matched[1] = capture_rows(&mut self.bases, needed[1], |rows| {
-            cair_base::walk(memory, base, game_state, rows)
-        });
-        ticks[1] = elapsed(begin);
-
-        let begin = qpc();
-        let first = cair_region_combat_data::walk_world(
-            memory,
-            base,
-            game_state,
-            &mut self.history.rows,
-            &mut self.damage.rows,
-        );
-        self.history.outcome = bounded(first.records, self.history.rows.len());
-        self.damage.outcome = bounded(first.damage, self.damage.rows.len());
-        let second = if needed[3] || needed[4] {
-            Some(cair_region_combat_data::walk_world(
-                memory,
-                base,
-                game_state,
-                &mut self.history.second,
-                &mut self.damage.second,
-            ))
+        // Hourly bases/aces raw-copy split: on hours with a valid raw payload
+        // the game thread stages bytes via `copy_air_bases_refresh` (shared
+        // with the fog registrations) and the decode worker fills the typed
+        // rows before the ready handoff, so the typed walks are skipped here.
+        // Matched flags and costs come from the raw compare, applied by the
+        // caller after this returns.
+        if self.bases_raw_mode {
+            // Refresh payload staged: leave the reset outcomes for the decode
+            // worker, which installs identical rows and outcomes.
+            matched[1] = false;
+            ticks[1] = 0;
         } else {
-            None
-        };
-        ticks[3] = elapsed(begin);
-        if let Some(second) = second {
-            if needed[3] {
-                let begin = qpc();
-                self.history.checked = true;
-                matched[3] = self
-                    .history
-                    .compare(bounded(second.records, self.history.second.len()));
-                ticks[3] = ticks[3].saturating_add(elapsed(begin));
-            }
-            if needed[4] {
-                let begin = qpc();
-                self.damage.checked = true;
-                matched[4] = self
-                    .damage
-                    .compare(bounded(second.damage, self.damage.second.len()));
-                ticks[4] = elapsed(begin);
+            matched[1] = capture_rows(&mut self.bases, needed[1], |rows| {
+                cair_base::walk(memory, base, game_state, rows)
+            });
+            ticks[1] = elapsed(begin);
+        }
+
+        let begin = qpc();
+        // Hourly history/damage raw-copy split: on hours with a valid raw
+        // payload the game thread stages bytes via `copy_air_history_refresh`
+        // and the decode worker fills both row sets before the ready handoff,
+        // so the typed regional walk is skipped here.
+        if self.history_raw_mode {
+            // Refresh payload staged: leave the reset outcomes for the decode
+            // worker, which installs identical rows and outcomes.
+            matched[3] = false;
+            matched[4] = false;
+            ticks[3] = 0;
+        } else {
+            let first = cair_region_combat_data::walk_world(
+                memory,
+                base,
+                game_state,
+                &mut self.history.rows,
+                &mut self.damage.rows,
+            );
+            self.history.outcome = bounded(first.records, self.history.rows.len());
+            self.damage.outcome = bounded(first.damage, self.damage.rows.len());
+            let second = if needed[3] || needed[4] {
+                Some(cair_region_combat_data::walk_world(
+                    memory,
+                    base,
+                    game_state,
+                    &mut self.history.second,
+                    &mut self.damage.second,
+                ))
+            } else {
+                None
+            };
+            ticks[3] = elapsed(begin);
+            if let Some(second) = second {
+                if needed[3] {
+                    let begin = qpc();
+                    self.history.checked = true;
+                    matched[3] = self
+                        .history
+                        .compare(bounded(second.records, self.history.second.len()));
+                    ticks[3] = ticks[3].saturating_add(elapsed(begin));
+                }
+                if needed[4] {
+                    let begin = qpc();
+                    self.damage.checked = true;
+                    matched[4] = self
+                        .damage
+                        .compare(bounded(second.damage, self.damage.second.len()));
+                    ticks[4] = elapsed(begin);
+                }
             }
         }
 
         let begin = qpc();
-        let first = cace::walk(
-            memory,
-            base,
-            game_state,
-            &mut self.aces.rows,
-            &mut self.names.first,
-        );
-        self.aces.outcome = names_outcome(first, &self.aces.rows, &self.names.first);
-        self.names.len = first.bytes_len;
-        self.names.required = first.required_bytes;
-        if needed[5] {
-            self.aces.checked = true;
-            let second = cace::walk(
+        if self.bases_raw_mode {
+            // Refresh payload staged (shared bases/aces job): leave the reset
+            // outcome for the decode worker.
+            matched[5] = false;
+            ticks[5] = 0;
+        } else {
+            let first = cace::walk(
                 memory,
                 base,
                 game_state,
-                &mut self.aces.second,
-                &mut self.names.second,
+                &mut self.aces.rows,
+                &mut self.names.first,
             );
-            let outcome = names_outcome(second, &self.aces.second, &self.names.second);
-            self.aces.compare(outcome);
-            self.aces.mismatches +=
-                usize::from(!self.names.compare(second.bytes_len, second.required_bytes));
-            matched[5] = full_match(self.aces.outcome, outcome, self.aces.mismatches);
+            self.aces.outcome = names_outcome(first, &self.aces.rows, &self.names.first);
+            self.names.len = first.bytes_len;
+            self.names.required = first.required_bytes;
+            if needed[5] {
+                self.aces.checked = true;
+                let second = cace::walk(
+                    memory,
+                    base,
+                    game_state,
+                    &mut self.aces.second,
+                    &mut self.names.second,
+                );
+                let outcome = names_outcome(second, &self.aces.second, &self.names.second);
+                self.aces.compare(outcome);
+                self.aces.mismatches +=
+                    usize::from(!self.names.compare(second.bytes_len, second.required_bytes));
+                matched[5] = full_match(self.aces.outcome, outcome, self.aces.mismatches);
+            }
+            ticks[5] = elapsed(begin);
         }
-        ticks[5] = elapsed(begin);
 
         let begin = qpc();
         // Hourly statistics raw-copy split: on hours with a valid raw payload
@@ -1473,6 +1520,1938 @@ pub(crate) fn decode_air_stats_payload(
     captured.stats_raw_mode = false;
 }
 
+// ===========================================================================
+// Hourly shared bases/registrations/aces split (AirBases,
+// AirBaseRegistrations, AirAces).
+//
+// The game thread copies raw bytes only: one authenticated country census,
+// the strategic-air manager with its four base vectors, per-base identity
+// and host/state/province fields, per-base country containers with pool and
+// wing vectors, and per-country ace rosters with ace objects and name bytes.
+// Shared spans (country census, manager, vectors, base identities) are taken
+// ONCE with the combined mask and serve every dependent replay: Recorded
+// spans are address-keyed with last-value repeat, so one census walk feeds
+// the bases, registrations and aces decodes with no duplicated copy of the
+// walk. No row is decoded on the game thread. The single FIFO decode worker
+// replays `cair_base::walk`, `cair_base::walk_registrations` and `cace::walk`
+// against the recorded spans, so rows, ordinals, skips, truncation counts
+// and failure reasons are identical by construction (see `crate::raw` for
+// the mirror rules).
+//
+// The mirror traverses structurally and records every discoverable span,
+// never aborting except on pool overflow: validation, precedence and error
+// scope are local parses, so the replay derives every outcome from the same
+// recorded spans and later extras are harmless. Takes follow walk order and
+// the pass stops at the first take failure the typed walk would also stop
+// at; container resolve link reads are deduplicated per pass through a
+// small seen list (the typed walk caches them in its Resolver), which is
+// deterministic across passes and byte-identical within a pass.
+// ===========================================================================
+
+/// Shared hourly payload slots in calibration/report order: [bases,
+/// registrations, aces]. The registrations rows live in the fog pack; the
+/// decode worker fills them from this same log (see
+/// `crate::extended::fog::Captured::decode_registrations_payload`).
+pub(crate) const AIR_BASES_N: usize = 3;
+const BASES_MASK: u32 = 0x01;
+const AIR_REGISTRATIONS_MASK: u32 = 0x02;
+const AIR_ACES_MASK: u32 = 0x04;
+/// Country census spans gate every slot: all three typed walks authenticate
+/// through the same country reader.
+const AIR_BASES_CENSUS_MASK: u32 = 0x07;
+/// Manager, vectors and base identities gate bases and registrations: the
+/// aces walk never reads them.
+const BASE_VECTORS_MASK: u32 = 0x03;
+
+/// Batch chunking for the registration pool/wing pointer blocks. Must match
+/// the engine walk's batching exactly: the typed walk issues one
+/// `read_slice` per chunk, and the replay serves exact (address, length)
+/// spans only.
+const REG_MIRROR_BATCH: usize = 64;
+
+/// One hour of raw shared bases payload: the country census, the manager and
+/// base vectors, per-base fields, containers with pools and wings, and ace
+/// rosters with objects and names. Flat pools recycle capacities and the
+/// steady state allocates on neither thread; growth happens on the decode
+/// side only (see `crate::decode::recycle_air_bases_job`).
+#[derive(Debug)]
+pub(crate) struct AirBasesJob {
+    pub log: RawLog<AIR_BASES_N>,
+    pub game_state: usize,
+    /// Canonical (pointer, slot) countries parsed from the census takes.
+    census: Vec<(usize, u32)>,
+    /// Link raws already taken this pass with their staged slot values
+    /// (mirrors the walk's Resolver cache: one link read per distinct raw).
+    seen_links: Vec<(u32, u32)>,
+}
+
+impl AirBasesJob {
+    pub fn new() -> Self {
+        Self {
+            // Late-campaign worst case is 396 bases with 5,148 registration
+            // rows plus wing vectors and 57 aces with names (appendix
+            // census); both pools start above that so steady state never
+            // overflows (see the worst-case caps test).
+            log: RawLog::new(1 << 17, 8 << 20),
+            game_state: 0,
+            census: Vec::with_capacity(1024),
+            seen_links: Vec::with_capacity(1024),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.log.clear();
+        self.game_state = 0;
+        self.census.clear();
+        self.seen_links.clear();
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.log.grow_for_next()
+    }
+
+    pub fn grow(&mut self) {
+        self.log.grow();
+        self.census.reserve_exact(self.census.capacity().max(1));
+        self.seen_links
+            .reserve_exact(self.seen_links.capacity().max(1));
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct AirBasesCopyReport {
+    /// False when staging overflowed: the caller falls back to the typed
+    /// walks (identical rows through the existing paths) and enqueues no
+    /// payload.
+    pub raw_ok: bool,
+    /// Per-partition raw equality gated by live-fault conservatism, in
+    /// [bases, registrations, aces] order. Shared census spans gate every
+    /// dependent partition; manager/vector spans gate bases and
+    /// registrations; private spans gate only their own slot.
+    pub matched: [bool; AIR_BASES_N],
+    pub copy_ticks: [u64; AIR_BASES_N],
+    pub raw_bytes: [u64; AIR_BASES_N],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AirBasesCopyContext {
+    pub base: usize,
+    pub game_state: usize,
+    pub needed: [bool; AIR_BASES_N],
+}
+
+fn bases_pool_u64(log: &RawLog<AIR_BASES_N>, start: usize) -> u64 {
+    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+}
+
+fn bases_pool_u32(log: &RawLog<AIR_BASES_N>, start: usize) -> u32 {
+    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
+}
+
+/// One mirrored span read. `None` addresses (arithmetic overflow) record
+/// nothing because the typed walk fails locally without reads.
+fn bspan(
+    log: &mut RawLog<AIR_BASES_N>,
+    memory: &impl engine::Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take(memory, addr?, len, mask)
+}
+
+/// Mirror of one link-table read with local bounds checks. Returns `None`
+/// exactly when the typed resolve fails; the replay derives its own reason.
+fn bases_link(
+    log: &mut RawLog<AIR_BASES_N>,
+    memory: &impl engine::Memory,
+    links: &Array,
+    countries: u32,
+    raw: u32,
+) -> Option<u32> {
+    if raw == 0 || raw >= links.count {
+        return None;
+    }
+    let offset = (raw as usize).checked_mul(4)?;
+    let start = bspan(
+        log,
+        memory,
+        links.data.checked_add(offset),
+        4,
+        AIR_BASES_CENSUS_MASK,
+    )?;
+    let slot = bases_pool_u32(log, start);
+    if slot == 0 || slot >= countries {
+        return None;
+    }
+    Some(slot)
+}
+
+/// Authenticated country census shared by the bases, registrations and aces
+/// walks. Records the exact read set of `ccountry::Reader::new` plus one full
+/// `read_at` per slot, taking every discoverable span: validation mismatches
+/// never stop the census because each replay derives its own verdict from the
+/// same spans (a mismatch fatal to one walk may be unread by another).
+/// Returns the parsed link array with its country count for the resolve
+/// mirror, or `None` only when the headers themselves are undiscoverable.
+fn copy_air_bases_census(
+    log: &mut RawLog<AIR_BASES_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    census: &mut Vec<(usize, u32)>,
+) -> Option<(Array, u32)> {
+    let countries_start = bspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRIES),
+        16,
+        AIR_BASES_CENSUS_MASK,
+    )?;
+    let links_start = bspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRY_LINKS),
+        16,
+        AIR_BASES_CENSUS_MASK,
+    )?;
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
+    let countries = Array::from_header(raw, 8)?;
+    raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
+    let links = Array::from_header(raw, 4)?;
+    if countries.count < 2 || links.count == 0 {
+        return None;
+    }
+    let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
+    for slot in 1..countries.count {
+        let pointer_addr = (slot as usize)
+            .checked_mul(8)
+            .and_then(|offset| countries.data.checked_add(offset));
+        let Some(pointer_start) = bspan(log, memory, pointer_addr, 8, AIR_BASES_CENSUS_MASK)
+        else {
+            continue;
+        };
+        let pointer = match usize::try_from(bases_pool_u64(log, pointer_start))
+            .ok()
+            .filter(|&pointer| pointer != 0)
+        {
+            Some(pointer) => pointer,
+            None => continue,
+        };
+        let vtable_start = bspan(log, memory, Some(pointer), 8, AIR_BASES_CENSUS_MASK);
+        let id_start = bspan(
+            log,
+            memory,
+            pointer.checked_add(ccountry::ID),
+            4,
+            AIR_BASES_CENSUS_MASK,
+        );
+        let (Some(vtable_start), Some(id_start)) = (vtable_start, id_start) else {
+            continue;
+        };
+        if bases_pool_u64(log, vtable_start) != vtable {
+            continue;
+        }
+        let id = bases_pool_u32(log, id_start);
+        let canonical = bases_link(log, memory, &links, countries.count, id);
+        let slot_link = bases_link(log, memory, &links, countries.count, slot);
+        let (Some(canonical), Some(slot_link)) = (canonical, slot_link) else {
+            continue;
+        };
+        if slot_link != canonical {
+            continue;
+        }
+        let check = bases_link(log, memory, &links, countries.count, canonical);
+        if check != Some(canonical) {
+            continue;
+        }
+        let canonical_addr = (canonical as usize)
+            .checked_mul(8)
+            .and_then(|offset| countries.data.checked_add(offset));
+        let canonical_pointer = bspan(log, memory, canonical_addr, 8, AIR_BASES_CENSUS_MASK);
+        let Some(canonical_pointer) = canonical_pointer else {
+            continue;
+        };
+        if bases_pool_u64(log, canonical_pointer) != pointer as u64 {
+            continue;
+        }
+        if slot != canonical {
+            continue;
+        }
+        if census.len() == census.capacity() {
+            log.overflowed = true;
+            return None;
+        }
+        census.push((pointer, slot));
+    }
+    Some((links, countries.count))
+}
+
+/// Deduplicated resolve-link take: mirrors the typed walk's Resolver cache
+/// (one link read per distinct raw per pass). Deterministic across passes;
+/// Deduplicated resolve-link take returning the staged slot value: mirrors
+/// the typed walk's Resolver cache (one link read per distinct raw per
+/// pass). Deterministic across passes; within a pass every take of one
+/// address holds identical bytes, so re-sights reuse the staged value.
+fn resolve_link(
+    log: &mut RawLog<AIR_BASES_N>,
+    memory: &impl engine::Memory,
+    links: &Array,
+    seen: &mut Vec<(u32, u32)>,
+    countries: u32,
+    raw: u32,
+) -> Option<u32> {
+    if let Some((_, slot)) = seen.iter().find(|(key, _)| *key == raw) {
+        return Some(*slot);
+    }
+    if raw == 0 || raw >= links.count {
+        return None;
+    }
+    let offset = (raw as usize).checked_mul(4)?;
+    let start = bspan(
+        log,
+        memory,
+        links.data.checked_add(offset),
+        4,
+        AIR_REGISTRATIONS_MASK,
+    )?;
+    let slot = bases_pool_u32(log, start);
+    if slot >= countries {
+        return None;
+    }
+    if seen.len() == seen.capacity() {
+        log.overflowed = true;
+        return None;
+    }
+    seen.push((raw, slot));
+    Some(slot)
+}
+
+/// Read one native word back out of a recorded pointer-block take (`chunk`
+/// words staged at pool offset `start`). The typed walk reads each block
+/// with one `read_slice`; the mirror takes the same span and parses the
+/// staged bytes locally, never re-reading live memory and never allocating.
+fn block_word(log: &RawLog<AIR_BASES_N>, start: usize, index: usize) -> Option<usize> {
+    let at = start.checked_add(index.checked_mul(8)?)?;
+    let bytes = log.bytes.get(at..at.checked_add(8)?)?;
+    usize::try_from(u64::from_le_bytes(bytes.try_into().ok()?)).ok()
+}
+
+fn copy_air_base_row(
+    log: &mut RawLog<AIR_BASES_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    pointer: usize,
+    state_slot: Option<u32>,
+) -> bool {
+    // The 16-byte identity is taken once per base by the shared vector loop
+    // (both walks read it); only the bases-private host/state/province
+    // fields are taken here.
+    let host = match bspan(
+        log,
+        memory,
+        pointer.checked_add(cair_base::HOST_REFERENCE),
+        32,
+        BASES_MASK,
+    ) {
+        Some(start) => start,
+        None => return false,
+    };
+    let state_pointer = match usize::try_from(bases_pool_u64(log, host + 8)).ok() {
+        Some(pointer) => pointer,
+        None => return false,
+    };
+    let province_pointer = match usize::try_from(bases_pool_u64(log, host + 16)).ok() {
+        Some(pointer) => pointer,
+        None => return false,
+    };
+    let state = if state_pointer == 0 {
+        None
+    } else {
+        let vtable = match bspan(log, memory, Some(state_pointer), 8, BASES_MASK) {
+            Some(start) => start,
+            None => return false,
+        };
+        let expected_state = match base.checked_add(cstate::VTABLE_RVA) {
+            Some(expected) => expected as u64,
+            None => return false,
+        };
+        if bases_pool_u64(log, vtable) != expected_state {
+            return false;
+        }
+        let id = match bspan(log, memory, state_pointer.checked_add(cstate::ID), 4, BASES_MASK) {
+            Some(start) => bases_pool_u32(log, start),
+            None => return false,
+        };
+        Some(id)
+    };
+    if state != state_slot {
+        return false;
+    }
+    let host_ref = bases_pool_u64(log, host);
+    if state.is_none() && host_ref == 0 {
+        return false;
+    }
+    if province_pointer != 0 {
+        let vtable = match bspan(log, memory, Some(province_pointer), 8, BASES_MASK) {
+            Some(start) => start,
+            None => return false,
+        };
+        let expected_province = match base.checked_add(cprovince::VTABLE_RVA) {
+            Some(expected) => expected as u64,
+            None => return false,
+        };
+        if bases_pool_u64(log, vtable) != expected_province {
+            return false;
+        }
+        let owner = match bspan(
+            log,
+            memory,
+            province_pointer.checked_add(cprovince::STATE),
+            8,
+            BASES_MASK,
+        ) {
+            Some(start) => start,
+            None => return false,
+        };
+        if state_pointer != 0 && bases_pool_u64(log, owner) != state_pointer as u64 {
+            return false;
+        }
+        if bspan(
+            log,
+            memory,
+            province_pointer.checked_add(cprovince::ID),
+            4,
+            BASES_MASK,
+        )
+        .is_none()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Mirror of one country's ace roster and objects. Takes every
+/// discoverable span; validation mismatches stop only this country's takes
+/// (the typed walk fails there). Returns false exactly when the typed walk
+/// fails at or before this country.
+fn copy_air_aces_country(
+    log: &mut RawLog<AIR_BASES_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    pointer: usize,
+) -> bool {
+    let header = match bspan(
+        log,
+        memory,
+        pointer.checked_add(ccountry::ACES),
+        16,
+        AIR_ACES_MASK,
+    ) {
+        Some(start) => start,
+        None => return false,
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[header..header + 16]);
+    let roster = match Array::from_header(raw, 8) {
+        Some(array) => array,
+        None => return false,
+    };
+    for ordinal in 0..roster.count {
+        if !copy_air_ace(log, memory, base, pointer, &roster, ordinal) {
+            return false;
+        }
+        if log.overflowed {
+            return false;
+        }
+    }
+    true
+}
+
+/// Mirror of one ace object with its three name strings. The seven scattered
+/// fields are taken as seven exact spans in walk order; heap names take the
+/// terminator byte plus the content bytes, inline names take nothing further.
+/// Returns false exactly when the typed row read fails for this ace.
+fn copy_air_ace(
+    log: &mut RawLog<AIR_BASES_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    country_pointer: usize,
+    roster: &Array,
+    ordinal: u32,
+) -> bool {
+    let addr = roster.element(ordinal, 8);
+    let entry = match bspan(log, memory, addr, 8, AIR_ACES_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    let pointer = match usize::try_from(bases_pool_u64(log, entry))
+        .ok()
+        .filter(|&pointer| pointer != 0)
+    {
+        Some(pointer) => pointer,
+        None => return false,
+    };
+    // Seven scattered fields in walk order: identity, mask, owner/wing,
+    // the 96-byte three-string header block, alive, kill type, handled.
+    let identity = bspan(log, memory, Some(pointer), 16, AIR_ACES_MASK);
+    let mask = bspan(
+        log,
+        memory,
+        pointer.checked_add(cace::AIRCRAFT_TYPE_MASK),
+        4,
+        AIR_ACES_MASK,
+    );
+    let owner = bspan(
+        log,
+        memory,
+        pointer.checked_add(cace::OWNER_COUNTRY),
+        16,
+        AIR_ACES_MASK,
+    );
+    let strings = bspan(
+        log,
+        memory,
+        pointer.checked_add(cace::NAME),
+        96,
+        AIR_ACES_MASK,
+    );
+    let alive = bspan(
+        log,
+        memory,
+        pointer.checked_add(cace::ALIVE),
+        1,
+        AIR_ACES_MASK,
+    );
+    let kill_type = bspan(
+        log,
+        memory,
+        pointer.checked_add(cace::KILL_TYPE),
+        4,
+        AIR_ACES_MASK,
+    );
+    let handled = bspan(
+        log,
+        memory,
+        pointer.checked_add(cace::HANDLED),
+        1,
+        AIR_ACES_MASK,
+    );
+    let (Some(identity), Some(_), Some(owner), Some(strings), Some(alive), Some(_), Some(handled)) =
+        (identity, mask, owner, strings, alive, kill_type, handled)
+    else {
+        return false;
+    };
+    let expected = match base.checked_add(cace::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    if bases_pool_u64(log, identity) != expected
+        || bases_pool_u64(log, identity + 8) == 0
+        || bases_pool_u64(log, owner) != country_pointer as u64
+        || log.bytes[alive] > 1
+        || log.bytes[handled] > 1
+    {
+        return false;
+    }
+    if log.bytes[alive] == 0
+        && bspan(
+            log,
+            memory,
+            pointer.checked_add(cace::KILLER_ACE_REFERENCE),
+            12,
+            AIR_ACES_MASK,
+        )
+        .is_none()
+    {
+        return false;
+    }
+    for index in 0..3 {
+        let head = strings + index * 32;
+        if !copy_ace_name(log, memory, head) {
+            return false;
+        }
+        if log.overflowed {
+            return false;
+        }
+    }
+    true
+}
+
+/// Mirror of one ace name string: header validation is a local parse, heap
+/// names take the terminator byte plus the content bytes. Returns false
+/// exactly when the typed name read fails.
+fn copy_ace_name(
+    log: &mut RawLog<AIR_BASES_N>,
+    memory: &impl engine::Memory,
+    head: usize,
+) -> bool {
+    let header = &log.bytes[head..head + 32];
+    let len = u64::from_le_bytes(header[msvc_string::LENGTH..msvc_string::LENGTH + 8].try_into().unwrap());
+    let capacity =
+        u64::from_le_bytes(header[msvc_string::CAPACITY..msvc_string::CAPACITY + 8].try_into().unwrap());
+    if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
+        return false;
+    }
+    let len = match usize::try_from(len) {
+        Ok(len) => len,
+        Err(_) => return false,
+    };
+    if capacity == msvc_string::INLINE_CAPACITY {
+        if header.get(len) != Some(&0) {
+            return false;
+        }
+        return true;
+    }
+    let source = match usize::try_from(u64::from_le_bytes(
+        header[msvc_string::DATA..msvc_string::DATA + 8].try_into().unwrap(),
+    ))
+    .ok()
+    .filter(|&source| source != 0)
+    {
+        Some(source) => source,
+        None => return false,
+    };
+    if source.checked_add(len).is_none() {
+        return false;
+    }
+    // Terminator first, then content: the walk's read order.
+    if bspan(log, memory, source.checked_add(len), 1, AIR_ACES_MASK).is_none() {
+        return false;
+    }
+    if len == 0 {
+        return true;
+    }
+    if bspan(log, memory, Some(source), len, AIR_ACES_MASK).is_none() {
+        return false;
+    }
+    true
+}
+
+/// Mirror of one base's `registration` subtree: containers, pools and wings
+/// with the engine's 64-row batch chunking. Stops at the first typed abort
+/// point, mirroring the walk's fail-fast; null containers are measured
+/// absence. Returns false exactly when the typed walk fails for this base.
+#[allow(clippy::too_many_arguments)]
+fn copy_air_base_registrations(
+    log: &mut RawLog<AIR_BASES_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    base_handle: u64,
+    pointer: usize,
+    links: &Array,
+    countries: u32,
+    seen: &mut Vec<(u32, u32)>,
+) -> bool {
+    let _ = base_handle;
+    let header = match bspan(
+        log,
+        memory,
+        pointer.checked_add(cair_base::COUNTRY_CONTAINERS),
+        16,
+        AIR_REGISTRATIONS_MASK,
+    ) {
+        Some(start) => start,
+        None => return false,
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[header..header + 16]);
+    let containers = match Array::from_header(raw, 8) {
+        Some(array) => array,
+        None => return false,
+    };
+    let expected_pool = match base.checked_add(cair_wing_pool::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    let expected_primary = match base.checked_add(engine::cair_wing::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    let expected_secondary = match base.checked_add(engine::cair_wing::SECONDARY_VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    let expected_container = match base.checked_add(ccountry_air_container::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    for slot in 0..containers.count {
+        let addr = (slot as usize)
+            .checked_mul(8)
+            .and_then(|offset| containers.data.checked_add(offset));
+        let container_start = match bspan(log, memory, addr, 8, AIR_REGISTRATIONS_MASK) {
+            Some(start) => start,
+            None => return false,
+        };
+        let container = match usize::try_from(bases_pool_u64(log, container_start))
+            .ok()
+            .filter(|&pointer| pointer != 0)
+        {
+            Some(container) => container,
+            None => continue,
+        };
+        let vtable = match bspan(log, memory, Some(container), 8, AIR_REGISTRATIONS_MASK) {
+            Some(start) => start,
+            None => return false,
+        };
+        if bases_pool_u64(log, vtable) != expected_container {
+            return false;
+        }
+        let country = match bspan(
+            log,
+            memory,
+            container.checked_add(ccountry_air_container::COUNTRY),
+            4,
+            AIR_REGISTRATIONS_MASK,
+        ) {
+            Some(start) => bases_pool_u32(log, start),
+            None => return false,
+        };
+        // Slot/country agreement mirrors the walk's resolver path exactly:
+        // the reserved slot accepts only zero or unlinked ids (a readable
+        // zero entry is absence; unreadable entries stay faults), any other
+        // slot requires its resolved canonical slot. Link reads are
+        // deduplicated per pass like the walk's Resolver cache.
+        if slot == 0 {
+            if country != 0 {
+                match resolve_link(log, memory, links, seen, countries, country) {
+                    Some(0) => {}
+                    _ => return false,
+                }
+                if log.overflowed {
+                    return false;
+                }
+            }
+        } else {
+            match resolve_link(log, memory, links, seen, countries, country) {
+                Some(canonical) if canonical == slot => {}
+                _ => return false,
+            }
+            if log.overflowed {
+                return false;
+            }
+        }
+        let pools_header = match bspan(
+            log,
+            memory,
+            container.checked_add(ccountry_air_container::POOLS),
+            16,
+            AIR_REGISTRATIONS_MASK,
+        ) {
+            Some(start) => start,
+            None => return false,
+        };
+        raw.copy_from_slice(&log.bytes[pools_header..pools_header + 16]);
+        let pools = match Array::from_header(raw, 8) {
+            Some(array) => array,
+            None => return false,
+        };
+        let mut pool_first = 0u32;
+        while pool_first < pools.count {
+            let chunk = ((pools.count - pool_first) as usize).min(REG_MIRROR_BATCH);
+            let first_address = pools.element(pool_first, 8);
+            let block = match bspan(
+                log,
+                memory,
+                first_address,
+                chunk * 8,
+                AIR_REGISTRATIONS_MASK,
+            ) {
+                Some(start) => start,
+                None => return false,
+            };
+            for index in 0..chunk {
+                let pointer = match block_word(log, block, index) {
+                    Some(pointer) => pointer,
+                    None => return false,
+                };
+                // A null pool pointer inside a counted vector refuses the
+                // table, exactly like the typed walk.
+                if pointer == 0 {
+                    return false;
+                }
+                // `copy_records` POOL_FIELDS: vtable word plus wing-vector
+                // header as two exact spans, in field order.
+                let pool_vtable = match bspan(log, memory, Some(pointer), 8, AIR_REGISTRATIONS_MASK)
+                {
+                    Some(start) => start,
+                    None => return false,
+                };
+                let wings = match bspan(
+                    log,
+                    memory,
+                    pointer.checked_add(engine::cair_wing_pool::WINGS),
+                    16,
+                    AIR_REGISTRATIONS_MASK,
+                ) {
+                    Some(start) => start,
+                    None => return false,
+                };
+                if bases_pool_u64(log, pool_vtable) != expected_pool {
+                    return false;
+                }
+                let mut header = [0u8; 16];
+                header.copy_from_slice(&log.bytes[wings..wings + 16]);
+                let members = match Array::from_header(header, 8) {
+                    Some(array) => array,
+                    None => return false,
+                };
+                let mut wing_first = 0u32;
+                while wing_first < members.count {
+                    let wing_chunk =
+                        ((members.count - wing_first) as usize).min(REG_MIRROR_BATCH);
+                    let wing_address = members.element(wing_first, 8);
+                    let wing_block = match bspan(
+                        log,
+                        memory,
+                        wing_address,
+                        wing_chunk * 8,
+                        AIR_REGISTRATIONS_MASK,
+                    ) {
+                        Some(start) => start,
+                        None => return false,
+                    };
+                    for wing_index in 0..wing_chunk {
+                        let wing = match block_word(log, wing_block, wing_index) {
+                            Some(wing) => wing,
+                            None => return false,
+                        };
+                        if wing == 0 {
+                            return false;
+                        }
+                        // `copy_records` WING_FIELDS: the 32-byte identity
+                        // span as one exact span.
+                        let identity = match bspan(
+                            log,
+                            memory,
+                            Some(wing),
+                            32,
+                            AIR_REGISTRATIONS_MASK,
+                        ) {
+                            Some(start) => start,
+                            None => return false,
+                        };
+                        if bases_pool_u64(log, identity) != expected_primary
+                            || bases_pool_u64(log, identity + 16) != expected_secondary
+                            || bases_pool_u64(log, identity + 24) == 0
+                        {
+                            return false;
+                        }
+                    }
+                    if log.overflowed {
+                        return false;
+                    }
+                    wing_first += wing_chunk as u32;
+                }
+            }
+            if log.overflowed {
+                return false;
+            }
+            pool_first += chunk as u32;
+        }
+        if log.overflowed {
+            return false;
+        }
+    }
+    true
+}
+
+/// One structural copy pass: shared census, manager with base vectors,
+/// per-base fields and registrations, then ace rosters. Phases are
+/// independent: a validation or take failure stops only the takes belonging
+/// to walks that would stop there (tracked with alive flags), so every
+/// replay derives its own verdict from the recorded spans. The aces phase
+/// runs last on the shared census takes. The job is cleared on entry so
+/// pooled refreshes never accumulate spans across hours.
+#[allow(clippy::too_many_lines)]
+fn copy_air_bases_pass(
+    job: &mut AirBasesJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    ticks: &mut [u64; AIR_BASES_N],
+) {
+    job.clear();
+    job.game_state = game_state;
+    let started = qpc();
+    let census = copy_air_bases_census(&mut job.log, memory, base, game_state, &mut job.census);
+    ticks[0] += elapsed(started);
+    if job.log.overflowed {
+        return;
+    }
+    let (links, countries) = match census {
+        Some(census) => census,
+        None => {
+            // Census headers undiscoverable: the manager/base phases are
+            // independent and continue (their replays fail at the same
+            // headers); resolve and roster takes are skipped (their replays
+            // fail at the headers too).
+            copy_air_bases_vectors(job, memory, base, None, ticks);
+            return;
+        }
+    };
+    copy_air_bases_vectors(job, memory, base, Some((&links, countries)), ticks);
+    if job.log.overflowed {
+        return;
+    }
+    // Aces phase: independent of the base phases, served by the shared
+    // census takes plus roster/object/name takes below. Index iteration
+    // avoids cloning the census on the game thread.
+    let aces_started = qpc();
+    let mut ace_index = 0;
+    while ace_index < job.census.len() {
+        let (pointer, _) = job.census[ace_index];
+        ace_index += 1;
+        if !copy_air_aces_country(&mut job.log, memory, base, pointer) {
+            break;
+        }
+        if job.log.overflowed {
+            break;
+        }
+    }
+    ticks[2] += elapsed(aces_started);
+}
+
+/// Manager, vectors and per-base takes with per-walk alive flags. Shared
+/// spans (manager, headers, element pointers, identities) stop both walks on
+/// failure; private spans stop only their own walk while the other continues,
+/// mirroring each typed walk's fail-fast scope.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+fn copy_air_bases_vectors(
+    job: &mut AirBasesJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    census: Option<(&Array, u32)>,
+    ticks: &mut [u64; AIR_BASES_N],
+) {
+    let vectors_started = qpc();
+    let manager = match bspan(
+        &mut job.log,
+        memory,
+        job.game_state.checked_add(cgame_state::STRATEGIC_AIR_MANAGER),
+        8,
+        BASE_VECTORS_MASK,
+    ) {
+        Some(start) => match usize::try_from(bases_pool_u64(&job.log, start))
+            .ok()
+            .filter(|&pointer| pointer != 0)
+        {
+            Some(manager) => manager,
+            None => {
+                ticks[0] += elapsed(vectors_started);
+                return;
+            }
+        },
+        None => {
+            ticks[0] += elapsed(vectors_started);
+            return;
+        }
+    };
+    let vtable = bspan(&mut job.log, memory, Some(manager), 8, BASE_VECTORS_MASK);
+    let expected_manager = base.checked_add(cstrategic_air_manager::VTABLE_RVA);
+    let manager_ok = match (vtable, expected_manager) {
+        (Some(start), Some(expected)) => bases_pool_u64(&job.log, start) == expected as u64,
+        _ => false,
+    };
+    // Four base vectors in walk order, with the walk's indexed flags.
+    let mut headers = [(0usize, 0u32, true); 4];
+    let mut headers_ok = manager_ok;
+    for (slot, (offset, indexed)) in [
+        (cstrategic_air_manager::STATE_AIR_BASES, true),
+        (cstrategic_air_manager::STATE_ROCKET_BASES, true),
+        (cstrategic_air_manager::STATE_GUN_BASES, true),
+        (cstrategic_air_manager::STATELESS_AIR_BASES, false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let header = bspan(
+            &mut job.log,
+            memory,
+            manager.checked_add(offset),
+            16,
+            BASE_VECTORS_MASK,
+        );
+        match header {
+            Some(start) => {
+                let mut raw = [0u8; 16];
+                raw.copy_from_slice(&job.log.bytes[start..start + 16]);
+                match Array::from_header(raw, 8) {
+                    Some(array) => {
+                        headers[slot] = (start, array.count, indexed);
+                        let _ = array;
+                    }
+                    None => headers_ok = false,
+                }
+            }
+            None => headers_ok = false,
+        }
+        if job.log.overflowed {
+            ticks[0] += elapsed(vectors_started);
+            return;
+        }
+    }
+    let mut bases_alive = headers_ok;
+    let mut reg_alive = headers_ok && census.is_some();
+    let mut bases_ticks = 0u64;
+    let mut reg_ticks = 0u64;
+    for (header_start, count, indexed) in headers {
+        if !bases_alive && !reg_alive {
+            break;
+        }
+        // Re-parse the recorded header (already validated above when
+        // headers_ok; re-parse identically when headers failed so the
+        // failure scope stays per-walk below).
+        let mut raw = [0u8; 16];
+        raw.copy_from_slice(&job.log.bytes[header_start..header_start + 16]);
+        let Some(array) = Array::from_header(raw, 8) else {
+            // Both typed walks fail on this header; later vectors are unread
+            // by either replay.
+            break;
+        };
+        let _ = count;
+        for index in 0..array.count {
+            if !bases_alive && !reg_alive {
+                break;
+            }
+            let addr = (index as usize)
+                .checked_mul(8)
+                .and_then(|offset| array.data.checked_add(offset));
+            let element = bspan(&mut job.log, memory, addr, 8, BASE_VECTORS_MASK);
+            let Some(element) = element else {
+                bases_alive = false;
+                reg_alive = false;
+                break;
+            };
+            let pointer = match usize::try_from(bases_pool_u64(&job.log, element))
+                .ok()
+                .filter(|&pointer| pointer != 0)
+            {
+                Some(pointer) => pointer,
+                None => {
+                    if indexed {
+                        continue;
+                    }
+                    bases_alive = false;
+                    reg_alive = false;
+                    break;
+                }
+            };
+            if bases_alive {
+                let begin = qpc();
+                // Shared identity take (both walks read it); a failure or a
+                // failed identity stops both walks, mirroring both typed
+                // walks. Bases-private fields follow on the bases path only.
+                let identity = bspan(&mut job.log, memory, Some(pointer), 16, BASE_VECTORS_MASK);
+                let expected = base.checked_add(cair_base::VTABLE_RVA);
+                let (identity_ok, handle) = match (identity, expected) {
+                    (Some(start), Some(expected)) => (
+                        bases_pool_u64(&job.log, start) == expected as u64
+                            && bases_pool_u64(&job.log, start + 8) != 0,
+                        bases_pool_u64(&job.log, start + 8),
+                    ),
+                    _ => (false, 0),
+                };
+                if !identity_ok {
+                    bases_alive = false;
+                    reg_alive = false;
+                    bases_ticks += elapsed(begin);
+                    if job.log.overflowed {
+                        break;
+                    }
+                    // Both typed walks fail at this base; later bases are
+                    // unread by either replay.
+                    break;
+                }
+                if !copy_air_base_row(&mut job.log, memory, base, pointer, indexed.then_some(index))
+                {
+                    bases_alive = false;
+                }
+                bases_ticks += elapsed(begin);
+                if reg_alive {
+                    let begin = qpc();
+                    let (links, countries) = census.expect("reg takes need census links");
+                    if !copy_air_base_registrations(
+                        &mut job.log,
+                        memory,
+                        base,
+                        handle,
+                        pointer,
+                        links,
+                        countries,
+                        &mut job.seen_links,
+                    ) {
+                        reg_alive = false;
+                    }
+                    reg_ticks += elapsed(begin);
+                }
+            } else if reg_alive {
+                // The bases walk already stopped: the registrations walk
+                // still needs the shared identity take plus its own takes.
+                let begin = qpc();
+                let identity = bspan(&mut job.log, memory, Some(pointer), 16, BASE_VECTORS_MASK);
+                let expected = base.checked_add(cair_base::VTABLE_RVA);
+                let (identity_ok, handle) = match (identity, expected) {
+                    (Some(start), Some(expected)) => (
+                        bases_pool_u64(&job.log, start) == expected as u64
+                            && bases_pool_u64(&job.log, start + 8) != 0,
+                        bases_pool_u64(&job.log, start + 8),
+                    ),
+                    _ => (false, 0),
+                };
+                if !identity_ok {
+                    reg_alive = false;
+                    reg_ticks += elapsed(begin);
+                    break;
+                }
+                let (links, countries) = census.expect("reg takes need census links");
+                if !copy_air_base_registrations(
+                    &mut job.log,
+                    memory,
+                    base,
+                    handle,
+                    pointer,
+                    links,
+                    countries,
+                    &mut job.seen_links,
+                ) {
+                    reg_alive = false;
+                }
+                reg_ticks += elapsed(begin);
+            }
+            if job.log.overflowed {
+                break;
+            }
+        }
+        if job.log.overflowed {
+            break;
+        }
+    }
+    ticks[0] += elapsed(vectors_started).saturating_sub(bases_ticks).saturating_sub(reg_ticks);
+    ticks[0] += bases_ticks;
+    ticks[1] += reg_ticks;
+}
+
+impl Captured {
+    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
+    /// `second` while any rest table still needs double-read checks, compares
+    /// the raw logs, and records copy-only costs plus the existing
+    /// checked/mismatches bookkeeping. Returns whether the payload is
+    /// complete (`raw_ok`); on staging overflow the caller falls back to the
+    /// typed walks and enqueues nothing.
+    pub(crate) fn copy_air_bases_refresh(
+        &mut self,
+        memory: &impl Memory,
+        ctx: AirBasesCopyContext,
+        fog: &mut super::fog::Captured,
+        first: &mut AirBasesJob,
+        second: Option<&mut AirBasesJob>,
+    ) -> AirBasesCopyReport {
+        let mut ticks = [0u64; AIR_BASES_N];
+        copy_air_bases_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
+        let mut matched = [true; AIR_BASES_N];
+        if let Some(second_job) = second {
+            let mut second_ticks = [0u64; AIR_BASES_N];
+            copy_air_bases_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
+            for (total, extra) in ticks.iter_mut().zip(second_ticks) {
+                *total += extra;
+            }
+            // Per-table partitions: the shared census gates every slot, the
+            // manager/vector spans gate bases and registrations, private
+            // spans only their own table.
+            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+            for (slot, matched) in matched.iter_mut().enumerate() {
+                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+            }
+        }
+        // Conservative checked bookkeeping mirroring the typed paths.
+        self.bases.checked = ctx.needed[0];
+        self.bases.mismatches = usize::from(ctx.needed[0] && !matched[0]);
+        self.aces.checked = ctx.needed[2];
+        self.aces.mismatches = usize::from(ctx.needed[2] && !matched[2]);
+        fog.note_registrations_copy(ctx.needed[1], matched[1]);
+        let raw_ok = !first.log.overflowed;
+        AirBasesCopyReport {
+            raw_ok,
+            matched,
+            copy_ticks: ticks,
+            raw_bytes: first.log.raw_bytes,
+        }
+    }
+
+    /// Decode-worker interpretation of a raw shared bases payload: replays
+    /// the bases and aces walks against the recorded spans into the pooled
+    /// buffers (the fog registrations half runs from the same log through
+    /// `super::fog::Captured::decode_registrations_payload`). Installs
+    /// identical rows, truncation counts and failure reasons.
+    pub(crate) fn decode_air_bases_payload(
+        &mut self,
+        base: usize,
+        job: &AirBasesJob,
+        decode_ticks: &mut [u64; AIR_BASES_N],
+    ) {
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let started = qpc();
+        let walked = cair_base::walk(&recorded, base, job.game_state, &mut self.bases.rows);
+        self.bases.outcome = bounded(walked, self.bases.rows.len());
+        decode_ticks[0] += elapsed(started);
+        let started = qpc();
+        let walked = cace::walk(
+            &recorded,
+            base,
+            job.game_state,
+            &mut self.aces.rows,
+            &mut self.names.first,
+        );
+        self.aces.outcome = names_outcome(walked, &self.aces.rows, &self.names.first);
+        self.names.len = walked.bytes_len;
+        self.names.required = walked.required_bytes;
+        decode_ticks[2] += elapsed(started);
+        self.bases_raw_mode = false;
+    }
+}
+
+// ===========================================================================
+// Hourly shared history/damage split (AirRegionHistory, AirRegionDamage).
+//
+// The game thread copies raw bytes only: the country census, the
+// strategic-air manager with its country roster, per-owner region-combat
+// vectors, per-root identity with both record-vector headers, and every
+// record with its two damage vectors. Record spans are shared by both
+// tables (a record fault fails both walks, exactly like the typed walk);
+// damage-only spans gate the damage slot alone. No row is decoded on the
+// game thread. The single FIFO decode worker replays
+// `cair_region_combat_data::walk_world` against the recorded spans, so rows,
+// ordinals, skips, truncation counts and failure reasons are identical by
+// construction (see `crate::raw` for the mirror rules).
+//
+// Batched gathers decompose into per-element takes in walk order (a
+// `copy_records` block becomes one take per field, a `read_slice` block one
+// take per chunk), so a faulted batch serves its recorded prefix and the
+// replay derives the walk's own error at the same site. Pooled capacities
+// are ignored while copying: a superset is recorded and the replay
+// truncates identically against the real pooled buffers.
+// ===========================================================================
+
+/// Shared hourly payload slots in calibration/report order: [history,
+/// damage]. The single regional walk fills both row sets at once.
+pub(crate) const AIR_HISTORY_N: usize = 2;
+const AIR_DAMAGE_MASK: u32 = 0x02;
+/// Census, manager, region and record spans gate both slots: a fault there
+/// fails the whole regional walk, exactly like the typed walk.
+const AIR_HISTORY_CENSUS_MASK: u32 = 0x03;
+
+/// Batch chunking for the region/root pointer gathers. Must match the engine
+/// walk's batching exactly; takes decompose per element in walk order.
+const HISTORY_MIRROR_BATCH: usize = 64;
+
+/// One hour of raw shared history payload. Flat pools recycle capacities
+/// and the steady state allocates on neither thread; growth happens on the
+/// decode side only (see `crate::decode::recycle_air_history_job`).
+#[derive(Debug)]
+pub(crate) struct AirHistoryJob {
+    pub log: RawLog<AIR_HISTORY_N>,
+    pub game_state: usize,
+}
+
+impl AirHistoryJob {
+    pub fn new() -> Self {
+        Self {
+            // Late-campaign worst case is 43 history groups with 34 damage
+            // groups (appendix census); both pools start above that so
+            // steady state never overflows (see the worst-case caps test).
+            log: RawLog::new(1 << 15, 2 << 20),
+            game_state: 0,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.log.clear();
+        self.game_state = 0;
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.log.grow_for_next()
+    }
+
+    pub fn grow(&mut self) {
+        self.log.grow();
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct AirHistoryCopyReport {
+    /// False when staging overflowed: the caller falls back to the typed
+    /// walk (identical rows through the existing path) and enqueues no
+    /// payload.
+    pub raw_ok: bool,
+    /// Per-partition raw equality gated by live-fault conservatism, in
+    /// [history, damage] order. Shared spans gate both slots; damage-only
+    /// spans gate only the damage slot.
+    pub matched: [bool; AIR_HISTORY_N],
+    pub copy_ticks: [u64; AIR_HISTORY_N],
+    pub raw_bytes: [u64; AIR_HISTORY_N],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AirHistoryCopyContext {
+    pub base: usize,
+    pub game_state: usize,
+    pub needed: [bool; AIR_HISTORY_N],
+}
+
+fn history_pool_u64(log: &RawLog<AIR_HISTORY_N>, start: usize) -> u64 {
+    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+}
+
+/// One mirrored span read. `None` addresses (arithmetic overflow) record
+/// nothing because the typed walk fails locally without reads.
+fn hspan(
+    log: &mut RawLog<AIR_HISTORY_N>,
+    memory: &impl engine::Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take(memory, addr?, len, mask)
+}
+
+/// Mirror of one link-table read with local bounds checks. Returns `None`
+/// exactly when the typed resolve fails; the replay derives its own reason.
+fn history_link(
+    log: &mut RawLog<AIR_HISTORY_N>,
+    memory: &impl engine::Memory,
+    links: &Array,
+    countries: u32,
+    raw: u32,
+) -> Option<u32> {
+    if raw == 0 || raw >= links.count {
+        return None;
+    }
+    let offset = (raw as usize).checked_mul(4)?;
+    let start = hspan(
+        log,
+        memory,
+        links.data.checked_add(offset),
+        4,
+        AIR_HISTORY_CENSUS_MASK,
+    )?;
+    let slot = u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap());
+    if slot == 0 || slot >= countries {
+        return None;
+    }
+    Some(slot)
+}
+
+/// Mirror of one `ccountry::Reader` resolution for an owner country raw.
+/// Takes the link entry plus the full `read_at` span set, returning the
+/// canonical slot exactly when the typed resolve succeeds.
+fn history_resolve(
+    log: &mut RawLog<AIR_HISTORY_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    links: &Array,
+    countries_array: &Array,
+    countries: u32,
+    raw: u32,
+) -> Option<u32> {
+    let offset = if raw == 0 || raw >= links.count {
+        return None;
+    } else {
+        (raw as usize).checked_mul(4)?
+    };
+    let start = hspan(
+        log,
+        memory,
+        links.data.checked_add(offset),
+        4,
+        AIR_HISTORY_CENSUS_MASK,
+    )?;
+    let canonical =
+        u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap());
+    if canonical == 0 || canonical >= countries {
+        return None;
+    }
+    let pointer_addr = (canonical as usize)
+        .checked_mul(8)
+        .and_then(|offset| countries_array.data.checked_add(offset));
+    let pointer_start = hspan(log, memory, pointer_addr, 8, AIR_HISTORY_CENSUS_MASK)?;
+    let pointer = usize::try_from(history_pool_u64(log, pointer_start))
+        .ok()
+        .filter(|&pointer| pointer != 0)?;
+    let vtable_start = hspan(log, memory, Some(pointer), 8, AIR_HISTORY_CENSUS_MASK)?;
+    let id_start = hspan(
+        log,
+        memory,
+        pointer.checked_add(ccountry::ID),
+        4,
+        AIR_HISTORY_CENSUS_MASK,
+    )?;
+    let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
+    if history_pool_u64(log, vtable_start) != vtable {
+        return None;
+    }
+    let id = u32::from_le_bytes(log.bytes[id_start..id_start + 4].try_into().unwrap());
+    if history_link(log, memory, links, countries, id)? != canonical {
+        return None;
+    }
+    if history_link(log, memory, links, countries, canonical)? != canonical {
+        return None;
+    }
+    let canonical_addr = (canonical as usize)
+        .checked_mul(8)
+        .and_then(|offset| countries_array.data.checked_add(offset));
+    let canonical_pointer = hspan(log, memory, canonical_addr, 8, AIR_HISTORY_CENSUS_MASK)?;
+    if history_pool_u64(log, canonical_pointer) != pointer as u64 {
+        return None;
+    }
+    Some(canonical)
+}
+
+/// Mirror of one strategic-air owner's region-combat takes: identity,
+/// owner/country agreement, region roster, every region root with its
+/// records and damage vectors. Damage-scoped faults set `damage_dead`
+/// (records continue, mirroring the walk); record-scoped faults stop the
+/// whole pass (the typed walk fails both tables). Returns false exactly
+/// when the typed walk fails at or before this owner.
+#[allow(clippy::too_many_arguments)]
+fn copy_history_owner(
+    log: &mut RawLog<AIR_HISTORY_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    links: &Array,
+    countries_array: &Array,
+    countries: u32,
+    owner: usize,
+    slot: u32,
+    country: u32,
+    damage_dead: &mut bool,
+) -> bool {
+    // Identity: vtable word plus country word (IDENTITY_FIELDS).
+    if hspan(log, memory, Some(owner), 8, AIR_HISTORY_CENSUS_MASK).is_none() {
+        return false;
+    }
+    let country_start = match hspan(
+        log,
+        memory,
+        owner.checked_add(cstrategic_air::COUNTRY),
+        4,
+        AIR_HISTORY_CENSUS_MASK,
+    ) {
+        Some(start) => start,
+        None => return false,
+    };
+    let _ = country_start;
+    // Owner/country agreement mirrors the visit check; the resolve takes
+    // serve the replay identically.
+    match history_resolve(log, memory, base, links, countries_array, countries, country) {
+        Some(canonical) if canonical == slot => {}
+        _ => return false,
+    }
+    let regions_header = match hspan(
+        log,
+        memory,
+        owner.checked_add(cstrategic_air::REGION_COMBAT),
+        16,
+        AIR_HISTORY_CENSUS_MASK,
+    ) {
+        Some(start) => start,
+        None => return false,
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[regions_header..regions_header + 16]);
+    let regions = match Array::from_header(raw, 8) {
+        Some(array) => array,
+        None => return false,
+    };
+    let mut first = 0u32;
+    while first < regions.count {
+        let chunk = ((regions.count - first) as usize).min(HISTORY_MIRROR_BATCH);
+        // POINTER_FIELD gather decomposed per element in walk order: a
+        // faulted element stops the batch takes, and the recorded prefix
+        // still serves the roots the walk processes before its error.
+        // Fixed-size stack staging: no allocation on the game thread.
+        let mut words = [0u64; HISTORY_MIRROR_BATCH];
+        let mut taken = 0usize;
+        let mut batch_failed = false;
+        for (index, word) in words.iter_mut().enumerate().take(chunk) {
+            let addr = regions.element(first + index as u32, 8);
+            match addr.and_then(|at| {
+                hspan(log, memory, Some(at), 8, AIR_HISTORY_CENSUS_MASK)
+            }) {
+                Some(start) => {
+                    *word = history_pool_u64(log, start);
+                    taken += 1;
+                }
+                None => {
+                    batch_failed = true;
+                    break;
+                }
+            }
+            if log.overflowed {
+                return false;
+            }
+        }
+        // Live-compact the recorded prefix exactly like the walk.
+        for word in words.iter().take(taken) {
+            let address = match usize::try_from(*word).ok().filter(|&address| address != 0) {
+                Some(address) => address,
+                None => continue,
+            };
+            if !copy_history_root(
+                log,
+                memory,
+                base,
+                address,
+                damage_dead,
+            ) {
+                return false;
+            }
+            if log.overflowed {
+                return false;
+            }
+        }
+        if batch_failed || log.overflowed {
+            // The walk processes the recorded prefix, then fails at the
+            // faulted element with its own reason; the replay derives it
+            // from the same spans.
+            return false;
+        }
+        first += chunk as u32;
+    }
+    true
+}
+
+/// Mirror of one region root: identity, owner and both record vectors with
+/// every record and its damage entries. Record faults return false (both
+/// tables fail); damage faults set `damage_dead` and skip further damage
+/// takes while records continue.
+fn copy_history_root(
+    log: &mut RawLog<AIR_HISTORY_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    address: usize,
+    damage_dead: &mut bool,
+) -> bool {
+    // ROOT_FIELDS in field order: vtable, owner, first header, second header.
+    let vtable = match hspan(log, memory, Some(address), 8, AIR_HISTORY_CENSUS_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    let expected = match base.checked_add(cair_region_combat_data::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    if history_pool_u64(log, vtable) != expected {
+        return false;
+    }
+    let owner = match hspan(
+        log,
+        memory,
+        address.checked_add(cair_region_combat_data::OWNER),
+        4,
+        AIR_HISTORY_CENSUS_MASK,
+    ) {
+        Some(start) => start,
+        None => return false,
+    };
+    let _region_owner =
+        u32::from_le_bytes(log.bytes[owner..owner + 4].try_into().unwrap());
+    let first_header = match hspan(
+        log,
+        memory,
+        address.checked_add(cair_region_combat_data::FIRST_RECORDS),
+        16,
+        AIR_HISTORY_CENSUS_MASK,
+    ) {
+        Some(start) => start,
+        None => return false,
+    };
+    let second_header = match hspan(
+        log,
+        memory,
+        address.checked_add(cair_region_combat_data::SECOND_RECORDS),
+        16,
+        AIR_HISTORY_CENSUS_MASK,
+    ) {
+        Some(start) => start,
+        None => return false,
+    };
+    for header in [first_header, second_header] {
+        let mut raw = [0u8; 16];
+        raw.copy_from_slice(&log.bytes[header..header + 16]);
+        let vector = match Array::from_header(raw, sair_wing_combat_data::STRIDE) {
+            Some(array) => array,
+            None => return false,
+        };
+        for ordinal in 0..vector.count {
+            let record_addr = vector.element(ordinal, sair_wing_combat_data::STRIDE);
+            // Record spans gate both tables: the damage decode needs each
+            // record key, exactly like the typed walk.
+            if !copy_history_record(log, memory, record_addr, damage_dead) {
+                return false;
+            }
+            if log.overflowed {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Mirror of one combat record with its two damage vectors. Record faults
+/// return false; damage faults set `damage_dead` (records continue).
+fn copy_history_record(
+    log: &mut RawLog<AIR_HISTORY_N>,
+    memory: &impl engine::Memory,
+    record_addr: Option<usize>,
+    damage_dead: &mut bool,
+) -> bool {
+    let address = match record_addr {
+        Some(address) => address,
+        None => return false,
+    };
+    // read_row scattered takes: head block, attribution word, copied byte.
+    if hspan(log, memory, Some(address), 0x1a, AIR_HISTORY_CENSUS_MASK).is_none() {
+        return false;
+    }
+    if hspan(
+        log,
+        memory,
+        address.checked_add(sair_wing_combat_data::ATTRIBUTED_COUNTRY),
+        4,
+        AIR_HISTORY_CENSUS_MASK,
+    )
+    .is_none()
+    {
+        return false;
+    }
+    if hspan(
+        log,
+        memory,
+        address.checked_add(sair_wing_combat_data::COPIED_FLAG),
+        1,
+        AIR_HISTORY_CENSUS_MASK,
+    )
+    .is_none()
+    {
+        return false;
+    }
+    if *damage_dead {
+        return true;
+    }
+    for offset in [
+        sair_wing_combat_data::FIRST_DAMAGE,
+        sair_wing_combat_data::SECOND_DAMAGE,
+    ] {
+        let header = match hspan(
+            log,
+            memory,
+            address.checked_add(offset),
+            16,
+            AIR_DAMAGE_MASK,
+        ) {
+            Some(start) => start,
+            None => {
+                *damage_dead = true;
+                continue;
+            }
+        };
+        let mut raw = [0u8; 16];
+        raw.copy_from_slice(&log.bytes[header..header + 16]);
+        let entries = match Array::from_header(raw, sdamage_entry::STRIDE) {
+            Some(array) => array,
+            None => {
+                *damage_dead = true;
+                continue;
+            }
+        };
+        for index in 0..entries.count {
+            let entry = entries.element(index, sdamage_entry::STRIDE);
+            // Damage read_row scattered takes: head block plus amount.
+            let head = hspan(log, memory, entry, 12, AIR_DAMAGE_MASK);
+            let amount = entry.and_then(|entry| entry.checked_add(sdamage_entry::AMOUNT));
+            let amount = hspan(log, memory, amount, 8, AIR_DAMAGE_MASK);
+            if head.is_none() || amount.is_none() {
+                *damage_dead = true;
+                break;
+            }
+            if log.overflowed {
+                return false;
+            }
+        }
+        if log.overflowed {
+            return false;
+        }
+    }
+    true
+}
+
+/// One structural copy pass: shared census, manager roster, per-owner
+/// region takes with records and damage vectors. The job is cleared on
+/// entry so pooled refreshes never accumulate spans across hours.
+fn copy_air_history_pass(
+    job: &mut AirHistoryJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    ticks: &mut [u64; AIR_HISTORY_N],
+) {
+    job.clear();
+    job.game_state = game_state;
+    let started = qpc();
+    copy_air_history_owners(job, memory, base, game_state);
+    // The single regional walk is anchor-charged to the history slot,
+    // matching the read-group convention.
+    ticks[0] += elapsed(started);
+}
+
+fn copy_air_history_owners(
+    job: &mut AirHistoryJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+) {
+    let log = &mut job.log;
+    let countries_start = hspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRIES),
+        16,
+        AIR_HISTORY_CENSUS_MASK,
+    );
+    let links_start = hspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRY_LINKS),
+        16,
+        AIR_HISTORY_CENSUS_MASK,
+    );
+    let (Some(countries_start), Some(links_start)) = (countries_start, links_start) else {
+        return;
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
+    let countries_array = match Array::from_header(raw, 8) {
+        Some(array) => array,
+        None => return,
+    };
+    raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
+    let links = match Array::from_header(raw, 4) {
+        Some(array) => array,
+        None => return,
+    };
+    if countries_array.count < 2 || links.count == 0 {
+        return;
+    }
+    let manager = match hspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::STRATEGIC_AIR_MANAGER),
+        8,
+        AIR_HISTORY_CENSUS_MASK,
+    )
+    .and_then(|start| {
+        usize::try_from(history_pool_u64(log, start))
+            .ok()
+            .filter(|&pointer| pointer != 0)
+    }) {
+        Some(manager) => manager,
+        None => return,
+    };
+    let vtable_start = match hspan(log, memory, Some(manager), 8, AIR_HISTORY_CENSUS_MASK) {
+        Some(start) => start,
+        None => return,
+    };
+    let expected_manager = match base.checked_add(cstrategic_air_manager::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return,
+    };
+    // Manager vtable validation is a local parse over the staged word.
+    if history_pool_u64(log, vtable_start) != expected_manager {
+        return;
+    }
+    let slots_header = match hspan(
+        log,
+        memory,
+        manager.checked_add(cstrategic_air_manager::COUNTRY_AIR),
+        16,
+        AIR_HISTORY_CENSUS_MASK,
+    ) {
+        Some(start) => start,
+        None => return,
+    };
+    raw.copy_from_slice(&log.bytes[slots_header..slots_header + 16]);
+    let slots = match Array::from_header(raw, 8) {
+        Some(array) => array,
+        None => return,
+    };
+    if slots.count == 0 {
+        return;
+    }
+    let expected_owner = match base.checked_add(cstrategic_air::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return,
+    };
+    let mut damage_dead = false;
+    let mut first = 0u32;
+    while first < slots.count {
+        let chunk = ((slots.count - first) as usize).min(HISTORY_MIRROR_BATCH);
+        // SLOT_FIELD gather decomposed per slot in walk order with
+        // fixed-size stack staging (no allocation on the game thread).
+        let mut words = [0u64; HISTORY_MIRROR_BATCH];
+        let mut taken = 0usize;
+        let mut batch_failed = false;
+        for (index, word) in words.iter_mut().enumerate().take(chunk) {
+            let addr = slots.element(first + index as u32, 8);
+            match addr.and_then(|at| hspan(log, memory, Some(at), 8, AIR_HISTORY_CENSUS_MASK))
+            {
+                Some(start) => {
+                    *word = history_pool_u64(log, start);
+                    taken += 1;
+                }
+                None => {
+                    batch_failed = true;
+                    break;
+                }
+            }
+            if log.overflowed {
+                return;
+            }
+        }
+        // Resolve the recorded prefix in slot order, mirroring the visit:
+        // identity takes, owner agreement, then region takes.
+        for (index, word) in words.iter().enumerate().take(taken) {
+            let address = match usize::try_from(*word).ok().filter(|&address| address != 0) {
+                Some(address) => address,
+                None => continue,
+            };
+            // IDENTITY_FIELDS: vtable word plus country word.
+            let vtable_start =
+                match hspan(log, memory, Some(address), 8, AIR_HISTORY_CENSUS_MASK) {
+                    Some(start) => start,
+                    None => return,
+                };
+            let country_start = match hspan(
+                log,
+                memory,
+                address.checked_add(cstrategic_air::COUNTRY),
+                4,
+                AIR_HISTORY_CENSUS_MASK,
+            ) {
+                Some(start) => start,
+                None => return,
+            };
+            let slot = first + index as u32;
+            if history_pool_u64(log, vtable_start) != expected_owner {
+                return;
+            }
+            let country = u32::from_le_bytes(
+                log.bytes[country_start..country_start + 4].try_into().unwrap(),
+            );
+            if !copy_history_owner(
+                log,
+                memory,
+                base,
+                &links,
+                &countries_array,
+                countries_array.count,
+                address,
+                slot,
+                country,
+                &mut damage_dead,
+            ) {
+                return;
+            }
+            if log.overflowed {
+                return;
+            }
+        }
+        if batch_failed || log.overflowed {
+            // The visit processes the recorded prefix, then fails at the
+            // faulted slot with its own reason; the replay derives it from
+            // the same spans.
+            return;
+        }
+        first += chunk as u32;
+    }
+}
+
+impl Captured {
+    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
+    /// `second` while any history table still needs double-read checks,
+    /// compares the raw logs, and records copy-only costs plus the existing
+    /// checked/mismatches bookkeeping. Returns whether the payload is
+    /// complete (`raw_ok`); on staging overflow the caller falls back to the
+    /// typed walk and enqueues nothing.
+    pub(crate) fn copy_air_history_refresh(
+        &mut self,
+        memory: &impl Memory,
+        ctx: AirHistoryCopyContext,
+        first: &mut AirHistoryJob,
+        second: Option<&mut AirHistoryJob>,
+    ) -> AirHistoryCopyReport {
+        let mut ticks = [0u64; AIR_HISTORY_N];
+        copy_air_history_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
+        let mut matched = [true; AIR_HISTORY_N];
+        if let Some(second_job) = second {
+            let mut second_ticks = [0u64; AIR_HISTORY_N];
+            copy_air_history_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
+            for (total, extra) in ticks.iter_mut().zip(second_ticks) {
+                *total += extra;
+            }
+            // Per-table partitions: shared spans gate both slots, damage
+            // spans only the damage slot.
+            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+            for (slot, matched) in matched.iter_mut().enumerate() {
+                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+            }
+        }
+        // Conservative checked bookkeeping mirroring the typed paths.
+        self.history.checked = ctx.needed[0];
+        self.history.mismatches = usize::from(ctx.needed[0] && !matched[0]);
+        self.damage.checked = ctx.needed[1];
+        self.damage.mismatches = usize::from(ctx.needed[1] && !matched[1]);
+        let raw_ok = !first.log.overflowed;
+        AirHistoryCopyReport {
+            raw_ok,
+            matched,
+            copy_ticks: ticks,
+            raw_bytes: first.log.raw_bytes,
+        }
+    }
+
+    /// Decode-worker interpretation of a raw shared history payload: replays
+    /// the regional walk against the recorded spans into the pooled buffers,
+    /// with the identical bounded/capacity handling the game thread applies.
+    /// Installs identical rows, truncation counts and failure reasons.
+    pub(crate) fn decode_air_history_payload(
+        &mut self,
+        base: usize,
+        job: &AirHistoryJob,
+        decode_ticks: &mut [u64; AIR_HISTORY_N],
+    ) {
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let started = qpc();
+        let walked = cair_region_combat_data::walk_world(
+            &recorded,
+            base,
+            job.game_state,
+            &mut self.history.rows,
+            &mut self.damage.rows,
+        );
+        self.history.outcome = bounded(walked.records, self.history.rows.len());
+        self.damage.outcome = bounded(walked.damage, self.damage.rows.len());
+        decode_ticks[0] += elapsed(started);
+        self.history_raw_mode = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2029,6 +4008,575 @@ mod tests {
         let report = super::copy_air_refresh(&memory, ctx, &mut tiny, None);
         assert!(!report.raw_ok);
     }
+
+    #[test]
+    fn air_bases_split_copy_matches_direct_walk_with_alias_and_rocket_vector() {
+        // Census alias skip plus a non-state base vector: the alias slot
+        // publishes no duplicate rows and the rocket base decodes from the
+        // same shared spans.
+        use super::air_bases_test_kit as kit;
+        let mut bytes = kit::fixture();
+        kit::add_alias_and_rocket(&mut bytes);
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let (split, report, _) = kit::split(&memory);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 3]);
+        kit::assert_matches_direct(&split, &direct);
+        assert_eq!(split.bases_outcome, Outcome::Rows { len: 4 });
+        assert_eq!(split.regs.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(split.aces_outcome, Outcome::Rows { len: 2 });
+    }
+
+    #[test]
+    fn air_bases_tables_are_hourly_tier_h_with_no_refresh_gate() {
+        use replay::rows::TableId;
+        for table in [
+            TableId::AirBases,
+            TableId::AirBaseRegistrations,
+            TableId::AirAces,
+        ] {
+            assert!(!replay::cadence::is_staggered(table), "{table:?}");
+            for hour in [0, 1, 2, 3, 60_820_531] {
+                assert!(replay::cadence::is_refresh(table, hour), "{table:?} at {hour}");
+            }
+        }
+    }
+
+    #[test]
+    fn air_bases_split_copy_matches_direct_walk() {
+        use super::air_bases_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let (split, report, _) = kit::split(&memory);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 3]);
+        kit::assert_matches_direct(&split, &direct);
+        // Two state bases plus one stateless host; two registrations (one
+        // with two wings, one empty); two aces (one alive inline, one dead
+        // heap-named).
+        assert_eq!(split.bases_outcome, Outcome::Rows { len: 3 });
+        assert_eq!(split.aces_outcome, Outcome::Rows { len: 2 });
+        assert_eq!(split.regs.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(split.regs.wings, vec![kit::WING_HANDLE_0, kit::WING_HANDLE_1]);
+        assert_eq!(split.bases[0].state, Some(1));
+        assert_eq!(split.bases[0].province, Some(5));
+        assert_eq!(split.bases[2].state, None);
+        assert_eq!(split.aces[0].alive, 1);
+        assert_eq!(split.aces[1].alive, 0);
+        assert!(split.aces[1].death.is_some());
+    }
+
+    #[test]
+    fn air_bases_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Fixture holds 3 bases, 2 registrations (2 wings) and 2 aces;
+        // bases cap 2 is the overflow-by-one arm, wings cap 1 the
+        // overflow arm, cap 0 the zero/massive arm.
+        use super::air_bases_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for (bases, wings, aces, names) in [
+            (0, 0, 0, 0),
+            (1, 1, 1, 8),
+            (2, 1, 1, 16),
+            (3, 2, 2, 64),
+            (64, 64, 64, 4096),
+        ] {
+            let direct = kit::direct_with(&memory, bases, wings, aces, names);
+            let (split, report, _) = kit::split_with(&memory, bases, wings, aces, names);
+            assert!(
+                report.raw_ok,
+                "bases={bases} wings={wings} aces={aces} names={names}"
+            );
+            assert_eq!(
+                report.matched,
+                [true; 3],
+                "bases={bases} wings={wings} aces={aces} names={names}"
+            );
+            kit::assert_matches_direct(&split, &direct);
+        }
+        // Exact-fit arm pins Rows with all rows present.
+        let direct = kit::direct_with(&memory, 3, 2, 2, 64);
+        assert_eq!(direct.bases_outcome, Outcome::Rows { len: 3 });
+        assert_eq!(direct.aces_outcome, Outcome::Rows { len: 2 });
+        assert_eq!(direct.regs.outcome, Outcome::Rows { len: 2 });
+    }
+
+    #[test]
+    fn air_bases_split_copy_matches_direct_walk_on_fault_matrix() {
+        // Every fault arm asserts byte-identical decode (same outcome and
+        // rows as the typed walk on the same torn memory) plus the expected
+        // per-slot raw-compare attribution: shared census faults block all
+        // three slots, manager/vector faults block bases and registrations,
+        // private faults block only their own slot.
+        use super::air_bases_test_kit as kit;
+        use engine::memory::SliceMemory;
+        struct Fault<'a> {
+            memory: SliceMemory<'a>,
+            fault: std::ops::Range<usize>,
+        }
+        impl engine::Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let Some(end) = address.checked_add(output.len()) else {
+                    return false;
+                };
+                if address < self.fault.end && end > self.fault.start {
+                    return false;
+                }
+                self.memory.copy(address, output)
+            }
+        }
+        for (fault, matched) in [
+            // Shared country census: every slot blocks.
+            (kit::GAME_STATE + engine::cgame_state::COUNTRIES, [false, false, false]),
+            (kit::C0, [false, false, false]),
+            (kit::LTAB + 4, [false, false, false]),
+            // Shared manager and vectors: bases and registrations block.
+            (kit::MANAGER, [false, false, true]),
+            (kit::SVEC, [false, false, true]),
+            (kit::B0, [false, false, true]),
+            // Bases-private fields: only bases blocks.
+            (kit::B0 + engine::cair_base::HOST_REFERENCE, [false, true, true]),
+            (kit::S0, [false, true, true]),
+            // Registrations-private spans: only registrations blocks.
+            (kit::CONT1, [true, false, true]),
+            (kit::CONT1 + engine::ccountry_air_container::COUNTRY, [true, false, true]),
+            (kit::POOL0, [true, false, true]),
+            (kit::W0, [true, false, true]),
+            // Aces-private spans: only aces blocks.
+            (kit::C0 + engine::ccountry::ACES, [true, true, false]),
+            (kit::A0, [true, true, false]),
+            (kit::A0 + engine::cace::ALIVE, [true, true, false]),
+            (kit::NSTR, [true, true, false]),
+        ] {
+            let bytes = kit::fixture();
+            let memory = Fault {
+                memory: SliceMemory { base: 0, bytes: &bytes },
+                fault: fault..fault + 1,
+            };
+            let direct = kit::direct(&memory);
+            let (split, report, _) = kit::split(&memory);
+            assert!(report.raw_ok, "fault={fault:x}");
+            kit::assert_matches_direct(&split, &direct);
+            assert_eq!(report.matched, matched, "fault={fault:x}");
+        }
+    }
+
+    #[test]
+    fn air_bases_double_copy_compare_blocks_checks_on_tearing() {
+        // Targeted tearing: a changed wing handle flips only the
+        // registrations partition, a changed census id flips every
+        // partition. Both copies run against live memories differing by one
+        // field, exactly like a same-hour tear.
+        use super::air_bases_test_kit as kit;
+        use super::{AirBasesCopyContext, AirBasesJob};
+        use crate::extended::fog::Capacities as FogCapacities;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = AirBasesCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 3],
+        };
+        let air_cap = super::Capacities::default();
+        let fog_cap = FogCapacities::default();
+        let mut air = super::Captured::with_capacities(&air_cap, &[0; 7]);
+        let mut fog = crate::extended::fog::Captured::with_capacities(&fog_cap, &[0; 6]);
+        let mut first = AirBasesJob::new();
+        let report = air.copy_air_bases_refresh(&memory, ctx, &mut fog, &mut first, None);
+        assert!(report.raw_ok);
+        // Tear the wing handle: only the registrations partition flips.
+        let mut torn = bytes.clone();
+        kit::put64(&mut torn, kit::W0 + 24, 0x1234_5678_9abc_def0);
+        let torn_memory = kit::memory(&torn);
+        let mut second = AirBasesJob::new();
+        let mut air2 = super::Captured::with_capacities(&air_cap, &[0; 7]);
+        let mut fog2 = crate::extended::fog::Captured::with_capacities(&fog_cap, &[0; 6]);
+        let torn_report =
+            air2.copy_air_bases_refresh(&torn_memory, ctx, &mut fog2, &mut second, None);
+        assert!(torn_report.raw_ok);
+        assert!(first.log.partition_equal(&second.log, 0));
+        assert!(!first.log.partition_equal(&second.log, 1));
+        assert!(first.log.partition_equal(&second.log, 2));
+        // Tear the census id: every partition flips (shared census).
+        let mut torn = bytes.clone();
+        kit::put32(&mut torn, kit::C0 + engine::ccountry::ID, 9);
+        let torn_memory = kit::memory(&torn);
+        let mut third = AirBasesJob::new();
+        let mut air3 = super::Captured::with_capacities(&air_cap, &[0; 7]);
+        let mut fog3 = crate::extended::fog::Captured::with_capacities(&fog_cap, &[0; 6]);
+        let torn_report =
+            air3.copy_air_bases_refresh(&torn_memory, ctx, &mut fog3, &mut third, None);
+        assert!(torn_report.raw_ok);
+        assert!(!first.log.partition_equal(&third.log, 0));
+        assert!(!first.log.partition_equal(&third.log, 1));
+        assert!(!first.log.partition_equal(&third.log, 2));
+        assert!(!first.log.logs_equal(&second.log));
+    }
+
+    #[test]
+    fn air_bases_shared_resolve_link_taken_once_per_pass() {
+        // Shared-copy proof: two containers name the same country, but the
+        // resolve link read is taken exactly once per pass (mirroring the
+        // walk's Resolver cache) while both registrations decode.
+        use super::air_bases_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let (_split, report, first) = kit::split(&memory);
+        assert!(report.raw_ok);
+        let addr = kit::LTAB + 4;
+        let takes = first
+            .log
+            .spans
+            .iter()
+            .filter(|span| {
+                span.addr == addr && span.len == 4 && span.mask == super::AIR_REGISTRATIONS_MASK
+            })
+            .count();
+        assert_eq!(takes, 1, "resolve link takes: {:?}", first.log.spans);
+    }
+
+    #[test]
+    fn air_bases_registrations_decode_matches_direct_from_shared_log() {
+        // Dual-decode proof: the registrations half decoded alone from the
+        // shared log (fresh fog buffers, no bases state) equals the typed
+        // walk, proving both families read identical rows from shared spans.
+        use super::air_bases_test_kit as kit;
+        use crate::extended::fog::Capacities as FogCapacities;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let (_split, report, first) = kit::split(&memory);
+        assert!(report.raw_ok);
+        let fog_cap = FogCapacities::default();
+        let mut fog = crate::extended::fog::Captured::with_capacities(&fog_cap, &[0; 6]);
+        let mut ticks = [0u64; 3];
+        fog.decode_registrations_payload(kit::BASE, &first, &mut ticks);
+        let alone = fog.registrations_snapshot();
+        assert_eq!(alone.outcome, direct.regs.outcome, "registrations outcome");
+        assert_eq!(alone.rows, direct.regs.rows, "registrations rows");
+        assert_eq!(alone.wings, direct.regs.wings, "registrations wings");
+    }
+
+    #[test]
+    fn air_bases_staging_overflow_falls_back_to_typed_walk() {
+        use super::air_bases_test_kit as kit;
+        use super::{AirBasesCopyContext, AirBasesJob};
+        use crate::extended::fog::Capacities as FogCapacities;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = AirBasesCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 3],
+        };
+        let mut tiny = AirBasesJob {
+            log: crate::raw::RawLog::new(1, 1),
+            game_state: 0,
+            census: Vec::new(),
+            seen_links: Vec::new(),
+        };
+        let air_cap = super::Capacities::default();
+        let fog_cap = FogCapacities::default();
+        let mut air = super::Captured::with_capacities(&air_cap, &[0; 7]);
+        let mut fog = crate::extended::fog::Captured::with_capacities(&fog_cap, &[0; 6]);
+        let report = air.copy_air_bases_refresh(&memory, ctx, &mut fog, &mut tiny, None);
+        assert!(!report.raw_ok);
+    }
+
+    #[test]
+    fn air_bases_pools_cover_appendix_worst_case() {
+        // Worst-case caps proof: the steady-state pools exceed a
+        // conservative span/byte estimate built from the appendix census
+        // (396 bases, 5,148 registrations, 57 aces, 439 countries), so live
+        // refreshes never take the overflow fallback in steady state.
+        use super::AirBasesJob;
+        let job = AirBasesJob::new();
+        // Census: 2 headers + 439 slots x (pointer, vtable, id, 3 links,
+        // canonical pointer). Vectors: manager + vtable + 4 headers + ~500
+        // element pointers + identities. Bases detail: ~500 x 6 field spans.
+        // Registrations: 5,148 rows x (container pointer, vtable, country,
+        // link, pools header) + pools/blocks/headers + ~10k wing takes.
+        // Aces: 439 roster headers + 57 x ~13 object/name spans.
+        let spans = 2 + 439 * 7 + 6 + 500 * 2 + 500 * 6 + 5_148 * 5 + 5_148 * 3 + 10_000 + 439 + 57 * 13;
+        assert!(
+            job.log.spans.capacity() >= spans,
+            "span cap {} < worst case {spans}",
+            job.log.spans.capacity()
+        );
+        // Bytes: census words + identities + host blocks + container/pool
+        // headers + wing identities + ace objects and names, with headroom.
+        let bytes = 439 * 64 + 500 * 48 + 500 * 64 + 5_148 * 64 + 10_000 * 40 + 57 * 512;
+        assert!(
+            job.log.bytes.capacity() >= bytes,
+            "byte cap {} < worst case {bytes}",
+            job.log.bytes.capacity()
+        );
+        assert!(job.census.capacity() >= 439);
+        assert!(job.seen_links.capacity() >= 439);
+    }
+
+    #[test]
+    fn air_bases_copy_sizes_cover_documented_read_set() {
+        // S3: every Memory::copy size the shared copy pass issues, recorded
+        // through the real pass. Census words (4/8), array headers (16),
+        // base identity (16), host block (32), state/province words (8/4),
+        // pool/wing blocks (chunked 8s), wing identities (32), ace scattered
+        // fields (16/4/1/12) and name bytes (1 + content).
+        use super::air_bases_test_kit as kit;
+        use engine::Memory;
+        use std::collections::BTreeSet;
+        struct Recorder<'a> {
+            inner: engine::memory::SliceMemory<'a>,
+            sizes: std::cell::RefCell<BTreeSet<usize>>,
+        }
+        impl Memory for Recorder<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.sizes.borrow_mut().insert(output.len());
+                self.inner.copy(address, output)
+            }
+        }
+        let bytes = kit::fixture();
+        let memory = Recorder {
+            inner: kit::memory(&bytes),
+            sizes: std::cell::RefCell::new(BTreeSet::new()),
+        };
+        let (_split, report, _) = kit::split(&memory);
+        assert!(report.raw_ok);
+        let sizes = memory.sizes.borrow().clone();
+        for required in [1, 4, 8, 12, 16, 32] {
+            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+        }
+    }
+
+    #[test]
+    fn air_history_tables_are_hourly_tier_h_with_no_refresh_gate() {
+        use replay::rows::TableId;
+        for table in [TableId::AirRegionHistory, TableId::AirRegionDamage] {
+            assert!(!replay::cadence::is_staggered(table), "{table:?}");
+            for hour in [0, 1, 2, 3, 60_820_531] {
+                assert!(replay::cadence::is_refresh(table, hour), "{table:?} at {hour}");
+            }
+        }
+    }
+
+    #[test]
+    fn air_history_split_copy_matches_direct_walk() {
+        use super::air_history_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let (split, report, _) = kit::split(&memory);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 2]);
+        kit::assert_matches_direct(&split, &direct);
+        // Three records across two sides plus three damage entries.
+        assert_eq!(split.history_outcome, Outcome::Rows { len: 3 });
+        assert_eq!(split.damage_outcome, Outcome::Rows { len: 3 });
+        assert_eq!(split.history[0].key.wing_id, 0x1111);
+        assert_eq!(split.history[0].region_owner, 7);
+        assert_eq!(split.damage[0].cause, 5);
+        assert_eq!(split.damage[0].amount, 1000);
+        assert_eq!(split.damage[2].channel, 1);
+    }
+
+    #[test]
+    fn air_history_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        use super::air_history_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for (history, damage) in [(0, 0), (1, 1), (2, 1), (3, 3), (64, 64)] {
+            let direct = kit::direct_with(&memory, history, damage);
+            let (split, report, _) = kit::split_with(&memory, history, damage);
+            assert!(report.raw_ok, "history={history} damage={damage}");
+            assert_eq!(report.matched, [true; 2], "history={history} damage={damage}");
+            kit::assert_matches_direct(&split, &direct);
+        }
+        let direct = kit::direct_with(&memory, 3, 3);
+        assert_eq!(direct.history_outcome, Outcome::Rows { len: 3 });
+        assert_eq!(direct.damage_outcome, Outcome::Rows { len: 3 });
+    }
+
+    #[test]
+    fn air_history_split_copy_matches_direct_walk_on_fault_matrix() {
+        // Every fault arm asserts byte-identical decode plus per-slot
+        // attribution: record faults block both slots (the typed walk fails
+        // both tables), damage-only faults block damage while history stays
+        // Rows (the typed walk keeps records).
+        use super::air_history_test_kit as kit;
+        use engine::memory::SliceMemory;
+        struct Fault<'a> {
+            memory: SliceMemory<'a>,
+            fault: std::ops::Range<usize>,
+        }
+        impl engine::Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let Some(end) = address.checked_add(output.len()) else {
+                    return false;
+                };
+                if address < self.fault.end && end > self.fault.start {
+                    return false;
+                }
+                self.memory.copy(address, output)
+            }
+        }
+        for (fault, matched) in [
+            (kit::GAME_STATE + engine::cgame_state::COUNTRIES, [false, false]),
+            (kit::MANAGER, [false, false]),
+            (kit::R0, [false, false]),
+            (kit::R0 + engine::cair_region_combat_data::OWNER, [false, false]),
+            (kit::REC0, [false, false]),
+            // Damage-scoped faults: history still decodes identical Rows.
+            (
+                kit::REC0 + engine::sair_wing_combat_data::FIRST_DAMAGE,
+                [true, false],
+            ),
+            (kit::E0, [true, false]),
+            (kit::E0 + engine::sdamage_entry::AMOUNT, [true, false]),
+        ] {
+            let bytes = kit::fixture();
+            let memory = Fault {
+                memory: SliceMemory { base: 0, bytes: &bytes },
+                fault: fault..fault + 1,
+            };
+            let direct = kit::direct(&memory);
+            let (split, report, _) = kit::split(&memory);
+            assert!(report.raw_ok, "fault={fault:x}");
+            kit::assert_matches_direct(&split, &direct);
+            assert_eq!(report.matched, matched, "fault={fault:x}");
+        }
+    }
+
+    #[test]
+    fn air_history_double_copy_compare_blocks_checks_on_tearing() {
+        // Targeted tearing: a changed damage amount flips only the damage
+        // partition, a changed record field flips both.
+        use super::air_history_test_kit as kit;
+        use super::{AirHistoryCopyContext, AirHistoryJob};
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = AirHistoryCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 2],
+        };
+        let capacities = super::Capacities {
+            rows: [8192, 2048, 4096, 8192, 16_384, 1024, 2048],
+            ace_names: 65_536,
+        };
+        let mut captured = super::Captured::with_capacities(&capacities, &[0; 7]);
+        let mut first = AirHistoryJob::new();
+        let report = captured.copy_air_history_refresh(&memory, ctx, &mut first, None);
+        assert!(report.raw_ok);
+        let mut torn = bytes.clone();
+        torn[kit::E0 + engine::sdamage_entry::AMOUNT] ^= 0xff;
+        let torn_memory = kit::memory(&torn);
+        let mut second = AirHistoryJob::new();
+        let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 7]);
+        let torn_report = captured2.copy_air_history_refresh(&torn_memory, ctx, &mut second, None);
+        assert!(torn_report.raw_ok);
+        assert!(first.log.partition_equal(&second.log, 0));
+        assert!(!first.log.partition_equal(&second.log, 1));
+        let mut torn = bytes.clone();
+        torn[kit::REC0 + engine::sair_wing_combat_data::PLANE_COUNT] ^= 0xff;
+        let torn_memory = kit::memory(&torn);
+        let mut third = AirHistoryJob::new();
+        let mut captured3 = super::Captured::with_capacities(&capacities, &[0; 7]);
+        let torn_report = captured3.copy_air_history_refresh(&torn_memory, ctx, &mut third, None);
+        assert!(torn_report.raw_ok);
+        assert!(!first.log.partition_equal(&third.log, 0));
+        assert!(!first.log.partition_equal(&third.log, 1));
+        assert!(!first.log.logs_equal(&second.log));
+    }
+
+    #[test]
+    fn air_history_staging_overflow_falls_back_to_typed_walk() {
+        use super::air_history_test_kit as kit;
+        use super::{AirHistoryCopyContext, AirHistoryJob};
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = AirHistoryCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [true; 2],
+        };
+        let mut tiny = AirHistoryJob {
+            log: crate::raw::RawLog::new(1, 1),
+            game_state: 0,
+        };
+        let capacities = super::Capacities {
+            rows: [8192, 2048, 4096, 8192, 16_384, 1024, 2048],
+            ace_names: 65_536,
+        };
+        let mut captured = super::Captured::with_capacities(&capacities, &[0; 7]);
+        let report = captured.copy_air_history_refresh(&memory, ctx, &mut tiny, None);
+        assert!(!report.raw_ok);
+    }
+
+    #[test]
+    fn air_history_pools_cover_appendix_worst_case() {
+        // Worst-case caps proof: the steady-state pools exceed a
+        // conservative span/byte estimate built from the appendix census
+        // (43 history groups with ~1,341 native entries, 34 damage groups),
+        // so live refreshes never take the overflow fallback in steady state.
+        use super::AirHistoryJob;
+        let job = AirHistoryJob::new();
+        // Census and manager: headers plus 439 country slots and one owner
+        // roster. Regions: ~100 roots x (pointer + identity + headers).
+        // Records: 1,341 x (head + attribution + copied + 2 damage headers).
+        // Damage: ~500 entries x (head + amount).
+        let spans = 2 + 439 * 2 + 6 + 100 * 7 + 1_341 * 6 + 500 * 2;
+        assert!(
+            job.log.spans.capacity() >= spans,
+            "span cap {} < worst case {spans}",
+            job.log.spans.capacity()
+        );
+        let bytes = 439 * 32 + 100 * 64 + 1_341 * 64 + 500 * 24;
+        assert!(
+            job.log.bytes.capacity() >= bytes,
+            "byte cap {} < worst case {bytes}",
+            job.log.bytes.capacity()
+        );
+    }
+
+    #[test]
+    fn air_history_copy_sizes_cover_documented_read_set() {
+        // S3: every Memory::copy size the shared copy pass issues, recorded
+        // through the real pass. Census words (4/8), array headers (16),
+        // root identity (8/4/16), record head (26) with attribution (4) and
+        // copied byte (1), damage headers (16) with entries (12/8).
+        use super::air_history_test_kit as kit;
+        use engine::Memory;
+        use std::collections::BTreeSet;
+        struct Recorder<'a> {
+            inner: engine::memory::SliceMemory<'a>,
+            sizes: std::cell::RefCell<BTreeSet<usize>>,
+        }
+        impl Memory for Recorder<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.sizes.borrow_mut().insert(output.len());
+                self.inner.copy(address, output)
+            }
+        }
+        let bytes = kit::fixture();
+        let memory = Recorder {
+            inner: kit::memory(&bytes),
+            sizes: std::cell::RefCell::new(BTreeSet::new()),
+        };
+        let (_split, report, _) = kit::split(&memory);
+        assert!(report.raw_ok);
+        let sizes = memory.sizes.borrow().clone();
+        for required in [1, 4, 8, 12, 16, 26] {
+            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+        }
+    }
 }
 
 /// Shared synthetic address space for the wing-pack copy/decode harness:
@@ -2412,5 +4960,695 @@ pub(crate) mod stats_test_kit {
     pub(crate) fn assert_captured_matches_direct(captured: &super::Captured, direct: &Split) {
         assert_eq!(captured.statistics.outcome, direct.outcome, "statistics outcome");
         assert_eq!(&captured.statistics.rows, &direct.rows, "statistics rows");
+    }
+}
+
+/// Shared synthetic address space for the bases/registrations/aces
+/// copy/decode harness: two countries, a manager with two state bases
+/// (one indexed hole) plus one stateless host, per-base containers with
+/// pools and wings, and two aces (one alive with inline names, one dead
+/// with heap names). Mirrors the engine bases/registrations/aces fixture
+/// shapes.
+#[cfg(test)]
+pub(crate) mod air_bases_test_kit {
+    use super::{AirBasesCopyContext, AirBasesCopyReport, AirBasesJob, Capacities, Captured};
+    use engine::{memory::SliceMemory, walk::Outcome, Memory};
+
+    pub(crate) const BASE: usize = 0;
+    pub(crate) const GAME_STATE: usize = 0x10000;
+    const CTAB: usize = 0x11000;
+    pub(crate) const LTAB: usize = 0x12000;
+    pub(crate) const C0: usize = 0x20000;
+    const C1: usize = 0x21000;
+    pub(crate) const MANAGER: usize = 0x30000;
+    pub(crate) const SVEC: usize = 0x31000;
+    const HVEC: usize = 0x32000;
+    pub(crate) const B0: usize = 0x40000;
+    const B1: usize = 0x41000;
+    const H0: usize = 0x42000;
+    pub(crate) const S0: usize = 0x50000;
+    const S1: usize = 0x50100;
+    const P0: usize = 0x51000;
+    const P1: usize = 0x51100;
+    const CVEC0: usize = 0x60000;
+    pub(crate) const CONT1: usize = 0x61000;
+    const POOLVEC0: usize = 0x61400;
+    pub(crate) const POOL0: usize = 0x62000;
+    const WVEC: usize = 0x62400;
+    pub(crate) const W0: usize = 0x63000;
+    const W1: usize = 0x63100;
+    const CVEC1: usize = 0x64000;
+    const CONT2: usize = 0x65000;
+    const POOLVEC1: usize = 0x65400;
+    const ACES0: usize = 0x70000;
+    pub(crate) const A0: usize = 0x71000;
+    const A1: usize = 0x72000;
+    pub(crate) const NSTR: usize = 0x73000;
+    const RVEC2: usize = 0x32100;
+    const B2: usize = 0x43000;
+    const S2: usize = 0x50200;
+    const P2: usize = 0x51200;
+    const CVEC2: usize = 0x66000;
+
+    pub(crate) const WING_HANDLE_0: u64 = (0x77 << 32) | engine::cair_wing::TYPE as u64;
+    pub(crate) const WING_HANDLE_1: u64 = (0x78 << 32) | engine::cair_wing::TYPE as u64;
+
+    pub(crate) fn put32(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    pub(crate) fn put64(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+        put64(bytes, at, data as u64);
+        put32(bytes, at + 8, count);
+        put32(bytes, at + 12, count);
+    }
+
+    pub(crate) fn fixture() -> Vec<u8> {
+        fixture_inner()
+    }
+
+    /// Alias country slot plus a rocket-vector base: exercises the census
+    /// alias skip and a non-state base vector with the same shared takes.
+    pub(crate)     fn add_alias_and_rocket(bytes: &mut [u8]) {
+        use engine::{
+            cair_base, cgame_state, cprovince, cstate, cstrategic_air_manager,
+        };
+        // Alias slot 3 publishing the slot-1 object once: its link entry
+        // resolves to slot 1 like its id does.
+        header(bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 4);
+        put64(bytes, CTAB + 24, C0 as u64);
+        put32(bytes, LTAB + 12, 1);
+        // Rocket vector with a hole plus one state base at slot 1.
+        header(
+            bytes,
+            MANAGER + cstrategic_air_manager::STATE_ROCKET_BASES,
+            RVEC2,
+            2,
+        );
+        put64(bytes, RVEC2, 0);
+        put64(bytes, RVEC2 + 8, B2 as u64);
+        put64(bytes, B2, cair_base::VTABLE_RVA as u64);
+        put64(bytes, B2 + cair_base::HANDLE, (0x44u64 << 32) | u64::from(cair_base::TYPE));
+        put64(bytes, B2 + cair_base::HOST_REFERENCE, 0);
+        put64(bytes, B2 + cair_base::HOST_REFERENCE + 8, S2 as u64);
+        put64(bytes, B2 + cair_base::HOST_REFERENCE + 16, P2 as u64);
+        put32(bytes, B2 + cair_base::HOST_REFERENCE + 24, 42);
+        put32(bytes, B2 + cair_base::HOST_REFERENCE + 28, 0);
+        put64(bytes, S2, cstate::VTABLE_RVA as u64);
+        put32(bytes, S2 + cstate::ID, 1);
+        put64(bytes, P2, cprovince::VTABLE_RVA as u64);
+        put32(bytes, P2 + cprovince::ID, 7);
+        put64(bytes, P2 + cprovince::STATE, S2 as u64);
+        header(bytes, B2 + cair_base::COUNTRY_CONTAINERS, CVEC2, 0);
+    }
+
+    fn fixture_inner() -> Vec<u8> {
+        use engine::{
+            cair_base, cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state,
+            cprovince, cstate, cstrategic_air_manager, msvc_string,
+        };
+        let mut bytes = vec![0; 0x80000];
+        header(&mut bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 3);
+        put64(&mut bytes, CTAB, 0);
+        put64(&mut bytes, CTAB + 8, C0 as u64);
+        put64(&mut bytes, CTAB + 16, C1 as u64);
+        header(&mut bytes, GAME_STATE + cgame_state::COUNTRY_LINKS, LTAB, 4);
+        put32(&mut bytes, LTAB, 0);
+        put32(&mut bytes, LTAB + 4, 1);
+        put32(&mut bytes, LTAB + 8, 2);
+        put32(&mut bytes, LTAB + 12, 0);
+        for (country, id) in [(C0, 1u32), (C1, 2u32)] {
+            put64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+            put32(&mut bytes, country + ccountry::ID, id);
+        }
+        header(&mut bytes, C0 + ccountry::ACES, ACES0, 2);
+        put64(&mut bytes, ACES0, A0 as u64);
+        put64(&mut bytes, ACES0 + 8, A1 as u64);
+        header(&mut bytes, C1 + ccountry::ACES, 0, 0);
+        // Manager with two state bases (indexed hole at 0) and one host.
+        put64(
+            &mut bytes,
+            GAME_STATE + cgame_state::STRATEGIC_AIR_MANAGER,
+            MANAGER as u64,
+        );
+        put64(&mut bytes, MANAGER, cstrategic_air_manager::VTABLE_RVA as u64);
+        header(&mut bytes, MANAGER + cstrategic_air_manager::STATE_AIR_BASES, SVEC, 3);
+        put64(&mut bytes, SVEC, 0);
+        put64(&mut bytes, SVEC + 8, B0 as u64);
+        put64(&mut bytes, SVEC + 16, B1 as u64);
+        header(&mut bytes, MANAGER + cstrategic_air_manager::STATE_ROCKET_BASES, 0, 0);
+        header(&mut bytes, MANAGER + cstrategic_air_manager::STATE_GUN_BASES, 0, 0);
+        header(&mut bytes, MANAGER + cstrategic_air_manager::STATELESS_AIR_BASES, HVEC, 1);
+        put64(&mut bytes, HVEC, H0 as u64);
+        // State bases with authenticated state/province links.
+        for (base, id, state, state_id, province, province_id, capacity, kind) in [
+            (B0, 0x41u64, S0, 1u32, P0, 5u32, 1200i32, 0i32),
+            (B1, 0x42u64, S1, 2u32, P1, 6u32, -3i32, 1i32),
+        ] {
+            put64(&mut bytes, base, cair_base::VTABLE_RVA as u64);
+            put64(&mut bytes, base + cair_base::HANDLE, (id << 32) | u64::from(cair_base::TYPE));
+            put64(&mut bytes, base + cair_base::HOST_REFERENCE, 0);
+            put64(&mut bytes, base + cair_base::HOST_REFERENCE + 8, state as u64);
+            put64(&mut bytes, base + cair_base::HOST_REFERENCE + 16, province as u64);
+            put32(&mut bytes, base + cair_base::HOST_REFERENCE + 24, capacity as u32);
+            put32(&mut bytes, base + cair_base::HOST_REFERENCE + 28, kind as u32);
+            put64(&mut bytes, state, cstate::VTABLE_RVA as u64);
+            put32(&mut bytes, state + cstate::ID, state_id);
+            put64(&mut bytes, province, cprovince::VTABLE_RVA as u64);
+            put32(&mut bytes, province + cprovince::ID, province_id);
+            put64(&mut bytes, province + cprovince::STATE, state as u64);
+        }
+        // Stateless host with a native host reference.
+        put64(&mut bytes, H0, cair_base::VTABLE_RVA as u64);
+        put64(&mut bytes, H0 + cair_base::HANDLE, (0x43u64 << 32) | u64::from(cair_base::TYPE));
+        put64(&mut bytes, H0 + cair_base::HOST_REFERENCE, (3u64 << 32) | 51);
+        put64(&mut bytes, H0 + cair_base::HOST_REFERENCE + 8, 0);
+        put64(&mut bytes, H0 + cair_base::HOST_REFERENCE + 16, 0);
+        put32(&mut bytes, H0 + cair_base::HOST_REFERENCE + 24, (-17i32) as u32);
+        put32(&mut bytes, H0 + cair_base::HOST_REFERENCE + 28, 1);
+        header(&mut bytes, H0 + cair_base::COUNTRY_CONTAINERS, 0, 0);
+        // B0 containers: hole at slot 0 plus one country-1 container with a
+        // two-wing pool. B1 containers: hole plus one empty country-2 pool.
+        header(&mut bytes, B0 + cair_base::COUNTRY_CONTAINERS, CVEC0, 2);
+        put64(&mut bytes, CVEC0, 0);
+        put64(&mut bytes, CVEC0 + 8, CONT1 as u64);
+        // Country-2's container sits at its canonical slot 2: the engine
+        // installs each container at its resolved ordinal.
+        header(&mut bytes, B1 + cair_base::COUNTRY_CONTAINERS, CVEC1, 3);
+        put64(&mut bytes, CVEC1, 0);
+        put64(&mut bytes, CVEC1 + 8, 0);
+        put64(&mut bytes, CVEC1 + 16, CONT2 as u64);
+        for (container, country, poolvec, pools) in [
+            (CONT1, 1u32, POOLVEC0, 1u32),
+            (CONT2, 2u32, POOLVEC1, 0u32),
+        ] {
+            put64(&mut bytes, container, ccountry_air_container::VTABLE_RVA as u64);
+            put32(&mut bytes, container + ccountry_air_container::COUNTRY, country);
+            header(&mut bytes, container + ccountry_air_container::POOLS, poolvec, pools);
+        }
+        put64(&mut bytes, POOLVEC0, POOL0 as u64);
+        put64(&mut bytes, POOL0, cair_wing_pool::VTABLE_RVA as u64);
+        header(&mut bytes, POOL0 + cair_wing_pool::WINGS, WVEC, 2);
+        put64(&mut bytes, WVEC, W0 as u64);
+        put64(&mut bytes, WVEC + 8, W1 as u64);
+        for (wing, handle) in [(W0, WING_HANDLE_0), (W1, WING_HANDLE_1)] {
+            put64(&mut bytes, wing, cair_wing::VTABLE_RVA as u64);
+            put64(&mut bytes, wing + 8, POOL0 as u64);
+            put64(&mut bytes, wing + 16, cair_wing::SECONDARY_VTABLE_RVA as u64);
+            put64(&mut bytes, wing + 24, handle);
+        }
+        // Aces: A0 alive with inline names, A1 dead with heap names.
+        ace(&mut bytes, A0, C0, 0xA0, 1, 1, 7, None, [("Al", true), ("Bo", true), ("Cy", true)]);
+        ace(
+            &mut bytes,
+            A1,
+            C0,
+            0xA1,
+            0,
+            0,
+            3,
+            Some((0xB0u64, 9u32)),
+            [("DeadAce", false), ("", false), ("Z", false)],
+        );
+        // Heap name bytes with terminators.
+        put_string(&mut bytes, NSTR, b"DeadAce");
+        put_string(&mut bytes, NSTR + 8, b"");
+        put_string(&mut bytes, NSTR + 9, b"Z");
+        let _ = msvc_string::INLINE_CAPACITY;
+        bytes
+    }
+
+    fn ace(
+        bytes: &mut [u8],
+        at: usize,
+        owner: usize,
+        id: u64,
+        alive: u8,
+        handled: u8,
+        kill_type: u32,
+        killer: Option<(u64, u32)>,
+        names: [(&str, bool); 3],
+    ) {
+        #![allow(clippy::too_many_arguments)]
+        use engine::{cace, msvc_string};
+        put64(bytes, at, cace::VTABLE_RVA as u64);
+        put64(bytes, at + cace::REFERENCE, (id << 32) | 0xace);
+        put32(bytes, at + cace::AIRCRAFT_TYPE_MASK, 0xF);
+        put64(bytes, at + cace::OWNER_COUNTRY, owner as u64);
+        put64(bytes, at + cace::OWNER_COUNTRY + 8, WING_HANDLE_0);
+        for (index, (text, inline)) in names.into_iter().enumerate() {
+            let head = at + [cace::NAME, cace::SURNAME, cace::CALLSIGN][index];
+            if inline {
+                bytes[head..head + text.len()].copy_from_slice(text.as_bytes());
+                bytes[head + text.len()] = 0;
+                put64(bytes, head + msvc_string::LENGTH, text.len() as u64);
+                put64(bytes, head + msvc_string::CAPACITY, msvc_string::INLINE_CAPACITY);
+            } else {
+                // Heap strings live consecutively from NSTR in field order.
+                let source = NSTR + heap_offset(index);
+                put64(bytes, head + msvc_string::DATA, source as u64);
+                put64(bytes, head + msvc_string::LENGTH, text.len() as u64);
+                put64(bytes, head + msvc_string::CAPACITY, 16);
+            }
+        }
+        bytes[at + cace::ALIVE] = alive;
+        put32(bytes, at + cace::KILL_TYPE, kill_type);
+        if let Some((killer_ace, killer_country)) = killer {
+            put64(bytes, at + cace::KILLER_ACE_REFERENCE, killer_ace);
+            put32(bytes, at + cace::KILLER_COUNTRY, killer_country);
+        }
+        bytes[at + cace::HANDLED] = handled;
+    }
+
+    fn heap_offset(index: usize) -> usize {
+        // NSTR layout: "DeadAce\0" (8) + "" (1) + "Z\0" (2).
+        [0, 8, 9][index]
+    }
+
+    fn put_string(bytes: &mut [u8], at: usize, text: &[u8]) {
+        bytes[at..at + text.len()].copy_from_slice(text);
+        bytes[at + text.len()] = 0;
+    }
+
+    pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
+        SliceMemory { base: 0, bytes }
+    }
+
+    pub(crate) struct Split {
+        pub bases_outcome: Outcome,
+        pub bases: Vec<engine::cair_base::Row>,
+        pub aces_outcome: Outcome,
+        pub aces: Vec<engine::cace::Row>,
+        pub ace_names: Vec<u8>,
+        pub ace_bytes_len: usize,
+        pub ace_required: usize,
+        pub regs: crate::extended::fog::RegistrationsSnapshot,
+    }
+
+    fn collect_typed(
+        memory: &impl Memory,
+        air_rows: [usize; 7],
+        ace_names: usize,
+        fog_rows: usize,
+        fog_wings: usize,
+    ) -> Split {
+        use engine::{cair_base, cace};
+        let capacities = Capacities { rows: air_rows, ace_names };
+        let mut captured = Captured::with_capacities(&capacities, &[0; 7]);
+        let walked = cair_base::walk(memory, BASE, GAME_STATE, &mut captured.bases.rows);
+        captured.bases.outcome = super::bounded(walked, captured.bases.rows.len());
+        let walked = cace::walk(
+            memory,
+            BASE,
+            GAME_STATE,
+            &mut captured.aces.rows,
+            &mut captured.names.first,
+        );
+        captured.aces.outcome =
+            super::names_outcome(walked, &captured.aces.rows, &captured.names.first);
+        captured.names.len = walked.bytes_len;
+        captured.names.required = walked.required_bytes;
+        let regs = crate::extended::fog::Captured::collect_registrations_direct(
+            fog_rows, fog_wings, memory, BASE, GAME_STATE,
+        );
+        Split {
+            bases_outcome: captured.bases.outcome,
+            bases: captured.bases.rows.clone(),
+            aces_outcome: captured.aces.outcome,
+            aces: captured.aces.rows.clone(),
+            ace_names: captured.names.first.clone(),
+            ace_bytes_len: captured.names.len,
+            ace_required: captured.names.required,
+            regs,
+        }
+    }
+
+    fn collect_split(
+        memory: &impl Memory,
+        air_rows: [usize; 7],
+        ace_names: usize,
+        fog_rows: usize,
+        fog_wings: usize,
+    ) -> (Split, AirBasesCopyReport, AirBasesJob) {
+        let ctx = AirBasesCopyContext {
+            base: BASE,
+            game_state: GAME_STATE,
+            needed: [true; 3],
+        };
+        let capacities = Capacities { rows: air_rows, ace_names };
+        let mut air = Captured::with_capacities(&capacities, &[0; 7]);
+        let mut fog = crate::extended::fog::Captured::with_capacities(
+            &crate::extended::fog::Capacities {
+                rows: [4, 4, 4, 4, 4, fog_rows],
+                radar_provinces: 8,
+                area_provinces: 8,
+                wings: fog_wings,
+            },
+            &[0; 6],
+        );
+        let mut first = AirBasesJob::new();
+        let mut second = AirBasesJob::new();
+        let report = air.copy_air_bases_refresh(memory, ctx, &mut fog, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        let mut ticks = [0u64; 3];
+        air.decode_air_bases_payload(BASE, &first, &mut ticks);
+        fog.decode_registrations_payload(BASE, &first, &mut ticks);
+        (
+            Split {
+                bases_outcome: air.bases.outcome,
+                bases: air.bases.rows.clone(),
+                aces_outcome: air.aces.outcome,
+                aces: air.aces.rows.clone(),
+                ace_names: air.names.first.clone(),
+                ace_bytes_len: air.names.len,
+                ace_required: air.names.required,
+                regs: fog.registrations_snapshot(),
+            },
+            report,
+            first,
+        )
+    }
+
+    pub(crate) fn direct(memory: &impl Memory) -> Split {
+        collect_typed(memory, Capacities::default().rows, 65_536, 2048, 4096)
+    }
+
+    pub(crate) fn split(memory: &impl Memory) -> (Split, AirBasesCopyReport, AirBasesJob) {
+        collect_split(memory, Capacities::default().rows, 65_536, 2048, 4096)
+    }
+
+    pub(crate) fn direct_with(
+        memory: &impl Memory,
+        bases: usize,
+        wings: usize,
+        aces: usize,
+        names: usize,
+    ) -> Split {
+        collect_typed(memory, [8192, bases, 4096, 8192, 16384, aces, 2048], names, bases.max(2), wings)
+    }
+
+    pub(crate) fn split_with(
+        memory: &impl Memory,
+        bases: usize,
+        wings: usize,
+        aces: usize,
+        names: usize,
+    ) -> (Split, AirBasesCopyReport, AirBasesJob) {
+        collect_split(memory, [8192, bases, 4096, 8192, 16384, aces, 2048], names, bases.max(2), wings)
+    }
+
+    pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
+        assert_eq!(split.bases_outcome, direct.bases_outcome, "bases outcome");
+        assert_eq!(split.bases, direct.bases, "bases rows");
+        assert_eq!(split.aces_outcome, direct.aces_outcome, "aces outcome");
+        assert_eq!(split.aces, direct.aces, "aces rows");
+        assert_eq!(split.ace_bytes_len, direct.ace_bytes_len, "aces bytes len");
+        assert_eq!(split.ace_required, direct.ace_required, "aces required");
+        assert_eq!(
+            split.ace_names[..split.ace_bytes_len],
+            direct.ace_names[..direct.ace_bytes_len],
+            "aces names"
+        );
+        assert_eq!(split.regs.outcome, direct.regs.outcome, "registrations outcome");
+        assert_eq!(split.regs.rows, direct.regs.rows, "registrations rows");
+        assert_eq!(split.regs.wings, direct.regs.wings, "registrations wings");
+    }
+}
+
+/// Shared synthetic address space for the history/damage copy/decode
+/// harness: one owner with two region slots (one null), three records with
+/// damage vectors on two of them. Mirrors the engine region-combat fixture
+/// shapes.
+#[cfg(test)]
+pub(crate) mod air_history_test_kit {
+    use super::{AirHistoryCopyContext, AirHistoryCopyReport, AirHistoryJob, Capacities, Captured};
+    use engine::{memory::SliceMemory, walk::Outcome, Memory};
+
+    pub(crate) const BASE: usize = 0;
+    pub(crate) const GAME_STATE: usize = 0x10000;
+    const CTAB: usize = 0x11000;
+    const LTAB: usize = 0x12000;
+    const C0: usize = 0x20000;
+    const C1: usize = 0x21000;
+    pub(crate) const MANAGER: usize = 0x30000;
+    const AIR_TAB: usize = 0x30800;
+    const AIR0: usize = 0x31000;
+    const RVEC: usize = 0x31800;
+    pub(crate) const R0: usize = 0x32000;
+    const FVEC: usize = 0x32800;
+    const SVEC2: usize = 0x32A00;
+    // Records live inline in their vectors (stride 0x98): two in FVEC, one
+    // in SVEC2. Damage entries live inline in theirs (stride 0x18).
+    pub(crate) const REC0: usize = 0x32800;
+    const REC1: usize = 0x32898;
+    const REC2: usize = 0x32A00;
+    const DV0: usize = 0x34000;
+    const DV1: usize = 0x34200;
+    pub(crate) const E0: usize = 0x34000;
+
+    fn p32(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn p64(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+        p64(bytes, at, data as u64);
+        p32(bytes, at + 8, count);
+        p32(bytes, at + 12, count);
+    }
+
+    pub(crate) fn fixture() -> Vec<u8> {
+        use engine::{
+            cair_region_combat_data, ccountry, cgame_state, cstrategic_air, cstrategic_air_manager,
+            sdamage_entry, sair_wing_combat_data,
+        };
+        let mut bytes = vec![0; 0x40000];
+        header(&mut bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 3);
+        p64(&mut bytes, CTAB, 0);
+        p64(&mut bytes, CTAB + 8, C0 as u64);
+        p64(&mut bytes, CTAB + 16, C1 as u64);
+        header(&mut bytes, GAME_STATE + cgame_state::COUNTRY_LINKS, LTAB, 4);
+        p32(&mut bytes, LTAB, 0);
+        p32(&mut bytes, LTAB + 4, 1);
+        p32(&mut bytes, LTAB + 8, 2);
+        p32(&mut bytes, LTAB + 12, 0);
+        for (country, id) in [(C0, 1u32), (C1, 2u32)] {
+            p64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+            p32(&mut bytes, country + ccountry::ID, id);
+        }
+        p64(
+            &mut bytes,
+            GAME_STATE + cgame_state::STRATEGIC_AIR_MANAGER,
+            MANAGER as u64,
+        );
+        p64(&mut bytes, MANAGER, cstrategic_air_manager::VTABLE_RVA as u64);
+        header(&mut bytes, MANAGER + cstrategic_air_manager::COUNTRY_AIR, AIR_TAB, 2);
+        p64(&mut bytes, AIR_TAB, 0);
+        p64(&mut bytes, AIR_TAB + 8, AIR0 as u64);
+        p64(&mut bytes, AIR0, cstrategic_air::VTABLE_RVA as u64);
+        p32(&mut bytes, AIR0 + cstrategic_air::COUNTRY, 1);
+        header(&mut bytes, AIR0 + cstrategic_air::REGION_COMBAT, RVEC, 2);
+        p64(&mut bytes, RVEC, R0 as u64);
+        p64(&mut bytes, RVEC + 8, 0);
+        p64(&mut bytes, R0, cair_region_combat_data::VTABLE_RVA as u64);
+        p32(&mut bytes, R0 + cair_region_combat_data::OWNER, 7);
+        header(&mut bytes, R0 + cair_region_combat_data::FIRST_RECORDS, FVEC, 2);
+        p64(&mut bytes, FVEC, REC0 as u64);
+        p64(&mut bytes, FVEC + 8, REC1 as u64);
+        header(&mut bytes, R0 + cair_region_combat_data::SECOND_RECORDS, SVEC2, 1);
+        p64(&mut bytes, SVEC2, REC2 as u64);
+        // Three records inline: REC0/REC1 in the first vector, REC2 in the
+        // second. REC0 carries two first-channel damage entries, REC1 one
+        // second-channel entry, REC2 none.
+        record(
+            &mut bytes,
+            REC0,
+            0x1111,
+            100,
+            0xF0,
+            1,
+            1,
+            11,
+            0,
+            Some((DV0, 2)),
+            None,
+        );
+        record(
+            &mut bytes,
+            REC1,
+            0x2222,
+            -50,
+            0x0F,
+            0,
+            0,
+            12,
+            1,
+            None,
+            Some((DV1, 1)),
+        );
+        record(
+            &mut bytes,
+            REC2,
+            0x3333,
+            0,
+            0,
+            1,
+            0,
+            13,
+            0,
+            None,
+            None,
+        );
+        damage(&mut bytes, E0, 5, 1000);
+        damage(&mut bytes, E0 + sdamage_entry::STRIDE, 6, -2000);
+        damage(&mut bytes, DV1, 7, 3000);
+        let _ = sdamage_entry::STRIDE;
+        let _ = sair_wing_combat_data::STRIDE;
+        bytes
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record(
+        bytes: &mut [u8],
+        at: usize,
+        wing: u32,
+        planes: i32,
+        missions: u32,
+        selection: u8,
+        classification: u8,
+        attributed: u32,
+        copied: u8,
+        first: Option<(usize, u32)>,
+        second: Option<(usize, u32)>,
+    ) {
+        use engine::{sair_wing_combat_data, sdamage_entry};
+        p64(bytes, at, sair_wing_combat_data::VTABLE_RVA as u64);
+        p32(bytes, at + sair_wing_combat_data::WING_ID, wing);
+        p32(bytes, at + sair_wing_combat_data::DATE, 1000);
+        p32(bytes, at + sair_wing_combat_data::PLANE_COUNT, planes as u32);
+        p32(bytes, at + sair_wing_combat_data::MISSION_MASK, missions);
+        bytes[at + sair_wing_combat_data::SELECTION_FLAG] = selection;
+        bytes[at + sair_wing_combat_data::CLASSIFICATION_FLAG] = classification;
+        p32(bytes, at + sair_wing_combat_data::ATTRIBUTED_COUNTRY, attributed);
+        bytes[at + sair_wing_combat_data::COPIED_FLAG] = copied;
+        match first {
+            Some((data, count)) => header(bytes, at + sair_wing_combat_data::FIRST_DAMAGE, data, count),
+            None => header(bytes, at + sair_wing_combat_data::FIRST_DAMAGE, 0, 0),
+        }
+        match second {
+            Some((data, count)) => header(bytes, at + sair_wing_combat_data::SECOND_DAMAGE, data, count),
+            None => header(bytes, at + sair_wing_combat_data::SECOND_DAMAGE, 0, 0),
+        }
+        let _ = sdamage_entry::STRIDE;
+    }
+
+    fn damage(bytes: &mut [u8], at: usize, cause: u32, amount: i64) {
+        use engine::sdamage_entry;
+        p64(bytes, at, sdamage_entry::VTABLE_RVA as u64);
+        p32(bytes, at + sdamage_entry::CAUSE_TYPE, cause);
+        bytes[at + sdamage_entry::AMOUNT..at + sdamage_entry::AMOUNT + 8]
+            .copy_from_slice(&amount.to_le_bytes());
+    }
+
+    pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
+        SliceMemory { base: 0, bytes }
+    }
+
+    pub(crate) struct Split {
+        pub history_outcome: Outcome,
+        pub history: Vec<engine::sair_wing_combat_data::Row>,
+        pub damage_outcome: Outcome,
+        pub damage: Vec<engine::sdamage_entry::Row>,
+    }
+
+    fn collect_typed(memory: &impl Memory, history_cap: usize, damage_cap: usize) -> Split {
+        use engine::cair_region_combat_data;
+        let capacities = Capacities {
+            rows: [8192, 2048, 4096, history_cap, damage_cap, 1024, 2048],
+            ace_names: 65_536,
+        };
+        let mut captured = Captured::with_capacities(&capacities, &[0; 7]);
+        let walked = cair_region_combat_data::walk_world(
+            memory,
+            BASE,
+            GAME_STATE,
+            &mut captured.history.rows,
+            &mut captured.damage.rows,
+        );
+        captured.history.outcome = super::bounded(walked.records, captured.history.rows.len());
+        captured.damage.outcome = super::bounded(walked.damage, captured.damage.rows.len());
+        Split {
+            history_outcome: captured.history.outcome,
+            history: captured.history.rows.clone(),
+            damage_outcome: captured.damage.outcome,
+            damage: captured.damage.rows.clone(),
+        }
+    }
+
+    fn collect_split(
+        memory: &impl Memory,
+        history_cap: usize,
+        damage_cap: usize,
+    ) -> (Split, AirHistoryCopyReport, AirHistoryJob) {
+        let ctx = AirHistoryCopyContext {
+            base: BASE,
+            game_state: GAME_STATE,
+            needed: [true; 2],
+        };
+        let capacities = Capacities {
+            rows: [8192, 2048, 4096, history_cap, damage_cap, 1024, 2048],
+            ace_names: 65_536,
+        };
+        let mut captured = Captured::with_capacities(&capacities, &[0; 7]);
+        let mut first = AirHistoryJob::new();
+        let mut second = AirHistoryJob::new();
+        let report = captured.copy_air_history_refresh(memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        let mut ticks = [0u64; 2];
+        captured.decode_air_history_payload(BASE, &first, &mut ticks);
+        (
+            Split {
+                history_outcome: captured.history.outcome,
+                history: captured.history.rows.clone(),
+                damage_outcome: captured.damage.outcome,
+                damage: captured.damage.rows.clone(),
+            },
+            report,
+            first,
+        )
+    }
+
+    pub(crate) fn direct(memory: &impl Memory) -> Split {
+        collect_typed(memory, 8192, 16_384)
+    }
+
+    pub(crate) fn split(memory: &impl Memory) -> (Split, AirHistoryCopyReport, AirHistoryJob) {
+        collect_split(memory, 8192, 16_384)
+    }
+
+    pub(crate) fn direct_with(memory: &impl Memory, history: usize, damage: usize) -> Split {
+        collect_typed(memory, history, damage)
+    }
+
+    pub(crate) fn split_with(
+        memory: &impl Memory,
+        history: usize,
+        damage: usize,
+    ) -> (Split, AirHistoryCopyReport, AirHistoryJob) {
+        collect_split(memory, history, damage)
+    }
+
+    pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
+        assert_eq!(split.history_outcome, direct.history_outcome, "history outcome");
+        assert_eq!(split.history, direct.history, "history rows");
+        assert_eq!(split.damage_outcome, direct.damage_outcome, "damage outcome");
+        assert_eq!(split.damage, direct.damage, "damage rows");
     }
 }
