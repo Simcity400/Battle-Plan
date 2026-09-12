@@ -261,6 +261,24 @@ impl Captured {
         &mut self.session
     }
 
+    /// Decode-worker handoff for the hourly production rest (copy/decode
+    /// split). Sole cross-thread entry to the production rest buffers: the
+    /// game thread stages raw-copy state through it every hour and the single
+    /// FIFO decode worker decodes the staged payload into these pooled typed
+    /// rows before the spool ready-queue handoff.
+    pub(crate) fn production_rest_pilot(&mut self) -> &mut production::Captured {
+        &mut self.production
+    }
+
+    /// Decode-worker handoff for the hourly construction rest (copy/decode
+    /// split). Sole cross-thread entry to the construction rest buffers: the
+    /// game thread stages raw-copy state through it every hour and the single
+    /// FIFO decode worker decodes the staged payload into these pooled typed
+    /// rows before the spool ready-queue handoff.
+    pub(crate) fn construction_rest_pilot(&mut self) -> &mut construction::Captured {
+        &mut self.construction
+    }
+
     /// Game-thread raw copy for a slot-3 variants refresh. Runs after the
     /// game-side registry census, which feeds both production (as today) and
     /// this copy. Returns the pilot-style report for sampling's install.
@@ -1045,5 +1063,23 @@ mod tests {
         assert!(captured.construction.raw_mode);
         captured.buildings_pilot().raw_mode = false;
         assert!(!captured.construction.raw_mode);
+    }
+
+    #[test]
+    fn production_rest_pilot_handoff_reaches_the_production_pack() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0u16; TABLE_COUNT]);
+        captured.production_rest_pilot().rest_raw_mode = true;
+        assert!(captured.production.rest_raw_mode);
+        captured.production_rest_pilot().rest_raw_mode = false;
+        assert!(!captured.production.rest_raw_mode);
+    }
+
+    #[test]
+    fn construction_rest_pilot_handoff_reaches_the_construction_pack() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0u16; TABLE_COUNT]);
+        captured.construction_rest_pilot().rest_raw_mode = true;
+        assert!(captured.construction.rest_raw_mode);
+        captured.construction_rest_pilot().rest_raw_mode = false;
+        assert!(!captured.construction.rest_raw_mode);
     }
 }

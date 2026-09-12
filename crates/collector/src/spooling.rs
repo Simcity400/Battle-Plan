@@ -969,6 +969,28 @@ impl Processor {
             stats.table_ns[decode::FOCUS[0].index()],
             stats.table_ns[decode::FOCUS[1].index()],
         ];
+        let production_rest_copy_ns = [
+            stats.table_ns[decode::PRODUCTION_REST[0].index()],
+            stats.table_ns[decode::PRODUCTION_REST[1].index()],
+            stats.table_ns[decode::PRODUCTION_REST[2].index()],
+            stats.table_ns[decode::PRODUCTION_REST[3].index()],
+            stats.table_ns[decode::PRODUCTION_REST[4].index()],
+            stats.table_ns[decode::PRODUCTION_REST[5].index()],
+            stats.table_ns[decode::PRODUCTION_REST[6].index()],
+            stats.table_ns[decode::PRODUCTION_REST[7].index()],
+        ];
+        let construction_rest_copy_ns = [
+            stats.table_ns[decode::CONSTRUCTION_REST[0].index()],
+            stats.table_ns[decode::CONSTRUCTION_REST[1].index()],
+            stats.table_ns[decode::CONSTRUCTION_REST[2].index()],
+            stats.table_ns[decode::CONSTRUCTION_REST[3].index()],
+            stats.table_ns[decode::CONSTRUCTION_REST[4].index()],
+            stats.table_ns[decode::CONSTRUCTION_REST[5].index()],
+            stats.table_ns[decode::CONSTRUCTION_REST[6].index()],
+            stats.table_ns[decode::CONSTRUCTION_REST[7].index()],
+            stats.table_ns[decode::CONSTRUCTION_REST[8].index()],
+            stats.table_ns[decode::CONSTRUCTION_REST[9].index()],
+        ];
         let value = json!({
             "campaign": stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
             "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
@@ -1039,6 +1061,8 @@ impl Processor {
         value["wars_copy_ns"] = json!(wars_copy_ns.as_slice());
         value["divisions_copy_ns"] = json!(divisions_copy_ns.as_slice());
         value["focus_copy_ns"] = json!(focus_copy_ns.as_slice());
+        value["production_rest_copy_ns"] = json!(production_rest_copy_ns.as_slice());
+        value["construction_rest_copy_ns"] = json!(construction_rest_copy_ns.as_slice());
         value
     }
 }

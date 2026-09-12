@@ -8,11 +8,15 @@ use crate::{
     table_capture::{Arena, CaptureRows},
 };
 use engine::{
-    Memory, army_upgrade_request_row, carmy_upgrades_requests, carmy_upgrades_status,
-    cdeployment_status, cequipment_module, cequipment_production_line, cequipment_type,
-    cequipment_upgrade, cequipment_upgrades_instance, cequipment_variant, cequipment_variant_pool,
-    cpdx_array::Array, cproduction_status, cupgrade_delivery, equipment_module_container,
-    equipment_module_entry, equipment_upgrade_entry, msvc_string, walk::Outcome,
+    Memory, army_upgrade_request_row, carmy_manpower_values, carmy_upgrades_requests,
+    carmy_upgrades_status, ccountry, cdeployment_status, cequipment_module,
+    cequipment_production_license, cequipment_production_line, cequipment_type, cequipment_upgrade,
+    cequipment_upgrades_instance, cequipment_variant, cequipment_variant_pool, cgame_state,
+    cmilitary_deployment, cmilitary_deployment_conveyor, cmilitary_deployment_line,
+    cname_group_member, cpdx_array::Array, cproduction_line, cproduction_status, cupgrade_delivery,
+    equipment_entry, equipment_module_container,
+    equipment_module_entry, equipment_upgrade_entry, manpower_value_entry, msvc_string,
+    walk::Outcome,
 };
 use replay::{
     frame::{TableView},
@@ -136,6 +140,13 @@ pub struct Captured {
     /// Preserved across `reset` (set per hour, cleared by the worker after
     /// decode). Lines, stockpiles, licences and deployment stay game-side.
     pub(crate) divisions_raw_mode: bool,
+    /// Raw-copy split gate for the hourly production rest (lines 0,
+    /// stockpiles 1, licences 11, deployment 12..15, licence records 16).
+    /// Set by the game thread every hour with a valid raw payload; `acquire`
+    /// then skips those typed walks and the decode worker fills the rows
+    /// (plus the licence/name arenas) before the ready handoff. Preserved
+    /// across `reset` (set per hour, cleared by the worker after decode).
+    pub(crate) rest_raw_mode: bool,
 }
 
 impl Captured {
@@ -169,6 +180,7 @@ impl Captured {
             license_handles: Arena::new(capacities.license_handles, successful[16]),
             raw_mode: false,
             divisions_raw_mode: false,
+            rest_raw_mode: false,
         }
     }
 
@@ -282,6 +294,13 @@ impl Captured {
         assert_eq!(needed.len(), N);
         let mut matched = [false; N];
         let mut ticks = [0; N];
+        // Hourly production rest (copy/decode split): every hour the game
+        // thread stages raw bytes via `copy_production_rest_refresh` and the
+        // decode worker fills lines, stockpiles, licences, deployment and
+        // licence records before the ready handoff, so the typed walks below
+        // skip here. Matched flags and costs come from the raw compare,
+        // applied by the caller after this returns.
+        if !self.rest_raw_mode {
         let begin = qpc();
         matched[0] = capture_rows(&mut self.lines, needed[0], |rows| {
             cproduction_status::walk_lines(memory, base, game_state, rows)
@@ -292,6 +311,7 @@ impl Captured {
             cequipment_variant_pool::walk_stockpiles(memory, base, game_state, rows)
         });
         ticks[1] = elapsed(begin);
+        }
         // Divisions group (copy/decode split): on hours with a staged raw
         // payload the decode worker fills equipment and upgrade rows before
         // the ready handoff, so the typed detail walks are skipped here,
@@ -393,6 +413,7 @@ impl Captured {
         ticks[7] = elapsed(begin);
         }
 
+        if !self.rest_raw_mode {
         let begin = qpc();
         matched[11] = capture_rows(&mut self.licenses, needed[11], |rows| {
             cproduction_status::walk_licenses(memory, base, game_state, rows)
@@ -469,6 +490,7 @@ impl Captured {
             matched[15] = check(15, &mut self.deployment_equipment, second.equipment);
         }
         ticks[12] = elapsed(begin);
+        }
         (matched, ticks)
     }
 
@@ -551,8 +573,1003 @@ impl Captured {
         )
     }
 
+    /// Decode-worker interpretation of a raw hourly production-rest payload.
+    /// Replays the existing lines, stockpile, licence, deployment and licence-
+    /// record walks against the recorded spans, installing identical rows,
+    /// arenas, truncation counts and failure reasons into the frame's pooled
+    /// buffers. Checked/mismatches set by the raw compare survive. Clears
+    /// `rest_raw_mode` so the next capture starts clean.
+    pub(crate) fn decode_production_rest_payload(
+        &mut self,
+        base: usize,
+        game_state: usize,
+        job: &ProductionRestJob,
+        decode_ticks: &mut [u64; 8],
+    ) {
+        let started = qpc();
+        let recorded = crate::raw::Recorded::build(&job.log);
+        self.lines.outcome =
+            cproduction_status::walk_lines(&recorded, base, game_state, &mut self.lines.rows);
+        decode_ticks[0] += elapsed(started);
+        let started = qpc();
+        self.stockpiles.outcome = cequipment_variant_pool::walk_stockpiles(
+            &recorded,
+            base,
+            game_state,
+            &mut self.stockpiles.rows,
+        );
+        decode_ticks[1] += elapsed(started);
+        let started = qpc();
+        self.licenses.outcome =
+            cproduction_status::walk_licenses(&recorded, base, game_state, &mut self.licenses.rows);
+        let result = cproduction_status::walk_license_records(
+            &recorded,
+            base,
+            game_state,
+            &mut self.license_records.rows,
+            &mut self.license_handles.first,
+        );
+        self.license_records.outcome = result.outcome;
+        self.license_handles.len = result.handles_len;
+        self.license_handles.required = result.required_handles;
+        decode_ticks[2] += elapsed(started);
+        let started = qpc();
+        let walked = cdeployment_status::walk(
+            &recorded,
+            base,
+            game_state,
+            &mut self.conveyors.rows,
+            &mut self.deployment_lines.rows,
+            &mut self.deployment_manpower.rows,
+            &mut self.deployment_equipment.rows,
+            &mut self.conveyor_name_bytes.first,
+            &mut self.line_custom_name_bytes.first,
+        );
+        self.conveyors.outcome = walked.conveyors;
+        self.deployment_lines.outcome = walked.lines;
+        self.deployment_manpower.outcome = walked.manpower;
+        self.deployment_equipment.outcome = walked.equipment;
+        self.conveyor_name_bytes.len = walked.name_bytes;
+        self.conveyor_name_bytes.required = walked.required_name_bytes;
+        self.line_custom_name_bytes.len = walked.custom_name_bytes;
+        self.line_custom_name_bytes.required = walked.required_custom_name_bytes;
+        decode_ticks[3] += elapsed(started);
+        self.rest_raw_mode = false;
+    }
+}
+
+// ===========================================================================
+// Hourly production-rest raw-copy split (ProductionLines, Stockpiles,
+// ProductionLicenses, DeploymentConveyors, DeploymentLines,
+// DeploymentManpower, DeploymentEquipment, ProductionLicenseRecords).
+//
+// Zero-engine-change replay (Wars/Divisions/Focus/Session precedent for
+// census plus per-country walks): the game thread copies raw bytes only and
+// the single FIFO decode worker replays the existing typed walks against the
+// recorded spans (`crate::raw::Recorded`), so rows, ordinals, arenas,
+// truncation and failure reasons are identical by construction (see
+// `crate::raw` for the mirror rules).
+//
+// One shared country census feeds all eight tables (no duplicated censuses);
+// the production manager is shared by lines/stockpiles/licences/records and
+// the deployment manager by the four deployment tables. Empty
+// ProductionLicenseRecords shares the licence walk and moves with it (never
+// observed nonempty on the test campaign, but the walk is shared so it is
+// recorded, not proven trivial). Licence arenas (produced handles, conveyor
+// names, line custom names) are staged decode-side: the log holds the
+// underlying string/array bytes and the worker fills the pooled arenas by
+// replaying the identical walks.
+//
+// Fault attribution is conservative like the pilot: shared census spans carry
+// all eight bits, production-manager spans the four production bits, and
+// deployment spans all four deployment bits, so any live failure blocks its
+// whole shared domain even when both copies agree. Per-table leaves use
+// single-bit masks. The mirror traverses structurally and records every
+// discoverable span, never aborting except on overflow: the replay derives
+// every outcome, precedence and error scope from the same recorded spans, so
+// later extras are harmless.
+// ===========================================================================
+
+/// Fault-attribution bits in family order: [lines, stockpiles, licences,
+/// conveyors, lines, manpower, equipment, records]. Shared census spans
+/// carry all eight bits; production-manager spans the four production bits;
+/// deployment spans all four deployment bits (the walk's shared failure
+/// domain).
+const M_P_LINES: u32 = 0x01;
+const M_P_STOCK: u32 = 0x02;
+const M_P_LIC: u32 = 0x04;
+const M_P_REC: u32 = 0x80;
+const M_P_PROD_MGR: u32 = 0x87;
+const M_P_DEPLOY: u32 = 0x78;
+const M_P_CENSUS: u32 = 0xFF;
+
+/// One hour of raw production-rest payload. Flat pools recycle capacities
+/// and the steady state allocates on neither thread; growth happens on the
+/// decode side only (see `crate::decode::recycle_production_rest_job`).
+#[derive(Debug)]
+pub(crate) struct ProductionRestJob {
+    pub log: RawLog<8>,
+    pub game_state: usize,
+    census: Vec<ProductionRestCountry>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProductionRestCountry {
+    pointer: usize,
+}
+
+impl ProductionRestJob {
+    pub fn new() -> Self {
+        Self {
+            // Late-campaign worst case is about 768 lines, 1.6k stockpiles,
+            // licences plus deployment queues with names; both pools start
+            // above that so steady state never overflows.
+            log: RawLog::new(1 << 17, 8 << 20),
+            game_state: 0,
+            census: Vec::with_capacity(512),
+        }
+    }
+
+    /// Reset lengths for reuse, keeping every capacity. No allocation.
+    pub fn clear(&mut self) {
+        self.log.clear();
+        self.game_state = 0;
+        self.census.clear();
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.log.grow_for_next()
+    }
+
+    /// Double every pool off the game thread until copies fit. Converges like
+    /// the typed capacity growth; overflowed hours fall back to the typed
+    /// walk in the meantime, so sizing is a pure performance knob.
+    pub fn grow(&mut self) {
+        self.log.grow();
+        self.census.reserve_exact(self.census.capacity().max(1));
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ProductionRestCopyReport {
+    /// False when staging overflowed: the caller falls back to the typed walk
+    /// (identical rows through the existing path) and enqueues no payload.
+    pub raw_ok: bool,
+    /// Whole-log raw equality gated by live-fault conservatism, in family
+    /// order [lines, stockpiles, licences, conveyors, lines, manpower,
+    /// equipment, records].
+    pub matched: [bool; 8],
+    pub copy_ticks: [u64; 8],
+    pub raw_bytes: [u64; 8],
+}
+
+/// Game-thread copy parameters, bundled to keep the tick entry small.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProductionRestCopyContext {
+    pub base: usize,
+    pub game_state: usize,
+    pub needed: [bool; 8],
+}
+
+fn p_pool_u64(log: &RawLog<8>, start: usize) -> u64 {
+    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+}
+
+fn p_pool_u32(log: &RawLog<8>, start: usize) -> u32 {
+    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
+}
+
+/// One mirrored span read. `None` addresses (arithmetic overflow) record
+/// nothing because the typed walk fails locally without reads.
+fn pspan(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take(memory, addr?, len, mask)
+}
+
+/// Mirror of one MSVC string's reads: 32-byte header plus heap payload and
+/// terminator. Inline strings ride in the header span; the replay requests
+/// exact ranges, so record the payload exactly like a heap one.
+fn copy_production_string(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    string: usize,
+    mask: u32,
+) {
+    let Some(header_start) = pspan(log, memory, Some(string), 32, mask) else {
+        return;
+    };
+    // The walk reads length/capacity/pointer as separate 8-byte spans, not
+    // just the 32-byte header above; record those exact spans too so
+    // exact-match service hits. Extras are harmless.
+    let _ = pspan(log, memory, string.checked_add(msvc_string::LENGTH), 8, mask);
+    let _ = pspan(log, memory, string.checked_add(msvc_string::CAPACITY), 8, mask);
+    let _ = pspan(log, memory, Some(string), 8, mask);
+    let mut header = [0u8; 32];
+    header.copy_from_slice(&log.bytes[header_start..header_start + 32]);
+    let len = match usize::try_from(u64::from_le_bytes(
+        header[msvc_string::LENGTH..msvc_string::CAPACITY]
+            .try_into()
+            .unwrap(),
+    )) {
+        Ok(len) => len,
+        Err(_) => return,
+    };
+    let capacity = u64::from_le_bytes(header[msvc_string::CAPACITY..].try_into().unwrap());
+    if len as u64 > capacity || capacity < msvc_string::INLINE_CAPACITY {
+        return;
+    }
+    let source = if capacity == msvc_string::INLINE_CAPACITY {
+        string
+    } else {
+        match usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
+            .ok()
+            .filter(|&s| s != 0)
+        {
+            Some(s) => s,
+            None => return,
+        }
+    };
+    if source.checked_add(len).is_none() {
+        return;
+    }
+    if len != 0 {
+        let _ = pspan(log, memory, Some(source), len, mask);
+    }
+    let _ = pspan(log, memory, source.checked_add(len), 1, mask);
+}
+
+/// Authenticated country census shared by all eight tables. Records the exact
+/// read set of `ccountry::Reader::new` plus one full `read_at` per slot.
+fn copy_production_census(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    census: &mut Vec<ProductionRestCountry>,
+) -> bool {
+    let Some(countries_start) = pspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRIES),
+        16,
+        M_P_CENSUS,
+    ) else {
+        return false;
+    };
+    let Some(links_start) = pspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRY_LINKS),
+        16,
+        M_P_CENSUS,
+    ) else {
+        return false;
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
+    let countries = match Array::from_header(raw, 8) {
+        Some(a) => a,
+        None => return false,
+    };
+    raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
+    let links = match Array::from_header(raw, 4) {
+        Some(a) => a,
+        None => return false,
+    };
+    if countries.count < 2 || links.count == 0 {
+        return false;
+    }
+    let vtable = match base.checked_add(ccountry::VTABLE_RVA) {
+        Some(v) => v as u64,
+        None => return false,
+    };
+    for slot in 1..countries.count {
+        let pointer_addr = (slot as usize)
+            .checked_mul(8)
+            .and_then(|o| countries.data.checked_add(o));
+        let Some(pointer_start) = pspan(log, memory, pointer_addr, 8, M_P_CENSUS) else {
+            return false;
+        };
+        let pointer = match usize::try_from(p_pool_u64(log, pointer_start))
+            .ok()
+            .filter(|&p| p != 0)
+        {
+            Some(p) => p,
+            None => continue,
+        };
+        let Some(vtable_start) = pspan(log, memory, Some(pointer), 8, M_P_CENSUS) else {
+            return false;
+        };
+        let Some(id_start) = pspan(log, memory, pointer.checked_add(ccountry::ID), 4, M_P_CENSUS)
+        else {
+            return false;
+        };
+        if p_pool_u64(log, vtable_start) != vtable {
+            return false;
+        }
+        let id = p_pool_u32(log, id_start);
+        let canonical = match copy_production_link(log, memory, &links, countries.count, id) {
+            Some(Some(canonical)) => canonical,
+            _ => return false,
+        };
+        let canonical_slot =
+            match copy_production_link(log, memory, &links, countries.count, slot) {
+                Some(Some(canonical_slot)) => canonical_slot,
+                _ => return false,
+            };
+        if canonical_slot != canonical {
+            return false;
+        }
+        let check = match copy_production_link(log, memory, &links, countries.count, canonical) {
+            Some(Some(check)) => check,
+            _ => return false,
+        };
+        if check != canonical {
+            return false;
+        }
+        let canonical_addr = (canonical as usize)
+            .checked_mul(8)
+            .and_then(|o| countries.data.checked_add(o));
+        let Some(canonical_start) = pspan(log, memory, canonical_addr, 8, M_P_CENSUS) else {
+            return false;
+        };
+        if p_pool_u64(log, canonical_start) != pointer as u64 {
+            return false;
+        }
+        if census.len() == census.capacity() {
+            log.overflowed = true;
+            return false;
+        }
+        census.push(ProductionRestCountry { pointer });
+    }
+    true
+}
+
+fn copy_production_link(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    links: &Array,
+    countries: u32,
+    raw: u32,
+) -> Option<Option<u32>> {
+    if raw == 0 || raw >= links.count {
+        return None;
+    }
+    let offset = (raw as usize).checked_mul(4)?;
+    let start = pspan(log, memory, links.data.checked_add(offset), 4, M_P_CENSUS)?;
+    let slot = p_pool_u32(log, start);
+    if slot == 0 {
+        return Some(None);
+    }
+    if slot >= countries {
+        return None;
+    }
+    Some(Some(slot))
+}
+
+/// Production manager for one country (shared by lines/stockpiles/licences/
+/// records). Returns the manager pointer on success.
+fn copy_production_manager(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    base: usize,
+    country: &ProductionRestCountry,
+) -> Option<usize> {
+    let ptr_start = pspan(
+        log,
+        memory,
+        country.pointer.checked_add(ccountry::PRODUCTION_STATUS),
+        8,
+        M_P_PROD_MGR,
+    )?;
+    let pointer = usize::try_from(p_pool_u64(log, ptr_start)).ok().filter(|&p| p != 0)?;
+    let expected = base.checked_add(cproduction_status::VTABLE_RVA)? as u64;
+    let vtable_start = pspan(log, memory, Some(pointer), 8, M_P_PROD_MGR)?;
+    let owner_start = pspan(
+        log,
+        memory,
+        pointer.checked_add(cproduction_status::COUNTRY),
+        8,
+        M_P_PROD_MGR,
+    )?;
+    if p_pool_u64(log, vtable_start) != expected {
+        return None;
+    }
+    if p_pool_u64(log, owner_start) != country.pointer as u64 {
+        return None;
+    }
+    Some(pointer)
+}
+
+/// Deployment manager for one country (shared by the four deployment tables).
+fn copy_deployment_manager(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    base: usize,
+    country: &ProductionRestCountry,
+) -> Option<usize> {
+    let ptr_start = pspan(
+        log,
+        memory,
+        country.pointer.checked_add(ccountry::DEPLOYMENT_MANAGER),
+        8,
+        M_P_DEPLOY,
+    )?;
+    let pointer = usize::try_from(p_pool_u64(log, ptr_start)).ok().filter(|&p| p != 0)?;
+    let expected = base.checked_add(cdeployment_status::VTABLE_RVA)? as u64;
+    let vtable_start = pspan(log, memory, Some(pointer), 8, M_P_DEPLOY)?;
+    let owner_start = pspan(
+        log,
+        memory,
+        pointer.checked_add(cdeployment_status::OWNER),
+        8,
+        M_P_DEPLOY,
+    )?;
+    if p_pool_u64(log, vtable_start) != expected {
+        return None;
+    }
+    if p_pool_u64(log, owner_start) != country.pointer as u64 {
+        return None;
+    }
+    Some(pointer)
+}
+
+fn copy_variant_identity(log: &mut RawLog<8>, memory: &impl Memory, pointer: usize, mask: u32) {
+    let _ = pspan(log, memory, Some(pointer), 16, mask);
+}
+
+/// Mirror of `walk_lines`' read set: array header, per-line pointers, the
+/// seven scattered field spans per line plus variant identities.
+fn copy_production_lines(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    manager: usize,
+) {
+    let Some(header_start) = pspan(
+        log,
+        memory,
+        manager.checked_add(cproduction_status::LINES),
+        16,
+        M_P_LINES,
+    ) else {
+        return;
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[header_start..header_start + 16]);
+    let array = match Array::from_header(raw, 8) {
+        Some(a) => a,
+        None => return,
+    };
+    for index in 0..array.count {
+        let addr = array.data.checked_add((index as usize).saturating_mul(8));
+        let Some(ptr_start) = pspan(log, memory, addr, 8, M_P_LINES) else {
+            continue;
+        };
+        let pointer = match usize::try_from(p_pool_u64(log, ptr_start))
+            .ok()
+            .filter(|&p| p != 0)
+        {
+            Some(p) => p,
+            None => continue,
+        };
+        // Seven scattered spans exactly like `read_row`'s `copy_scattered`.
+        let takes = [
+            (pointer, 16),
+            (pointer.checked_add(cproduction_line::ACTIVE_FACTORIES).unwrap_or(0), 4),
+            (pointer.checked_add(cproduction_line::PRODUCTION_STATUS).unwrap_or(0), 8),
+            (pointer.checked_add(cproduction_line::COST).unwrap_or(0), 24),
+            (pointer.checked_add(cproduction_line::PRIORITY).unwrap_or(0), 8),
+            (pointer.checked_add(cequipment_production_line::EQUIPMENT_VARIANT).unwrap_or(0), 16),
+            (pointer.checked_add(cequipment_production_line::REQUESTED_FACTORIES).unwrap_or(0), 4),
+        ];
+        let mut variant = None;
+        for (addr, len) in takes {
+            if let Some(start) = pspan(log, memory, Some(addr), len, M_P_LINES)
+                && addr == pointer.checked_add(cequipment_production_line::EQUIPMENT_VARIANT).unwrap_or(0) {
+                    variant = usize::try_from(p_pool_u64(log, start)).ok().filter(|&p| p != 0);
+                }
+        }
+        if let Some(v) = variant {
+            copy_variant_identity(log, memory, v, M_P_LINES);
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+/// Mirror of `walk_stockpiles`' read set: pool vtable, array header,
+/// per-entry words plus variant identities.
+fn copy_production_stockpiles(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    manager: usize,
+) {
+    let pool = match manager.checked_add(cproduction_status::STOCKPILE_POOL) {
+        Some(p) => p,
+        None => return,
+    };
+    let _ = pspan(log, memory, Some(pool), 8, M_P_STOCK);
+    let Some(header_start) = pspan(
+        log,
+        memory,
+        manager.checked_add(cproduction_status::STOCKPILE),
+        16,
+        M_P_STOCK,
+    ) else {
+        return;
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[header_start..header_start + 16]);
+    let array = match Array::from_header(raw, equipment_entry::STRIDE) {
+        Some(a) => a,
+        None => return,
+    };
+    for ordinal in 0..array.count {
+        let addr = array.element(ordinal, equipment_entry::STRIDE);
+        let Some(entry_start) = pspan(log, memory, addr, equipment_entry::STRIDE, M_P_STOCK) else {
+            continue;
+        };
+        let variant = usize::try_from(p_pool_u64(log, entry_start)).ok().filter(|&p| p != 0);
+        if let Some(v) = variant {
+            copy_variant_identity(log, memory, v, M_P_STOCK);
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+/// Mirror of `walk_licenses`' read set: array header, per-licence pointers
+/// plus variant identities.
+fn copy_production_licenses(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    manager: usize,
+) {
+    let Some(header_start) = pspan(
+        log,
+        memory,
+        manager.checked_add(cproduction_status::LICENSES),
+        16,
+        M_P_LIC,
+    ) else {
+        return;
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[header_start..header_start + 16]);
+    let array = match Array::from_header(raw, 8) {
+        Some(a) => a,
+        None => return,
+    };
+    for ordinal in 0..array.count {
+        let addr = array.data.checked_add((ordinal as usize).saturating_mul(8));
+        let Some(ptr_start) = pspan(log, memory, addr, 8, M_P_LIC) else {
+            continue;
+        };
+        let variant = usize::try_from(p_pool_u64(log, ptr_start)).ok().filter(|&p| p != 0);
+        // Licence entries hold variant pointers directly; authenticate via identity.
+        if let Some(v) = variant {
+            copy_variant_identity(log, memory, v, M_P_LIC);
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+/// Mirror of `walk_license_records`' read set: array header, per-record
+/// 0x58 heads, parent identities, equipment headers plus per-handle pointers
+/// and identities.
+fn copy_production_records(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    manager: usize,
+) {
+    let Some(header_start) = pspan(
+        log,
+        memory,
+        manager.checked_add(cproduction_status::LICENSE_RECORDS),
+        16,
+        M_P_REC,
+    ) else {
+        return;
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[header_start..header_start + 16]);
+    let array = match Array::from_header(raw, 8) {
+        Some(a) => a,
+        None => return,
+    };
+    for ordinal in 0..array.count {
+        let addr = array.data.checked_add((ordinal as usize).saturating_mul(8));
+        let Some(ptr_start) = pspan(log, memory, addr, 8, M_P_REC) else {
+            continue;
+        };
+        let pointer = match usize::try_from(p_pool_u64(log, ptr_start))
+            .ok()
+            .filter(|&p| p != 0)
+        {
+            Some(p) => p,
+            None => continue,
+        };
+        let Some(head_start) = pspan(log, memory, Some(pointer), 0x58, M_P_REC) else {
+            continue;
+        };
+        let mut head = [0u8; 0x58];
+        head.copy_from_slice(&log.bytes[head_start..head_start + 0x58]);
+        let parent = usize::try_from(u64::from_le_bytes(head[cequipment_production_license::PARENT..cequipment_production_license::PARENT + 8].try_into().unwrap()))
+            .ok()
+            .filter(|&p| p != 0);
+        if let Some(p) = parent {
+            copy_variant_identity(log, memory, p, M_P_REC);
+        }
+        let equipment = Array::from_header(
+            head[cequipment_production_license::EQUIPMENT..cequipment_production_license::EQUIPMENT + 16].try_into().unwrap(),
+            8,
+        );
+        if let Some(equipment) = equipment {
+            for index in 0..equipment.count {
+                let addr = equipment.data.checked_add((index as usize).saturating_mul(8));
+                let Some(h_start) = pspan(log, memory, addr, 8, M_P_REC) else {
+                    continue;
+                };
+                let variant = usize::try_from(p_pool_u64(log, h_start)).ok().filter(|&p| p != 0);
+                if let Some(v) = variant {
+                    copy_variant_identity(log, memory, v, M_P_REC);
+                }
+            }
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+/// Mirror of the shared deployment walk's read set: conveyor array, per
+/// conveyor heads plus templates, line arrays and names, per-line heads plus
+/// name objects, custom strings, deployment objects with pools and manpower,
+/// plus per-entry words and variant identities. All spans carry the combined
+/// deployment mask, matching the walk's shared failure domain.
+fn copy_deployment_queue(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    base: usize,
+    manager: usize,
+) {
+    let Some(header_start) = pspan(
+        log,
+        memory,
+        manager.checked_add(cdeployment_status::CONVEYORS),
+        16,
+        M_P_DEPLOY,
+    ) else {
+        return;
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[header_start..header_start + 16]);
+    let queue = match Array::from_header(raw, 8) {
+        Some(a) => a,
+        None => return,
+    };
+    for index in 0..queue.count {
+        let addr = queue.data.checked_add((index as usize).saturating_mul(8));
+        let Some(ptr_start) = pspan(log, memory, addr, 8, M_P_DEPLOY) else {
+            continue;
+        };
+        let conveyor = match usize::try_from(p_pool_u64(log, ptr_start))
+            .ok()
+            .filter(|&p| p != 0)
+        {
+            Some(p) => p,
+            None => continue,
+        };
+        let Some(head_start) = pspan(log, memory, Some(conveyor), 0x9c, M_P_DEPLOY) else {
+            continue;
+        };
+        let mut head = [0u8; 0x9c];
+        head.copy_from_slice(&log.bytes[head_start..head_start + 0x9c]);
+        let template = usize::try_from(u64::from_le_bytes(head[cmilitary_deployment_conveyor::TEMPLATE..cmilitary_deployment_conveyor::TEMPLATE + 8].try_into().unwrap()))
+            .ok()
+            .filter(|&p| p != 0);
+        if let Some(t) = template {
+            // Template vtable plus reference words.
+            let _ = pspan(log, memory, Some(t), 16, M_P_DEPLOY);
+        }
+        // Conveyor name string.
+        if let Some(name) = conveyor.checked_add(cmilitary_deployment_conveyor::NAME) {
+            copy_production_string(log, memory, name, M_P_DEPLOY);
+        }
+        // Line array header as its own exact span: the walk reads it via
+        // `Array::read` at +0x78, which exact-match service does not derive
+        // from the 0x9c head span above.
+        let _ = pspan(
+            log,
+            memory,
+            conveyor.checked_add(cmilitary_deployment_conveyor::LINES),
+            16,
+            M_P_DEPLOY,
+        );
+        let lines = Array::from_header(
+            head[cmilitary_deployment_conveyor::LINES..cmilitary_deployment_conveyor::LINES + 16].try_into().unwrap(),
+            8,
+        );
+        let Some(lines) = lines else {
+            continue;
+        };
+        for ordinal in 0..lines.count {
+            let addr = lines.data.checked_add((ordinal as usize).saturating_mul(8));
+            let Some(lptr_start) = pspan(log, memory, addr, 8, M_P_DEPLOY) else {
+                continue;
+            };
+            let line = match usize::try_from(p_pool_u64(log, lptr_start))
+                .ok()
+                .filter(|&p| p != 0)
+            {
+                Some(p) => p,
+                None => continue,
+            };
+            copy_deployment_line(log, memory, base, conveyor, line);
+            if log.overflowed {
+                return;
+            }
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+fn copy_deployment_line(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    base: usize,
+    conveyor: usize,
+    line: usize,
+) {
+    let _ = base;
+    let Some(head_start) = pspan(log, memory, Some(line), 0x40, M_P_DEPLOY) else {
+        return;
+    };
+    let mut head = [0u8; 0x40];
+    head.copy_from_slice(&log.bytes[head_start..head_start + 0x40]);
+    let name = usize::try_from(u64::from_le_bytes(head[cmilitary_deployment_line::NAME..cmilitary_deployment_line::NAME + 8].try_into().unwrap()))
+        .ok()
+        .filter(|&p| p != 0);
+    let deployment = usize::try_from(u64::from_le_bytes(head[cmilitary_deployment_line::DEPLOYMENT..cmilitary_deployment_line::DEPLOYMENT + 8].try_into().unwrap()))
+        .ok()
+        .filter(|&p| p != 0);
+    let (Some(name), Some(deployment)) = (name, deployment) else {
+        return;
+    };
+    // Name object: vtable, order, override header, flags; then custom bytes.
+    let _ = pspan(log, memory, Some(name), 8, M_P_DEPLOY);
+    let _ = pspan(log, memory, name.checked_add(cname_group_member::ORDER), 4, M_P_DEPLOY);
+    let string = match name.checked_add(cname_group_member::OVERRIDE_NAME) {
+        Some(s) => s,
+        None => return,
+    };
+    let Some(chead_start) = pspan(log, memory, Some(string), 32, M_P_DEPLOY) else {
+        return;
+    };
+    let _ = pspan(log, memory, string.checked_add(msvc_string::LENGTH), 8, M_P_DEPLOY);
+    let _ = pspan(log, memory, string.checked_add(msvc_string::CAPACITY), 8, M_P_DEPLOY);
+    let _ = pspan(log, memory, Some(string), 8, M_P_DEPLOY);
+    let mut chead = [0u8; 32];
+    chead.copy_from_slice(&log.bytes[chead_start..chead_start + 32]);
+    let len = match usize::try_from(u64::from_le_bytes(chead[msvc_string::LENGTH..msvc_string::CAPACITY].try_into().unwrap())) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    let capacity = u64::from_le_bytes(chead[msvc_string::CAPACITY..].try_into().unwrap());
+    if len as u64 <= capacity && capacity >= msvc_string::INLINE_CAPACITY {
+        let source = if capacity == msvc_string::INLINE_CAPACITY {
+            string
+        } else {
+            match usize::try_from(u64::from_le_bytes(chead[..8].try_into().unwrap())).ok().filter(|&s| s != 0) {
+                Some(s) => s,
+                None => string,
+            }
+        };
+        if source.checked_add(len).is_some() {
+            if len != 0 {
+                let _ = pspan(log, memory, Some(source), len, M_P_DEPLOY);
+            }
+            let _ = pspan(log, memory, source.checked_add(len), 1, M_P_DEPLOY);
+        }
+    }
+    let _ = pspan(log, memory, name.checked_add(cname_group_member::FLAG_A), 1, M_P_DEPLOY);
+    let _ = pspan(log, memory, name.checked_add(cname_group_member::FLAG_B), 1, M_P_DEPLOY);
+    // Parent backlink is inside the head span already; deployment object next.
+    let _ = conveyor;
+    copy_deployment_object(log, memory, base, deployment, line);
+}
+
+fn copy_deployment_object(
+    log: &mut RawLog<8>,
+    memory: &impl Memory,
+    base: usize,
+    deployment: usize,
+    line: usize,
+) {
+    let _ = base;
+    let _ = line;
+    let _ = pspan(log, memory, Some(deployment), 8, M_P_DEPLOY);
+    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::SECONDARY_VTABLE), 8, M_P_DEPLOY);
+    let pool = match deployment.checked_add(cmilitary_deployment::EQUIPMENT_POOL) {
+        Some(p) => p,
+        None => return,
+    };
+    let _ = pspan(log, memory, Some(pool), 8, M_P_DEPLOY);
+    let _ = pspan(log, memory, pool.checked_add(cequipment_variant_pool::ALLOW_ZERO), 1, M_P_DEPLOY);
+    // Equipment pool arrays.
+    if let Some(h) = pspan(log, memory, pool.checked_add(cequipment_variant_pool::ITEMS), 16, M_P_DEPLOY) {
+        let mut raw = [0u8; 16];
+        raw.copy_from_slice(&log.bytes[h..h + 16]);
+        if let Some(array) = Array::from_header(raw, equipment_entry::STRIDE) {
+            for ordinal in 0..array.count {
+                let addr = array.element(ordinal, equipment_entry::STRIDE);
+                if let Some(e_start) = pspan(log, memory, addr, equipment_entry::STRIDE, M_P_DEPLOY) {
+                    let variant = usize::try_from(p_pool_u64(log, e_start)).ok().filter(|&p| p != 0);
+                    if let Some(v) = variant {
+                        copy_variant_identity(log, memory, v, M_P_DEPLOY);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(h) = pspan(log, memory, pool.checked_add(cequipment_variant_pool::ALLOCATIONS), 16, M_P_DEPLOY) {
+        let mut raw = [0u8; 16];
+        raw.copy_from_slice(&log.bytes[h..h + 16]);
+        if let Some(array) = Array::from_header(raw, 24) {
+            // Allocation entries are counted, not decoded per row here; record
+            // the contiguous block as individual entry spans via takes below.
+            for ordinal in 0..array.count {
+                let addr = array.element(ordinal, 24);
+                let _ = pspan(log, memory, addr, 24, M_P_DEPLOY);
+            }
+        }
+    }
+    // Scalars.
+    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::TRAINING), 8, M_P_DEPLOY);
+    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::MAX_TRAINING), 8, M_P_DEPLOY);
+    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::MAX_MANPOWER), 4, M_P_DEPLOY);
+    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::OWNING_LINE), 8, M_P_DEPLOY);
+    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::DISTRIBUTABLE_PRIORITY), 4, M_P_DEPLOY);
+    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::HALTING_REASON), 4, M_P_DEPLOY);
+    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::HALTING_REASON_PRESENT), 1, M_P_DEPLOY);
+    // Manpower containers.
+    for offset in [cmilitary_deployment::MANPOWER_HAVE, cmilitary_deployment::MANPOWER_NEED] {
+        let container = match deployment.checked_add(offset) {
+            Some(c) => c,
+            None => continue,
+        };
+        let _ = pspan(log, memory, Some(container), 8, M_P_DEPLOY);
+        let Some(data_start) = pspan(log, memory, container.checked_add(carmy_manpower_values::DATA), 16, M_P_DEPLOY) else {
+            continue;
+        };
+        let mut raw = [0u8; 16];
+        raw.copy_from_slice(&log.bytes[data_start..data_start + 16]);
+        if let Some(array) = Array::from_header(raw, manpower_value_entry::STRIDE) {
+            for ordinal in 0..array.count {
+                let addr = array.element(ordinal, manpower_value_entry::STRIDE);
+                let _ = pspan(log, memory, addr, manpower_value_entry::STRIDE, M_P_DEPLOY);
+            }
+        }
+    }
+}
+
+impl Captured {
+    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
+    /// `second` while any rest table still needs double-read checks, compares
+    /// the raw logs, and records copy-only costs plus the existing
+    /// checked/mismatches bookkeeping. Returns whether the payload is
+    /// complete (`raw_ok`); on staging overflow the caller falls back to the
+    /// typed walk and enqueues nothing.
+    pub(crate) fn copy_production_rest_refresh(
+        &mut self,
+        memory: &impl Memory,
+        ctx: ProductionRestCopyContext,
+        first: &mut ProductionRestJob,
+        second: Option<&mut ProductionRestJob>,
+    ) -> ProductionRestCopyReport {
+        let started = qpc();
+        first.clear();
+        first.game_state = ctx.game_state;
+        copy_production_rest_pass(memory, ctx.base, ctx.game_state, first);
+        let mut ticks = [0u64; 8];
+        ticks[0] = elapsed(started);
+        let mut matched = [true; 8];
+        if let Some(second_job) = second {
+            let second_started = qpc();
+            second_job.clear();
+            second_job.game_state = ctx.game_state;
+            copy_production_rest_pass(memory, ctx.base, ctx.game_state, second_job);
+            ticks[0] += elapsed(second_started);
+            let equal = first.log.logs_equal(&second_job.log)
+                && !first.log.overflowed
+                && !second_job.log.overflowed;
+            for (slot, matched) in matched.iter_mut().enumerate() {
+                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+            }
+        }
+        // Conservative checked bookkeeping mirroring the typed paths: shared
+        // name/handle arenas block every member table on change.
+        self.lines.checked = ctx.needed[0];
+        self.lines.mismatches = usize::from(ctx.needed[0] && !matched[0]);
+        self.stockpiles.checked = ctx.needed[1];
+        self.stockpiles.mismatches = usize::from(ctx.needed[1] && !matched[1]);
+        self.licenses.checked = ctx.needed[2];
+        self.licenses.mismatches = usize::from(ctx.needed[2] && !matched[2]);
+        self.conveyors.checked = ctx.needed[3];
+        self.conveyors.mismatches = usize::from(ctx.needed[3] && !matched[3]);
+        self.deployment_lines.checked = ctx.needed[4];
+        self.deployment_lines.mismatches = usize::from(ctx.needed[4] && !matched[4]);
+        self.deployment_manpower.checked = ctx.needed[5];
+        self.deployment_manpower.mismatches = usize::from(ctx.needed[5] && !matched[5]);
+        self.deployment_equipment.checked = ctx.needed[6];
+        self.deployment_equipment.mismatches = usize::from(ctx.needed[6] && !matched[6]);
+        self.license_records.checked = ctx.needed[7];
+        self.license_records.mismatches = usize::from(ctx.needed[7] && !matched[7]);
+        let raw_ok = !first.log.overflowed;
+        ProductionRestCopyReport {
+            raw_ok,
+            matched,
+            copy_ticks: ticks,
+            raw_bytes: first.log.raw_bytes,
+        }
+    }
+}
+
+/// One structural copy pass: shared census plus every country's production
+/// and deployment takes. The job is cleared on entry so pooled refreshes
+/// never accumulate spans across hours.
+fn copy_production_rest_pass(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    job: &mut ProductionRestJob,
+) {
+    if !copy_production_census(&mut job.log, memory, base, game_state, &mut job.census) {
+        return;
+    }
+    for index in 0..job.census.len() {
+        let country = job.census[index];
+        if let Some(manager) = copy_production_manager(&mut job.log, memory, base, &country) {
+            copy_production_lines(&mut job.log, memory, manager);
+            if job.log.overflowed {
+                return;
+            }
+            copy_production_stockpiles(&mut job.log, memory, manager);
+            if job.log.overflowed {
+                return;
+            }
+            copy_production_licenses(&mut job.log, memory, manager);
+            if job.log.overflowed {
+                return;
+            }
+            copy_production_records(&mut job.log, memory, manager);
+            if job.log.overflowed {
+                return;
+            }
+        }
+        if let Some(manager) = copy_deployment_manager(&mut job.log, memory, base, &country) {
+            copy_deployment_queue(&mut job.log, memory, base, manager);
+            if job.log.overflowed {
+                return;
+            }
+        }
+    }
+}
 
 
+
+impl Captured {
     /// Read variant fields from complete, independently acquired registry
     /// snapshots. No consumer-table union or discovery pass is needed.
     pub fn finish_variants(
@@ -1986,6 +3003,484 @@ pub(crate) mod variants_test_kit {
     }
 }
 
+/// Shared synthetic address space for the hourly production-rest
+/// copy/decode split: one country with one line, one stockpile entry,
+/// one licence, one licence record with one handle, and a one-conveyor
+/// deployment queue with one line, manpower and equipment.
+#[cfg(test)]
+pub(crate) mod production_rest_test_kit {
+    use super::{
+        Capacities, Captured, ProductionRestCopyContext, ProductionRestCopyReport,
+        ProductionRestJob, Sources, N,
+    };
+    use engine::{
+        carmy_manpower_values, ccountry, cdeployment_status, cequipment_production_license,
+        cequipment_production_line, cequipment_variant, cequipment_variant_pool, cgame_state,
+        cmilitary_deployment, cmilitary_deployment_conveyor, cmilitary_deployment_line,
+        cname_group_member, cproduction_line, cproduction_status, creferenced_division_template,
+        msvc_string, walk::Outcome,
+    };
+
+    pub(crate) const BASE: usize = 0x1000;
+    const COUNTRY: usize = 0x3000;
+    const PROD: usize = 0x10000;
+    const DEPLOY: usize = 0x4000;
+    const QUEUE: usize = 0x4100;
+    const CONVEYOR: usize = 0x5000;
+    const LINE_ARRAY: usize = 0x5200;
+    const LINE: usize = 0x6000;
+    const NAME_OBJECT: usize = 0x6200;
+    const DEPLOYMENT: usize = 0x7000;
+    const EQUIPMENT: usize = 0x7400;
+    const HAVE: usize = 0x7500;
+    const NEED: usize = 0x7580;
+    const TEMPLATE: usize = 0x7600;
+    const ALLOCATIONS: usize = 0x7680;
+    const VARIANT: usize = 0x7700;
+    const PLINE: usize = 0x11000;
+    const PDATA: usize = 0x11100;
+    const SDATA: usize = 0x11200;
+    const LDATA: usize = 0x11300;
+    const RDATA: usize = 0x11400;
+    const RECORD: usize = 0x11500;
+    const RLIST: usize = 0x11600;
+
+    fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
+        bytes[address - BASE..address - BASE + value.len()].copy_from_slice(value);
+    }
+
+    fn array(bytes: &mut [u8], header: usize, data: usize, count: u32) {
+        put(bytes, header, &(data as u64).to_le_bytes());
+        put(bytes, header + 8, &count.to_le_bytes());
+        put(bytes, header + 12, &count.to_le_bytes());
+    }
+
+    pub(crate) fn fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 0x12000];
+        array(&mut bytes, BASE + cgame_state::COUNTRIES, 0x2000, 3);
+        array(&mut bytes, BASE + cgame_state::COUNTRY_LINKS, 0x2100, 3);
+        for slot in [1, 2] {
+            put(&mut bytes, 0x2000 + slot * 8, &(COUNTRY as u64).to_le_bytes());
+            put(&mut bytes, 0x2100 + slot * 4, &1_u32.to_le_bytes());
+        }
+        put(&mut bytes, COUNTRY, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, COUNTRY + ccountry::ID, &2_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            COUNTRY + ccountry::PRODUCTION_STATUS,
+            &(PROD as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            COUNTRY + ccountry::DEPLOYMENT_MANAGER,
+            &(DEPLOY as u64).to_le_bytes(),
+        );
+        // Production manager.
+        put(&mut bytes, PROD, &(cproduction_status::VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, PROD + cproduction_status::COUNTRY, &(COUNTRY as u64).to_le_bytes());
+        array(&mut bytes, PROD + cproduction_status::LINES, PDATA, 1);
+        put(&mut bytes, PDATA, &(PLINE as u64).to_le_bytes());
+        array(&mut bytes, PROD + cproduction_status::LICENSES, LDATA, 1);
+        put(&mut bytes, LDATA, &(VARIANT as u64).to_le_bytes());
+        array(&mut bytes, PROD + cproduction_status::LICENSE_RECORDS, RDATA, 1);
+        put(&mut bytes, RDATA, &(RECORD as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            PROD + cproduction_status::STOCKPILE_POOL,
+            &(cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        array(&mut bytes, PROD + cproduction_status::STOCKPILE, SDATA, 1);
+        put(&mut bytes, SDATA, &(VARIANT as u64).to_le_bytes());
+        put(&mut bytes, SDATA + 8, &77_i64.to_le_bytes());
+        // Production line (military).
+        for (offset, value) in [
+            (0, engine::cmilitary_production_line::VTABLE_RVA as u64),
+            (cproduction_line::REFERENCE_TYPE, 0x8000_1234_0000_0038),
+            (cproduction_line::PRODUCTION_STATUS, PROD as u64),
+            (cproduction_line::COST, 100),
+            (cproduction_line::SPEED, 200),
+            (cproduction_line::PRODUCED, 300),
+            (cequipment_production_line::EQUIPMENT_VARIANT, VARIANT as u64),
+            (
+                cequipment_production_line::INDUSTRIAL_ORGANISATION_CID,
+                0x1234_5678_0000_0095,
+            ),
+        ] {
+            put(&mut bytes, PLINE + offset, &value.to_le_bytes());
+        }
+        for (offset, value) in [
+            (cproduction_line::ACTIVE_FACTORIES, 12_i32),
+            (cproduction_line::PRIORITY, 17),
+            (cproduction_line::AMOUNT, -1),
+            (cequipment_production_line::REQUESTED_FACTORIES, 14),
+        ] {
+            put(&mut bytes, PLINE + offset, &value.to_le_bytes());
+        }
+        // Variant identity.
+        put(&mut bytes, VARIANT, &(cequipment_variant::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            VARIANT + cequipment_variant::TYPE,
+            &0xfedc_ba98_0000_0046_u64.to_le_bytes(),
+        );
+        // Licence record.
+        put(
+            &mut bytes,
+            RECORD,
+            &(cequipment_production_license::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(&mut bytes, RECORD + cequipment_production_license::OWNER, &2_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            RECORD + cequipment_production_license::UNSERIALIZED_OPERAND,
+            &100_000_i64.to_le_bytes(),
+        );
+        for (offset, value) in [
+            (cequipment_production_license::LENDED_CIC, 3_i32),
+            (cequipment_production_license::REQUIRED_CIC, 4_i32),
+            (cequipment_production_license::GIVER, 5),
+            (cequipment_production_license::START_DATE, 6),
+        ] {
+            put(&mut bytes, RECORD + offset, &value.to_le_bytes());
+        }
+        put(
+            &mut bytes,
+            RECORD + cequipment_production_license::PARENT,
+            &(VARIANT as u64).to_le_bytes(),
+        );
+        array(&mut bytes, RECORD + cequipment_production_license::EQUIPMENT, RLIST, 1);
+        put(&mut bytes, RLIST, &(VARIANT as u64).to_le_bytes());
+        // Deployment manager + queue (mirrors the deployment walk fixture).
+        put(&mut bytes, DEPLOY, &(cdeployment_status::VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, DEPLOY + cdeployment_status::OWNER, &(COUNTRY as u64).to_le_bytes());
+        array(&mut bytes, DEPLOY + cdeployment_status::CONVEYORS, QUEUE, 1);
+        put(&mut bytes, QUEUE, &(CONVEYOR as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            CONVEYOR,
+            &(cmilitary_deployment_conveyor::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            CONVEYOR + cmilitary_deployment_conveyor::TYPE,
+            &0xfedc_ba98_0000_0040_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            CONVEYOR + cmilitary_deployment_conveyor::TEMPLATE,
+            &(TEMPLATE as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            CONVEYOR + cmilitary_deployment_conveyor::NAME,
+            b"Panzer\0",
+        );
+        put(
+            &mut bytes,
+            CONVEYOR + cmilitary_deployment_conveyor::NAME + msvc_string::LENGTH,
+            &6_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            CONVEYOR + cmilitary_deployment_conveyor::NAME + msvc_string::CAPACITY,
+            &15_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            CONVEYOR + cmilitary_deployment_conveyor::AMOUNT,
+            &(-3_i32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            CONVEYOR + cmilitary_deployment_conveyor::LOCATION,
+            &9_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            CONVEYOR + cmilitary_deployment_conveyor::PRIORITY,
+            &7_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            CONVEYOR + cmilitary_deployment_conveyor::ROLE_TOKEN,
+            &0_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            CONVEYOR + cmilitary_deployment_conveyor::CLOSED,
+            &[0xaa],
+        );
+        array(
+            &mut bytes,
+            CONVEYOR + cmilitary_deployment_conveyor::LINES,
+            LINE_ARRAY,
+            1,
+        );
+        put(&mut bytes, LINE_ARRAY, &(LINE as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            TEMPLATE,
+            &(creferenced_division_template::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            TEMPLATE + creferenced_division_template::TYPE,
+            &0x0000_0021_0000_0034_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            LINE,
+            &(cmilitary_deployment_line::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            LINE + cmilitary_deployment_line::TYPE,
+            &0x0000_00c8_0000_003f_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            LINE + cmilitary_deployment_line::NAME,
+            &(NAME_OBJECT as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            LINE + cmilitary_deployment_line::AMOUNT,
+            &(-1_i32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            LINE + cmilitary_deployment_line::DEPLOYMENT,
+            &(DEPLOYMENT as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            LINE + cmilitary_deployment_line::PARENT,
+            &(CONVEYOR as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            NAME_OBJECT,
+            &(cname_group_member::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            NAME_OBJECT + cname_group_member::ORDER,
+            &11_i32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            NAME_OBJECT + cname_group_member::OVERRIDE_NAME + msvc_string::LENGTH,
+            &0_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            NAME_OBJECT + cname_group_member::OVERRIDE_NAME + msvc_string::CAPACITY,
+            &msvc_string::INLINE_CAPACITY.to_le_bytes(),
+        );
+        put(&mut bytes, NAME_OBJECT + cname_group_member::FLAG_A, &[1]);
+        put(&mut bytes, NAME_OBJECT + cname_group_member::FLAG_B, &[0]);
+        put(
+            &mut bytes,
+            DEPLOYMENT,
+            &(cmilitary_deployment::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            DEPLOYMENT + cmilitary_deployment::SECONDARY_VTABLE,
+            &(cmilitary_deployment::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            DEPLOYMENT + cmilitary_deployment::EQUIPMENT_POOL,
+            &(cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        array(
+            &mut bytes,
+            DEPLOYMENT + cmilitary_deployment::EQUIPMENT_POOL + cequipment_variant_pool::ITEMS,
+            EQUIPMENT,
+            1,
+        );
+        put(
+            &mut bytes,
+            DEPLOYMENT + cmilitary_deployment::EQUIPMENT_POOL + cequipment_variant_pool::ALLOW_ZERO,
+            &[1],
+        );
+        array(
+            &mut bytes,
+            DEPLOYMENT + cmilitary_deployment::EQUIPMENT_POOL + cequipment_variant_pool::ALLOCATIONS,
+            ALLOCATIONS,
+            0,
+        );
+        put(
+            &mut bytes,
+            DEPLOYMENT + cmilitary_deployment::DISTRIBUTABLE_PRIORITY,
+            &2_i32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            DEPLOYMENT + cmilitary_deployment::HALTING_REASON,
+            &3_i32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            DEPLOYMENT + cmilitary_deployment::HALTING_REASON_PRESENT,
+            &[1],
+        );
+        put(&mut bytes, EQUIPMENT, &(VARIANT as u64).to_le_bytes());
+        put(&mut bytes, EQUIPMENT + 8, &55_i64.to_le_bytes());
+        put(
+            &mut bytes,
+            DEPLOYMENT + cmilitary_deployment::TRAINING,
+            &0_i64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            DEPLOYMENT + cmilitary_deployment::MAX_TRAINING,
+            &66_i64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            DEPLOYMENT + cmilitary_deployment::MAX_MANPOWER,
+            &77_i32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            DEPLOYMENT + cmilitary_deployment::OWNING_LINE,
+            &(LINE as u64).to_le_bytes(),
+        );
+        for (offset, container, count) in [
+            (cmilitary_deployment::MANPOWER_HAVE, HAVE, 1_u32),
+            (cmilitary_deployment::MANPOWER_NEED, NEED, 0),
+        ] {
+            put(
+                &mut bytes,
+                DEPLOYMENT + offset,
+                &(carmy_manpower_values::VTABLE_RVA as u64).to_le_bytes(),
+            );
+            array(
+                &mut bytes,
+                DEPLOYMENT + offset + carmy_manpower_values::DATA,
+                container,
+                count,
+            );
+        }
+        put(&mut bytes, HAVE, &8_u32.to_le_bytes());
+        put(&mut bytes, HAVE + 4, &(-5_i32).to_le_bytes());
+        bytes
+    }
+
+    pub(crate) fn capacities() -> Capacities {
+        Capacities {
+            rows: [8; N],
+            definition_bytes: 64,
+            module_bytes: 64,
+            upgrade_bytes: 64,
+            conveyor_name_bytes: 64,
+            line_custom_name_bytes: 64,
+            license_handles: 64,
+        }
+    }
+
+    pub(crate) fn direct(
+        memory: &impl engine::Memory,
+        capacities: &Capacities,
+    ) -> Captured {
+        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+        let divisions = Sources {
+            first: &[],
+            first_outcome: Outcome::Rows { len: 0 },
+            second: &[],
+            second_outcome: Outcome::Rows { len: 0 },
+        };
+        let _ = captured.acquire(memory, 0, BASE, &[true; N], divisions, 0, true);
+        captured.rest_raw_mode = false;
+        captured
+    }
+
+    pub(crate) fn split(
+        memory: &impl engine::Memory,
+        capacities: &Capacities,
+    ) -> (Captured, ProductionRestCopyReport, ProductionRestJob) {
+        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+        let ctx = ProductionRestCopyContext {
+            base: 0,
+            game_state: BASE,
+            needed: [true; 8],
+        };
+        let mut first = ProductionRestJob::new();
+        let mut second = ProductionRestJob::new();
+        let report =
+            captured.copy_production_rest_refresh(memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        captured.rest_raw_mode = report.raw_ok;
+        // Typed walks skip while staged; the worker fills the buffers.
+        let divisions = Sources {
+            first: &[],
+            first_outcome: Outcome::Rows { len: 0 },
+            second: &[],
+            second_outcome: Outcome::Rows { len: 0 },
+        };
+        let _ = captured.acquire(memory, 0, BASE, &[true; N], divisions, 0, true);
+        let mut ticks = [0u64; 8];
+        captured.decode_production_rest_payload(0, BASE, &first, &mut ticks);
+        (captured, report, first)
+    }
+
+        pub(crate) fn assert_matches_direct(split: &Captured, direct: &Captured) {
+            assert_eq!(split.lines.outcome, direct.lines.outcome, "lines outcome");
+            assert_eq!(split.stockpiles.outcome, direct.stockpiles.outcome, "stockpiles outcome");
+            assert_eq!(split.licenses.outcome, direct.licenses.outcome, "licences outcome");
+            assert_eq!(split.conveyors.outcome, direct.conveyors.outcome, "conveyors outcome");
+            assert_eq!(
+                split.deployment_lines.outcome, direct.deployment_lines.outcome,
+                "lines outcome"
+            );
+            assert_eq!(
+                split.deployment_manpower.outcome, direct.deployment_manpower.outcome,
+                "manpower outcome"
+            );
+            assert_eq!(
+                split.deployment_equipment.outcome, direct.deployment_equipment.outcome,
+                "equipment outcome"
+            );
+            assert_eq!(
+                split.license_records.outcome, direct.license_records.outcome,
+                "records outcome"
+            );
+        let len = split.lines.outcome.len();
+        assert_eq!(&split.lines.rows[..len], &direct.lines.rows[..len], "line rows");
+        let len = split.stockpiles.outcome.len();
+        assert_eq!(
+            &split.stockpiles.rows[..len],
+            &direct.stockpiles.rows[..len],
+            "stockpile rows"
+        );
+        let len = split.conveyors.outcome.len();
+        assert_eq!(
+            &split.conveyors.rows[..len],
+            &direct.conveyors.rows[..len],
+            "conveyor rows"
+        );
+        let len = split.license_records.outcome.len();
+        assert_eq!(
+            &split.license_records.rows[..len],
+            &direct.license_records.rows[..len],
+            "record rows"
+        );
+        assert_eq!(
+            &split.conveyor_name_bytes.first[..split.conveyor_name_bytes.len],
+            &direct.conveyor_name_bytes.first[..direct.conveyor_name_bytes.len],
+            "conveyor names"
+        );
+        assert_eq!(
+            &split.license_handles.first[..split.license_handles.len],
+            &direct.license_handles.first[..direct.license_handles.len],
+            "licence handles"
+        );
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3168,5 +4663,148 @@ mod tests {
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());
+    }
+
+    #[test]
+    fn production_rest_split_copy_matches_direct_walk() {
+        use super::production_rest_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let capacities = kit::capacities();
+        let direct = kit::direct(&memory, &capacities);
+        let (split, report, _) = kit::split(&memory, &capacities);
+        assert_eq!(report.matched, [true; 8]);
+        kit::assert_matches_direct(&split, &direct);
+        assert_eq!(split.lines.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.stockpiles.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.licenses.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.conveyors.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.deployment_lines.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.deployment_manpower.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.deployment_equipment.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.license_records.outcome, Outcome::Rows { len: 1 });
+    }
+
+    #[test]
+    fn production_rest_split_copy_matches_direct_walk_under_truncation() {
+        use super::production_rest_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let capacities = Capacities {
+            rows: [1; N],
+            definition_bytes: 0,
+            module_bytes: 0,
+            upgrade_bytes: 0,
+            conveyor_name_bytes: 2,
+            line_custom_name_bytes: 0,
+            license_handles: 0,
+        };
+        let direct = kit::direct(&memory, &capacities);
+        let (split, report, _) = {
+            let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+            let ctx = ProductionRestCopyContext {
+                base: 0,
+                game_state: kit::BASE,
+                needed: [true; 8],
+            };
+            let mut first = ProductionRestJob::new();
+            let mut second = ProductionRestJob::new();
+            let report =
+                captured.copy_production_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
+            assert!(report.raw_ok);
+            captured.rest_raw_mode = true;
+            let divisions = Sources {
+                first: &[],
+                first_outcome: Outcome::Rows { len: 0 },
+                second: &[],
+                second_outcome: Outcome::Rows { len: 0 },
+            };
+            let _ = captured.acquire(&memory, 0, kit::BASE, &[true; N], divisions, 0, true);
+            let mut ticks = [0u64; 8];
+            captured.decode_production_rest_payload(0, kit::BASE, &first, &mut ticks);
+            (captured, report, first)
+        };
+        assert_eq!(report.matched, [true; 8]);
+        kit::assert_matches_direct(&split, &direct);
+    }
+
+    #[test]
+    fn production_rest_double_copy_compare_blocks_checks_on_tearing() {
+        use super::production_rest_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let capacities = kit::capacities();
+        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let ctx = ProductionRestCopyContext {
+            base: 0,
+            game_state: kit::BASE,
+            needed: [true; 8],
+        };
+        let mut first = ProductionRestJob::new();
+        let mut second = ProductionRestJob::new();
+        let report =
+            captured.copy_production_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 8]);
+        // A torn conveyor amount between the passes changes the log.
+        let mut torn = bytes.clone();
+        torn[0x5000 + engine::cmilitary_deployment_conveyor::AMOUNT - kit::BASE] ^= 0xff;
+        let torn_memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &torn };
+        let mut after = ProductionRestJob::new();
+        let mut after_torn = ProductionRestJob::new();
+        {
+            let mut log = crate::raw::RawLog::<8>::new(1 << 17, 8 << 20);
+            let _ = &mut log;
+        }
+        let ctx_none = ProductionRestCopyContext {
+            base: 0,
+            game_state: kit::BASE,
+            needed: [false; 8],
+        };
+        let mut c2 = Captured::with_capacities(&capacities, &[0; N]);
+        let r1 = c2.copy_production_rest_refresh(&memory, ctx_none, &mut after, None);
+        assert!(r1.raw_ok);
+        let r2 = c2.copy_production_rest_refresh(&torn_memory, ctx_none, &mut after_torn, None);
+        assert!(r2.raw_ok);
+        assert!(!after.log.logs_equal(&after_torn.log));
+    }
+
+    #[test]
+    fn production_rest_staging_overflow_falls_back_to_typed_walk() {
+        use super::production_rest_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let capacities = kit::capacities();
+        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let ctx = ProductionRestCopyContext {
+            base: 0,
+            game_state: kit::BASE,
+            needed: [true; 8],
+        };
+        let mut tiny = ProductionRestJob {
+            log: crate::raw::RawLog::new(8, 8),
+            game_state: 0,
+            census: Vec::new(),
+        };
+        let report = captured.copy_production_rest_refresh(&memory, ctx, &mut tiny, None);
+        assert!(!report.raw_ok);
+        assert!(tiny.log.overflowed);
+        assert!(tiny.grow_for_next());
+    }
+
+    #[test]
+    fn production_rest_worst_case_pools_start_above_late_campaign_caps() {
+        // Late-campaign worst case: 2048 lines, 8192 stockpiles, licences and
+        // deployment queues with names plus licence handles. Pools start
+        // above that so steady state never overflows; overflow still falls
+        // back to the typed walk above.
+        let job = ProductionRestJob::new();
+        assert!(job.log.spans.capacity() >= 1 << 17);
+        assert!(job.log.bytes.capacity() >= (8 << 20));
+        let capacities = Capacities::default();
+        assert!(capacities.rows[0] >= 2048);
+        assert!(capacities.rows[1] >= 8192);
+        assert!(capacities.conveyor_name_bytes >= 128 * 1024);
+        assert!(capacities.license_handles >= 4096);
     }
 }

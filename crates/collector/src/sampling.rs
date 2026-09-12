@@ -820,6 +820,23 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             // with no payload enqueued.
             let mut session_payload: Option<extended::session::SessionJob> = None;
             let mut session_report = extended::session::SessionCopyReport::default();
+            // Production hourly rest handoff state: same FIFO, same ordering
+            // guarantees. The hourly payload carries lines, stockpiles,
+            // licences, the deployment queue and licence records with its own
+            // census and no cross-family decoded roots. Staging overflow
+            // falls back to the typed walks with no payload enqueued.
+            let mut production_rest_payload: Option<extended::production::ProductionRestJob> = None;
+            let mut production_rest_report =
+                extended::production::ProductionRestCopyReport::default();
+            // Construction hourly rest handoff state: same FIFO, same ordering
+            // guarantees. The hourly payload carries resources, the
+            // construction queue, occupation, resistance and collaboration
+            // with its own census and no cross-family decoded roots. Staging
+            // overflow falls back to the typed walks with no payload enqueued.
+            let mut construction_rest_payload: Option<extended::construction::ConstructionRestJob> =
+                None;
+            let mut construction_rest_report =
+                extended::construction::ConstructionRestCopyReport::default();
             let mut decode_hour = 0;
             let mut decode_force_full = false;
             if let Some(clock) = frame.clock_before {
@@ -1451,6 +1468,91 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::recycle_session_job(second);
                     }
                 }
+                // Production hourly rest (copy/decode split): raw copies only
+                // on the game thread. Every hour stages the payload and hands
+                // the frame to the decode FIFO; the worker replays lines,
+                // stockpiles, licences, deployment and licence records before
+                // the spool ready handoff. Staging overflow falls back to the
+                // typed walks with no payload enqueued.
+                {
+                    let needed_any = decode::PRODUCTION_REST
+                        .iter()
+                        .any(|table| extended_needed[table.index()]);
+                    let mut first = decode::acquire_production_rest_job();
+                    let mut second = needed_any.then(decode::acquire_production_rest_job);
+                    let ctx = extended::production::ProductionRestCopyContext {
+                        base: shared.base,
+                        game_state: state,
+                        needed: [
+                            extended_needed[decode::PRODUCTION_REST[0].index()],
+                            extended_needed[decode::PRODUCTION_REST[1].index()],
+                            extended_needed[decode::PRODUCTION_REST[2].index()],
+                            extended_needed[decode::PRODUCTION_REST[3].index()],
+                            extended_needed[decode::PRODUCTION_REST[4].index()],
+                            extended_needed[decode::PRODUCTION_REST[5].index()],
+                            extended_needed[decode::PRODUCTION_REST[6].index()],
+                            extended_needed[decode::PRODUCTION_REST[7].index()],
+                        ],
+                    };
+                    production_rest_report = frame
+                        .extended
+                        .production_rest_pilot()
+                        .copy_production_rest_refresh(&memory, ctx, &mut first, second.as_mut());
+                    frame.extended.production_rest_pilot().rest_raw_mode =
+                        production_rest_report.raw_ok;
+                    if production_rest_report.raw_ok {
+                        production_rest_payload = Some(first);
+                    } else {
+                        decode::recycle_production_rest_job(first);
+                    }
+                    if let Some(second) = second {
+                        decode::recycle_production_rest_job(second);
+                    }
+                }
+                // Construction hourly rest (copy/decode split): raw copies
+                // only on the game thread. Every hour stages the payload and
+                // hands the frame to the decode FIFO; the worker replays
+                // resources, the queue, occupation, resistance and
+                // collaboration before the spool ready handoff. Staging
+                // overflow falls back to the typed walks with no payload
+                // enqueued.
+                {
+                    let needed_any = decode::CONSTRUCTION_REST
+                        .iter()
+                        .any(|table| extended_needed[table.index()]);
+                    let mut first = decode::acquire_construction_rest_job();
+                    let mut second = needed_any.then(decode::acquire_construction_rest_job);
+                    let ctx = extended::construction::ConstructionRestCopyContext {
+                        base: shared.base,
+                        game_state: state,
+                        needed: [
+                            extended_needed[decode::CONSTRUCTION_REST[0].index()],
+                            extended_needed[decode::CONSTRUCTION_REST[1].index()],
+                            extended_needed[decode::CONSTRUCTION_REST[2].index()],
+                            extended_needed[decode::CONSTRUCTION_REST[3].index()],
+                            extended_needed[decode::CONSTRUCTION_REST[4].index()],
+                            extended_needed[decode::CONSTRUCTION_REST[5].index()],
+                            extended_needed[decode::CONSTRUCTION_REST[6].index()],
+                            extended_needed[decode::CONSTRUCTION_REST[7].index()],
+                            extended_needed[decode::CONSTRUCTION_REST[8].index()],
+                            extended_needed[decode::CONSTRUCTION_REST[9].index()],
+                        ],
+                    };
+                    construction_rest_report = frame
+                        .extended
+                        .construction_rest_pilot()
+                        .copy_construction_rest_refresh(&memory, ctx, &mut first, second.as_mut());
+                    frame.extended.construction_rest_pilot().rest_raw_mode =
+                        construction_rest_report.raw_ok;
+                    if construction_rest_report.raw_ok {
+                        construction_rest_payload = Some(first);
+                    } else {
+                        decode::recycle_construction_rest_job(first);
+                    }
+                    if let Some(second) = second {
+                        decode::recycle_construction_rest_job(second);
+                    }
+                }
                 // Focus pair (copy/decode split): raw copies only on the game
                 // thread. Every hour stages the payload and hands the frame
                 // to the decode FIFO; the worker decodes before the spool
@@ -1710,6 +1812,42 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::add_session_raw_bytes(slot, session_report.raw_bytes[slot]);
                     }
                 }
+                // Production hourly rest measured copy-only above; same
+                // install for the calibration counters. The deployment shared
+                // traversal is anchor-charged to the conveyors slot and the
+                // licence walk to the licences slot, matching the read-group
+                // convention.
+                if production_rest_report.raw_ok {
+                    for (slot, table) in decode::PRODUCTION_REST.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = production_rest_report.matched[slot];
+                        let ns = shared.ns(production_rest_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_production_rest_copy_ns(slot, ns);
+                        decode::add_production_rest_raw_bytes(
+                            slot,
+                            production_rest_report.raw_bytes[slot],
+                        );
+                    }
+                }
+                // Construction hourly rest measured copy-only above; same
+                // install for the calibration counters. The construction
+                // queue is anchor-charged to the building slot and the
+                // occupation shared walk to the settings slot, matching the
+                // read-group convention.
+                if construction_rest_report.raw_ok {
+                    for (slot, table) in decode::CONSTRUCTION_REST.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = construction_rest_report.matched[slot];
+                        let ns = shared.ns(construction_rest_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_construction_rest_copy_ns(slot, ns);
+                        decode::add_construction_rest_raw_bytes(
+                            slot,
+                            construction_rest_report.raw_bytes[slot],
+                        );
+                    }
+                }
                 let cache_verify_begin = qpc();
                 frame.country_cache_error = cached.verify().err();
                 frame.country_cache_ns =
@@ -1757,6 +1895,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 naval_refresh: naval_report.raw_ok,
                 players_refresh: players_report.raw_ok,
                 session_refresh: session_report.raw_ok,
+                production_rest_refresh: production_rest_report.raw_ok,
+                construction_rest_refresh: construction_rest_report.raw_ok,
                 force_full: decode_force_full,
                 game_elapsed: (qpc() - entered - (original_end - original_begin)).max(1),
                 payload: pilot_payload,
@@ -1774,6 +1914,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 naval_payload,
                 players_payload,
                 session_payload,
+                production_rest_payload,
+                construction_rest_payload,
             };
             match decode::enqueue(shared, decode_job) {
                 None => {
@@ -1840,6 +1982,12 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     }
                     if let Some(payload) = returned.session_payload {
                         decode::recycle_session_job(payload);
+                    }
+                    if let Some(payload) = returned.production_rest_payload {
+                        decode::recycle_production_rest_job(payload);
+                    }
+                    if let Some(payload) = returned.construction_rest_payload {
+                        decode::recycle_construction_rest_job(payload);
                     }
                     // Existing whole-frame drop plus gap path, unchanged
                     // counters and no new loss reasons.
@@ -4385,6 +4533,8 @@ mod tests {
                     naval_refresh: false,
                     players_refresh: false,
                     session_refresh: false,
+                    production_rest_refresh: false,
+                    construction_rest_refresh: false,
                     force_full: false,
                     game_elapsed: 1,
                     payload: None,
@@ -4402,6 +4552,8 @@ mod tests {
                     naval_payload: None,
                     players_payload: None,
                     session_payload: None,
+                    production_rest_payload: None,
+                    construction_rest_payload: None,
                 })
                 .unwrap();
         }
@@ -4427,6 +4579,8 @@ mod tests {
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
+            production_rest_refresh: false,
+            construction_rest_refresh: false,
             force_full: false,
             game_elapsed: 1,
             payload: None,
@@ -4444,6 +4598,8 @@ mod tests {
             naval_payload: None,
             players_payload: None,
             session_payload: None,
+            production_rest_payload: None,
+            construction_rest_payload: None,
         };
         assert!(shared.decode_queue.push(extra).is_err());
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
