@@ -11,6 +11,9 @@ Screenshot, Click and Move coordinates are relative to the outer game window.
 Move positions the cursor without clicking or pressing a key. After setting
 speed and unpausing, move well inside the map before each timed run to avoid
 edge scrolling during either the baseline or the capture.
+Interactive actions briefly borrow foreground focus through a thread-attached
+handoff and restore the previous foreground window afterward. They never stop
+or minimize that application, including when it is TeamViewer.
 Console opens the console with the supplied key, types one line, presses Enter,
 and closes it. Use Text for an already-open console or a save-name field.
 .EXAMPLE
@@ -323,7 +326,12 @@ public static class Hoi4ProbeInput {
     [DllImport("user32.dll", SetLastError=true)] static extern uint SendInput(uint count, Input[] input, int size);
     [DllImport("user32.dll")] static extern uint MapVirtualKeyW(uint code, uint mapType);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint from, uint to, bool attach);
+    [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr window);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] static extern IntPtr SetActiveWindow(IntPtr window);
+    [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr window);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr window);
@@ -334,6 +342,46 @@ public static class Hoi4ProbeInput {
     [DllImport("user32.dll", SetLastError=true)] public static extern bool ClientToScreen(IntPtr window, ref Point point);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+    static bool AttachIfDifferent(uint current, uint other) {
+        return other != 0 && other != current && AttachThreadInput(current, other, true);
+    }
+    static void DetachIfAttached(uint current, uint other, bool attached) {
+        if (attached) AttachThreadInput(current, other, false);
+    }
+    static bool FocusWindow(IntPtr window) {
+        IntPtr foreground = GetForegroundWindow();
+        uint ignored;
+        uint foregroundThread = foreground == IntPtr.Zero ? 0 : GetWindowThreadProcessId(foreground, out ignored);
+        uint targetThread = GetWindowThreadProcessId(window, out ignored);
+        uint currentThread = GetCurrentThreadId();
+        bool foregroundAttached = AttachIfDifferent(currentThread, foregroundThread);
+        bool targetAttached = targetThread != foregroundThread && AttachIfDifferent(currentThread, targetThread);
+        try {
+            BringWindowToTop(window);
+            SetForegroundWindow(window);
+            SetActiveWindow(window);
+            SetFocus(window);
+            return GetForegroundWindow() == window;
+        } finally {
+            DetachIfAttached(currentThread, targetThread, targetAttached);
+            DetachIfAttached(currentThread, foregroundThread, foregroundAttached);
+        }
+    }
+    public static IntPtr AcquireTargetFocus(IntPtr window, uint process) {
+        uint actual;
+        if (!IsWindow(window) || GetWindowThreadProcessId(window, out actual) == 0 || actual != process)
+            throw new InvalidOperationException("The game window no longer belongs to the selected process.");
+        IntPtr previous = GetForegroundWindow();
+        if (!FocusWindow(window))
+            throw new InvalidOperationException("Windows refused to focus the game; input was not sent.");
+        return previous;
+    }
+    public static void RestoreForeground(IntPtr previous, IntPtr gameWindow) {
+        if (previous == IntPtr.Zero || previous == gameWindow || !IsWindow(previous)) return;
+        // Restoration is best effort: the prior application may close or
+        // deliberately retake focus while the guarded game action runs.
+        FocusWindow(previous);
+    }
     public static void CheckTarget(IntPtr window, uint process) {
         uint actual;
         if (!IsWindow(window) || GetWindowThreadProcessId(window, out actual) == 0 || actual != process)
@@ -400,17 +448,18 @@ public static class Hoi4ProbeInput {
 }
 [void][Hoi4ProbeInput]::SetProcessDPIAware()
 if ([Hoi4ProbeInput]::IsIconic($window)) { [void][Hoi4ProbeInput]::ShowWindow($window, 9) }
-[void][Hoi4ProbeInput]::SetForegroundWindow($window)
-Start-Sleep -Milliseconds 200
-[Hoi4ProbeInput]::CheckTarget($window, [uint32]$game.Id)
-if (-not [Hoi4ProbeInput]::IsWindowVisible($window)) { throw 'The game window is not visible.' }
-$rect = New-Object Hoi4ProbeInput+Rect
-if (-not [Hoi4ProbeInput]::GetWindowRect($window, [ref]$rect)) { throw 'Cannot read the game window rectangle.' }
-$width = $rect.Right - $rect.Left
-$height = $rect.Bottom - $rect.Top
-if ($width -le 0 -or $height -le 0) { throw 'The game window has an empty rectangle.' }
+$previousForeground = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
+try {
+    Start-Sleep -Milliseconds 200
+    [Hoi4ProbeInput]::CheckTarget($window, [uint32]$game.Id)
+    if (-not [Hoi4ProbeInput]::IsWindowVisible($window)) { throw 'The game window is not visible.' }
+    $rect = New-Object Hoi4ProbeInput+Rect
+    if (-not [Hoi4ProbeInput]::GetWindowRect($window, [ref]$rect)) { throw 'Cannot read the game window rectangle.' }
+    $width = $rect.Right - $rect.Left
+    $height = $rect.Bottom - $rect.Top
+    if ($width -le 0 -or $height -le 0) { throw 'The game window has an empty rectangle.' }
 
-switch ($Action) {
+    switch ($Action) {
     'Screenshot' {
         $captureRoot = 'captures'
         if (-not $Out) { $Out = Join-Path $captureRoot ('probe\game-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.png') }
@@ -481,4 +530,7 @@ switch ($Action) {
         }
         [pscustomobject]@{ Action = $Action; GameId = $game.Id; Text = $Text }
     }
+    }
+} finally {
+    [Hoi4ProbeInput]::RestoreForeground($previousForeground, $window)
 }
