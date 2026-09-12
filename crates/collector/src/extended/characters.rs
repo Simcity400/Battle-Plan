@@ -4012,6 +4012,76 @@ mod tests {
     }
 
     #[test]
+    fn characters_copy_sizes_cover_documented_read_set() {
+        // S3: every Memory::copy size the characters copy pass issues,
+        // recorded through the real pass. Roster headers (16), words (4/8),
+        // msvc_string headers (32) with heap payloads and terminators (1),
+        // tree nodes and skill entries. Alignment follows the engine layout.
+        use super::characters_test_kit as kit;
+        use super::{CharactersCopyContext, CharactersJob};
+        use engine::Memory;
+        use replay::frame::TABLE_COUNT;
+        use std::collections::BTreeSet;
+        struct Recorder<'a> {
+            inner: engine::memory::SliceMemory<'a>,
+            sizes: std::cell::RefCell<BTreeSet<usize>>,
+        }
+        impl Memory for Recorder<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.sizes.borrow_mut().insert(output.len());
+                self.inner.copy(address, output)
+            }
+        }
+        let bytes = kit::mapped_fixture();
+        let inner = kit::memory(&bytes);
+        let memory = Recorder { inner, sizes: std::cell::RefCell::new(BTreeSet::new()) };
+        let ctx = CharactersCopyContext { base: kit::BASE, game_state: kit::GAME_STATE, needed: [true; TABLE_COUNT] };
+        let mut first = CharactersJob::new();
+        let mut captured = Captured::with_capacities(&Capacities { rows: [4096; N], bytes: [131_072; N] }, &[0; N]);
+        let report = captured.copy_characters_refresh(&memory, ctx, &mut first, None);
+        assert!(report.raw_ok);
+        let sizes = memory.sizes.borrow().clone();
+        for required in [1, 4, 8, 16, 32] {
+            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+        }
+    }
+
+    #[test]
+    fn characters_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Cost fixture holds 32 characters, 5 leaders, 22 advisors, 3 units,
+        // 6 traits, 45 experience rows. u32 unread saturation is not
+        // reachable synthetically and is covered by the walk's own
+        // saturating arithmetic.
+        use super::characters_test_kit as kit;
+        let bytes = cost_fixture();
+        let memory = kit::memory(&bytes);
+        for (rows, byte) in [
+            ([0; N], 0),
+            ([1; N], 64),
+            ([2; N], 64),
+            ([32, 5, 22, 3, 6, 45, 0], 131_072),
+            ([33, 6, 23, 4, 7, 46, 1], 131_072),
+            ([4096; N], 131_072),
+        ] {
+            let capacities = Capacities { rows, bytes: [byte; N] };
+            let direct = kit::direct(&memory, &capacities);
+            let (split, report, _) = kit::split(&memory, &capacities);
+            assert!(report.raw_ok, "rows={rows:?}");
+            assert_eq!(report.matched, [true; 6], "rows={rows:?}");
+            kit::assert_matches_direct(&split, &direct);
+        }
+        // Exact-fit arm pins Rows on every table.
+        let capacities = Capacities { rows: [32, 5, 22, 3, 6, 45, 0], bytes: [131_072; N] };
+        let (split, _, _) = kit::split(&memory, &capacities);
+        assert_eq!(split.characters.rows.outcome, Outcome::Rows { len: 32 });
+        assert_eq!(split.leaders.rows.outcome, Outcome::Rows { len: 5 });
+        assert_eq!(split.trait_experience.rows.outcome, Outcome::Rows { len: 45 });
+    }
+
+    #[test]
     fn split_copy_matches_direct_walk_under_truncation() {
         use super::characters_test_kit as kit;
         let bytes = cost_fixture();

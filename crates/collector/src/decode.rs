@@ -55,7 +55,7 @@
 
 use crate::{
     extended::{
-        air::AirWingJob,
+        air::{AirStatsJob, AirWingJob},
         characters::CharactersJob,
         construction::{BuildingsJob, ConstructionRestJob},
         governance::{FocusJob, ResearchJob},
@@ -189,6 +189,11 @@ pub const SESSION: [TableId; 3] = [
 /// wing-census copies with no cross-family decoded roots.
 pub const AIR_WING: [TableId; 2] = [TableId::WingEquipment, TableId::WingCumulative];
 
+/// Hourly air-statistics table in calibration/report order: [statistics].
+/// Hourly like every Tier-H table (no refresh gate). Stages its own
+/// strategic-air census copies with no cross-family decoded roots.
+pub const AIR_STATS: [TableId; 1] = [TableId::AirStatistics];
+
 /// Source-fed naval block in calibration/report order: [land theatres, land
 /// groups, land members, air theatres, air groups, air members, orders
 /// groups, orders members, army members]. Hourly like every Tier-H table (no
@@ -269,6 +274,7 @@ pub struct DecodeJob {
     pub focus_refresh: bool,
     pub map_refresh: bool,
     pub air_wing_refresh: bool,
+    pub air_stats_refresh: bool,
     pub naval_refresh: bool,
     pub players_refresh: bool,
     pub session_refresh: bool,
@@ -288,6 +294,7 @@ pub struct DecodeJob {
     pub focus_payload: Option<FocusJob>,
     pub map_payload: Option<MapJob>,
     pub air_wing_payload: Option<AirWingJob>,
+    pub air_stats_payload: Option<AirStatsJob>,
     pub naval_payload: Option<NavalJob>,
     pub players_payload: Option<PlayersJob>,
     pub session_payload: Option<SessionJob>,
@@ -430,6 +437,9 @@ static MAP_RAW_BYTES: [AtomicU64; 8] = [
 static AIR_WING_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static AIR_WING_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static AIR_WING_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static AIR_STATS_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
+static AIR_STATS_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
+static AIR_STATS_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
 static NAVAL_COPY_NS: [AtomicU64; 9] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -559,6 +569,7 @@ static DIVISIONS_JOB_POOL: Mutex<Vec<DivisionsJob>> = Mutex::new(Vec::new());
 static FOCUS_JOB_POOL: Mutex<Vec<FocusJob>> = Mutex::new(Vec::new());
 static MAP_JOB_POOL: Mutex<Vec<MapJob>> = Mutex::new(Vec::new());
 static AIR_WING_JOB_POOL: Mutex<Vec<AirWingJob>> = Mutex::new(Vec::new());
+static AIR_STATS_JOB_POOL: Mutex<Vec<AirStatsJob>> = Mutex::new(Vec::new());
 static NAVAL_JOB_POOL: Mutex<Vec<NavalJob>> = Mutex::new(Vec::new());
 static PLAYERS_JOB_POOL: Mutex<Vec<PlayersJob>> = Mutex::new(Vec::new());
 static SESSION_JOB_POOL: Mutex<Vec<SessionJob>> = Mutex::new(Vec::new());
@@ -947,6 +958,32 @@ pub fn recycle_air_wing_job(mut job: AirWingJob) {
         job.grow();
     }
     if let Ok(mut pool) = AIR_WING_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
+/// Recycled hourly statistics raw-payload job. Cold calls allocate; steady
+/// state reuses jobs with their capacities, so neither thread allocates
+/// per hour.
+pub fn acquire_air_stats_job() -> AirStatsJob {
+    if let Ok(mut pool) = AIR_STATS_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    AirStatsJob::new()
+}
+
+/// Return a statistics payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_air_stats_job(mut job: AirStatsJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = AIR_STATS_JOB_POOL.try_lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1344,6 +1381,24 @@ pub fn process_job(shared: &Shared, job: &DecodeJob) {
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
+    if job.air_stats_refresh
+        && let Some(payload) = job.air_stats_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 1];
+        crate::extended::air::decode_air_stats_payload(
+            frame.extended.air_stats_pilot(),
+            shared.base,
+            payload,
+            &mut decode_ticks,
+        );
+        for (total, ticks) in AIR_STATS_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
     if job.naval_refresh
         && let Some(payload) = job.naval_payload.as_ref()
     {
@@ -1583,6 +1638,15 @@ pub fn calibration() -> Calibration {
         air_wing_raw_bytes: AIR_WING_RAW_BYTES
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
+        air_stats_copy_ns: AIR_STATS_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        air_stats_decode_ns: AIR_STATS_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        air_stats_raw_bytes: AIR_STATS_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
         naval_copy_ns: NAVAL_COPY_NS
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
@@ -1676,6 +1740,9 @@ pub struct Calibration {
     pub air_wing_copy_ns: [u64; 2],
     pub air_wing_decode_ns: [u64; 2],
     pub air_wing_raw_bytes: [u64; 2],
+    pub air_stats_copy_ns: [u64; 1],
+    pub air_stats_decode_ns: [u64; 1],
+    pub air_stats_raw_bytes: [u64; 1],
     pub naval_copy_ns: [u64; 9],
     pub naval_decode_ns: [u64; 9],
     pub naval_raw_bytes: [u64; 9],
@@ -1752,6 +1819,10 @@ impl Calibration {
             "air_wing_decode_ns": self.air_wing_decode_ns.as_slice(),
             "air_wing_raw_bytes": self.air_wing_raw_bytes.as_slice(),
             "air_wing_tables": ["WingEquipment", "WingCumulative"],
+            "air_stats_copy_ns": self.air_stats_copy_ns.as_slice(),
+            "air_stats_decode_ns": self.air_stats_decode_ns.as_slice(),
+            "air_stats_raw_bytes": self.air_stats_raw_bytes.as_slice(),
+            "air_stats_tables": ["AirStatistics"],
             "naval_copy_ns": self.naval_copy_ns.as_slice(),
             "naval_decode_ns": self.naval_decode_ns.as_slice(),
             "naval_raw_bytes": self.naval_raw_bytes.as_slice(),
@@ -1879,6 +1950,14 @@ pub(crate) fn add_air_wing_raw_bytes(table: usize, bytes: u64) {
     AIR_WING_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
 }
 
+pub(crate) fn add_air_stats_copy_ns(table: usize, ns: u64) {
+    AIR_STATS_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_air_stats_raw_bytes(table: usize, bytes: u64) {
+    AIR_STATS_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
 pub(crate) fn add_naval_copy_ns(table: usize, ns: u64) {
     NAVAL_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
 }
@@ -1965,6 +2044,9 @@ pub(crate) fn reset_calibration_for_test() {
         .chain(AIR_WING_COPY_NS.iter())
         .chain(AIR_WING_DECODE_NS.iter())
         .chain(AIR_WING_RAW_BYTES.iter())
+        .chain(AIR_STATS_COPY_NS.iter())
+        .chain(AIR_STATS_DECODE_NS.iter())
+        .chain(AIR_STATS_RAW_BYTES.iter())
         .chain(NAVAL_COPY_NS.iter())
         .chain(NAVAL_DECODE_NS.iter())
         .chain(NAVAL_RAW_BYTES.iter())
@@ -2104,6 +2186,7 @@ mod tests {
                 focus_refresh: false,
                 map_refresh: false,
                 air_wing_refresh: false,
+                air_stats_refresh: false,
                 naval_refresh: false,
                 players_refresh: false,
                 session_refresh: false,
@@ -2123,6 +2206,7 @@ mod tests {
                 focus_payload: None,
                 map_payload: None,
                 air_wing_payload: None,
+                air_stats_payload: None,
                 naval_payload: None,
                 players_payload: None,
                 session_payload: None,
@@ -2166,6 +2250,7 @@ mod tests {
                 focus_refresh: false,
                 map_refresh: false,
                 air_wing_refresh: false,
+                air_stats_refresh: false,
                 naval_refresh: false,
                 players_refresh: false,
                 session_refresh: false,
@@ -2185,6 +2270,7 @@ mod tests {
                 focus_payload: None,
                 map_payload: None,
                 air_wing_payload: None,
+                air_stats_payload: None,
                 naval_payload: None,
                 players_payload: None,
                 session_payload: None,
@@ -2210,6 +2296,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -2229,6 +2316,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -2295,6 +2383,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -2314,6 +2403,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -2361,6 +2451,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -2380,6 +2471,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -2442,6 +2534,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -2461,6 +2554,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -2526,6 +2620,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -2545,6 +2640,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -2607,6 +2703,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -2626,6 +2723,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -2686,6 +2784,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -2705,6 +2804,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -2764,6 +2864,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -2783,6 +2884,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -2837,6 +2939,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -2856,6 +2959,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -2917,6 +3021,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -2936,6 +3041,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -2996,9 +3102,9 @@ mod tests {
     #[test]
     fn payload_pools_cover_analytic_worst_cases() {
         use crate::extended::{
-            characters::CharactersJob, construction::BuildingsJob, governance::ResearchJob,
-            intel::RelationsJob, lexical::LexicalJob, production::VariantsJob,
-            projects::ProjectsJob,
+            air::AirStatsJob, characters::CharactersJob, construction::BuildingsJob,
+            governance::ResearchJob, intel::RelationsJob, lexical::LexicalJob,
+            production::VariantsJob, projects::ProjectsJob,
         };
         // Analytic worst cases from the 2026-09-11 appendix (late-campaign
         // maxima): research 242328 instances / 1133 slots / 552 templates;
@@ -3058,6 +3164,12 @@ mod tests {
         let focus = FocusJob::new();
         assert!(focus.log.spans.capacity() >= 18_000);
         assert!(focus.log.bytes.capacity() >= 1 << 20);
+        // Hourly air-statistics worst case is 330 rows (appendix census)
+        // with per-history channel spans; both pools start above that so
+        // steady state never overflows.
+        let air_stats = AirStatsJob::new();
+        assert!(air_stats.log.spans.capacity() >= 330 * 64);
+        assert!(air_stats.log.bytes.capacity() >= 330 * 2048);
         // Combined worst-case live set (one staged job per family, as on a
         // force-full hour) stays under half the measured pool peak.
         let combined = research.tech_pool.capacity()
@@ -3072,7 +3184,8 @@ mod tests {
             + wars.log.bytes.capacity()
             + divisions.log.bytes.capacity()
             + focus.log.spans.capacity()
-            + focus.log.bytes.capacity();
+            + focus.log.bytes.capacity()
+            + air_stats.log.bytes.capacity();
         assert!(combined < 256 << 20, "combined caps {combined}");
         // The FIFO holds one lightweight job per pooled buffer by
         // construction (see the pool-invariant test); 256 slots absorb any
@@ -3103,6 +3216,7 @@ mod tests {
                 focus_refresh: false,
                 map_refresh: false,
                 air_wing_refresh: false,
+                air_stats_refresh: false,
                 naval_refresh: false,
                 players_refresh: false,
                 session_refresh: false,
@@ -3122,6 +3236,7 @@ mod tests {
                 focus_payload: None,
                 map_payload: None,
                 air_wing_payload: None,
+                air_stats_payload: None,
                 naval_payload: None,
                 players_payload: None,
                 session_payload: None,
@@ -3173,6 +3288,7 @@ mod tests {
             focus_refresh: true,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -3192,6 +3308,7 @@ mod tests {
             focus_payload: Some(first),
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -3247,6 +3364,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: true,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -3265,6 +3383,7 @@ mod tests {
             divisions_payload: None,
             focus_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -3327,6 +3446,7 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             air_wing_refresh: true,
+            air_stats_refresh: false,
             force_full: false,
             game_elapsed: 31,
             payload: None,
@@ -3346,6 +3466,7 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             air_wing_payload: Some(first),
+            air_stats_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3356,6 +3477,101 @@ mod tests {
         assert!(snapshot.refresh_jobs >= 1);
         assert_eq!(snapshot.json()["air_wing_tables"][0], "WingEquipment");
         recycle_air_wing_job(job.air_wing_payload.unwrap());
+    }
+
+    #[test]
+    fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
+        use crate::extended::air::{AirStatsCopyContext, stats_test_kit};
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        let bytes = stats_test_kit::fixture();
+        let memory = stats_test_kit::memory(&bytes);
+        let shared = Shared::new(stats_test_kit::BASE, 0, 1);
+        let index = shared.free.pop().expect("pooled buffer");
+        let capacities = crate::extended::air::Capacities::default();
+        let direct = stats_test_kit::direct(&memory, &capacities);
+        let ctx = AirStatsCopyContext {
+            base: stats_test_kit::BASE,
+            game_state: stats_test_kit::GAME_STATE,
+        };
+        let mut first = acquire_air_stats_job();
+        let report = crate::extended::air::copy_air_stats_refresh(&memory, ctx, &mut first, None);
+        assert!(report.raw_ok);
+        shared.completed[index].store(0, Ordering::Relaxed);
+        let job = DecodeJob {
+            index,
+            seq: next_seq(),
+            hour: 9,
+            pilot_refresh: false,
+            relations_refresh: false,
+            characters_refresh: false,
+            projects_refresh: false,
+            lexical_refresh: false,
+            variants_refresh: false,
+            buildings_refresh: false,
+            wars_refresh: false,
+            divisions_refresh: false,
+            focus_refresh: false,
+            map_refresh: false,
+            air_wing_refresh: false,
+            air_stats_refresh: true,
+            naval_refresh: false,
+            players_refresh: false,
+            session_refresh: false,
+            production_rest_refresh: false,
+            construction_rest_refresh: false,
+            force_full: false,
+            game_elapsed: 59,
+            payload: None,
+            relations_payload: None,
+            characters_payload: None,
+            projects_payload: None,
+            lexical_payload: None,
+            variants_payload: None,
+            buildings_payload: None,
+            wars_payload: None,
+            divisions_payload: None,
+            focus_payload: None,
+            map_payload: None,
+            air_wing_payload: None,
+            air_stats_payload: Some(first),
+            naval_payload: None,
+            players_payload: None,
+            session_payload: None,
+            production_rest_payload: None,
+            construction_rest_payload: None,
+        };
+        process_job(&shared, &job);
+        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.completed[index].load(Ordering::Acquire), 59);
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        stats_test_kit::assert_captured_matches_direct(frame.extended.air_stats_pilot(), &direct);
+        assert!(!frame.extended.air_stats_pilot().stats_raw_mode);
+        // table_ns stays copy-only for the moved table.
+        assert_eq!(frame.table_ns[AIR_STATS[0].index()], 0);
+        let snapshot = calibration();
+        assert!(snapshot.refresh_jobs >= 1);
+        assert_eq!(snapshot.json()["air_stats_tables"][0], "AirStatistics");
+        recycle_air_stats_job(job.air_stats_payload.unwrap());
+    }
+
+    #[test]
+    fn air_stats_calibration_counters_are_monotonic_and_additive() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        add_air_stats_copy_ns(0, 11);
+        add_air_stats_raw_bytes(0, 100);
+        let snapshot = calibration();
+        assert_eq!(snapshot.air_stats_copy_ns, [11]);
+        assert_eq!(snapshot.air_stats_raw_bytes, [100]);
+        assert_eq!(snapshot.json()["air_stats_copy_ns"][0], 11);
+        assert_eq!(snapshot.json()["air_stats_tables"][0], "AirStatistics");
+        let job = acquire_air_stats_job();
+        assert!(job.log.spans.capacity() >= 1 << 16);
+        recycle_air_stats_job(job);
+        let again = acquire_air_stats_job();
+        assert!(again.log.spans.capacity() >= 1 << 16);
+        recycle_air_stats_job(again);
     }
 
     #[test]
@@ -3393,6 +3609,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: true,
             players_refresh: false,
             session_refresh: false,
@@ -3412,6 +3629,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: Some(first),
             players_payload: None,
             session_payload: None,
@@ -3570,6 +3788,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -3589,6 +3808,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -3660,6 +3880,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -3679,6 +3900,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
@@ -3728,6 +3950,123 @@ mod tests {
         let again = acquire_production_rest_job();
         assert!(again.log.spans.capacity() >= 1 << 17);
         recycle_production_rest_job(again);
+    }
+
+    #[test]
+    fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
+        // S4: two families decode in one process_job on one Shared. Both
+        // payloads' rows install identically, both family counters advance
+        // (REFRESH_JOBS +2), and per-frame table_ns stays copy-only (the
+        // worker never writes it; decode ns goes to the calibration
+        // counters). Fixture BASE compatibility: both the wing and naval
+        // kits pin BASE=0 with GAME_STATE=0x10000, so one Shared::new(0,..)
+        // serves both payloads at full strength with no fixture adaptation
+        // and no weakened assertion (each payload is still staged from its
+        // own fixture memory and compared against its own typed reference).
+        use crate::extended::air::{AirWingCopyContext, wing_test_kit as air_kit};
+        use crate::extended::naval_history::{NavalCopyContext, naval_test_kit as naval_kit};
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        // Stage each payload from its own fixture memory (separate address
+        // spaces; the kits share BASE/GAME_STATE values but not objects).
+        let air_bytes = air_kit::fixture();
+        let air_memory = air_kit::memory(&air_bytes);
+        let air_direct = air_kit::direct(&air_memory);
+        let air_ctx = AirWingCopyContext {
+            base: air_kit::BASE,
+            game_state: air_kit::GAME_STATE,
+        };
+        let mut air_job = acquire_air_wing_job();
+        let air_report =
+            crate::extended::air::copy_air_refresh(&air_memory, air_ctx, &mut air_job, None);
+        assert!(air_report.raw_ok);
+        let naval_bytes = naval_kit::fixture();
+        let naval_memory = naval_kit::memory(&naval_bytes);
+        let naval_direct = naval_kit::direct(&naval_memory);
+        let naval_ctx = NavalCopyContext {
+            base: naval_kit::BASE,
+            game_state: naval_kit::GAME_STATE,
+        };
+        let mut naval_job = acquire_naval_job();
+        let naval_report = crate::extended::naval_history::copy_naval_refresh(
+            &naval_memory,
+            naval_ctx,
+            &mut naval_job,
+            None,
+        );
+        assert!(naval_report.raw_ok);
+        // One Shared serves both: BASE coincides (0 == 0), so no mismatch.
+        assert_eq!(air_kit::BASE, naval_kit::BASE);
+        let shared = Shared::new(air_kit::BASE, 0, 1);
+        let index = shared.free.pop().expect("pooled buffer");
+        shared.completed[index].store(0, Ordering::Relaxed);
+        let refresh_before = REFRESH_JOBS.load(Ordering::Relaxed);
+        let job = DecodeJob {
+            index,
+            seq: next_seq(),
+            hour: 9,
+            pilot_refresh: false,
+            relations_refresh: false,
+            characters_refresh: false,
+            projects_refresh: false,
+            lexical_refresh: false,
+            variants_refresh: false,
+            buildings_refresh: false,
+            wars_refresh: false,
+            divisions_refresh: false,
+            focus_refresh: false,
+            map_refresh: false,
+            air_wing_refresh: true,
+            air_stats_refresh: false,
+            naval_refresh: true,
+            players_refresh: false,
+            session_refresh: false,
+            production_rest_refresh: false,
+            construction_rest_refresh: false,
+            force_full: false,
+            game_elapsed: 53,
+            payload: None,
+            relations_payload: None,
+            characters_payload: None,
+            projects_payload: None,
+            lexical_payload: None,
+            variants_payload: None,
+            buildings_payload: None,
+            wars_payload: None,
+            divisions_payload: None,
+            focus_payload: None,
+            map_payload: None,
+            air_wing_payload: Some(air_job),
+            air_stats_payload: None,
+            naval_payload: Some(naval_job),
+            players_payload: None,
+            session_payload: None,
+            production_rest_payload: None,
+            construction_rest_payload: None,
+        };
+        process_job(&shared, &job);
+        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.completed[index].load(Ordering::Acquire), 53);
+        // Both families' rows install identically in the one frame.
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        air_kit::assert_captured_matches_direct(frame.extended.air_wing_pilot(), &air_direct);
+        naval_kit::assert_captured_matches_direct(frame.extended.naval_pilot(), &naval_direct);
+        // Both counters advance: one REFRESH_JOB per family payload.
+        assert_eq!(REFRESH_JOBS.load(Ordering::Relaxed), refresh_before + 2);
+        // table_ns stays copy-only: the worker wrote rows + calibration
+        // decode ns, never the per-frame copy-only slots.
+        for table in AIR_WING.iter().chain(NAVAL_ORDER.iter()) {
+            assert_eq!(
+                frame.table_ns[table.index()],
+                0,
+                "table_ns for {table:?} must stay copy-only"
+            );
+        }
+        let snapshot = calibration();
+        assert!(snapshot.air_wing_decode_ns.iter().any(|ns| *ns > 0) || snapshot.refresh_jobs >= 2);
+        assert!(snapshot.naval_decode_ns.iter().any(|ns| *ns > 0) || snapshot.refresh_jobs >= 2);
+        recycle_air_wing_job(job.air_wing_payload.unwrap());
+        recycle_naval_job(job.naval_payload.unwrap());
     }
 
     #[test]

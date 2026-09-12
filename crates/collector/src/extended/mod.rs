@@ -243,6 +243,17 @@ impl Captured {
         &mut self.air
     }
 
+    /// Decode-worker handoff for the hourly air-statistics table (copy/decode
+    /// split). Sole cross-thread entry to the statistics buffers: the game
+    /// thread stages raw-copy state through it every hour and the single FIFO
+    /// decode worker decodes the staged payload into these pooled typed rows
+    /// before the spool ready-queue handoff. Shares the air pack buffers with
+    /// the wing extensions; each stages its own copies with no cross-family
+    /// decoded roots.
+    pub(crate) fn air_stats_pilot(&mut self) -> &mut air::Captured {
+        &mut self.air
+    }
+
     /// Decode-worker handoff for the source-fed naval block (copy/decode
     /// split). Sole cross-thread entry to the naval theatre/OOB buffers: the
     /// game thread stages raw-copy state through it every hour and the

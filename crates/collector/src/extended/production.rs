@@ -4530,6 +4530,49 @@ mod tests {
     }
 
     #[test]
+    fn variants_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit(2)/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Fixture holds 2 variants (2 definitions/stats, 1 upgrade set);
+        // cap 1 is the overflow-by-one arm for definitions (total 2 ==
+        // cap+1), cap 0 the massive/zero arm. u32 unread saturation is not
+        // reachable synthetically and is covered by the walk's own
+        // saturating arithmetic.
+        use super::variants_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for rows in [[0; N], [1; N], [2; N], [3; N], [64; N]] {
+            let capacities = Capacities {
+                rows,
+                definition_bytes: 512,
+                module_bytes: 512,
+                upgrade_bytes: 512,
+                conveyor_name_bytes: 0,
+                line_custom_name_bytes: 0,
+                license_handles: 0,
+            };
+            let direct = kit::direct(&memory, &capacities);
+            let (split, report, _) = kit::split(&memory, &capacities);
+            assert!(report.raw_ok, "rows={rows:?}");
+            assert_eq!(report.matched, [true; 4], "rows={rows:?}");
+            kit::assert_matches_direct(&split, &direct);
+        }
+        // Exact-fit arm pins Rows on definitions.
+        let capacities = Capacities {
+            rows: [2; N],
+            definition_bytes: 512,
+            module_bytes: 512,
+            upgrade_bytes: 512,
+            conveyor_name_bytes: 0,
+            line_custom_name_bytes: 0,
+            license_handles: 0,
+        };
+        let (split, _, _) = kit::split(&memory, &capacities);
+        assert_eq!(split.definitions.outcome, Outcome::Rows { len: 2 });
+    }
+
+    #[test]
     fn split_copy_matches_direct_walk_under_truncation() {
         use super::variants_test_kit as kit;
         let bytes = kit::fixture();
@@ -4688,6 +4731,50 @@ mod tests {
         assert_eq!(split.deployment_manpower.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.deployment_equipment.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.license_records.outcome, Outcome::Rows { len: 1 });
+    }
+
+    #[test]
+    fn production_rest_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Fixture holds 1 row per rest table, so cap 1 is both the one-row
+        // and exact-fit arm, cap 0 the zero/overflow-by-one/massive arm.
+        // u32 unread saturation is not reachable and is covered by the
+        // walk's own saturating arithmetic.
+        use super::production_rest_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        for rows in [[0; N], [1; N], [2; N], [64; N]] {
+            let capacities = Capacities {
+                rows,
+                definition_bytes: 0,
+                module_bytes: 0,
+                upgrade_bytes: 0,
+                conveyor_name_bytes: 64,
+                line_custom_name_bytes: 64,
+                license_handles: 64,
+            };
+            let direct = kit::direct(&memory, &capacities);
+            let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+            let ctx = ProductionRestCopyContext { base: 0, game_state: kit::BASE, needed: [true; 8] };
+            let mut first = ProductionRestJob::new();
+            let mut second = ProductionRestJob::new();
+            let report = captured.copy_production_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
+            assert!(report.raw_ok, "rows={rows:?}");
+            assert_eq!(report.matched, [true; 8], "rows={rows:?}");
+            captured.rest_raw_mode = true;
+            let divisions = Sources {
+                first: &[],
+                first_outcome: Outcome::Rows { len: 0 },
+                second: &[],
+                second_outcome: Outcome::Rows { len: 0 },
+            };
+            let _ = captured.acquire(&memory, 0, kit::BASE, &[true; N], divisions, 0, true);
+            let mut ticks = [0u64; 8];
+            captured.decode_production_rest_payload(0, kit::BASE, &first, &mut ticks);
+            kit::assert_matches_direct(&captured, &direct);
+        }
     }
 
     #[test]

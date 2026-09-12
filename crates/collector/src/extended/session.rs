@@ -1047,6 +1047,81 @@ mod tests {
     }
 
     #[test]
+    fn session_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Fixture holds 1 manager, 2 sources, 2 aggregates; exact-fit is
+        // rows [1,2,2] with 8 reason bytes. u32 unread saturation is not
+        // reachable with 2 rows and is covered by the walk's own saturating
+        // arithmetic.
+        let bytes = fixture();
+        let memory = SliceMemory { base: BASE, bytes: &bytes };
+        for (rows, reason) in [
+            ([0, 0, 0], 0),
+            ([1, 1, 1], 2),
+            ([1, 2, 2], 8),
+            ([2, 3, 3], 8),
+            ([8, 8, 8], 64),
+        ] {
+            let capacities = Capacities { rows, reason_bytes: reason };
+            let mut direct = Captured::with_capacities(&capacities, &[0; N]);
+            let (matched, _) = direct.capture(&memory, 0, BASE, &[true; N]);
+            let _ = matched;
+            let mut split = Captured::with_capacities(&capacities, &[0; N]);
+            let ctx = SessionCopyContext { base: 0, game_state: BASE, needed: [true; N] };
+            let mut first = SessionJob::new();
+            let mut second = SessionJob::new();
+            let report = split.copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
+            assert!(report.raw_ok, "rows={rows:?}");
+            assert_eq!(report.matched, [true; 3], "rows={rows:?}");
+            split.raw_mode = true;
+            let mut ticks = [0u64; 3];
+            split.decode_session_payload(0, &first, &mut ticks);
+            assert_matches_direct(&split, &direct);
+        }
+        // Exact-fit arm pins Rows with all rows present.
+        let capacities = Capacities { rows: [1, 2, 2], reason_bytes: 8 };
+        let mut direct = Captured::with_capacities(&capacities, &[0; N]);
+        let _ = direct.capture(&memory, 0, BASE, &[true; N]);
+        assert_eq!(direct.manager.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(direct.sources.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(direct.aggregates.outcome, Outcome::Rows { len: 2 });
+    }
+
+    #[test]
+    fn session_copy_sizes_cover_documented_read_set() {
+        // S3: every Memory::copy size the session copy pass issues, recorded
+        // through the real pass. The pass bulk-copies (32 B string headers,
+        // 52/64 B manager/aggregate structs, 8 B words) wider than the
+        // walk's scattered reads (4 B keys, 8 B words, 1 B flags inside);
+        // sub-ranges serve from the enclosing bulk span at replay (proved
+        // by session_bulk_header_serves_enclosed_length_word). Alignment
+        // follows the engine layout (structs 8-aligned, headers 8-aligned).
+        use engine::Memory;
+        use std::collections::BTreeSet;
+        struct Recorder<'a> {
+            inner: SliceMemory<'a>,
+            sizes: std::cell::RefCell<BTreeSet<usize>>,
+        }
+        impl Memory for Recorder<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.sizes.borrow_mut().insert(output.len());
+                self.inner.copy(address, output)
+            }
+        }
+        let bytes = fixture();
+        let memory = Recorder { inner: SliceMemory { base: BASE, bytes: &bytes }, sizes: std::cell::RefCell::new(BTreeSet::new()) };
+        let mut job = SessionJob::new();
+        copy_pass(&memory, 0, BASE, &mut job.log);
+        assert!(job.log.raw_bytes.iter().any(|&b| b > 0));
+        let sizes = memory.sizes.borrow().clone();
+        for required in [8, 32, 52, 64] {
+            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+        }
+    }
+
+    #[test]
     fn session_worst_case_pools_start_above_late_campaign_caps() {
         // Late-campaign worst case: 1024 sources + 512 aggregates with
         // 128 KiB reasons. Pools start above that so steady state never

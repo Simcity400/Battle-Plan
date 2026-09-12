@@ -2444,6 +2444,68 @@ mod tests {
     }
 
     #[test]
+    fn naval_copy_sizes_cover_documented_read_set() {
+        // S3: every Memory::copy size the naval copy pass issues, recorded
+        // through the real pass. Registry headers (16/32), words (4/8),
+        // theatre names (inline/heap) and OOB member rows. Alignment follows
+        // the engine layout (headers 8-aligned, strings byte-packed).
+        use super::naval_test_kit as kit;
+        use super::{NavalCopyContext, NavalJob};
+        use engine::Memory;
+        use std::collections::BTreeSet;
+        struct Recorder<'a> {
+            inner: engine::memory::SliceMemory<'a>,
+            sizes: std::cell::RefCell<BTreeSet<usize>>,
+        }
+        impl Memory for Recorder<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.sizes.borrow_mut().insert(output.len());
+                self.inner.copy(address, output)
+            }
+        }
+        let bytes = kit::fixture();
+        let inner = kit::memory(&bytes);
+        let memory = Recorder { inner, sizes: std::cell::RefCell::new(BTreeSet::new()) };
+        let ctx = NavalCopyContext { base: kit::BASE, game_state: kit::GAME_STATE };
+        let mut first = NavalJob::new();
+        let report = super::copy_naval_refresh(&memory, ctx, &mut first, None);
+        assert!(report.raw_ok);
+        let sizes = memory.sizes.borrow().clone();
+        for required in [4, 8, 16] {
+            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+        }
+    }
+
+    #[test]
+    fn naval_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Fixture holds 1 land theatre, 1 group, 2 members, 1 OOB group;
+        // cap 1 is the overflow-by-one arm for members (total 2 == cap+1),
+        // cap 0 the zero/massive arm, cap 2 the members exact-fit arm.
+        // u32 unread saturation is not reachable and is covered by the
+        // walk's own saturating arithmetic.
+        use super::naval_test_kit as kit;
+        use super::Capacities;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for rows in [[0; 17], [1; 17], [2; 17], [64; 17]] {
+            let capacity = Capacities { rows, theatre_names: 1024, sunk_names: 1024, orders_sources: 64, wing_sources: 64 };
+            let direct = kit::direct_with(&memory, &capacity);
+            let (split, report, _) = kit::split_with(&memory, &capacity);
+            assert!(report.raw_ok, "rows={rows:?}");
+            assert_eq!(report.matched, [true; 9], "rows={rows:?}");
+            kit::assert_matches_direct(&split, &direct);
+        }
+        // Exact-fit arm pins Rows on land/groups with both members present.
+        let capacity = Capacities { rows: [2; 17], theatre_names: 1024, sunk_names: 1024, orders_sources: 64, wing_sources: 64 };
+        let (split, _, _) = kit::split_with(&memory, &capacity);
+        assert_eq!(split.land_outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.members_outcome, Outcome::Rows { len: 2 });
+    }
+
+    #[test]
     fn naval_split_copy_matches_direct_walk_under_truncation() {
         use super::naval_test_kit as kit;
         let bytes = kit::fixture();
@@ -2725,6 +2787,37 @@ pub(crate) mod naval_test_kit {
         let report = super::copy_naval_refresh(memory, ctx, &mut first, Some(&mut second));
         assert!(report.raw_ok);
         let mut captured = Captured::with_capacities(&Capacities::default(), &[0; 17]);
+        let mut ticks = [0u64; 9];
+        super::decode_naval_payload(&mut captured, BASE, &first, &mut ticks);
+        (
+            Split {
+                land_outcome: captured.land.outcome,
+                land: captured.land.rows.clone(),
+                groups_outcome: captured.land_groups.outcome,
+                groups: captured.land_groups.rows.clone(),
+                members_outcome: captured.land_members.outcome,
+                members: captured.land_members.rows.clone(),
+                oob_groups_outcome: captured.groups.outcome,
+                oob_groups: captured.groups.rows.clone(),
+                oob_members_outcome: captured.group_members.outcome,
+                oob_members: captured.group_members.rows.clone(),
+            },
+            report,
+            first,
+        )
+    }
+
+    pub(crate) fn direct_with(memory: &impl Memory, capacity: &Capacities) -> Split {
+        collect(memory, capacity)
+    }
+
+    pub(crate) fn split_with(memory: &impl Memory, capacity: &Capacities) -> (Split, NavalCopyReport, NavalJob) {
+        let ctx = NavalCopyContext { base: BASE, game_state: GAME_STATE };
+        let mut first = NavalJob::new();
+        let mut second = NavalJob::new();
+        let report = super::copy_naval_refresh(memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        let mut captured = Captured::with_capacities(capacity, &[0; 17]);
         let mut ticks = [0u64; 9];
         super::decode_naval_payload(&mut captured, BASE, &first, &mut ticks);
         (

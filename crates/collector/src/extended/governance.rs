@@ -4155,6 +4155,92 @@ mod tests {
     }
 
     #[test]
+    fn research_copy_sizes_cover_documented_read_set() {
+        // S3: every Memory::copy size the research copy pass issues,
+        // recorded through the real pass. Array headers (16), words (4/8),
+        // msvc_string headers (32) with heap payloads and terminators (1),
+        // token handles and template dictionary entries. Alignment follows
+        // the engine layout (headers 8-aligned, strings byte-packed).
+        use engine::Memory;
+        use std::collections::BTreeSet;
+        struct Recorder<'a> {
+            inner: engine::memory::SliceMemory<'a>,
+            sizes: std::cell::RefCell<BTreeSet<usize>>,
+        }
+        impl Memory for Recorder<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.sizes.borrow_mut().insert(output.len());
+                self.inner.copy(address, output)
+            }
+        }
+        let (bytes, layout) = kit::fixture();
+        let inner = kit::memory(&bytes);
+        let memory = Recorder { inner, sizes: std::cell::RefCell::new(BTreeSet::new()) };
+        let mut pilot = kit::pilot_captured();
+        let mut needed = [false; TABLE_COUNT];
+        needed[TABLES[2].index()] = true;
+        needed[TABLES[3].index()] = true;
+        needed[TABLES[4].index()] = true;
+        let ctx = CopyContext {
+            base: layout.base,
+            game_state: layout.game_state,
+            tech_cap: pilot.tech_rows_cap(),
+            slot_cap: pilot.slot_rows_cap(),
+            needed,
+        };
+        let mut first = ResearchJob::new();
+        let report = pilot.copy_research_refresh(&memory, ctx, &mut first, None);
+        assert!(report.raw_ok);
+        let sizes = memory.sizes.borrow().clone();
+        for required in [1, 4, 8, 16, 32] {
+            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+        }
+    }
+
+    #[test]
+    fn research_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Fixture holds 3 technologies, 3 slots, 2 deduplicated definitions
+        // (TECH_A and TECH_A2 share TMPL_A); tech cap 2 is the
+        // overflow-by-one arm (total 3 == cap+1), def cap 1 the overflow arm
+        // (total 2 == cap+1), cap 0 the zero/massive arm. u32 unread
+        // saturation is not reachable and is covered by the walk's own
+        // saturating arithmetic. Dedup arms vary the template dictionary
+        // capacity with rows ample, proving shared-template accounting
+        // agrees on both paths.
+        let (bytes, layout) = kit::fixture();
+        let memory = kit_memory(&bytes);
+        for (tech, slot, def) in [(0, 0, 0), (1, 1, 1), (2, 2, 1), (3, 3, 2), (4, 4, 3), (8, 4, 8)] {
+            let direct = kit::direct(&memory, &layout, tech, slot, def, 32, 64);
+            let mut pilot = kit::pilot_captured();
+            pilot.technologies.rows.truncate(tech);
+            pilot.slots.rows.truncate(slot);
+            pilot.definitions.rows.truncate(def);
+            let (report, _) = kit::split(&memory, &layout, &mut pilot, true);
+            assert!(report.raw_ok, "tech={tech} slot={slot} def={def}");
+            kit::assert_matches_direct(&pilot, &direct);
+        }
+        // Exact-fit arm pins Rows with all instances present.
+        let direct = kit::direct(&memory, &layout, 3, 3, 2, 32, 64);
+        assert_eq!(direct.tech_outcome, Outcome::Rows { len: 3 });
+        assert_eq!(direct.slot_outcome, Outcome::Rows { len: 3 });
+        assert_eq!(direct.def_outcome, Outcome::Rows { len: 2 });
+        // Dedup arms: dictionary capacity pressure fails definitions
+        // identically without losing instances.
+        for dict in [0, 1, 2, 32] {
+            let direct = kit::direct(&memory, &layout, 8, 4, 8, dict, 64);
+            let mut pilot = kit::pilot_captured();
+            pilot.dictionary.truncate(dict);
+            pilot.dictionary_second.truncate(dict);
+            let (report, _) = kit::split(&memory, &layout, &mut pilot, true);
+            assert!(report.raw_ok, "dict={dict}");
+            kit::assert_matches_direct(&pilot, &direct);
+        }
+    }
+
+    #[test]
     fn copy_decode_matches_truncation_and_exact_required_counts() {
         let (bytes, layout) = kit::fixture();
         let memory = kit_memory(&bytes);
@@ -4761,6 +4847,54 @@ mod tests {
             typed_small.focus_text.required
         );
         assert_eq!(replayed_small.focus_text.len, typed_small.focus_text.len);
+    }
+
+    #[test]
+    fn focus_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Fixture holds 2 focus rows and 3 completed rows; focus cap 1 is
+        // the overflow-by-one arm (total 2 == cap+1), completed cap 2 the
+        // overflow arm (total 3 == cap+1), cap 0 the zero/massive arm.
+        // u32 unread saturation is not reachable and is covered by the
+        // walk's own saturating arithmetic.
+        use focus_test_kit::Fixture;
+        let fixture = Fixture::world();
+        let memory = fixture.memory();
+        let needed = [true; TABLE_COUNT];
+        for (focus_rows, completed_rows, text) in [
+            (0, 0, 0),
+            (1, 1, 20),
+            (1, 2, 20),
+            (2, 3, 88),
+            (3, 4, 128),
+            (64, 64, 8192),
+        ] {
+            let mut caps = Capacities::default();
+            caps.rows[0] = focus_rows;
+            caps.rows[1] = completed_rows;
+            caps.focus_text = text;
+            let mut typed = Captured::with_capacities(&caps, &[0u16; TABLE_COUNT]);
+            typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+            let mut replayed = Captured::with_capacities(&caps, &[0u16; TABLE_COUNT]);
+            replayed.focus_raw_mode = true;
+            let (report, first) = Fixture::copy_first(&mut replayed, &memory, None);
+            assert!(report.raw_ok, "focus={focus_rows} completed={completed_rows}");
+            replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+            let mut ticks = [0; 2];
+            replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
+            Fixture::assert_matches_typed(&replayed, &typed);
+        }
+        // Exact-fit arm pins Rows on both tables.
+        let mut caps = Capacities::default();
+        caps.rows[0] = 2;
+        caps.rows[1] = 3;
+        caps.focus_text = 88;
+        let mut typed = Captured::with_capacities(&caps, &[0u16; TABLE_COUNT]);
+        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        assert_eq!(typed.focus.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(typed.completed.outcome, Outcome::Rows { len: 3 });
     }
 
     #[test]

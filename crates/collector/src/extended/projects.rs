@@ -2645,6 +2645,45 @@ mod tests {
     }
 
     #[test]
+    fn projects_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Fixture holds 1 program, 1 project, 1 history, 1 breakthrough, so
+        // cap 1 is both the one-row and exact-fit arm, cap 0 is both the
+        // zero-cap, overflow-by-one (total 1 == cap+1) and massive arm;
+        // u32 unread saturation is not reachable and is covered by the
+        // walk's own saturating arithmetic.
+        use super::projects_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for rows in [[0; N], [1; N], [256; N]] {
+            let capacities = Capacities { rows, program_names: 8192, program_candidates: 1024 };
+            let direct = kit::direct(&memory, &capacities);
+            let (split, report, _) = kit::split(&memory, &capacities);
+            assert!(report.raw_ok, "rows={rows:?}");
+            assert_eq!(report.matched, [true; 4], "rows={rows:?}");
+            kit::assert_matches_direct(&split, &direct);
+        }
+        // Arena arms: names/candidates truncation agrees on both paths.
+        for (names, candidates) in [(0, 0), (4, 1), (8192, 1024)] {
+            let capacities = Capacities { rows: [256; N], program_names: names, program_candidates: candidates };
+            let direct = kit::direct(&memory, &capacities);
+            let (split, report, _) = kit::split(&memory, &capacities);
+            assert!(report.raw_ok);
+            assert_eq!(report.matched, [true; 4]);
+            kit::assert_matches_direct(&split, &direct);
+        }
+        // Exact-fit arm pins Rows on every table.
+        let capacities = Capacities { rows: [1; N], program_names: 8192, program_candidates: 1024 };
+        let (split, _, _) = kit::split(&memory, &capacities);
+        assert_eq!(split.programs.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.projects.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.history.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.breakthroughs.outcome, Outcome::Rows { len: 1 });
+    }
+
+    #[test]
     fn split_copy_matches_direct_walk_under_truncation() {
         use super::projects_test_kit as kit;
         let bytes = kit::fixture();

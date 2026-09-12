@@ -3291,6 +3291,145 @@ pub(crate) mod players_split_tests {
     }
 
     #[test]
+    fn players_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Fixture holds 1 player and 1 controller census row, so cap 1 is
+        // both the one-row and exact-fit arm, cap 0 the zero/overflow
+        // (total 1 == cap+1)/massive arm. u32 unread saturation is not
+        // reachable and is covered by the walk's own saturating arithmetic.
+        struct NoSources;
+        impl super::MapSources for NoSources {
+            fn checks(&self) -> super::SourceChecks {
+                super::SourceChecks::default()
+            }
+            fn begin_ships(&mut self, _: bool) -> u64 {
+                0
+            }
+            fn ship(&mut self, _: bool, _: usize, _: &engine::cship::Row) -> u64 {
+                0
+            }
+            fn finish_ships(&mut self, _: bool, _: Outcome) -> u64 {
+                0
+            }
+            fn begin_air(&mut self, _: bool) -> u64 {
+                0
+            }
+            fn air(&mut self, _: bool, _: usize, _: usize, _: &engine::cair_wing::Row) -> u64 {
+                0
+            }
+            fn finish_air(&mut self, _: bool, _: Outcome) -> u64 {
+                0
+            }
+            fn order_groups(
+                &mut self,
+                _: bool,
+                _: &[engine::corders_group::Root],
+                _: Outcome,
+            ) -> u64 {
+                0
+            }
+        }
+        let bytes = fixture();
+        let memory = SliceMemory {
+            base: GS,
+            bytes: &bytes,
+        };
+        let needed = [
+            true, true, false, false, false, false, false, false, false, false,
+        ];
+        for (players, controllers) in [(0, 0), (1, 1), (0, 1), (1, 0), (64, 64)] {
+            let mut caps = capacities();
+            caps.rows[0] = players;
+            caps.rows[1] = controllers;
+            let mut direct = MapCaptured::with_capacities(
+                &caps,
+                &[0; super::MAP_TABLES],
+                SourceChecks::default(),
+            );
+            let _ = direct.sample(&memory, BASE, GS, &needed, &mut NoSources);
+            let mut captured = MapCaptured::with_capacities(
+                &caps,
+                &[0; super::MAP_TABLES],
+                SourceChecks::default(),
+            );
+            let ctx = PlayersCopyContext {
+                base: BASE,
+                game_state: GS,
+                needed: [true, true],
+            };
+            let mut first = PlayersJob::new();
+            let mut second = PlayersJob::new();
+            let report = captured.copy_players_refresh(&memory, ctx, &mut first, Some(&mut second));
+            assert!(report.raw_ok, "players={players} controllers={controllers}");
+            captured.players_raw_mode = true;
+            let mut ticks = [0u64; 2];
+            captured.decode_players_payload(BASE, &first, &mut ticks);
+            assert_eq!(
+                captured.players.outcome, direct.players.outcome,
+                "players outcome p={players} c={controllers}"
+            );
+            assert_eq!(
+                captured.human_controllers.outcome, direct.human_controllers.outcome,
+                "controllers outcome p={players} c={controllers}"
+            );
+            assert_eq!(
+                &captured.players.rows[..captured.players.outcome.len()],
+                &direct.players.rows[..direct.players.outcome.len()],
+                "player rows"
+            );
+        }
+        // Exact-fit arm pins Rows on both tables.
+        let mut caps = capacities();
+        caps.rows[0] = 1;
+        caps.rows[1] = 1;
+        let mut direct =
+            MapCaptured::with_capacities(&caps, &[0; super::MAP_TABLES], SourceChecks::default());
+        let _ = direct.sample(&memory, BASE, GS, &needed, &mut NoSources);
+        assert_eq!(direct.players.outcome, Outcome::Rows { len: 1 });
+    }
+
+    #[test]
+    fn players_bulk_string_pair_serves_enclosed_sub_reads() {
+        // S3 containment: the 64 B player string pair is a bulk span, so the
+        // walk's enclosed 32 B halves and unaligned sub-reads inside it are
+        // served from the same recorded bytes. Proves bulk containment plus
+        // bulk-wins-for-sub-ranges; straddling reads fail.
+        use engine::Memory;
+        let bytes = fixture();
+        let memory = SliceMemory {
+            base: GS,
+            bytes: &bytes,
+        };
+        let mut job = PlayersJob::new();
+        super::copy_players_pass(&mut job.log, &memory, BASE, GS);
+        assert!(job.log.has_bulk);
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let pair = job
+            .log
+            .spans
+            .iter()
+            .find(|span| span.ok && span.bulk && span.len == 64)
+            .expect("bulk string pair");
+        // Enclosed aligned 32 B half.
+        let mut half = [0u8; 32];
+        assert!(recorded.copy(pair.addr, &mut half));
+        let mut expected = [0u8; 32];
+        assert!(memory.copy(pair.addr, &mut expected));
+        assert_eq!(half, expected);
+        // Deliberately unaligned enclosed sub-range.
+        let mut unaligned = [0u8; 7];
+        assert!(recorded.copy(pair.addr + 3, &mut unaligned));
+        let mut expected7 = [0u8; 7];
+        assert!(memory.copy(pair.addr + 3, &mut expected7));
+        assert_eq!(unaligned, expected7);
+        // Straddling the pair edge fails.
+        let mut straddle = [0u8; 32];
+        assert!(!recorded.copy(pair.addr + 48, &mut straddle));
+    }
+
+    #[test]
     fn players_split_copy_matches_direct_walk_under_truncation() {
         let bytes = fixture();
         let memory = SliceMemory {

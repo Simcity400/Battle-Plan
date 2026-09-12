@@ -77,6 +77,12 @@ pub struct Captured {
     wing_second: [Outcome; 2],
     wing_matched: [bool; 2],
     wing_ticks: [u64; 2],
+    /// Raw-copy split gate for the hourly air-statistics table. Set by the
+    /// game thread on hours with a valid raw payload; `capture` then skips
+    /// the typed statistics walk and the decode worker fills these rows
+    /// before the ready handoff. Preserved across `reset` (set per hour,
+    /// cleared by the worker after decode).
+    pub(crate) stats_raw_mode: bool,
 }
 
 const NO_WING_SOURCE: Outcome = Outcome::Unavailable {
@@ -97,6 +103,7 @@ impl Captured {
             wing_second: [NO_WING_SOURCE; 2],
             wing_matched: [false; 2],
             wing_ticks: [0; 2],
+            stats_raw_mode: false,
         }
     }
 
@@ -344,10 +351,22 @@ impl Captured {
         ticks[5] = elapsed(begin);
 
         let begin = qpc();
-        matched[6] = capture_rows(&mut self.statistics, needed[6], |rows| {
-            cloop_history::walk(memory, base, game_state, rows)
-        });
-        ticks[6] = elapsed(begin);
+        // Hourly statistics raw-copy split: on hours with a valid raw payload
+        // the game thread stages bytes via `copy_air_stats_refresh` and the
+        // decode worker fills the typed rows before the ready handoff, so the
+        // typed walk is skipped here. Matched flags and costs come from the
+        // raw compare, applied by the caller after this returns.
+        if self.stats_raw_mode {
+            // Refresh payload staged: leave the reset outcome for the decode
+            // worker, which installs identical rows and outcomes.
+            matched[6] = false;
+            ticks[6] = 0;
+        } else {
+            matched[6] = capture_rows(&mut self.statistics, needed[6], |rows| {
+                cloop_history::walk(memory, base, game_state, rows)
+            });
+            ticks[6] = elapsed(begin);
+        }
         (matched, ticks)
     }
 
@@ -1000,6 +1019,460 @@ pub(crate) fn decode_air_payload(
     decode_ticks[0] += qpc().saturating_sub(started).max(0) as u64;
 }
 
+pub(crate) const AIR_STATS_N: usize = 1;
+const STATS_MASK: u32 = 0x01;
+
+/// One refresh of raw air-statistics payload. Flat pools recycle capacities
+/// and the steady state allocates on neither thread; growth happens on the
+/// decode side only (see `crate::decode::recycle_air_stats_job`).
+#[derive(Debug)]
+pub(crate) struct AirStatsJob {
+    pub log: RawLog<AIR_STATS_N>,
+    pub game_state: usize,
+}
+
+impl AirStatsJob {
+    pub fn new() -> Self {
+        Self {
+            // Late-campaign worst case is 330 statistics rows (appendix
+            // census) with per-history channel spans (~1 KiB each worst
+            // case); both pools start above that so steady state never
+            // overflows.
+            log: RawLog::new(1 << 16, 4 << 20),
+            game_state: 0,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.log.clear();
+        self.game_state = 0;
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.log.grow_for_next()
+    }
+
+    pub fn grow(&mut self) {
+        self.log.grow();
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct AirStatsCopyReport {
+    pub raw_ok: bool,
+    pub matched: [bool; AIR_STATS_N],
+    pub copy_ticks: [u64; AIR_STATS_N],
+    pub raw_bytes: [u64; AIR_STATS_N],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AirStatsCopyContext {
+    pub base: usize,
+    pub game_state: usize,
+}
+
+fn sspan(
+    log: &mut RawLog<AIR_STATS_N>,
+    memory: &impl engine::Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take(memory, addr?, len, mask)
+}
+
+fn stats_pool_u64(log: &RawLog<AIR_STATS_N>, start: usize) -> u64 {
+    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+}
+
+fn stats_pool_u32(log: &RawLog<AIR_STATS_N>, start: usize) -> u32 {
+    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
+}
+
+/// Mirror of one history slot's `read_current` takes: vtable, field count,
+/// self reference, window chain, yearly-window validation words, record
+/// linkage and the nine channel spans. Returns false exactly when the typed
+/// read fails for this history.
+fn copy_stats_history(
+    log: &mut RawLog<AIR_STATS_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    history: usize,
+) -> bool {
+    use engine::{cloop_history, cloop_history::air_stats, loop_history_record_fields, loop_history_window};
+    let vtable = match sspan(log, memory, Some(history), 8, STATS_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    let expected = match base.checked_add(cloop_history::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    if stats_pool_u64(log, vtable) != expected {
+        return false;
+    }
+    let field_count = match sspan(log, memory, history.checked_add(cloop_history::FIELD_COUNT), 4, STATS_MASK) {
+        Some(start) => stats_pool_u32(log, start),
+        None => return false,
+    };
+    if field_count != air_stats::FIELD_COUNT {
+        return false;
+    }
+    let self_ref = match sspan(log, memory, history.checked_add(cloop_history::SELF_REFERENCE), 8, STATS_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    if stats_pool_u64(log, self_ref) != history as u64 {
+        return false;
+    }
+    let window = match sspan(log, memory, history.checked_add(cloop_history::WINDOW), 8, STATS_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    let window = match usize::try_from(stats_pool_u64(log, window)).ok().filter(|&p| p != 0) {
+        Some(window) => window,
+        None => return false,
+    };
+    let window_vtable = match sspan(log, memory, Some(window), 8, STATS_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    let expected_window = match base.checked_add(loop_history_window::VTABLE_RVA) {
+        Some(expected) => expected as u64,
+        None => return false,
+    };
+    if stats_pool_u64(log, window_vtable) != expected_window {
+        return false;
+    }
+    let records_header = match sspan(log, memory, window.checked_add(loop_history_window::RECORDS), 16, STATS_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[records_header..records_header + 16]);
+    let records = match Array::from_header(raw, 8) {
+        Some(array) => array,
+        None => return false,
+    };
+    let capacity = match sspan(log, memory, window.checked_add(loop_history_window::CAPACITY), 4, STATS_MASK) {
+        Some(start) => stats_pool_u32(log, start),
+        None => return false,
+    };
+    let year_slot = match sspan(log, memory, window.checked_add(loop_history_window::CURRENT_SLOT), 4, STATS_MASK) {
+        Some(start) => stats_pool_u32(log, start),
+        None => return false,
+    };
+    let wrapped = match sspan(log, memory, window.checked_add(loop_history_window::WRAPPED), 1, STATS_MASK) {
+        Some(start) => log.bytes[start],
+        None => return false,
+    };
+    if capacity != loop_history_window::AIR_STATS_YEARLY_CAPACITY
+        || records.count != capacity
+        || year_slot >= capacity
+        || wrapped > 1
+    {
+        return false;
+    }
+    let owner_back = match sspan(log, memory, window.checked_add(loop_history_window::HISTORY), 8, STATS_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    if stats_pool_u64(log, owner_back) != history as u64 {
+        return false;
+    }
+    let record_ptr = match sspan(log, memory, window.checked_add(loop_history_window::RECORD_FIELDS), 8, STATS_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    let record = match usize::try_from(stats_pool_u64(log, record_ptr)).ok().filter(|&p| p != 0) {
+        Some(record) => record,
+        None => return false,
+    };
+    let slot_addr = match (year_slot as usize).checked_mul(8).and_then(|o| records.data.checked_add(o)) {
+        Some(addr) => addr,
+        None => return false,
+    };
+    let slot = match sspan(log, memory, Some(slot_addr), 8, STATS_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    if stats_pool_u64(log, slot) != record as u64 {
+        return false;
+    }
+    let record_owner = match sspan(log, memory, record.checked_add(loop_history_record_fields::HISTORY), 8, STATS_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    if stats_pool_u64(log, record_owner) != history as u64 {
+        return false;
+    }
+    let values_header = match sspan(log, memory, record.checked_add(loop_history_record_fields::VALUES), 16, STATS_MASK) {
+        Some(start) => start,
+        None => return false,
+    };
+    raw.copy_from_slice(&log.bytes[values_header..values_header + 16]);
+    let values = match Array::from_header(raw, 8) {
+        Some(array) => array,
+        None => return false,
+    };
+    if values.count != air_stats::FIELD_COUNT {
+        return false;
+    }
+    // Nine channel spans at the pinned channel indices (mirrors the
+    // copy_scattered gather; the replay decomposes it into these exact
+    // copies served from the recorded spans).
+    for (len, index) in [(32, 0), (8, 10), (8, 17), (8, 24), (72, 36), (8, 51), (8, 58), (8, 65), (40, 77)] {
+        let addr = match (index as usize)
+            .checked_mul(loop_history_record_fields::VALUE_STRIDE)
+            .and_then(|o| values.data.checked_add(o))
+        {
+            Some(addr) => addr,
+            None => return false,
+        };
+        if sspan(log, memory, Some(addr), len, STATS_MASK).is_none() {
+            return false;
+        }
+        if log.overflowed {
+            return false;
+        }
+    }
+    true
+}
+
+fn copy_stats_pass(
+    job: &mut AirStatsJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    ticks: &mut [u64; AIR_STATS_N],
+) {
+    job.clear();
+    job.game_state = game_state;
+    let started = qpc();
+    // Single per-owner loop (no duplicate takes): census takes and history
+    // takes interleave in owner order. The replay serves by exact
+    // (address, length) with in-order multiplicity, so take order never
+    // affects serving; both copy passes take deterministically, so the raw
+    // compare stays exact.
+    copy_stats_owners(&mut job.log, memory, base, game_state);
+    ticks[0] += qpc().saturating_sub(started).max(0) as u64;
+}
+
+/// Countries/links/manager preamble plus one loop over owner slots: per
+/// owner the identity takes, the history-table header take, every slot-word
+/// take and every nonnull history object. Stops at the first typed abort
+/// point, mirroring the walk's fail-fast.
+fn copy_stats_owners(
+    log: &mut RawLog<AIR_STATS_N>,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+) {
+    use engine::{ccountry, cstrategic_air, cstrategic_air_manager};
+    let countries = match sspan(log, memory, game_state.checked_add(engine::cgame_state::COUNTRIES), 16, STATS_MASK) {
+        Some(start) => start,
+        None => return,
+    };
+    let links = match sspan(log, memory, game_state.checked_add(engine::cgame_state::COUNTRY_LINKS), 16, STATS_MASK) {
+        Some(start) => start,
+        None => return,
+    };
+    let manager_ptr = match sspan(log, memory, game_state.checked_add(engine::cgame_state::STRATEGIC_AIR_MANAGER), 8, STATS_MASK)
+        .and_then(|s| usize::try_from(stats_pool_u64(log, s)).ok().filter(|&p| p != 0))
+    {
+        Some(manager) => manager,
+        None => return,
+    };
+    if sspan(log, memory, Some(manager_ptr), 8, STATS_MASK).is_none() {
+        return;
+    }
+    let owners_header = match sspan(log, memory, manager_ptr.checked_add(cstrategic_air_manager::COUNTRY_AIR), 16, STATS_MASK) {
+        Some(start) => start,
+        None => return,
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[countries..countries + 16]);
+    let countries_array = match Array::from_header(raw, 8) {
+        Some(array) => array,
+        None => return,
+    };
+    raw.copy_from_slice(&log.bytes[links..links + 16]);
+    let links_array = match Array::from_header(raw, 4) {
+        Some(array) => array,
+        None => return,
+    };
+    raw.copy_from_slice(&log.bytes[owners_header..owners_header + 16]);
+    let owners = match Array::from_header(raw, 8) {
+        Some(array) => array,
+        None => return,
+    };
+    if owners.count == 0 || countries_array.count < 2 || links_array.count == 0 {
+        return;
+    }
+    // Every link entry the walk can read (canonical(slot)/canonical(id)
+    // checks read each visited slot's entry plus each raw id's entry).
+    // Taking the whole vector once covers all of them deterministically.
+    for link in 0..links_array.count {
+        let addr = match (link as usize).checked_mul(4).and_then(|o| links_array.data.checked_add(o)) {
+            Some(addr) => addr,
+            None => return,
+        };
+        if sspan(log, memory, Some(addr), 4, STATS_MASK).is_none() {
+            return;
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+    let country_vtable = match base.checked_add(ccountry::VTABLE_RVA) {
+        Some(vtable) => vtable as u64,
+        None => return,
+    };
+    for slot in 1..countries_array.count {
+        let pointer_addr = (slot as usize).checked_mul(8).and_then(|o| countries_array.data.checked_add(o));
+        let pointer = match sspan(log, memory, pointer_addr, 8, STATS_MASK)
+            .and_then(|s| usize::try_from(stats_pool_u64(log, s)).ok().filter(|&p| p != 0))
+        {
+            Some(pointer) => pointer,
+            None => return,
+        };
+        let vtable = match sspan(log, memory, Some(pointer), 8, STATS_MASK) {
+            Some(start) => start,
+            None => return,
+        };
+        if stats_pool_u64(log, vtable) != country_vtable {
+            return;
+        }
+        let id = match sspan(log, memory, pointer.checked_add(ccountry::ID), 4, STATS_MASK) {
+            Some(start) => stats_pool_u32(log, start),
+            None => return,
+        };
+        // Range validation mirrors the link reader; the entry bytes are
+        // already staged above, so no per-id take is needed.
+        if id == 0 || id >= links_array.count {
+            return;
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+    let air_vtable = match base.checked_add(cstrategic_air::VTABLE_RVA) {
+        Some(vtable) => vtable as u64,
+        None => return,
+    };
+    for slot in 0..owners.count {
+        let owner_addr = owners.data.checked_add((slot as usize).saturating_mul(8));
+        let owner = match sspan(log, memory, owner_addr, 8, STATS_MASK)
+            .and_then(|s| usize::try_from(stats_pool_u64(log, s)).ok())
+        {
+            Some(owner) => owner,
+            None => {
+                if log.overflowed {
+                    return;
+                }
+                return;
+            }
+        };
+        if owner == 0 {
+            continue;
+        }
+        let vtable = match sspan(log, memory, Some(owner), 8, STATS_MASK) {
+            Some(start) => start,
+            None => return,
+        };
+        if stats_pool_u64(log, vtable) != air_vtable {
+            return;
+        }
+        let owner_field = match sspan(log, memory, owner.checked_add(cstrategic_air::COUNTRY), 4, STATS_MASK) {
+            Some(start) => start,
+            None => return,
+        };
+        let _ = stats_pool_u32(log, owner_field);
+        let table_header = match sspan(log, memory, owner.checked_add(cstrategic_air::HISTORY_TABLE), 16, STATS_MASK) {
+            Some(start) => start,
+            None => return,
+        };
+        let mut table_raw = [0u8; 16];
+        table_raw.copy_from_slice(&log.bytes[table_header..table_header + 16]);
+        let table = match Array::from_header(table_raw, 8) {
+            Some(array) => array,
+            None => continue,
+        };
+        for region in 0..table.count {
+            let slot_addr = match (region as usize).checked_mul(8).and_then(|o| table.data.checked_add(o)) {
+                Some(addr) => addr,
+                None => return,
+            };
+            let slot_start = match sspan(log, memory, Some(slot_addr), 8, STATS_MASK) {
+                Some(start) => start,
+                None => return,
+            };
+            let history = match usize::try_from(stats_pool_u64(log, slot_start)).ok() {
+                Some(history) => history,
+                None => return,
+            };
+            if history == 0 {
+                continue;
+            }
+            if !copy_stats_history(log, memory, base, history) {
+                return;
+            }
+            if log.overflowed {
+                return;
+            }
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+/// Per-owner history-table walk: header already staged by the census; take
+/// each slot word, then each nonnull history via `copy_stats_history`.
+/// Stops at the first typed abort point (failed take), mirroring the walk's
+/// fail-fast on unreadable slots.
+pub(crate) fn copy_air_stats_refresh(
+    memory: &impl engine::Memory,
+    ctx: AirStatsCopyContext,
+    first: &mut AirStatsJob,
+    second: Option<&mut AirStatsJob>,
+) -> AirStatsCopyReport {
+    let mut ticks = [0u64; AIR_STATS_N];
+    copy_stats_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
+    let mut matched = [true; AIR_STATS_N];
+    if let Some(second_job) = second {
+        let mut second_ticks = [0u64; AIR_STATS_N];
+        copy_stats_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
+        for (total, extra) in ticks.iter_mut().zip(second_ticks) {
+            *total += extra;
+        }
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+        for (slot, matched) in matched.iter_mut().enumerate() {
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+        }
+    }
+    let raw_ok = !first.log.overflowed;
+    AirStatsCopyReport { raw_ok, matched, copy_ticks: ticks, raw_bytes: first.log.raw_bytes }
+}
+
+pub(crate) fn decode_air_stats_payload(
+    captured: &mut Captured,
+    base: usize,
+    job: &AirStatsJob,
+    decode_ticks: &mut [u64; AIR_STATS_N],
+) {
+    let recorded = crate::raw::Recorded::build(&job.log);
+    let started = qpc();
+    // Replay the existing statistics walk against the recorded spans into
+    // the pooled buffers, with the identical bounded/capacity handling the
+    // game thread applies.
+    let walked = cloop_history::walk(&recorded, base, job.game_state, &mut captured.statistics.rows);
+    captured.statistics.outcome = bounded(walked, captured.statistics.rows.len());
+    decode_ticks[0] += qpc().saturating_sub(started).max(0) as u64;
+    captured.stats_raw_mode = false;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1344,6 +1817,35 @@ mod tests {
     }
 
     #[test]
+    fn wing_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Fixture holds 2 wings with 3 equipment rows and 2 cumulative rows;
+        // equipment cap 2 is the overflow-by-one arm (total 3 == cap+1),
+        // cumulative cap 1 the overflow arm (total 2 == cap+1), cap 0 the
+        // zero/massive arm. u32 unread saturation is not reachable and is
+        // covered by the walk's own saturating arithmetic.
+        use super::wing_test_kit as kit;
+        use super::Capacities;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for (equipment, cumulative) in [(0, 0), (1, 1), (2, 1), (3, 2), (4, 3), (8192, 4096)] {
+            let capacity = Capacities { rows: [equipment, 2048, cumulative, 8192, 16384, 1024, 2048], ace_names: 65536 };
+            let direct = kit::direct_with(&memory, &capacity);
+            let (split, report, _) = kit::split_with(&memory, &capacity);
+            assert!(report.raw_ok, "equipment={equipment} cumulative={cumulative}");
+            assert_eq!(report.matched, [true; 2], "equipment={equipment} cumulative={cumulative}");
+            kit::assert_matches_direct(&split, &direct);
+        }
+        // Exact-fit arm pins Rows with all rows present.
+        let capacity = Capacities { rows: [3, 2048, 2, 8192, 16384, 1024, 2048], ace_names: 65536 };
+        let (split, _, _) = kit::split_with(&memory, &capacity);
+        assert_eq!(split.equipment_outcome, Outcome::Rows { len: 3 });
+        assert_eq!(split.cumulative_outcome, Outcome::Rows { len: 2 });
+    }
+
+    #[test]
     fn wing_split_copy_matches_direct_walk_under_truncation() {
         use super::wing_test_kit as kit;
         let bytes = kit::fixture();
@@ -1407,6 +1909,110 @@ mod tests {
         assert_eq!(report.matched, [true; 2]);
         second.log.bytes[100] ^= 0xff;
         assert!(!first.log.logs_equal(&second.log));
+    }
+
+    #[test]
+    fn stats_split_copy_matches_direct_walk() {
+        use super::stats_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let capacities = Capacities::default();
+        let direct = kit::direct(&memory, &capacities);
+        let (split, report, _) = kit::split(&memory, &capacities);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true]);
+        kit::assert_matches_direct(&split, &direct);
+        assert_eq!(split.outcome, Outcome::Rows { len: 2 });
+        assert_eq!((split.rows[0].country, split.rows[0].region), (2, 0));
+        assert_eq!((split.rows[1].country, split.rows[1].region), (2, 1));
+        assert_eq!(split.rows[0].channels[0], 1000);
+        assert_eq!(split.rows[1].channels[0], 2000);
+    }
+
+    #[test]
+    fn stats_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit(2)/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Cap 1 is the overflow-by-one arm (total 2 == cap+1), cap 0 the
+        // zero/massive arm. u32 unread saturation is not reachable with 2
+        // rows and is covered by the walk's own saturating arithmetic.
+        use super::stats_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for rows in [0, 1, 2, 64] {
+            let capacities = Capacities { rows: [8192, 2048, 4096, 8192, 16384, 1024, rows], ace_names: 65536 };
+            let direct = kit::direct(&memory, &capacities);
+            let (split, report, _) = kit::split(&memory, &capacities);
+            assert!(report.raw_ok, "rows={rows}");
+            assert_eq!(report.matched, [true], "rows={rows}");
+            kit::assert_matches_direct(&split, &direct);
+        }
+        let capacities = Capacities { rows: [8192, 2048, 4096, 8192, 16384, 1024, 2], ace_names: 65536 };
+        let (split, _, _) = kit::split(&memory, &capacities);
+        assert_eq!(split.outcome, Outcome::Rows { len: 2 });
+    }
+
+    #[test]
+    fn stats_double_copy_compare_blocks_checks_on_tearing() {
+        use super::stats_test_kit as kit;
+        use super::{AirStatsCopyContext, AirStatsJob};
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = AirStatsCopyContext { base: kit::BASE, game_state: kit::GAME_STATE };
+        let mut first = AirStatsJob::new();
+        let mut second = AirStatsJob::new();
+        let report = super::copy_air_stats_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true]);
+        second.log.bytes[100] ^= 0xff;
+        assert!(!first.log.logs_equal(&second.log));
+    }
+
+    #[test]
+    fn stats_staging_overflow_falls_back_to_typed_walk() {
+        use super::stats_test_kit as kit;
+        use super::{AirStatsCopyContext, AirStatsJob};
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = AirStatsCopyContext { base: kit::BASE, game_state: kit::GAME_STATE };
+        let mut tiny = AirStatsJob {
+            log: crate::raw::RawLog::new(1, 1),
+            game_state: 0,
+        };
+        let report = super::copy_air_stats_refresh(&memory, ctx, &mut tiny, None);
+        assert!(!report.raw_ok);
+    }
+
+    #[test]
+    fn stats_copy_sizes_cover_documented_read_set() {
+        // S3: every Memory::copy size the statistics copy pass issues,
+        // recorded through the real pass. Census words (4/8), array headers
+        // (16), window byte (1), channel spans (8/32/40/72); the walk's
+        // batched gathers decompose into these exact copies at replay.
+        use super::stats_test_kit as kit;
+        use engine::Memory;
+        use std::collections::BTreeSet;
+        struct Recorder<'a> {
+            inner: engine::memory::SliceMemory<'a>,
+            sizes: std::cell::RefCell<BTreeSet<usize>>,
+        }
+        impl Memory for Recorder<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.sizes.borrow_mut().insert(output.len());
+                self.inner.copy(address, output)
+            }
+        }
+        let bytes = kit::fixture();
+        let memory = Recorder { inner: kit::memory(&bytes), sizes: std::cell::RefCell::new(BTreeSet::new()) };
+        let ctx = super::AirStatsCopyContext { base: kit::BASE, game_state: kit::GAME_STATE };
+        let mut job = super::AirStatsJob::new();
+        let report = super::copy_air_stats_refresh(&memory, ctx, &mut job, None);
+        assert!(report.raw_ok);
+        let sizes = memory.sizes.borrow().clone();
+        for required in [1, 4, 8, 16, 32, 40, 72] {
+            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+        }
     }
 
     #[test]
@@ -1592,6 +2198,31 @@ pub(crate) mod wing_test_kit {
         )
     }
 
+    pub(crate) fn direct_with(memory: &impl Memory, capacity: &Capacities) -> Split {
+        collect_typed(memory, capacity)
+    }
+
+    pub(crate) fn split_with(memory: &impl Memory, capacity: &Capacities) -> (Split, AirWingCopyReport, AirWingJob) {
+        let ctx = AirWingCopyContext { base: BASE, game_state: GAME_STATE };
+        let mut first = AirWingJob::new();
+        let mut second = AirWingJob::new();
+        let report = super::copy_air_refresh(memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        let mut captured = Captured::with_capacities(capacity, &[0; 7]);
+        let mut ticks = [0u64; 2];
+        super::decode_air_payload(&mut captured, BASE, &first, &mut ticks);
+        (
+            Split {
+                equipment_outcome: captured.equipment.outcome,
+                equipment: captured.equipment.rows.clone(),
+                cumulative_outcome: captured.cumulative.outcome,
+                cumulative: captured.cumulative.rows.clone(),
+            },
+            report,
+            first,
+        )
+    }
+
     pub(crate) fn direct_truncated(memory: &impl Memory) -> Split {
         let capacity = Capacities { rows: [1, 2048, 1, 8192, 16384, 1024, 2048], ace_names: 65536 };
         collect_typed(memory, &capacity)
@@ -1634,5 +2265,152 @@ pub(crate) mod wing_test_kit {
         assert_eq!(&captured.equipment.rows, &direct.equipment, "equipment rows");
         assert_eq!(captured.cumulative.outcome, direct.cumulative_outcome, "cumulative outcome");
         assert_eq!(&captured.cumulative.rows, &direct.cumulative, "cumulative rows");
+    }
+}
+
+/// Shared synthetic address space for the air-statistics copy/decode
+/// harness: one owner with a two-region history table, each region holding
+/// one history with a valid yearly window, record and channel values.
+/// Mirrors the engine statistics fixture shapes contiguously.
+#[cfg(test)]
+pub(crate) mod stats_test_kit {
+    use super::{AirStatsCopyContext, AirStatsCopyReport, AirStatsJob, Capacities, Captured};
+    use engine::{memory::SliceMemory, walk::Outcome, Memory};
+
+    pub(crate) const BASE: usize = 0x1400_0000;
+    pub(crate) const GAME_STATE: usize = 0x10000;
+    const CTAB: usize = 0x11000;
+    const LTAB: usize = 0x12000;
+    const COUNTRY: usize = 0x20000;
+    const MANAGER: usize = 0x30000;
+    const OWNER_TAB: usize = 0x31000;
+    const AIR: usize = 0x40000;
+    const HIST_TAB: usize = 0x41000;
+    const HISTORY1: usize = 0x50000;
+    const HISTORY2: usize = 0x50200;
+    const WINDOW1: usize = 0x60000;
+    const WINDOW2: usize = 0x60200;
+    const SLOTS1: usize = 0x61000;
+    const SLOTS2: usize = 0x61200;
+    const RECORD1: usize = 0x70000;
+    const RECORD2: usize = 0x70200;
+    const VALUES1: usize = 0x80000;
+    const VALUES2: usize = 0x81000;
+
+    fn p64(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn p32(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+        p64(bytes, at, data as u64);
+        p32(bytes, at + 8, count);
+        p32(bytes, at + 12, count);
+    }
+
+    fn history(bytes: &mut [u8], history: usize, window: usize, slots: usize, record: usize, values: usize, seed: i64) {
+    use engine::{cloop_history::air_stats, cloop_history, loop_history_record_fields, loop_history_window};
+        p64(bytes, history, (BASE + cloop_history::VTABLE_RVA) as u64);
+        p32(bytes, history + cloop_history::FIELD_COUNT, air_stats::FIELD_COUNT);
+        p64(bytes, history + cloop_history::SELF_REFERENCE, history as u64);
+        p64(bytes, history + cloop_history::WINDOW, window as u64);
+        p64(bytes, window, (BASE + loop_history_window::VTABLE_RVA) as u64);
+        header(bytes, window + loop_history_window::RECORDS, slots, 5);
+        p32(bytes, window + loop_history_window::CAPACITY, 5);
+        p32(bytes, window + loop_history_window::CURRENT_SLOT, 2);
+        bytes[window + loop_history_window::WRAPPED] = 1;
+        p64(bytes, window + loop_history_window::HISTORY, history as u64);
+        p64(bytes, window + loop_history_window::RECORD_FIELDS, record as u64);
+        for slot in 0..5 {
+            p64(bytes, slots + slot * 8, 0);
+        }
+        p64(bytes, slots + 2 * 8, record as u64);
+        p64(bytes, record + loop_history_record_fields::HISTORY, history as u64);
+        header(bytes, record + loop_history_record_fields::VALUES, values, air_stats::FIELD_COUNT);
+        for channel in 0..air_stats::FIELD_COUNT as usize {
+            p64(bytes, values + channel * 8, (seed + channel as i64) as u64);
+        }
+    }
+
+    pub(crate) fn fixture() -> Vec<u8> {
+        use engine::{ccountry, cgame_state, cstrategic_air, cstrategic_air_manager};
+        let mut bytes = vec![0; 0x82000];
+        header(&mut bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 3);
+        p64(&mut bytes, CTAB, 0);
+        p64(&mut bytes, CTAB + 8, COUNTRY as u64);
+        p64(&mut bytes, CTAB + 16, COUNTRY as u64);
+        header(&mut bytes, GAME_STATE + cgame_state::COUNTRY_LINKS, LTAB, 4);
+        p32(&mut bytes, LTAB, 0);
+        p32(&mut bytes, LTAB + 4, 1);
+        p32(&mut bytes, LTAB + 8, 1);
+        p32(&mut bytes, LTAB + 12, 1);
+        p64(&mut bytes, COUNTRY, (BASE + ccountry::VTABLE_RVA) as u64);
+        p32(&mut bytes, COUNTRY + ccountry::ID, 3);
+        p64(&mut bytes, GAME_STATE + cgame_state::STRATEGIC_AIR_MANAGER, MANAGER as u64);
+        p64(&mut bytes, MANAGER, (BASE + cstrategic_air_manager::VTABLE_RVA) as u64);
+        header(&mut bytes, MANAGER + cstrategic_air_manager::COUNTRY_AIR, OWNER_TAB, 3);
+        p64(&mut bytes, OWNER_TAB, 0);
+        p64(&mut bytes, OWNER_TAB + 8, AIR as u64);
+        p64(&mut bytes, OWNER_TAB + 16, 0);
+        p64(&mut bytes, AIR, (BASE + cstrategic_air::VTABLE_RVA) as u64);
+        p32(&mut bytes, AIR + cstrategic_air::COUNTRY, 2);
+        header(&mut bytes, AIR + cstrategic_air::HISTORY_TABLE, HIST_TAB, 2);
+        p64(&mut bytes, HIST_TAB, HISTORY1 as u64);
+        p64(&mut bytes, HIST_TAB + 8, HISTORY2 as u64);
+        history(&mut bytes, HISTORY1, WINDOW1, SLOTS1, RECORD1, VALUES1, 1000);
+        history(&mut bytes, HISTORY2, WINDOW2, SLOTS2, RECORD2, VALUES2, 2000);
+        bytes
+    }
+
+    pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
+        SliceMemory { base: 0, bytes }
+    }
+
+    pub(crate) struct Split {
+        pub outcome: Outcome,
+        pub rows: Vec<engine::cloop_history::Row>,
+    }
+
+    fn collect_typed(memory: &impl Memory, capacity: &Capacities) -> Split {
+        use engine::cloop_history;
+        let mut captured = Captured::with_capacities(capacity, &[0; 7]);
+        let walked = cloop_history::walk(memory, BASE, GAME_STATE, &mut captured.statistics.rows);
+        captured.statistics.outcome = super::bounded(walked, captured.statistics.rows.len());
+        Split { outcome: captured.statistics.outcome, rows: captured.statistics.rows.clone() }
+    }
+
+    pub(crate) fn direct(memory: &impl Memory, capacity: &Capacities) -> Split {
+        collect_typed(memory, capacity)
+    }
+
+    pub(crate) fn split(memory: &impl Memory, capacity: &Capacities) -> (Split, AirStatsCopyReport, AirStatsJob) {
+        let ctx = AirStatsCopyContext { base: BASE, game_state: GAME_STATE };
+        let mut first = AirStatsJob::new();
+        let mut second = AirStatsJob::new();
+        let report = super::copy_air_stats_refresh(memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        let mut captured = Captured::with_capacities(capacity, &[0; 7]);
+        let mut ticks = [0u64; 1];
+        super::decode_air_stats_payload(&mut captured, BASE, &first, &mut ticks);
+        (
+            Split { outcome: captured.statistics.outcome, rows: captured.statistics.rows.clone() },
+            report,
+            first,
+        )
+    }
+
+    pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
+        assert_eq!(split.outcome, direct.outcome, "statistics outcome");
+        assert_eq!(split.rows, direct.rows, "statistics rows");
+    }
+
+    /// Decode-worker assertion against pooled buffers (same module, so
+    /// private rows are visible).
+    pub(crate) fn assert_captured_matches_direct(captured: &super::Captured, direct: &Split) {
+        assert_eq!(captured.statistics.outcome, direct.outcome, "statistics outcome");
+        assert_eq!(&captured.statistics.rows, &direct.rows, "statistics rows");
     }
 }

@@ -799,6 +799,77 @@ mod tests {
     }
 
     #[test]
+    fn lexical_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit(3)/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // u32 unread saturation is not reachable with 3 rows and is covered
+        // by the walk's own saturating arithmetic. TABLE_CHUNK mid-table:
+        // the 3-token fixture (96 header bytes) fits one 64 KiB bulk chunk,
+        // so multi-chunk truncation is live-only (see below); the mid-table
+        // fault arm (middle heap token broken) proves per-token fallback
+        // inside the chunk with identical outcomes.
+        use super::lexical_test_kit as kit;
+        let memory = kit::KitMemory::fixture();
+        for capacities in [
+            Capacities { rows: 0, text: 0 },
+            Capacities { rows: 1, text: 2 },
+            Capacities { rows: 2, text: 4 },
+            Capacities { rows: 3, text: 32 },
+            Capacities { rows: 4, text: 64 },
+            Capacities { rows: 256, text: 8192 },
+        ] {
+            let direct = kit::direct(&memory, &capacities);
+            let (split, report, _) = kit::split(&memory, &capacities);
+            assert!(report.raw_ok, "rows={} text={}", capacities.rows, capacities.text);
+            assert_eq!(report.matched, [true], "rows={} text={}", capacities.rows, capacities.text);
+            kit::assert_matches_direct(&split, &direct);
+        }
+        // Exact-fit arm pins Rows with all 3 tokens present.
+        let exact = Capacities { rows: 3, text: 32 };
+        let (split, _, _) = kit::split(&memory, &exact);
+        assert_eq!(split.rows.outcome, Outcome::Rows { len: 3 });
+        // Mid-table arm: break the middle (heap) token's length word so the
+        // typed walk and the bulk-chunk fallback fail at the identical token.
+        let mut torn = kit::KitMemory::fixture();
+        torn.table[16 + 32] ^= 0xff;
+        let capacities = split_capacities();
+        let direct = kit::direct(&torn, &capacities);
+        let (split, report, _) = kit::split(&torn, &capacities);
+        assert!(report.raw_ok);
+        kit::assert_matches_direct(&split, &direct);
+    }
+
+    #[test]
+    fn lexical_bulk_chunk_serves_enclosed_header_words() {
+        // S3 containment: the 64 KiB header-table chunk is a bulk span, so
+        // the walk's enclosed header reads (4 B flags, 8 B pointers inside
+        // the 32 B token headers) are served from the same recorded bytes.
+        // Proves bulk containment plus bulk-wins-for-sub-ranges: an exact
+        // 32 B header read and an unaligned sub-range inside the chunk both
+        // serve, while a straddling read fails.
+        use super::lexical_test_kit as kit;
+        let memory = kit::KitMemory::fixture();
+        let mut job = LexicalJob::new();
+        copy_pass(&memory, kit::BASE, &mut job.log);
+        assert!(job.log.has_bulk);
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let chunk = job.log.spans.iter().find(|span| span.ok && span.bulk).expect("bulk chunk");
+        // Enclosed 8 B pointer read at an unaligned offset inside the chunk.
+        let mut word = [0u8; 8];
+        assert!(recorded.copy(chunk.addr + 3, &mut word));
+        let mut expected = [0u8; 8];
+        assert!(memory.copy(chunk.addr + 3, &mut expected));
+        assert_eq!(word, expected);
+        // Exact 32 B header read also serves from the bulk chunk.
+        let mut header = [0u8; 32];
+        assert!(recorded.copy(chunk.addr, &mut header));
+        // Straddling the chunk edge fails (not fully enclosed).
+        let mut straddle = [0u8; 32];
+        assert!(!recorded.copy(chunk.addr + chunk.len as usize - 16, &mut straddle));
+    }
+
+    #[test]
     fn split_copy_matches_direct_walk_under_truncation() {
         use super::lexical_test_kit as kit;
         let memory = kit::KitMemory::fixture();

@@ -1010,6 +1010,7 @@ impl Processor {
             stats.table_ns[decode::AIR_WING[0].index()],
             stats.table_ns[decode::AIR_WING[1].index()],
         ];
+        let air_stats_copy_ns = [stats.table_ns[decode::AIR_STATS[0].index()]];
         let naval_copy_ns = [
             stats.table_ns[decode::NAVAL_ORDER[0].index()],
             stats.table_ns[decode::NAVAL_ORDER[1].index()],
@@ -1112,6 +1113,7 @@ impl Processor {
         value["construction_rest_copy_ns"] = json!(construction_rest_copy_ns.as_slice());
         value["map_copy_ns"] = json!(map_copy_ns.as_slice());
         value["air_wing_copy_ns"] = json!(air_wing_copy_ns.as_slice());
+        value["air_stats_copy_ns"] = json!(air_stats_copy_ns.as_slice());
         value["naval_copy_ns"] = json!(naval_copy_ns.as_slice());
         value["players_copy_ns"] = json!(players_copy_ns.as_slice());
         value["session_copy_ns"] = json!(session_copy_ns.as_slice());

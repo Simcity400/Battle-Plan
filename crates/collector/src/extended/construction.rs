@@ -3464,6 +3464,32 @@ mod tests {
     }
 
     #[test]
+    fn buildings_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Fixture holds 1 state + 1 province building, so cap 1 is both the
+        // one-row and exact-fit arm, cap 0 the zero/overflow-by-one/massive
+        // arm. u32 unread saturation is not reachable and is covered by the
+        // walk's own saturating arithmetic.
+        use super::buildings_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for rows in [[0; N], [1; N], [2; N], [64; N]] {
+            let capacities = Capacities { rows, routes: 64, law_bytes: 64 };
+            let direct = kit::direct(&memory, &capacities);
+            let (split, report, _) = kit::split(&memory, &capacities);
+            assert!(report.raw_ok, "rows={rows:?}");
+            assert_eq!(report.matched, [true; 2], "rows={rows:?}");
+            kit::assert_matches_direct(&split, &direct);
+        }
+        let capacities = Capacities { rows: [1; N], routes: 64, law_bytes: 64 };
+        let (split, _, _) = kit::split(&memory, &capacities);
+        assert_eq!(split.state_buildings.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.province_buildings.outcome, Outcome::Rows { len: 1 });
+    }
+
+    #[test]
     fn split_copy_matches_direct_walk_under_truncation() {
         use super::buildings_test_kit as kit;
         let bytes = kit::fixture();
@@ -3605,6 +3631,36 @@ mod tests {
         assert_eq!(split.resistance.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.reserve_manpower.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.collaboration.outcome, Outcome::Rows { len: 0 });
+    }
+
+    #[test]
+    fn construction_rest_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
+        // copy→decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // Fixture holds 1 row on most rest tables (collaboration empty), so
+        // cap 1 is the one-row/exact-fit arm, cap 0 the zero/overflow/massive
+        // arm. u32 unread saturation is not reachable and is covered by the
+        // walk's own saturating arithmetic.
+        use super::construction_rest_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        for rows in [[0; N], [1; N], [2; N], [64; N]] {
+            let capacities = Capacities { rows, routes: 64, law_bytes: 64 };
+            let direct = kit::direct(&memory, &capacities);
+            let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+            let ctx = ConstructionRestCopyContext { base: 0, game_state: kit::BASE, needed: [true; 10] };
+            let mut first = ConstructionRestJob::new();
+            let mut second = ConstructionRestJob::new();
+            let report = captured.copy_construction_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
+            assert!(report.raw_ok, "rows={rows:?}");
+            assert_eq!(report.matched, [true; 10], "rows={rows:?}");
+            captured.rest_raw_mode = true;
+            let _ = captured.capture(&memory, 0, kit::BASE, &[true; N], 0, true);
+            let mut ticks = [0u64; 10];
+            captured.decode_construction_rest_payload(0, kit::BASE, &first, &mut ticks);
+            kit::assert_matches_direct(&captured, &direct);
+        }
     }
 
     #[test]

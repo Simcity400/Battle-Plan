@@ -804,6 +804,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             let mut map_report = crate::map_capture::MapCopyReport::default();
             let mut air_wing_payload: Option<extended::air::AirWingJob> = None;
             let mut air_wing_report = extended::air::AirWingCopyReport::default();
+            let mut air_stats_payload: Option<extended::air::AirStatsJob> = None;
+            let mut air_stats_report = extended::air::AirStatsCopyReport::default();
             let mut naval_payload: Option<extended::naval_history::NavalJob> = None;
             let mut naval_report = extended::naval_history::NavalCopyReport::default();
             // Players pair handoff state: same FIFO, same ordering
@@ -1205,6 +1207,36 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 }
                 if let Some(second) = air_second {
                     decode::recycle_air_wing_job(second);
+                }
+                // Hourly air statistics (copy/decode split): raw copies only
+                // on the game thread, same FIFO and ordering guarantees as
+                // the wing pair above. Stages its own strategic-air census
+                // copies with no cross-family decoded roots. Staging overflow
+                // falls back to the typed walk with no payload enqueued.
+                let air_stats_second_needed = decode::AIR_STATS
+                    .iter()
+                    .any(|table| extended_needed[table.index()]);
+                let mut air_stats_first = decode::acquire_air_stats_job();
+                let mut air_stats_second =
+                    air_stats_second_needed.then(decode::acquire_air_stats_job);
+                let air_stats_ctx = extended::air::AirStatsCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                };
+                air_stats_report = extended::air::copy_air_stats_refresh(
+                    &memory,
+                    air_stats_ctx,
+                    &mut air_stats_first,
+                    air_stats_second.as_mut(),
+                );
+                frame.extended.air_stats_pilot().stats_raw_mode = air_stats_report.raw_ok;
+                if air_stats_report.raw_ok {
+                    air_stats_payload = Some(air_stats_first);
+                } else {
+                    decode::recycle_air_stats_job(air_stats_first);
+                }
+                if let Some(second) = air_stats_second {
+                    decode::recycle_air_stats_job(second);
                 }
                 let naval_second_needed = decode::NAVAL_ORDER
                     .iter()
@@ -1776,6 +1808,20 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::add_air_wing_raw_bytes(slot, air_wing_report.raw_bytes[slot]);
                     }
                 }
+                // Hourly air statistics measured copy-only above; same
+                // install for the calibration counters. The shared
+                // strategic-air census is anchor-charged to the statistics
+                // slot, matching the read-group convention.
+                if air_stats_report.raw_ok {
+                    for (slot, table) in decode::AIR_STATS.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = air_stats_report.matched[slot];
+                        let ns = shared.ns(air_stats_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_air_stats_copy_ns(slot, ns);
+                        decode::add_air_stats_raw_bytes(slot, air_stats_report.raw_bytes[slot]);
+                    }
+                }
                 if naval_report.raw_ok {
                     for (slot, table) in decode::NAVAL_ORDER.iter().enumerate() {
                         let index = table.index();
@@ -1896,6 +1942,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 focus_refresh: focus_report.raw_ok,
                 map_refresh: map_report.raw_ok,
                 air_wing_refresh: air_wing_report.raw_ok,
+                air_stats_refresh: air_stats_report.raw_ok,
                 naval_refresh: naval_report.raw_ok,
                 players_refresh: players_report.raw_ok,
                 session_refresh: session_report.raw_ok,
@@ -1915,6 +1962,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 focus_payload,
                 map_payload,
                 air_wing_payload,
+                air_stats_payload,
                 naval_payload,
                 players_payload,
                 session_payload,
@@ -1977,6 +2025,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     }
                     if let Some(payload) = returned.air_wing_payload {
                         decode::recycle_air_wing_job(payload);
+                    }
+                    if let Some(payload) = returned.air_stats_payload {
+                        decode::recycle_air_stats_job(payload);
                     }
                     if let Some(payload) = returned.naval_payload {
                         decode::recycle_naval_job(payload);
@@ -4545,6 +4596,7 @@ mod tests {
                     focus_refresh: false,
                     map_refresh: false,
                     air_wing_refresh: false,
+                    air_stats_refresh: false,
                     naval_refresh: false,
                     players_refresh: false,
                     session_refresh: false,
@@ -4564,6 +4616,7 @@ mod tests {
                     focus_payload: None,
                     map_payload: None,
                     air_wing_payload: None,
+                    air_stats_payload: None,
                     naval_payload: None,
                     players_payload: None,
                     session_payload: None,
@@ -4591,6 +4644,7 @@ mod tests {
             focus_refresh: false,
             map_refresh: false,
             air_wing_refresh: false,
+            air_stats_refresh: false,
             naval_refresh: false,
             players_refresh: false,
             session_refresh: false,
@@ -4610,6 +4664,7 @@ mod tests {
             focus_payload: None,
             map_payload: None,
             air_wing_payload: None,
+            air_stats_payload: None,
             naval_payload: None,
             players_payload: None,
             session_payload: None,
