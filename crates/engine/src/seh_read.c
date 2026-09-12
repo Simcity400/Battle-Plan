@@ -4,7 +4,17 @@
 #include <windows.h>
 
 /* Ported from the old collector's seh_read.c. Only faults within this copy
-   are handled; unrelated exceptions continue through the game's handlers. */
+   are handled; unrelated exceptions continue through the game's handlers.
+   Windows reports a fault on a noncanonical x86-64 source
+   (bits 63:48 != bit 47, e.g. ASCII bytes such as "_factor" read as a
+   pointer) with ExceptionInformation[1] == -1. The guarded instruction only
+   touches the requested source range (the destination is valid pool memory),
+   so -1 during the copy must come from that source range and is handled
+   gracefully. Any other address still uses the exact range check, so a
+   canonical out-of-range fault elsewhere keeps returning
+   EXCEPTION_CONTINUE_SEARCH for real crash reporting. The Rust
+   is_canonical_range gate makes this -1 path unreachable in normal walks; it
+   remains as containment for any direct FFI caller bypassing that gate. */
 static int copy_fault(EXCEPTION_POINTERS *ep, const unsigned char *src,
                       size_t len, const unsigned char *dst) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
@@ -14,6 +24,9 @@ static int copy_fault(EXCEPTION_POINTERS *ep, const unsigned char *src,
     }
     if (ep->ExceptionRecord->NumberParameters >= 2) {
         uintptr_t address = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
+        if (address == (uintptr_t)-1) {
+            return 1;
+        }
         return address - (uintptr_t)src < len || address - (uintptr_t)dst < len;
     }
     return 0;

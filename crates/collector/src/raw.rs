@@ -33,6 +33,33 @@
 use engine::Memory;
 use std::collections::HashMap;
 
+/// x86-64 canonical range check, identical to `engine::memory`'s gate.
+///
+/// Duplicated (not imported) so this crate needs no new public engine API;
+/// the two implementations are proved equal by mirrored unit vectors in both
+/// crates. Noncanonical sources fault with `ExceptionInformation[1] == -1`,
+/// which `copy_fault` cannot attribute to the requested range. Gating here
+/// records the same graceful fault the typed walk produces for an unreadable
+/// source, before any guarded instruction runs. Empty spans succeed without
+/// a check, matching `Memory`. The Rust gate makes the C `-1` path
+/// unreachable through `take_inner`/`LiveMemory`; the C fix remains as
+/// containment for direct FFI callers.
+#[inline]
+fn is_canonical_range(addr: usize, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let Some(end) = addr.checked_add(len.wrapping_sub(1)) else {
+        return false;
+    };
+    let high = |value: usize| value >> 47;
+    let canonical = |value: usize| {
+        let top = value >> 48;
+        top == 0 || top == 0xFFFF
+    };
+    canonical(addr) && canonical(end) && high(addr) == high(end)
+}
+
 /// One recorded guarded read: exact address and length, success flag, table
 /// mask, byte-pool offset for successful spans, and whether this span is a
 /// bulk chunk whose sub-ranges the replay may request.
@@ -146,6 +173,17 @@ impl<const N: usize> RawLog<N> {
             return None;
         };
         if addr == 0 || addr.checked_add(len).is_none() {
+            self.note_fail(addr, len32, mask);
+            return None;
+        }
+        // Noncanonical x86-64 sources (e.g. ASCII "_factor" bytes read as a
+        // pointer) fault with ExceptionInformation[1] == -1, which the C
+        // filter cannot attribute and would crash. Record the same graceful
+        // fault the typed walk reports for an unreadable source, before any
+        // guarded copy runs. Ordering matches the typed walk: null, overflow,
+        // then canonical, each with identical Unavailable/Truncated reasons
+        // derived by the replay from these recorded spans.
+        if !is_canonical_range(addr, len) {
             self.note_fail(addr, len32, mask);
             return None;
         }
@@ -387,6 +425,13 @@ impl Memory for Recorded<'_> {
         if address == 0 || address.checked_add(destination.len()).is_none() {
             return false;
         }
+        // Mirror the live canonical gate so the replay fails the same way for
+        // a noncanonical derived pointer even if a log ever contained it.
+        // `take_inner` never records such spans, so this is unreachable in
+        // normal decodes and only keeps outcomes identical by construction.
+        if !is_canonical_range(address, destination.len()) {
+            return false;
+        }
         if destination.len() > u32::MAX as usize {
             return false;
         }
@@ -598,5 +643,71 @@ mod tests {
         plain.take(&memory, 0x1000, 64, 0x01);
         let plain_recorded = Recorded::build(&plain);
         assert!(!plain_recorded.copy(0x1008, &mut out));
+    }
+
+    #[test]
+    fn take_inner_rejects_noncanonical_addresses_as_faults_pre_copy() {
+        // Live crash runs resolved to ASCII-derived noncanonical sources:
+        // run 1 `rdx=0x00726f746361665f` ("_factor\0") and run 2
+        // `rdx=0x6f746361665f7374` ("ts_facto"). `take_inner` must record the
+        // same fault the typed walk produces for an unreadable source, before
+        // any guarded copy runs (a crash cannot happen in tests; the traced
+        // memory proves no copy was attempted).
+        use std::cell::Cell;
+        struct Traced<'a> {
+            inner: SliceMemory<'a>,
+            calls: Cell<usize>,
+        }
+        impl Memory for Traced<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                self.calls.set(self.calls.get() + 1);
+                self.inner.copy(address, destination)
+            }
+        }
+        let bytes = [9u8; 64];
+        let memory = Traced {
+            inner: SliceMemory {
+                base: 0x1000,
+                bytes: &bytes,
+            },
+            calls: Cell::new(0),
+        };
+        let mut log = RawLog::<2>::new(8, 64);
+        for noncanonical in [0x0072_6f74_6361_665fusize, 0x6f74_6361_665f_7374usize] {
+            assert!(
+                log.take(&memory, noncanonical, 8, 0x01).is_none(),
+                "noncanonical {noncanonical:x} must fail pre-copy"
+            );
+            assert!(log.fault[0]);
+            assert!(!log.overflowed);
+        }
+        assert_eq!(
+            memory.calls.get(),
+            0,
+            "noncanonical takes must not touch memory"
+        );
+        // Canonical low-half and high-half kernel addresses still go through.
+        assert!(log.take(&memory, 0x1000, 8, 0x02).is_some());
+        assert_eq!(memory.calls.get(), 1);
+        // `Recorded` mirrors the live gate so decodes fail identically.
+        let recorded = Recorded::build(&log);
+        let mut out = [0u8; 8];
+        assert!(!recorded.copy(0x0072_6f74_6361_665f, &mut out));
+        assert!(!recorded.copy(0x6f74_6361_665f_7374, &mut out));
+        assert!(recorded.copy(0x1000, &mut out));
+    }
+
+    #[test]
+    fn canonical_gate_matches_engine_vectors_and_keeps_valid_data() {
+        // The collector gate duplicates `engine::memory`'s check without a new
+        // public API; both must agree on the live crash vectors and on valid
+        // game-like addresses. Overflow and empty spans keep `Memory` semantics.
+        assert!(!is_canonical_range(0x0072_6f74_6361_665f, 8));
+        assert!(!is_canonical_range(0x6f74_6361_665f_7374, 8));
+        assert!(is_canonical_range(0x1_4000_0000, 8));
+        assert!(is_canonical_range(0xFFFF_8000_0000_0000, 8));
+        assert!(!is_canonical_range(0x0000_7FFF_FFFF_FFF0, 32));
+        assert!(is_canonical_range(0x2000, 0));
+        assert!(!is_canonical_range(usize::MAX - 3, 8));
     }
 }

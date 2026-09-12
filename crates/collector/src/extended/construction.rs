@@ -629,6 +629,7 @@ pub(crate) struct BuildingsCopyReport {
 /// Game-thread copy parameters, bundled to keep the refresh entry small.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BuildingsCopyContext {
+    pub base: usize,
     pub game_state: usize,
     pub needed: [bool; 2],
 }
@@ -665,12 +666,22 @@ fn record_offset(index: usize) -> usize {
 }
 
 /// Mirror of one `walk_locations` pass: roots, pointer pages, field gathers,
-/// state-authentication rounds and building records. Takes are unconditional
-/// over discoverable addresses (a superset); the replay derives precedence
-/// and outcomes.
+/// state-authentication rounds and building records.
+///
+/// Field/state takes remain a superset (safe under the canonical gate); the
+/// replay derives precedence and outcomes. Building vectors are gated by the
+/// typed walker's exact authentication order (location vtable, location id,
+/// province state authentication, status vtable, status identity/scope,
+/// building/index vectors) with identical pass/fail outcomes: only the
+/// leading authenticated prefix is followed, and the first failure aborts
+/// the walk exactly like the typed `break`/`?`. Unauthenticated bytes (e.g.
+/// ASCII "_factor" runs observed live as `rdx=0x00726f746361665f`) therefore
+/// never become a guarded-copy source. The validity flag (`ok`) is honored:
+/// a record whose gather failed is never consumed as a vector.
 fn copy_buildings_walk(
     log: &mut RawLog<2>,
     memory: &impl Memory,
+    base: usize,
     game_state: usize,
     province_scope: bool,
     mask: u32,
@@ -709,6 +720,25 @@ fn copy_buildings_walk(
         (cprovince::ID, cprovince::BUILDING_STATUS, true)
     } else {
         (cstate::ID, cstate::BUILDING_STATUS, false)
+    };
+    // Expected vtables in the typed walk's order. Overflow aborts like the
+    // typed "module address overflow" without touching building vectors; the
+    // replay derives the same reason from the same base.
+    let location_vtable = match base.checked_add(if province_scope {
+        cprovince::VTABLE_RVA
+    } else {
+        cstate::VTABLE_RVA
+    }) {
+        Some(v) => v as u64,
+        None => return,
+    };
+    let state_vtable = match base.checked_add(cstate::VTABLE_RVA) {
+        Some(v) => v as u64,
+        None => return,
+    };
+    let status_vtable = match base.checked_add(cbuilding_status::VTABLE_RVA) {
+        Some(v) => v as u64,
+        None => return,
     };
     let mut first = 1u32;
     while first < locations.count {
@@ -801,19 +831,61 @@ fn copy_buildings_walk(
             }
         }
         // State-authentication rounds for the province walk, staged from the
-        // recorded state links exactly like the typed gather.
+        // recorded state links exactly like the typed gather. Results gate
+        // building reads below with identical pass/fail outcomes.
+        let mut state_passed = [false; 64];
+        let mut state_ids = [0u32; 64];
         if with_state_link {
-            copy_state_identities(log, memory, &states, &live[..live_len], &fields, mask);
+            copy_state_identities(
+                log,
+                memory,
+                base,
+                &states,
+                &live[..live_len],
+                &fields,
+                mask,
+                &mut state_passed,
+                &mut state_ids,
+            );
             if log.overflowed {
                 return;
             }
         }
-        // Building records for every live entry.
-        for (record, _) in fields.iter().take(live_len) {
+        // Building records for the leading authenticated prefix only,
+        // mirroring the typed walk's break-on-first-failure. Earlier
+        // successes' buildings are read (typed reads them before failing);
+        // the failing location and every later one are never touched, so
+        // unauthenticated ASCII bytes never become a copy source.
+        let mut auth_failed = false;
+        for (slot, ((record, ok), (_, location))) in fields
+            .iter()
+            .take(live_len)
+            .zip(live[..live_len].iter())
+            .enumerate()
+        {
+            if !ok {
+                auth_failed = true;
+                break;
+            }
+            if !authenticate_location_record(
+                record,
+                *location,
+                province_scope,
+                location_vtable,
+                status_vtable,
+                state_vtable,
+                state_passed[slot],
+            ) {
+                auth_failed = true;
+                break;
+            }
             copy_location_buildings(log, memory, record, mask);
             if log.overflowed {
                 return;
             }
+        }
+        if auth_failed {
+            return;
         }
         // A failed pointer page aborts the walk after its prefix, exactly
         // like the typed visit-then-error order.
@@ -825,17 +897,40 @@ fn copy_buildings_walk(
 }
 
 /// Mirror of the state-identity gather: identity round plus table-slot round
-/// for staged nonzero state links. Takes are unconditional; the replay
-/// derives the completed prefixes.
+/// for staged nonzero state links. Takes are unconditional (safe under the
+/// canonical gate); the replay derives the completed prefixes.
+///
+/// `out_passed`/`out_state` report per-live-slot authentication with the
+/// typed walk's exact order and outcomes: state vtable, then state id
+/// (nonzero), then state-table match. Null links are sea provinces and pass
+/// without reads (`out_passed` stays false but the location gate treats link
+/// zero as state 0; see `authenticate_location_record`). Records whose gather
+/// failed (`!ok`) are never staged and report failure, matching the typed
+/// `copied < 3` break.
+#[allow(clippy::too_many_arguments)]
 fn copy_state_identities(
     log: &mut RawLog<2>,
     memory: &impl Memory,
+    base: usize,
     states: &Array,
     live: &[(usize, u32)],
     fields: &[([u8; 72], bool); 64],
     mask: u32,
+    out_passed: &mut [bool; 64],
+    out_state: &mut [u32; 64],
 ) {
+    for value in out_passed.iter_mut() {
+        *value = false;
+    }
+    for value in out_state.iter_mut() {
+        *value = 0;
+    }
+    let state_vtable = match base.checked_add(cstate::VTABLE_RVA) {
+        Some(v) => v as u64,
+        None => return,
+    };
     let mut pointers = [0usize; 64];
+    let mut staged_slots = [0usize; 64];
     let mut staged = 0usize;
     for (slot, _) in live.iter().enumerate() {
         let (record, ok) = &fields[slot];
@@ -847,6 +942,7 @@ fn copy_state_identities(
             .filter(|&pointer| pointer != 0);
         if let Some(pointer) = pointer {
             pointers[staged] = pointer;
+            staged_slots[staged] = slot;
             staged += 1;
         }
     }
@@ -873,21 +969,100 @@ fn copy_state_identities(
             return;
         }
     }
-    // Round 2: state-table slot each fully-read id names. Null table slots
-    // read nothing, matching copy_records' stop rule.
-    for (identity, ok) in identities[..staged].iter() {
+    // Round 2: state-table slot each fully-read id names plus per-slot
+    // authentication evaluation in typed order. Null table slots read
+    // nothing, matching copy_records' stop rule.
+    for (staged_idx, (identity, ok)) in identities[..staged].iter().enumerate() {
+        let live_slot = staged_slots[staged_idx];
         if !ok {
             continue;
         }
-        let id = u32::from_le_bytes(identity[8..12].try_into().unwrap());
-        let table_addr = states.element(id, 8);
-        if table_addr.is_some_and(|addr| addr != 0) {
-            let _ = bspan(log, memory, table_addr, 8, mask);
+        let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
+        if vtable != state_vtable {
+            continue;
         }
+        let id = u32::from_le_bytes(identity[8..12].try_into().unwrap());
+        if id == 0 {
+            continue;
+        }
+        let Some(table_addr) = states.element(id, 8) else {
+            continue;
+        };
+        if table_addr == 0 {
+            continue;
+        }
+        let Some(slot_start) = bspan(log, memory, Some(table_addr), 8, mask) else {
+            if log.overflowed {
+                return;
+            }
+            continue;
+        };
         if log.overflowed {
             return;
         }
+        let slot_value = u64::from_le_bytes(
+            log.bytes[slot_start..slot_start + 8].try_into().unwrap(),
+        );
+        if slot_value != pointers[staged_idx] as u64 {
+            continue;
+        }
+        out_passed[live_slot] = true;
+        out_state[live_slot] = id;
     }
+}
+
+/// Typed-walker gate mirror for one location record, in
+/// `cbuilding_status::walk_locations` order: location vtable, location id,
+/// province state authentication (vtable, id, table match; null link is sea
+/// state 0), status vtable, status identity location/scope, building vector,
+/// index vector. `ok == false` is handled by the caller (break before this
+/// call); this function assumes all seven spans were taken. Returns true only
+/// when the typed walk would stage this location's buildings.
+fn authenticate_location_record(
+    record: &[u8; 72],
+    location: u32,
+    province_scope: bool,
+    location_vtable: u64,
+    status_vtable: u64,
+    state_vtable: u64,
+    state_passed: bool,
+) -> bool {
+    let _ = state_vtable;
+    if u64::from_le_bytes(record[..8].try_into().unwrap()) != location_vtable {
+        return false;
+    }
+    if u32::from_le_bytes(record[8..12].try_into().unwrap()) != location {
+        return false;
+    }
+    if province_scope {
+        let link = u64::from_le_bytes(record[12..20].try_into().unwrap());
+        // Null links are sea provinces (state 0) and need no state reads.
+        // Nonzero links require the gathered authentication above.
+        if link != 0 && !state_passed {
+            return false;
+        }
+    }
+    if u64::from_le_bytes(record[20..28].try_into().unwrap()) != status_vtable {
+        return false;
+    }
+    let flags = u32::from_le_bytes(record[28..32].try_into().unwrap());
+    let status_location = u32::from_le_bytes(record[32..36].try_into().unwrap());
+    if status_location != location
+        || (flags & cbuilding_status::PROVINCE_FLAG != 0) != province_scope
+    {
+        return false;
+    }
+    let mut building_header = [0u8; 16];
+    building_header.copy_from_slice(&record[40..56]);
+    if Array::from_header(building_header, 8).is_none() {
+        return false;
+    }
+    let mut index_header = [0u8; 16];
+    index_header.copy_from_slice(&record[56..72]);
+    if Array::from_header(index_header, 4).is_none() {
+        return false;
+    }
+    true
 }
 
 /// Mirror of one location's building reads: pointer vector, field gathers,
@@ -991,15 +1166,43 @@ impl Captured {
     ) -> BuildingsCopyReport {
         let started = qpc();
         first.game_state = ctx.game_state;
-        copy_buildings_walk(&mut first.log, memory, ctx.game_state, false, M_STATES);
-        copy_buildings_walk(&mut first.log, memory, ctx.game_state, true, M_PROVINCES);
+        copy_buildings_walk(
+            &mut first.log,
+            memory,
+            ctx.base,
+            ctx.game_state,
+            false,
+            M_STATES,
+        );
+        copy_buildings_walk(
+            &mut first.log,
+            memory,
+            ctx.base,
+            ctx.game_state,
+            true,
+            M_PROVINCES,
+        );
         let mut ticks = [0u64; 2];
         ticks[0] = elapsed(started);
         let mut matched = [true; 2];
         if let Some(second_job) = second {
             let second_started = qpc();
-            copy_buildings_walk(&mut second_job.log, memory, ctx.game_state, false, M_STATES);
-            copy_buildings_walk(&mut second_job.log, memory, ctx.game_state, true, M_PROVINCES);
+            copy_buildings_walk(
+                &mut second_job.log,
+                memory,
+                ctx.base,
+                ctx.game_state,
+                false,
+                M_STATES,
+            );
+            copy_buildings_walk(
+                &mut second_job.log,
+                memory,
+                ctx.base,
+                ctx.game_state,
+                true,
+                M_PROVINCES,
+            );
             ticks[0] += elapsed(second_started);
             // Per-table partitions: shared roots gate both slots, state /
             // province private spans only their own.
@@ -2583,6 +2786,7 @@ pub(crate) mod buildings_test_kit {
     ) -> (Captured, BuildingsCopyReport, BuildingsJob) {
         let mut captured = Captured::with_capacities(capacities, &[0; N]);
         let ctx = BuildingsCopyContext {
+            base: BASE,
             game_state: GAME_STATE,
             needed: [true, true],
         };
@@ -3561,6 +3765,7 @@ mod tests {
         let capacities = split_capacities();
         let mut captured = Captured::with_capacities(&capacities, &[0; N]);
         let ctx = BuildingsCopyContext {
+            base: kit::BASE,
             game_state: kit::GAME_STATE,
             needed: [true, true],
         };
@@ -3575,6 +3780,7 @@ mod tests {
         torn[kit::ST1 + cstate::ID] ^= 0xff;
         let torn_memory = kit::memory(&torn);
         let ctx = BuildingsCopyContext {
+            base: kit::BASE,
             game_state: kit::GAME_STATE,
             needed: [false, false],
         };
@@ -3603,6 +3809,7 @@ mod tests {
         let capacities = split_capacities();
         let mut captured = Captured::with_capacities(&capacities, &[0; N]);
         let ctx = BuildingsCopyContext {
+            base: kit::BASE,
             game_state: kit::GAME_STATE,
             needed: [true, true],
         };
@@ -3773,5 +3980,137 @@ mod tests {
         assert!(capacities.rows[2] >= 4096);
         assert!(capacities.routes >= 4096);
         assert!(capacities.law_bytes >= 16384);
+    }
+
+    /// Crash-fix regression (i): readable-but-unauthenticated location vtable
+    /// with ASCII-derived building pointers (`"_factor\0"` run 1).
+    ///
+    /// The typed walk rejects the location before reading its building vector
+    /// (`"building location vtable mismatch"`); the copy must authenticate in
+    /// the same order and never issue a guarded copy for the ASCII
+    /// noncanonical pointer. Outcomes (including reason strings) must be
+    /// identical, and the log must contain no span for the ASCII address.
+    #[test]
+    fn buildings_copy_skips_ascii_vectors_behind_bad_location_vtable() {
+        use super::buildings_test_kit as kit;
+        use engine::{cbuilding_status, cstate};
+        const ASCII_FACTOR: u64 = 0x0072_6f74_6361_665f;
+        let mut bytes = kit::fixture();
+        // Corrupt the state location vtable but keep every span readable.
+        bytes[kit::ST1..kit::ST1 + 8].copy_from_slice(&0x1234_5678_9abc_def0u64.to_le_bytes());
+        // Poison the building vector behind it with the live ASCII pointer.
+        let status = kit::ST1 + cstate::BUILDING_STATUS;
+        let vector = status + cbuilding_status::BUILDINGS;
+        bytes[vector..vector + 8].copy_from_slice(&ASCII_FACTOR.to_le_bytes());
+        bytes[vector + 8..vector + 12].copy_from_slice(&1u32.to_le_bytes());
+        bytes[vector + 12..vector + 16].copy_from_slice(&1u32.to_le_bytes());
+        let memory = kit::memory(&bytes);
+        let capacities = split_capacities();
+        let direct = kit::direct(&memory, &capacities);
+        let (split, report, first) = kit::split(&memory, &capacities);
+        assert!(report.raw_ok);
+        kit::assert_matches_direct(&split, &direct);
+        assert_eq!(
+            direct.state_buildings.outcome,
+            Outcome::Unavailable {
+                reason: "building location vtable mismatch"
+            }
+        );
+        assert!(!first.log.spans.iter().any(|span| {
+            span.addr == ASCII_FACTOR as usize && span.addr != 0
+        }));
+    }
+
+    /// Crash-fix regression (ii): readable-but-unauthenticated province status
+    /// bytes with ASCII-derived building pointers (`"ts_facto"` run 2).
+    ///
+    /// Mirrors (i) on the province scope, which additionally stages state
+    /// authentication. The typed walk fails at
+    /// `"building status vtable mismatch"`; the copy must fail identically
+    /// without touching the ASCII vector.
+    #[test]
+    fn buildings_copy_skips_ascii_vectors_behind_bad_province_status() {
+        use super::buildings_test_kit as kit;
+        use engine::{cbuilding_status, cprovince};
+        const ASCII_FACTO: u64 = 0x6f74_6361_665f_7374;
+        let mut bytes = kit::fixture();
+        let status = kit::PR1 + cprovince::BUILDING_STATUS;
+        bytes[status..status + 8].copy_from_slice(&0xdead_beef_dead_beefu64.to_le_bytes());
+        let vector = status + cbuilding_status::BUILDINGS;
+        bytes[vector..vector + 8].copy_from_slice(&ASCII_FACTO.to_le_bytes());
+        bytes[vector + 8..vector + 12].copy_from_slice(&1u32.to_le_bytes());
+        bytes[vector + 12..vector + 16].copy_from_slice(&1u32.to_le_bytes());
+        let memory = kit::memory(&bytes);
+        let capacities = split_capacities();
+        let direct = kit::direct(&memory, &capacities);
+        let (split, report, first) = kit::split(&memory, &capacities);
+        assert!(report.raw_ok);
+        kit::assert_matches_direct(&split, &direct);
+        assert_eq!(
+            direct.province_buildings.outcome,
+            Outcome::Unavailable {
+                reason: "building status vtable mismatch"
+            }
+        );
+        assert!(!first.log.spans.iter().any(|span| {
+            span.addr == ASCII_FACTO as usize && span.addr != 0
+        }));
+    }
+
+    /// Crash-fix regression (iii): ignored-validity-flag shape.
+    ///
+    /// A field gather fails (blocked status-identity span) while the record's
+    /// building-vector bytes happen to hold an ASCII noncanonical pointer.
+    /// The old `for (record, _)` consumed the record anyway; the fixed copy
+    /// honors the flag, stops at the first failure like the typed walk, and
+    /// reports the identical Unavailable reason without recording the ASCII
+    /// span.
+    #[test]
+    fn buildings_copy_honors_gather_validity_before_consuming_vectors() {
+        use super::buildings_test_kit as kit;
+        use engine::{Memory, cbuilding_status, cstate, memory::SliceMemory};
+        const ASCII_FACTOR: u64 = 0x0072_6f74_6361_665f;
+        struct Fault<'a> {
+            memory: SliceMemory<'a>,
+            fault: std::ops::Range<usize>,
+        }
+        impl Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let Some(end) = address.checked_add(output.len()) else {
+                    return false;
+                };
+                if address < self.fault.end && end > self.fault.start {
+                    return false;
+                }
+                self.memory.copy(address, output)
+            }
+        }
+        let mut bytes = kit::fixture();
+        let status = kit::ST1 + cstate::BUILDING_STATUS;
+        let vector = status + cbuilding_status::BUILDINGS;
+        bytes[vector..vector + 8].copy_from_slice(&ASCII_FACTOR.to_le_bytes());
+        bytes[vector + 8..vector + 12].copy_from_slice(&1u32.to_le_bytes());
+        bytes[vector + 12..vector + 16].copy_from_slice(&1u32.to_le_bytes());
+        // Block the 12-byte status-identity span so the gather fails.
+        let blocked = kit::GAME_STATE + status + cbuilding_status::FLAGS;
+        let memory = Fault {
+            memory: SliceMemory {
+                base: kit::GAME_STATE,
+                bytes: &bytes,
+            },
+            fault: blocked..blocked + 1,
+        };
+        let capacities = split_capacities();
+        let direct = kit::direct(&memory, &capacities);
+        let (split, report, first) = kit::split(&memory, &capacities);
+        assert!(report.raw_ok);
+        kit::assert_matches_direct(&split, &direct);
+        assert!(matches!(
+            direct.state_buildings.outcome,
+            Outcome::Unavailable { .. }
+        ));
+        assert!(!first.log.spans.iter().any(|span| {
+            span.addr == ASCII_FACTOR as usize && span.addr != 0
+        }));
     }
 }

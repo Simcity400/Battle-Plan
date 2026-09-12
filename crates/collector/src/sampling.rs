@@ -1823,6 +1823,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     let mut second = needed_any.then(decode::acquire_buildings_job);
                     let buildings = frame.extended.buildings_pilot();
                     let ctx = extended::construction::BuildingsCopyContext {
+                        base: shared.base,
                         game_state: state,
                         needed: [
                             extended_needed[decode::BUILDINGS[0].index()],

@@ -31,6 +31,38 @@ fn record_count(
     Some(count)
 }
 
+/// x86-64 canonical range check for a guarded source span.
+///
+/// A user address is canonical when bits 63:48 equal bit 47 (low half
+/// `0x0000_...` or high half `0xFFFF_...`). Windows reports a fault on a
+/// noncanonical source as `ExceptionInformation[1] == -1`, which the C
+/// `copy_fault` filter cannot attribute to the requested range and would
+/// otherwise return `EXCEPTION_CONTINUE_SEARCH` (process crash). Gating here
+/// records the same graceful `false`/prefix failure the typed walk produces
+/// for an unreadable source, before any guarded instruction runs.
+///
+/// Empty spans succeed without a check, matching `Memory`. Overflow is
+/// reported by the caller's existing null/overflow path; this helper returns
+/// `false` for it as well so callers record a fault without touching memory.
+/// Both range ends must be canonical and in the same half; a span crossing
+/// the noncanonical gap is noncanonical even when both ends look canonical
+/// in isolation.
+#[inline]
+fn is_canonical_range(addr: usize, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let Some(end) = addr.checked_add(len.wrapping_sub(1)) else {
+        return false;
+    };
+    let high = |value: usize| value >> 47;
+    let canonical = |value: usize| {
+        let top = value >> 48;
+        top == 0 || top == 0xFFFF
+    };
+    canonical(addr) && canonical(end) && high(addr) == high(end)
+}
+
 /// Implementations fill the destination or return false; a failed copy may be partial.
 pub trait Memory {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool;
@@ -194,6 +226,13 @@ impl Memory for LiveMemory {
         if address == 0 || address.checked_add(destination.len()).is_none() {
             return false;
         }
+        // Noncanonical sources fault with ExceptionInformation[1] == -1, which
+        // the C filter cannot attribute to the requested range. Fail here with
+        // the same `false` an unreadable canonical source produces; the typed
+        // walk then reports its own site-specific reason instead of crashing.
+        if !is_canonical_range(address, destination.len()) {
+            return false;
+        }
         // SAFETY: destination is writable; C catches faults in the foreign source range.
         unsafe {
             seh_guarded_copy(
@@ -231,7 +270,9 @@ impl Memory for LiveMemory {
             .enumerate()
         {
             if !destination.is_empty()
-                && (address == 0 || address.checked_add(destination.len()).is_none())
+                && (address == 0
+                    || address.checked_add(destination.len()).is_none()
+                    || !is_canonical_range(address, destination.len()))
             {
                 break;
             }
@@ -289,11 +330,77 @@ impl Memory for LiveMemory {
         if count == 0 || fields.iter().all(|field| field.len == 0) {
             return count;
         }
+        // Contain noncanonical x86-64 sources before the guarded instruction.
+        // Scan in field order for the first null/overflow/noncanonical span:
+        // null/overflow are safe for C (it returns the prefix without touching
+        // memory), so only a first-blocker that is noncanonical needs Rust
+        // handling. In that case copy the canonical prefix field-by-field with
+        // the same completed-field semantics (empty counts, unreadable stops
+        // with partial allowed) and return without touching the noncanonical
+        // span. The common all-canonical path keeps the fast batched C call.
+        enum Blocker {
+            NullOverflow,
+            Noncanonical { row: usize, col: usize },
+        }
+        let mut first_blocker: Option<(usize, Blocker)> = None;
+        {
+            let mut completed = 0;
+            'scan: for (row, &pointer) in pointers.iter().enumerate() {
+                for (col, field) in fields.iter().enumerate() {
+                    if field.len != 0 {
+                        let Some(address) = pointer
+                            .checked_add(field.source_offset)
+                            .filter(|_| pointer != 0)
+                            .filter(|&address| address.checked_add(field.len).is_some())
+                        else {
+                            first_blocker = Some((completed, Blocker::NullOverflow));
+                            break 'scan;
+                        };
+                        if !is_canonical_range(address, field.len) {
+                            first_blocker = Some((completed, Blocker::Noncanonical { row, col }));
+                            break 'scan;
+                        }
+                    }
+                    completed += 1;
+                }
+            }
+        }
+        if let Some((fail_index, Blocker::Noncanonical { row, col })) = first_blocker {
+            let _ = fail_index;
+            // Copy the canonical prefix before (row, col) with identical
+            // prefix semantics; unreadable canonical spans stop gracefully.
+            let mut completed = 0;
+            for (r, &pointer) in pointers.iter().enumerate() {
+                for (c, field) in fields.iter().enumerate() {
+                    if r == row && c == col {
+                        return completed;
+                    }
+                    if field.len == 0 {
+                        completed += 1;
+                        continue;
+                    }
+                    // Safe: record_count validated every destination bound, and
+                    // the scan guarantees this address is canonical with no
+                    // overflow (null/overflow would have blocked first).
+                    let address = pointer.checked_add(field.source_offset).unwrap();
+                    let start = r * row_stride + field.destination_offset;
+                    let end = start + field.len;
+                    if !self.copy(address, &mut destination[start..end]) {
+                        return completed;
+                    }
+                    completed += 1;
+                }
+            }
+            return completed;
+        }
         // SAFETY: the two immutable metadata slices and initialized writable
         // destination outlive the call. RecordField has the C layout, and the
         // checked row count/stride and field bounds cover every destination.
         // C validates each nonempty source range and contains only faults in
         // the currently copied field, preserving its completed-field witness.
+        // The scan above guarantees no noncanonical source reaches C before a
+        // null/overflow stop; remaining noncanonical spans past such a stop
+        // are never touched.
         unsafe {
             seh_guarded_copy_records(
                 pointers.as_ptr(),
@@ -695,5 +802,98 @@ mod tests {
             assert_eq!(first[width..], [0xa5; 32][width..]);
             assert_eq!(later, [0xa5; 8]);
         }
+    }
+
+    #[test]
+    fn canonical_range_rejects_live_crash_vectors_and_keeps_valid_spans() {
+        // Owner-measured crash sources: ASCII "_factor\0" and "ts_facto" bytes
+        // read as pointers. Both are noncanonical (top bits nonzero while bit
+        // 47 is zero) and must fail pre-copy with the same outcome as an
+        // unreadable canonical source.
+        assert!(!is_canonical_range(0x0072_6f74_6361_665f, 8));
+        assert!(!is_canonical_range(0x6f74_6361_665f_7374, 8));
+        assert!(is_canonical_range(0x1_4000_0000, 8));
+        assert!(is_canonical_range(0xFFFF_8000_0000_0000, 8));
+        assert!(!is_canonical_range(0x0000_7FFF_FFFF_FFF0, 32));
+        assert!(is_canonical_range(0x2000, 0));
+        assert!(!is_canonical_range(usize::MAX - 3, 8));
+    }
+
+    #[test]
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    fn live_memory_rejects_noncanonical_sources_pre_copy() {
+        // SAFETY: noncanonical sources never reach the guarded instruction;
+        // the Rust gate returns `false`/prefix without dereferencing them.
+        // Canonical valid sources still copy; canonical unreadable (null page)
+        // still fails gracefully via the C shim.
+        let memory = unsafe { LiveMemory::new() };
+        let mut out = [0xa5; 8];
+        assert!(!memory.copy(0x0072_6f74_6361_665f, &mut out));
+        assert!(!memory.copy(0x6f74_6361_665f_7374, &mut out));
+        assert_eq!(out, [0xa5; 8]);
+        let source = 0x1234_5678_u64.to_le_bytes();
+        let mut valid = [0; 8];
+        assert!(memory.copy(source.as_ptr() as usize, &mut valid));
+        assert_eq!(valid, source);
+        // Scattered prefix stops at the noncanonical span with earlier fields
+        // intact, exactly like a null/overflow break.
+        let mut first = [0; 8];
+        let mut failed = [0xa5; 8];
+        let mut later = [0xa5; 8];
+        assert_eq!(
+            memory.copy_scattered(
+                [
+                    source.as_ptr() as usize,
+                    0x0072_6f74_6361_665f,
+                    source.as_ptr() as usize
+                ],
+                &mut [&mut first, &mut failed, &mut later],
+            ),
+            1
+        );
+        assert_eq!(first, source);
+        assert_eq!(failed, [0xa5; 8]);
+        assert_eq!(later, [0xa5; 8]);
+        // Records prefix stops at the noncanonical field with the same
+        // completed-field count the C validator returns for null/overflow,
+        // with the leading row's bytes preserved.
+        let fields = [RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: 8,
+        }];
+        let mut bytes = [0xa5; 16];
+        assert_eq!(
+            memory.copy_records(
+                &[source.as_ptr() as usize, 0x0072_6f74_6361_665f],
+                &fields[..1],
+                8,
+                &mut bytes
+            ),
+            1
+        );
+        assert_eq!(&bytes[..8], &source);
+        assert_eq!(&bytes[8..], &[0xa5; 8]);
+    }
+
+    #[test]
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    fn guarded_copy_handles_noncanonical_fault_address_gracefully() {
+        // Direct C containment proof for `copy_fault`'s `-1` path, bypassing
+        // the Rust gate. Before the fix this crashed with
+        // EXCEPTION_CONTINUE_SEARCH; after the fix it returns graceful
+        // failure (0). The Rust gate makes this path unreachable through
+        // `LiveMemory`/`take_inner`, so this test is the only caller that
+        // exercises the C `-1` branch directly.
+        unsafe extern "C" {
+            fn seh_guarded_copy(dst: *mut u8, src: *const u8, len: usize) -> i32;
+        }
+        let mut dst = [0xa5; 8];
+        // SAFETY: destination is valid stack memory; the noncanonical source
+        // is only touched by the guarded C copy, which handles the fault.
+        let result =
+            unsafe { seh_guarded_copy(dst.as_mut_ptr(), 0x0072_6f74_6361_665f as *const u8, 8) };
+        assert_eq!(result, 0);
+        assert_eq!(dst, [0xa5; 8]);
     }
 }

@@ -4034,6 +4034,7 @@ mod tests {
         let capacities = crate::extended::construction::Capacities::default();
         let direct = buildings_test_kit::direct(&memory, &capacities);
         let ctx = crate::extended::construction::BuildingsCopyContext {
+            base: buildings_test_kit::BASE,
             game_state: buildings_test_kit::GAME_STATE,
             needed: [true, true],
         };
