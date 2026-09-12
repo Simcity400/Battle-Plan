@@ -2532,8 +2532,9 @@ fn copy_map_pass(
 }
 
 /// Game-thread raw copy for one hour: all eight map-pack walks with
-/// independent censuses. Compares raw logs while any map-pack window needs
-/// checks.
+/// independent censuses. Compares per-table raw partitions while any
+/// map-pack window needs checks: shared fleet/task/naval roots gate their
+/// dependents, private spans only their own table.
 pub(crate) fn copy_map_refresh(
     memory: &impl engine::Memory,
     ctx: MapCopyContext,
@@ -2555,10 +2556,9 @@ pub(crate) fn copy_map_refresh(
         for (total, extra) in ticks.iter_mut().zip(second_ticks) {
             *total += extra;
         }
-        let equal = first.log.logs_equal(&second_job.log)
-            && !first.log.overflowed
-            && !second_job.log.overflowed;
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
         for (slot, matched) in matched.iter_mut().enumerate() {
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
             *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
     }
@@ -3041,10 +3041,10 @@ fn copy_players_pass(
 impl MapCaptured {
     /// Game-thread raw copy for an hourly refresh. Copies `first` always and
     /// `second` while either players table still needs double-read checks,
-    /// compares the raw logs, and records copy-only costs plus the existing
-    /// checked/mismatches bookkeeping. Returns whether the payload is
-    /// complete (`raw_ok`); on staging overflow the caller falls back to the
-    /// typed walk and enqueues nothing.
+    /// compares the per-table raw partitions, and records copy-only costs
+    /// plus the existing checked/mismatches bookkeeping. Returns whether the
+    /// payload is complete (`raw_ok`); on staging overflow the caller falls
+    /// back to the typed walk and enqueues nothing.
     pub(crate) fn copy_players_refresh(
         &mut self,
         memory: &impl engine::Memory,
@@ -3065,14 +3065,15 @@ impl MapCaptured {
             second_job.game_state = ctx.game_state;
             copy_players_pass(&mut second_job.log, memory, ctx.base, ctx.game_state);
             ticks[0] += elapsed(second_started);
-            let equal = first.log.logs_equal(&second_job.log)
-                && !first.log.overflowed
-                && !second_job.log.overflowed;
+            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
             for (slot, matched) in matched.iter_mut().enumerate() {
+                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
                 *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
             }
         }
         self.players.checked = ctx.needed[0];
+        // Binary per refresh: tearing detected (0/1), not a row count.
+        // Spool gates test `==0`/`!=0` only.
         self.players.mismatches = usize::from(ctx.needed[0] && !matched[0]);
         self.human_controllers.checked = ctx.needed[1];
         self.human_controllers.mismatches = usize::from(ctx.needed[1] && !matched[1]);
@@ -3400,6 +3401,43 @@ pub(crate) mod players_split_tests {
             GS,
         );
         assert!(!after.log.logs_equal(&after_torn.log));
+    }
+
+    #[test]
+    fn players_partition_equal_isolates_players_private_bytes() {
+        // Tear exactly the players table's private bytes (P_PLAYERS 0x01):
+        // only slot 0 flips; controllers (0x02) stay true. The two walks
+        // share no census spans, so partitions are fully independent.
+        let bytes = fixture();
+        let memory = SliceMemory {
+            base: GS,
+            bytes: &bytes,
+        };
+        let mut captured = MapCaptured::with_capacities(
+            &capacities(),
+            &[0; super::MAP_TABLES],
+            SourceChecks::default(),
+        );
+        let ctx = PlayersCopyContext {
+            base: BASE,
+            game_state: GS,
+            needed: [true, true],
+        };
+        let mut first = PlayersJob::new();
+        let mut second = PlayersJob::new();
+        let report = captured.copy_players_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true, true]);
+        let players_idx = second
+            .log
+            .spans
+            .iter()
+            .position(|span| span.ok && span.mask == 0x01)
+            .expect("players-private span");
+        let start = second.log.spans[players_idx].start as usize;
+        second.log.bytes[start] ^= 0xff;
+        assert!(!first.log.partition_equal(&second.log, 0));
+        assert!(first.log.partition_equal(&second.log, 1));
     }
 
     #[test]
@@ -4445,6 +4483,58 @@ mod tests {
         second.log.bytes[100] ^= 0xff;
         let equal = first.log.logs_equal(&second.log);
         assert!(!equal);
+    }
+
+    #[test]
+    fn map_partition_equal_isolates_land_private_bytes() {
+        use super::map_test_kit as kit;
+        use super::{MapCopyContext, MapJob};
+        // Tear exactly one table's private bytes (LAND_MASK 0x01): only
+        // the land slot flips; fleet/task/ship/naval/wing/order partitions
+        // share no spans with land and stay true.
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = MapCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+        };
+        let mut first = MapJob::new();
+        let mut second = MapJob::new();
+        let report = super::copy_map_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 8]);
+        let land_idx = second
+            .log
+            .spans
+            .iter()
+            .position(|span| span.ok && span.mask == 0x01)
+            .expect("land-private span");
+        let start = second.log.spans[land_idx].start as usize;
+        second.log.bytes[start] ^= 0xff;
+        for slot in 0..8 {
+            let equal = first.log.partition_equal(&second.log, slot);
+            if slot == 0 {
+                assert!(!equal, "land partition must flip");
+            } else {
+                assert!(equal, "slot {slot} must stay true");
+            }
+        }
+    }
+
+    #[test]
+    fn map_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero-cap / one-row / ample run typed AND copy-decode against
+        // the SAME memory with the SAME pooled caps, asserting identical
+        // outcome and identical rows per table.
+        use super::map_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for lens in [[0; 8], [1; 8], [64; 8]] {
+            let direct = kit::direct(&memory, lens);
+            let (split, report, _) = kit::split(&memory, lens);
+            assert!(report.raw_ok, "lens={lens:?}");
+            kit::assert_matches_direct(&split, &direct);
+        }
     }
 
     #[test]

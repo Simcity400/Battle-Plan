@@ -426,9 +426,12 @@ impl Captured {
             let second_started = qpc();
             copy_pass(memory, ctx.base, &mut second_job.log);
             ticks[0] += elapsed(second_started);
-            let equal =
-                first.log.logs_equal(&second_job.log) && !first.log.overflowed && !second_job.log.overflowed;
-            matched[0] = equal && !first.log.fault[0] && !second_job.log.fault[0];
+            // Single-table family: the one partition is the whole log.
+            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+            matched[0] = raw_ok_pair
+                && first.log.partition_equal(&second_job.log, 0)
+                && !first.log.fault[0]
+                && !second_job.log.fault[0];
         }
         self.rows.checked = needed;
         self.rows.mismatches = usize::from(needed && !matched[0]);

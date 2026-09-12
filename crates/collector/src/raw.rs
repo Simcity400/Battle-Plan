@@ -198,8 +198,80 @@ impl<const N: usize> RawLog<N> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn logs_equal(&self, other: &Self) -> bool {
         self.spans == other.spans && self.bytes == other.bytes
+    }
+
+    /// Per-partition equality for independently-walked tables. Compares only
+    /// the spans whose mask carries `slot`'s bit (shared census spans carry
+    /// several bits and gate every dependent partition; private spans carry
+    /// one bit and gate only their own). Byte contents compare per span, not
+    /// whole-pool, so tearing one table's private bytes flips only that
+    /// table's partition. `has_bulk` is log-level and must agree, otherwise
+    /// the bulk-serving mode differs and every partition disagrees.
+    /// Callers still gate each slot by its own live-fault bits:
+    /// `matched[slot] = partition_equal(slot) && !fault[slot]`.
+    pub fn partition_equal(&self, other: &Self, slot: usize) -> bool {
+        debug_assert!(slot < N, "partition slot out of range");
+        if slot >= N {
+            return false;
+        }
+        // Overflowed logs never compare equal per partition: the caller
+        // falls back to the typed walk and enqueues nothing.
+        if self.overflowed || other.overflowed {
+            return false;
+        }
+        if self.has_bulk != other.has_bulk {
+            return false;
+        }
+        let bit = 1u32 << slot;
+        // Filter in record order; the copy is deterministic so shared and
+        // private spans interleave identically when the underlying bytes do.
+        let mut left_count = 0usize;
+        let mut right_count = 0usize;
+        for span in &self.spans {
+            if span.mask & bit != 0 {
+                left_count += 1;
+            }
+        }
+        for span in &other.spans {
+            if span.mask & bit != 0 {
+                right_count += 1;
+            }
+        }
+        if left_count != right_count {
+            return false;
+        }
+        let mut left_iter = self.spans.iter().filter(|span| span.mask & bit != 0);
+        let mut right_iter = other.spans.iter().filter(|span| span.mask & bit != 0);
+        loop {
+            match (left_iter.next(), right_iter.next()) {
+                (None, None) => return true,
+                (Some(left), Some(right)) => {
+                    if left.addr != right.addr
+                        || left.len != right.len
+                        || left.ok != right.ok
+                        || left.mask != right.mask
+                        || left.bulk != right.bulk
+                    {
+                        return false;
+                    }
+                    if left.ok {
+                        let left_bytes = self
+                            .bytes
+                            .get(left.start as usize..left.start as usize + left.len as usize);
+                        let right_bytes = other
+                            .bytes
+                            .get(right.start as usize..right.start as usize + right.len as usize);
+                        if left_bytes != right_bytes {
+                            return false;
+                        }
+                    }
+                }
+                _ => return false,
+            }
+        }
     }
 }
 
@@ -445,5 +517,86 @@ mod tests {
         assert!(recorded.copy(0x1000, &mut out));
         assert_eq!(out, [9, 3, 3, 3]);
         assert!(!recorded.copy(0x2000, &mut out));
+    }
+
+    #[test]
+    fn partition_equal_isolates_private_bytes_and_shares_census() {
+        let bytes = [5u8; 64];
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut first = RawLog::<2>::new(8, 64);
+        let mut second = RawLog::<2>::new(8, 64);
+        // Shared census span (both bits) plus one private span per slot.
+        first.take(&memory, 0x1000, 4, 0x03);
+        first.take(&memory, 0x1010, 4, 0x01);
+        first.take(&memory, 0x1020, 4, 0x02);
+        second.take(&memory, 0x1000, 4, 0x03);
+        second.take(&memory, 0x1010, 4, 0x01);
+        second.take(&memory, 0x1020, 4, 0x02);
+        assert!(first.partition_equal(&second, 0));
+        assert!(first.partition_equal(&second, 1));
+        // Tear slot 1's private bytes: only slot 1 flips.
+        let private_start = second.spans[2].start as usize;
+        second.bytes[private_start] ^= 0xff;
+        assert!(first.partition_equal(&second, 0));
+        assert!(!first.partition_equal(&second, 1));
+        assert!(!first.logs_equal(&second));
+        // Tear the shared census: both partitions flip.
+        let census_start = second.spans[0].start as usize;
+        second.bytes[census_start] ^= 0xff;
+        // Slot 0 still compares its private span equal, but the shared
+        // census differs, so slot 0 now disagrees as well.
+        assert!(!first.partition_equal(&second, 0));
+        assert!(!first.partition_equal(&second, 1));
+    }
+
+    #[test]
+    fn bulk_spans_serve_enclosed_unaligned_sub_ranges() {
+        // S3: moved walks issue bulk copies (session 0x34/0x40 headers,
+        // players 64 B string pairs, map order vectors) wider than the
+        // walk's scattered reads (4 B keys, 8 B words, 1 B flags inside).
+        // `Recorded` serves any request fully enclosed in one bulk span,
+        // including deliberately unaligned sub-ranges; exact-only logs
+        // fail the same requests. Bulk wins for sub-ranges: small exact
+        // spans never shadow an enclosing bulk chunk.
+        let mut bytes = [0u8; 128];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = (index & 0xff) as u8;
+        }
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut log = RawLog::<1>::new(8, 128);
+        log.has_bulk = true;
+        // Bulk chunk covering 0x1000..0x1040, plus an exact span elsewhere.
+        log.take_bulk(&memory, 0x1000, 64, 0x01);
+        log.take(&memory, 0x1060, 8, 0x01);
+        let recorded = Recorded::build(&log);
+        // Aligned sub-range inside the bulk chunk.
+        let mut out = [0u8; 8];
+        assert!(recorded.copy(0x1008, &mut out));
+        assert_eq!(out, bytes[8..16]);
+        // Deliberately unaligned overlapping sub-range (addr+3, len 7).
+        let mut unaligned = [0u8; 7];
+        assert!(recorded.copy(0x1003, &mut unaligned));
+        assert_eq!(unaligned, bytes[3..10]);
+        // Single byte at the very end of the bulk chunk.
+        let mut tail = [0u8; 1];
+        assert!(recorded.copy(0x103f, &mut tail));
+        assert_eq!(tail, [bytes[63]]);
+        // Straddling the bulk edge fails (not fully enclosed).
+        let mut straddle = [0u8; 8];
+        assert!(!recorded.copy(0x103c, &mut straddle));
+        // Exact span still serves its own range.
+        let mut exact = [0u8; 8];
+        assert!(recorded.copy(0x1060, &mut exact));
+        // Without bulk, the same sub-range requests fail (exact-only).
+        let mut plain = RawLog::<1>::new(8, 128);
+        plain.take(&memory, 0x1000, 64, 0x01);
+        let plain_recorded = Recorded::build(&plain);
+        assert!(!plain_recorded.copy(0x1008, &mut out));
     }
 }

@@ -557,10 +557,10 @@ fn copy_pass(memory: &impl engine::Memory, base: usize, game_state: usize, log: 
 impl Captured {
     /// Game-thread raw copy for an hourly refresh. Copies `first` always and
     /// `second` while any table still needs double-read checks, compares the
-    /// raw logs, and records copy-only costs plus the existing
-    /// checked/mismatches bookkeeping. Returns whether the payload is
-    /// complete (`raw_ok`); on staging overflow the caller falls back to the
-    /// typed walk and enqueues nothing.
+    /// per-table raw partitions, and records copy-only costs plus the
+    /// existing checked/mismatches bookkeeping. Returns whether the payload
+    /// is complete (`raw_ok`); on staging overflow the caller falls back to
+    /// the typed walk and enqueues nothing.
     pub(crate) fn copy_session_refresh(
         &mut self,
         memory: &impl engine::Memory,
@@ -581,13 +581,17 @@ impl Captured {
             second_job.game_state = ctx.game_state;
             copy_pass(memory, ctx.base, ctx.game_state, &mut second_job.log);
             ticks[0] += elapsed(second_started);
-            let equal = first.log.logs_equal(&second_job.log)
-                && !first.log.overflowed
-                && !second_job.log.overflowed;
+            // Three-way partition equality: manager spans (M_ALL) gate all
+            // three slots, sources/aggregates private spans only their own.
+            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
             for (slot, matched) in matched.iter_mut().enumerate() {
+                let equal =
+                    raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
                 *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
             }
         }
+        // Binary per refresh per table: tearing detected (0/1), not a row
+        // count. Spool gates test `==0`/`!=0` only.
         self.manager.checked = ctx.needed[0];
         self.manager.mismatches = usize::from(ctx.needed[0] && !matched[0]);
         self.sources.checked = ctx.needed[1];
@@ -1000,6 +1004,35 @@ mod tests {
     }
 
     #[test]
+    fn session_partition_equal_isolates_sources_private_bytes() {
+        // Tear exactly the sources table's private bytes (M_SOURCES 0x02):
+        // only slot 1 flips; manager (M_ALL) and aggregates (0x04) stay
+        // true. The manager header gates all three, but sources-private
+        // payloads gate only sources.
+        let capacities = split_capacities();
+        let bytes = fixture();
+        let memory = SliceMemory { base: BASE, bytes: &bytes };
+        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let ctx = SessionCopyContext { base: 0, game_state: BASE, needed: [true; N] };
+        let mut first = SessionJob::new();
+        let mut second = SessionJob::new();
+        let report = captured.copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 3]);
+        let sources_idx = second
+            .log
+            .spans
+            .iter()
+            .position(|span| span.ok && span.mask == 0x02)
+            .expect("sources-private span");
+        let start = second.log.spans[sources_idx].start as usize;
+        second.log.bytes[start] ^= 0xff;
+        assert!(first.log.partition_equal(&second.log, 0));
+        assert!(!first.log.partition_equal(&second.log, 1));
+        assert!(first.log.partition_equal(&second.log, 2));
+    }
+
+    #[test]
     fn session_staging_overflow_falls_back_to_typed_walk() {
         let capacities = split_capacities();
         let bytes = fixture();
@@ -1024,5 +1057,34 @@ mod tests {
         let capacities = Capacities::default();
         assert!(capacities.rows[1] >= 1024);
         assert!(capacities.reason_bytes >= 128 * 1024);
+    }
+
+    #[test]
+    fn session_bulk_header_serves_enclosed_length_word() {
+        // S3 containment: the 32 B reason-string header is a bulk span, so
+        // the walk's enclosed 8 B length/terminator reads inside it are
+        // served from the same recorded bytes (raw.rs bulk rule). Proves
+        // the sspan containment claim with overlapping/unaligned sub-reads.
+        let bytes = fixture();
+        let memory = SliceMemory { base: BASE, bytes: &bytes };
+        let mut job = SessionJob::new();
+        copy_pass(&memory, 0, BASE, &mut job.log);
+        assert!(job.log.has_bulk);
+        let recorded = crate::raw::Recorded::build(&job.log);
+        // Find a 32 B bulk header span and read an enclosed 8 B word at an
+        // unaligned offset inside it.
+        let header = job
+            .log
+            .spans
+            .iter()
+            .find(|span| span.ok && span.bulk && span.len == 32)
+            .expect("bulk string header");
+        let mut word = [0u8; 8];
+        assert!(recorded.copy(header.addr + 3, &mut word));
+        let mut expected = [0u8; 8];
+        expected.copy_from_slice(
+            &bytes[header.addr - BASE + 3..header.addr - BASE + 11],
+        );
+        assert_eq!(word, expected);
     }
 }

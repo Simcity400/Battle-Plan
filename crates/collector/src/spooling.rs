@@ -991,6 +991,45 @@ impl Processor {
             stats.table_ns[decode::CONSTRUCTION_REST[8].index()],
             stats.table_ns[decode::CONSTRUCTION_REST[9].index()],
         ];
+        // Map-pack coupled unit, wing-fed air pair, source-fed naval block,
+        // players pair and session family: game-thread copy-only mirrors.
+        // Each mirrors its `table_ns` slots (copy-only ns for moved
+        // families; `decode_ns` lives in the decode calibration, so this is
+        // not comparable across threads — see the PLAN appendix).
+        let map_copy_ns = [
+            stats.table_ns[decode::MAP_PACK[0].index()],
+            stats.table_ns[decode::MAP_PACK[1].index()],
+            stats.table_ns[decode::MAP_PACK[2].index()],
+            stats.table_ns[decode::MAP_PACK[3].index()],
+            stats.table_ns[decode::MAP_PACK[4].index()],
+            stats.table_ns[decode::MAP_PACK[5].index()],
+            stats.table_ns[decode::MAP_PACK[6].index()],
+            stats.table_ns[decode::MAP_PACK[7].index()],
+        ];
+        let air_wing_copy_ns = [
+            stats.table_ns[decode::AIR_WING[0].index()],
+            stats.table_ns[decode::AIR_WING[1].index()],
+        ];
+        let naval_copy_ns = [
+            stats.table_ns[decode::NAVAL_ORDER[0].index()],
+            stats.table_ns[decode::NAVAL_ORDER[1].index()],
+            stats.table_ns[decode::NAVAL_ORDER[2].index()],
+            stats.table_ns[decode::NAVAL_ORDER[3].index()],
+            stats.table_ns[decode::NAVAL_ORDER[4].index()],
+            stats.table_ns[decode::NAVAL_ORDER[5].index()],
+            stats.table_ns[decode::NAVAL_ORDER[6].index()],
+            stats.table_ns[decode::NAVAL_ORDER[7].index()],
+            stats.table_ns[decode::NAVAL_ORDER[8].index()],
+        ];
+        let players_copy_ns = [
+            stats.table_ns[decode::PLAYERS[0].index()],
+            stats.table_ns[decode::PLAYERS[1].index()],
+        ];
+        let session_copy_ns = [
+            stats.table_ns[decode::SESSION[0].index()],
+            stats.table_ns[decode::SESSION[1].index()],
+            stats.table_ns[decode::SESSION[2].index()],
+        ];
         let value = json!({
             "campaign": stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
             "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
@@ -1012,6 +1051,11 @@ impl Processor {
             "war_matrix_failures": stats.war_matrix_failures,
             "war_matrix_cost": stats.war_matrix_cost.json(),
             "shared_read_groups": crate::extended::read_groups().into_iter().map(|(name, anchor, members)| {
+                // Game-thread copy-only for moved families: `table_ns` for
+                // moved tables carries copy ns only, while `decode_ns`
+                // lives in the decode calibration (`runtime` status). Do not
+                // compare `shared_read_groups` totals across moved vs unmoved
+                // families (PLAN-appendix apples-to-oranges).
                 let total_ns: u64 = members.iter().map(|table| stats.table_ns[table.index()]).sum();
                 json!({"name": name, "anchor": format!("{anchor:?}"),
                     "members": members.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>(),
@@ -1047,7 +1091,10 @@ impl Processor {
         });
         // Copy/decode splits: per-frame copy-only nanoseconds per moved
         // family, mirroring the game-thread `table_ns` slots. Monotonic
-        // decode totals live in the runtime status instead. Inserted outside
+        // decode totals live in the runtime status instead. `table_ns` for
+        // moved families is game-thread copy-only (decode lives in the
+        // calibration); do not compare copy ns against decode ns across
+        // threads (PLAN-appendix apples-to-oranges). Inserted outside
         // the status `json!` so the macro stays under its recursion limit as
         // families move over.
         let mut value = value;
@@ -1063,6 +1110,11 @@ impl Processor {
         value["focus_copy_ns"] = json!(focus_copy_ns.as_slice());
         value["production_rest_copy_ns"] = json!(production_rest_copy_ns.as_slice());
         value["construction_rest_copy_ns"] = json!(construction_rest_copy_ns.as_slice());
+        value["map_copy_ns"] = json!(map_copy_ns.as_slice());
+        value["air_wing_copy_ns"] = json!(air_wing_copy_ns.as_slice());
+        value["naval_copy_ns"] = json!(naval_copy_ns.as_slice());
+        value["players_copy_ns"] = json!(players_copy_ns.as_slice());
+        value["session_copy_ns"] = json!(session_copy_ns.as_slice());
         value
     }
 }
@@ -1573,8 +1625,28 @@ mod tests {
         processor.stats.table_ns[replay::rows::TableId::ResearchTechnologies.index()] = 11;
         processor.stats.table_ns[replay::rows::TableId::ResearchSlots.index()] = 22;
         processor.stats.table_ns[replay::rows::TableId::TechnologyDefinitions.index()] = 33;
+        processor.stats.table_ns[replay::rows::TableId::LandCombats.index()] = 101;
+        processor.stats.table_ns[replay::rows::TableId::WingEquipment.index()] = 201;
+        processor.stats.table_ns[replay::rows::TableId::LandTheatres.index()] = 301;
+        processor.stats.table_ns[replay::rows::TableId::Players.index()] = 401;
+        processor.stats.table_ns[replay::rows::TableId::WorldTension.index()] = 501;
+        // war_matrix dual-homing: owned walk in table_ns, matrix census in
+        // the dedicated stat (sampling.rs copy ticks, spooling mirror,
+        // stats.war_matrix_ns). Both advance together.
+        processor.stats.table_ns[replay::rows::TableId::WarRelations.index()] = 601;
+        processor.stats.war_matrix_ns = 602;
         let status = processor.status();
         assert_eq!(status["research_copy_ns"], json!([11, 22, 33]));
+        assert_eq!(status["wars_copy_ns"], json!([601, 602]));
+        // New game-thread copy-only mirrors for the coupled unit, air,
+        // naval, players and session families.
+        assert_eq!(status["map_copy_ns"][0], json!(101));
+        assert_eq!(status["map_copy_ns"].as_array().unwrap().len(), 8);
+        assert_eq!(status["air_wing_copy_ns"], json!([201, 0]));
+        assert_eq!(status["naval_copy_ns"][0], json!(301));
+        assert_eq!(status["naval_copy_ns"].as_array().unwrap().len(), 9);
+        assert_eq!(status["players_copy_ns"], json!([401, 0]));
+        assert_eq!(status["session_copy_ns"], json!([501, 0, 0]));
         // Existing keys survive the additive merge.
         assert!(status["table_ns"].is_array());
         assert_eq!(status["hours"], 0);
@@ -2667,5 +2739,58 @@ mod tests {
             ),
             "new branch must not carry stale rows"
         );
+    }
+
+    #[test]
+    fn truncated_decode_forces_snapshot_next_refresh() {
+        // B3: a truncated refresh (as produced by a copy→decode payload
+        // with pooled caps smaller than the census) clears the encoder
+        // baseline, so the next refresh of that table is a snapshot —
+        // never unchanged/delta off a cleared baseline. Extends the
+        // hand-built-frame pattern with decode-payload shapes: first frame
+        // carries Truncated (rows + missing), second carries the full rows.
+        use replay::frame::{FrameDecoder, TableUpdate};
+        use replay::rows::TableId;
+        let (mut campaign, _) = campaign();
+        let branch = 3;
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        // First refresh: WorldTension truncated (1 row kept, 2 missing),
+        // as a decode payload with tiny pooled caps would emit. Precede it
+        // with a Complete frame so the truncation lands off-keyframe
+        // (branch-start keyframes refuse truncated tables by design).
+        let mut base = staggered_frame(branch, 10, false);
+        campaign.apply_staggered_cache(&mut base);
+        let base_frame = encoder.encode(base.clone(), false).unwrap();
+        decoder.apply(&base_frame).unwrap();
+        let mut first = staggered_frame(branch, 11, false);
+        first.tables[TableId::WorldTension.index()] = TableView::Truncated {
+            rows: TableRows::WorldTension(vec![replay::rows::WorldTensionRow::default()]),
+            missing: 2,
+        };
+        campaign.apply_staggered_cache(&mut first);
+        let frame = encoder.encode(first.clone(), false).unwrap();
+        assert!(
+            matches!(
+                frame.tables[TableId::WorldTension.index()],
+                TableUpdate::Truncated { .. }
+            ),
+            "truncated refresh must encode as truncated, got {:?}",
+            frame.tables[TableId::WorldTension.index()]
+        );
+        assert_eq!(decoder.apply(&frame).unwrap(), first);
+        // Second refresh: full rows. Must be a snapshot (baseline was
+        // cleared by the truncation), never unchanged/delta.
+        let mut second = staggered_frame(branch, 12, false);
+        campaign.apply_staggered_cache(&mut second);
+        let frame = encoder.encode(second.clone(), false).unwrap();
+        assert!(
+            matches!(
+                frame.tables[TableId::WorldTension.index()],
+                TableUpdate::Snapshot(_)
+            ),
+            "post-truncation refresh must be a snapshot, not delta/unchanged"
+        );
+        assert_eq!(decoder.apply(&frame).unwrap(), second);
     }
 }

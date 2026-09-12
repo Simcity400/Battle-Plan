@@ -2065,6 +2065,8 @@ impl Captured {
                 matched[index] = equal[index] && !live_fault[index];
             }
         }
+        // Binary per refresh per table: tearing detected (0/1), not a row
+        // count. Spool gates test `==0`/`!=0` only.
         self.relation_opinions.checked = needed[0];
         self.relation_opinions.mismatches = usize::from(needed[0] && !matched[0]);
         self.relation_tuples.checked = needed[1];
@@ -3337,6 +3339,25 @@ mod tests {
         let mut intel = relations_kit::intel_captured(1, 1);
         let (_, _) = relations_kit::split(&memory, &mut intel, true);
         relations_kit::assert_matches_direct(&intel, &direct);
+    }
+
+    #[test]
+    fn relations_truncation_matrix_matches_direct_with_skipped_boundary() {
+        // B3: zero/one/exact/ample tuple caps run typed AND copy-decode
+        // against the SAME memory with the SAME pooled caps, asserting
+        // identical outcome (incl. unread_rows) and identical rows. The
+        // opinionated fixture interleaves war/subject (skipped) with
+        // emitted tuples; caps that fill before a skipped vs before an
+        // emitted element must agree on unread_rows because skipped
+        // reservations are released identically on both paths.
+        let bytes = relations_kit::opinionated_fixture();
+        let memory = relations_kit::memory(&bytes);
+        for (opinion_cap, tuple_cap) in [(0, 0), (1, 1), (2, 2), (64, 64)] {
+            let direct = relations_kit::direct(&memory, opinion_cap, tuple_cap);
+            let mut intel = relations_kit::intel_captured(opinion_cap, tuple_cap);
+            let (_, _) = relations_kit::split(&memory, &mut intel, true);
+            relations_kit::assert_matches_direct(&intel, &direct);
+        }
     }
 
     #[test]

@@ -2606,6 +2606,8 @@ impl Captured {
                 matched[index] = equal[index] && !live_fault[index];
             }
         }
+        // Binary per refresh per table: tearing detected (0/1), not a row
+        // count. Spool gates test `==0`/`!=0` only.
         self.technologies.checked = needed[0];
         self.technologies.mismatches = usize::from(needed[0] && !matched[0]);
         self.slots.checked = needed[1];
@@ -3191,8 +3193,9 @@ fn copy_focus_pass(
 
 impl Captured {
     /// Game-thread raw copy for one hour: shared census plus every country's
-    /// summary and completed takes. Compares raw logs while either focus
-    /// table still needs double-read checks.
+    /// summary and completed takes. Compares per-table raw partitions while
+    /// either focus table still needs double-read checks: the shared census
+    /// gates both slots, focus/completed private spans only their own.
     pub(crate) fn copy_focus_refresh(
         &mut self,
         memory: &impl engine::Memory,
@@ -3208,13 +3211,15 @@ impl Captured {
             let mut second_ticks = [0u64; 2];
             copy_focus_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
             ticks[0] += second_ticks[0];
-            let equal = first.log.logs_equal(&second_job.log)
-                && !first.log.overflowed
-                && !second_job.log.overflowed;
+            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
             for (slot, matched) in matched.iter_mut().enumerate() {
+                let equal =
+                    raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
                 *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
             }
         }
+        // Binary per refresh per table: tearing detected (0/1), not a row
+        // count. Spool gates test `==0`/`!=0` only.
         self.focus.checked = needed[0];
         self.focus.mismatches = usize::from(needed[0] && !matched[0]);
         self.completed.checked = needed[1];
@@ -4881,6 +4886,29 @@ mod tests {
             &mut torn_ticks,
         );
         assert!(!after.log.logs_equal(&after_torn.log));
+        // Per-partition isolation: tearing a focus-private span flips only
+        // slot 0; the completed partition (slot 1) still agrees.
+        let focus_idx = after
+            .log
+            .spans
+            .iter()
+            .position(|span| span.ok && span.mask == 0x01)
+            .expect("focus-private span");
+        let mut second_torn = FocusJob::new();
+        let mut second_ticks = [0; 2];
+        copy_focus_pass(
+            &mut second_torn,
+            &memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            &mut second_ticks,
+        );
+        let start = second_torn.log.spans[focus_idx].start as usize;
+        // Align by span order: both logs took the same sequence, so the
+        // same index addresses the same logical read.
+        second_torn.log.bytes[start] ^= 0xff;
+        assert!(!after.log.partition_equal(&second_torn.log, 0));
+        assert!(after.log.partition_equal(&second_torn.log, 1));
         // Identical images agree byte-for-byte.
         let mut repeat = FocusJob::new();
         let mut repeat_ticks = [0; 2];

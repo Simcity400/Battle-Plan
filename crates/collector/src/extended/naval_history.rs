@@ -2059,10 +2059,12 @@ pub(crate) fn copy_naval_refresh(
         for (total, extra) in ticks.iter_mut().zip(second_ticks) {
             *total += extra;
         }
-        let equal = first.log.logs_equal(&second_job.log)
-            && !first.log.overflowed
-            && !second_job.log.overflowed;
+        // Per-table partitions: shared theatre/order roots gate their
+        // dependents, private spans only their own table.
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
         for (slot, matched) in matched.iter_mut().enumerate() {
+            let equal =
+                raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
             *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
     }

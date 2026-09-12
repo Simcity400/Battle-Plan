@@ -20,7 +20,10 @@
 //! payload jobs are bounded and recycled, never pool memory), so an owned
 //! buffer guarantees a free slot exactly as the spool ready queue does today.
 //! A full queue takes the existing whole-frame drop plus `LossBatch` gap path
-//! with the existing counters and reason strings.
+//! with the existing counters and reason strings. This is distinct from
+//! staging overflow (pooled span/byte caps exceeded during the copy): that
+//! falls back to the typed walk on the game thread with identical rows
+//! (`raw_ok=false`, enqueues nothing) and records no gap.
 //!
 //! Queue sizing (analytic, provisional until live calibration): the FIFO depth
 //! equals the buffer pool (`BUFFERS` = 256 indices, ~2 KiB). Raw payloads are
@@ -34,12 +37,21 @@
 //! refresh per 4 game hours (hundreds of milliseconds at speed 5) against an
 //! expected decode cost in the tens of milliseconds, so the steady-state queue
 //! depth is ~1; depth 2 absorbs stalls and anything beyond drops through the
-//! existing gap path. Live measurement (not this change) confirms or resizes.
+//! existing queue-full gap path (not the staging-overflow typed fallback).
+//! Live measurement (not this change) confirms or resizes.
 //!
 //! Calibration: per-pilot-table copy ns, decode ns and raw bytes are monotonic
 //! additive counters readable from status (`calibration_json`, merged into the
 //! runtime status additively). Per-frame copy-only ns also stays in the
 //! existing `table_ns` slots for the pilot tables.
+//!
+//! Counter semantics: `JOBS` counts every FIFO item enqueued (one per frame,
+//! including skip-hour ordering placeholders that carry no payload).
+//! `REFRESH_JOBS` counts every family-refresh payload decoded (one per moved
+//! family per refresh hour, so several increments per frame when families
+//! coincide). `FULL_REFRESH_JOBS` counts frames with `force_full` set.
+//! `DROPS` counts queue-full whole-frame drops (the `LossBatch` gap path),
+//! never staging overflows (those take the typed fallback with no gap).
 
 use crate::{
     extended::{
@@ -2996,8 +3008,11 @@ mod tests {
         // and 7480 upgrades; buildings 2941 + 5220 rows; wars 535 relations
         // over 439 countries; divisions 2843 with 17364 equipment rows and
         // about 4000 upgrade rows. Every cap below must exceed its shape's
-        // span/byte cost so staging overflow — which takes the existing
-        // whole-frame gap branch — never triggers in steady state. A
+        // span/byte cost so staging overflow — which falls back to the typed
+        // walk with identical rows (`raw_ok=false`, enqueues nothing, no gap)
+        // — never triggers in steady state. This is distinct from a full
+        // decode queue, which takes the existing whole-frame drop plus
+        // `LossBatch` gap path. A
         // force-full hour stages every family at once; the combined live set
         // stays under half the measured 513 MB pool peak (per-capture
         // reports), so the split never exceeds the memory it replaces.

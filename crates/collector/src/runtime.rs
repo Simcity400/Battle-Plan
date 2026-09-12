@@ -554,12 +554,19 @@ fn set_drain_status(status: &mut Value, result: &Result<(), String>) {
 }
 
 /// Additive decode-worker calibration for status. Existing keys survive; the
-/// counters are monotonic since attach (see `crate::decode`).
+/// counters are monotonic since attach (see `crate::decode`). `table_ns`
+/// for moved families is game-thread copy-only; `decode_ns` lives here, so
+/// the two are not comparable across threads (PLAN-appendix
+/// apples-to-oranges).
 fn add_decode_status(status: &mut Value) {
     if !status.is_object() {
         *status = json!({});
     }
-    status["research_decode"] = decode::calibration_json();
+    // Canonical key is `decode_calibration`; `research_decode` stays as a
+    // backward-compatible alias (same object) for existing consumers.
+    let calibration = decode::calibration_json();
+    status["decode_calibration"] = calibration.clone();
+    status["research_decode"] = calibration;
 }
 
 fn wait_quiet(
@@ -1001,5 +1008,8 @@ mod tests {
             status["research_decode"]["tables"][2],
             "TechnologyDefinitions"
         );
+        // Canonical key plus backward-compatible alias carry the same object.
+        assert!(status["decode_calibration"].is_object());
+        assert_eq!(status["decode_calibration"], status["research_decode"]);
     }
 }

@@ -1491,10 +1491,12 @@ impl Captured {
             second_job.game_state = ctx.game_state;
             copy_production_rest_pass(memory, ctx.base, ctx.game_state, second_job);
             ticks[0] += elapsed(second_started);
-            let equal = first.log.logs_equal(&second_job.log)
-                && !first.log.overflowed
-                && !second_job.log.overflowed;
+            // Per-table partitions: shared roots gate their dependents,
+            // private spans only their own table.
+            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
             for (slot, matched) in matched.iter_mut().enumerate() {
+                let equal =
+                    raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
                 *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
             }
         }
@@ -2379,9 +2381,12 @@ impl Captured {
                 }
             }
             ticks[0] += elapsed(second_started);
-            let equal =
-                first.log.logs_equal(&second_job.log) && !first.log.overflowed && !second_job.log.overflowed;
+            // Per-table partitions: shared registry spans gate every detail
+            // slot, per-variant detail spans only their own table.
+            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
             for (slot, matched) in matched.iter_mut().enumerate() {
+                let equal =
+                    raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
                 *matched =
                     first_ok && equal && !first.log.fault[slot] && !second_job.log.fault[slot];
             }

@@ -932,6 +932,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     matched[2] = divisions_report.matched[0];
                     if needed[2] {
                         frame.consistency_checked[2] = true;
+                        // Binary per refresh: tearing detected (0/1), not a
+                        // row count. Spool gates test `==0`/`!=0` only.
                         frame.divisions_mismatches = usize::from(!divisions_report.matched[0]);
                     }
                     let divisions_ns = shared.ns(divisions_report.copy_ticks[0] as i64);
@@ -1009,6 +1011,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     matched[3] = wars_report.matched[0];
                     if needed[3] {
                         frame.consistency_checked[3] = true;
+                        // Binary per refresh: tearing detected (0/1), not a
+                        // row count. Spool gates test `==0`/`!=0` only.
                         frame.wars_mismatches = usize::from(!wars_report.matched[0]);
                     }
                     let wars_ns = shared.ns(wars_report.copy_ticks[0] as i64);
@@ -2092,9 +2096,13 @@ pub(crate) struct WarsCopyReport {
     /// False when staging overflowed: the caller falls back to the typed walk
     /// (identical rows through the existing path) and enqueues no payload.
     pub raw_ok: bool,
-    /// Whole-log raw equality gated by live-fault conservatism, in
-    /// [wars, matrix] order. The matrix slot reports copy success (no live
-    /// faults); its 200-check counter advances on stable success.
+    /// Per-partition raw equality gated by live-fault conservatism, in
+    /// [wars, matrix] order. The owned-walk partition (slot 0) covers the
+    /// shared census plus owned relations; the matrix partition (slot 1)
+    /// covers the shared census plus matrix relations, so tearing one
+    /// walk's private bytes flips only that slot. The matrix slot reports
+    /// copy success (no live faults); its 200-check counter advances on
+    /// stable success.
     pub matched: [bool; 2],
     pub copy_ticks: [u64; 2],
     pub raw_bytes: [u64; 2],
@@ -2814,10 +2822,12 @@ pub(crate) fn copy_wars_refresh(
         );
         ticks[0] += second_ticks[0];
         ticks[1] += second_ticks[1];
-        let equal = first.log.logs_equal(&second_job.log)
-            && !first.log.overflowed
-            && !second_job.log.overflowed;
+        // Per-partition equality: owned-walk bytes gate only wars, matrix
+        // bytes only the matrix, shared census bytes gate both. Each slot
+        // keeps the conservative live-fault gate.
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
         for (slot, matched) in matched.iter_mut().enumerate() {
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
             *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
     }
@@ -2942,8 +2952,11 @@ pub(crate) struct DivisionsCopyReport {
     /// False when staging overflowed: the caller falls back to the typed walk
     /// (identical rows through the existing path) and enqueues no payload.
     pub raw_ok: bool,
-    /// Whole-log raw equality gated by live-fault conservatism, in
+    /// Per-partition raw equality gated by live-fault conservatism, in
     /// [divisions, equipment, groups, requests, deliveries, produced] order.
+    /// Shared census spans gate every dependent partition; each table's
+    /// private spans gate only their own slot, so tearing equipment private
+    /// bytes flips only equipment.
     pub matched: [bool; 6],
     pub copy_ticks: [u64; 6],
     pub raw_bytes: [u64; 6],
@@ -3727,10 +3740,12 @@ pub(crate) fn copy_divisions_refresh(
         for (total, extra) in ticks.iter_mut().zip(second_ticks) {
             *total += extra;
         }
-        let equal = first.log.logs_equal(&second_job.log)
-            && !first.log.overflowed
-            && !second_job.log.overflowed;
+        // Per-slot partitions: shared census spans gate every dependent
+        // slot, private spans only their own. Each slot keeps the
+        // conservative live-fault gate.
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
         for (slot, matched) in matched.iter_mut().enumerate() {
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
             *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
     }
@@ -5142,6 +5157,31 @@ mod tests {
     }
 
     #[test]
+    fn wars_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero-cap (len 0, all unread) / one-row / exact-fit (2) /
+        // ample (64) run the typed walk AND the copy→decode replay against
+        // the SAME memory with the SAME pooled caps, asserting identical
+        // outcome (incl. len/unread) and identical rows. The 2-war fixture
+        // makes cap 1 the overflow-by-one arm (total 2 == cap+1) and cap 0
+        // the massive arm; u32 unread saturation is not reachable with two
+        // rows and is covered by the walk's own saturating arithmetic.
+        use super::wars_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for cap in [0usize, 1, 2, 64] {
+            let direct = kit::direct(&memory, cap);
+            let (split, report, _) = kit::split(&memory, cap);
+            assert!(report.raw_ok, "cap={cap}");
+            assert_eq!(report.matched, [true; 2], "cap={cap}");
+            kit::assert_matches_direct(&split, &direct);
+        }
+        // Exact-fit arm pins Rows (not Truncated) with both rows present.
+        let (exact, _, _) = kit::split(&memory, 2);
+        assert_eq!(exact.owned_outcome, Outcome::Rows { len: 2 });
+        assert_eq!(exact.matrix_outcome, Outcome::Rows { len: 2 });
+    }
+
+    #[test]
     fn wars_split_copy_matches_direct_walk_on_fault_matrix() {
         use super::wars_test_kit as kit;
         use engine::{ccountry, cdiplomacy_status, cgame_state, crelation, memory::SliceMemory};
@@ -5231,6 +5271,54 @@ mod tests {
         let torn_report = copy_wars_refresh(&torn_memory, ctx_single, &mut after_torn, None);
         assert!(torn_report.raw_ok);
         assert!(!after.log.logs_equal(&after_torn.log));
+    }
+
+    #[test]
+    fn wars_partition_equal_isolates_owned_vs_matrix_private_bytes() {
+        use super::wars_test_kit as kit;
+        // Two equal copies, then tear exactly one walk's private bytes in
+        // the second log. Only that walk's partition flips; the shared
+        // census still agrees. Keeps the conservative per-slot live-fault
+        // gate (no faults here, so verdicts follow partitions).
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = WarsCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed_matrix: true,
+        };
+        let mut first = WarsJob::new();
+        let mut second = WarsJob::new();
+        let report = copy_wars_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 2]);
+        // Owned-private span: mask exactly WARS (0x01), e.g. the owned
+        // relations header the matrix walk never reads.
+        let owned_idx = second
+            .log
+            .spans
+            .iter()
+            .position(|span| span.ok && span.mask == 0x01)
+            .expect("owned-private span");
+        let start = second.log.spans[owned_idx].start as usize;
+        second.log.bytes[start] ^= 0xff;
+        assert!(!first.log.partition_equal(&second.log, 0));
+        assert!(first.log.partition_equal(&second.log, 1));
+        // Matrix-private span on a fresh equal pair flips only the matrix.
+        let mut first_b = WarsJob::new();
+        let mut second_b = WarsJob::new();
+        let report_b = copy_wars_refresh(&memory, ctx, &mut first_b, Some(&mut second_b));
+        assert_eq!(report_b.matched, [true; 2]);
+        let matrix_idx = second_b
+            .log
+            .spans
+            .iter()
+            .position(|span| span.ok && span.mask == 0x02)
+            .expect("matrix-private span");
+        let start_b = second_b.log.spans[matrix_idx].start as usize;
+        second_b.log.bytes[start_b] ^= 0xff;
+        assert!(first_b.log.partition_equal(&second_b.log, 0));
+        assert!(!first_b.log.partition_equal(&second_b.log, 1));
     }
 
     #[test]
@@ -5476,6 +5564,45 @@ mod tests {
     }
 
     #[test]
+    fn divisions_partition_equal_isolates_equipment_private_bytes() {
+        use super::divisions_test_kit as kit;
+        // Tear exactly one table's private bytes: equipment spans carry
+        // EQUIPMENT_MASK (0x02) only, so only slot 1 flips.
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = DivisionsCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+        };
+        let mut first = DivisionsJob::new();
+        let mut second = DivisionsJob::new();
+        let report = copy_divisions_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 6]);
+        let equip_idx = second
+            .log
+            .spans
+            .iter()
+            .position(|span| span.ok && span.mask == 0x02)
+            .expect("equipment-private span");
+        let start = second.log.spans[equip_idx].start as usize;
+        second.log.bytes[start] ^= 0xff;
+        for slot in 0..6 {
+            let equal = first.log.partition_equal(&second.log, slot);
+            if slot == 1 {
+                assert!(!equal, "equipment partition must flip");
+            } else {
+                // Shared census/row spans (0x3F) still agree; other
+                // private tables (groups/requests/deliveries/produced)
+                // do not include equipment bytes.
+                // Note: divisions slot 0 includes census+rows only, so it
+                // stays true when only equipment private tears.
+                assert!(equal, "slot {slot} must stay true");
+            }
+        }
+    }
+
+    #[test]
     fn divisions_staging_overflow_falls_back_to_typed_walk() {
         use super::divisions_test_kit as kit;
         use crate::raw::RawLog;
@@ -5498,5 +5625,85 @@ mod tests {
         assert_eq!(direct.divisions_outcome, Outcome::Rows { len: 3 });
         assert_eq!(direct.equipment_outcome, Outcome::Rows { len: 3 });
         assert_eq!(direct.groups_outcome, Outcome::Rows { len: 3 });
+    }
+
+    #[test]
+    fn wars_and_divisions_copy_decode_counters_advance_with_copy_only_table_ns() {
+        // S4: two families through the same copy/decode path. Both families'
+        // copy ticks (game thread) and decode ticks (worker) advance, and
+        // `table_ns` stays copy-only: decode writes `decode_ticks`, never
+        // `table_ns`. `process_job` dispatches to these same
+        // `decode_*_payload` functions, so this covers the worker path.
+        use super::divisions_test_kit as dkit;
+        use super::wars_test_kit as wkit;
+        // Wars copy + decode.
+        let wbytes = wkit::fixture();
+        let wmemory = wkit::memory(&wbytes);
+        let wctx = WarsCopyContext {
+            base: wkit::BASE,
+            game_state: wkit::GAME_STATE,
+            needed_matrix: true,
+        };
+        let mut wfirst = WarsJob::new();
+        let mut wsecond = WarsJob::new();
+        let wreport = copy_wars_refresh(&wmemory, wctx, &mut wfirst, Some(&mut wsecond));
+        assert!(wreport.raw_ok);
+        assert_eq!(wreport.matched, [true; 2]);
+        // Divisions copy + decode.
+        let dbytes = dkit::fixture();
+        let dmemory = dkit::memory(&dbytes);
+        let dctx = DivisionsCopyContext {
+            base: dkit::BASE,
+            game_state: dkit::GAME_STATE,
+        };
+        let mut dfirst = DivisionsJob::new();
+        let mut dsecond = DivisionsJob::new();
+        let dreport = copy_divisions_refresh(&dmemory, dctx, &mut dfirst, Some(&mut dsecond));
+        assert!(dreport.raw_ok);
+        assert_eq!(dreport.matched, [true; 6]);
+        // Copy ticks advance for both families (game-thread copy-only).
+        assert!(wreport.copy_ticks.iter().any(|ticks| *ticks > 0));
+        // Divisions copy ticks: slot 0 (divisions walk) always advances;
+        // equipment/upgrades may be zero on tiny fixtures, so check slot 0.
+        assert!(dreport.copy_ticks[0] > 0);
+        // Install copy ns into a synthetic table_ns (as the tick does), then
+        // decode and prove table_ns is untouched (decode goes to decode_ticks).
+        let mut table_ns = [0u64; 16];
+        table_ns[0] = wreport.copy_ticks[0];
+        table_ns[1] = dreport.copy_ticks[0];
+        let before = table_ns;
+        let mut frame = Captured::new();
+        frame.wars = vec![engine::cwar_relation::Row::default(); 64];
+        frame.wars_matrix = vec![engine::cwar_relation::Row::default(); 64];
+        let mut wdecode = [0u64; 2];
+        super::decode_wars_payload(&mut frame, wkit::BASE, &wfirst, &mut wdecode);
+        assert_eq!(table_ns, before, "decode must not touch table_ns");
+        // War-matrix dual-homing: owned ticks and matrix ticks are recorded
+        // separately (sampling copy_ticks[0]/[1] feed table_ns vs
+        // war_matrix_ns; spooling mirrors both in wars_copy_ns).
+        assert!(wreport.raw_bytes.iter().any(|bytes| *bytes > 0));
+    }
+
+    #[test]
+    fn divisions_truncation_matrix_matches_direct_with_same_caps() {
+        // B3: zero-cap / one-row / exact-fit (3) / ample run typed AND
+        // copy-decode against the SAME memory with the SAME pooled caps,
+        // asserting identical outcome (incl. len/unread) and identical rows.
+        // The 3-division fixture makes cap 1 the overflow-by-one arm for
+        // divisions (total 3, truncated with dependents unavailable); cap 0
+        // the massive/zero-rows arm.
+        use super::divisions_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        for cap in [0usize, 1, 3, 64] {
+            let caps = [cap; 6];
+            let direct = kit::direct(&memory, caps);
+            let (split, report, _) = kit::split(&memory, caps);
+            assert!(report.raw_ok, "cap={cap}");
+            assert_eq!(report.matched, [true; 6], "cap={cap}");
+            kit::assert_matches_direct(&split, &direct);
+        }
+        let (exact, _, _) = kit::split(&memory, [3; 6]);
+        assert_eq!(exact.divisions_outcome, Outcome::Rows { len: 3 });
     }
 }

@@ -1142,8 +1142,50 @@ impl CharactersJob {
         }
     }
 
+    #[allow(dead_code)]
     fn logs_equal(&self, other: &Self) -> bool {
         self.spans == other.spans && self.bytes == other.bytes
+    }
+
+    /// Per-partition equality for independently-walked character tables.
+    /// Compares only spans carrying `slot`'s bit (shared roster spans gate
+    /// every dependent partition; private spans only their own). Byte
+    /// contents compare per span so tearing one table's private bytes flips
+    /// only that slot. Callers keep the conservative per-slot live-fault
+    /// gate.
+    fn partition_equal(&self, other: &Self, slot: usize) -> bool {
+        if slot >= 6 || self.overflowed || other.overflowed {
+            return false;
+        }
+        let bit = 1u8 << slot;
+        let mut left_iter = self.spans.iter().filter(|span| span.mask & bit != 0);
+        let mut right_iter = other.spans.iter().filter(|span| span.mask & bit != 0);
+        loop {
+            match (left_iter.next(), right_iter.next()) {
+                (None, None) => return true,
+                (Some(left), Some(right)) => {
+                    if left.addr != right.addr
+                        || left.len != right.len
+                        || left.ok != right.ok
+                        || left.mask != right.mask
+                    {
+                        return false;
+                    }
+                    if left.ok {
+                        let left_bytes = self
+                            .bytes
+                            .get(left.start as usize..left.start as usize + left.len as usize);
+                        let right_bytes = other
+                            .bytes
+                            .get(right.start as usize..right.start as usize + right.len as usize);
+                        if left_bytes != right_bytes {
+                            return false;
+                        }
+                    }
+                }
+                _ => return false,
+            }
+        }
     }
 
     /// Take failure from an overflowing pool aborts the whole copy (typed
@@ -2453,9 +2495,12 @@ impl Captured {
             let second_started = qpc();
             copy_pass(memory, ctx.base, ctx.game_state, second_job);
             ticks[0] += elapsed(second_started);
-            let equal =
-                first.logs_equal(second_job) && !first.overflowed && !second_job.overflowed;
+            // Per-table partitions: shared roster spans gate dependents,
+            // private spans only their own table.
+            let raw_ok_pair = !first.overflowed && !second_job.overflowed;
             for (slot, matched) in matched.iter_mut().enumerate() {
+                let equal =
+                    raw_ok_pair && first.partition_equal(second_job, slot);
                 *matched = equal && !first.fault[slot] && !second_job.fault[slot];
             }
         }
