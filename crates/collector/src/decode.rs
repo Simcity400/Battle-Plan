@@ -61,12 +61,13 @@ use crate::{
         economy::EconomyRestJob,
         fog::{IntelJob, RadarJob},
         governance::{FocusJob, ResearchJob},
-        intel::{IntelRestJob, RelationsJob},
+        intel::{CapitulationJob, IntelRestJob, RelationsJob},
         lexical::LexicalJob,
         naval_history::{NavalJob, RailJob, SunkJob, SupremacyJob},
         production::{ProductionRestJob, VariantsJob},
         projects::ProjectsJob,
         session::SessionJob,
+        weather::WeatherJob,
     },
     map_capture::{MapJob, PlayersJob},
     sampling::{self, BUFFERS, DivisionsJob, Shared, WarsJob},
@@ -333,6 +334,20 @@ pub const INTEL_REST: [TableId; 13] = [
     TableId::CountryIntel,
 ];
 
+/// Hourly weather family in calibration/report order: [limits, regions,
+/// provinces]. Hourly like every Tier-H table (no refresh gate). The manager
+/// header is anchor-charged to the limits slot, matching the read-group
+/// convention.
+pub const WEATHER: [TableId; 3] = [
+    TableId::WeatherLimits,
+    TableId::WeatherRegions,
+    TableId::WeatherProvinces,
+];
+
+/// Hourly capitulation table in calibration/report order: [capitulation].
+/// Hourly like every Tier-H table (no refresh gate).
+pub const CAPITULATION: [TableId; 1] = [TableId::Capitulation];
+
 /// Live raw payloads beyond this count are not retained; further refreshes
 /// take the existing gap path until the worker catches up (see module docs).
 const JOB_POOL_KEEP: usize = 2;
@@ -372,6 +387,8 @@ pub struct DecodeJob {
     pub sunk_refresh: bool,
     pub radar_refresh: bool,
     pub intel_refresh: bool,
+    pub weather_refresh: bool,
+    pub capitulation_refresh: bool,
     pub force_full: bool,
     pub game_elapsed: i64,
     pub payload: Option<ResearchJob>,
@@ -401,6 +418,8 @@ pub struct DecodeJob {
     pub sunk_payload: Option<SunkJob>,
     pub radar_payload: Option<RadarJob>,
     pub intel_payload: Option<IntelJob>,
+    pub weather_payload: Option<WeatherJob>,
+    pub capitulation_payload: Option<CapitulationJob>,
 }
 
 static COPY_NS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
@@ -753,6 +772,14 @@ static RADAR_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
 static INTEL_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
 static INTEL_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
 static INTEL_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
+static WEATHER_COPY_NS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static WEATHER_DECODE_NS: [AtomicU64; 3] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static WEATHER_RAW_BYTES: [AtomicU64; 3] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static CAPITULATION_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
+static CAPITULATION_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
+static CAPITULATION_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
 static QUEUE_HIGH_WATER: AtomicU64 = AtomicU64::new(0);
 static JOBS: AtomicU64 = AtomicU64::new(0);
 static REFRESH_JOBS: AtomicU64 = AtomicU64::new(0);
@@ -790,6 +817,8 @@ static SUPREMACY_JOB_POOL: Mutex<Vec<SupremacyJob>> = Mutex::new(Vec::new());
 static SUNK_JOB_POOL: Mutex<Vec<SunkJob>> = Mutex::new(Vec::new());
 static RADAR_JOB_POOL: Mutex<Vec<RadarJob>> = Mutex::new(Vec::new());
 static INTEL_JOB_POOL: Mutex<Vec<IntelJob>> = Mutex::new(Vec::new());
+static WEATHER_JOB_POOL: Mutex<Vec<WeatherJob>> = Mutex::new(Vec::new());
+static CAPITULATION_JOB_POOL: Mutex<Vec<CapitulationJob>> = Mutex::new(Vec::new());
 
 /// Pilot refresh gate: the whole family shares stagger slot 2 (`H%4==2`);
 /// branch starts and keyframes force a full refresh like every other table.
@@ -1567,6 +1596,57 @@ pub fn recycle_intel_job(mut job: IntelJob) {
     }
 }
 
+/// Recycled hourly weather raw-payload job. Cold calls allocate; steady state
+/// reuses jobs with their capacities, so neither thread allocates per hour.
+pub fn acquire_weather_job() -> WeatherJob {
+    if let Ok(mut pool) = WEATHER_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    WeatherJob::new()
+}
+
+/// Return a weather payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_weather_job(mut job: WeatherJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = WEATHER_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
+/// Recycled hourly capitulation raw-payload job. Cold calls allocate; steady
+/// state reuses jobs with their capacities, so neither thread allocates per
+/// hour.
+pub fn acquire_capitulation_job() -> CapitulationJob {
+    if let Ok(mut pool) = CAPITULATION_JOB_POOL.try_lock()
+        && let Some(job) = pool.pop()
+    {
+        return job;
+    }
+    CapitulationJob::new()
+}
+
+/// Return a capitulation payload job to the pool after clearing it. Growth
+/// decided here runs on the calling (off-game-thread) side.
+pub fn recycle_capitulation_job(mut job: CapitulationJob) {
+    job.clear();
+    if job.grow_for_next() {
+        job.grow();
+    }
+    if let Ok(mut pool) = CAPITULATION_JOB_POOL.try_lock()
+        && pool.len() < JOB_POOL_KEEP + 1
+    {
+        pool.push(job);
+    }
+}
+
 /// Enqueue a frame for decode (or ordered forwarding for skip hours).
 /// Starts the worker lazily; never blocks. A full queue returns the job for
 /// the existing gap path and counts the drop on the existing counters.
@@ -2083,6 +2163,39 @@ pub fn process_job(shared: &Shared, job: &DecodeJob) {
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
+    if job.weather_refresh
+        && let Some(payload) = job.weather_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 3];
+        frame.extended.weather_pilot().decode_weather_payload(
+            shared.base,
+            payload,
+            &mut decode_ticks,
+        );
+        for (total, ticks) in WEATHER_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
+    if job.capitulation_refresh
+        && let Some(payload) = job.capitulation_payload.as_ref()
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        let mut decode_ticks = [0; 1];
+        frame
+            .extended
+            .capitulation_pilot()
+            .decode_capitulation_payload(shared.base, payload, &mut decode_ticks);
+        for (total, ticks) in CAPITULATION_DECODE_NS.iter().zip(decode_ticks) {
+            if ticks != 0 {
+                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+            }
+        }
+        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
+    }
     // Pool invariant: this frame is owned by the worker, so it occupies no
     // ready slot and the push below always has room while the spool thread
     // lives. The worker may wait (only the game thread must never block).
@@ -2365,6 +2478,24 @@ pub fn calibration() -> Calibration {
         intel_raw_bytes: INTEL_RAW_BYTES
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
+        weather_copy_ns: WEATHER_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        weather_decode_ns: WEATHER_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        weather_raw_bytes: WEATHER_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        capitulation_copy_ns: CAPITULATION_COPY_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        capitulation_decode_ns: CAPITULATION_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        capitulation_raw_bytes: CAPITULATION_RAW_BYTES
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
         queue_high_water: QUEUE_HIGH_WATER.load(Ordering::Relaxed),
     }
 }
@@ -2458,6 +2589,12 @@ pub struct Calibration {
     pub intel_copy_ns: [u64; 1],
     pub intel_decode_ns: [u64; 1],
     pub intel_raw_bytes: [u64; 1],
+    pub weather_copy_ns: [u64; 3],
+    pub weather_decode_ns: [u64; 3],
+    pub weather_raw_bytes: [u64; 3],
+    pub capitulation_copy_ns: [u64; 1],
+    pub capitulation_decode_ns: [u64; 1],
+    pub capitulation_raw_bytes: [u64; 1],
     pub queue_high_water: u64,
 }
 
@@ -2579,6 +2716,14 @@ impl Calibration {
             "intel_decode_ns": self.intel_decode_ns.as_slice(),
             "intel_raw_bytes": self.intel_raw_bytes.as_slice(),
             "intel_tables": ["UnitIntel"],
+            "weather_copy_ns": self.weather_copy_ns.as_slice(),
+            "weather_decode_ns": self.weather_decode_ns.as_slice(),
+            "weather_raw_bytes": self.weather_raw_bytes.as_slice(),
+            "weather_tables": ["WeatherLimits", "WeatherRegions", "WeatherProvinces"],
+            "capitulation_copy_ns": self.capitulation_copy_ns.as_slice(),
+            "capitulation_decode_ns": self.capitulation_decode_ns.as_slice(),
+            "capitulation_raw_bytes": self.capitulation_raw_bytes.as_slice(),
+            "capitulation_tables": ["Capitulation"],
             "queue_high_water": self.queue_high_water,
             "queue_capacity": BUFFERS,
         })
@@ -2806,6 +2951,22 @@ pub(crate) fn add_intel_raw_bytes(table: usize, bytes: u64) {
     INTEL_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
 }
 
+pub(crate) fn add_weather_copy_ns(table: usize, ns: u64) {
+    WEATHER_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_weather_raw_bytes(table: usize, bytes: u64) {
+    WEATHER_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
+pub(crate) fn add_capitulation_copy_ns(table: usize, ns: u64) {
+    CAPITULATION_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
+}
+
+pub(crate) fn add_capitulation_raw_bytes(table: usize, bytes: u64) {
+    CAPITULATION_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
+}
+
 /// Bounded raw FIFO type shared with sampling's pool (indices only).
 pub type DecodeQueue = ArrayQueue<DecodeJob>;
 
@@ -2897,6 +3058,12 @@ pub(crate) fn reset_calibration_for_test() {
         .chain(INTEL_COPY_NS.iter())
         .chain(INTEL_DECODE_NS.iter())
         .chain(INTEL_RAW_BYTES.iter())
+        .chain(WEATHER_COPY_NS.iter())
+        .chain(WEATHER_DECODE_NS.iter())
+        .chain(WEATHER_RAW_BYTES.iter())
+        .chain(CAPITULATION_COPY_NS.iter())
+        .chain(CAPITULATION_DECODE_NS.iter())
+        .chain(CAPITULATION_RAW_BYTES.iter())
     {
         cell.store(0, Ordering::Relaxed);
     }
@@ -3036,6 +3203,8 @@ mod tests {
                 sunk_refresh: false,
                 radar_refresh: false,
                 intel_refresh: false,
+                weather_refresh: false,
+                capitulation_refresh: false,
                 force_full: false,
                 game_elapsed: 7,
                 payload: None,
@@ -3065,6 +3234,8 @@ mod tests {
                 sunk_payload: None,
                 radar_payload: None,
                 intel_payload: None,
+                weather_payload: None,
+                capitulation_payload: None,
             };
             shared.decode_queue.push(job).unwrap();
         }
@@ -3118,6 +3289,8 @@ mod tests {
                 sunk_refresh: false,
                 radar_refresh: false,
                 intel_refresh: false,
+                weather_refresh: false,
+                capitulation_refresh: false,
                 force_full: false,
                 game_elapsed: 1,
                 payload: None,
@@ -3147,6 +3320,8 @@ mod tests {
                 sunk_payload: None,
                 radar_payload: None,
                 intel_payload: None,
+                weather_payload: None,
+                capitulation_payload: None,
             };
             assert!(shared.decode_queue.push(job).is_ok());
         }
@@ -3182,6 +3357,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 1,
             payload: None,
@@ -3211,6 +3388,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         assert!(enqueue(&shared, job).is_some());
         assert_eq!(DROPS.load(Ordering::Relaxed), before + 1);
@@ -3287,6 +3466,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 13,
             payload: Some(first),
@@ -3316,6 +3497,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3373,6 +3556,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 17,
             payload: None,
@@ -3402,6 +3587,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3474,6 +3661,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 19,
             payload: None,
@@ -3503,6 +3692,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3578,6 +3769,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 23,
             payload: None,
@@ -3607,6 +3800,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3679,6 +3874,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 29,
             payload: None,
@@ -3708,6 +3905,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3778,6 +3977,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 31,
             payload: None,
@@ -3807,6 +4008,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3876,6 +4079,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 37,
             payload: None,
@@ -3905,6 +4110,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -3969,6 +4176,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 43,
             payload: None,
@@ -3998,6 +4207,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -4069,6 +4280,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 47,
             payload: None,
@@ -4098,6 +4311,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -4282,6 +4497,8 @@ mod tests {
                 sunk_refresh: false,
                 radar_refresh: false,
                 intel_refresh: false,
+                weather_refresh: false,
+                capitulation_refresh: false,
                 force_full: false,
                 game_elapsed: 1,
                 payload: None,
@@ -4311,6 +4528,8 @@ mod tests {
                 sunk_payload: None,
                 radar_payload: None,
                 intel_payload: None,
+                weather_payload: None,
+                capitulation_payload: None,
             };
             assert!(enqueue(&shared, job).is_none());
         }
@@ -4372,6 +4591,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 23,
             payload: None,
@@ -4401,6 +4622,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -4466,6 +4689,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 29,
             payload: None,
@@ -4494,6 +4719,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
             map_payload: Some(first),
         };
         process_job(&shared, &job);
@@ -4559,6 +4786,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             air_wing_refresh: true,
             air_stats_refresh: false,
             force_full: false,
@@ -4588,6 +4817,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
             air_wing_payload: Some(first),
             air_stats_payload: None,
         };
@@ -4652,6 +4883,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 59,
             payload: None,
@@ -4681,6 +4914,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -4765,6 +5000,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 37,
             payload: None,
@@ -4794,6 +5031,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -4962,6 +5201,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 31,
             payload: None,
@@ -4991,6 +5232,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -5072,6 +5315,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 37,
             payload: None,
@@ -5101,6 +5346,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -5227,6 +5474,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 53,
             payload: None,
@@ -5256,6 +5505,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         process_job(&shared, &job);
         assert_eq!(shared.ready.pop(), Some(index));
@@ -5347,6 +5598,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed,
             payload: None,
@@ -5376,6 +5629,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         }
     }
 

@@ -337,6 +337,15 @@ impl Captured {
         &mut self.fog
     }
 
+    /// Decode-worker handoff for the hourly weather family (copy/decode
+    /// split). Sole cross-thread entry to the weather buffers: the game
+    /// thread stages raw-copy state through it every hour and the single
+    /// FIFO decode worker decodes the staged payload into these pooled typed
+    /// rows before the spool ready-queue handoff.
+    pub(crate) fn weather_pilot(&mut self) -> &mut weather::Captured {
+        &mut self.weather
+    }
+
     /// Decode-worker handoff for the hourly production rest (copy/decode
     /// split). Sole cross-thread entry to the production rest buffers: the
     /// game thread stages raw-copy state through it every hour and the single
@@ -372,6 +381,17 @@ impl Captured {
     /// buffers with the relations family; each stages its own copies with no
     /// cross-family decoded roots.
     pub(crate) fn intel_rest_pilot(&mut self) -> &mut intel::Captured {
+        &mut self.intel
+    }
+
+    /// Decode-worker handoff for the hourly capitulation table (copy/decode
+    /// split). Sole cross-thread entry to the capitulation buffers: the game
+    /// thread stages raw-copy state through it every hour and the single
+    /// FIFO decode worker decodes the staged payload into these pooled typed
+    /// rows before the spool ready-queue handoff. Shares the intel pack
+    /// buffers with the relations/rest families; each stages its own copies
+    /// with no cross-family decoded roots.
+    pub(crate) fn capitulation_pilot(&mut self) -> &mut intel::Captured {
         &mut self.intel
     }
 

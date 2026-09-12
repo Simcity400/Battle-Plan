@@ -898,6 +898,20 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             // the typed walk with no payload enqueued.
             let mut intel_payload: Option<extended::fog::IntelJob> = None;
             let mut intel_report = extended::fog::IntelCopyReport::default();
+            // Hourly weather handoff state: same FIFO, same ordering
+            // guarantees. The hourly payload carries the manager header once
+            // with limits, regions and provinces detail; all three decodes
+            // read the shared spans. Staging overflow falls back to the typed
+            // walks with no payload enqueued.
+            let mut weather_payload: Option<extended::weather::WeatherJob> = None;
+            let mut weather_report = extended::weather::WeatherCopyReport::default();
+            // Hourly capitulation handoff state: same FIFO, same ordering
+            // guarantees. The hourly payload carries the country census once
+            // with diplomacy detail; the decode reads the shared spans.
+            // Staging overflow falls back to the typed walk with no payload
+            // enqueued.
+            let mut capitulation_payload: Option<extended::intel::CapitulationJob> = None;
+            let mut capitulation_report = extended::intel::CapitulationCopyReport::default();
             let mut decode_hour = 0;
             let mut decode_force_full = false;
             if let Some(clock) = frame.clock_before {
@@ -1547,6 +1561,76 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 }
                 if let Some(second) = intel_second {
                     decode::recycle_intel_job(second);
+                }
+                // Hourly weather (copy/decode split): raw copies only on the
+                // game thread, same FIFO and ordering guarantees. The manager
+                // header is staged once with limits, regions and provinces
+                // detail; all three decodes read the shared spans. Staging
+                // overflow falls back to the typed walks with no payload
+                // enqueued.
+                let weather_second_needed = decode::WEATHER
+                    .iter()
+                    .any(|table| extended_needed[table.index()]);
+                let mut weather_first = decode::acquire_weather_job();
+                let mut weather_second = weather_second_needed.then(decode::acquire_weather_job);
+                let weather_ctx = extended::weather::WeatherCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                    needed: [
+                        extended_needed[decode::WEATHER[0].index()],
+                        extended_needed[decode::WEATHER[1].index()],
+                        extended_needed[decode::WEATHER[2].index()],
+                    ],
+                };
+                weather_report = frame.extended.weather_pilot().copy_weather_refresh(
+                    &memory,
+                    weather_ctx,
+                    &mut weather_first,
+                    weather_second.as_mut(),
+                );
+                frame.extended.weather_pilot().raw_mode = weather_report.raw_ok;
+                if weather_report.raw_ok {
+                    weather_payload = Some(weather_first);
+                } else {
+                    decode::recycle_weather_job(weather_first);
+                }
+                if let Some(second) = weather_second {
+                    decode::recycle_weather_job(second);
+                }
+                // Hourly capitulation (copy/decode split): raw copies only on
+                // the game thread, same FIFO and ordering guarantees. The
+                // country census is staged once with diplomacy detail.
+                // Staging overflow falls back to the typed walk with no
+                // payload enqueued.
+                let capitulation_second_needed = decode::CAPITULATION
+                    .iter()
+                    .any(|table| extended_needed[table.index()]);
+                let mut capitulation_first = decode::acquire_capitulation_job();
+                let mut capitulation_second =
+                    capitulation_second_needed.then(decode::acquire_capitulation_job);
+                let capitulation_ctx = extended::intel::CapitulationCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                    needed: [extended_needed[decode::CAPITULATION[0].index()]],
+                };
+                capitulation_report = frame
+                    .extended
+                    .capitulation_pilot()
+                    .copy_capitulation_refresh(
+                        &memory,
+                        capitulation_ctx,
+                        &mut capitulation_first,
+                        capitulation_second.as_mut(),
+                    );
+                frame.extended.capitulation_pilot().capitulation_raw_mode =
+                    capitulation_report.raw_ok;
+                if capitulation_report.raw_ok {
+                    capitulation_payload = Some(capitulation_first);
+                } else {
+                    decode::recycle_capitulation_job(capitulation_first);
+                }
+                if let Some(second) = capitulation_second {
+                    decode::recycle_capitulation_job(second);
                 }
                 let (map_matched, map_ticks) = frame.map.sample(
                     &cached,
@@ -2399,6 +2483,35 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::add_intel_raw_bytes(slot, intel_report.raw_bytes[slot]);
                     }
                 }
+                // Hourly weather measured copy-only above; same install for
+                // the calibration counters. The manager header is
+                // anchor-charged to the limits slot, matching the read-group
+                // convention.
+                if weather_report.raw_ok {
+                    for (slot, table) in decode::WEATHER.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = weather_report.matched[slot];
+                        let ns = shared.ns(weather_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_weather_copy_ns(slot, ns);
+                        decode::add_weather_raw_bytes(slot, weather_report.raw_bytes[slot]);
+                    }
+                }
+                // Hourly capitulation measured copy-only above; same install
+                // for the calibration counters.
+                if capitulation_report.raw_ok {
+                    for (slot, table) in decode::CAPITULATION.iter().enumerate() {
+                        let index = table.index();
+                        extended_matched[index] = capitulation_report.matched[slot];
+                        let ns = shared.ns(capitulation_report.copy_ticks[slot] as i64);
+                        frame.table_ns[index] = ns;
+                        decode::add_capitulation_copy_ns(slot, ns);
+                        decode::add_capitulation_raw_bytes(
+                            slot,
+                            capitulation_report.raw_bytes[slot],
+                        );
+                    }
+                }
                 let cache_verify_begin = qpc();
                 frame.country_cache_error = cached.verify().err();
                 frame.country_cache_ns =
@@ -2458,6 +2571,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 sunk_refresh: sunk_report.raw_ok,
                 radar_refresh: radar_report.raw_ok,
                 intel_refresh: intel_report.raw_ok,
+                weather_refresh: weather_report.raw_ok,
+                capitulation_refresh: capitulation_report.raw_ok,
                 force_full: decode_force_full,
                 game_elapsed: (qpc() - entered - (original_end - original_begin)).max(1),
                 payload: pilot_payload,
@@ -2487,6 +2602,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 sunk_payload,
                 radar_payload,
                 intel_payload,
+                weather_payload,
+                capitulation_payload,
             };
             match decode::enqueue(shared, decode_job) {
                 None => {
@@ -2589,6 +2706,12 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     }
                     if let Some(payload) = returned.intel_payload {
                         decode::recycle_intel_job(payload);
+                    }
+                    if let Some(payload) = returned.weather_payload {
+                        decode::recycle_weather_job(payload);
+                    }
+                    if let Some(payload) = returned.capitulation_payload {
+                        decode::recycle_capitulation_job(payload);
                     }
                     // Existing whole-frame drop plus gap path, unchanged
                     // counters and no new loss reasons.
@@ -5157,6 +5280,8 @@ mod tests {
                     sunk_refresh: false,
                     radar_refresh: false,
                     intel_refresh: false,
+                    weather_refresh: false,
+                    capitulation_refresh: false,
                     force_full: false,
                     game_elapsed: 1,
                     payload: None,
@@ -5186,6 +5311,8 @@ mod tests {
                     sunk_payload: None,
                     radar_payload: None,
                     intel_payload: None,
+                    weather_payload: None,
+                    capitulation_payload: None,
                 })
                 .unwrap();
         }
@@ -5223,6 +5350,8 @@ mod tests {
             sunk_refresh: false,
             radar_refresh: false,
             intel_refresh: false,
+            weather_refresh: false,
+            capitulation_refresh: false,
             force_full: false,
             game_elapsed: 1,
             payload: None,
@@ -5252,6 +5381,8 @@ mod tests {
             sunk_payload: None,
             radar_payload: None,
             intel_payload: None,
+            weather_payload: None,
+            capitulation_payload: None,
         };
         assert!(shared.decode_queue.push(extra).is_err());
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };

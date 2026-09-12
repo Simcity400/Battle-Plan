@@ -130,6 +130,12 @@ pub struct Captured {
     /// before the ready handoff. Preserved across `reset` (set per hour,
     /// cleared by the worker after decode).
     pub(crate) rest_raw_mode: bool,
+    /// Raw-copy split gate for the hourly capitulation table (slot 0).
+    /// Set by the game thread every hour with a valid raw payload; `capture`
+    /// then skips the typed capitulation walk and the decode worker fills
+    /// the rows before the ready handoff. Preserved across `reset` (set per
+    /// hour, cleared by the worker after decode).
+    pub(crate) capitulation_raw_mode: bool,
 }
 
 impl Captured {
@@ -163,6 +169,7 @@ impl Captured {
             flag_scratch: vec![cscript_flag::Row::default(); capacity.rows[7]],
             relations_raw_mode: false,
             rest_raw_mode: false,
+            capitulation_raw_mode: false,
         }
     }
 
@@ -279,8 +286,18 @@ impl Captured {
                 ticks[$index] = elapsed(begin);
             }};
         }
-        plain!(0, capitulation, cdiplomacy_status::walk_capitulation);
-
+        // Hourly capitulation (copy/decode split): every hour the game thread
+        // stages raw bytes via `copy_capitulation_refresh` and the decode
+        // worker fills the rows before the ready handoff, so the typed walk
+        // below skips here when `capitulation_raw_mode` is set. Matched flags
+        // and costs come from the raw compare, applied by the caller after
+        // this returns.
+        if self.capitulation_raw_mode {
+            // Refresh payload staged: leave the reset outcomes for the decode
+            // worker, which installs identical rows and outcomes.
+        } else {
+            plain!(0, capitulation, cdiplomacy_status::walk_capitulation);
+        }
         // Hourly intel remainders (copy/decode split): every hour the game
         // thread stages raw bytes via `copy_intel_rest_refresh` and the decode
         // worker fills subjects, autonomy, agencies, operatives, cryptology,
@@ -3648,6 +3665,332 @@ fn append_relations(total: &mut Outcome, next: Outcome) {
     }
 }
 
+// ===========================================================================
+// Hourly capitulation raw-copy split (Capitulation).
+//
+// The game thread copies raw bytes only: one shared country census plus, per
+// country, the diplomacy pointer and one bulk diplomacy object enclosing the
+// capitulation scalars. No row is decoded on the game thread. The single FIFO
+// decode worker replays `cdiplomacy_status::walk_capitulation` against the
+// recorded spans (`crate::raw::Recorded`), so rows, order, truncation and
+// failure reasons are identical by construction (see `crate::raw` for the
+// mirror rules).
+//
+// The mirror traverses structurally and records every discoverable span,
+// never aborting except on overflow: validation, precedence and error scope
+// are local parses, so the replay derives every outcome from the same
+// recorded spans and later extras are harmless.
+// ===========================================================================
+
+/// Fault-attribution mask: the single capitulation table. The shared census
+/// carries the same bit, so tearing the census blocks the check like the
+/// pilot's conservative rule.
+const M_CAPITULATION: u32 = 0x01;
+
+/// One hour of raw capitulation payload. Flat pools recycle capacities and
+/// the steady state allocates on neither thread; growth happens on the
+/// decode side only (see `crate::decode::recycle_capitulation_job`).
+#[derive(Debug)]
+pub(crate) struct CapitulationJob {
+    pub log: RawLog<1>,
+    pub game_state: usize,
+}
+
+impl CapitulationJob {
+    pub fn new() -> Self {
+        Self {
+            // Late-campaign worst case is 439 countries with one diplomacy
+            // object each (~0.9 KiB per country); both pools start above
+            // that so steady state never overflows.
+            log: RawLog::new(1 << 15, 4 << 20),
+            game_state: 0,
+        }
+    }
+
+    /// Reset lengths for reuse, keeping every capacity. No allocation.
+    pub fn clear(&mut self) {
+        self.log.clear();
+        self.game_state = 0;
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.log.grow_for_next()
+    }
+
+    /// Double every pool off the game thread until copies fit. Converges like
+    /// the typed capacity growth; overflowed hours fall back to the typed
+    /// walk in the meantime, so sizing is a pure performance knob.
+    pub fn grow(&mut self) {
+        self.log.grow();
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct CapitulationCopyReport {
+    /// False when staging overflowed: the caller falls back to the typed walk
+    /// (identical rows through the existing path) and enqueues no payload.
+    pub raw_ok: bool,
+    /// Single-table raw equality gated by live-fault conservatism.
+    pub matched: [bool; 1],
+    pub copy_ticks: [u64; 1],
+    pub raw_bytes: [u64; 1],
+}
+
+/// Game-thread copy parameters, bundled to keep the tick entry small.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CapitulationCopyContext {
+    pub base: usize,
+    pub game_state: usize,
+    pub needed: [bool; 1],
+}
+
+fn cap_pool_u64(log: &RawLog<1>, start: usize) -> u64 {
+    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+}
+
+fn cap_pool_u32(log: &RawLog<1>, start: usize) -> u32 {
+    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
+}
+
+/// One mirrored span read. `None` addresses (arithmetic overflow) record
+/// nothing because the typed walk fails locally without reads.
+fn capspan(
+    log: &mut RawLog<1>,
+    memory: &impl Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take(memory, addr?, len, mask)
+}
+
+/// Bulk variant for contiguous diplomacy objects. Enclosed sub-reads serve
+/// from the bulk span at replay.
+fn capsbulk(
+    log: &mut RawLog<1>,
+    memory: &impl Memory,
+    addr: Option<usize>,
+    len: usize,
+    mask: u32,
+) -> Option<usize> {
+    log.take_bulk(memory, addr?, len, mask)
+}
+
+/// Mirror of a link-table read with local bounds checks.
+fn cap_link(
+    log: &mut RawLog<1>,
+    memory: &impl Memory,
+    links: &Array,
+    countries: u32,
+    raw: u32,
+) -> Option<Option<u32>> {
+    if raw == 0 || raw >= links.count {
+        return None;
+    }
+    let offset = (raw as usize).checked_mul(4)?;
+    let start = capspan(log, memory, links.data.checked_add(offset), 4, M_CAPITULATION)?;
+    let slot = cap_pool_u32(log, start);
+    if slot == 0 {
+        return Some(None);
+    }
+    if slot >= countries {
+        return None;
+    }
+    Some(Some(slot))
+}
+
+/// One structural copy pass: shared census plus, per country, the diplomacy
+/// pointer and one bulk diplomacy object (0x360 bytes enclosing 0x188..0x350
+/// capitulation scalars). Stops at the first typed abort point; later extras
+/// are harmless.
+fn copy_capitulation_pass(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    log: &mut RawLog<1>,
+) {
+    use engine::cgame_state;
+    log.has_bulk = true;
+    let Some(countries_start) = capspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRIES),
+        16,
+        M_CAPITULATION,
+    ) else {
+        return;
+    };
+    let Some(links_start) = capspan(
+        log,
+        memory,
+        game_state.checked_add(cgame_state::COUNTRY_LINKS),
+        16,
+        M_CAPITULATION,
+    ) else {
+        return;
+    };
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
+    let countries = match Array::from_header(raw, 8) {
+        Some(a) => a,
+        None => return,
+    };
+    raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
+    let links = match Array::from_header(raw, 4) {
+        Some(a) => a,
+        None => return,
+    };
+    if countries.count < 2 || links.count == 0 {
+        return;
+    }
+    let country_vtable = match base.checked_add(ccountry::VTABLE_RVA) {
+        Some(v) => v as u64,
+        None => return,
+    };
+    for slot in 1..countries.count {
+        let pointer_addr = (slot as usize)
+            .checked_mul(8)
+            .and_then(|o| countries.data.checked_add(o));
+        let Some(pointer_start) = capspan(log, memory, pointer_addr, 8, M_CAPITULATION) else {
+            return;
+        };
+        let pointer = match usize::try_from(cap_pool_u64(log, pointer_start))
+            .ok()
+            .filter(|&p| p != 0)
+        {
+            Some(p) => p,
+            None => continue,
+        };
+        let Some(vtable_start) = capspan(log, memory, Some(pointer), 8, M_CAPITULATION) else {
+            return;
+        };
+        if cap_pool_u64(log, vtable_start) != country_vtable {
+            return;
+        }
+        let Some(id_start) = capspan(
+            log,
+            memory,
+            pointer.checked_add(ccountry::ID),
+            4,
+            M_CAPITULATION,
+        ) else {
+            return;
+        };
+        let id = cap_pool_u32(log, id_start);
+        // Authenticate through the link table like `ccountry::Reader`.
+        let canonical = match cap_link(log, memory, &links, countries.count, id) {
+            Some(Some(canonical)) => canonical,
+            _ => return,
+        };
+        let canonical_slot = match cap_link(log, memory, &links, countries.count, slot) {
+            Some(Some(canonical_slot)) => canonical_slot,
+            _ => return,
+        };
+        if canonical_slot != canonical {
+            return;
+        }
+        // Per-country diplomacy pointer plus one bulk object.
+        let Some(diplo_start) = capspan(
+            log,
+            memory,
+            pointer.checked_add(ccountry::DIPLOMACY_STATUS),
+            8,
+            M_CAPITULATION,
+        ) else {
+            return;
+        };
+        let diplomacy = match usize::try_from(cap_pool_u64(log, diplo_start))
+            .ok()
+            .filter(|&p| p != 0)
+        {
+            Some(p) => p,
+            None => continue,
+        };
+        let _ = capspan(log, memory, Some(diplomacy), 8, M_CAPITULATION);
+        let _ = capspan(log, memory, diplomacy.checked_add(cdiplomacy_status::COUNTRY), 8, M_CAPITULATION);
+        let _ = capspan(log, memory, diplomacy.checked_add(cdiplomacy_status::LEGITIMACY), 12, M_CAPITULATION);
+        let _ = capspan(log, memory, diplomacy.checked_add(cdiplomacy_status::LAST_SURRENDER_HOUR), 4, M_CAPITULATION);
+        let _ = capspan(log, memory, diplomacy.checked_add(cdiplomacy_status::FACTION_JOIN_HOUR), 4, M_CAPITULATION);
+        let _ = capspan(log, memory, diplomacy.checked_add(cdiplomacy_status::CAPITULATED), 1, M_CAPITULATION);
+        let _ = capspan(log, memory, diplomacy.checked_add(cdiplomacy_status::CAPITULATED_HOUR), 4, M_CAPITULATION);
+        // Bulk superset encloses the scattered reads above for replay
+        // containment; exact spans above preserve fault attribution.
+        let _ = capsbulk(log, memory, Some(diplomacy), 0x360, M_CAPITULATION);
+        if log.overflowed {
+            return;
+        }
+    }
+}
+
+impl Captured {
+    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
+    /// `second` while the table still needs double-read checks, compares the
+    /// raw partition, and records copy-only costs plus the existing
+    /// checked/mismatches bookkeeping. Returns whether the payload is
+    /// complete (`raw_ok`); on staging overflow the caller falls back to the
+    /// typed walk and enqueues nothing.
+    pub(crate) fn copy_capitulation_refresh(
+        &mut self,
+        memory: &impl Memory,
+        ctx: CapitulationCopyContext,
+        first: &mut CapitulationJob,
+        second: Option<&mut CapitulationJob>,
+    ) -> CapitulationCopyReport {
+        let started = qpc();
+        first.clear();
+        first.game_state = ctx.game_state;
+        copy_capitulation_pass(memory, ctx.base, ctx.game_state, &mut first.log);
+        let mut ticks = [0u64; 1];
+        ticks[0] = elapsed(started);
+        let mut matched = [true; 1];
+        if let Some(second_job) = second {
+            let second_started = qpc();
+            second_job.clear();
+            second_job.game_state = ctx.game_state;
+            copy_capitulation_pass(memory, ctx.base, ctx.game_state, &mut second_job.log);
+            ticks[0] += elapsed(second_started);
+            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, 0);
+            matched[0] = equal && !first.log.fault[0] && !second_job.log.fault[0];
+        }
+        self.capitulation.checked = ctx.needed[0];
+        self.capitulation.mismatches = usize::from(ctx.needed[0] && !matched[0]);
+        let raw_ok = !first.log.overflowed;
+        CapitulationCopyReport {
+            raw_ok,
+            matched,
+            copy_ticks: ticks,
+            raw_bytes: first.log.raw_bytes,
+        }
+    }
+
+    /// Decode-worker interpretation of a raw hourly payload into the pooled
+    /// typed rows. Outcomes match the typed walk exactly because the
+    /// identical walk runs against the recorded spans; checked/mismatches
+    /// set by the raw compare survive. Clears `capitulation_raw_mode` so the
+    /// next capture starts clean.
+    pub(crate) fn decode_capitulation_payload(
+        &mut self,
+        base: usize,
+        job: &CapitulationJob,
+        decode_ticks: &mut [u64; 1],
+    ) {
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let started = qpc();
+        self.capitulation.outcome = bounded(
+            cdiplomacy_status::walk_capitulation(
+                &recorded,
+                base,
+                job.game_state,
+                &mut self.capitulation.rows,
+            ),
+            self.capitulation.rows.len(),
+        );
+        decode_ticks[0] += elapsed(started);
+        self.capitulation_raw_mode = false;
+    }
+}
+
 // Test-only re-export so the decode worker tests can reuse the same harness.
 #[cfg(test)]
 pub(crate) use tests::relations_test_kit;
@@ -5263,5 +5606,231 @@ mod tests {
         let capacities = Capacities::default();
         assert!(capacities.rows[3] >= 512);
         assert!(capacities.rows[15] >= 65_536);
+    }
+
+    // ---- Hourly capitulation split (Capitulation) ----
+
+    const CAP_BASE: usize = 0;
+    const CAP_GAME: usize = 0x1000;
+    const CAP_COUNTRIES: usize = 0x2000;
+    const CAP_LINKS: usize = 0x2100;
+    const CAP_COUNTRY: usize = 0x3000;
+    const CAP_DIPLO: usize = 0x4000;
+
+    fn cap_put(bytes: &mut [u8], address: usize, value: &[u8]) {
+        bytes[address - CAP_GAME..address - CAP_GAME + value.len()].copy_from_slice(value);
+    }
+
+    fn cap_array(bytes: &mut [u8], header: usize, data: usize, count: u32) {
+        cap_put(bytes, header, &(data as u64).to_le_bytes());
+        cap_put(bytes, header + 8, &count.to_le_bytes());
+        cap_put(bytes, header + 12, &count.to_le_bytes());
+    }
+
+    fn cap_fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 0x4000];
+        cap_array(&mut bytes, CAP_GAME + cgame_state::COUNTRIES, CAP_COUNTRIES, 2);
+        cap_array(&mut bytes, CAP_GAME + cgame_state::COUNTRY_LINKS, CAP_LINKS, 2);
+        cap_put(&mut bytes, CAP_COUNTRIES, &0_u64.to_le_bytes());
+        cap_put(&mut bytes, CAP_COUNTRIES + 8, &(CAP_COUNTRY as u64).to_le_bytes());
+        cap_put(&mut bytes, CAP_LINKS, &0_u32.to_le_bytes());
+        cap_put(&mut bytes, CAP_LINKS + 4, &1_u32.to_le_bytes());
+        cap_put(&mut bytes, CAP_COUNTRY, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        cap_put(&mut bytes, CAP_COUNTRY + ccountry::ID, &1_u32.to_le_bytes());
+        cap_put(
+            &mut bytes,
+            CAP_COUNTRY + ccountry::DIPLOMACY_STATUS,
+            &(CAP_DIPLO as u64).to_le_bytes(),
+        );
+        cap_put(&mut bytes, CAP_DIPLO, &(cdiplomacy_status::VTABLE_RVA as u64).to_le_bytes());
+        cap_put(
+            &mut bytes,
+            CAP_DIPLO + cdiplomacy_status::COUNTRY,
+            &(CAP_COUNTRY as u64).to_le_bytes(),
+        );
+        cap_put(
+            &mut bytes,
+            CAP_DIPLO + cdiplomacy_status::LEGITIMACY,
+            &(-125_682_i64).to_le_bytes(),
+        );
+        cap_put(
+            &mut bytes,
+            CAP_DIPLO + cdiplomacy_status::LEGITIMACY + 8,
+            &42_i32.to_le_bytes(),
+        );
+        cap_put(
+            &mut bytes,
+            CAP_DIPLO + cdiplomacy_status::LAST_SURRENDER_HOUR,
+            &(-1_i32).to_le_bytes(),
+        );
+        cap_put(
+            &mut bytes,
+            CAP_DIPLO + cdiplomacy_status::FACTION_JOIN_HOUR,
+            &7_i32.to_le_bytes(),
+        );
+        cap_put(&mut bytes, CAP_DIPLO + cdiplomacy_status::CAPITULATED, &[1]);
+        cap_put(
+            &mut bytes,
+            CAP_DIPLO + cdiplomacy_status::CAPITULATED_HOUR,
+            &i32::MIN.to_le_bytes(),
+        );
+        bytes
+    }
+
+    fn cap_capacities() -> Capacities {
+        let mut capacities = Capacities {
+            rows: [2; N],
+            intel_scratch: 2 * engine::country_intel_row::STRIDE,
+            subject_names: 8,
+            autonomy_names: 8,
+            variable_entries: 4,
+            variable_names: 8,
+            tokens: 8,
+        };
+        capacities.rows[0] = 2;
+        capacities
+    }
+
+    fn cap_direct(memory: &SliceMemory<'_>) -> Captured {
+        let capacities = cap_capacities();
+        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        // Typed reference path for slot 0 only; other slots stay reset.
+        captured.capitulation.outcome = bounded(
+            cdiplomacy_status::walk_capitulation(memory, CAP_BASE, CAP_GAME, &mut captured.capitulation.rows),
+            captured.capitulation.rows.len(),
+        );
+        captured
+    }
+
+    fn cap_split(memory: &SliceMemory<'_>) -> (Captured, CapitulationCopyReport) {
+        let capacities = cap_capacities();
+        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let ctx = CapitulationCopyContext {
+            base: CAP_BASE,
+            game_state: CAP_GAME,
+            needed: [true; 1],
+        };
+        let mut first = CapitulationJob::new();
+        let mut second = CapitulationJob::new();
+        let report = captured.copy_capitulation_refresh(memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        captured.capitulation_raw_mode = report.raw_ok;
+        let mut ticks = [0u64; 1];
+        captured.decode_capitulation_payload(CAP_BASE, &first, &mut ticks);
+        (captured, report)
+    }
+
+    #[test]
+    fn capitulation_split_copy_matches_direct_walk() {
+        let bytes = cap_fixture();
+        let memory = SliceMemory { base: CAP_GAME, bytes: &bytes };
+        let direct = cap_direct(&memory);
+        let (split, report) = cap_split(&memory);
+        assert_eq!(report.matched, [true; 1]);
+        assert_eq!(split.capitulation.outcome, direct.capitulation.outcome);
+        let len = split.capitulation.outcome.len();
+        assert_eq!(&split.capitulation.rows[..len], &direct.capitulation.rows[..len]);
+        assert_eq!(split.capitulation.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(split.capitulation.rows[0].country, 1);
+        assert_eq!(split.capitulation.rows[0].capitulated, 1);
+        assert_eq!(split.capitulation.rows[0].legitimacy_raw, -125_682);
+    }
+
+    #[test]
+    fn capitulation_split_copy_matches_direct_walk_under_truncation() {
+        let bytes = cap_fixture();
+        let memory = SliceMemory { base: CAP_GAME, bytes: &bytes };
+        let mut capacities = cap_capacities();
+        capacities.rows[0] = 0;
+        let mut direct = Captured::with_capacities(&capacities, &[0; N]);
+        direct.capitulation.outcome = bounded(
+            cdiplomacy_status::walk_capitulation(&memory, CAP_BASE, CAP_GAME, &mut direct.capitulation.rows),
+            direct.capitulation.rows.len(),
+        );
+        assert!(matches!(direct.capitulation.outcome, Outcome::Truncated { .. }));
+        let mut split = Captured::with_capacities(&capacities, &[0; N]);
+        let ctx = CapitulationCopyContext { base: CAP_BASE, game_state: CAP_GAME, needed: [true; 1] };
+        let mut first = CapitulationJob::new();
+        let mut second = CapitulationJob::new();
+        let report = split.copy_capitulation_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        split.capitulation_raw_mode = true;
+        let mut ticks = [0u64; 1];
+        split.decode_capitulation_payload(CAP_BASE, &first, &mut ticks);
+        assert_eq!(split.capitulation.outcome, direct.capitulation.outcome);
+    }
+
+    #[test]
+    fn capitulation_split_copy_matches_direct_walk_on_fault_matrix() {
+        let mut bytes = cap_fixture();
+        cap_put(&mut bytes, CAP_DIPLO, &0_u64.to_le_bytes());
+        let memory = SliceMemory { base: CAP_GAME, bytes: &bytes };
+        let direct = cap_direct(&memory);
+        assert!(matches!(direct.capitulation.outcome, Outcome::Unavailable { .. }));
+        let (split, report) = cap_split(&memory);
+        assert_eq!(report.matched, [true; 1]);
+        assert_eq!(split.capitulation.outcome, direct.capitulation.outcome);
+    }
+
+    #[test]
+    fn capitulation_double_copy_compare_blocks_checks_on_tearing() {
+        let bytes = cap_fixture();
+        let memory = SliceMemory { base: CAP_GAME, bytes: &bytes };
+        let capacities = cap_capacities();
+        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let ctx = CapitulationCopyContext { base: CAP_BASE, game_state: CAP_GAME, needed: [true; 1] };
+        let mut first = CapitulationJob::new();
+        let mut second = CapitulationJob::new();
+        let report = captured.copy_capitulation_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 1]);
+        let mut torn = cap_fixture();
+        cap_put(&mut torn, CAP_DIPLO + cdiplomacy_status::CAPITULATED, &[9]);
+        let mut after = CapitulationJob::new();
+        copy_capitulation_pass(&memory, CAP_BASE, CAP_GAME, &mut after.log);
+        let mut after_torn = CapitulationJob::new();
+        copy_capitulation_pass(
+            &SliceMemory { base: CAP_GAME, bytes: &torn },
+            CAP_BASE,
+            CAP_GAME,
+            &mut after_torn.log,
+        );
+        assert!(!after.log.logs_equal(&after_torn.log));
+        assert!(!after.log.partition_equal(&after_torn.log, 0));
+    }
+
+    #[test]
+    fn capitulation_staging_overflow_falls_back_to_typed_walk() {
+        let bytes = cap_fixture();
+        let memory = SliceMemory { base: CAP_GAME, bytes: &bytes };
+        let capacities = cap_capacities();
+        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let ctx = CapitulationCopyContext { base: CAP_BASE, game_state: CAP_GAME, needed: [true; 1] };
+        let mut tiny = CapitulationJob { log: crate::raw::RawLog::new(8, 8), game_state: 0 };
+        let report = captured.copy_capitulation_refresh(&memory, ctx, &mut tiny, None);
+        assert!(!report.raw_ok);
+        assert!(tiny.log.overflowed);
+        assert!(tiny.grow_for_next());
+    }
+
+    #[test]
+    fn capitulation_gate_skips_typed_walk_when_raw_mode_set() {
+        let capacities = cap_capacities();
+        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        captured.capitulation_raw_mode = true;
+        let bytes = cap_fixture();
+        let memory = SliceMemory { base: CAP_GAME, bytes: &bytes };
+        let needed = [false; N];
+        let (matched, _) = captured.capture(&memory, CAP_BASE, CAP_GAME, &needed, 0, false);
+        assert!(!matched[0]);
+    }
+
+    #[test]
+    fn capitulation_worst_case_pools_start_above_late_campaign_caps() {
+        let job = CapitulationJob::new();
+        assert!(job.log.spans.capacity() >= (1 << 14));
+        assert!(job.log.bytes.capacity() >= (4 << 20));
+        let capacities = Capacities::default();
+        assert!(capacities.rows[0] >= 512);
     }
 }
