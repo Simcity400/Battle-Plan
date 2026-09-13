@@ -16,6 +16,8 @@ use crate::map::{
     labels::LabelReport,
     name_pass::{LayerFade, Placements},
     scene::{Overlay, Request},
+    // weather
+    weather::WeatherCache,
 };
 use eframe::{egui, wgpu};
 use replay::{branches::Parentage, container::SeekResult, frame::TableView, rows::TableId};
@@ -60,6 +62,8 @@ pub struct Viewer {
     label_report: LabelReport,
     // counters
     counter_report: CounterReport,
+    // weather
+    weather: WeatherCache,
 }
 
 impl Viewer {
@@ -95,7 +99,7 @@ impl Viewer {
             last_step: Instant::now(),
             started: Instant::now(),
             // colour
-            postfx: false,
+            postfx: true,
             // political fill
             political: PoliticalCache::new(),
             borders_uploaded: false,
@@ -107,6 +111,8 @@ impl Viewer {
             label_report: LabelReport::default(),
             // counters
             counter_report: CounterReport::default(),
+            // weather
+            weather: WeatherCache::new(),
         };
         if !viewer.settings
             && let Some(path) = viewer.options.replay.clone()
@@ -145,6 +151,8 @@ impl Viewer {
         // political fill
         self.political = PoliticalCache::new();
         self.borders_uploaded = false;
+        // weather
+        self.weather = WeatherCache::new();
         self.generation = 0;
         self.error = None;
         self.map_error = None;
@@ -446,6 +454,21 @@ impl Viewer {
             )?;
             scene.set_land_classes(&state.device, &layers.regions)?;
         }
+        // weather: the snow and mud grid follows the same rebuild-then-upload
+        // rule, keyed on the weather rows rather than the provinces.
+        if self
+            .weather
+            .ensure(&document.map, &document.assets.perm_snow, document.frame()?)?
+            && let Some(snow_mud) = self.weather.data()
+        {
+            scene.set_snow_mud(
+                &state.device,
+                &state.queue,
+                &snow_mud.texels,
+                snow_mud.width,
+                snow_mud.height,
+            )?;
+        }
         Ok(())
     }
 
@@ -472,6 +495,8 @@ impl Viewer {
             // political fill: a fresh scene holds no uploaded layers or geometry.
             self.political = PoliticalCache::new();
             self.borders_uploaded = false;
+            // weather
+            self.weather = WeatherCache::new();
         }
         // political fill
         self.map_error = self
@@ -496,6 +521,16 @@ impl Viewer {
             "Political layer: {filled} provinces filled in {distinct} country colors, rebuilt in {:.0} ms",
             layers.build.as_secs_f64() * 1000.0
         ));
+        // weather
+        if let Some(snow_mud) = self.weather.data() {
+            ui.weak(format!(
+                "Snow and mud: {}; {}x{} grid rasterised in {:.0} ms",
+                snow_mud.summary.line(),
+                snow_mud.width,
+                snow_mud.height,
+                snow_mud.build.as_secs_f64() * 1000.0
+            ));
+        }
         let size = ui.available_size().max(egui::vec2(1.0, 1.0));
         let pixels = [
             (size.x * ui.ctx().pixels_per_point()).round() as u32,

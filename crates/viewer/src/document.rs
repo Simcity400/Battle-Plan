@@ -36,6 +36,8 @@ use crate::map::{
 };
 // counters
 use crate::map::counters::{self, CounterContent, CounterInputs, CounterReport};
+// weather
+use crate::map::weather::{self, SnowMud};
 
 pub struct Document {
     pub playback: Playback,
@@ -294,6 +296,17 @@ impl Document {
         batch.quads.extend(icons.counters.quads);
         batch.quads.extend(icons.combats.quads);
         Ok((batch, label_report, icons.report))
+    }
+
+    // weather
+    /// Builds this hour's `SnowMudData` grid from its weather tables.
+    ///
+    /// The `perm_snow` mask and the province image are static content, so the
+    /// hour is the only input that moves; the window goes through
+    /// `map::weather::WeatherCache` instead, which skips an hour that changed
+    /// no weather row.
+    pub fn snow_mud(&self) -> io::Result<SnowMud> {
+        weather::build(&self.map, &self.assets.perm_snow, self.frame()?)
     }
 }
 

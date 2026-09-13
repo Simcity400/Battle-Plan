@@ -56,11 +56,10 @@ impl Options {
         // the screenshots.
         let mut options = Self {
             size: [2048, 1152],
-            // colour: `--postfx on` runs the engine's grading chain. It is off
-            // by default because the chain driven by the game's own values is
-            // far worse against both reference pairs than no chain at all; the
-            // measurements are in `map::post`.
-            postfx: false,
+            // colour: the reference session graded its frames, so the chain is
+            // on unless `--postfx off` turns it off. The measurements behind
+            // that are in `map::post`.
+            postfx: true,
             ..Default::default()
         };
         let mut args = args.peekable();
@@ -462,6 +461,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // political fill
         let mode = political::Mode::from_control(options.control);
         let layers = political::build(&document.map, document.frame()?, mode)?;
+        // weather
+        let snow_mud = document.snow_mud()?;
         for warning in document.warnings.iter().chain(layers.warnings()) {
             eprintln!("Warning: {warning}");
         }
@@ -501,6 +502,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // rivers
                 river_assets: &document.river_assets,
                 river_mesh: &document.river_mesh,
+                // weather
+                snow_mud: &snow_mud,
             },
             // names
             &document.icons,
@@ -569,6 +572,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.river_trace.circular.len(),
             document.river_trace.unreachable,
             document.river_build.as_secs_f64() * 1000.0
+        );
+        // weather
+        println!(
+            "Snow and mud: {}; {}x{} grid rasterised in {:.0} ms",
+            snow_mud.summary.line(),
+            snow_mud.width,
+            snow_mud.height,
+            snow_mud.build.as_secs_f64() * 1000.0
         );
         // names
         for line in document.icons.fonts.summary() {

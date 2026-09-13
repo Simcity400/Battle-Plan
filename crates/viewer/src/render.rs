@@ -26,6 +26,8 @@ use crate::map::{
     // names
     sprites::MapIcons,
     textures::MapAssets,
+    // weather
+    weather::SnowMud,
 };
 
 // political fill + borders
@@ -39,6 +41,9 @@ pub struct MapLayers<'a> {
     // rivers
     pub river_assets: &'a RiverAssets,
     pub river_mesh: &'a RiverMesh,
+    // weather
+    /// The hour's `SnowMudData` grid.
+    pub snow_mud: &'a SnowMud,
 }
 
 pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
@@ -299,6 +304,15 @@ pub fn dump_png(
         scene.set_land_classes(&device, &layers.political.regions)?;
         // rivers
         scene.set_rivers(&device, &queue, layers.river_assets, layers.river_mesh)?;
+        // weather
+        let snow_mud = layers.snow_mud;
+        scene.set_snow_mud(
+            &device,
+            &queue,
+            &snow_mud.texels,
+            snow_mud.width,
+            snow_mud.height,
+        )?;
         // A first frame warms the pipeline caches so the timing below measures
         // the steady-state cost the window pays.
         scene.render(&device, &queue, request)?;
