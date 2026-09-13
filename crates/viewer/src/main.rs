@@ -487,7 +487,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for warning in &placements.warnings {
             eprintln!("Warning: {warning}");
         }
-        let (label_batch, label_report) = document.label_batch(camera, options.size)?;
+        // counters: bases, labels, counters and combats in priority order.
+        let (label_batch, label_report, counter_report) =
+            document.overlay_batch(camera, options.size)?;
         let report = render::dump_png(
             &document.assets,
             // political fill + borders
@@ -605,6 +607,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .perspective
                 .as_deref()
                 .unwrap_or("no human country")
+        );
+        // counters
+        println!(
+            "Counters: {} land, {} naval; {} air bases, {} naval bases; {} land combats, {} naval combats; {} stacks with no anchor",
+            counter_report.land_counters,
+            counter_report.naval_counters,
+            counter_report.air_bases,
+            counter_report.naval_bases,
+            counter_report.land_combats,
+            counter_report.naval_combats,
+            counter_report.unanchored
+        );
+        println!(
+            "Counter assets: {} sprite sheets, {} small flags packed{}",
+            document.icons.counters.sheet_count(),
+            document.icons.counters.flags.len(),
+            if counter_report.missing_flags.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; no flag for {}",
+                    counter_report
+                        .missing_flags
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
         );
         return Ok(());
     }

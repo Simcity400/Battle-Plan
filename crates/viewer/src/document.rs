@@ -34,6 +34,8 @@ use crate::map::{
     name_pass::{self, NameContent, PlacementInputs, Placements},
     sprites::{Batch, MapIcons},
 };
+// counters
+use crate::map::counters::{self, CounterContent, CounterInputs, CounterReport};
 
 pub struct Document {
     pub playback: Playback,
@@ -69,6 +71,10 @@ pub struct Document {
     pub river_trace: rivers::Trace,
     /// Wall time of the river trace and widening, for reporting.
     pub river_build: Duration,
+    // counters
+    /// The counter, base and combat anchors from `map/unitstacks.txt` and
+    /// `map/buildings.txt`.
+    pub counters: CounterContent,
 }
 
 impl Document {
@@ -99,6 +105,26 @@ impl Document {
         let icons = MapIcons::load(&content.layers)?;
         let names = NameContent::load(&content.layers, &map)?;
         let labels = LabelContent::load(&content.layers, &map, assets.heightmap_texels())?;
+        // counters
+        let counters = CounterContent::load(&content.layers, &map)?;
+        warnings.extend(icons.counters.warnings.iter().cloned());
+        if icons.counters.flags.is_empty() {
+            warnings.push(
+                "No flag of the small set resolved, so unit counters carry no country flag.".into(),
+            );
+        }
+        if !counters.missing_standstill.is_empty() {
+            warnings.push(format!(
+                "{} provinces have no Standstill unit stack in map/unitstacks.txt; a unit counter in one of them is not drawn.",
+                counters.missing_standstill.len()
+            ));
+        }
+        warnings.push(
+            "Unit counters carry no division-type icon: no division-template table is recorded. The organisation and strength bars are filled by each stack's mean over its own maximum, because the template maxima the game divides by are not recorded either.".into(),
+        );
+        warnings.push(
+            "Map icons are placed independently of each other; the game's icon de-overlap and camera-height grouping are not reproduced, so counters of nearby provinces overlap here.".into(),
+        );
         if !labels.centroid_fallbacks.is_empty() {
             warnings.push(format!(
                 "{} provinces have no victory-point unit stack and their label is anchored at the province centroid instead.",
@@ -191,6 +217,8 @@ impl Document {
             river_mesh,
             river_trace,
             river_build,
+            // counters
+            counters,
         })
     }
 
@@ -224,14 +252,33 @@ impl Document {
         )
     }
 
-    /// Builds this frame's victory-point and capital label quads.
-    pub fn label_batch(
+    // counters
+    /// Builds this frame's whole screen-space icon layer, in priority order.
+    ///
+    /// `00_graphics.lua:141-160` sorts map icons by `DEFAULT_PRIORITY_*`: air
+    /// and naval bases 3, victory points and capitals 5, unit stacks 10, land
+    /// and naval combat 20. The sprite batch draws in push order, so pushing
+    /// the four groups in that order is what produces the engine's overlap.
+    pub fn overlay_batch(
         &self,
         camera: Camera,
         viewport: [u32; 2],
-    ) -> io::Result<(Batch, LabelReport)> {
+    ) -> io::Result<(Batch, LabelReport, CounterReport)> {
+        let frame = self.frame()?;
+        let icons = counters::build(
+            &CounterInputs {
+                content: &self.counters,
+                assets: &self.icons.counters,
+                fonts: &self.icons.fonts,
+                map: &self.map,
+                camera,
+                viewport,
+            },
+            frame,
+        )?;
         let mut batch = Batch::default();
-        let report = labels::build(
+        batch.quads.extend(icons.bases.quads);
+        let label_report = labels::build(
             &labels::LabelInputs {
                 content: &self.labels,
                 localisation: &self.names.localisation,
@@ -241,10 +288,12 @@ impl Document {
                 camera,
                 viewport,
             },
-            self.frame()?,
+            frame,
             &mut batch,
         )?;
-        Ok((batch, report))
+        batch.quads.extend(icons.counters.quads);
+        batch.quads.extend(icons.combats.quads);
+        Ok((batch, label_report, icons.report))
     }
 }
 

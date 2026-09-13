@@ -1,10 +1,14 @@
 //! The game-identical map pipeline (`RENDERING.md`). CPU-side generators live beside the passes
 //! that consume them; each module owns one intermediate or one pass.
 
+// counters
+pub mod allegiance;
 // borders
 pub mod border_pass;
 pub mod borders;
 pub mod camera;
+// counters
+pub mod counters;
 pub mod frame;
 pub mod gradient;
 // names

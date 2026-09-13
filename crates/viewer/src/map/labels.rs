@@ -42,32 +42,16 @@
 //!
 //! # Allegiance colour
 //!
-//! The replay is omniscient, so "ours" has to be chosen. The `Players` table's
-//! human country is used when there is exactly one, otherwise the first human
-//! controller. Allegiance is then read off the **province owner**, not its
-//! controller: in `array_loaded.png` Praha is owned by Czechoslovakia and
-//! controlled by the Soviet Union and its dot is grey, which the controller
-//! reading could not produce.
+//! The perspective and the relation table live in [`super::allegiance`], which
+//! the unit counters share. This pass takes the **war-only** reading
+//! ([`super::allegiance::war_table`]), where our own faction partners stay
+//! grey; that module's docs carry the evidence for why, and why the counters
+//! read the same tables differently.
 //!
-//! Only two selectors survive that frame. The player's own country is green —
-//! Berlin, Kiel, Hannover, Breslau and Frankfurt all sample within one RGB
-//! unit of the render. Everything else is grey, **including Germany's own
-//! faction partners**: the recorded `FactionMembers` put `AUS`, `ROM`, `YUG`,
-//! `BUL` and `HUN` in Germany's faction, and Vienna, Budapest, Győr, Linz and
-//! Salzburg — all Austrian or Hungarian owned — are grey in the screenshot
-//! while colouring faction members blue paints all five. R2 section 5.2 reads
-//! Brussels and København as blue "allied"; sampling the middle of their sprite
-//! frames gives `(77, 77, 77)` and `(73, 73, 73)`, which is the grey frame, so
-//! that reading does not hold either.
-//!
-//! So faction membership alone is **not** what selects the blue frame, and
-//! nothing in this reference frame selects it: `WarRelations` records no German
-//! war at this hour, so a "fighting on our side" reading of blue would also
-//! produce none. The blue and gold frames are therefore left unselected until a
-//! reference pair with a live war settles them, and a country at war with ours
-//! takes the red frame, which the palette names outright
-//! (`COUNTER_MODE_ALLEGIANCE_ENEMY`). **UNVERIFIED**: red has no positive
-//! evidence in this frame either, only the palette name.
+//! Allegiance is read off the **province owner**, not its controller: in
+//! `array_loaded.png` Praha is owned by Czechoslovakia and controlled by the
+//! Soviet Union and its dot is grey, which the controller reading could not
+//! produce.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -84,9 +68,10 @@ use installed_content::{
 use replay::{frame::DecodedFrame, rows::tables};
 
 use super::{
+    allegiance::{self, Allegiance},
     borders::{HEIGHT_SCALE, WATER_HEIGHT, world_from_pixel},
     camera::Camera,
-    sprites::{Batch, SpriteSheet},
+    sprites::{self, Batch, SpriteSheet},
     text,
 };
 
@@ -106,6 +91,11 @@ pub const MAX_VICTORY_POINTS_FOR_PERCENT: f32 = 22.0;
 pub const CAPITAL_ICON_CUTOFF: f32 = 1100.0;
 /// `00_graphics.lua:950`: `VICTORY_POINT_MAP_ICON_CAPITAL_CUTOFF_MAX`.
 pub const CAPITAL_TEXT_CUTOFF: f32 = 1000.0;
+// counters
+/// `DEFAULT_PRIORITY_VICTORY_POINTS = DEFAULT_PRIORITY_CAPITAL = 5`
+/// (`00_graphics.lua:143,158`), the sort priority both label windows take.
+pub const PRIORITY: u32 = 5;
+
 /// Unit-stack type 38 `Victory point`, the label anchor (R2 section 9.4).
 pub const ANCHOR_STACK: u32 = 38;
 /// Unit-stack type 10 `Defending`, which slot 38 defaults from in the loader.
@@ -122,34 +112,6 @@ pub const CAPITAL_WINDOW: &str = "capital_mapicon";
 /// anchor, so its origin is half its height above it. R1 fitted the whole chain
 /// against `array_loaded.png` to rms 0.6 px on type-38 anchors.
 pub const CONTAINER_OFFSET: [f32; 2] = [0.0, -15.0];
-
-/// Which colour of the five in each shape group a label takes.
-///
-/// The strip is four shapes by five colours with the shape varying slowest, and
-/// the colours run red, blue, green, gold, grey (R2 section 5.2). Index 1
-/// (blue, `COUNTER_MODE_ALLEGIANCE_ALLIED`) and index 3 (gold, R2 open item 6)
-/// have no input that selects them; see the module docs. That is why
-/// [`Allegiance::index`] is written out rather than being a discriminant.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Allegiance {
-    /// `COUNTER_MODE_ALLEGIANCE_ENEMY`, red.
-    Enemy,
-    /// `COUNTER_MODE_ALLEGIANCE_OURS`, green.
-    Ours,
-    /// `COUNTER_MODE_ALLEGIANCE_OTHER`, grey.
-    Other,
-}
-
-impl Allegiance {
-    /// The colour's position inside a shape group of five.
-    pub fn index(self) -> u32 {
-        match self {
-            Allegiance::Enemy => 0,
-            Allegiance::Ours => 2,
-            Allegiance::Other => 4,
-        }
-    }
-}
 
 /// The shape group of a label: 0 star, 1 large dot, 2 pentagon, 3 small square.
 pub fn shape_group(capital: bool, victory_points: i32) -> u32 {
@@ -383,8 +345,8 @@ pub fn build(
             )
         })
         .collect();
-    let ours = perspective(frame, &links)?;
-    let allegiances = allegiance_table(frame, &links, ours)?;
+    let ours = allegiance::perspective(frame, &links)?;
+    let allegiances = allegiance::war_table(frame, &links, ours)?;
     let capitals = capital_provinces(frame, &links)?;
 
     let height = inputs.camera.height;
@@ -434,6 +396,8 @@ pub fn build(
             .and_then(|slot| allegiances.get(&slot).copied())
             .unwrap_or(Allegiance::Other);
         let shape = shape_group(capital, victory_points);
+        // counters: `icon` is `iconType "icon"`, child 0 of the window.
+        batch.at_layer(sprites::layer(PRIORITY, report.icons as u32, 0));
         batch.sprite(
             inputs.sheet,
             frame_index(shape, allegiance),
@@ -462,6 +426,8 @@ pub fn build(
         if glyphs.is_empty() {
             continue;
         }
+        // counters: the text box, which both windows declare after the icon.
+        batch.at_layer(sprites::layer(PRIORITY, report.icons as u32 - 1, 1));
         batch.text(&glyphs, color);
         report.texts += 1;
     }
@@ -536,64 +502,6 @@ pub fn victory_point_keys(tag: Option<&str>, province: u32) -> Vec<String> {
         ],
         None => vec![format!("VICTORY_POINTS_{province}")],
     }
-}
-
-/// The canonical country slot the allegiance colours are measured against.
-///
-/// `Players` holds the session's human countries; when it names exactly one,
-/// that is the perspective. Otherwise the first `HumanControllers` row with a
-/// positive count is taken, so a multiplayer replay still picks a stable
-/// country rather than colouring the whole map grey.
-fn perspective(frame: &DecodedFrame, links: &BTreeMap<u32, u32>) -> io::Result<Option<u32>> {
-    let players = frame.complete::<tables::Players>()?;
-    let distinct: BTreeSet<u32> = players
-        .iter()
-        .filter_map(|player| links.get(&player.country).copied())
-        .collect();
-    if distinct.len() == 1 {
-        return Ok(distinct.into_iter().next());
-    }
-    let mut humans: Vec<u32> = frame
-        .complete::<tables::HumanControllers>()?
-        .iter()
-        .filter(|row| row.count > 0)
-        .filter_map(|row| links.get(&row.country).copied())
-        .collect();
-    humans.sort_unstable();
-    Ok(humans.first().copied())
-}
-
-/// The allegiance of every country slot relative to `ours`.
-fn allegiance_table(
-    frame: &DecodedFrame,
-    links: &BTreeMap<u32, u32>,
-    ours: Option<u32>,
-) -> io::Result<BTreeMap<u32, Allegiance>> {
-    let mut table = BTreeMap::new();
-    let Some(ours) = ours else {
-        return Ok(table);
-    };
-    table.insert(ours, Allegiance::Ours);
-    // A war row stays in the table after the war ends, with `end_hour` set;
-    // an ongoing war records `i32::MAX`.
-    for war in frame.complete::<tables::WarRelations>()? {
-        if war.end_hour <= frame.hour {
-            continue;
-        }
-        let (first, second) = (
-            links.get(&war.first_country).copied(),
-            links.get(&war.second_country).copied(),
-        );
-        let other = match (first, second) {
-            (Some(a), Some(b)) if a == ours => Some(b),
-            (Some(a), Some(b)) if b == ours => Some(a),
-            _ => None,
-        };
-        if let Some(other) = other.filter(|slot| *slot != ours) {
-            table.insert(other, Allegiance::Enemy);
-        }
-    }
-    Ok(table)
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {

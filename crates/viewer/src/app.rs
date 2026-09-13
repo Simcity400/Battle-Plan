@@ -11,6 +11,8 @@ use crate::{
 };
 // names
 use crate::map::{
+    // counters
+    counters::CounterReport,
     labels::LabelReport,
     name_pass::{LayerFade, Placements},
     scene::{Overlay, Request},
@@ -56,6 +58,8 @@ pub struct Viewer {
     fade: LayerFade,
     last_frame: Instant,
     label_report: LabelReport,
+    // counters
+    counter_report: CounterReport,
 }
 
 impl Viewer {
@@ -101,6 +105,8 @@ impl Viewer {
             fade: LayerFade::instant(camera_height),
             last_frame: Instant::now(),
             label_report: LabelReport::default(),
+            // counters
+            counter_report: CounterReport::default(),
         };
         if !viewer.settings
             && let Some(path) = viewer.options.replay.clone()
@@ -549,10 +555,13 @@ impl Viewer {
                 Err(error) => return Err(error.to_string()),
             }
         }
-        let (label_batch, label_report) = document
-            .label_batch(camera, pixels)
+        // counters: one batch carries the bases, the labels, the counters and
+        // the combat icons in `DEFAULT_PRIORITY_*` order.
+        let (label_batch, label_report, counter_report) = document
+            .overlay_batch(camera, pixels)
             .map_err(|error| error.to_string())?;
         self.label_report = label_report;
+        self.counter_report = counter_report;
         let scene = self.scene.as_mut().unwrap();
         scene
             .render(

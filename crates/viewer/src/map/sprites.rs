@@ -23,6 +23,8 @@ use eframe::wgpu;
 use installed_content::{ResolvedLayers, gfx, image::dds};
 
 use super::{
+    // counters
+    counters::CounterAssets,
     scene::{SAMPLE_COUNT, Targets, sampler_entry, texture_entry},
     text,
     textures::{Bound, upload},
@@ -75,6 +77,8 @@ pub struct MapIcons {
     pub images: Vec<dds::Texture>,
     pub fonts: text::Fonts,
     pub victory_points: SpriteSheet,
+    // counters: the unit-counter, base and combat sheets, and the flag atlas.
+    pub counters: CounterAssets,
 }
 
 impl MapIcons {
@@ -87,17 +91,20 @@ impl MapIcons {
         let mut images = Vec::new();
         let fonts = text::Fonts::load(layers, &mut images)?;
         let sprites = gfx::sprites(layers)?;
-        let victory_points = sheet(layers, &sprites, VICTORY_POINT_STRIP, &mut images)?;
+        let victory_points = load_sheet(layers, &sprites, VICTORY_POINT_STRIP, &mut images)?;
+        // counters
+        let counters = CounterAssets::load(layers, &sprites, &mut images)?;
         Ok(Self {
             images,
             fonts,
             victory_points,
+            counters,
         })
     }
 }
 
 /// Loads one declared sprite and appends its texture to `images`.
-fn sheet(
+pub fn load_sheet(
     layers: &ResolvedLayers,
     sprites: &std::collections::BTreeMap<String, gfx::SpriteType>,
     name: &str,
@@ -140,17 +147,52 @@ pub struct Quad {
     pub uv: [f32; 4],
     /// Straight RGBA multiplier; `[1, 1, 1, 1]` draws the texture as authored.
     pub color: [f32; 4],
+    // counters
+    /// Clockwise rotation about the rectangle's centre, in radians.
+    ///
+    /// `mapicons.gui` rotates two children of the map icons this pass draws:
+    /// the counter bars by `1.5708` and `battle_indicator_direction` by the
+    /// combat's own heading. Everything else pushes zero and keeps the
+    /// pixel-snapped axis-aligned path.
+    pub rotation: f32,
+    // counters
+    /// The sort key [`layer`] builds; see it for the field order.
+    pub layer: u32,
+}
+
+// counters
+/// A quad's sort key: the engine's icon priority, then the icon's own place in
+/// the pass, then the child's place inside its window.
+///
+/// Quads are uploaded sorted by `(layer, texture)`. The engine sorts map icons
+/// by `DEFAULT_PRIORITY_*` (R2 section 5.5) and draws each icon's children in
+/// the order `mapicons.gui` declares them, so **only quads that are the same
+/// child of the same icon may be reordered** — which is what batches a run of
+/// glyphs onto one page without ever letting one counter's flag overtake
+/// another counter's plate. `icon` wraps at 16 children per window, which is
+/// more than any window this pass draws.
+pub const fn layer(priority: u32, icon: u32, child: u32) -> u32 {
+    priority * 1_000_000 + icon * 16 + child
 }
 
 /// A frame's worth of screen-space quads, in the order the caller pushed them.
 #[derive(Clone, Debug, Default)]
 pub struct Batch {
     pub quads: Vec<Quad>,
+    // counters
+    /// The layer subsequent pushes are tagged with.
+    layer: u32,
 }
 
 impl Batch {
     pub fn is_empty(&self) -> bool {
         self.quads.is_empty()
+    }
+
+    // counters
+    /// Tags every later push with this sort layer.
+    pub fn at_layer(&mut self, layer: u32) {
+        self.layer = layer;
     }
 
     /// Adds one sprite frame with its top-left corner at `at`.
@@ -161,6 +203,108 @@ impl Batch {
             rect: [at[0], at[1], size[0], size[1]],
             uv: sheet.frame_uv(frame),
             color,
+            rotation: 0.0,
+            layer: self.layer,
+        });
+    }
+
+    // counters
+    /// Adds one sprite frame drawn into an explicit device-pixel size.
+    ///
+    /// `mapicons.gui` gives several children a `scale`, and the flag cells are
+    /// drawn from an atlas whose cell is not the sprite's frame, so the size
+    /// cannot always come from the sheet.
+    pub fn scaled(
+        &mut self,
+        sheet: &SpriteSheet,
+        frame: u32,
+        at: [f32; 2],
+        size: [f32; 2],
+        color: [f32; 4],
+    ) {
+        self.quads.push(Quad {
+            texture: sheet.texture,
+            rect: [at[0], at[1], size[0], size[1]],
+            uv: sheet.frame_uv(frame),
+            color,
+            rotation: 0.0,
+            layer: self.layer,
+        });
+    }
+
+    // counters
+    /// Adds one sprite frame rotated clockwise about its own centre.
+    pub fn rotated(
+        &mut self,
+        sheet: &SpriteSheet,
+        frame: u32,
+        at: [f32; 2],
+        size: [f32; 2],
+        rotation: f32,
+        color: [f32; 4],
+    ) {
+        self.quads.push(Quad {
+            texture: sheet.texture,
+            rect: [at[0], at[1], size[0], size[1]],
+            uv: sheet.frame_uv(frame),
+            color,
+            rotation,
+            layer: self.layer,
+        });
+    }
+
+    // counters
+    /// Adds an explicit atlas rectangle of an already-known page.
+    pub fn cell(
+        &mut self,
+        texture: usize,
+        at: [f32; 2],
+        size: [f32; 2],
+        uv: [f32; 4],
+        color: [f32; 4],
+    ) {
+        self.quads.push(Quad {
+            texture,
+            rect: [at[0], at[1], size[0], size[1]],
+            uv,
+            color,
+            rotation: 0.0,
+            layer: self.layer,
+        });
+    }
+
+    // counters
+    /// Adds the leftmost `fill` of one frame, clipping the rectangle and the uv.
+    ///
+    /// This is how the counter bars are filled: `mapicons.gui` declares
+    /// `bar_org` and `bar_str` with `rotation = 1.5708`, which turns the
+    /// 3 x 17 texture into a 17 x 3 horizontal bar. Both textures are a
+    /// **single flat colour** — `mapicon_bar_org_sprite.dds` is
+    /// `(105, 195, 115)` in every one of its 51 texels and
+    /// `mapicon_bar_str_sprite.dds` is `(195, 145, 75)` — so the quarter turn
+    /// produces exactly the same pixels as drawing the frame into the rotated
+    /// rectangle, and the caller passes the already-rotated size.
+    pub fn bar(
+        &mut self,
+        sheet: &SpriteSheet,
+        at: [f32; 2],
+        size: [f32; 2],
+        fill: f32,
+        color: [f32; 4],
+    ) {
+        let fill = fill.clamp(0.0, 1.0);
+        let width = (size[0] * fill).floor();
+        if width < 1.0 {
+            return;
+        }
+        let [u0, v0, u1, v1] = sheet.frame_uv(0);
+        self.quads.push(Quad {
+            texture: sheet.texture,
+            rect: [at[0], at[1], width, size[1]],
+            uv: [u0, v0, u0 + (u1 - u0) * fill, v1],
+            color,
+            rotation: 0.0,
+            layer: self.layer,
         });
     }
 
@@ -171,6 +315,8 @@ impl Batch {
             rect: glyph.rect,
             uv: glyph.uv,
             color,
+            rotation: 0.0,
+            layer: self.layer,
         }));
     }
 }
@@ -388,7 +534,9 @@ impl SpritePass {
             return;
         }
         let mut order: Vec<usize> = (0..batch.quads.len()).collect();
-        order.sort_by_key(|&index| batch.quads[index].texture);
+        // counters: `(layer, texture)`, so a page batch never overtakes an
+        // icon child that has to draw under or over another.
+        order.sort_by_key(|&index| (batch.quads[index].layer, batch.quads[index].texture));
         let width = size[0] as f32;
         let height = size[1] as f32;
         let mut vertices: Vec<Vertex> = Vec::with_capacity(order.len() * 6);
@@ -402,10 +550,28 @@ impl SpritePass {
             let x1 = x0 + quad.rect[2].round();
             let y1 = y0 + quad.rect[3].round();
             let clip = |x: f32, y: f32| [x / width * 2.0 - 1.0, 1.0 - y / height * 2.0];
-            let corner = |x: f32, y: f32, u: f32, v: f32| Vertex {
-                position: clip(x, y),
-                uv: [u, v],
-                color: quad.color,
+            // counters: a rotated quad turns about its own centre, with `y`
+            // down, so a positive angle is clockwise on screen.
+            let spin = (quad.rotation != 0.0).then(|| {
+                let (sin, cos) = quad.rotation.sin_cos();
+                ([(x0 + x1) * 0.5, (y0 + y1) * 0.5], sin, cos)
+            });
+            let corner = |x: f32, y: f32, u: f32, v: f32| {
+                let (x, y) = match spin {
+                    Some((centre, sin, cos)) => {
+                        let (dx, dy) = (x - centre[0], y - centre[1]);
+                        (
+                            centre[0] + dx * cos - dy * sin,
+                            centre[1] + dx * sin + dy * cos,
+                        )
+                    }
+                    None => (x, y),
+                };
+                Vertex {
+                    position: clip(x, y),
+                    uv: [u, v],
+                    color: quad.color,
+                }
             };
             let [u0, v0, u1, v1] = quad.uv;
             let start = vertices.len() as u32;

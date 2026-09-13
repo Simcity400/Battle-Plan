@@ -134,6 +134,12 @@ pub fn size(items: &[Item]) -> io::Result<Option<(Length, Length)>> {
     pair(items, b"size", b"width", b"height")
 }
 
+// counters
+/// `slotsize = { width = .. height = .. }`, a `gridBoxType`'s cell step.
+pub fn slot_size(items: &[Item]) -> io::Result<Option<(Length, Length)>> {
+    pair(items, b"slotsize", b"width", b"height")
+}
+
 /// `spriteType`, or the `quadTextureSprite` a button names instead.
 pub fn sprite(items: &[Item]) -> Option<&str> {
     last(items, b"spriteType")
