@@ -30,7 +30,9 @@
 //! while emitting the identical Unavailable outcome.
 
 use engine::Memory;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Mutex;
 
 static GROWTH_DIAGNOSTICS: Mutex<std::collections::BTreeMap<&'static str, serde_json::Value>> =
@@ -126,6 +128,9 @@ pub struct RawLog<const N: usize> {
     /// (contiguous table copies). The decode side then serves sub-ranges
     /// from the enclosing span instead of exact matches only.
     pub has_bulk: bool,
+    // Address metadata only, never game bytes. Taken and returned by the
+    // decode worker; clear() on the copy side leaves it untouched.
+    index: RefCell<Option<RecordedIndex>>,
 }
 
 impl<const N: usize> Default for RawLog<N> {
@@ -148,6 +153,7 @@ impl<const N: usize> RawLog<N> {
             span_exhausted: false,
             required_bytes: 0,
             has_bulk: false,
+            index: RefCell::new(None),
         }
     }
 
@@ -166,7 +172,9 @@ impl<const N: usize> RawLog<N> {
     pub fn grow_for_next(&self) -> bool {
         // More storage cannot repair a failed source read. In particular an
         // invalid optional-object path must not double every pool indefinitely.
-        self.overflowed && !self.fault.iter().any(|fault| *fault)
+        self.overflowed
+            && self.required_bytes <= u32::MAX as usize
+            && !self.fault.iter().any(|fault| *fault)
     }
 
     /// Grow only exhausted storage off-thread. Span-heavy censuses must not
@@ -249,7 +257,7 @@ impl<const N: usize> RawLog<N> {
                 .bytes
                 .len()
                 .checked_add(len)
-                .is_none_or(|end| end > self.bytes.capacity())
+                .is_none_or(|end| end > self.bytes.capacity() || end > u32::MAX as usize)
         {
             self.span_exhausted = self.spans.len() == self.spans.capacity();
             self.required_bytes = self.bytes.len().saturating_add(len);
@@ -273,6 +281,153 @@ impl<const N: usize> RawLog<N> {
         });
         self.raw_bytes[lowest_table(mask)] += len as u64;
         Some(start)
+    }
+
+    /// Stage independent fields with one guarded call, retaining the exact
+    /// successful prefix and first failure. Each field keeps its table mask.
+    pub fn take_scattered<const M: usize>(
+        &mut self,
+        memory: &impl Memory,
+        addresses: [usize; M],
+        lengths: [usize; M],
+        masks: [u32; M],
+    ) -> Option<([usize; M], usize)> {
+        if self.overflowed {
+            return None;
+        }
+        let start = self.bytes.len();
+        let mut end = start;
+        let mut starts = [0; M];
+        for (index, len) in lengths.into_iter().enumerate() {
+            starts[index] = end;
+            let Some(next) = end.checked_add(len).filter(|_| len <= u32::MAX as usize) else {
+                self.overflowed = true;
+                return None;
+            };
+            end = next;
+        }
+        let spans = lengths.iter().filter(|&&len| len != 0).count();
+        if spans > self.spans.capacity() - self.spans.len()
+            || end > self.bytes.capacity()
+            || end > u32::MAX as usize
+        {
+            self.span_exhausted = spans > self.spans.capacity() - self.spans.len();
+            self.required_bytes = end;
+            self.overflowed = true;
+            return None;
+        }
+        self.bytes.resize(end, 0);
+        let completed = {
+            let mut remaining = &mut self.bytes[start..end];
+            let mut destinations: [&mut [u8]; M] = std::array::from_fn(|index| {
+                let (field, rest) = std::mem::take(&mut remaining).split_at_mut(lengths[index]);
+                remaining = rest;
+                field
+            });
+            let guarded = std::array::from_fn(|index| {
+                if is_canonical_range(addresses[index], lengths[index]) {
+                    addresses[index]
+                } else {
+                    0
+                }
+            });
+            memory.copy_scattered(guarded, &mut destinations)
+        };
+        debug_assert!(completed <= M);
+        for index in 0..completed {
+            let len = lengths[index];
+            if len != 0 {
+                self.spans.push(Span {
+                    addr: addresses[index],
+                    len: len as u32,
+                    ok: true,
+                    mask: masks[index],
+                    start: starts[index] as u32,
+                    bulk: false,
+                });
+                self.raw_bytes[lowest_table(masks[index])] += len as u64;
+            }
+        }
+        if completed != M {
+            self.bytes.truncate(starts[completed]);
+            self.note_fail(
+                addresses[completed],
+                lengths[completed] as u32,
+                masks[completed],
+            );
+        }
+        Some((starts, completed))
+    }
+
+    /// Copy at most 64 consecutive fixed-width elements in one guard. Retain
+    /// the successful prefix as one bulk span and the first failed element
+    /// separately; never retry a partial copy or read beyond that failure.
+    /// The limit sizes stack scratch, not the source array: callers chunk it.
+    pub fn take_array_chunk(
+        &mut self,
+        memory: &impl Memory,
+        address: usize,
+        width: usize,
+        count: usize,
+        mask: u32,
+    ) -> Option<(usize, usize)> {
+        if self.overflowed || count > 64 || width == 0 || width > u32::MAX as usize {
+            return None;
+        }
+        let start = self.bytes.len();
+        if count == 0 {
+            return Some((start, 0));
+        }
+        let size = count.checked_mul(width)?;
+        let end = start.checked_add(size)?;
+        if self.spans.capacity() - self.spans.len() < 2
+            || end > self.bytes.capacity()
+            || end > u32::MAX as usize
+        {
+            self.span_exhausted = self.spans.capacity() - self.spans.len() < 2;
+            self.required_bytes = end;
+            self.overflowed = true;
+            return None;
+        }
+        let addresses: [usize; 64] =
+            std::array::from_fn(|index| address.checked_add(index * width).unwrap_or(0));
+        let guarded = addresses.map(|address| {
+            if is_canonical_range(address, width) {
+                address
+            } else {
+                0
+            }
+        });
+        self.bytes.resize(end, 0);
+        let fields = [engine::memory::RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: width,
+        }];
+        let completed = memory.copy_records(
+            &guarded[..count],
+            &fields,
+            width,
+            &mut self.bytes[start..end],
+        );
+        debug_assert!(completed <= count);
+        self.bytes.truncate(start + completed * width);
+        if completed != 0 {
+            self.spans.push(Span {
+                addr: address,
+                len: (completed * width) as u32,
+                ok: true,
+                mask,
+                start: start as u32,
+                bulk: true,
+            });
+            self.has_bulk = true;
+            self.raw_bytes[lowest_table(mask)] += (completed * width) as u64;
+        }
+        if completed != count {
+            self.note_fail(addresses[completed], width as u32, mask);
+        }
+        Some((start, completed))
     }
 
     /// Stage an exact fixed-layout gather with one guarded call. The log
@@ -466,68 +621,145 @@ pub fn lowest_table(mask: u32) -> usize {
 /// taken once and requested many times with identical bytes, while a span
 /// the mirror never took has no entry at all and still fails loudly.
 pub struct Recorded<'a> {
-    map: HashMap<(usize, u32), SpanCursor>,
-    next: Vec<usize>,
+    index: RecordedIndex,
+    recycle: &'a RefCell<Option<RecordedIndex>>,
     spans: &'a [Span],
-    // Start, end, byte-pool offset, maximum end through this sorted entry.
-    bulk: Vec<(usize, usize, usize, usize)>,
     bytes: &'a [u8],
 }
 
+#[derive(Debug, Default)]
+struct RecordedIndex {
+    has_bulk: bool,
+    map: HashMap<(usize, u32), SpanCursor, BuildHasherDefault<ReadAddressHasher>>,
+    next: Vec<usize>,
+    repeated: Vec<(usize, u32)>,
+    // Exact structural comparison, not a hash witness. Payload bytes and
+    // byte-pool offsets always come from the current refresh's spans.
+    shape: Vec<(usize, u32, bool, bool)>,
+    // Start, end, current-log span index, maximum end through this entry.
+    bulk: Vec<(usize, usize, usize, usize)>,
+}
+
+/// Process-local integer read keys, not untrusted strings or file identity.
+/// Exact address/length equality still resolves every bucket collision. This
+/// cheaper mixer affects lookup cost only; it is never a correctness witness.
+#[derive(Debug, Default)]
+struct ReadAddressHasher(u64);
+
+impl Hasher for ReadAddressHasher {
+    fn finish(&self) -> u64 {
+        let mut value = self.0;
+        value ^= value >> 32;
+        value = value.wrapping_mul(0xd6e8_feb8_6659_fd93);
+        value ^ (value >> 32)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u64(u64::from(byte));
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0 ^ value).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.write_u64(value as u64);
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.write_u64(u64::from(value));
+    }
+}
+
+#[derive(Debug)]
 struct SpanCursor {
+    first: usize,
     current: std::cell::Cell<usize>,
     last: usize,
 }
 
-impl<'a> Recorded<'a> {
-    pub fn build<const N: usize>(log: &'a RawLog<N>) -> Self {
-        let mut map: HashMap<(usize, u32), SpanCursor> = HashMap::with_capacity(log.spans.len());
-        let mut next: Vec<usize> = (0..log.spans.len()).collect();
-        let mut bulk = Vec::new();
-        for (index, span) in log.spans.iter().enumerate() {
-            map.entry((span.addr, span.len))
+impl RecordedIndex {
+    fn prepare(&mut self, spans: &[Span], has_bulk: bool) {
+        if self.has_bulk == has_bulk
+            && self.shape.len() == spans.len()
+            && self
+                .shape
+                .iter()
+                .zip(spans)
+                .all(|(shape, span)| *shape == (span.addr, span.len, span.ok, span.bulk))
+        {
+            for key in &self.repeated {
+                let cursor = &self.map[key];
+                cursor.current.set(cursor.first);
+            }
+            return;
+        }
+        self.map.clear();
+        self.has_bulk = has_bulk;
+        // Grow for distinct read keys, not repeated observations. In the
+        // calibration matrix those counts can differ by orders of magnitude.
+        self.next.clear();
+        self.next.extend(0..spans.len());
+        self.repeated.clear();
+        self.bulk.clear();
+        self.shape.clear();
+        for (index, span) in spans.iter().enumerate() {
+            self.shape.push((span.addr, span.len, span.ok, span.bulk));
+            self.map
+                .entry((span.addr, span.len))
                 .and_modify(|cursor| {
-                    next[cursor.last] = index;
+                    if cursor.first == cursor.last {
+                        self.repeated.push((span.addr, span.len));
+                    }
+                    self.next[cursor.last] = index;
                     cursor.last = index;
                 })
                 .or_insert(SpanCursor {
+                    first: index,
                     current: std::cell::Cell::new(index),
                     last: index,
                 });
-            if span.ok {
-                // Only flagged bulk chunks serve sub-ranges: small exact
-                // spans inside a chunk must never shadow it.
-                if log.has_bulk && span.bulk && span.len > 0 {
-                    bulk.push((
-                        span.addr,
-                        span.addr + span.len as usize,
-                        span.start as usize,
-                        0,
-                    ));
-                }
+            // Only flagged bulk chunks serve sub-ranges: small exact
+            // spans inside a chunk must never shadow it.
+            if span.ok && self.has_bulk && span.bulk && span.len > 0 {
+                self.bulk
+                    .push((span.addr, span.addr + span.len as usize, index, 0));
             }
         }
-        if log.has_bulk {
-            bulk.sort_unstable();
+        if !self.bulk.is_empty() {
+            self.bulk.sort_unstable();
             let mut maximum_end = 0;
-            for span in &mut bulk {
+            for span in &mut self.bulk {
                 maximum_end = maximum_end.max(span.1);
                 span.3 = maximum_end;
             }
         }
+    }
+}
+
+impl<'a> Recorded<'a> {
+    pub fn build<const N: usize>(log: &'a RawLog<N>) -> Self {
+        let mut index = log.index.borrow_mut().take().unwrap_or_default();
+        index.prepare(&log.spans, log.has_bulk);
         Self {
-            map,
-            next,
+            index,
+            recycle: &log.index,
             spans: &log.spans,
-            bulk,
             bytes: &log.bytes,
         }
     }
 
     fn serve(&self, address: usize, destination: &mut [u8]) -> bool {
-        if let Some(cursor) = self.map.get(&(address, destination.len() as u32)) {
-            let index = cursor.current.get();
-            cursor.current.set(self.next[index]);
+        if let Some(cursor) = self.index.map.get(&(address, destination.len() as u32)) {
+            let index = if cursor.first == cursor.last {
+                cursor.first
+            } else {
+                let current = cursor.current.get();
+                cursor.current.set(self.index.next[current]);
+                current
+            };
             let span = &self.spans[index];
             if !span.ok {
                 return false;
@@ -539,7 +771,7 @@ impl<'a> Recorded<'a> {
             destination.copy_from_slice(source);
             return true;
         }
-        if self.bulk.is_empty() {
+        if self.index.bulk.is_empty() {
             return false;
         }
         let end = address.checked_add(destination.len());
@@ -551,21 +783,32 @@ impl<'a> Recorded<'a> {
         // hide the surrounding object when a later field is outside that
         // smaller array. Prefix maxima bound the backward search even when
         // no span encloses the request.
-        let index = self.bulk.partition_point(|span| span.0 <= address);
-        let enclosing = self.bulk[..index]
+        let index = self.index.bulk.partition_point(|span| span.0 <= address);
+        let enclosing = self.index.bulk[..index]
             .iter()
             .rev()
             .take_while(|span| span.3 >= end)
             .find(|span| span.1 >= end);
-        let Some(&(start, _, pool, _)) = enclosing else {
+        let Some(&(start, _, source_index, _)) = enclosing else {
             return false;
         };
-        let offset = pool + (address - start);
+        let offset = self.spans[source_index].start as usize + (address - start);
         let Some(source) = self.bytes.get(offset..offset + destination.len()) else {
             return false;
         };
         destination.copy_from_slice(source);
         true
+    }
+}
+
+impl Drop for Recorded<'_> {
+    fn drop(&mut self) {
+        // Simultaneous readers get independent cursors. Only one cached index
+        // is retained per payload; any additional index is dropped off-thread.
+        let mut recycled = self.recycle.borrow_mut();
+        if recycled.is_none() {
+            *recycled = Some(std::mem::take(&mut self.index));
+        }
     }
 }
 
@@ -595,6 +838,258 @@ impl Memory for Recorded<'_> {
 mod tests {
     use super::*;
     use engine::memory::SliceMemory;
+
+    #[test]
+    fn array_chunk_coalesces_exact_success_prefix_without_retry() {
+        struct Source<'a> {
+            memory: SliceMemory<'a>,
+            calls: std::cell::Cell<usize>,
+        }
+        impl Memory for Source<'_> {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("expected one record gather")
+            }
+            fn copy_records(
+                &self,
+                pointers: &[usize],
+                fields: &[engine::memory::RecordField],
+                stride: usize,
+                destination: &mut [u8],
+            ) -> usize {
+                self.calls.set(self.calls.get() + 1);
+                self.memory
+                    .copy_records(pointers, fields, stride, destination)
+            }
+        }
+        for readable in 0..=4 {
+            let bytes: Vec<u8> = (0..32).collect();
+            let memory = Source {
+                memory: SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes[..readable * 8],
+                },
+                calls: std::cell::Cell::new(0),
+            };
+            let mut log = RawLog::<2>::new(2, 32);
+            assert_eq!(
+                log.take_array_chunk(&memory, 0x1000, 8, 4, 2),
+                Some((0, readable))
+            );
+            assert_eq!(memory.calls.get(), 1);
+            assert_eq!(log.bytes, bytes[..readable * 8]);
+            assert_eq!(log.raw_bytes, [0, (readable * 8) as u64]);
+            assert_eq!(log.fault, [false, readable != 4]);
+            assert_eq!(
+                log.spans.len(),
+                usize::from(readable != 0) + usize::from(readable != 4)
+            );
+            let recorded = Recorded::build(&log);
+            for index in 0..4 {
+                let mut field = [0; 8];
+                assert_eq!(
+                    recorded.copy(0x1000 + index * 8, &mut field),
+                    index < readable
+                );
+                if index < readable {
+                    assert_eq!(field, bytes[index * 8..index * 8 + 8]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn array_chunk_capacity_failure_reads_nothing_and_empty_chunk_succeeds() {
+        let mut log = RawLog::<1>::new(2, 8);
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &[3; 16],
+        };
+        assert_eq!(log.take_array_chunk(&memory, 0, 8, 0, 1), Some((0, 0)));
+        assert_eq!(log.take_array_chunk(&memory, 0x1000, 8, 2, 1), None);
+        assert!(log.overflowed);
+        assert!(log.spans.is_empty());
+        assert!(log.bytes.is_empty());
+        log.grow();
+        log.clear();
+        assert_eq!(log.take_array_chunk(&memory, 0x1000, 8, 2, 1), Some((0, 2)));
+    }
+
+    #[test]
+    fn raw_growth_stops_when_offsets_cannot_represent_the_required_arena() {
+        let mut log = RawLog::<1> {
+            overflowed: true,
+            required_bytes: u32::MAX as usize,
+            ..Default::default()
+        };
+        assert!(log.grow_for_next());
+        log.required_bytes += 1;
+        assert!(!log.grow_for_next());
+    }
+
+    #[test]
+    fn scattered_copy_uses_one_gather_and_keeps_failed_field_masks() {
+        struct Scatter<'a> {
+            memory: SliceMemory<'a>,
+            gathers: std::cell::Cell<usize>,
+        }
+        impl Memory for Scatter<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                self.memory.copy(address, destination)
+            }
+            fn copy_scattered<const M: usize>(
+                &self,
+                addresses: [usize; M],
+                destinations: &mut [&mut [u8]; M],
+            ) -> usize {
+                self.gathers.set(self.gathers.get() + 1);
+                self.memory.copy_scattered(addresses, destinations)
+            }
+        }
+        let memory = Scatter {
+            memory: SliceMemory {
+                base: 0x1000,
+                bytes: &[31; 8],
+            },
+            gathers: std::cell::Cell::new(0),
+        };
+        let mut log = RawLog::<2>::new(4, 32);
+        assert_eq!(
+            log.take_scattered(
+                &memory,
+                [0x1000, 0, 0x1008, 0x1000],
+                [8, 0, 4, 4],
+                [1, 1, 2, 1]
+            ),
+            Some(([0, 8, 8, 12], 2))
+        );
+        assert_eq!(memory.gathers.get(), 1);
+        assert_eq!(log.spans.len(), 2);
+        assert_eq!(log.bytes.len(), 8);
+        assert_eq!(log.fault, [false, true]);
+        assert_eq!(log.raw_bytes, [8, 0]);
+        assert_eq!(log.spans[1].mask, 2);
+        assert!(!log.spans[1].ok);
+        let recorded = Recorded::build(&log);
+        assert!(recorded.copy(0x1000, &mut [0; 8]));
+        assert!(!recorded.copy(0x1008, &mut [0; 4]));
+        assert!(!recorded.copy(0x1000, &mut [0; 4]));
+    }
+
+    #[test]
+    fn scattered_overflow_declines_before_touching_any_source() {
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &[7; 8],
+        };
+        let mut log = RawLog::<1>::new(1, 4);
+        assert_eq!(
+            log.take_scattered(&memory, [0x1000, 0x1004], [4, 4], [1, 1]),
+            None
+        );
+        assert!(log.overflowed);
+        assert!(log.spans.is_empty());
+        assert!(log.bytes.is_empty());
+        log.grow();
+        log.clear();
+        assert_eq!(
+            log.take_scattered(&memory, [0x1000, 0x1004], [4, 4], [1, 1]),
+            Some(([0, 4], 2))
+        );
+    }
+
+    #[test]
+    fn reused_index_reads_only_current_bytes_and_resets_duplicate_cursors() {
+        let mut log = RawLog::<1>::new(4, 32);
+        for (first, second) in [(7, 11), (23, 47)] {
+            log.clear();
+            for byte in [first, second] {
+                let memory = SliceMemory {
+                    base: 0x1000,
+                    bytes: &[byte; 8],
+                };
+                log.take(&memory, 0x1000, 8, 1).unwrap();
+            }
+            let recorded = Recorded::build(&log);
+            let mut bytes = [0; 8];
+            assert!(recorded.copy(0x1000, &mut bytes));
+            assert_eq!(bytes, [first; 8]);
+            assert!(recorded.copy(0x1000, &mut bytes));
+            assert_eq!(bytes, [second; 8]);
+            assert!(recorded.copy(0x1000, &mut bytes));
+            assert_eq!(bytes, [second; 8]);
+        }
+        assert!(log.index.borrow().is_some());
+    }
+
+    #[test]
+    fn cached_index_rebuilds_when_address_or_failure_changes() {
+        let mut log = RawLog::<1>::new(4, 32);
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &[9; 16],
+        };
+        log.take(&memory, 0x1000, 8, 1).unwrap();
+        assert!(Recorded::build(&log).copy(0x1000, &mut [0; 8]));
+        log.clear();
+        log.take(&memory, 0x1008, 8, 1).unwrap();
+        {
+            let recorded = Recorded::build(&log);
+            assert!(!recorded.copy(0x1000, &mut [0; 8]));
+            assert!(recorded.copy(0x1008, &mut [0; 8]));
+        }
+        log.clear();
+        assert!(log.take(&FailAll, 0x1008, 8, 1).is_none());
+        assert!(!Recorded::build(&log).copy(0x1008, &mut [0; 8]));
+    }
+
+    #[test]
+    fn cached_bulk_index_uses_current_pool_offsets_and_bulk_gate() {
+        let mut log = RawLog::<1>::new(4, 32);
+        log.has_bulk = true;
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &[9; 16],
+        };
+        log.take_bulk(&memory, 0x1000, 16, 1).unwrap();
+        assert!(Recorded::build(&log).copy(0x1004, &mut [0; 8]));
+        log.bytes.splice(0..0, [71; 8]);
+        log.spans[0].start += 8;
+        let mut bytes = [0; 8];
+        assert!(Recorded::build(&log).copy(0x1004, &mut bytes));
+        assert_eq!(bytes, [9; 8]);
+        log.has_bulk = false;
+        assert!(!Recorded::build(&log).copy(0x1004, &mut bytes));
+    }
+
+    #[test]
+    fn simultaneous_recorded_views_have_independent_cursors() {
+        let mut log = RawLog::<1>::new(4, 32);
+        for byte in [7, 19] {
+            log.take(
+                &SliceMemory {
+                    base: 0x1000,
+                    bytes: &[byte; 8],
+                },
+                0x1000,
+                8,
+                1,
+            )
+            .unwrap();
+        }
+        let first = Recorded::build(&log);
+        let second = Recorded::build(&log);
+        let mut bytes = [0; 8];
+        assert!(first.copy(0x1000, &mut bytes));
+        assert!(first.copy(0x1000, &mut bytes));
+        assert_eq!(bytes, [19; 8]);
+        assert!(second.copy(0x1000, &mut bytes));
+        assert_eq!(bytes, [7; 8]);
+        drop(first);
+        assert!(Recorded::build(&log).copy(0x1000, &mut bytes));
+        assert_eq!(bytes, [7; 8]);
+        assert!(second.copy(0x1000, &mut bytes));
+        assert_eq!(bytes, [19; 8]);
+    }
 
     struct FailAll;
 

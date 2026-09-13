@@ -244,7 +244,13 @@ impl<B: SegmentBackend> Campaign<B> {
             );
             if is_skip {
                 skipped[index] = true;
-                if let Some(cached) = self.staggered_cache.get(&table) {
+                if self
+                    .encoder
+                    .can_carry(table, source.branch, source.hour, !self.spool.is_open())
+                {
+                    // Keep the small marker. The encoder already owns a
+                    // validated complete baseline; no row clone or recheck.
+                } else if let Some(cached) = self.staggered_cache.get(&table) {
                     source.tables[index] = cached.clone();
                 } else {
                     source.tables[index] = TableView::Unavailable {
@@ -2671,6 +2677,41 @@ mod tests {
             tables,
             metrics: Metrics::default(),
         }
+    }
+
+    #[test]
+    fn open_spool_carries_skip_marker_but_restart_materializes_cached_rows() {
+        use replay::frame::{FrameDecoder, TableUpdate};
+        use replay::rows::TableId;
+        let (mut campaign, _) = campaign();
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let mut first = staggered_frame(branch, 0, false);
+        campaign.apply_staggered_cache(&mut first);
+        let mut reference = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        decoder
+            .apply(&reference.encode(first.clone(), true).unwrap())
+            .unwrap();
+        campaign
+            .write(first.clone(), 1000, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+        assert!(campaign.spool.is_open());
+        let mut second = staggered_frame(branch, 1, true);
+        campaign.apply_staggered_cache(&mut second);
+        assert!(
+            matches!(&second.tables[TableId::Characters.index()], TableView::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON)
+        );
+        let encoded = campaign.encoder.encode(second, false).unwrap();
+        assert_eq!(
+            encoded.tables[TableId::Characters.index()],
+            TableUpdate::Unchanged { baseline: 0 }
+        );
+        assert_eq!(decoder.apply(&encoded).unwrap(), first.clone_with_hour(1));
+        campaign.spool.finish_segment().unwrap();
+        let mut third = staggered_frame(branch, 2, true);
+        campaign.apply_staggered_cache(&mut third);
+        assert_eq!(third, first.clone_with_hour(2));
+        assert!(campaign.encoder.encode(third, true).unwrap().keyframe);
     }
 
     #[test]

@@ -635,13 +635,19 @@ fn spool_loop(
         while let Some(index) = shared.ready.pop() {
             let service_started = sampling::qpc();
             work.queue_peak_observed = work.queue_peak_observed.max(shared.ready.len() + 1);
-            let mut elapsed = shared.completed[index].load(Ordering::Acquire);
-            while elapsed == 0 {
+            let mut elapsed = sampling::completed_callback_ticks(
+                &shared.completed[index],
+                &shared.callback_tail[index],
+            );
+            while elapsed.is_none() {
                 std::thread::yield_now();
-                elapsed = shared.completed[index].load(Ordering::Acquire);
+                elapsed = sampling::completed_callback_ticks(
+                    &shared.completed[index],
+                    &shared.callback_tail[index],
+                );
             }
             let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-            frame.total_ns = shared.ns(elapsed);
+            frame.total_ns = shared.ns(elapsed.unwrap());
             let before_bytes = frame.allocated_bytes();
             if !shared.roster_ready.load(Ordering::Acquire) {
                 // Any readable post-tick clock publishes the roster before its

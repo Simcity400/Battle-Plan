@@ -380,17 +380,31 @@ impl FrameEncoder {
     pub fn new() -> Self {
         Self::default()
     }
+    fn needs_keyframe(&self, branch: BranchId, hour: Hour, force: bool) -> bool {
+        force
+            || self.state.branch != Some(branch)
+            || self.keyframe_hour.is_none_or(|base| {
+                i64::from(hour) - i64::from(base) >= i64::from(KEYFRAME_INTERVAL)
+            })
+    }
+
+    /// A producer may leave the reserved cadence marker in this slot instead
+    /// of cloning already validated rows. Missing/partial baselines, branch
+    /// starts and keyframes still require the ordinary complete input.
+    pub fn can_carry(&self, table: TableId, branch: BranchId, hour: Hour, force: bool) -> bool {
+        crate::cadence::is_staggered(table)
+            && !self.needs_keyframe(branch, hour, force)
+            && self.state.last_hour.is_some_and(|previous| hour > previous)
+            && self.state.tables[table.index()].is_some()
+    }
+
     /// Segment recovery must call with force_keyframe; it may never reuse a failed write's delta.
     pub fn encode(&mut self, source: DecodedFrame, force_keyframe: bool) -> io::Result<Frame> {
         let new_branch = self.state.branch != Some(source.branch);
         if !new_branch && self.state.last_hour.is_some_and(|hour| hour >= source.hour) {
             return Err(invalid("frame hour did not advance on its branch"));
         }
-        let keyframe = force_keyframe
-            || new_branch
-            || self.keyframe_hour.is_none_or(|hour| {
-                i64::from(source.hour) - i64::from(hour) >= i64::from(KEYFRAME_INTERVAL)
-            });
+        let keyframe = self.needs_keyframe(source.branch, source.hour, force_keyframe);
         let mut tables = Vec::with_capacity(TABLE_COUNT);
         for (table, view) in TableId::ALL.into_iter().zip(&source.tables) {
             let update = match view {
@@ -445,8 +459,16 @@ impl FrameEncoder {
                     if reason.is_empty() {
                         return Err(invalid("unavailable table needs a reason"));
                     }
-                    TableUpdate::Unavailable {
-                        reason: reason.clone(),
+                    if reason == crate::cadence::SKIPPED_REASON
+                        && self.can_carry(table, source.branch, source.hour, force_keyframe)
+                    {
+                        TableUpdate::Unchanged {
+                            baseline: self.state.tables[table.index()].as_ref().unwrap().0,
+                        }
+                    } else {
+                        TableUpdate::Unavailable {
+                            reason: reason.clone(),
+                        }
                     }
                 }
             };
@@ -635,6 +657,65 @@ mod tests {
     };
 
     const FACTION_ID: u64 = 0xfedc_ba98_0000_004d;
+
+    #[test]
+    fn cadence_marker_carries_identical_validated_rows_without_input_clones() {
+        let mut ordinary = FrameEncoder::new();
+        let mut carried = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        for hour in 0..8 {
+            let full = source(1, hour);
+            let mut compact = full.clone();
+            if hour != 0 {
+                for table in TableId::ALL {
+                    if crate::cadence::is_staggered(table) {
+                        assert!(carried.can_carry(table, 1, hour, false));
+                        compact.tables[table.index()] = TableView::Unavailable {
+                            reason: crate::cadence::SKIPPED_REASON.into(),
+                        };
+                    }
+                }
+            }
+            let expected = ordinary.encode(full.clone(), false).unwrap();
+            let actual = carried.encode(compact, false).unwrap();
+            assert_eq!(actual, expected, "hour {hour}");
+            assert_eq!(decoder.apply(&actual).unwrap(), full);
+        }
+    }
+
+    #[test]
+    fn cadence_carry_requires_complete_same_branch_non_keyframe_baseline() {
+        let mut encoder = FrameEncoder::new();
+        let table = TableId::Characters;
+        assert!(!encoder.can_carry(table, 1, 1, false));
+        encoder.encode(source(1, 0), false).unwrap();
+        assert!(encoder.can_carry(table, 1, 1, false));
+        for (branch, hour, force) in [(2, 1, false), (1, 0, false), (1, 1, true), (1, 720, false)] {
+            assert!(!encoder.can_carry(table, branch, hour, force));
+        }
+        assert!(!encoder.can_carry(TableId::Clock, 1, 1, false));
+        let mut missing = source(1, 1);
+        missing.tables[table.index()] = TableView::Unavailable {
+            reason: "fault".into(),
+        };
+        encoder.encode(missing, false).unwrap();
+        assert!(!encoder.can_carry(table, 1, 2, false));
+        let mut marker = source(1, 2);
+        marker.tables[table.index()] = TableView::Unavailable {
+            reason: crate::cadence::SKIPPED_REASON.into(),
+        };
+        assert!(matches!(
+            encoder.encode(marker, false).unwrap().tables[table.index()],
+            TableUpdate::Unavailable { .. }
+        ));
+        let mut partial = source(1, 3);
+        let TableView::Complete(rows) = partial.tables[table.index()].clone() else {
+            unreachable!()
+        };
+        partial.tables[table.index()] = TableView::Truncated { rows, missing: 1 };
+        encoder.encode(partial, false).unwrap();
+        assert!(!encoder.can_carry(table, 1, 4, false));
+    }
 
     fn source(branch: BranchId, hour: Hour) -> DecodedFrame {
         DecodedFrame {

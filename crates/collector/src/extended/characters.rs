@@ -20,7 +20,6 @@ use replay::{
         UnitLeaderRow, UnitLeaderTraitExperienceRow, UnitLeaderTraitRow, tables,
     },
 };
-use std::collections::HashMap;
 
 pub const N: usize = 7;
 pub const TABLES: [TableId; N] = [
@@ -965,19 +964,19 @@ fn ability_row(row: &active_ability_record::Row, bytes: &[u8]) -> ActiveAbilityR
 // ===========================================================================
 
 /// Fault-attribution bits, one per family table in `TABLES[0..6]` order.
-const MASK_CHARACTERS: u8 = 0x01;
-const MASK_LEADERS: u8 = 0x02;
-const MASK_ADVISORS: u8 = 0x04;
-const MASK_UNITS: u8 = 0x08;
-const MASK_TRAITS: u8 = 0x10;
-const MASK_EXPERIENCE: u8 = 0x20;
-const MASK_ALL: u8 = 0x3f;
-const MASK_COUNTRY: u8 = MASK_CHARACTERS | MASK_LEADERS | MASK_ADVISORS;
-const MASK_UNIT_LINK: u8 = MASK_UNITS | MASK_TRAITS | MASK_EXPERIENCE;
+const MASK_CHARACTERS: u32 = 0x01;
+const MASK_LEADERS: u32 = 0x02;
+const MASK_ADVISORS: u32 = 0x04;
+const MASK_UNITS: u32 = 0x08;
+const MASK_TRAITS: u32 = 0x10;
+const MASK_EXPERIENCE: u32 = 0x20;
+const MASK_ALL: u32 = 0x3f;
+const MASK_COUNTRY: u32 = MASK_CHARACTERS | MASK_LEADERS | MASK_ADVISORS;
+const MASK_UNIT_LINK: u32 = MASK_UNITS | MASK_TRAITS | MASK_EXPERIENCE;
 /// Identity-fallback spans feed only the trait vectors: the units outcome is
 /// already decided when the typed fallback runs. The overlapping identity
 /// span itself already attributes units through `MASK_UNIT_LINK`.
-const MASK_TRAIT_FALLBACK: u8 = MASK_TRAITS | MASK_EXPERIENCE;
+const MASK_TRAIT_FALLBACK: u32 = MASK_TRAITS | MASK_EXPERIENCE;
 
 /// View span offsets, lengths and fault masks in `View::read` order:
 /// identity, country, name token id, name/token headers, leader map head,
@@ -992,7 +991,7 @@ const VIEW_OFFSETS: [usize; 7] = [
     ccharacter::ADVISOR_MAP_HEAD,
 ];
 const VIEW_LENS: [usize; 7] = [16, 4, 4, 64, 16, 8, 16];
-const VIEW_MASKS: [u8; 7] = [
+const VIEW_MASKS: [u32; 7] = [
     MASK_ALL,
     MASK_COUNTRY,
     MASK_CHARACTERS,
@@ -1006,192 +1005,37 @@ const VIEW_MASKS: [u8; 7] = [
 /// cursor, so the replay requests the identical page spans.
 const ROSTER_PAGE: u32 = 32;
 
-/// One recorded guarded read: exact address and length, success flag, table
-/// mask, and byte-pool offset for successful spans.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Span {
-    pub addr: usize,
-    pub len: u32,
-    pub ok: bool,
-    pub mask: u8,
-    pub start: u32,
-}
-
-/// One refresh of raw character payload. Flat pools keep every span
-/// fixed-size so `clear` recycles capacities and the steady state allocates
-/// on neither thread; growth happens on the decode side only (see
-/// `crate::decode::recycle_characters_job`).
+/// One refresh of raw character payload. The shared log preserves every
+/// repeated observation and retains only decode-index metadata between jobs.
 #[derive(Debug, Default)]
 pub(crate) struct CharactersJob {
-    pub spans: Vec<Span>,
-    pub bytes: Vec<u8>,
+    pub log: crate::raw::RawLog<6>,
     pub game_state: usize,
-    pub fault: [bool; 6],
-    pub raw_bytes: [u64; 6],
-    pub overflowed: bool,
 }
 
 impl CharactersJob {
     pub fn new() -> Self {
         Self {
-            // Late-campaign worst case is about 13k characters with a few
-            // hundred thousand spans and under 10 MB of payload bytes; both
-            // pools start above that so steady state never overflows.
-            spans: Vec::with_capacity(1 << 19),
-            bytes: Vec::with_capacity(24 << 20),
+            log: crate::raw::RawLog::new(1 << 19, 24 << 20),
             game_state: 0,
-            fault: [false; 6],
-            raw_bytes: [0; 6],
-            overflowed: false,
         }
     }
 
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
     pub fn clear(&mut self) {
-        self.spans.clear();
-        self.bytes.clear();
+        self.log.clear();
         self.game_state = 0;
-        self.fault = [false; 6];
-        self.raw_bytes = [0; 6];
-        self.overflowed = false;
     }
 
     pub fn grow_for_next(&self) -> bool {
-        self.overflowed
+        self.log.grow_for_next()
     }
 
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed refreshes fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
-crate::raw::double_capacity(&mut self.spans);
-crate::raw::double_capacity(&mut self.bytes);
+        self.log.grow();
     }
 
-    /// Guarded copy of one span into the pool. Returns the pool offset of the
-    /// copied bytes on success and records failures with the affected-table
-    /// mask. Empty spans read nothing (matching `Memory`), null or
-    /// overflowing addresses fail without touching memory. On pool overflow
-    /// sets `overflowed` and returns `None`; the caller aborts the copy and
-    /// the frame falls back to the typed walk.
-    fn take(
-        &mut self,
-        memory: &impl Memory,
-        addr: usize,
-        len: usize,
-        mask: u8,
-    ) -> Option<usize> {
-        if self.overflowed {
-            return None;
-        }
-        if len == 0 {
-            return Some(self.bytes.len());
-        }
-        let Ok(len32) = u32::try_from(len) else {
-            self.overflowed = true;
-            return None;
-        };
-        if addr == 0 || addr.checked_add(len).is_none() {
-            self.note_fail(addr, len32, mask);
-            return None;
-        }
-        if self.spans.len() == self.spans.capacity()
-            || self
-                .bytes
-                .len()
-                .checked_add(len)
-                .is_none_or(|end| end > self.bytes.capacity())
-        {
-            self.overflowed = true;
-            return None;
-        }
-        let start = self.bytes.len();
-        self.bytes.resize(start + len, 0);
-        if !memory.copy(addr, &mut self.bytes[start..start + len]) {
-            self.bytes.truncate(start);
-            self.note_fail(addr, len32, mask);
-            return None;
-        }
-        self.spans.push(Span {
-            addr,
-            len: len32,
-            ok: true,
-            mask,
-            start: start as u32,
-        });
-        self.raw_bytes[lowest_table(mask)] += len as u64;
-        Some(start)
-    }
-
-    fn note_fail(&mut self, addr: usize, len32: u32, mask: u8) {
-        if self.spans.len() == self.spans.capacity() {
-            self.overflowed = true;
-            return;
-        }
-        self.spans.push(Span {
-            addr,
-            len: len32,
-            ok: false,
-            mask,
-            start: 0,
-        });
-        for (slot, fault) in self.fault.iter_mut().enumerate() {
-            if mask & (1 << slot) != 0 {
-                *fault = true;
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    fn logs_equal(&self, other: &Self) -> bool {
-        self.spans == other.spans && self.bytes == other.bytes
-    }
-
-    /// Per-partition equality for independently-walked character tables.
-    /// Compares only spans carrying `slot`'s bit (shared roster spans gate
-    /// every dependent partition; private spans only their own). Byte
-    /// contents compare per span so tearing one table's private bytes flips
-    /// only that slot. Callers keep the conservative per-slot live-fault
-    /// gate.
-    fn partition_equal(&self, other: &Self, slot: usize) -> bool {
-        if slot >= 6 || self.overflowed || other.overflowed {
-            return false;
-        }
-        let bit = 1u8 << slot;
-        let mut left_iter = self.spans.iter().filter(|span| span.mask & bit != 0);
-        let mut right_iter = other.spans.iter().filter(|span| span.mask & bit != 0);
-        loop {
-            match (left_iter.next(), right_iter.next()) {
-                (None, None) => return true,
-                (Some(left), Some(right)) => {
-                    if left.addr != right.addr
-                        || left.len != right.len
-                        || left.ok != right.ok
-                        || left.mask != right.mask
-                    {
-                        return false;
-                    }
-                    if left.ok {
-                        let left_bytes = self
-                            .bytes
-                            .get(left.start as usize..left.start as usize + left.len as usize);
-                        let right_bytes = other
-                            .bytes
-                            .get(right.start as usize..right.start as usize + right.len as usize);
-                        if left_bytes != right_bytes {
-                            return false;
-                        }
-                    }
-                }
-                _ => return false,
-            }
-        }
-    }
-
-    /// Take failure from an overflowing pool aborts the whole copy (typed
-    /// fallback); a live read failure kills only the enclosing batch.
     fn fate(&self) -> TreeFate {
-        if self.overflowed {
+        if self.log.overflowed {
             TreeFate::Abort
         } else {
             TreeFate::Dead
@@ -1199,16 +1043,6 @@ crate::raw::double_capacity(&mut self.bytes);
     }
 }
 
-/// Attribute shared spans to the anchor table; private spans carry a single
-/// bit already. Only `take` calls this, so byte accounting never allocates.
-fn lowest_table(mask: u8) -> usize {
-    for slot in 0..6 {
-        if mask & (1 << slot) != 0 {
-            return slot;
-        }
-    }
-    0
-}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct CharactersCopyReport {
@@ -1230,53 +1064,6 @@ pub(crate) struct CharactersCopyContext {
     pub needed: [bool; TABLE_COUNT],
 }
 
-/// Decode-side address space: serves exactly the recorded spans and fails
-/// every other read, so the replayed walk observes the identical bytes and
-/// faults the copy observed. Empty reads succeed and null or overflowing
-/// addresses fail without a lookup, matching `Memory`.
-struct RecordedMemory<'a> {
-    map: HashMap<(usize, u32), usize>,
-    bytes: &'a [u8],
-}
-
-impl<'a> RecordedMemory<'a> {
-    fn build(job: &'a CharactersJob) -> Self {
-        let mut map = HashMap::with_capacity(job.spans.len());
-        for span in &job.spans {
-            if span.ok {
-                map.insert((span.addr, span.len), span.start as usize);
-            }
-        }
-        Self {
-            map,
-            bytes: &job.bytes,
-        }
-    }
-}
-
-impl Memory for RecordedMemory<'_> {
-    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        if destination.is_empty() {
-            return true;
-        }
-        if address == 0 || address.checked_add(destination.len()).is_none() {
-            return false;
-        }
-        let Ok(len) = u32::try_from(destination.len()) else {
-            return false;
-        };
-        match self.map.get(&(address, len)) {
-            Some(&start) => {
-                let Some(source) = self.bytes.get(start..start + destination.len()) else {
-                    return false;
-                };
-                destination.copy_from_slice(source);
-                true
-            }
-            None => false,
-        }
-    }
-}
 
 /// Per-batch failure flags mirroring `Batch::active`: once a typed batch
 /// fails, its later appends are skipped without reads, and so are the
@@ -1310,17 +1097,15 @@ fn copy_view(
         bytes: [[0; 64]; 7],
         unit_id: None,
     };
-    let mut completed = 0;
-    while completed < 7 {
-        let addr = pointer.checked_add(VIEW_OFFSETS[completed]).unwrap_or(0);
-        let len = VIEW_LENS[completed];
-        match job.take(memory, addr, len, VIEW_MASKS[completed]) {
-            Some(start) => {
-                view.bytes[completed][..len].copy_from_slice(&job.bytes[start..start + len]);
-                completed += 1;
-            }
-            None => break,
-        }
+    let (starts, completed) = job.log.take_scattered(
+        memory,
+        VIEW_OFFSETS.map(|offset| pointer.checked_add(offset).unwrap_or(0)),
+        VIEW_LENS,
+        VIEW_MASKS,
+    )?;
+    for index in 0..completed {
+        let (start, len) = (starts[index], VIEW_LENS[index]);
+        view.bytes[index][..len].copy_from_slice(&job.log.bytes[start..start + len]);
     }
     if completed == 0 {
         return None;
@@ -1330,8 +1115,8 @@ fn copy_view(
     for index in completed + 1..7 {
         let addr = pointer.checked_add(VIEW_OFFSETS[index]).unwrap_or(0);
         let len = VIEW_LENS[index];
-        if let Some(start) = job.take(memory, addr, len, VIEW_MASKS[index]) {
-            view.bytes[index][..len].copy_from_slice(&job.bytes[start..start + len]);
+        if let Some(start) = job.log.take(memory, addr, len, VIEW_MASKS[index]) {
+            view.bytes[index][..len].copy_from_slice(&job.log.bytes[start..start + len]);
         }
     }
     // Local vtable and reference-type authentication, checked after the
@@ -1388,7 +1173,7 @@ fn copy_unit_literal(
     job: &mut CharactersJob,
     memory: &impl Memory,
     header: &[u8],
-    mask: u8,
+    mask: u32,
 ) -> Option<usize> {
     let len = u64::from_le_bytes(
         header[msvc_string::LENGTH..msvc_string::CAPACITY]
@@ -1410,9 +1195,9 @@ fn copy_unit_literal(
         .ok()
         .filter(|&pointer| pointer != 0)?;
     let terminator = source.checked_add(len)?;
-    job.take(memory, terminator, 1, mask)?;
+    job.log.take(memory, terminator, 1, mask)?;
     if len != 0 {
-        job.take(memory, source, len, mask)?;
+        job.log.take(memory, source, len, mask)?;
     }
     Some(len)
 }
@@ -1423,7 +1208,7 @@ fn copy_character_literal_bytes(
     job: &mut CharactersJob,
     memory: &impl Memory,
     literal: &Lit,
-    mask: u8,
+    mask: u32,
 ) -> bool {
     if literal.inline {
         return true;
@@ -1431,10 +1216,10 @@ fn copy_character_literal_bytes(
     let Some(terminator) = literal.source.checked_add(literal.len) else {
         return false;
     };
-    if job.take(memory, terminator, 1, mask).is_none() {
+    if job.log.take(memory, terminator, 1, mask).is_none() {
         return false;
     }
-    if literal.len != 0 && job.take(memory, literal.source, literal.len, mask).is_none() {
+    if literal.len != 0 && job.log.take(memory, literal.source, literal.len, mask).is_none() {
         return false;
     }
     true
@@ -1461,7 +1246,7 @@ fn tree_read(
     job: &mut CharactersJob,
     memory: &impl Memory,
     head_bytes: &[u8],
-    mask: u8,
+    mask: u32,
 ) -> Result<TreeWalk, TreeFate> {
     let head = usize::try_from(u64::from_le_bytes(head_bytes[..8].try_into().unwrap()))
         .ok()
@@ -1469,11 +1254,11 @@ fn tree_read(
         .ok_or_else(|| job.fate())?;
     let count = u32::try_from(u64::from_le_bytes(head_bytes[8..16].try_into().unwrap()))
         .map_err(|_| job.fate())?;
-    let start = job
+    let start = job.log
         .take(memory, head, 26, mask)
         .ok_or_else(|| job.fate())?;
     let mut sentinel = [0u8; 26];
-    sentinel.copy_from_slice(&job.bytes[start..start + 26]);
+    sentinel.copy_from_slice(&job.log.bytes[start..start + 26]);
     if sentinel[msvc_tree_node::NIL] != 1 {
         return Err(TreeFate::Dead);
     }
@@ -1506,14 +1291,14 @@ fn tree_link(
     memory: &impl Memory,
     node: usize,
     offset: usize,
-    mask: u8,
+    mask: u32,
 ) -> Result<usize, TreeFate> {
     let addr = node.checked_add(offset).ok_or(TreeFate::Dead)?;
-    let start = job
+    let start = job.log
         .take(memory, addr, 8, mask)
         .ok_or_else(|| job.fate())?;
     usize::try_from(u64::from_le_bytes(
-        job.bytes[start..start + 8].try_into().unwrap(),
+        job.log.bytes[start..start + 8].try_into().unwrap(),
     ))
     .ok()
     .filter(|&pointer| pointer != 0)
@@ -1526,7 +1311,7 @@ fn tree_next(
     job: &mut CharactersJob,
     memory: &impl Memory,
     walk: &mut TreeWalk,
-    mask: u8,
+    mask: u32,
 ) -> Result<Option<usize>, TreeFate> {
     if walk.remaining == 0 {
         if walk.next != walk.head {
@@ -1539,10 +1324,10 @@ fn tree_next(
         return Err(TreeFate::Dead);
     }
     let nil_addr = current.checked_add(msvc_tree_node::NIL).ok_or(TreeFate::Dead)?;
-    let nil = job
+    let nil = job.log
         .take(memory, nil_addr, 1, mask)
         .ok_or_else(|| job.fate())?;
-    if job.bytes[nil] != 0 {
+    if job.log.bytes[nil] != 0 {
         return Err(TreeFate::Dead);
     }
     let right = tree_link(job, memory, current, msvc_tree_node::RIGHT, mask)?;
@@ -1555,10 +1340,10 @@ fn tree_next(
                 return Err(TreeFate::Dead);
             }
             let nil_addr = next.checked_add(msvc_tree_node::NIL).ok_or(TreeFate::Dead)?;
-            let nil = job
+            let nil = job.log
                 .take(memory, nil_addr, 1, mask)
                 .ok_or_else(|| job.fate())?;
-            if job.bytes[nil] != 0 {
+            if job.log.bytes[nil] != 0 {
                 return Err(TreeFate::Dead);
             }
             let left = tree_link(job, memory, next, msvc_tree_node::LEFT, mask)?;
@@ -1604,10 +1389,10 @@ fn take_or_kill(
     memory: &impl Memory,
     addr: Option<usize>,
     len: usize,
-    mask: u8,
+    mask: u32,
     dead: &mut bool,
 ) -> Option<usize> {
-    match addr.and_then(|addr| job.take(memory, addr, len, mask)) {
+    match addr.and_then(|addr| job.log.take(memory, addr, len, mask)) {
         Some(start) => Some(start),
         None => {
             *dead = true;
@@ -1617,11 +1402,11 @@ fn take_or_kill(
 }
 
 fn pool_u64(job: &CharactersJob, start: usize) -> u64 {
-    u64::from_le_bytes(job.bytes[start..start + 8].try_into().unwrap())
+    u64::from_le_bytes(job.log.bytes[start..start + 8].try_into().unwrap())
 }
 
 fn pool_u32(job: &CharactersJob, start: usize) -> u32 {
-    u32::from_le_bytes(job.bytes[start..start + 4].try_into().unwrap())
+    u32::from_le_bytes(job.log.bytes[start..start + 4].try_into().unwrap())
 }
 
 /// Mirror of `ccharacter::walk_entry`'s string reads: header parses are local
@@ -1700,9 +1485,9 @@ fn copy_leaders(
             MASK_LEADERS,
             &mut dead.leaders,
         ) else {
-            return !job.overflowed;
+            return !job.log.overflowed;
         };
-        let ideology = i32::from_le_bytes(job.bytes[ideo..ideo + 4].try_into().unwrap());
+        let ideology = i32::from_le_bytes(job.log.bytes[ideo..ideo + 4].try_into().unwrap());
         if previous.is_some_and(|key| key >= ideology) {
             dead.leaders = true;
             return true;
@@ -1712,7 +1497,7 @@ fn copy_leaders(
         let Some(header) =
             take_or_kill(job, memory, role, 16, MASK_LEADERS, &mut dead.leaders)
         else {
-            return !job.overflowed;
+            return !job.log.overflowed;
         };
         if pool_u64(job, header) != expected
             || pool_u64(job, header + ccountry_leader::CHARACTER) != pointer as u64
@@ -1772,7 +1557,7 @@ fn copy_advisors(
             MASK_ADVISORS,
             &mut dead.advisors,
         ) else {
-            return !job.overflowed;
+            return !job.log.overflowed;
         };
         let Some(key_header) = take_or_kill(
             job,
@@ -1782,7 +1567,7 @@ fn copy_advisors(
             MASK_ADVISORS,
             &mut dead.advisors,
         ) else {
-            return !job.overflowed;
+            return !job.log.overflowed;
         };
         let Some(hash) = take_or_kill(
             job,
@@ -1792,7 +1577,7 @@ fn copy_advisors(
             MASK_ADVISORS,
             &mut dead.advisors,
         ) else {
-            return !job.overflowed;
+            return !job.log.overflowed;
         };
         let role = usize::try_from(pool_u64(job, role_ptr))
             .ok()
@@ -1804,7 +1589,7 @@ fn copy_advisors(
         let role = role.unwrap();
         let Some(vtable) = take_or_kill(job, memory, Some(role), 8, MASK_ADVISORS, &mut dead.advisors)
         else {
-            return !job.overflowed;
+            return !job.log.overflowed;
         };
         let Some(parent) = take_or_kill(
             job,
@@ -1814,7 +1599,7 @@ fn copy_advisors(
             MASK_ADVISORS,
             &mut dead.advisors,
         ) else {
-            return !job.overflowed;
+            return !job.log.overflowed;
         };
         let Some(idea_header) = take_or_kill(
             job,
@@ -1824,7 +1609,7 @@ fn copy_advisors(
             MASK_ADVISORS,
             &mut dead.advisors,
         ) else {
-            return !job.overflowed;
+            return !job.log.overflowed;
         };
         let Some(slot_header) = take_or_kill(
             job,
@@ -1834,7 +1619,7 @@ fn copy_advisors(
             MASK_ADVISORS,
             &mut dead.advisors,
         ) else {
-            return !job.overflowed;
+            return !job.log.overflowed;
         };
         if pool_u64(job, vtable) != expected
             || pool_u64(job, parent) != pointer as u64
@@ -1857,7 +1642,7 @@ fn copy_advisors(
         let slot_addr = role.checked_add(cadvisor::SLOT).unwrap_or(0);
         let literal = |start: usize, addr: usize| {
             let mut header = [0u8; 32];
-            header.copy_from_slice(&job.bytes[start..start + 32]);
+            header.copy_from_slice(&job.log.bytes[start..start + 32]);
             parse_character_literal(&header, addr)
         };
         let (Some(key), Some(idea), Some(slot)) = (
@@ -1981,7 +1766,7 @@ fn copy_unit(
                 }
             }
         }
-        if !job.overflowed && states_ok {
+        if !job.log.overflowed && states_ok {
             // These are independent registries: a leader's id is not the
             // id of the character whose role points to it.
             let character_id = u32::from_le_bytes(
@@ -1995,20 +1780,20 @@ fn copy_unit(
                 copy_unit_skill(job, memory, base, state[3], dead);
             }
         }
-        if job.overflowed {
+        if job.log.overflowed {
             return false;
         }
         if !dead.units {
             if let Some(kind) = kind {
                 copy_unit_components(job, memory, unit, kind, dead);
             }
-            if job.overflowed {
+            if job.log.overflowed {
                 return false;
             }
         }
         if !dead.units {
             copy_unit_text(job, memory, unit, dead);
-            if job.overflowed {
+            if job.log.overflowed {
                 return false;
             }
         }
@@ -2039,7 +1824,7 @@ fn copy_unit(
         } else {
             None
         };
-        if job.overflowed {
+        if job.log.overflowed {
             return false;
         }
         if first.is_none() || second.is_none() {
@@ -2171,9 +1956,9 @@ fn copy_unit_text(
         return;
     };
     let mut header = [0u8; 32];
-    header.copy_from_slice(&job.bytes[name_header..name_header + 32]);
+    header.copy_from_slice(&job.log.bytes[name_header..name_header + 32]);
     let name = copy_unit_literal(job, memory, &header, MASK_UNITS);
-    header.copy_from_slice(&job.bytes[token_header..token_header + 32]);
+    header.copy_from_slice(&job.log.bytes[token_header..token_header + 32]);
     let token = copy_unit_literal(job, memory, &header, MASK_UNITS);
     if name.is_none() || token.is_none() {
         dead.units = true;
@@ -2187,7 +1972,7 @@ struct TraitVectorCopy {
     array_offset: usize,
     stride: usize,
     has_experience: bool,
-    mask: u8,
+    mask: u32,
 }
 
 /// Mirror of `walk_definitions`' read set for one trait vector: identity,
@@ -2214,7 +1999,7 @@ fn copy_trait_vector(
     let Some(identity) =
         take_or_kill(job, memory, Some(unit), 16, mask, dead)
     else {
-        return !job.overflowed;
+        return !job.log.overflowed;
     };
     if pool_u32(job, identity + cunit_leader::ID) != leader_id {
         *dead = true;
@@ -2228,10 +2013,10 @@ fn copy_trait_vector(
         mask,
         dead,
     ) else {
-        return !job.overflowed;
+        return !job.log.overflowed;
     };
     let mut raw = [0u8; 16];
-    raw.copy_from_slice(&job.bytes[array_header..array_header + 16]);
+    raw.copy_from_slice(&job.log.bytes[array_header..array_header + 16]);
     let array = match Array::from_header(raw, stride) {
         Some(array) => array,
         None => {
@@ -2265,7 +2050,7 @@ fn copy_trait_vector(
         let Some(entry_start) =
             take_or_kill(job, memory, Some(entry), entry_len, mask, dead)
         else {
-            return !job.overflowed;
+            return !job.log.overflowed;
         };
         let definition = usize::try_from(pool_u64(job, entry_start)).ok();
         let Some(definition) = definition.filter(|&definition| definition != 0) else {
@@ -2276,7 +2061,7 @@ fn copy_trait_vector(
         let Some(definition_header) =
             take_or_kill(job, memory, Some(definition), 12, mask, dead)
         else {
-            return !job.overflowed;
+            return !job.log.overflowed;
         };
         let Some(definition_ordinal) = take_or_kill(
             job,
@@ -2286,7 +2071,7 @@ fn copy_trait_vector(
             mask,
             dead,
         ) else {
-            return !job.overflowed;
+            return !job.log.overflowed;
         };
         let Some(token_header) = take_or_kill(
             job,
@@ -2296,14 +2081,14 @@ fn copy_trait_vector(
             mask,
             dead,
         ) else {
-            return !job.overflowed;
+            return !job.log.overflowed;
         };
         if pool_u64(job, definition_header) != expected {
             *dead = true;
             return true;
         }
         let mut header = [0u8; 32];
-        header.copy_from_slice(&job.bytes[token_header..token_header + 32]);
+        header.copy_from_slice(&job.log.bytes[token_header..token_header + 32]);
         if copy_unit_literal(job, memory, &header, mask).is_none() {
             *dead = true;
             return true;
@@ -2327,7 +2112,7 @@ fn copy_character(
     let Some(mut view) = copy_view(job, memory, base, pointer) else {
         return false;
     };
-    if job.overflowed {
+    if job.log.overflowed {
         return false;
     }
     let id = u32::from_le_bytes(
@@ -2336,7 +2121,7 @@ fn copy_character(
             .unwrap(),
     );
     copy_character_text(job, memory, &view, pointer, dead);
-    if job.overflowed {
+    if job.log.overflowed {
         return false;
     }
     if !copy_leaders(job, memory, base, &view, pointer, dead) {
@@ -2399,14 +2184,14 @@ fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut Cha
     let Some(manager_addr) = game_state.checked_add(cgame_state::CHARACTER_MANAGER) else {
         return;
     };
-    let Some(manager_start) = job.take(memory, manager_addr, 8, MASK_ALL) else {
+    let Some(manager_start) = job.log.take(memory, manager_addr, 8, MASK_ALL) else {
         return;
     };
     let manager = match usize::try_from(pool_u64(job, manager_start)).ok().filter(|&manager| manager != 0) {
         Some(manager) => manager,
         None => return,
     };
-    let Some(vtable_start) = job.take(memory, manager, 8, MASK_ALL) else {
+    let Some(vtable_start) = job.log.take(memory, manager, 8, MASK_ALL) else {
         return;
     };
     let expected = match base.checked_add(ccharacter_manager::VTABLE_RVA) {
@@ -2427,11 +2212,11 @@ fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut Cha
         let Some(addr) = manager.checked_add(*offset) else {
             return;
         };
-        let Some(header_start) = job.take(memory, addr, 16, MASK_ALL) else {
+        let Some(header_start) = job.log.take(memory, addr, 16, MASK_ALL) else {
             return;
         };
         let mut raw = [0u8; 16];
-        raw.copy_from_slice(&job.bytes[header_start..header_start + 16]);
+        raw.copy_from_slice(&job.log.bytes[header_start..header_start + 16]);
         let Some(array) = Array::from_header(raw, 8) else {
             return;
         };
@@ -2447,7 +2232,7 @@ fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut Cha
             let Some(page_addr) = array.element(ordinal, 8) else {
                 return;
             };
-            let Some(page_start) = job.take(
+            let Some(page_start) = job.log.take(
                 memory,
                 page_addr,
                 chunk as usize * 8,
@@ -2458,7 +2243,7 @@ fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut Cha
             for index in 0..chunk {
                 let at = page_start + index as usize * 8;
                 let pointer = match usize::try_from(u64::from_le_bytes(
-                    job.bytes[at..at + 8].try_into().unwrap(),
+                    job.log.bytes[at..at + 8].try_into().unwrap(),
                 ))
                 .ok()
                 .filter(|&pointer| pointer != 0)
@@ -2504,11 +2289,11 @@ impl Captured {
             ticks[0] += elapsed(second_started);
             // Per-table partitions: shared roster spans gate dependents,
             // private spans only their own table.
-            let raw_ok_pair = !first.overflowed && !second_job.overflowed;
+            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
             for (slot, matched) in matched.iter_mut().enumerate() {
                 let equal =
-                    raw_ok_pair && first.partition_equal(second_job, slot);
-                *matched = equal && !first.fault[slot] && !second_job.fault[slot];
+                    raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
             }
         }
         self.characters.rows.checked = needed(0);
@@ -2523,13 +2308,13 @@ impl Captured {
         self.traits.rows.mismatches = usize::from(needed(4) && !matched[4]);
         self.trait_experience.rows.checked = needed(5);
         self.trait_experience.rows.mismatches = usize::from(needed(5) && !matched[5]);
-        let raw_ok = !first.overflowed
-            && second.is_none_or(|job| !job.overflowed);
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         CharactersCopyReport {
             raw_ok,
             matched,
             copy_ticks: ticks,
-            raw_bytes: first.raw_bytes,
+            raw_bytes: first.log.raw_bytes,
         }
     }
 
@@ -2545,7 +2330,7 @@ impl Captured {
         decode_ticks: &mut [u64; 6],
     ) {
         let started = qpc();
-        let recorded = RecordedMemory::build(job);
+        let recorded = crate::raw::Recorded::build(&job.log);
         let results = walk_family(
             &recorded,
             base,
@@ -4240,11 +4025,11 @@ mod tests {
         copy_pass(&memory, IMAGE, ADDRESS, &mut after);
         let mut after_torn = CharactersJob::new();
         copy_pass(&torn_memory, IMAGE, ADDRESS, &mut after_torn);
-        assert!(!after.logs_equal(&after_torn));
+        assert!(!after.log.logs_equal(&after_torn.log));
         // Identical images agree byte-for-byte.
         let mut repeat = CharactersJob::new();
         copy_pass(&memory, IMAGE, ADDRESS, &mut repeat);
-        assert!(after.logs_equal(&repeat));
+        assert!(after.log.logs_equal(&repeat.log));
     }
 
     #[test]
@@ -4261,16 +4046,12 @@ mod tests {
             needed: [true; TABLE_COUNT],
         };
         let mut first = CharactersJob {
-            spans: Vec::with_capacity(8),
-            bytes: Vec::with_capacity(8),
+            log: crate::raw::RawLog::new(8, 8),
             game_state: 0,
-            fault: [false; 6],
-            raw_bytes: [0; 6],
-            overflowed: false,
         };
         let report = captured.copy_characters_refresh(&memory, ctx, &mut first, None);
         assert!(!report.raw_ok);
-        assert!(first.overflowed);
+        assert!(first.log.overflowed);
         assert!(first.grow_for_next());
     }
 }

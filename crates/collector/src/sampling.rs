@@ -514,6 +514,7 @@ pub struct Shared {
     /// Slot addresses never move. Only published slots own a Captured allocation.
     pub frames: [AtomicPtr<Captured>; BUFFERS],
     pub completed: [AtomicI64; BUFFERS],
+    pub callback_tail: [AtomicI64; BUFFERS],
     pub pool_buffers: AtomicUsize,
     pub free: ArrayQueue<usize>,
     pub ready: ArrayQueue<usize>,
@@ -556,6 +557,7 @@ impl Shared {
             frequency,
             frames: std::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
             completed: std::array::from_fn(|_| AtomicI64::new(0)),
+            callback_tail: std::array::from_fn(|_| AtomicI64::new(0)),
             pool_buffers: AtomicUsize::new(0),
             free: ArrayQueue::new(BUFFERS),
             ready: ArrayQueue::new(BUFFERS),
@@ -640,6 +642,12 @@ impl Shared {
             self.roster_ready.store(roster.sampled(), Ordering::Release);
         }
     }
+}
+
+pub(crate) fn completed_callback_ticks(base: &AtomicI64, tail: &AtomicI64) -> Option<i64> {
+    let base = base.load(Ordering::Acquire);
+    let tail = tail.load(Ordering::Acquire);
+    (base > 0 && tail > 0).then(|| base.saturating_add(tail))
 }
 
 fn complete_matrix_check(remaining: &AtomicUsize) {
@@ -1895,7 +1903,10 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     let mut second = needed_any.then(decode::acquire_characters_job);
                     // A consistency pass needs both owned buffers; otherwise use
                     // the allocation-free typed double read.
-                    if second.as_ref().is_some_and(|job| job.spans.capacity() == 0) {
+                    if second
+                        .as_ref()
+                        .is_some_and(|job| job.log.spans.capacity() == 0)
+                    {
                         decode::recycle_characters_job(first);
                         first = Default::default();
                     }
@@ -2776,6 +2787,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             frame.pool_bytes = shared.pool_bytes.load(Ordering::Relaxed);
             frame.dropped_frames = shared.dropped.load(Ordering::Relaxed);
             shared.completed[index].store(0, Ordering::Relaxed);
+            shared.callback_tail[index].store(0, Ordering::Relaxed);
             // Finish every frame write before publishing its index. The decode
             // worker may acquire exclusive access as soon as enqueue succeeds;
             // its later ready-queue Release cannot protect writes after enqueue.
@@ -2789,6 +2801,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             // worker hands it to the spool ready queue after decoding any
             // refresh payload. With 256 buffers and 256 queue slots, an owned
             // buffer guarantees space, exactly as the ready push did before.
+            let game_elapsed = (qpc() - entered - (original_end - original_begin)).max(1);
             let decode_job = decode::DecodeJob {
                 index,
                 seq: decode::next_seq(),
@@ -2822,7 +2835,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 weather_refresh: weather_report.raw_ok,
                 capitulation_refresh: capitulation_report.raw_ok,
                 force_full: decode_force_full,
-                game_elapsed: (qpc() - entered - (original_end - original_begin)).max(1),
+                game_elapsed,
                 payload: pilot_payload,
                 relations_payload,
                 characters_payload,
@@ -2861,6 +2874,11 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     if wars_matrix_check && stable {
                         complete_matrix_check(&shared.war_matrix_remaining);
                     }
+                    // The frame belongs to the worker now. Publish timing
+                    // through a separate atomic, never by writing the frame.
+                    // This includes enqueue and post-publication bookkeeping.
+                    let tail = qpc() - entered - (original_end - original_begin) - game_elapsed;
+                    shared.callback_tail[index].store(tail.max(1), Ordering::Release);
                 }
                 Some(returned) => {
                     if let Some(payload) = returned.payload {
@@ -5458,6 +5476,21 @@ pub(crate) mod divisions_test_kit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callback_time_waits_for_decode_and_includes_the_game_thread_tail() {
+        let base = AtomicI64::new(0);
+        let tail = AtomicI64::new(0);
+        assert_eq!(completed_callback_ticks(&base, &tail), None);
+        base.store(17, Ordering::Release);
+        assert_eq!(completed_callback_ticks(&base, &tail), None);
+        tail.store(3, Ordering::Release);
+        assert_eq!(completed_callback_ticks(&base, &tail), Some(20));
+        base.store(0, Ordering::Release);
+        assert_eq!(completed_callback_ticks(&base, &tail), None);
+        base.store(23, Ordering::Release);
+        assert_eq!(completed_callback_ticks(&base, &tail), Some(26));
+    }
 
     #[test]
     fn matrix_window_stays_closed_after_its_last_success() {

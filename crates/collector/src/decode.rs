@@ -914,9 +914,10 @@ pub fn recycle_characters_job(job: CharactersJob) {
 }
 
 fn release_characters_job(mut job: CharactersJob) {
-    if job.spans.capacity() == 0 {
+    if job.log.spans.capacity() == 0 {
         return;
     }
+    crate::raw::note_growth("characters", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
@@ -5058,8 +5059,8 @@ mod tests {
         assert!(relations.countries.capacity() >= 439);
         assert!(relations.metas.capacity() >= 439);
         let characters = CharactersJob::new();
-        assert!(characters.spans.capacity() >= 300_000);
-        assert!(characters.bytes.capacity() >= 10 << 20);
+        assert!(characters.log.spans.capacity() >= 300_000);
+        assert!(characters.log.bytes.capacity() >= 10 << 20);
         let projects = ProjectsJob::new();
         assert!(projects.log.spans.capacity() >= 21_511 * 32);
         assert!(projects.log.bytes.capacity() >= 21_511 * 1024);

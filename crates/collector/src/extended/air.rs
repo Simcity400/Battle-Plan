@@ -1495,28 +1495,21 @@ fn copy_stats_owners(
             Some(array) => array,
             None => continue,
         };
-        for region in 0..table.count {
-            let slot_addr = match (region as usize).checked_mul(8).and_then(|o| table.data.checked_add(o)) {
-                Some(addr) => addr,
-                None => return,
-            };
-            let slot_start = match sspan(log, memory, Some(slot_addr), 8, STATS_MASK) {
-                Some(start) => start,
-                None => return,
-            };
-            let history = match usize::try_from(stats_pool_u64(log, slot_start)).ok() {
-                Some(history) => history,
-                None => return,
-            };
-            if history == 0 {
-                continue;
+        for first in (0..table.count).step_by(64) {
+            let count = (table.count - first).min(64) as usize;
+            let Some(address) = table.element(first, 8) else { return; };
+            let Some((start, completed)) = log.take_array_chunk(memory, address, 8, count, STATS_MASK) else { return; };
+            for index in 0..completed {
+                let history = match usize::try_from(stats_pool_u64(log, start + index * 8)).ok() {
+                    Some(history) => history,
+                    None => return,
+                };
+                if history != 0 && !copy_stats_history(log, memory, base, history) {
+                    return;
+                }
+                if log.overflowed { return; }
             }
-            if !copy_stats_history(log, memory, base, history) {
-                return;
-            }
-            if log.overflowed {
-                return;
-            }
+            if completed != count { return; }
         }
         if log.overflowed {
             return;
@@ -3022,34 +3015,13 @@ fn copy_history_owner(
     let mut first = 0u32;
     while first < regions.count {
         let chunk = ((regions.count - first) as usize).min(HISTORY_MIRROR_BATCH);
-        // POINTER_FIELD gather decomposed per element in walk order: a
-        // faulted element stops the batch takes, and the recorded prefix
-        // still serves the roots the walk processes before its error.
-        // Fixed-size stack staging: no allocation on the game thread.
-        let mut words = [0u64; HISTORY_MIRROR_BATCH];
-        let mut taken = 0usize;
-        let mut batch_failed = false;
-        for (index, word) in words.iter_mut().enumerate().take(chunk) {
-            let addr = regions.element(first + index as u32, 8);
-            match addr.and_then(|at| {
-                hspan(log, memory, Some(at), 8, AIR_HISTORY_CENSUS_MASK)
-            }) {
-                Some(start) => {
-                    *word = history_pool_u64(log, start);
-                    taken += 1;
-                }
-                None => {
-                    batch_failed = true;
-                    break;
-                }
-            }
-            if log.overflowed {
-                return false;
-            }
-        }
+        // One guarded gather, one compact span for the readable prefix.
+        let Some(address) = regions.element(first, 8) else { return false; };
+        let Some((start, taken)) = log.take_array_chunk(memory, address, 8, chunk, AIR_HISTORY_CENSUS_MASK) else { return false; };
         // Live-compact the recorded prefix exactly like the walk.
-        for word in words.iter().take(taken) {
-            let address = match usize::try_from(*word).ok().filter(|&address| address != 0) {
+        for index in 0..taken {
+            let word = history_pool_u64(log, start + index * 8);
+            let address = match usize::try_from(word).ok().filter(|&address| address != 0) {
                 Some(address) => address,
                 None => continue,
             };
@@ -3066,7 +3038,7 @@ fn copy_history_owner(
                 return false;
             }
         }
-        if batch_failed || log.overflowed {
+        if taken != chunk || log.overflowed {
             // The walk processes the recorded prefix, then fails at the
             // faulted element with its own reason; the replay derives it
             // from the same spans.
