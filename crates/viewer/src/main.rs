@@ -1,6 +1,7 @@
 mod app;
 mod compare;
 mod document;
+mod map;
 mod playback;
 mod render;
 
