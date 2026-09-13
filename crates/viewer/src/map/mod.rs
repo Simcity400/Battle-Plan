@@ -2,5 +2,11 @@
 //! that consume them; each module owns one intermediate or one pass.
 
 pub mod borders;
+pub mod camera;
+pub mod frame;
 pub mod gradient;
 pub mod names;
+pub mod scene;
+pub mod terrain;
+pub mod textures;
+pub mod water;

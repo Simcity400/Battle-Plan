@@ -1,7 +1,7 @@
 use crate::{
     Config, Options, choose_initial,
     document::{Document, Palette},
-    render::{Camera, MapRenderer},
+    map::{camera::Camera, frame::DayNight, scene::Scene},
 };
 use eframe::{egui, wgpu};
 use replay::{branches::Parentage, container::SeekResult, frame::TableView, rows::TableId};
@@ -20,7 +20,7 @@ pub struct Viewer {
     document: Option<Document>,
     loading: Option<mpsc::Receiver<Result<Document, String>>>,
     error: Option<String>,
-    renderer: Option<MapRenderer>,
+    scene: Option<Scene>,
     texture: Option<egui::TextureId>,
     generation: u64,
     palette: Option<Palette>,
@@ -28,11 +28,11 @@ pub struct Viewer {
     map_error: Option<String>,
     camera: Option<Camera>,
     camera_manual: bool,
-    drag_origin: Option<Camera>,
     control: bool,
     playing: bool,
     speed: u32,
     last_step: Instant,
+    started: Instant,
 }
 
 impl Viewer {
@@ -49,14 +49,13 @@ impl Viewer {
             settings: config.resolve_options().is_err(),
             camera: options.camera,
             camera_manual: options.camera.is_some(),
-            drag_origin: None,
             control: options.control,
             config,
             options,
             document: None,
             loading: None,
             error,
-            renderer: None,
+            scene: None,
             texture: None,
             generation: 0,
             palette: None,
@@ -65,6 +64,7 @@ impl Viewer {
             playing: false,
             speed: 24,
             last_step: Instant::now(),
+            started: Instant::now(),
         };
         if !viewer.settings
             && let Some(path) = viewer.options.replay.clone()
@@ -99,7 +99,7 @@ impl Viewer {
         });
         self.loading = Some(receiver);
         self.document = None;
-        self.renderer = None;
+        self.scene = None;
         self.palette = None;
         self.palette_at = None;
         self.generation = 0;
@@ -108,7 +108,6 @@ impl Viewer {
         self.playing = false;
         self.camera = self.options.camera;
         self.camera_manual = self.options.camera.is_some();
-        self.drag_origin = None;
     }
 
     fn poll(&mut self) {
@@ -380,11 +379,6 @@ impl Viewer {
                 Ok(palette) => self.palette = Some(palette),
                 Err(error) => self.map_error = Some(error.to_string()),
             }
-            if let (Some(renderer), Some(palette)) = (&mut self.renderer, &self.palette) {
-                renderer
-                    .set_colors(&state.queue, &palette.colors, &palette.owner_keys)
-                    .map_err(|e| e.to_string())?;
-            }
         }
         if let Some(error) = &self.map_error {
             ui.centered_and_justified(|ui| {
@@ -396,19 +390,15 @@ impl Viewer {
         for warning in &palette.warnings {
             ui.colored_label(egui::Color32::YELLOW, warning);
         }
-        if self.renderer.is_none() {
-            let mut renderer = MapRenderer::new(
-                &state.device,
-                &state.queue,
-                document.map.width,
-                document.map.height,
-                &document.map.province_ids,
-            )
-            .map_err(|e| e.to_string())?;
-            renderer
-                .set_colors(&state.queue, &palette.colors, &palette.owner_keys)
-                .map_err(|e| e.to_string())?;
-            self.renderer = Some(renderer);
+        let (owned, distinct) = palette.political_summary();
+        ui.weak(format!(
+            "Political layer: {owned} provinces with a resolved owner in {distinct} country colors; the gradient-border fill is not drawn yet"
+        ));
+        if self.scene.is_none() {
+            self.scene = Some(
+                Scene::new(&state.device, &state.queue, &document.assets)
+                    .map_err(|error| error.to_string())?,
+            );
         }
         let size = ui.available_size().max(egui::vec2(1.0, 1.0));
         let pixels = [
@@ -416,48 +406,55 @@ impl Viewer {
             (size.y * ui.ctx().pixels_per_point()).round() as u32,
         ];
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::drag());
+        let map_size = [document.map.width as f32, document.map.height as f32];
         if !self.camera_manual {
-            self.camera = Some(Camera::fit(
-                [document.map.width, document.map.height],
-                pixels,
-            ));
+            self.camera = Some(Camera::fit(map_size, pixels));
         }
         let camera = self
             .camera
-            .get_or_insert_with(|| Camera::fit([document.map.width, document.map.height], pixels));
-        if response.dragged() {
+            .get_or_insert_with(|| Camera::fit(map_size, pixels));
+        // Screen positions reach the camera in physical pixels, the same space
+        // the render target and the projection use.
+        let scale = ui.ctx().pixels_per_point();
+        let physical = |position: egui::Pos2| {
+            [
+                (position.x - rect.left()) * scale,
+                (position.y - rect.top()) * scale,
+            ]
+        };
+        if response.dragged()
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
             self.camera_manual = true;
-            let origin = *self.drag_origin.get_or_insert(*camera);
-            if let Some(delta) = response.total_drag_delta() {
-                let scale = ui.ctx().pixels_per_point();
-                *camera = origin;
-                camera.pan_pixels([delta.x * scale, delta.y * scale], pixels);
-            }
-        } else {
-            self.drag_origin = None;
+            let delta = response.drag_delta();
+            let to = physical(pointer);
+            camera.pan(
+                [to[0] - delta.x * scale, to[1] - delta.y * scale],
+                to,
+                pixels,
+            );
         }
         if response.hovered() {
             let scroll = ui.input(|input| input.smooth_scroll_delta.y);
             if scroll != 0.0 {
                 self.camera_manual = true;
                 let pointer = response.hover_pos().unwrap_or(rect.center());
-                camera.zoom_at(
-                    (scroll * 0.002).exp(),
-                    [
-                        (pointer.x - rect.left()) / size.x,
-                        (pointer.y - rect.top()) / size.y,
-                    ],
-                    pixels,
-                );
+                camera.zoom((scroll * 0.002).exp(), physical(pointer), pixels);
             }
         }
-        camera.center[1] = camera.center[1].clamp(0.0, document.map.height as f32);
-        let renderer = self.renderer.as_mut().unwrap();
-        renderer
-            .render(&state.device, &state.queue, pixels, *camera)
+        let scene = self.scene.as_mut().unwrap();
+        scene
+            .render(
+                &state.device,
+                &state.queue,
+                pixels,
+                *camera,
+                DayNight::at_hour(document.playback.hour()),
+                self.started.elapsed().as_secs_f32(),
+            )
             .map_err(|e| e.to_string())?;
-        if self.generation != renderer.generation() {
-            let view = renderer.view().ok_or("Map target was not created")?;
+        if self.generation != scene.generation() {
+            let view = scene.view().ok_or("Map target was not created")?;
             let mut egui_renderer = state.renderer.write();
             if let Some(texture) = self.texture {
                 egui_renderer.update_egui_texture_from_wgpu_texture(
@@ -473,7 +470,7 @@ impl Viewer {
                     wgpu::FilterMode::Nearest,
                 ));
             }
-            self.generation = renderer.generation();
+            self.generation = scene.generation();
         }
         ui.painter().image(
             self.texture.unwrap(),
@@ -481,6 +478,8 @@ impl Viewer {
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
             egui::Color32::WHITE,
         );
+        // The water animates, so the window keeps drawing.
+        ui.ctx().request_repaint();
         response.on_hover_text("Drag to pan · Scroll to zoom");
         Ok(())
     }
@@ -507,13 +506,15 @@ impl eframe::App for Viewer {
                     self.settings = true;
                 }
                 ui.separator();
-                ui.selectable_value(&mut self.control, false, "Political");
-                ui.selectable_value(&mut self.control, true, "Control");
+                ui.selectable_value(&mut self.control, false, "Political")
+                    .on_hover_text("Stored for the gradient-border pass; no fill is drawn yet");
+                ui.selectable_value(&mut self.control, true, "Control")
+                    .on_hover_text("Stored for the gradient-border pass; no fill is drawn yet");
                 if ui.button("Fit map").clicked() {
                     self.camera = None;
                     self.camera_manual = false;
                 }
-                ui.weak("Omniscient · Base country colors");
+                ui.weak("Omniscient · Terrain and water");
             });
             ui.add_space(5.0);
             if let Some(error) = &self.error {

@@ -6,6 +6,7 @@ mod playback;
 mod render;
 
 use installed_content::ResolveOptions;
+use map::{camera::Camera, frame::DayNight};
 use replay::{BranchId, Hour, container::SeekResult};
 use serde::{Deserialize, Serialize};
 use std::{ffi::OsString, fs, io, path::PathBuf};
@@ -24,7 +25,7 @@ struct Options {
     branch: Option<BranchId>,
     allow_unverified: bool,
     control: bool,
-    camera: Option<render::Camera>,
+    camera: Option<Camera>,
     size: [u32; 2],
     game_dir: Option<PathBuf>,
     user_dir: Option<PathBuf>,
@@ -33,14 +34,18 @@ struct Options {
     diff: Option<PathBuf>,
     json: Option<PathBuf>,
     regions: Option<(u32, u32)>,
+    upscale: Option<f64>,
     excludes: Vec<compare::Rect>,
     exclude_game_ui: bool,
 }
 
 impl Options {
     fn parse(args: impl Iterator<Item = OsString>) -> io::Result<Self> {
+        // The game renders the reference frames at 2048x1152 (R1 section 0), so
+        // a dump matches that by default and `--upscale 1.25` scores it against
+        // the screenshots.
         let mut options = Self {
-            size: [1600, 900],
+            size: [2048, 1152],
             ..Default::default()
         };
         let mut args = args.peekable();
@@ -81,6 +86,19 @@ impl Options {
                         .ok_or_else(|| invalid(USAGE))?;
                     options.regions = Some(parse_regions(&value)?);
                 }
+                Some("--upscale") => {
+                    let value = args
+                        .next()
+                        .and_then(|value| value.into_string().ok())
+                        .ok_or_else(|| invalid(USAGE))?;
+                    let factor = value
+                        .parse::<f64>()
+                        .map_err(|_| invalid("invalid upscale factor"))?;
+                    if !factor.is_finite() || factor <= 0.0 {
+                        return Err(invalid("the upscale factor must be finite and positive"));
+                    }
+                    options.upscale = Some(factor);
+                }
                 Some("--allow-unverified-content") => options.allow_unverified = true,
                 Some("--out") => {
                     options.dump = Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
@@ -119,18 +137,24 @@ impl Options {
                                 .split(',')
                                 .map(str::parse::<f32>)
                                 .collect::<Result<Vec<_>, _>>()
-                                .map_err(|_| invalid("camera requires x,y,vertical-span"))?;
-                            if values.len() != 3
-                                || !values.iter().all(|value| value.is_finite())
-                                || values[2] <= 0.0
-                            {
+                                .map_err(|_| invalid("camera requires world-x,world-z,height"))?;
+                            if values.len() != 3 || !values.iter().all(|value| value.is_finite()) {
                                 return Err(invalid(
-                                    "camera requires finite x,y and a positive vertical span",
+                                    "camera requires finite world-x,world-z,height",
                                 ));
                             }
-                            options.camera = Some(render::Camera {
+                            if !(map::camera::MIN_HEIGHT..=map::camera::MAX_HEIGHT)
+                                .contains(&values[2])
+                            {
+                                return Err(invalid(format!(
+                                    "camera height must be between {} and {}, the engine's CAMERA_MIN_HEIGHT and CAMERA_MAX_HEIGHT",
+                                    map::camera::MIN_HEIGHT,
+                                    map::camera::MAX_HEIGHT
+                                )));
+                            }
+                            options.camera = Some(Camera {
                                 center: [values[0], values[1]],
-                                vertical_span: values[2],
+                                height: values[2],
                             });
                         }
                         "--mode" => {
@@ -170,11 +194,12 @@ impl Options {
             || options.diff.is_some()
             || options.json.is_some()
             || options.regions.is_some()
+            || options.upscale.is_some()
             || !options.excludes.is_empty()
             || options.exclude_game_ui
         {
             return Err(invalid(
-                "--mask, --diff, --json, --regions, --exclude and --exclude-game-ui require --compare",
+                "--mask, --diff, --json, --regions, --upscale, --exclude and --exclude-game-ui require --compare",
             ));
         }
         if dump != options.dump.is_some() || (dump && options.hour.is_none()) {
@@ -201,7 +226,10 @@ fn parse_regions(value: &str) -> io::Result<(u32, u32)> {
 /// Scores one reference pair: prints the metrics and writes the optional difference image and JSON.
 fn run_compare(options: &Options, paths: &[PathBuf; 2]) -> io::Result<()> {
     let game = compare::read_png(&paths[0])?;
-    let viewer = compare::read_png(&paths[1])?;
+    let mut viewer = compare::read_png(&paths[1])?;
+    if let Some(factor) = options.upscale {
+        viewer = compare::upscale(&viewer, factor)?;
+    }
     if !game.same_size(&viewer) {
         return Err(invalid(format!(
             "image size mismatch: {} is {}x{} and {} is {}x{}",
@@ -377,7 +405,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Warning: {warning}");
         }
         let camera = options.camera.unwrap_or_else(|| {
-            render::Camera::fit([document.map.width, document.map.height], options.size)
+            Camera::fit(
+                [document.map.width as f32, document.map.height as f32],
+                options.size,
+            )
         });
         let unverified = document
             .warnings
@@ -386,28 +417,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .cloned()
             .collect::<Vec<_>>()
             .join("; ");
-        let adapter = render::dump_png(
-            render::MapImage {
-                width: document.map.width,
-                height: document.map.height,
-                province_ids: &document.map.province_ids,
-                colors: &palette.colors,
-                owner_keys: &palette.owner_keys,
-            },
+        let hour = document.playback.hour();
+        let report = render::dump_png(
+            &document.assets,
             camera,
+            DayNight::at_hour(hour),
             options.size,
             output,
             (!unverified.is_empty()).then_some(unverified.as_str()),
         )?;
         println!(
-            "Rendered branch {}, hour {} to {} using {adapter}",
+            "Rendered branch {}, hour {hour} to {} using {}",
             document.playback.branch(),
-            document.playback.hour(),
-            output.display()
+            output.display(),
+            report.adapter
         );
         println!(
-            "Camera: {},{},{}; base country colors",
-            camera.center[0], camera.center[1], camera.vertical_span
+            "Camera: {},{},{}",
+            camera.center[0], camera.center[1], camera.height
+        );
+        println!(
+            "Terrain grid: {} quads at step {}; render {:.1} ms",
+            report.quads,
+            report.step,
+            report.render_seconds * 1000.0
+        );
+        let (owned, distinct) = palette.political_summary();
+        println!(
+            "Political layer: {owned} provinces with a resolved owner in {distinct} country colors; the gradient-border fill is not drawn yet"
         );
         return Ok(());
     }
@@ -466,6 +503,8 @@ mod tests {
             "out.json",
             "--regions",
             "8x6",
+            "--upscale",
+            "1.25",
             "--exclude-game-ui",
             "--exclude",
             "1,2,3,4",
@@ -480,6 +519,7 @@ mod tests {
         assert_eq!(options.diff, Some(PathBuf::from("diff.png")));
         assert_eq!(options.json, Some(PathBuf::from("out.json")));
         assert_eq!(options.regions, Some((8, 6)));
+        assert_eq!(options.upscale, Some(1.25));
         assert!(options.exclude_game_ui);
         assert_eq!(options.excludes.len(), 2);
         assert_eq!(options.excludes[1].x, 5);
@@ -490,6 +530,7 @@ mod tests {
         let options = parse(&["--compare", "a.png", "b.png"]).unwrap();
         assert!(options.compare.is_some());
         assert_eq!(options.regions, None);
+        assert_eq!(options.upscale, None);
         assert!(options.mask.is_none() && options.diff.is_none() && options.json.is_none());
         assert!(options.excludes.is_empty() && !options.exclude_game_ui);
     }
@@ -512,6 +553,7 @@ mod tests {
             vec!["c.battleplan", "--diff", "d.png"],
             vec!["c.battleplan", "--json", "j.json"],
             vec!["c.battleplan", "--regions", "2x2"],
+            vec!["c.battleplan", "--upscale", "1.25"],
             vec!["c.battleplan", "--exclude", "1,2,3,4"],
             vec!["c.battleplan", "--exclude-game-ui"],
         ] {
@@ -549,7 +591,9 @@ mod tests {
         assert_eq!(dump.hour, Some(60826315));
         assert!(dump.control);
         assert!(dump.compare.is_none());
-        assert_eq!(dump.size, [1600, 900]);
+        assert_eq!(dump.camera.unwrap().center, [100.0, 200.0]);
+        assert_eq!(dump.camera.unwrap().height, 300.0);
+        assert_eq!(dump.size, [2048, 1152]);
 
         let window = parse(&["campaign.battleplan", "--branch", "2"]).unwrap();
         assert_eq!(window.replay, Some(PathBuf::from("campaign.battleplan")));
@@ -557,5 +601,47 @@ mod tests {
 
         assert!(parse(&["--dump", "campaign.battleplan", "--hour", "1"]).is_err());
         assert!(parse(&["--dump", "campaign.battleplan", "--out", "f.png"]).is_err());
+    }
+
+    #[test]
+    fn the_camera_takes_world_coordinates_and_an_engine_legal_height() {
+        let reference = parse(&[
+            "--dump",
+            "c.battleplan",
+            "--hour",
+            "1",
+            "--out",
+            "f.png",
+            "--camera",
+            "3010,1568,310.178",
+        ])
+        .unwrap()
+        .camera
+        .unwrap();
+        assert_eq!(reference.center, [3010.0, 1568.0]);
+        assert_eq!(reference.height, 310.178);
+        for bad in ["3010,1568", "3010,1568,10", "3010,1568,4000", "a,b,c"] {
+            assert!(
+                parse(&[
+                    "--dump",
+                    "c.battleplan",
+                    "--hour",
+                    "1",
+                    "--out",
+                    "f.png",
+                    "--camera",
+                    bad
+                ])
+                .is_err(),
+                "`{bad}` should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn the_upscale_factor_must_be_positive() {
+        assert!(parse(&["--compare", "a.png", "b.png", "--upscale", "0"]).is_err());
+        assert!(parse(&["--compare", "a.png", "b.png", "--upscale", "-1"]).is_err());
+        assert!(parse(&["--compare", "a.png", "b.png", "--upscale", "x"]).is_err());
     }
 }

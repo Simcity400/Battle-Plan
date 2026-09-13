@@ -145,6 +145,63 @@ impl Image {
     }
 }
 
+/// Bilinearly resamples an image by `factor`.
+///
+/// The reference screenshots are 2560x1440 bilinear upscales of the game's
+/// 2048x1152 frame (R1 section 0), so the viewer renders at the native size and
+/// this puts its frame in the screenshot's pixel space before scoring. Pixel
+/// centres are aligned: destination pixel `i` samples source coordinate
+/// `(i + 0.5) / factor - 0.5`, clamped at the edges.
+pub fn upscale(image: &Image, factor: f64) -> io::Result<Image> {
+    if !factor.is_finite() || factor <= 0.0 {
+        return Err(invalid("the upscale factor must be finite and positive"));
+    }
+    if factor == 1.0 {
+        return Ok(image.clone());
+    }
+    let width = (f64::from(image.width()) * factor).round().max(1.0);
+    let height = (f64::from(image.height()) * factor).round().max(1.0);
+    if width > f64::from(u32::MAX) || height > f64::from(u32::MAX) {
+        return Err(invalid(format!(
+            "upscaling {}x{} by {factor} exceeds the addressable image size",
+            image.width(),
+            image.height()
+        )));
+    }
+    let (width, height) = (width as u32, height as u32);
+    let last_x = image.width() - 1;
+    let last_y = image.height() - 1;
+    let mut rgb = Vec::new();
+    rgb.try_reserve_exact(width as usize * height as usize * 3)
+        .map_err(|_| invalid(format!("a {width}x{height} image exceeds available memory")))?;
+    for y in 0..height {
+        let source_y = ((f64::from(y) + 0.5) / factor - 0.5).clamp(0.0, f64::from(last_y));
+        let y0 = source_y.floor() as u32;
+        let y1 = (y0 + 1).min(last_y);
+        let ty = source_y - f64::from(y0);
+        for x in 0..width {
+            let source_x = ((f64::from(x) + 0.5) / factor - 0.5).clamp(0.0, f64::from(last_x));
+            let x0 = source_x.floor() as u32;
+            let x1 = (x0 + 1).min(last_x);
+            let tx = source_x - f64::from(x0);
+            let corners = [
+                image.pixel(x0, y0).unwrap_or_default(),
+                image.pixel(x1, y0).unwrap_or_default(),
+                image.pixel(x0, y1).unwrap_or_default(),
+                image.pixel(x1, y1).unwrap_or_default(),
+            ];
+            let upper = corners[0].iter().zip(&corners[1]);
+            let lower = corners[2].iter().zip(&corners[3]);
+            for ((top_left, top_right), (bottom_left, bottom_right)) in upper.zip(lower) {
+                let top = f64::from(*top_left) * (1.0 - tx) + f64::from(*top_right) * tx;
+                let bottom = f64::from(*bottom_left) * (1.0 - tx) + f64::from(*bottom_right) * tx;
+                rgb.push((top * (1.0 - ty) + bottom * ty).round().clamp(0.0, 255.0) as u8);
+            }
+        }
+    }
+    Image::from_rgb(width, height, rgb)
+}
+
 /// Decodes an 8 bit RGB or RGBA PNG, dropping any alpha channel.
 pub fn decode_png(bytes: &[u8]) -> io::Result<Image> {
     let mut reader = png::Decoder::new(io::Cursor::new(bytes))
@@ -1272,5 +1329,33 @@ mod tests {
             assert!(text.contains(key), "the report is missing `{key}`");
         }
         assert_eq!(text.lines().count(), 13 + 2 + 16);
+    }
+
+    #[test]
+    fn upscaling_two_by_two_to_four_by_four_aligns_pixel_centres() {
+        // A single red channel ramp: 0, 100 on the top row, 200, 40 below.
+        let image = Image::from_rgb(2, 2, vec![0, 0, 0, 100, 0, 0, 200, 0, 0, 40, 0, 0]).unwrap();
+        let scaled = upscale(&image, 2.0).unwrap();
+        assert_eq!((scaled.width(), scaled.height()), (4, 4));
+        // Destination x maps to source -0.25, 0.25, 0.75, 1.25, clamped to
+        // 0.0, 0.25, 0.75, 1.0, so the top row reads 0, 25, 75, 100.
+        let row: Vec<u8> = (0..4).map(|x| scaled.pixel(x, 0).unwrap()[0]).collect();
+        assert_eq!(row, vec![0, 25, 75, 100]);
+        // The bottom row is the same interpolation of 200 and 40.
+        let row: Vec<u8> = (0..4).map(|x| scaled.pixel(x, 3).unwrap()[0]).collect();
+        assert_eq!(row, vec![200, 160, 80, 40]);
+        // Row 1 sits a quarter of the way from the top row to the bottom row.
+        assert_eq!(scaled.pixel(0, 1).unwrap()[0], 50);
+        assert_eq!(scaled.pixel(3, 2).unwrap()[0], 55);
+    }
+
+    #[test]
+    fn upscaling_by_one_and_a_quarter_reaches_the_screenshot_size() {
+        let scaled = upscale(&gradient(2048, 8), 1.25).unwrap();
+        assert_eq!(scaled.width(), 2560);
+        assert_eq!(scaled.height(), 10);
+        assert!(upscale(&gradient(4, 4), 0.0).is_err());
+        assert!(upscale(&gradient(4, 4), f64::NAN).is_err());
+        assert_eq!(upscale(&gradient(4, 4), 1.0).unwrap(), gradient(4, 4));
     }
 }

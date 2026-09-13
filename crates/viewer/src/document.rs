@@ -17,7 +17,7 @@ use replay::{
     rows::{CountryRow, tables},
 };
 
-use crate::playback::Playback;
+use crate::{map::textures::MapAssets, playback::Playback};
 
 const WATER: [u8; 4] = [31, 56, 77, 255];
 const UNKNOWN_LAND: [u8; 4] = [100, 103, 107, 255];
@@ -25,6 +25,8 @@ const UNKNOWN_LAND: [u8; 4] = [100, 103, 107, 255];
 pub struct Document {
     pub playback: Playback,
     pub map: MapData,
+    /// The game images and textures the map passes draw from.
+    pub assets: MapAssets,
     /// Persistent content verification and presentation limitations.
     pub warnings: Vec<String>,
     pub source_path: PathBuf,
@@ -37,6 +39,26 @@ pub struct Palette {
     pub owner_keys: Vec<u32>,
     /// Limitations at this hour, separate from persistent content warnings.
     pub warnings: Vec<String>,
+}
+
+impl Palette {
+    /// What the political layer holds this hour: provinces with a resolved
+    /// owner, and the distinct country colours among them.
+    ///
+    /// The fill itself is drawn by the gradient-border pass, which the border
+    /// worker is still building, so the viewer reports the state it is holding
+    /// rather than pretending it is on screen.
+    pub fn political_summary(&self) -> (usize, usize) {
+        let owned = self
+            .owner_keys
+            .iter()
+            .enumerate()
+            .filter(|(_, key)| **key != 0)
+            .map(|(province, _)| self.colors[province])
+            .collect::<Vec<_>>();
+        let distinct = owned.iter().collect::<BTreeSet<_>>().len();
+        (owned.len(), distinct)
+    }
 }
 
 impl Document {
@@ -61,12 +83,15 @@ impl Document {
         // The recorded layer ids and hashes, rather than launcher state, select it.
         let content = installed_content::resolve(&replay.identity, options)?;
         let map = map::load(&content.layers)?;
+        let (terrain, default_map) = installed_content::terrain::read(&content.layers)?;
+        let assets = MapAssets::load(&content.layers, &terrain, &default_map, &mut warnings)?;
         warnings.push(
             "Country colors come from the game's static content; runtime and cosmetic color overrides were not captured.".into(),
         );
         Ok(Self {
             playback: Playback::new(replay)?,
             map,
+            assets,
             warnings,
             source_path: path.to_path_buf(),
         })
