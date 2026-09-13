@@ -18,7 +18,7 @@ Scoring: the viewer gains a `--compare <game.png> <viewer.png>` mode that prints
 
 ## 3. Pipeline
 
-Coordinate systems (confirmed by research R1, `C:\hoi4_scratcheplay_mapesearch\R1-camera-lighting.md`): map pixel space is `provinces.bmp` (5632 x 2048, origin top-left, x right, y down). Game world space is x = pixel column, z = 2047 - pixel row, y = heightmap byte x 0.1 with sea level at `WATER_HEIGHT = 9.5` (byte 95). `map/unitstacks.txt` and `map/buildings.txt` positions are world x, y, z. Shader `uv` is pixel/size; `uv2` flips y; every `*_POW2_*` define is 1.0 on this profile and `MAP_SIZE_X/Y` are 5632/2048; the FOW and snow/mud grid is `MAP_SIZE / 6` (939 x 342 texels).
+Coordinate systems (confirmed by research R1, `<local-path>`): map pixel space is `provinces.bmp` (5632 x 2048, origin top-left, x right, y down). Game world space is x = pixel column, z = 2047 - pixel row, y = heightmap byte x 0.1 with sea level at `WATER_HEIGHT = 9.5` (byte 95). `map/unitstacks.txt` and `map/buildings.txt` positions are world x, y, z. Shader `uv` is pixel/size; `uv2` flips y; every `*_POW2_*` define is 1.0 on this profile and `MAP_SIZE_X/Y` are 5632/2048; the FOW and snow/mud grid is `MAP_SIZE / 6` (939 x 342 texels).
 
 Camera (exact, from the binary, fitted to `array_loaded.png` at rms 1.3 px over 21 cities): left-handed look-at with up +Y, vertical field of view 0.785 rad, near 5, far 4000, aspect w/h; `eye = (cx, h, cz - 30)`, `look_at = (cx, 9.5, cz)` where the 30 is `camera_tilt x 0.3` and does not depend on height. The load camera targets the player capital's unit-stack type 0 position at height about 310.2; the reference frame is `centre (3010, 1568), height 310.178`. `Camera` therefore keeps `center` (world x, z) and `height`; `--camera x,y,span` is replaced by `--camera x,z,height` in world units (the old flat form is removed with the old renderer).
 
@@ -72,7 +72,7 @@ All readers take `&ResolvedLayers` and return owned data; parsers take bytes and
 
 ## 6. Evidence pointers
 
-- Research reports (outside the repository): `C:\hoi4_scratcheplay_mapesearch\R1-camera-lighting.md` (camera, day/night, lighting constants, post chain, terrain mesh, snow/mud data) and `C:\hoi4_scratcheplay_mapesearch2\R2-borders-names-icons.md` (gradient border fields with the exact byte formula, border meshes, rivers, country-name placement, VP labels, counters, unit-stack types, localisation precedence).
+- Research reports (outside the repository): `<local-path>` (camera, day/night, lighting constants, post chain, terrain mesh, snow/mud data) and `<local-path>` (gradient border fields with the exact byte formula, border meshes, rivers, country-name placement, VP labels, counters, unit-stack types, localisation precedence).
 
 - Shaders: `gfx/FX/*.shader`, `*.fxh` (read directly).
 - Defines: `common/defines/00_graphics.lua` (`LIGHT_*`, `BORDER_WIDTH`, `*_BORDER_FADE_*`, `DRAW_COUNTRY_NAMES_CUTOFF`, `PROVINCE_NAME_DRAW_DISTANCE`, `GRADIENT_BORDERS_*`, `CAMERA_*`, `SUN_*`, `DAY_NIGHT_FEATHER`, `WEATHER_*`).
