@@ -43,6 +43,9 @@ pub struct Viewer {
     speed: u32,
     last_step: Instant,
     started: Instant,
+    // colour
+    /// Whether the map is graded through the engine's post chain.
+    postfx: bool,
     // political fill
     political: PoliticalCache,
     /// Cleared with the scene: the border geometry has to be uploaded into a new one.
@@ -87,6 +90,8 @@ impl Viewer {
             speed: 24,
             last_step: Instant::now(),
             started: Instant::now(),
+            // colour
+            postfx: false,
             // political fill
             political: PoliticalCache::new(),
             borders_uploaded: false,
@@ -389,6 +394,9 @@ impl Viewer {
             let displayed = document.playback.hour();
             ui.strong(date(displayed));
             ui.weak(format!("Hour {displayed}"));
+            // colour
+            ui.checkbox(&mut self.postfx, "Colour grading")
+                .on_hover_text("The engine's post chain: exposure, tone map, colour LUT");
         });
     }
 
@@ -555,6 +563,8 @@ impl Viewer {
                     camera,
                     day_night: DayNight::at_hour(document.playback.hour()),
                     animation_time: self.started.elapsed().as_secs_f32(),
+                    // colour
+                    postfx: self.postfx,
                     // names
                     overlay: Overlay {
                         names: self.placements.as_ref(),

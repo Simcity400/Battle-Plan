@@ -16,7 +16,7 @@ use replay::{BranchId, Hour, container::SeekResult};
 use serde::{Deserialize, Serialize};
 use std::{ffi::OsString, fs, io, path::PathBuf};
 
-const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span>\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -44,6 +44,9 @@ struct Options {
     dim: Option<f64>,
     excludes: Vec<compare::Rect>,
     exclude_game_ui: bool,
+    // colour
+    /// `--postfx off` renders without the engine's colour grading.
+    postfx: bool,
 }
 
 impl Options {
@@ -53,6 +56,11 @@ impl Options {
         // the screenshots.
         let mut options = Self {
             size: [2048, 1152],
+            // colour: `--postfx on` runs the engine's grading chain. It is off
+            // by default because the chain driven by the game's own values is
+            // far worse against both reference pairs than no chain at all; the
+            // measurements are in `map::post`.
+            postfx: false,
             ..Default::default()
         };
         let mut args = args.peekable();
@@ -77,6 +85,18 @@ impl Options {
                 }
                 Some("--json") => {
                     options.json = Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
+                }
+                // colour
+                Some("--postfx") => {
+                    let value = args
+                        .next()
+                        .and_then(|value| value.into_string().ok())
+                        .ok_or_else(|| invalid(USAGE))?;
+                    options.postfx = match value.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(invalid(format!("`{other}` is not `on` or `off`"))),
+                    };
                 }
                 Some("--exclude-game-ui") => options.exclude_game_ui = true,
                 Some("--exclude") => {
@@ -485,6 +505,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 day_night: DayNight::at_hour(hour),
                 // The animation time is 0 so a headless dump is deterministic.
                 animation_time: 0.0,
+                // colour
+                postfx: options.postfx,
                 overlay: Overlay {
                     names: Some(&placements),
                     layer_alpha: fade.as_array(),

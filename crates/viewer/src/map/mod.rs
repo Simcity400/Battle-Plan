@@ -13,6 +13,8 @@ pub mod name_pass;
 pub mod names;
 // political fill
 pub mod political;
+// colour
+pub mod post;
 pub mod scene;
 pub mod sprites;
 pub mod terrain;

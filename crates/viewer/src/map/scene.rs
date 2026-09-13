@@ -27,6 +27,8 @@ use super::{
 // names
 use super::{
     name_pass::{NamePass, Placements},
+    // colour
+    post::{HDR_ADJUSTMENT_SPEED, PostPass},
     sprites::{Batch, IconTextures, MapIcons, SpritePass},
 };
 
@@ -139,6 +141,24 @@ impl Targets {
         }
     }
 
+    // colour: the post stage draws over every sample of the colour attachment
+    // while reading the resolve target, so it must not resolve into the texture
+    // it is sampling; the overlays that follow resolve the frame.
+    pub fn color_attachment_without_resolve(
+        &self,
+        load: wgpu::LoadOp<wgpu::Color>,
+    ) -> wgpu::RenderPassColorAttachment<'_> {
+        wgpu::RenderPassColorAttachment {
+            view: &self.color_ms,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load,
+                store: wgpu::StoreOp::Store,
+            },
+        }
+    }
+
     pub fn depth_attachment(
         &self,
         load: wgpu::LoadOp<f32>,
@@ -195,6 +215,9 @@ pub struct Scene {
     secondary: Bound,
     terrain: TerrainPass,
     water: WaterPass,
+    // colour
+    post: PostPass,
+    last_animation_time: Option<f32>,
     targets: Option<Targets>,
     grid: Grid,
     generation: u64,
@@ -219,6 +242,9 @@ pub struct Request<'a> {
     pub day_night: DayNight,
     /// `vGlobalTime`, which drives the water animation.
     pub animation_time: f32,
+    // colour
+    /// Whether the `post` stage grades the frame. See [`Scene::render`].
+    pub postfx: bool,
     // names
     pub overlay: Overlay<'a>,
 }
@@ -376,6 +402,9 @@ impl Scene {
             samplers,
             terrain: TerrainPass::new(device, &globals_layout, OUTPUT_FORMAT)?,
             water: WaterPass::new(device, &globals_layout, OUTPUT_FORMAT)?,
+            // colour
+            post: PostPass::new(device, queue, &assets.post, OUTPUT_FORMAT)?,
+            last_animation_time: None,
             targets: None,
             grid: Grid {
                 origin: [0.0, 0.0],
@@ -557,6 +586,8 @@ impl Scene {
             camera,
             day_night,
             animation_time,
+            // colour
+            postfx,
             overlay,
         } = request;
         camera.validate()?;
@@ -566,6 +597,7 @@ impl Scene {
             self.generation += 1;
             self.rebind_water(device);
         }
+        let generation_changed = self.targets.as_ref().is_some_and(|t| t.size != size);
         let targets = self.targets.as_ref().expect("created above");
         self.grid = grid_for(camera, size);
         queue.write_buffer(
@@ -625,6 +657,34 @@ impl Scene {
                 },
             );
         }
+        // colour: the engine's post chain sits between the world passes and the
+        // interface, which it does not touch (R1 section 4.2 item 6). Both
+        // overlay layers are drawn after it, which is where the interface is;
+        // the country and victory-point labels are map furniture rather than
+        // interface, so whether the engine grades them is an open reading
+        // recorded in `PostPass`.
+        if postfx {
+            // `1 - exp(-tau * dt)` while the clock advances, and the
+            // instantaneous value for a still frame, which is every `--dump`
+            // and every paused window frame.
+            let blend = match self.last_animation_time {
+                Some(previous) if animation_time > previous => {
+                    1.0 - (-HDR_ADJUSTMENT_SPEED * (animation_time - previous)).exp()
+                }
+                _ => 1.0,
+            };
+            let grading = self.post.grading(camera, day_night);
+            self.post.draw(
+                device,
+                queue,
+                &mut encoder,
+                targets,
+                grading,
+                blend,
+                generation_changed,
+            );
+        }
+        self.last_animation_time = Some(animation_time);
         // names: the world-space name layer over the world passes, then the
         // screen-space icon layer last of all (R2 5.5: the icon layer wins).
         self.name_pass
