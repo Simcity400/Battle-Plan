@@ -521,6 +521,13 @@ impl ResolvedLayers {
         self.effective.values().map(|file| file.path.as_str())
     }
 
+    /// Load-order position of the layer an effective covered path comes from.
+    pub(crate) fn layer_index(&self, relative: &str) -> Option<usize> {
+        self.effective
+            .get(&relative.to_ascii_lowercase())
+            .map(|file| file.layer)
+    }
+
     pub fn read(&self, relative: &str) -> io::Result<Vec<u8>> {
         let relative = normalize_relative(relative)?;
         if let Some(file) = self.effective.get(&relative.to_ascii_lowercase())
@@ -552,6 +559,83 @@ impl ResolvedLayers {
         }
         Err(io::Error::new(io::ErrorKind::NotFound, relative))
     }
+
+    /// Reads a path outside the coverage policy, such as `gfx/fonts`,
+    /// `gfx/world` or `gfx/mapitems`, from the resolved layers.
+    ///
+    /// The returned bytes are **not** hash-verified: the layer hash does not
+    /// cover them, so a changed file cannot be detected here and the viewer
+    /// must state that limitation. A covered path is passed straight to
+    /// [`ResolvedLayers::read`], which does verify it.
+    pub fn read_uncovered(&self, relative: &str) -> io::Result<Vec<u8>> {
+        let relative = normalize_relative(relative)?;
+        if covered(&relative) {
+            return self.read(&relative);
+        }
+        let lower = relative.to_ascii_lowercase();
+        for layer in self.layers.iter().rev() {
+            match &layer.source {
+                LayerSource::Folder(root) => match fs::read(root.join(&relative)) {
+                    Ok(bytes) => return Ok(bytes),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        // Native Windows folder lookup ignores case; keep that
+                        // behaviour explicit so a layer resolves the same way
+                        // whatever case the calling parser carries.
+                        if let Some(path) = folded_path(root, &relative)? {
+                            return fs::read(path);
+                        }
+                    }
+                    Err(error) => return Err(error),
+                },
+                LayerSource::Archive(path) => {
+                    // ZIP lookup is exact, as it is for covered paths.
+                    let mut archive = zip::ZipArchive::new(File::open(path)?)?;
+                    if let Ok(mut entry) = archive.by_name(&relative) {
+                        let mut bytes = Vec::new();
+                        entry.read_to_end(&mut bytes)?;
+                        return Ok(bytes);
+                    }
+                }
+            }
+            if layer
+                .replace_paths
+                .iter()
+                .any(|path| below(&lower, &path.to_ascii_lowercase()))
+            {
+                break;
+            }
+        }
+        Err(io::Error::new(io::ErrorKind::NotFound, relative))
+    }
+}
+
+/// Resolves each path component case-insensitively inside one folder layer.
+fn folded_path(root: &Path, relative: &str) -> io::Result<Option<PathBuf>> {
+    let mut path = root.to_path_buf();
+    for part in relative.split('/') {
+        let entries = match fs::read_dir(&path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut found = None;
+        for entry in entries {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(part)
+            {
+                found = Some(entry.file_name());
+                break;
+            }
+        }
+        match found {
+            Some(name) => path.push(name),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(path))
 }
 
 fn apply_overlay<'a>(
@@ -1426,6 +1510,83 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// Builds a folder layer without inventorying it; `read_uncovered` never
+    /// consults the covered inventory.
+    fn folder_layer(id: &str, root: &Path, replace_paths: Vec<String>) -> ResolvedLayer {
+        ResolvedLayer {
+            id: id.into(),
+            source: LayerSource::Folder(root.to_path_buf()),
+            descriptor: None,
+            replace_paths,
+            files: BTreeMap::new(),
+            hashes: BTreeMap::new(),
+            archive_stamp: None,
+            descriptor_hash: None,
+        }
+    }
+
+    #[test]
+    fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_installed_content_uncovered_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let (base, over) = (root.join("base"), root.join("over"));
+        fs::create_dir_all(base.join("gfx/Fonts")).unwrap();
+        fs::create_dir_all(over.join("gfx/fonts")).unwrap();
+        fs::write(base.join("gfx/Fonts/Hoi.fnt"), b"base").unwrap();
+        fs::write(over.join("gfx/fonts/hoi.fnt"), b"over").unwrap();
+
+        // A path outside the coverage roots resolves whatever case it carries.
+        assert_eq!(
+            folded_path(&base, "gfx/fonts/hoi.fnt").unwrap(),
+            Some(base.join("gfx").join("Fonts").join("Hoi.fnt"))
+        );
+        assert_eq!(folded_path(&base, "gfx/fonts/absent.fnt").unwrap(), None);
+        assert_eq!(folded_path(&base, "no/such/dir.fnt").unwrap(), None);
+
+        let mut layers = ResolvedLayers {
+            layers: vec![
+                folder_layer("base", &base, Vec::new()),
+                folder_layer("over", &over, Vec::new()),
+            ],
+            effective: BTreeMap::new(),
+        };
+        assert_eq!(layers.read_uncovered("gfx/fonts/hoi.fnt").unwrap(), b"over");
+        layers.layers.pop();
+        assert_eq!(layers.read_uncovered("gfx/fonts/hoi.fnt").unwrap(), b"base");
+
+        // A replacing layer hides the layers below it even when it has no file.
+        let replacing = ResolvedLayers {
+            layers: vec![
+                folder_layer("base", &base, Vec::new()),
+                folder_layer("over", &root.join("empty"), vec!["gfx/fonts".into()]),
+            ],
+            effective: BTreeMap::new(),
+        };
+        assert_eq!(
+            replacing
+                .read_uncovered("gfx/fonts/hoi.fnt")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+
+        // Covered paths go through the verifying reader, and unsafe paths fail.
+        assert_eq!(
+            layers
+                .read_uncovered("map/provinces.bmp")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(layers.read_uncovered("../escape").is_err());
+        assert!(layers.read_uncovered("gfx/fonts/absent.fnt").is_err());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
