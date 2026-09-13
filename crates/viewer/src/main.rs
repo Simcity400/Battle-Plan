@@ -619,6 +619,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.naval_combats,
             counter_report.unanchored
         );
+        // counters
+        if let Some(pass) = counter_report.grouping {
+            println!(
+                "Counter grouping: {:?} level, {} groups, budget {}{}",
+                pass.level,
+                counter_report.groups,
+                pass.budget,
+                if pass.split { ", split" } else { "" }
+            );
+        }
         println!(
             "Counter assets: {} sprite sheets, {} small flags packed{}",
             document.icons.counters.sheet_count(),

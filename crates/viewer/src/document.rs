@@ -123,7 +123,7 @@ impl Document {
             "Unit counters carry no division-type icon: no division-template table is recorded. The organisation and strength bars are filled by each stack's mean over its own maximum, because the template maxima the game divides by are not recorded either.".into(),
         );
         warnings.push(
-            "Map icons are placed independently of each other; the game's icon de-overlap and camera-height grouping are not reproduced, so counters of nearby provinces overlap here.".into(),
+            "Unit counters are gathered into the engine's camera-height groups, but the engine's own grouping relation between two countries is read as faction membership, which no reference frame can confirm; counters of allied countries in one state may therefore be gathered where the game keeps them apart, or the reverse.".into(),
         );
         if !labels.centroid_fallbacks.is_empty() {
             warnings.push(format!(

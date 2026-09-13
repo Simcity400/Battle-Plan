@@ -8,6 +8,7 @@ pub mod border_pass;
 pub mod borders;
 pub mod camera;
 // counters
+pub mod counter_groups;
 pub mod counters;
 pub mod frame;
 pub mod gradient;
