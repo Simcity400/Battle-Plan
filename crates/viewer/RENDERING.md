@@ -18,9 +18,11 @@ Scoring: the viewer gains a `--compare <game.png> <viewer.png>` mode that prints
 
 ## 3. Pipeline
 
-Coordinate systems: map pixel space is `provinces.bmp` (5632 x 2048, origin top-left, x right, y down). Game world space is x = pixel x, z = 2048 - pixel y (bottom-up, to be verified by research R1), y = height with `WATER_HEIGHT = 9.5` and heightmap value x 0.01 (`pdxmap.shader` vertex shader). `map/unitstacks.txt` and `map/buildings.txt` positions are world x, y, z. Shader `uv` is pixel/size; `uv2` flips y and scales by the power-of-two texture ratio (`MAP_POW2_X/Y`).
+Coordinate systems (confirmed by research R1, `C:\hoi4_scratcheplay_mapesearch\R1-camera-lighting.md`): map pixel space is `provinces.bmp` (5632 x 2048, origin top-left, x right, y down). Game world space is x = pixel column, z = 2047 - pixel row, y = heightmap byte x 0.1 with sea level at `WATER_HEIGHT = 9.5` (byte 95). `map/unitstacks.txt` and `map/buildings.txt` positions are world x, y, z. Shader `uv` is pixel/size; `uv2` flips y; every `*_POW2_*` define is 1.0 on this profile and `MAP_SIZE_X/Y` are 5632/2048; the FOW and snow/mud grid is `MAP_SIZE / 6` (939 x 342 texels).
 
-Camera: the game's perspective camera (height 50 to 3000, pitch as a function of height, field of view; research R1 derives the model from the decompile and fits it to a screenshot). `Camera` keeps `center`, `height` (or vertical span) and the derived pitch; `--camera x,y,span` stays accepted for headless runs and a game-style `--camera-height` is added.
+Camera (exact, from the binary, fitted to `array_loaded.png` at rms 1.3 px over 21 cities): left-handed look-at with up +Y, vertical field of view 0.785 rad, near 5, far 4000, aspect w/h; `eye = (cx, h, cz - 30)`, `look_at = (cx, 9.5, cz)` where the 30 is `camera_tilt x 0.3` and does not depend on height. The load camera targets the player capital's unit-stack type 0 position at height about 310.2; the reference frame is `centre (3010, 1568), height 310.178`. `Camera` therefore keeps `center` (world x, z) and `height`; `--camera x,y,span` is replaced by `--camera x,z,height` in world units (the old flat form is removed with the old renderer).
+
+Reference profile facts (R1 section 0): the game renders at 2048 x 1152 borderless and the screenshots are 1.25x bilinear upscales, so comparisons render at 2048 x 1152 and upscale by 1.25; `draw_postfx=no` (no LUT, tone mapping or exposure), `multi_sampling=4`, `shadows=no`, `texture_quality=0` (`atlas0.dds` 2048 squared). Day/night: `DayNight_Hour_SunDir.x = (hour mod 24) / 24` with the raw replay hour, sun direction `(0, -sin d, cos d)` with d measured at +1.62 degrees on 23 Aug 1943 (seasonal law unknown); the terminator fits the screenshot at rms 0.9 px. Constant-buffer values, sun and moon virtual positions, the terrain ambient basis and the HSV-defined light colours are tabulated in the report's "Formulas for implementers".
 
 Frame constants (bind group 0), mirroring the game's `ConstantBuffer(0,0)`: view-projection and inverse, camera position and look direction, gradient-border camera-distance overrides and outline cutoffs, sun and moon virtual positions (two each), `DayNight_Hour_SunDir`, `vFoWOpacity_FoWTime_SnowMudFade_MaxGameSpeed`, ambient cube, `HdrRange`, sun and moon diffuse intensity, `GB_TextureHeight`, global time. Values come from `00_graphics.lua` and research R1.
 
@@ -32,7 +34,7 @@ Pass order (each pass a module under `crates/viewer/src/map/`, registered in one
 4. `borders`: meshes along province boundaries classed country / state / province / sea / sea region / impassable, textured with `border_*_N.dds`, `BORDER_WIDTH`, camera-distance fades from the defines, `border.shader` port.
 5. `names`: country names on curves (engine placement reproduced from research R2; `hoi_mapfont4`), victory-point and capital labels (`victory_point_mapicon`, `capital_mapicon` in `interface/mapicons.gui`, `GFX_onmap_victorypoints_strip` frame by value, font `hoi_20bs`), province names within `PROVINCE_NAME_DRAW_DISTANCE`.
 6. `icons`: screen-space sprites anchored to world positions: unit counters at unit-stack positions (frame, flag stripe, count, organisation and strength bars, `unit_counter` layout at `interface/mapicons.gui`), naval counters for task forces, air base and naval base icons with counts, land combat icons, front lines and order arrows from `ArmyOrders.path`.
-7. `post`: the game's post pass: color-correction LUT (`gfx/world/colorcorrection*.tga`, `gfx/posteffect_volumes.txt`), bloom on the city-light alpha, HDR range. Research R1 establishes which LUT and parameters apply.
+7. `post`: the game's post pass: color-correction LUT (`gfx/world/colorcorrection*.tga`, `gfx/posteffect_volumes.txt`), bloom on the city-light alpha, HDR range. The reference profile has `draw_postfx=no`, so this pass is off for the reference pairs and is built later from R1 section 4.
 8. `overlay`: egui only: timeline, warnings, table status; nothing of the map is drawn by egui.
 
 Fog of war: the recorded fog inputs exist (D102) but v1 is omniscient (`PLAN.md` section 2); the FOW pass is built with the shader but disabled until per-country perspective is scheduled.
@@ -69,6 +71,8 @@ All readers take `&ResolvedLayers` and return owned data; parsers take bytes and
 | Victory points, capitals | Provinces (victory_points), Politics (capital) | |
 
 ## 6. Evidence pointers
+
+- Research reports (outside the repository): `C:\hoi4_scratcheplay_mapesearch\R1-camera-lighting.md` (camera, day/night, lighting constants, post chain, terrain mesh, snow/mud data) and `C:\hoi4_scratcheplay_mapesearch2\R2-borders-names-icons.md` (gradient border fields with the exact byte formula, border meshes, rivers, country-name placement, VP labels, counters, unit-stack types, localisation precedence).
 
 - Shaders: `gfx/FX/*.shader`, `*.fxh` (read directly).
 - Defines: `common/defines/00_graphics.lua` (`LIGHT_*`, `BORDER_WIDTH`, `*_BORDER_FADE_*`, `DRAW_COUNTRY_NAMES_CUTOFF`, `PROVINCE_NAME_DRAW_DISTANCE`, `GRADIENT_BORDERS_*`, `CAMERA_*`, `SUN_*`, `DAY_NIGHT_FEATHER`, `WEATHER_*`).
