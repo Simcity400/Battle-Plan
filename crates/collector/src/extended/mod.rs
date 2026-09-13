@@ -373,17 +373,6 @@ impl Captured {
         &mut self.economy
     }
 
-    /// Decode-worker handoff for the hourly intel remainders (copy/decode
-    /// split). Sole cross-thread entry to the intel remainder buffers: the
-    /// game thread stages raw-copy state through it every hour and the single
-    /// FIFO decode worker decodes the staged payload into these pooled typed
-    /// rows before the spool ready-queue handoff. Shares the intel pack
-    /// buffers with the relations family; each stages its own copies with no
-    /// cross-family decoded roots.
-    pub(crate) fn intel_rest_pilot(&mut self) -> &mut intel::Captured {
-        &mut self.intel
-    }
-
     /// Decode-worker handoff for the hourly capitulation table (copy/decode
     /// split). Sole cross-thread entry to the capitulation buffers: the game
     /// thread stages raw-copy state through it every hour and the single
@@ -1234,14 +1223,5 @@ mod tests {
         assert!(captured.economy.rest_raw_mode);
         captured.economy_rest_pilot().rest_raw_mode = false;
         assert!(!captured.economy.rest_raw_mode);
-    }
-
-    #[test]
-    fn intel_rest_pilot_handoff_reaches_the_intel_pack() {
-        let mut captured = Captured::with_capacities(&Capacities::default(), &[0u16; TABLE_COUNT]);
-        captured.intel_rest_pilot().rest_raw_mode = true;
-        assert!(captured.intel.rest_raw_mode);
-        captured.intel_rest_pilot().rest_raw_mode = false;
-        assert!(!captured.intel.rest_raw_mode);
     }
 }

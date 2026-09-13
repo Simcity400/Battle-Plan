@@ -116,7 +116,7 @@ pub(super) fn compare(
 ) -> io::Result<()> {
     let mut complete = true;
     // Tier-4 slot0; cadence table is the single source of truth.
-    let staggered = !replay::cadence::is_refresh(replay::rows::TableId::Characters, frame.hour);
+    let staggered = !report.refresh_is_current(replay::rows::TableId::Characters, frame.hour);
     if staggered {
         for table in [
             replay::rows::TableId::Characters,

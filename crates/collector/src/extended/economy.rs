@@ -707,7 +707,7 @@ impl Captured {
         memory: &impl Memory,
         ctx: EconomyRestCopyContext,
         first: &mut EconomyRestJob,
-        second: Option<&mut EconomyRestJob>,
+        mut second: Option<&mut EconomyRestJob>,
     ) -> EconomyRestCopyReport {
         let started = qpc();
         first.clear();
@@ -716,7 +716,7 @@ impl Captured {
         let mut ticks = [0u64; 10];
         ticks[0] = elapsed(started);
         let mut matched = [true; 10];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let second_started = qpc();
             second_job.clear();
             second_job.game_state = ctx.game_state;
@@ -749,7 +749,8 @@ impl Captured {
         self.exchanges.mismatches = usize::from(ctx.needed[8] && !matched[8]);
         self.purchases.checked = ctx.needed[9];
         self.purchases.mismatches = usize::from(ctx.needed[9] && !matched[9]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         EconomyRestCopyReport {
             raw_ok,
             matched,
@@ -813,7 +814,7 @@ const M_E_SUPPLY_OBJ: u32 = 0x038;
 /// One hour of raw economy-rest payload. Flat pools recycle capacities and the
 /// steady state allocates on neither thread; growth happens on the decode side
 /// only (see `crate::decode::recycle_economy_rest_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct EconomyRestJob {
     pub log: RawLog<10>,
     pub game_state: usize,
@@ -1575,7 +1576,7 @@ fn copy_economy_supply_details(
                 if let Some(scan) = bucket_count.checked_add(u32::from(max_distance))
                     && let Some(bytes) = (scan as usize)
                         .checked_mul(engine::disrupted_supply_bucket::STRIDE)
-                        .and_then(|b| b.checked_add(1))
+                        .and_then(|b| b.checked_add(engine::disrupted_supply_bucket::DISTANCE_PLUS_ONE + 1))
                 {
                     let _ = esbulk(log, memory, Some(buckets), bytes, M_E_DISRUPTED);
                 }

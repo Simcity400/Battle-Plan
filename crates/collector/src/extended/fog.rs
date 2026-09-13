@@ -774,7 +774,7 @@ const RADAR_MASK: u32 = 0x01;
 /// One hour of raw radar payload. Flat pools recycle capacities and the
 /// steady state allocates on neither thread; growth happens on the decode
 /// side only (see `crate::decode::recycle_radar_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct RadarJob {
     pub log: RawLog<RADAR_N>,
     pub game_state: usize,
@@ -1252,12 +1252,12 @@ impl Captured {
         memory: &impl Memory,
         ctx: RadarCopyContext,
         first: &mut RadarJob,
-        second: Option<&mut RadarJob>,
+        mut second: Option<&mut RadarJob>,
     ) -> RadarCopyReport {
         let mut ticks = [0u64; RADAR_N];
         copy_radar_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
         let mut matched = [true; RADAR_N];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let mut second_ticks = [0u64; RADAR_N];
             copy_radar_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
             for (total, extra) in ticks.iter_mut().zip(second_ticks) {
@@ -1272,7 +1272,8 @@ impl Captured {
         // Conservative checked bookkeeping mirroring the typed path.
         self.radar.checked = ctx.needed[0];
         self.radar.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         RadarCopyReport {
             raw_ok,
             matched,
@@ -1361,7 +1362,7 @@ const INTEL_MIRROR_BATCH: usize = 32;
 /// One hour of raw intel payload. Flat pools recycle capacities and the
 /// steady state allocates on neither thread; growth happens on the decode
 /// side only (see `crate::decode::recycle_intel_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct IntelJob {
     pub log: RawLog<INTEL_N>,
     pub game_state: usize,
@@ -1802,12 +1803,12 @@ impl Captured {
         memory: &impl Memory,
         ctx: IntelCopyContext,
         first: &mut IntelJob,
-        second: Option<&mut IntelJob>,
+        mut second: Option<&mut IntelJob>,
     ) -> IntelCopyReport {
         let mut ticks = [0u64; INTEL_N];
         copy_intel_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
         let mut matched = [true; INTEL_N];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let mut second_ticks = [0u64; INTEL_N];
             copy_intel_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
             for (total, extra) in ticks.iter_mut().zip(second_ticks) {
@@ -1822,7 +1823,8 @@ impl Captured {
         // Conservative checked bookkeeping mirroring the typed path.
         self.intel.checked = ctx.needed[0];
         self.intel.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         IntelCopyReport {
             raw_ok,
             matched,

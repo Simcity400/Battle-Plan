@@ -1021,7 +1021,7 @@ pub(crate) struct Span {
 /// fixed-size so `clear` recycles capacities and the steady state allocates
 /// on neither thread; growth happens on the decode side only (see
 /// `crate::decode::recycle_characters_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct CharactersJob {
     pub spans: Vec<Span>,
     pub bytes: Vec<u8>,
@@ -1064,8 +1064,8 @@ impl CharactersJob {
     /// the typed capacity growth; overflowed refreshes fall back to the typed
     /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
-        self.spans.reserve_exact(self.spans.capacity().max(1));
-        self.bytes.reserve_exact(self.bytes.capacity().max(1));
+crate::raw::double_capacity(&mut self.spans);
+crate::raw::double_capacity(&mut self.bytes);
     }
 
     /// Guarded copy of one span into the pool. Returns the pool offset of the
@@ -1294,6 +1294,7 @@ struct Dead {
 /// Seven copied view spans in `View::read` order for local parsing.
 struct ViewCopy {
     bytes: [[u8; 64]; 7],
+    unit_id: Option<u32>,
 }
 
 /// Mirror of `View::read`'s scatter plus single-resume sequence with no
@@ -1307,6 +1308,7 @@ fn copy_view(
 ) -> Option<ViewCopy> {
     let mut view = ViewCopy {
         bytes: [[0; 64]; 7],
+        unit_id: None,
     };
     let mut completed = 0;
     while completed < 7 {
@@ -1907,7 +1909,7 @@ fn copy_unit(
     job: &mut CharactersJob,
     memory: &impl Memory,
     base: usize,
-    view: &ViewCopy,
+    view: &mut ViewCopy,
     _pointer: usize,
     dead: &mut Dead,
 ) -> bool {
@@ -1943,6 +1945,7 @@ fn copy_unit(
         dead.experience = true;
     }
     let parsed = identity.and_then(|start| parse_unit_identity(job, base, start));
+    view.unit_id = parsed.map(|(_, id)| id);
     if identity.is_some() && parsed.is_none() {
         dead.units = true;
         dead.traits = true;
@@ -1979,7 +1982,11 @@ fn copy_unit(
             }
         }
         if !job.overflowed && states_ok {
-            let character_id = pool_u32(job, identity.unwrap() + cunit_leader::ID);
+            // These are independent registries: a leader's id is not the
+            // id of the character whose role points to it.
+            let character_id = u32::from_le_bytes(
+                view.bytes[0][ccharacter::ID..ccharacter::ID + 4].try_into().unwrap(),
+            );
             if pool_u32(job, state[0]) != ccharacter::REFERENCE_TYPE
                 || pool_u32(job, state[0] + 4) != character_id
             {
@@ -2317,7 +2324,7 @@ fn copy_character(
     pointer: usize,
     dead: &mut Dead,
 ) -> bool {
-    let Some(view) = copy_view(job, memory, base, pointer) else {
+    let Some(mut view) = copy_view(job, memory, base, pointer) else {
         return false;
     };
     if job.overflowed {
@@ -2338,7 +2345,7 @@ fn copy_character(
     if !copy_advisors(job, memory, base, &view, pointer, dead) {
         return false;
     }
-    if !copy_unit(job, memory, base, &view, pointer, dead) {
+    if !copy_unit(job, memory, base, &mut view, pointer, dead) {
         return false;
     }
     // Trait vectors share the unit leader pointer resolved view-locally
@@ -2353,7 +2360,7 @@ fn copy_character(
             base,
             TraitVectorCopy {
                 unit,
-                leader_id: id,
+                leader_id: view.unit_id.unwrap_or(id),
                 array_offset: cunit_leader::TRAIT_DATA,
                 stride: 8,
                 has_experience: false,
@@ -2369,7 +2376,7 @@ fn copy_character(
             base,
             TraitVectorCopy {
                 unit,
-                leader_id: id,
+                leader_id: view.unit_id.unwrap_or(id),
                 array_offset: cunit_leader::TRAIT_EXPERIENCE_DATA,
                 stride: unit_leader_trait_experience_entry::STRIDE,
                 has_experience: true,
@@ -2483,7 +2490,7 @@ impl Captured {
         memory: &impl Memory,
         ctx: CharactersCopyContext,
         first: &mut CharactersJob,
-        second: Option<&mut CharactersJob>,
+        mut second: Option<&mut CharactersJob>,
     ) -> CharactersCopyReport {
         let needed = |local: usize| ctx.needed[TABLES[local].index()];
         let started = qpc();
@@ -2491,7 +2498,7 @@ impl Captured {
         let mut ticks = [0u64; 6];
         ticks[0] = elapsed(started);
         let mut matched = [true; 6];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let second_started = qpc();
             copy_pass(memory, ctx.base, ctx.game_state, second_job);
             ticks[0] += elapsed(second_started);
@@ -2516,7 +2523,8 @@ impl Captured {
         self.traits.rows.mismatches = usize::from(needed(4) && !matched[4]);
         self.trait_experience.rows.checked = needed(5);
         self.trait_experience.rows.mismatches = usize::from(needed(5) && !matched[5]);
-        let raw_ok = !first.overflowed;
+        let raw_ok = !first.overflowed
+            && second.is_none_or(|job| !job.overflowed);
         CharactersCopyReport {
             raw_ok,
             matched,
@@ -4009,6 +4017,25 @@ mod tests {
                 [character.name_start..character.name_start + character.name_len],
             b"heap-named-character!"
         );
+    }
+
+    #[test]
+    fn split_keeps_character_and_unit_leader_registry_ids_distinct() {
+        use super::characters_test_kit as kit;
+        let mut bytes = kit::mapped_fixture();
+        for (index, unit) in UNITS.into_iter().enumerate() {
+            put(&mut bytes, unit + cunit_leader::ID, (17 + index as u32).to_le_bytes());
+        }
+        let memory = kit::memory(&bytes);
+        let capacities = split_capacities();
+        let direct = kit::direct(&memory, &capacities);
+        let (split, report, _) = kit::split(&memory, &capacities);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 6]);
+        kit::assert_matches_direct(&split, &direct);
+        assert_eq!(split.units.rows.outcome, Outcome::Rows { len: 3 });
+        assert!(matches!(split.traits.rows.outcome, Outcome::Rows { len } if len > 0));
+        assert!(matches!(split.trait_experience.rows.outcome, Outcome::Rows { len } if len > 0));
     }
 
     #[test]

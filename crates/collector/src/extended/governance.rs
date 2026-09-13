@@ -1359,12 +1359,16 @@ impl Default for CountryMeta {
 /// fixed-size so `clear` recycles capacities and the steady state allocates
 /// on neither thread; growth happens on the decode side only (see
 /// `crate::decode::recycle_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct ResearchJob {
     pub metas: Vec<CountryMeta>,
     pub tech_pool: Vec<u8>,
     pub researched_pool: Vec<u8>,
     pub templates: Vec<TemplateOcc>,
+    /// First admitted occurrence per native handle, reset for every pass.
+    /// Handles beyond this acceleration table use the same uncached path.
+    template_index: Vec<usize>,
+    template_seen_country: Vec<usize>,
     pub id_pool: Vec<u8>,
     pub slots: Vec<SlotOcc>,
     pub reader_err: Option<&'static str>,
@@ -1381,6 +1385,8 @@ impl ResearchJob {
             tech_pool: Vec::with_capacity(16 << 20),
             researched_pool: Vec::with_capacity(8 << 20),
             templates: Vec::with_capacity(1 << 18),
+            template_index: vec![usize::MAX; 1 << 16],
+            template_seen_country: vec![0; 1 << 16],
             id_pool: Vec::with_capacity(8 << 20),
             slots: Vec::with_capacity(4096),
             reader_err: None,
@@ -1397,6 +1403,8 @@ impl ResearchJob {
         self.tech_pool.clear();
         self.researched_pool.clear();
         self.templates.clear();
+        self.template_index.fill(usize::MAX);
+        self.template_seen_country.fill(0);
         self.id_pool.clear();
         self.slots.clear();
         self.reader_err = None;
@@ -1415,7 +1423,7 @@ impl ResearchJob {
     /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
         fn double<T>(rows: &mut Vec<T>) {
-            rows.reserve_exact(rows.capacity().max(1));
+crate::raw::double_capacity(rows);
         }
         double(&mut self.metas);
         double(&mut self.tech_pool);
@@ -1506,6 +1514,16 @@ fn record_template_occ(
     if job.templates.len() == job.templates.capacity() {
         return true;
     }
+    if let Some(&index) = job.template_index.get(handle as usize)
+        && let Some(cached) = job.templates.get(index)
+    {
+        // Dictionary::read_definition reads a handle once, including failed
+        // definitions; a different pointer is rejected by the decoder.
+        let mut occ = cached.clone();
+        occ.pointer = pointer;
+        job.templates.push(occ);
+        return false;
+    }
     let mut header = [0; ctechnology_template::HEADER_BYTES];
     let header_result = ctechnology_template::copy_header(memory, pointer, &mut header);
     let mut occ = TemplateOcc {
@@ -1547,12 +1565,16 @@ fn record_template_occ(
         }
     }
     tallies.bytes[2] += (ctechnology_template::HEADER_BYTES + occ.id_len) as u64;
+    if let Some(index) = job.template_index.get_mut(handle as usize) {
+        *index = job.templates.len();
+    }
     job.templates.push(occ);
     false
 }
 
 fn copy_country_tech(
     memory: &impl Memory,
+    base: usize,
     country: ccountry::Country,
     tech_cap: usize,
     job: &mut ResearchJob,
@@ -1611,80 +1633,107 @@ fn copy_country_tech(
     meta.tech_start = job.tech_pool.len();
     meta.tmpl_start = job.templates.len();
     let mut page = [0u8; ctechnology::BATCH * 8];
+    let mut pointers = [0usize; ctechnology::BATCH];
+    let mut blobs = [0u8; ctechnology::BATCH * ctechnology::INSTANCE_BYTES];
+    let status_raw = ctechnology_status::StatusRaw {
+        pointer: meta.status_pointer,
+        vtable: meta.status_vtable,
+        backlink: meta.status_backlink,
+        scattered: meta.status_scattered,
+    };
+    // Only the authenticated, successfully decoded prefix can admit a
+    // definition. This matches the native dictionary's once-per-pass reads;
+    // an invalid earlier instance must not seed its cache.
+    let mut admits = ctechnology_status::decode_status(base, country.pointer, &status_raw).is_ok();
     let mut first = 0u32;
     let mut copied = 0usize;
     while first < array.count {
         let count = (array.count - first).min(ctechnology::BATCH as u32);
-        let page_addr = match array.element(first, ctechnology_status::POINTER_STRIDE) {
-            Some(address) => address,
-            None => {
-                meta.tech_err = Some("technology roster address overflow");
-                return false;
-            }
+        let Some(page_addr) = array.element(first, ctechnology_status::POINTER_STRIDE) else {
+            meta.tech_err = Some("technology roster address overflow");
+            return false;
         };
-        if !read_slice(
-            memory,
-            page_addr,
-            &mut page[..count as usize * ctechnology_status::POINTER_STRIDE],
-        ) {
+        if !read_slice(memory, page_addr, &mut page[..count as usize * 8]) {
             meta.tech_err = Some("technology roster pointers unreadable");
             tallies.live_fault[0] = true;
             return false;
         }
-        for chunk in page[..count as usize * ctechnology_status::POINTER_STRIDE].chunks_exact(8) {
-            let pointer = match usize::try_from(u64::from_le_bytes(chunk.try_into().unwrap())) {
-                Ok(pointer) => pointer,
-                Err(_) => {
-                    meta.tech_err = Some("technology pointer overflow");
-                    return false;
-                }
+        let mut selected = 0;
+        for chunk in page[..count as usize * 8].chunks_exact(8) {
+            let Ok(pointer) = usize::try_from(u64::from_le_bytes(chunk.try_into().unwrap())) else {
+                meta.tech_err = Some("technology pointer overflow");
+                return false;
             };
             if pointer == 0 {
                 continue;
             }
-            if copied == tech_cap {
+            if copied + selected == tech_cap {
                 meta.tech_unread += 1;
                 continue;
             }
-            let mut blob = [0; ctechnology::INSTANCE_BYTES];
-            if ctechnology::copy_one(memory, pointer, &mut blob) != ctechnology::FIELDS.len() {
-                meta.tech_err = Some("technology fields unreadable");
-                tallies.live_fault[0] = true;
-                return false;
-            }
-            if !fit_len(
-                job.tech_pool.len(),
-                job.tech_pool.capacity(),
-                ctechnology::INSTANCE_BYTES,
-            ) {
-                return true;
-            }
-            job.tech_pool.extend_from_slice(&blob);
-            let template = usize::try_from(blob_template(&blob)).unwrap_or(0);
-            let handle = blob_handle(&blob);
-            tallies.max_handle_plus_one =
-                tallies.max_handle_plus_one.max(handle as usize + 1);
+            ctechnology::hint(pointer);
+            pointers[selected] = pointer;
+            selected += 1;
+        }
+        if !fit_len(job.tech_pool.len(), job.tech_pool.capacity(),
+            selected * ctechnology::INSTANCE_BYTES)
+            || !fit_len(job.templates.len(), job.templates.capacity(), selected)
+        {
+            return true;
+        }
+        // The typed walker rejects the entire current gather on a field
+        // fault; do not retain definitions from a partial batch.
+        if ctechnology::copy_batch(memory, &pointers[..selected], &mut blobs)
+            != selected * ctechnology::FIELDS.len()
+        {
+            meta.tech_err = Some("technology fields unreadable");
+            tallies.live_fault[0] = true;
+            return false;
+        }
+        let started = qpc();
+        for blob in blobs[..selected * ctechnology::INSTANCE_BYTES]
+            .chunks_exact(ctechnology::INSTANCE_BYTES)
+        {
+            job.tech_pool.extend_from_slice(blob);
+            let template = usize::try_from(blob_template(blob)).unwrap_or(0);
+            let handle = blob_handle(blob);
+            tallies.max_handle_plus_one = tallies.max_handle_plus_one.max(handle as usize + 1);
             tallies.bytes[0] += ctechnology::INSTANCE_BYTES as u64;
-            let started = qpc();
-            let overflowed = record_template_occ(memory, template, handle, job, tallies);
-            tallies.ticks[2] += elapsed(started);
-            if overflowed {
-                return true;
+            admits &= ctechnology::decode_one(base, status, country.id, blob.try_into().unwrap()).is_ok();
+            if admits {
+                let repeated = if let Some(previous) = job.template_seen_country.get_mut(handle as usize) {
+                    let repeated = *previous == country.pointer;
+                    *previous = country.pointer;
+                    repeated
+                } else {
+                    job.tech_pool[meta.tech_start..job.tech_pool.len() - ctechnology::INSTANCE_BYTES]
+                        .chunks_exact(ctechnology::INSTANCE_BYTES)
+                        .any(|previous| blob_handle(previous) == handle)
+                };
+                admits = !repeated;
+            }
+            if admits {
+                if record_template_occ(memory, template, handle, job, tallies) {
+                    tallies.ticks[2] += elapsed(started);
+                    return true;
+                }
+            } else {
+                job.templates.push(TemplateOcc {
+                    pointer: template, handle, header: [0; ctechnology_template::HEADER_BYTES],
+                    header_result: Err("technology template fields unreadable"),
+                    id_start: job.id_pool.len(), id_len: 0, id_ok: false,
+                    term_ok: false, term_overflow: false,
+                });
             }
             copied += 1;
-            // Prefix ranges stay valid on every path: a later fault in this
-            // country still decodes the recorded prefix admits, exactly like
-            // the typed walk keeps admits made before its error.
             meta.tech_len = job.tech_pool.len() - meta.tech_start;
             meta.tmpl_len = job.templates.len() - meta.tmpl_start;
         }
+        tallies.ticks[2] += elapsed(started);
         first += count;
     }
     meta.tech_len = job.tech_pool.len() - meta.tech_start;
     meta.tmpl_len = job.templates.len() - meta.tmpl_start;
-    if meta.tech_err.is_some() {
-        return false;
-    }
     // Researched census: rereads full rows for the independent inventory.
     let researched_addr = match status.checked_add(ctechnology_status::RESEARCHED_DATA) {
         Some(address) => address,
@@ -1744,35 +1793,32 @@ fn copy_country_tech(
             tallies.live_fault[0] = true;
             return false;
         }
-        for chunk in page[..count as usize * ctechnology_status::POINTER_STRIDE].chunks_exact(8) {
-            let pointer = match usize::try_from(u64::from_le_bytes(chunk.try_into().unwrap()))
-                .ok()
-                .filter(|&pointer| pointer != 0)
-            {
-                Some(pointer) => pointer,
-                None => {
-                    meta.researched_err =
-                        Some("researched technology pointer unreadable or null");
-                    tallies.live_fault[0] = true;
-                    return false;
-                }
-            };
-            let mut blob = [0; ctechnology::INSTANCE_BYTES];
-            if ctechnology::copy_one(memory, pointer, &mut blob) != ctechnology::FIELDS.len() {
-                meta.researched_err = Some("technology fields unreadable");
+        for (pointer, chunk) in pointers[..count as usize].iter_mut()
+            .zip(page[..count as usize * ctechnology_status::POINTER_STRIDE].chunks_exact(8))
+        {
+            let Some(source) = usize::try_from(u64::from_le_bytes(chunk.try_into().unwrap()))
+                .ok().filter(|source| *source != 0)
+            else {
+                meta.researched_err = Some("researched technology pointer unreadable or null");
                 tallies.live_fault[0] = true;
                 return false;
-            }
-            if !fit_len(
-                job.researched_pool.len(),
-                job.researched_pool.capacity(),
-                ctechnology::INSTANCE_BYTES,
-            ) {
-                return true;
-            }
-            job.researched_pool.extend_from_slice(&blob);
-            tallies.bytes[0] += ctechnology::INSTANCE_BYTES as u64;
+            };
+            *pointer = source;
+            ctechnology::hint(source);
         }
+        let byte_count = count as usize * ctechnology::INSTANCE_BYTES;
+        if !fit_len(job.researched_pool.len(), job.researched_pool.capacity(), byte_count) {
+            return true;
+        }
+        if ctechnology::copy_batch(memory, &pointers[..count as usize], &mut blobs)
+            != count as usize * ctechnology::FIELDS.len()
+        {
+            meta.researched_err = Some("technology fields unreadable");
+            tallies.live_fault[0] = true;
+            return false;
+        }
+        job.researched_pool.extend_from_slice(&blobs[..byte_count]);
+        tallies.bytes[0] += byte_count as u64;
         first += count;
     }
     meta.researched_len = job.researched_pool.len() - meta.researched_start;
@@ -1945,9 +1991,10 @@ fn copy_research_pass(
         let slot_remaining = slot_cap.saturating_sub(slot_recorded);
         let mut meta = CountryMeta::default();
         let started = qpc();
+        let definitions_before = tallies.ticks[2];
         let overflowed =
-            copy_country_tech(memory, country, tech_remaining, job, &mut meta, &mut tallies);
-        tallies.ticks[0] += elapsed(started);
+            copy_country_tech(memory, base, country, tech_remaining, job, &mut meta, &mut tallies);
+        tallies.ticks[0] += elapsed(started).saturating_sub(tallies.ticks[2] - definitions_before);
         if overflowed {
             job.overflowed = true;
             return tallies;
@@ -2562,7 +2609,7 @@ impl Captured {
         memory: &impl Memory,
         ctx: CopyContext,
         first: &mut ResearchJob,
-        second: Option<&mut ResearchJob>,
+        mut second: Option<&mut ResearchJob>,
     ) -> CopyReport {
         let needed = [
             ctx.needed[TABLES[RESEARCH_LOCAL[0]].index()],
@@ -2580,7 +2627,7 @@ impl Captured {
         let mut matched = [true; 3];
         let mut ticks = first_tallies.ticks;
         let mut live_fault = first_tallies.live_fault;
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let second_tallies = copy_research_pass(
                 memory,
                 ctx.base,
@@ -2614,7 +2661,8 @@ impl Captured {
         self.slots.mismatches = usize::from(needed[1] && !matched[1]);
         self.definitions.checked = needed[2];
         self.definitions.mismatches = usize::from(needed[2] && !matched[2]);
-        let raw_ok = !first.overflowed;
+        let raw_ok = !first.overflowed
+            && second.is_none_or(|job| !job.overflowed);
         CopyReport {
             raw_ok,
             matched,
@@ -2773,7 +2821,7 @@ struct FocusCountry {
 /// summary and completed spans. Flat pools recycle capacities and the steady
 /// state allocates on neither thread; growth happens on the decode side only
 /// (see `crate::decode::recycle_focus_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct FocusJob {
     pub log: RawLog<2>,
     pub game_state: usize,
@@ -2808,7 +2856,7 @@ impl FocusJob {
     /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
         self.log.grow();
-        self.census.reserve_exact(self.census.capacity().max(1));
+crate::raw::double_capacity(&mut self.census);
     }
 }
 
@@ -3201,13 +3249,13 @@ impl Captured {
         memory: &impl engine::Memory,
         ctx: FocusCopyContext,
         first: &mut FocusJob,
-        second: Option<&mut FocusJob>,
+        mut second: Option<&mut FocusJob>,
     ) -> FocusCopyReport {
         let needed = ctx.needed;
         let mut ticks = [0u64; 2];
         copy_focus_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
         let mut matched = [true; 2];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let mut second_ticks = [0u64; 2];
             copy_focus_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
             ticks[0] += second_ticks[0];
@@ -3224,7 +3272,8 @@ impl Captured {
         self.focus.mismatches = usize::from(needed[0] && !matched[0]);
         self.completed.checked = needed[1];
         self.completed.mismatches = usize::from(needed[1] && !matched[1]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         FocusCopyReport {
             raw_ok,
             matched,
@@ -4155,6 +4204,53 @@ mod tests {
     }
 
     #[test]
+    fn research_batches_instances_and_reads_shared_definitions_once_per_pass() {
+        use engine::Memory;
+        use std::cell::Cell;
+        struct Counts<'a> {
+            inner: engine::memory::SliceMemory<'a>,
+            headers: Cell<usize>,
+            batch: Cell<usize>,
+        }
+        impl Memory for Counts<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address == kit::TMPL_A + ctechnology_template::ID && output.len() == 32 {
+                    self.headers.set(self.headers.get() + 1);
+                }
+                self.inner.copy(address, output)
+            }
+            fn copy_records(&self, pointers: &[usize], fields: &[engine::memory::RecordField],
+                stride: usize, output: &mut [u8]) -> usize {
+                if stride == ctechnology::INSTANCE_BYTES {
+                    self.batch.set(self.batch.get().max(pointers.len()));
+                }
+                // Preserve field-order failures while keeping reads visible
+                // to the definition-header counter above.
+                let mut completed = 0;
+                for (index, pointer) in pointers.iter().enumerate() {
+                    for field in fields {
+                        let Some(address) = pointer.checked_add(field.source_offset) else { return completed; };
+                        let start = index * stride + field.destination_offset;
+                        if !self.copy(address, &mut output[start..start + field.len]) { return completed; }
+                        completed += 1;
+                    }
+                }
+                completed
+            }
+        }
+        let (bytes, layout) = kit::fixture();
+        let memory = Counts { inner: kit_memory(&bytes), headers: Cell::new(0), batch: Cell::new(0) };
+        let direct = kit::direct(&kit_memory(&bytes), &layout, 8, 4, 8, 32, 64);
+        let mut pilot = kit::pilot_captured();
+        let (report, _) = kit::split(&memory, &layout, &mut pilot, true);
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [true; 3]);
+        kit::assert_matches_direct(&pilot, &direct);
+        assert_eq!(memory.headers.get(), 2, "one shared header in each independent pass");
+        assert_eq!(memory.batch.get(), 2, "both non-null first-country instances share a gather");
+    }
+
+    #[test]
     fn research_copy_sizes_cover_documented_read_set() {
         // S3: every Memory::copy size the research copy pass issues,
         // recorded through the real pass. Array headers (16), words (4/8),
@@ -4554,6 +4650,8 @@ mod tests {
             tech_pool: Vec::new(),
             researched_pool: Vec::new(),
             templates: Vec::new(),
+            template_index: Vec::new(),
+            template_seen_country: Vec::new(),
             id_pool: Vec::new(),
             slots: Vec::new(),
             reader_err: None,

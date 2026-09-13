@@ -351,7 +351,7 @@ const M_ALL: u32 = 0x07;
 /// One hour of raw session payload. Flat pools recycle capacities and the
 /// steady state allocates on neither thread; growth happens on the decode
 /// side only (see `crate::decode::recycle_session_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct SessionJob {
     pub log: RawLog<3>,
     pub game_state: usize,
@@ -566,7 +566,7 @@ impl Captured {
         memory: &impl engine::Memory,
         ctx: SessionCopyContext,
         first: &mut SessionJob,
-        second: Option<&mut SessionJob>,
+        mut second: Option<&mut SessionJob>,
     ) -> SessionCopyReport {
         let started = qpc();
         first.clear();
@@ -575,7 +575,7 @@ impl Captured {
         let mut ticks = [0u64; 3];
         ticks[0] = elapsed(started);
         let mut matched = [true; 3];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let second_started = qpc();
             second_job.clear();
             second_job.game_state = ctx.game_state;
@@ -598,7 +598,8 @@ impl Captured {
         self.sources.mismatches = usize::from(ctx.needed[1] && !matched[1]);
         self.aggregates.checked = ctx.needed[2];
         self.aggregates.mismatches = usize::from(ctx.needed[2] && !matched[2]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         SessionCopyReport {
             raw_ok,
             matched,

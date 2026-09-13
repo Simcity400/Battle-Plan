@@ -166,7 +166,7 @@ const TABLE_CHUNK: usize = 65536;
 /// One refresh of raw lexical payload. Flat pools recycle capacities and the
 /// steady state allocates on neither thread; growth happens on the decode
 /// side only (see `crate::decode::recycle_lexical_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct LexicalJob {
     pub log: RawLog<1>,
 }
@@ -414,7 +414,7 @@ impl Captured {
         memory: &impl Memory,
         ctx: LexicalCopyContext,
         first: &mut LexicalJob,
-        second: Option<&mut LexicalJob>,
+        mut second: Option<&mut LexicalJob>,
     ) -> LexicalCopyReport {
         let needed = ctx.needed[TableId::LexicalTokens.index()];
         let started = qpc();
@@ -422,7 +422,7 @@ impl Captured {
         let mut ticks = [0u64; 1];
         ticks[0] = elapsed(started);
         let mut matched = [true; 1];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let second_started = qpc();
             copy_pass(memory, ctx.base, &mut second_job.log);
             ticks[0] += elapsed(second_started);
@@ -435,7 +435,8 @@ impl Captured {
         }
         self.rows.checked = needed;
         self.rows.mismatches = usize::from(needed && !matched[0]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         LexicalCopyReport {
             raw_ok,
             matched,

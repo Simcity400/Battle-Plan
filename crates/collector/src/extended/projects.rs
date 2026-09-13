@@ -517,7 +517,7 @@ const PROJECT_BATCH: u32 = 16;
 /// One refresh of raw project payload. The census scratch is reused across
 /// passes without allocation; growth happens on the decode side only (see
 /// `crate::decode::recycle_projects_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct ProjectsJob {
     pub log: RawLog<4>,
     pub game_state: usize,
@@ -571,8 +571,8 @@ impl ProjectsJob {
     /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
         self.log.grow();
-        self.census.reserve_exact(self.census.capacity().max(1));
-        self.pointers.reserve_exact(self.pointers.capacity().max(1));
+crate::raw::double_capacity(&mut self.census);
+crate::raw::double_capacity(&mut self.pointers);
     }
 }
 
@@ -1317,7 +1317,7 @@ impl Captured {
         memory: &impl Memory,
         ctx: ProjectsCopyContext,
         first: &mut ProjectsJob,
-        second: Option<&mut ProjectsJob>,
+        mut second: Option<&mut ProjectsJob>,
     ) -> ProjectsCopyReport {
         let needed = |local: usize| ctx.needed[TABLES[local].index()];
         let started = qpc();
@@ -1325,7 +1325,7 @@ impl Captured {
         let mut ticks = [0u64; 4];
         ticks[0] = elapsed(started);
         let mut matched = [true; 4];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let second_started = qpc();
             copy_pass(memory, ctx.base, ctx.game_state, second_job);
             ticks[0] += elapsed(second_started);
@@ -1346,7 +1346,8 @@ impl Captured {
         self.history.mismatches = usize::from(needed(2) && !matched[2]);
         self.breakthroughs.checked = needed(3);
         self.breakthroughs.mismatches = usize::from(needed(3) && !matched[3]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         ProjectsCopyReport {
             raw_ok,
             matched,
@@ -1581,7 +1582,6 @@ fn copy_program_row(
         return false;
     }
     if building_len != 0
-        && name_capacity != msvc_string::INLINE_CAPACITY
         && span(log, memory, Some(source), building_len, M_PROGRAMS).is_none()
     {
         return false;
@@ -2681,6 +2681,25 @@ mod tests {
         assert_eq!(split.projects.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.history.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.breakthroughs.outcome, Outcome::Rows { len: 1 });
+    }
+
+    #[test]
+    fn program_inline_building_name_is_copied_for_the_arena_read() {
+        use super::projects_test_kit as kit;
+        let mut bytes = kit::fixture();
+        let at = kit::PROG1 + nproject_cprogram::BUILDING;
+        bytes[at..at + 32].fill(0);
+        bytes[at..at + 8].copy_from_slice(b"facility");
+        bytes[at + 16..at + 24].copy_from_slice(&8_u64.to_le_bytes());
+        bytes[at + 24..at + 32].copy_from_slice(&msvc_string::INLINE_CAPACITY.to_le_bytes());
+        let memory = kit::memory(&bytes);
+        let capacities = split_capacities();
+        let direct = kit::direct(&memory, &capacities);
+        let (split, report, _) = kit::split(&memory, &capacities);
+        assert!(report.raw_ok);
+        kit::assert_matches_direct(&split, &direct);
+        assert_eq!(split.programs.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(&split.names.first[..8], b"facility");
     }
 
     #[test]

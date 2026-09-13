@@ -91,6 +91,7 @@ pub(crate) fn stable_clock(before: Option<Clock>, after: Option<Clock>) -> bool 
             && before.play_session_started_at == after.play_session_started_at)
 }
 
+#[derive(Clone, Copy)]
 struct ConsistencyWindow<const N: usize> {
     successful: [u16; N],
 }
@@ -224,6 +225,8 @@ pub struct Captured {
     pub map: MapCaptured,
     pub extended: extended::Captured,
     pub extended_checked: [bool; TABLE_COUNT],
+    // Raw-copy verdicts survive pack resets between staging and worker decode.
+    pub extended_raw_mismatches: [bool; TABLE_COUNT],
     pub extended_successful: [u16; TABLE_COUNT],
     pub country_cache_status: SeedStatus,
     pub country_cache_entries: usize,
@@ -315,6 +318,7 @@ impl Captured {
                 &extended_successful,
             ),
             extended_checked: [false; TABLE_COUNT],
+            extended_raw_mismatches: [false; TABLE_COUNT],
             extended_successful,
             country_cache_status: SeedStatus::Unavailable {
                 reason: "clock unavailable",
@@ -638,6 +642,14 @@ impl Shared {
     }
 }
 
+fn complete_matrix_check(remaining: &AtomicUsize) {
+    // A completed window stays closed even if a stale successful report is
+    // observed. Wrapping zero restarts billions of expensive matrix reads.
+    let _ = remaining.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        value.checked_sub(1)
+    });
+}
+
 fn pool_growth(free: usize, allocated: usize) -> usize {
     if free <= FREE_RESERVE {
         GROW_BUFFERS.min(BUFFERS.saturating_sub(allocated))
@@ -744,6 +756,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             frame.map.reset();
             frame.extended.reset();
             frame.extended_checked = [false; TABLE_COUNT];
+            frame.extended_raw_mismatches = [false; TABLE_COUNT];
             frame.country_cache_status = SeedStatus::Unavailable {
                 reason: "clock unavailable",
             };
@@ -847,14 +860,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             // typed walks with no payload enqueued.
             let mut economy_rest_payload: Option<extended::economy::EconomyRestJob> = None;
             let mut economy_rest_report = extended::economy::EconomyRestCopyReport::default();
-            // Intel hourly remainders handoff state: same FIFO, same ordering
-            // guarantees. The hourly payload carries subjects, autonomy,
-            // agencies, operatives, cryptology, networks, flags, variables,
-            // operations, assignments, tokens, incoming and country intel
-            // with its own census and no cross-family decoded roots. Staging
-            // overflow falls back to the typed walks with no payload enqueued.
-            let mut intel_rest_payload: Option<extended::intel::IntelRestJob> = None;
-            let mut intel_rest_report = extended::intel::IntelRestCopyReport::default();
             // Shared hourly bases handoff state: same FIFO, same ordering
             // guarantees. The hourly payload carries the wing/manager census
             // once with bases, registrations and aces detail; all three
@@ -989,6 +994,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let mut divisions_second = (needed[2]
                     || extended::Captured::needs_division_check(&extended_needed))
                 .then(decode::acquire_divisions_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if divisions_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_divisions_job(divisions_first);
+                    divisions_first = Default::default();
+                }
                 let divisions_ctx = DivisionsCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1075,6 +1089,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let matrix_needed = shared.war_matrix_remaining.load(Ordering::Relaxed) != 0;
                 let mut first = decode::acquire_wars_job();
                 let mut second = (needed[3] || matrix_needed).then(decode::acquire_wars_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_wars_job(first);
+                    first = Default::default();
+                }
                 let wars_ctx = WarsCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1101,7 +1124,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     // success (both copies equal, no live faults), following
                     // the pilot's conservative rule; the spool-side
                     // cross-check of decoded rows is unchanged.
-                    wars_matrix_check = wars_report.matched[1];
+                    wars_matrix_check = matrix_needed && wars_report.matched[1];
                 } else {
                     let begin = qpc();
                     decode::recycle_wars_job(first);
@@ -1210,6 +1233,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let players_second_needed = needed[6] || needed[7];
                 let mut players_first = decode::acquire_players_job();
                 let mut players_second = players_second_needed.then(decode::acquire_players_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if players_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_players_job(players_first);
+                    players_first = Default::default();
+                }
                 let players_ctx = crate::map_capture::PlayersCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1239,6 +1271,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let map_second_needed = needed[8..PROVINCE_CHECK].iter().any(|&n| n);
                 let mut map_first = decode::acquire_map_job();
                 let mut map_second = map_second_needed.then(decode::acquire_map_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if map_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_map_job(map_first);
+                    map_first = Default::default();
+                }
                 let map_ctx = crate::map_capture::MapCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1263,9 +1304,19 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     .any(|table| extended_needed[table.index()]);
                 let mut air_first = decode::acquire_air_wing_job();
                 let mut air_second = air_second_needed.then(decode::acquire_air_wing_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if air_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_air_wing_job(air_first);
+                    air_first = Default::default();
+                }
                 let air_ctx = extended::air::AirWingCopyContext {
                     base: shared.base,
                     game_state: state,
+                    needed: decode::AIR_WING.map(|table| extended_needed[table.index()]),
                 };
                 air_wing_report = extended::air::copy_air_refresh(
                     &memory,
@@ -1292,6 +1343,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let mut air_stats_first = decode::acquire_air_stats_job();
                 let mut air_stats_second =
                     air_stats_second_needed.then(decode::acquire_air_stats_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if air_stats_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_air_stats_job(air_stats_first);
+                    air_stats_first = Default::default();
+                }
                 let air_stats_ctx = extended::air::AirStatsCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1316,6 +1376,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     .any(|table| extended_needed[table.index()]);
                 let mut naval_first = decode::acquire_naval_job();
                 let mut naval_second = naval_second_needed.then(decode::acquire_naval_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if naval_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_naval_job(naval_first);
+                    naval_first = Default::default();
+                }
                 let naval_ctx = extended::naval_history::NavalCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1347,6 +1416,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let mut air_bases_first = decode::acquire_air_bases_job();
                 let mut air_bases_second =
                     air_bases_second_needed.then(decode::acquire_air_bases_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if air_bases_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_air_bases_job(air_bases_first);
+                    air_bases_first = Default::default();
+                }
                 let air_bases_ctx = extended::air::AirBasesCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1386,6 +1464,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let mut air_history_first = decode::acquire_air_history_job();
                 let mut air_history_second =
                     air_history_second_needed.then(decode::acquire_air_history_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if air_history_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_air_history_job(air_history_first);
+                    air_history_first = Default::default();
+                }
                 let air_history_ctx = extended::air::AirHistoryCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1419,6 +1506,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     .any(|table| extended_needed[table.index()]);
                 let mut rail_first = decode::acquire_rail_job();
                 let mut rail_second = rail_second_needed.then(decode::acquire_rail_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if rail_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_rail_job(rail_first);
+                    rail_first = Default::default();
+                }
                 let rail_ctx = extended::naval_history::RailCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1452,6 +1548,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let mut supremacy_first = decode::acquire_supremacy_job();
                 let mut supremacy_second =
                     supremacy_second_needed.then(decode::acquire_supremacy_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if supremacy_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_supremacy_job(supremacy_first);
+                    supremacy_first = Default::default();
+                }
                 let supremacy_ctx = extended::naval_history::SupremacyCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1481,6 +1586,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     .any(|table| extended_needed[table.index()]);
                 let mut sunk_first = decode::acquire_sunk_job();
                 let mut sunk_second = sunk_second_needed.then(decode::acquire_sunk_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if sunk_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_sunk_job(sunk_first);
+                    sunk_first = Default::default();
+                }
                 let sunk_ctx = extended::naval_history::SunkCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1511,6 +1625,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     .any(|table| extended_needed[table.index()]);
                 let mut radar_first = decode::acquire_radar_job();
                 let mut radar_second = radar_second_needed.then(decode::acquire_radar_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if radar_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_radar_job(radar_first);
+                    radar_first = Default::default();
+                }
                 let radar_ctx = extended::fog::RadarCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1542,6 +1665,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     .any(|table| extended_needed[table.index()]);
                 let mut intel_first = decode::acquire_intel_job();
                 let mut intel_second = intel_second_needed.then(decode::acquire_intel_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if intel_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_intel_job(intel_first);
+                    intel_first = Default::default();
+                }
                 let intel_ctx = extended::fog::IntelCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1573,6 +1705,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     .any(|table| extended_needed[table.index()]);
                 let mut weather_first = decode::acquire_weather_job();
                 let mut weather_second = weather_second_needed.then(decode::acquire_weather_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if weather_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_weather_job(weather_first);
+                    weather_first = Default::default();
+                }
                 let weather_ctx = extended::weather::WeatherCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1608,6 +1749,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let mut capitulation_first = decode::acquire_capitulation_job();
                 let mut capitulation_second =
                     capitulation_second_needed.then(decode::acquire_capitulation_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if capitulation_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_capitulation_job(capitulation_first);
+                    capitulation_first = Default::default();
+                }
                 let capitulation_ctx = extended::intel::CapitulationCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1661,6 +1811,12 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .any(|table| extended_needed[table.index()]);
                     let mut first = decode::acquire_job();
                     let mut second = needed_any.then(decode::acquire_job);
+                    // A consistency pass needs both owned buffers; otherwise use
+                    // the allocation-free typed double read.
+                    if second.as_ref().is_some_and(|job| job.metas.capacity() == 0) {
+                        decode::recycle_job(first);
+                        first = Default::default();
+                    }
                     let pilot = frame.extended.research_pilot();
                     let ctx = extended::governance::CopyContext {
                         base: shared.base,
@@ -1693,6 +1849,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .any(|table| extended_needed[table.index()]);
                     let mut first = decode::acquire_relations_job();
                     let mut second = needed_any.then(decode::acquire_relations_job);
+                    // A consistency pass needs both owned buffers; otherwise use
+                    // the allocation-free typed double read.
+                    if second
+                        .as_ref()
+                        .is_some_and(|job| job.countries.capacity() == 0)
+                    {
+                        decode::recycle_relations_job(first);
+                        first = Default::default();
+                    }
                     let relations = frame.extended.relations_pilot();
                     let ctx = extended::intel::RelationsCopyContext {
                         base: shared.base,
@@ -1728,6 +1893,12 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .any(|table| extended_needed[table.index()]);
                     let mut first = decode::acquire_characters_job();
                     let mut second = needed_any.then(decode::acquire_characters_job);
+                    // A consistency pass needs both owned buffers; otherwise use
+                    // the allocation-free typed double read.
+                    if second.as_ref().is_some_and(|job| job.spans.capacity() == 0) {
+                        decode::recycle_characters_job(first);
+                        first = Default::default();
+                    }
                     let characters = frame.extended.characters_pilot();
                     let ctx = extended::characters::CharactersCopyContext {
                         base: shared.base,
@@ -1762,6 +1933,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .any(|table| extended_needed[table.index()]);
                     let mut first = decode::acquire_projects_job();
                     let mut second = needed_any.then(decode::acquire_projects_job);
+                    // A consistency pass needs both owned buffers; otherwise use
+                    // the allocation-free typed double read.
+                    if second
+                        .as_ref()
+                        .is_some_and(|job| job.log.spans.capacity() == 0)
+                    {
+                        decode::recycle_projects_job(first);
+                        first = Default::default();
+                    }
                     let projects = frame.extended.projects_pilot();
                     let ctx = extended::projects::ProjectsCopyContext {
                         base: shared.base,
@@ -1792,6 +1972,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .any(|table| extended_needed[table.index()]);
                     let mut first = decode::acquire_lexical_job();
                     let mut second = needed_any.then(decode::acquire_lexical_job);
+                    // A consistency pass needs both owned buffers; otherwise use
+                    // the allocation-free typed double read.
+                    if second
+                        .as_ref()
+                        .is_some_and(|job| job.log.spans.capacity() == 0)
+                    {
+                        decode::recycle_lexical_job(first);
+                        first = Default::default();
+                    }
                     let lexical = frame.extended.lexical_pilot();
                     let ctx = extended::lexical::LexicalCopyContext {
                         base: shared.base,
@@ -1821,6 +2010,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .any(|table| extended_needed[table.index()]);
                     let mut first = decode::acquire_buildings_job();
                     let mut second = needed_any.then(decode::acquire_buildings_job);
+                    // A consistency pass needs both owned buffers; otherwise use
+                    // the allocation-free typed double read.
+                    if second
+                        .as_ref()
+                        .is_some_and(|job| job.log.spans.capacity() == 0)
+                    {
+                        decode::recycle_buildings_job(first);
+                        first = Default::default();
+                    }
                     let buildings = frame.extended.buildings_pilot();
                     let ctx = extended::construction::BuildingsCopyContext {
                         base: shared.base,
@@ -1853,6 +2051,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .any(|table| extended_needed[table.index()]);
                     let mut first = decode::acquire_session_job();
                     let mut second = needed_any.then(decode::acquire_session_job);
+                    // A consistency pass needs both owned buffers; otherwise use
+                    // the allocation-free typed double read.
+                    if second
+                        .as_ref()
+                        .is_some_and(|job| job.log.spans.capacity() == 0)
+                    {
+                        decode::recycle_session_job(first);
+                        first = Default::default();
+                    }
                     let session = frame.extended.session_pilot();
                     let ctx = extended::session::SessionCopyContext {
                         base: shared.base,
@@ -1887,6 +2094,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .any(|table| extended_needed[table.index()]);
                     let mut first = decode::acquire_production_rest_job();
                     let mut second = needed_any.then(decode::acquire_production_rest_job);
+                    // A consistency pass needs both owned buffers; otherwise use
+                    // the allocation-free typed double read.
+                    if second
+                        .as_ref()
+                        .is_some_and(|job| job.log.spans.capacity() == 0)
+                    {
+                        decode::recycle_production_rest_job(first);
+                        first = Default::default();
+                    }
                     let ctx = extended::production::ProductionRestCopyContext {
                         base: shared.base,
                         game_state: state,
@@ -1929,6 +2145,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .any(|table| extended_needed[table.index()]);
                     let mut first = decode::acquire_construction_rest_job();
                     let mut second = needed_any.then(decode::acquire_construction_rest_job);
+                    // A consistency pass needs both owned buffers; otherwise use
+                    // the allocation-free typed double read.
+                    if second
+                        .as_ref()
+                        .is_some_and(|job| job.log.spans.capacity() == 0)
+                    {
+                        decode::recycle_construction_rest_job(first);
+                        first = Default::default();
+                    }
                     let ctx = extended::construction::ConstructionRestCopyContext {
                         base: shared.base,
                         game_state: state,
@@ -1973,6 +2198,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .any(|table| extended_needed[table.index()]);
                     let mut first = decode::acquire_economy_rest_job();
                     let mut second = needed_any.then(decode::acquire_economy_rest_job);
+                    // A consistency pass needs both owned buffers; otherwise use
+                    // the allocation-free typed double read.
+                    if second
+                        .as_ref()
+                        .is_some_and(|job| job.log.spans.capacity() == 0)
+                    {
+                        decode::recycle_economy_rest_job(first);
+                        first = Default::default();
+                    }
                     let ctx = extended::economy::EconomyRestCopyContext {
                         base: shared.base,
                         game_state: state,
@@ -2003,55 +2237,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::recycle_economy_rest_job(second);
                     }
                 }
-                // Intel hourly remainders (copy/decode split): raw copies only
-                // on the game thread. Every hour stages the payload and hands
-                // the frame to the decode FIFO; the worker replays subjects,
-                // autonomy, agencies, operatives, cryptology, networks, flags,
-                // variables, operations, assignments, tokens, incoming and
-                // country intel before the spool ready handoff. Staging
-                // overflow falls back to the typed walks with no payload
-                // enqueued.
-                {
-                    let needed_any = decode::INTEL_REST
-                        .iter()
-                        .any(|table| extended_needed[table.index()]);
-                    let mut first = decode::acquire_intel_rest_job();
-                    let mut second = needed_any.then(decode::acquire_intel_rest_job);
-                    let ctx = extended::intel::IntelRestCopyContext {
-                        base: shared.base,
-                        game_state: state,
-                        needed: [
-                            extended_needed[decode::INTEL_REST[0].index()],
-                            extended_needed[decode::INTEL_REST[1].index()],
-                            extended_needed[decode::INTEL_REST[2].index()],
-                            extended_needed[decode::INTEL_REST[3].index()],
-                            extended_needed[decode::INTEL_REST[4].index()],
-                            extended_needed[decode::INTEL_REST[5].index()],
-                            extended_needed[decode::INTEL_REST[6].index()],
-                            extended_needed[decode::INTEL_REST[7].index()],
-                            extended_needed[decode::INTEL_REST[8].index()],
-                            extended_needed[decode::INTEL_REST[9].index()],
-                            extended_needed[decode::INTEL_REST[10].index()],
-                            extended_needed[decode::INTEL_REST[11].index()],
-                            extended_needed[decode::INTEL_REST[12].index()],
-                        ],
-                    };
-                    intel_rest_report = frame.extended.intel_rest_pilot().copy_intel_rest_refresh(
-                        &memory,
-                        ctx,
-                        &mut first,
-                        second.as_mut(),
-                    );
-                    frame.extended.intel_rest_pilot().rest_raw_mode = intel_rest_report.raw_ok;
-                    if intel_rest_report.raw_ok {
-                        intel_rest_payload = Some(first);
-                    } else {
-                        decode::recycle_intel_rest_job(first);
-                    }
-                    if let Some(second) = second {
-                        decode::recycle_intel_rest_job(second);
-                    }
-                }
                 // Focus pair (copy/decode split): raw copies only on the game
                 // thread. Every hour stages the payload and hands the frame
                 // to the decode FIFO; the worker decodes before the spool
@@ -2061,6 +2246,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let mut focus_second = (extended_needed[decode::FOCUS[0].index()]
                     || extended_needed[decode::FOCUS[1].index()])
                 .then(decode::acquire_focus_job);
+                // A consistency pass needs both owned buffers; otherwise use
+                // the allocation-free typed double read.
+                if focus_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    decode::recycle_focus_job(focus_first);
+                    focus_first = Default::default();
+                }
                 let focus_ctx = extended::governance::FocusCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -2096,6 +2290,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .iter()
                         .any(|table| extended_needed[table.index()]);
                 let mut variants_second = variants_second_needed.then(decode::acquire_variants_job);
+                if variants_second
+                    .as_ref()
+                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                {
+                    if let Some(first) = variants_first.take() {
+                        decode::recycle_variants_job(first);
+                    }
+                    variants_first = Some(Default::default());
+                }
                 let (checks, ticks, variants_report_opt) = frame.extended.capture(
                     &cached,
                     shared.base,
@@ -2112,7 +2315,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 }
                 if variants_refresh {
                     let first = variants_first.take().expect("staged variants job");
-                    let raw_ok = !first.log.overflowed;
+                    let raw_ok = variants_report.raw_ok;
                     if raw_ok {
                         variants_payload = Some(first);
                     } else {
@@ -2142,6 +2345,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::PILOT.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = pilot_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !pilot_report.matched[slot];
                         let ns = shared.ns(pilot_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_copy_ns(slot, ns);
@@ -2153,6 +2358,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::RELATIONS.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = relations_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !relations_report.matched[slot];
                         let ns = shared.ns(relations_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_relations_copy_ns(slot, ns);
@@ -2164,6 +2371,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::CHARACTERS.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = characters_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !characters_report.matched[slot];
                         let ns = shared.ns(characters_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_characters_copy_ns(slot, ns);
@@ -2175,6 +2384,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::PROJECTS.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = projects_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !projects_report.matched[slot];
                         let ns = shared.ns(projects_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_projects_copy_ns(slot, ns);
@@ -2186,6 +2397,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::LEXICAL.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = lexical_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !lexical_report.matched[slot];
                         let ns = shared.ns(lexical_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_lexical_copy_ns(slot, ns);
@@ -2197,6 +2410,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 if variants_report.raw_ok {
                     for (slot, table) in decode::VARIANTS.iter().enumerate() {
                         let index = table.index();
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !variants_report.matched[slot];
                         let ns = shared.ns(variants_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_variants_copy_ns(slot, ns);
@@ -2208,6 +2423,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::BUILDINGS.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = buildings_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !buildings_report.matched[slot];
                         let ns = shared.ns(buildings_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_buildings_copy_ns(slot, ns);
@@ -2221,6 +2438,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::DIVISIONS.iter().enumerate().skip(1) {
                         let index = table.index();
                         extended_matched[index] = divisions_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !divisions_report.matched[slot];
                         let ns = shared.ns(divisions_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_divisions_copy_ns(slot, ns);
@@ -2235,6 +2454,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::FOCUS.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = focus_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !focus_report.matched[slot];
                         let ns = shared.ns(focus_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_focus_copy_ns(slot, ns);
@@ -2265,6 +2486,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::AIR_WING.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = air_wing_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !air_wing_report.matched[slot];
                         let ns = shared.ns(air_wing_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_air_wing_copy_ns(slot, ns);
@@ -2279,6 +2502,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::AIR_STATS.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = air_stats_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !air_stats_report.matched[slot];
                         let ns = shared.ns(air_stats_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_air_stats_copy_ns(slot, ns);
@@ -2289,6 +2514,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::NAVAL_ORDER.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = naval_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !naval_report.matched[slot];
                         let ns = shared.ns(naval_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_naval_copy_ns(slot, ns);
@@ -2319,6 +2546,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::SESSION.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = session_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !session_report.matched[slot];
                         let ns = shared.ns(session_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_session_copy_ns(slot, ns);
@@ -2334,6 +2563,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::PRODUCTION_REST.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = production_rest_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !production_rest_report.matched[slot];
                         let ns = shared.ns(production_rest_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_production_rest_copy_ns(slot, ns);
@@ -2352,6 +2583,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::CONSTRUCTION_REST.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = construction_rest_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !construction_rest_report.matched[slot];
                         let ns = shared.ns(construction_rest_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_construction_rest_copy_ns(slot, ns);
@@ -2370,6 +2603,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::ECONOMY_REST.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = economy_rest_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !economy_rest_report.matched[slot];
                         let ns = shared.ns(economy_rest_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_economy_rest_copy_ns(slot, ns);
@@ -2377,20 +2612,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                             slot,
                             economy_rest_report.raw_bytes[slot],
                         );
-                    }
-                }
-                // Intel hourly remainders measured copy-only above; same
-                // install for the calibration counters. The operation census
-                // is anchor-charged to the operations slot, matching the
-                // read-group convention.
-                if intel_rest_report.raw_ok {
-                    for (slot, table) in decode::INTEL_REST.iter().enumerate() {
-                        let index = table.index();
-                        extended_matched[index] = intel_rest_report.matched[slot];
-                        let ns = shared.ns(intel_rest_report.copy_ticks[slot] as i64);
-                        frame.table_ns[index] = ns;
-                        decode::add_intel_rest_copy_ns(slot, ns);
-                        decode::add_intel_rest_raw_bytes(slot, intel_rest_report.raw_bytes[slot]);
                     }
                 }
                 // Shared hourly bases measured copy-only above; same install
@@ -2402,6 +2623,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::AIR_BASES.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = air_bases_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !air_bases_report.matched[slot];
                         let ns = shared.ns(air_bases_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_air_bases_copy_ns(slot, ns);
@@ -2416,6 +2639,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::AIR_HISTORY.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = air_history_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !air_history_report.matched[slot];
                         let ns = shared.ns(air_history_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_air_history_copy_ns(slot, ns);
@@ -2430,6 +2655,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::RAIL.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = rail_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !rail_report.matched[slot];
                         let ns = shared.ns(rail_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_rail_copy_ns(slot, ns);
@@ -2442,6 +2669,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::SUPREMACY.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = supremacy_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !supremacy_report.matched[slot];
                         let ns = shared.ns(supremacy_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_supremacy_copy_ns(slot, ns);
@@ -2454,6 +2683,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::SUNK.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = sunk_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !sunk_report.matched[slot];
                         let ns = shared.ns(sunk_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_sunk_copy_ns(slot, ns);
@@ -2466,6 +2697,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::RADAR.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = radar_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !radar_report.matched[slot];
                         let ns = shared.ns(radar_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_radar_copy_ns(slot, ns);
@@ -2478,6 +2711,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::INTEL.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = intel_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !intel_report.matched[slot];
                         let ns = shared.ns(intel_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_intel_copy_ns(slot, ns);
@@ -2492,6 +2727,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::WEATHER.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = weather_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !weather_report.matched[slot];
                         let ns = shared.ns(weather_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_weather_copy_ns(slot, ns);
@@ -2504,6 +2741,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::CAPITULATION.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = capitulation_report.matched[slot];
+                        frame.extended_raw_mismatches[index] =
+                            extended_needed[index] && !capitulation_report.matched[slot];
                         let ns = shared.ns(capitulation_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_capitulation_copy_ns(slot, ns);
@@ -2537,6 +2776,15 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             frame.pool_bytes = shared.pool_bytes.load(Ordering::Relaxed);
             frame.dropped_frames = shared.dropped.load(Ordering::Relaxed);
             shared.completed[index].store(0, Ordering::Relaxed);
+            // Finish every frame write before publishing its index. The decode
+            // worker may acquire exclusive access as soon as enqueue succeeds;
+            // its later ready-queue Release cannot protect writes after enqueue.
+            // Stage the window updates locally, committing them only if sent.
+            let stable = stable_clock(frame.clock_before, frame.clock_after);
+            let mut consistency = unsafe { *shared.consistency.get() };
+            let mut extended_consistency = unsafe { *shared.extended_consistency.get() };
+            frame.consistency_successful = consistency.commit(matched, stable, true);
+            frame.extended_successful = extended_consistency.commit(extended_matched, stable, true);
             // Every frame transits the single decode FIFO in hour order; the
             // worker hands it to the spool ready queue after decoding any
             // refresh payload. With 256 buffers and 256 queue slots, an owned
@@ -2564,7 +2812,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 production_rest_refresh: production_rest_report.raw_ok,
                 construction_rest_refresh: construction_rest_report.raw_ok,
                 economy_rest_refresh: economy_rest_report.raw_ok,
-                intel_rest_refresh: intel_rest_report.raw_ok,
                 air_bases_refresh: air_bases_report.raw_ok,
                 air_history_refresh: air_history_report.raw_ok,
                 rail_refresh: rail_report.raw_ok,
@@ -2595,7 +2842,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 production_rest_payload,
                 construction_rest_payload,
                 economy_rest_payload,
-                intel_rest_payload,
                 air_bases_payload,
                 air_history_payload,
                 rail_payload,
@@ -2608,23 +2854,13 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             };
             match decode::enqueue(shared, decode_job) {
                 None => {
-                    let stable = stable_clock(frame.clock_before, frame.clock_after);
-                    frame.consistency_successful =
-                        unsafe { (&mut *shared.consistency.get()).commit(matched, stable, true) };
-                    frame.extended_successful = unsafe {
-                        (&mut *shared.extended_consistency.get()).commit(
-                            extended_matched,
-                            stable,
-                            true,
-                        )
-                    };
-                    if wars_matrix_check && stable {
-                        shared.war_matrix_remaining.fetch_sub(1, Ordering::Relaxed);
+                    unsafe {
+                        *shared.consistency.get() = consistency;
+                        *shared.extended_consistency.get() = extended_consistency;
                     }
-                    // The decode worker stores the game-thread elapsed time
-                    // after handing the frame to the spool ready queue; the
-                    // spool thread waits for that Release before accessing the
-                    // frame, including the just-committed comparison snapshots.
+                    if wars_matrix_check && stable {
+                        complete_matrix_check(&shared.war_matrix_remaining);
+                    }
                 }
                 Some(returned) => {
                     if let Some(payload) = returned.payload {
@@ -2683,9 +2919,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     }
                     if let Some(payload) = returned.economy_rest_payload {
                         decode::recycle_economy_rest_job(payload);
-                    }
-                    if let Some(payload) = returned.intel_rest_payload {
-                        decode::recycle_intel_rest_job(payload);
                     }
                     if let Some(payload) = returned.air_bases_payload {
                         decode::recycle_air_bases_job(payload);
@@ -2767,7 +3000,7 @@ struct WarCountry {
 /// pools recycle capacities and the steady state allocates on neither
 /// thread; growth happens on the decode side only (see
 /// `crate::decode::recycle_wars_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct WarsJob {
     pub log: RawLog<2>,
     pub game_state: usize,
@@ -2808,7 +3041,7 @@ impl WarsJob {
     /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
         self.log.grow();
-        self.census.reserve_exact(self.census.capacity().max(1));
+        crate::raw::double_capacity(&mut self.census);
     }
 }
 
@@ -3519,7 +3752,7 @@ pub(crate) fn copy_wars_refresh(
     memory: &impl engine::Memory,
     ctx: WarsCopyContext,
     first: &mut WarsJob,
-    second: Option<&mut WarsJob>,
+    mut second: Option<&mut WarsJob>,
 ) -> WarsCopyReport {
     let mut ticks = [0u64; 2];
     copy_wars_pass(
@@ -3531,7 +3764,7 @@ pub(crate) fn copy_wars_refresh(
         &mut ticks,
     );
     let mut matched = [true; 2];
-    if let Some(second_job) = second {
+    if let Some(second_job) = second.as_deref_mut() {
         let mut second_ticks = [0u64; 2];
         copy_wars_pass(
             second_job,
@@ -3552,7 +3785,7 @@ pub(crate) fn copy_wars_refresh(
             *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
     }
-    let raw_ok = !first.log.overflowed;
+    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
     WarsCopyReport {
         raw_ok,
         matched,
@@ -3629,7 +3862,7 @@ struct DivisionEntry {
 /// walk, and the equipment/upgrade detail walks. Flat pools recycle
 /// capacities and the steady state allocates on neither thread; growth
 /// happens on the decode side only (see `crate::decode::recycle_divisions_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct DivisionsJob {
     pub log: RawLog<6>,
     pub game_state: usize,
@@ -3664,7 +3897,7 @@ impl DivisionsJob {
     /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
         self.log.grow();
-        self.census.reserve_exact(self.census.capacity().max(1));
+        crate::raw::double_capacity(&mut self.census);
     }
 }
 
@@ -4444,12 +4677,12 @@ pub(crate) fn copy_divisions_refresh(
     memory: &impl engine::Memory,
     ctx: DivisionsCopyContext,
     first: &mut DivisionsJob,
-    second: Option<&mut DivisionsJob>,
+    mut second: Option<&mut DivisionsJob>,
 ) -> DivisionsCopyReport {
     let mut ticks = [0u64; 6];
     copy_divisions_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
     let mut matched = [true; 6];
-    if let Some(second_job) = second {
+    if let Some(second_job) = second.as_deref_mut() {
         let mut second_ticks = [0u64; 6];
         copy_divisions_pass(
             second_job,
@@ -4470,7 +4703,7 @@ pub(crate) fn copy_divisions_refresh(
             *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
     }
-    let raw_ok = !first.log.overflowed;
+    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
     DivisionsCopyReport {
         raw_ok,
         matched,
@@ -5227,6 +5460,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn matrix_window_stays_closed_after_its_last_success() {
+        let remaining = AtomicUsize::new(200);
+        for _ in 0..200 {
+            complete_matrix_check(&remaining);
+        }
+        assert_eq!(remaining.load(Ordering::Relaxed), 0);
+        complete_matrix_check(&remaining);
+        assert_eq!(remaining.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
     fn pool_growth_preserves_reserve_threshold_and_hard_queue_bound() {
         assert_eq!(pool_growth(FREE_RESERVE + 1, INITIAL_BUFFERS), 0);
         assert_eq!(pool_growth(FREE_RESERVE, INITIAL_BUFFERS), GROW_BUFFERS);
@@ -5273,7 +5517,6 @@ mod tests {
                     production_rest_refresh: false,
                     construction_rest_refresh: false,
                     economy_rest_refresh: false,
-                    intel_rest_refresh: false,
                     air_bases_refresh: false,
                     air_history_refresh: false,
                     rail_refresh: false,
@@ -5304,7 +5547,6 @@ mod tests {
                     production_rest_payload: None,
                     construction_rest_payload: None,
                     economy_rest_payload: None,
-                    intel_rest_payload: None,
                     air_bases_payload: None,
                     air_history_payload: None,
                     rail_payload: None,
@@ -5343,7 +5585,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -5374,7 +5615,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -6006,6 +6246,27 @@ mod tests {
             kit::assert_matches_direct(&split, &direct);
             assert_eq!(report.matched, matched, "fault={fault:x}");
         }
+    }
+
+    #[test]
+    fn a_short_second_wars_payload_requests_typed_fallback() {
+        use super::wars_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = WarsCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed_matrix: false,
+        };
+        let mut first = WarsJob::new();
+        let mut second = WarsJob::default();
+        let report = copy_wars_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(!first.log.overflowed);
+        assert!(second.log.overflowed);
+        assert!(
+            !report.raw_ok,
+            "an incomplete second copy is not a data mismatch"
+        );
     }
 
     #[test]

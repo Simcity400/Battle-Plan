@@ -6,13 +6,12 @@
 //! only copies bytes and parses locally what the next read address is. The
 //! single FIFO decode worker serves the log through `Recorded` (a `Memory`
 //! impl failing every unrecorded read) and replays the family's existing
-//! typed walk, so rows, ordinals, skips, truncation counts and failure
-//! reasons are identical by construction: every read the walk performs on
-//! its success paths is in the log, and every recorded failure reproduces
-//! the walk's own reason at the same read site.
+//! typed walk. Correctness requires staging every read that walk needs and
+//! preserving its failure prefix; synthetic-memory tests and fresh-save
+//! comparisons validate those contracts.
 //!
-//! Mirror rules (log order is irrelevant; the log is a set keyed by exact
-//! address and length):
+//! Mirror rules (exact address/length keys retain their observation order,
+//! including failures; bulk spans additionally serve contained requests):
 //! - reads served locally by an authenticated view need no log entry beyond
 //!   the view's own spans;
 //! - pooled row and arena capacities are ignored while copying (a superset
@@ -32,6 +31,47 @@
 
 use engine::Memory;
 use std::collections::HashMap;
+use std::sync::Mutex;
+
+static GROWTH_DIAGNOSTICS: Mutex<std::collections::BTreeMap<&'static str, serde_json::Value>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// Worker-only capacity diagnostics: distinguish genuine demand from a mirror
+/// following unreadable bytes. Never allocate or take this lock in the callback.
+pub(crate) fn note_growth<const N: usize>(family: &'static str, log: &RawLog<N>) {
+    if !log.overflowed {
+        return;
+    }
+    let failed = log.spans.iter().find(|span| !span.ok);
+    let value = serde_json::json!({
+        "spans": log.spans.len(), "span_capacity": log.spans.capacity(),
+        "bytes": log.bytes.len(), "byte_capacity": log.bytes.capacity(),
+        "faults": log.fault.as_slice(), "growing": log.grow_for_next(),
+        "first_failed_address": failed.map(|span| span.addr),
+        "first_failed_length": failed.map(|span| span.len),
+        "first_failed_mask": failed.map(|span| span.mask),
+        "last_address": log.spans.last().map(|span| span.addr),
+        "last_length": log.spans.last().map(|span| span.len),
+        "last_mask": log.spans.last().map(|span| span.mask),
+    });
+    if let Ok(mut diagnostics) = GROWTH_DIAGNOSTICS.lock() {
+        diagnostics.insert(family, value);
+    }
+}
+
+pub(crate) fn growth_diagnostics() -> serde_json::Value {
+    GROWTH_DIAGNOSTICS
+        .lock()
+        .map(|rows| serde_json::json!(*rows))
+        .unwrap_or_default()
+}
+
+/// Increase capacity even when an oversized first request left the vector
+/// empty. `reserve_exact(capacity)` alone is a no-op after `clear()`.
+pub(crate) fn double_capacity<T>(rows: &mut Vec<T>) {
+    let target = rows.capacity().max(1).saturating_mul(2);
+    rows.reserve_exact(target.saturating_sub(rows.len()));
+}
 
 /// x86-64 canonical range check, identical to `engine::memory`'s gate.
 ///
@@ -52,12 +92,9 @@ fn is_canonical_range(addr: usize, len: usize) -> bool {
     let Some(end) = addr.checked_add(len.wrapping_sub(1)) else {
         return false;
     };
-    let high = |value: usize| value >> 47;
-    let canonical = |value: usize| {
-        let top = value >> 48;
-        top == 0 || top == 0xFFFF
-    };
-    canonical(addr) && canonical(end) && high(addr) == high(end)
+    // Bit 47 is part of the sign extension, not an independent address bit.
+    let high = addr >> 47;
+    matches!(high, 0 | 0x1FFFF) && end >> 47 == high
 }
 
 /// One recorded guarded read: exact address and length, success flag, table
@@ -83,10 +120,18 @@ pub struct RawLog<const N: usize> {
     pub fault: [bool; N],
     pub raw_bytes: [u64; N],
     pub overflowed: bool,
+    span_exhausted: bool,
+    required_bytes: usize,
     /// Set when the log holds bulk spans wider than the replay's requests
     /// (contiguous table copies). The decode side then serves sub-ranges
     /// from the enclosing span instead of exact matches only.
     pub has_bulk: bool,
+}
+
+impl<const N: usize> Default for RawLog<N> {
+    fn default() -> Self {
+        Self::new(0, 0)
+    }
 }
 
 impl<const N: usize> RawLog<N> {
@@ -100,6 +145,8 @@ impl<const N: usize> RawLog<N> {
             fault: [false; N],
             raw_bytes: [0; N],
             overflowed: false,
+            span_exhausted: false,
+            required_bytes: 0,
             has_bulk: false,
         }
     }
@@ -111,19 +158,29 @@ impl<const N: usize> RawLog<N> {
         self.fault = [false; N];
         self.raw_bytes = [0; N];
         self.overflowed = false;
+        self.span_exhausted = false;
+        self.required_bytes = 0;
         self.has_bulk = false;
     }
 
     pub fn grow_for_next(&self) -> bool {
-        self.overflowed
+        // More storage cannot repair a failed source read. In particular an
+        // invalid optional-object path must not double every pool indefinitely.
+        self.overflowed && !self.fault.iter().any(|fault| *fault)
     }
 
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed refreshes fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
+    /// Grow only exhausted storage off-thread. Span-heavy censuses must not
+    /// repeatedly double a mostly empty byte arena (and vice versa).
     pub fn grow(&mut self) {
-        self.spans.reserve_exact(self.spans.capacity().max(1));
-        self.bytes.reserve_exact(self.bytes.capacity().max(1));
+        if self.span_exhausted {
+            double_capacity(&mut self.spans);
+        }
+        if self.required_bytes > self.bytes.capacity() {
+            let target = self
+                .required_bytes
+                .max(self.bytes.capacity().saturating_mul(2));
+            self.bytes.reserve_exact(target - self.bytes.len());
+        }
     }
 
     /// Guarded copy of one span into the pool. Returns the pool offset of the
@@ -194,6 +251,8 @@ impl<const N: usize> RawLog<N> {
                 .checked_add(len)
                 .is_none_or(|end| end > self.bytes.capacity())
         {
+            self.span_exhausted = self.spans.len() == self.spans.capacity();
+            self.required_bytes = self.bytes.len().saturating_add(len);
             self.overflowed = true;
             return None;
         }
@@ -216,8 +275,77 @@ impl<const N: usize> RawLog<N> {
         Some(start)
     }
 
+    /// Stage an exact fixed-layout gather with one guarded call. The log
+    /// retains the same complete-field prefix and first failure as Memory;
+    /// padding and partially copied failed fields are never exposed.
+    pub fn take_records(
+        &mut self,
+        memory: &impl Memory,
+        pointers: &[usize],
+        fields: &[engine::memory::RecordField],
+        stride: usize,
+        mask: u32,
+    ) -> Option<(usize, usize)> {
+        if self.overflowed {
+            return None;
+        }
+        let bytes = pointers.len().checked_mul(stride)?;
+        let spans = pointers.len().checked_mul(fields.len())?;
+        if fields.iter().any(|field| {
+            field
+                .destination_offset
+                .checked_add(field.len)
+                .is_none_or(|end| end > stride)
+                || field.len > u32::MAX as usize
+        }) {
+            return None;
+        }
+        let start = self.bytes.len();
+        let end = start.checked_add(bytes)?;
+        if self.spans.capacity() - self.spans.len() < spans
+            || self.bytes.capacity() < end
+            || end > u32::MAX as usize
+        {
+            self.span_exhausted = self.spans.capacity() - self.spans.len() < spans;
+            self.required_bytes = end;
+            self.overflowed = true;
+            return None;
+        }
+        self.bytes.resize(end, 0);
+        // LiveMemory performs the canonical-address gate before entering its
+        // guard, preserving the exact prefix on null/overflow/bad sources.
+        let completed = memory.copy_records(pointers, fields, stride, &mut self.bytes[start..end]);
+        for (row, &pointer) in pointers.iter().enumerate() {
+            for (column, field) in fields.iter().enumerate() {
+                let ordinal = row * fields.len() + column;
+                if ordinal > completed {
+                    return Some((start, completed));
+                }
+                if field.len == 0 {
+                    continue;
+                }
+                let address = pointer.checked_add(field.source_offset).unwrap_or(0);
+                if ordinal == completed {
+                    self.note_fail(address, field.len as u32, mask);
+                    return Some((start, completed));
+                }
+                self.spans.push(Span {
+                    addr: address,
+                    len: field.len as u32,
+                    ok: true,
+                    mask,
+                    start: (start + row * stride + field.destination_offset) as u32,
+                    bulk: false,
+                });
+                self.raw_bytes[lowest_table(mask)] += field.len as u64;
+            }
+        }
+        Some((start, completed))
+    }
+
     fn note_fail(&mut self, addr: usize, len32: u32, mask: u32) {
         if self.spans.len() == self.spans.capacity() {
+            self.span_exhausted = true;
             self.overflowed = true;
             return;
         }
@@ -338,21 +466,35 @@ pub fn lowest_table(mask: u32) -> usize {
 /// taken once and requested many times with identical bytes, while a span
 /// the mirror never took has no entry at all and still fails loudly.
 pub struct Recorded<'a> {
-    map: HashMap<(usize, u32), Vec<usize>>,
-    next: std::cell::RefCell<HashMap<(usize, u32), usize>>,
-    bulk: Vec<(usize, usize, usize)>,
+    map: HashMap<(usize, u32), SpanCursor>,
+    next: Vec<usize>,
+    spans: &'a [Span],
+    // Start, end, byte-pool offset, maximum end through this sorted entry.
+    bulk: Vec<(usize, usize, usize, usize)>,
     bytes: &'a [u8],
+}
+
+struct SpanCursor {
+    current: std::cell::Cell<usize>,
+    last: usize,
 }
 
 impl<'a> Recorded<'a> {
     pub fn build<const N: usize>(log: &'a RawLog<N>) -> Self {
-        let mut map: HashMap<(usize, u32), Vec<usize>> = HashMap::with_capacity(log.spans.len());
+        let mut map: HashMap<(usize, u32), SpanCursor> = HashMap::with_capacity(log.spans.len());
+        let mut next: Vec<usize> = (0..log.spans.len()).collect();
         let mut bulk = Vec::new();
-        for span in &log.spans {
+        for (index, span) in log.spans.iter().enumerate() {
+            map.entry((span.addr, span.len))
+                .and_modify(|cursor| {
+                    next[cursor.last] = index;
+                    cursor.last = index;
+                })
+                .or_insert(SpanCursor {
+                    current: std::cell::Cell::new(index),
+                    last: index,
+                });
             if span.ok {
-                map.entry((span.addr, span.len))
-                    .or_default()
-                    .push(span.start as usize);
                 // Only flagged bulk chunks serve sub-ranges: small exact
                 // spans inside a chunk must never shadow it.
                 if log.has_bulk && span.bulk && span.len > 0 {
@@ -360,32 +502,37 @@ impl<'a> Recorded<'a> {
                         span.addr,
                         span.addr + span.len as usize,
                         span.start as usize,
+                        0,
                     ));
                 }
             }
         }
         if log.has_bulk {
             bulk.sort_unstable();
+            let mut maximum_end = 0;
+            for span in &mut bulk {
+                maximum_end = maximum_end.max(span.1);
+                span.3 = maximum_end;
+            }
         }
         Self {
             map,
-            next: std::cell::RefCell::new(HashMap::new()),
+            next,
+            spans: &log.spans,
             bulk,
             bytes: &log.bytes,
         }
     }
 
     fn serve(&self, address: usize, destination: &mut [u8]) -> bool {
-        if let Some(starts) = self.map.get(&(address, destination.len() as u32)) {
-            let mut next = self.next.borrow_mut();
-            let cursor = next.entry((address, destination.len() as u32)).or_insert(0);
-            // In-order values while the multiplicity lasts, then the last
-            // value for shared spans requested more often than taken.
-            let start = starts.get(*cursor).or(starts.last()).copied();
-            let Some(start) = start else {
+        if let Some(cursor) = self.map.get(&(address, destination.len() as u32)) {
+            let index = cursor.current.get();
+            cursor.current.set(self.next[index]);
+            let span = &self.spans[index];
+            if !span.ok {
                 return false;
-            };
-            *cursor += 1;
+            }
+            let start = span.start as usize;
             let Some(source) = self.bytes.get(start..start + destination.len()) else {
                 return false;
             };
@@ -400,14 +547,19 @@ impl<'a> Recorded<'a> {
             Some(end) => end,
             None => return false,
         };
-        // Enclosing bulk span by greatest start at or below the request.
+        // Prefer the nearest enclosing span. Nested inline arrays must not
+        // hide the surrounding object when a later field is outside that
+        // smaller array. Prefix maxima bound the backward search even when
+        // no span encloses the request.
         let index = self.bulk.partition_point(|span| span.0 <= address);
-        let Some(&(start, span_end, pool)) = self.bulk[..index].last() else {
+        let enclosing = self.bulk[..index]
+            .iter()
+            .rev()
+            .take_while(|span| span.3 >= end)
+            .find(|span| span.1 >= end);
+        let Some(&(start, _, pool, _)) = enclosing else {
             return false;
         };
-        if end > span_end {
-            return false;
-        }
         let offset = pool + (address - start);
         let Some(source) = self.bytes.get(offset..offset + destination.len()) else {
             return false;
@@ -450,6 +602,79 @@ mod tests {
         fn copy(&self, _address: usize, _destination: &mut [u8]) -> bool {
             false
         }
+    }
+
+    #[test]
+    fn batched_records_preserve_exact_fields_failure_prefix_and_padding() {
+        use engine::memory::RecordField;
+        let fields = [
+            RecordField {
+                source_offset: 0,
+                destination_offset: 0,
+                len: 2,
+            },
+            RecordField {
+                source_offset: 4,
+                destination_offset: 4,
+                len: 2,
+            },
+        ];
+        let bytes = [7; 12];
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let pointers = [0x1000, 0x1008];
+        let mut log = RawLog::<2>::new(4, 16);
+        assert_eq!(
+            log.take_records(&memory, &pointers, &fields, 8, 2),
+            Some((0, 3))
+        );
+        assert_eq!(log.spans.len(), 4);
+        assert_eq!(log.raw_bytes, [0, 6]);
+        assert_eq!(log.fault, [false, true]);
+        let recorded = Recorded::build(&log);
+        let mut direct = [0xa5; 16];
+        let mut replayed = direct;
+        assert_eq!(memory.copy_records(&pointers, &fields, 8, &mut direct), 3);
+        assert_eq!(
+            recorded.copy_records(&pointers, &fields, 8, &mut replayed),
+            3
+        );
+        assert_eq!(direct, replayed);
+        assert!(
+            !recorded.copy(0x1002, &mut [0; 2]),
+            "padding is not a copied field"
+        );
+    }
+
+    #[test]
+    fn batched_records_decline_insufficient_staging_without_partial_success() {
+        use engine::memory::RecordField;
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &[7; 16],
+        };
+        let fields = [RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: 8,
+        }];
+        let mut log = RawLog::<1>::new(1, 8);
+        assert_eq!(
+            log.take_records(&memory, &[0x1000, 0x1008], &fields, 8, 1),
+            None
+        );
+        assert!(log.overflowed);
+        assert!(log.spans.is_empty());
+        assert!(log.bytes.is_empty());
+        log.grow();
+        log.clear();
+        assert_eq!(
+            log.take_records(&memory, &[0x1000, 0x1008], &fields, 8, 1),
+            Some((0, 2))
+        );
+        assert!(!log.fault[0]);
     }
 
     #[test]
@@ -532,6 +757,53 @@ mod tests {
         assert!(first.logs_equal(&second));
         second.take(&memory, 0x1010, 4, 0x01);
         assert!(!first.logs_equal(&second));
+    }
+
+    #[test]
+    fn growth_increases_empty_and_partially_filled_capacities() {
+        let mut empty = Vec::<u8>::with_capacity(16);
+        double_capacity(&mut empty);
+        assert!(empty.capacity() >= 32);
+        assert!(empty.is_empty());
+        let mut partial = Vec::with_capacity(16);
+        partial.extend_from_slice(&[7u8; 3]);
+        double_capacity(&mut partial);
+        assert!(partial.capacity() >= 32);
+        assert_eq!(partial, [7; 3]);
+        let mut zero = Vec::<u8>::new();
+        double_capacity(&mut zero);
+        assert!(zero.capacity() >= 2);
+    }
+
+    #[test]
+    fn span_pressure_does_not_grow_the_byte_arena() {
+        let bytes = [1; 64];
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut log = RawLog::<1>::new(1, 64);
+        log.take(&memory, 0x1000, 4, 1);
+        log.take(&memory, 0x1004, 4, 1);
+        assert!(log.grow_for_next());
+        log.grow();
+        assert!(log.spans.capacity() >= 2);
+        assert_eq!(log.bytes.capacity(), 64);
+    }
+
+    #[test]
+    fn byte_pressure_does_not_grow_the_span_arena() {
+        let bytes = [1; 64];
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut log = RawLog::<1>::new(8, 4);
+        log.take_bulk(&memory, 0x1000, 32, 1);
+        assert!(log.grow_for_next());
+        log.grow();
+        assert_eq!(log.spans.capacity(), 8);
+        assert!(log.bytes.capacity() >= 32);
     }
 
     #[test]
@@ -695,6 +967,59 @@ mod tests {
         assert!(!recorded.copy(0x0072_6f74_6361_665f, &mut out));
         assert!(!recorded.copy(0x6f74_6361_665f_7374, &mut out));
         assert!(recorded.copy(0x1000, &mut out));
+    }
+
+    #[test]
+    fn nested_bulk_arrays_do_not_hide_later_parent_object_fields() {
+        let bytes: Vec<u8> = (0..128).collect();
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut log = RawLog::<1>::new(8, 256);
+        log.has_bulk = true;
+        log.take_bulk(&memory, 0x1000, 128, 1);
+        log.take_bulk(&memory, 0x1010, 16, 1);
+        log.take_bulk(&memory, 0x1040, 8, 1);
+        let recorded = Recorded::build(&log);
+        let mut out = [0; 24];
+        assert!(recorded.copy(0x1028, &mut out));
+        assert_eq!(out, bytes[40..64]);
+        assert!(recorded.copy(0x1044, &mut out));
+        assert_eq!(out, bytes[68..92]);
+        assert!(!recorded.copy(0x1070, &mut out));
+    }
+
+    #[test]
+    fn canonical_gate_includes_bit_47_in_the_sign_extension() {
+        assert!(!is_canonical_range(0x0000_8000_0000_0000, 8));
+        assert!(!is_canonical_range(0xFFFF_0000_0000_0000, 8));
+        assert!(is_canonical_range(0x0000_7FFF_FFFF_FFF8, 8));
+        assert!(is_canonical_range(0xFFFF_8000_0000_0000, 8));
+    }
+
+    #[test]
+    fn repeated_failed_reads_keep_their_place_and_do_not_fall_back_to_bulk() {
+        let bytes = [7; 64];
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut log = RawLog::<1>::new(8, 128);
+        log.has_bulk = true;
+        log.take_bulk(&memory, 0x1000, 64, 1);
+        log.take(&memory, 0x1010, 8, 1);
+        log.take(&FailAll, 0x1010, 8, 1);
+        log.take(&memory, 0x1010, 8, 1);
+        log.take(&FailAll, 0x1020, 8, 1);
+        let recorded = Recorded::build(&log);
+        let mut out = [0; 8];
+        assert!(recorded.copy(0x1010, &mut out));
+        assert!(!recorded.copy(0x1010, &mut out));
+        assert!(recorded.copy(0x1010, &mut out));
+        assert!(recorded.copy(0x1010, &mut out));
+        assert!(!recorded.copy(0x1020, &mut out));
+        assert!(!recorded.copy(0x1020, &mut out));
     }
 
     #[test]

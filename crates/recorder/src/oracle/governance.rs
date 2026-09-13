@@ -493,7 +493,7 @@ fn compare_research(
     report: &mut Report,
 ) -> io::Result<()> {
     // Tier-4 slot2; cadence table is the single source of truth.
-    if !replay::cadence::is_refresh(replay::rows::TableId::ResearchTechnologies, frame.hour) {
+    if !report.refresh_is_current(replay::rows::TableId::ResearchTechnologies, frame.hour) {
         for table in [
             replay::rows::TableId::ResearchTechnologies,
             replay::rows::TableId::ResearchSlots,

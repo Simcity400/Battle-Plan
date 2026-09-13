@@ -719,10 +719,12 @@ const EQUIPMENT_MASK: u32 = 0x01;
 const CUMULATIVE_MASK: u32 = 0x02;
 const WING_CENSUS_MASK: u32 = 0x03;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct AirWingJob {
     pub log: RawLog<WING_PACK_N>,
     pub game_state: usize,
+    checked: [bool; WING_PACK_N],
+    matched: [bool; WING_PACK_N],
 }
 
 impl AirWingJob {
@@ -730,12 +732,16 @@ impl AirWingJob {
         Self {
             log: RawLog::new(1 << 16, 4 << 20),
             game_state: 0,
+            checked: [false; WING_PACK_N],
+            matched: [false; WING_PACK_N],
         }
     }
 
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
+        self.checked = [false; WING_PACK_N];
+        self.matched = [false; WING_PACK_N];
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -759,6 +765,7 @@ pub(crate) struct AirWingCopyReport {
 pub(crate) struct AirWingCopyContext {
     pub base: usize,
     pub game_state: usize,
+    pub needed: [bool; WING_PACK_N],
 }
 
 fn wing_pool_u64(log: &RawLog<WING_PACK_N>, start: usize) -> u64 {
@@ -825,7 +832,10 @@ fn copy_air_census(
     for slot in 1..countries_array.count {
         let pointer_addr = (slot as usize).checked_mul(8).and_then(|o| countries_array.data.checked_add(o));
         let pointer = wspan(log, memory, pointer_addr, 8, WING_CENSUS_MASK)
-            .and_then(|s| usize::try_from(wing_pool_u64(log, s)).ok().filter(|&p| p != 0))?;
+            .and_then(|s| usize::try_from(wing_pool_u64(log, s)).ok())?;
+        if pointer == 0 {
+            continue;
+        }
         let vtable = wspan(log, memory, Some(pointer), 8, WING_CENSUS_MASK)?;
         if wing_pool_u64(log, vtable) != country_vtable {
             return None;
@@ -903,7 +913,10 @@ fn copy_air_wing(
     base: usize,
     wing: usize,
 ) {
-    use engine::{air_mission, cair_wing};
+    use engine::{air_mission, cair_wing, cstrategic_region};
+    let mut region = 0;
+    let mut primary_valid = false;
+    let mut secondary_valid = false;
     for (offset, len, mask) in [
         (0usize, 8, WING_CENSUS_MASK),
         (cair_wing::SECONDARY, 16, WING_CENSUS_MASK),
@@ -917,7 +930,35 @@ fn copy_air_wing(
         (cair_wing::AIR_ACCIDENTS, 4, CUMULATIVE_MASK),
         (cair_wing::EXPERIENCE, 8, CUMULATIVE_MASK),
     ] {
-        let _ = wspan(log, memory, wing.checked_add(offset), len, mask);
+        let Some(start) = wspan(log, memory, wing.checked_add(offset), len, mask) else {
+            if mask == CUMULATIVE_MASK {
+                continue;
+            }
+            return;
+        };
+        if offset == 0 {
+            primary_valid = base.checked_add(cair_wing::VTABLE_RVA)
+                == usize::try_from(wing_pool_u64(log, start)).ok();
+        } else if offset == cair_wing::SECONDARY {
+            secondary_valid = base.checked_add(cair_wing::SECONDARY_VTABLE_RVA)
+                == usize::try_from(wing_pool_u64(log, start)).ok()
+                && wing_pool_u64(log, start + 8) != 0;
+        } else if offset == cair_wing::MISSION + air_mission::REGION {
+            let Ok(pointer) = usize::try_from(wing_pool_u64(log, start)) else { return };
+            region = pointer;
+        }
+    }
+    if !primary_valid || !secondary_valid {
+        return;
+    }
+    // A mission region is a pointer, not the saved id. The typed wing
+    // walker authenticates both subobjects before reading that id.
+    if region != 0 {
+        for (offset, len) in [(0, 8), (cstrategic_region::SECONDARY, 8), (cstrategic_region::ID, 4)] {
+            if wspan(log, memory, region.checked_add(offset), len, WING_CENSUS_MASK).is_none() {
+                return;
+            }
+        }
     }
     // Equipment pool with per-entry variant identities (equipment table).
     let pool = match wing.checked_add(cair_wing::EQUIPMENT_POOL) {
@@ -993,12 +1034,13 @@ pub(crate) fn copy_air_refresh(
     memory: &impl engine::Memory,
     ctx: AirWingCopyContext,
     first: &mut AirWingJob,
-    second: Option<&mut AirWingJob>,
+    mut second: Option<&mut AirWingJob>,
 ) -> AirWingCopyReport {
     let mut ticks = [0u64; WING_PACK_N];
     copy_air_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
+    first.checked = ctx.needed.map(|needed| needed && second.is_some());
     let mut matched = [true; WING_PACK_N];
-    if let Some(second_job) = second {
+    if let Some(second_job) = second.as_deref_mut() {
         let mut second_ticks = [0u64; WING_PACK_N];
         copy_air_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
         for (total, extra) in ticks.iter_mut().zip(second_ticks) {
@@ -1013,7 +1055,9 @@ pub(crate) fn copy_air_refresh(
             *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
     }
-    let raw_ok = !first.log.overflowed;
+    let raw_ok = !first.log.overflowed
+        && second.is_none_or(|job| !job.log.overflowed);
+    first.matched = matched;
     AirWingCopyReport { raw_ok, matched, copy_ticks: ticks, raw_bytes: first.log.raw_bytes }
 }
 
@@ -1034,7 +1078,9 @@ pub(crate) fn decode_air_payload(
     // thread withholds extensions only when its own map AirWings truncates,
     // via require_parent on the map outcome, which this payload does not
     // share). Worker-side growth converges like pooled growth.
-    let needed = [true, false, true, false, false, false, false];
+    // Consistency was checked on the two live copies. This is one decode
+    // pass; comparing it with a nonexistent second census invents failures.
+    let needed = [false; N];
     let mut wing_rows: Vec<cair_wing::Row> = Vec::new();
     loop {
         captured.begin_wings();
@@ -1063,6 +1109,10 @@ pub(crate) fn decode_air_payload(
             }
         }
     }
+    captured.equipment.checked = job.checked[0];
+    captured.equipment.mismatches = usize::from(job.checked[0] && !job.matched[0]);
+    captured.cumulative.checked = job.checked[1];
+    captured.cumulative.mismatches = usize::from(job.checked[1] && !job.matched[1]);
     decode_ticks[0] += qpc().saturating_sub(started).max(0) as u64;
 }
 
@@ -1072,7 +1122,7 @@ const STATS_MASK: u32 = 0x01;
 /// One refresh of raw air-statistics payload. Flat pools recycle capacities
 /// and the steady state allocates on neither thread; growth happens on the
 /// decode side only (see `crate::decode::recycle_air_stats_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct AirStatsJob {
     pub log: RawLog<AIR_STATS_N>,
     pub game_state: usize,
@@ -1482,12 +1532,12 @@ pub(crate) fn copy_air_stats_refresh(
     memory: &impl engine::Memory,
     ctx: AirStatsCopyContext,
     first: &mut AirStatsJob,
-    second: Option<&mut AirStatsJob>,
+    mut second: Option<&mut AirStatsJob>,
 ) -> AirStatsCopyReport {
     let mut ticks = [0u64; AIR_STATS_N];
     copy_stats_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
     let mut matched = [true; AIR_STATS_N];
-    if let Some(second_job) = second {
+    if let Some(second_job) = second.as_deref_mut() {
         let mut second_ticks = [0u64; AIR_STATS_N];
         copy_stats_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
         for (total, extra) in ticks.iter_mut().zip(second_ticks) {
@@ -1499,7 +1549,8 @@ pub(crate) fn copy_air_stats_refresh(
             *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
     }
-    let raw_ok = !first.log.overflowed;
+    let raw_ok = !first.log.overflowed
+        && second.is_none_or(|job| !job.log.overflowed);
     AirStatsCopyReport { raw_ok, matched, copy_ticks: ticks, raw_bytes: first.log.raw_bytes }
 }
 
@@ -1574,7 +1625,7 @@ const REG_MIRROR_BATCH: usize = 64;
 /// rosters with objects and names. Flat pools recycle capacities and the
 /// steady state allocates on neither thread; growth happens on the decode
 /// side only (see `crate::decode::recycle_air_bases_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct AirBasesJob {
     pub log: RawLog<AIR_BASES_N>,
     pub game_state: usize,
@@ -1612,9 +1663,8 @@ impl AirBasesJob {
 
     pub fn grow(&mut self) {
         self.log.grow();
-        self.census.reserve_exact(self.census.capacity().max(1));
-        self.seen_links
-            .reserve_exact(self.seen_links.capacity().max(1));
+crate::raw::double_capacity(&mut self.census);
+crate::raw::double_capacity(&mut self.seen_links);
     }
 }
 
@@ -2648,12 +2698,12 @@ impl Captured {
         ctx: AirBasesCopyContext,
         fog: &mut super::fog::Captured,
         first: &mut AirBasesJob,
-        second: Option<&mut AirBasesJob>,
+        mut second: Option<&mut AirBasesJob>,
     ) -> AirBasesCopyReport {
         let mut ticks = [0u64; AIR_BASES_N];
         copy_air_bases_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
         let mut matched = [true; AIR_BASES_N];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let mut second_ticks = [0u64; AIR_BASES_N];
             copy_air_bases_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
             for (total, extra) in ticks.iter_mut().zip(second_ticks) {
@@ -2674,7 +2724,8 @@ impl Captured {
         self.aces.checked = ctx.needed[2];
         self.aces.mismatches = usize::from(ctx.needed[2] && !matched[2]);
         fog.note_registrations_copy(ctx.needed[1], matched[1]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         AirBasesCopyReport {
             raw_ok,
             matched,
@@ -2752,7 +2803,7 @@ const HISTORY_MIRROR_BATCH: usize = 64;
 /// One hour of raw shared history payload. Flat pools recycle capacities
 /// and the steady state allocates on neither thread; growth happens on the
 /// decode side only (see `crate::decode::recycle_air_history_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct AirHistoryJob {
     pub log: RawLog<AIR_HISTORY_N>,
     pub game_state: usize,
@@ -3393,12 +3444,12 @@ impl Captured {
         memory: &impl Memory,
         ctx: AirHistoryCopyContext,
         first: &mut AirHistoryJob,
-        second: Option<&mut AirHistoryJob>,
+        mut second: Option<&mut AirHistoryJob>,
     ) -> AirHistoryCopyReport {
         let mut ticks = [0u64; AIR_HISTORY_N];
         copy_air_history_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
         let mut matched = [true; AIR_HISTORY_N];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let mut second_ticks = [0u64; AIR_HISTORY_N];
             copy_air_history_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
             for (total, extra) in ticks.iter_mut().zip(second_ticks) {
@@ -3417,7 +3468,8 @@ impl Captured {
         self.history.mismatches = usize::from(ctx.needed[0] && !matched[0]);
         self.damage.checked = ctx.needed[1];
         self.damage.mismatches = usize::from(ctx.needed[1] && !matched[1]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         AirHistoryCopyReport {
             raw_ok,
             matched,
@@ -3825,6 +3877,56 @@ mod tests {
     }
 
     #[test]
+    fn wing_decode_preserves_live_check_verdict_without_a_second_decode_pass() {
+        use super::wing_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let (_, report, mut job) = kit::split(&memory);
+        assert_eq!(report.matched, [true; 2]);
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0; N]);
+        let mut ticks = [0; 2];
+        super::decode_air_payload(&mut captured, kit::BASE, &job, &mut ticks);
+        assert_eq!((captured.equipment.checked, captured.equipment.mismatches), (true, 0));
+        assert_eq!((captured.cumulative.checked, captured.cumulative.mismatches), (true, 0));
+        assert!(matches!(captured.tables()[0], TableView::Complete(_)));
+        assert!(matches!(captured.tables()[2], TableView::Complete(_)));
+        // A real failed live partition must still withhold that table only.
+        job.matched[0] = false;
+        super::decode_air_payload(&mut captured, kit::BASE, &job, &mut ticks);
+        assert_eq!(captured.equipment.mismatches, 1);
+        assert_eq!(captured.cumulative.mismatches, 0);
+        assert!(!matches!(captured.tables()[0], TableView::Complete(_)));
+        assert!(matches!(captured.tables()[2], TableView::Complete(_)));
+    }
+
+    #[test]
+    fn wing_copy_includes_assigned_mission_region_and_skips_null_country_slots() {
+        use super::wing_test_kit as kit;
+        use engine::{air_mission, cstrategic_region};
+        let mut bytes = kit::fixture();
+        let region = 0x3a000;
+        let put = |bytes: &mut [u8], address: usize, value: u64| {
+            bytes[address..address + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        put(&mut bytes, kit::WING + cair_wing::MISSION + air_mission::REGION, region as u64);
+        put(&mut bytes, region, (kit::BASE + cstrategic_region::VTABLE_RVA) as u64);
+        put(&mut bytes, region + cstrategic_region::SECONDARY,
+            (kit::BASE + cstrategic_region::SECONDARY_VTABLE_RVA) as u64);
+        bytes[region + cstrategic_region::ID..region + cstrategic_region::ID + 4]
+            .copy_from_slice(&17u32.to_le_bytes());
+        // The fixture's third slot is an unused alias; a null country slot
+        // is not an absent wing census and must not stop discovery.
+        put(&mut bytes, 0x11000 + 16, 0);
+        let memory = kit::memory(&bytes);
+        let direct = kit::direct(&memory);
+        let (split, report, _) = kit::split(&memory);
+        assert_eq!(report.matched, [true; 2]);
+        kit::assert_matches_direct(&split, &direct);
+        assert_eq!(split.equipment_outcome, Outcome::Rows { len: 3 });
+        assert_eq!(split.cumulative_outcome, Outcome::Rows { len: 2 });
+    }
+
+    #[test]
     fn wing_split_copy_matches_direct_walk_under_truncation() {
         use super::wing_test_kit as kit;
         let bytes = kit::fixture();
@@ -3880,7 +3982,10 @@ mod tests {
         use super::{AirWingCopyContext, AirWingJob};
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
-        let ctx = AirWingCopyContext { base: kit::BASE, game_state: kit::GAME_STATE };
+let ctx = AirWingCopyContext {
+            base: kit::BASE, game_state: kit::GAME_STATE,
+            needed: [true; 2],
+        };
         let mut first = AirWingJob::new();
         let mut second = AirWingJob::new();
         let report = super::copy_air_refresh(&memory, ctx, &mut first, Some(&mut second));
@@ -4000,10 +4105,15 @@ mod tests {
         use super::{AirWingCopyContext, AirWingJob};
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
-        let ctx = AirWingCopyContext { base: kit::BASE, game_state: kit::GAME_STATE };
+let ctx = AirWingCopyContext {
+            base: kit::BASE, game_state: kit::GAME_STATE,
+            needed: [true; 2],
+        };
         let mut tiny = AirWingJob {
             log: crate::raw::RawLog::new(1, 1),
             game_state: 0,
+            checked: [false; 2],
+            matched: [false; 2],
         };
         let report = super::copy_air_refresh(&memory, ctx, &mut tiny, None);
         assert!(!report.raw_ok);
@@ -4726,7 +4836,10 @@ pub(crate) mod wing_test_kit {
     }
 
     pub(crate) fn split(memory: &impl Memory) -> (Split, AirWingCopyReport, AirWingJob) {
-        let ctx = AirWingCopyContext { base: BASE, game_state: GAME_STATE };
+let ctx = AirWingCopyContext {
+            base: BASE, game_state: GAME_STATE,
+            needed: [true; 2],
+        };
         let mut first = AirWingJob::new();
         let mut second = AirWingJob::new();
         let report = super::copy_air_refresh(memory, ctx, &mut first, Some(&mut second));
@@ -4751,7 +4864,10 @@ pub(crate) mod wing_test_kit {
     }
 
     pub(crate) fn split_with(memory: &impl Memory, capacity: &Capacities) -> (Split, AirWingCopyReport, AirWingJob) {
-        let ctx = AirWingCopyContext { base: BASE, game_state: GAME_STATE };
+let ctx = AirWingCopyContext {
+            base: BASE, game_state: GAME_STATE,
+            needed: [true; 2],
+        };
         let mut first = AirWingJob::new();
         let mut second = AirWingJob::new();
         let report = super::copy_air_refresh(memory, ctx, &mut first, Some(&mut second));
@@ -4777,7 +4893,10 @@ pub(crate) mod wing_test_kit {
     }
 
     pub(crate) fn split_truncated(memory: &impl Memory) -> (Split, AirWingCopyReport, AirWingJob) {
-        let ctx = AirWingCopyContext { base: BASE, game_state: GAME_STATE };
+let ctx = AirWingCopyContext {
+            base: BASE, game_state: GAME_STATE,
+            needed: [true; 2],
+        };
         let mut first = AirWingJob::new();
         let mut second = AirWingJob::new();
         let report = super::copy_air_refresh(memory, ctx, &mut first, Some(&mut second));

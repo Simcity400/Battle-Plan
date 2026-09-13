@@ -55,12 +55,9 @@ fn is_canonical_range(addr: usize, len: usize) -> bool {
     let Some(end) = addr.checked_add(len.wrapping_sub(1)) else {
         return false;
     };
-    let high = |value: usize| value >> 47;
-    let canonical = |value: usize| {
-        let top = value >> 48;
-        top == 0 || top == 0xFFFF
-    };
-    canonical(addr) && canonical(end) && high(addr) == high(end)
+    // Bit 47 is part of the sign extension, not an independent address bit.
+    let high = addr >> 47;
+    matches!(high, 0 | 0x1FFFF) && end >> 47 == high
 }
 
 /// Implementations fill the destination or return false; a failed copy may be partial.
@@ -812,6 +809,8 @@ mod tests {
         // unreadable canonical source.
         assert!(!is_canonical_range(0x0072_6f74_6361_665f, 8));
         assert!(!is_canonical_range(0x6f74_6361_665f_7374, 8));
+        assert!(!is_canonical_range(0x0000_8000_0000_0000, 8));
+        assert!(!is_canonical_range(0xFFFF_0000_0000_0000, 8));
         assert!(is_canonical_range(0x1_4000_0000, 8));
         assert!(is_canonical_range(0xFFFF_8000_0000_0000, 8));
         assert!(!is_canonical_range(0x0000_7FFF_FFFF_FFF0, 32));

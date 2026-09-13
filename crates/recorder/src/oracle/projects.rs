@@ -110,7 +110,7 @@ pub(super) fn compare(
         compare_nukes(frame, pack, countries, report)
     });
     // Tier-4 slot3; cadence table is the single source of truth.
-    let staggered = !replay::cadence::is_refresh(replay::rows::TableId::Projects, frame.hour);
+    let staggered = !report.refresh_is_current(replay::rows::TableId::Projects, frame.hour);
     if staggered {
         for table in [
             replay::rows::TableId::ProjectPrograms,

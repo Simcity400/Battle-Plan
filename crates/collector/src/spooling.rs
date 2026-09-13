@@ -537,7 +537,9 @@ impl Statistics {
             self.extended_successful[index] =
                 self.extended_successful[index].max(captured.extended_successful[index]);
             if captured.extended_checked[index] {
-                self.extended_mismatches[index] += extended_mismatches[index] as u64;
+                self.extended_mismatches[index] += extended_mismatches[index]
+                    .max(usize::from(captured.extended_raw_mismatches[index]))
+                    as u64;
             }
         }
         self.country_cache_failures += u64::from(captured.country_cache_error.is_some());
@@ -1447,6 +1449,7 @@ fn decoded_with_costs(
             *destination = value;
         }
         pack_ticks = captured.extended.insert_tables(&mut tables).map(Some);
+        apply_raw_verdicts(&mut tables, &captured.extended_raw_mismatches);
         if let Some(reason) = captured.country_cache_error {
             for (index, value) in tables.iter_mut().enumerate() {
                 if !matches!(index, 0 | 1 | 4 | 5)
@@ -1469,11 +1472,40 @@ fn decoded_with_costs(
     )
 }
 
+fn apply_raw_verdicts(tables: &mut [TableView; TABLE_COUNT], mismatches: &[bool; TABLE_COUNT]) {
+    for (index, view) in tables.iter_mut().enumerate() {
+        if mismatches[index] && !matches!(view, TableView::Unavailable { .. }) {
+            *view = unavailable("raw capture changed during double read");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use replay::container::{Replay, SeekResult};
     use replay::rows::TableId;
+
+    #[test]
+    fn raw_mismatch_survives_pack_reset_and_rejects_decoded_rows() {
+        let mut source = captured(12);
+        let index = TableId::Characters.index();
+        source.extended_checked[index] = true;
+        source.extended_raw_mismatches[index] = true;
+        source.extended.reset();
+        assert_eq!(source.extended.checked_mismatches()[index], 0);
+        let mut statistics = Statistics::default();
+        statistics.observe_consistency(&source);
+        assert_eq!(statistics.extended_mismatches[index], 1);
+        let mut tables = std::array::from_fn(|_| unavailable("unreadable"));
+        tables[index] = TableView::Complete(TableRows::Characters(Vec::new()));
+        apply_raw_verdicts(&mut tables, &source.extended_raw_mismatches);
+        assert_eq!(
+            tables[index],
+            unavailable("raw capture changed during double read")
+        );
+        assert_eq!(tables[TableId::Clock.index()], unavailable("unreadable"));
+    }
 
     #[test]
     fn work_ticks_use_nanoseconds_and_nearest_rank_percentiles() {

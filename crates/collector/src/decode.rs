@@ -25,20 +25,14 @@
 //! falls back to the typed walk on the game thread with identical rows
 //! (`raw_ok=false`, enqueues nothing) and records no gap.
 //!
-//! Queue sizing (analytic, provisional until live calibration): the FIFO depth
-//! equals the buffer pool (`BUFFERS` = 256 indices, ~2 KiB). Raw payloads are
-//! recycled job boxes (`JOB_POOL_KEEP` = 2 live payloads plus the one being
-//! copied): a late-game refresh carries on the order of 242k technology
-//! instances x 52 B (~12.6 MB) plus redundant per-occurrence template headers
-//! (~552 templates x 439 countries x ~96 B ≈ 23 MB worst case, deduplicated on
-//! the decode thread) plus slots (~0.2 MB), so one payload is bounded near
-//! ~40 MB and the live set near ~120 MB transient, frozen after warmup and
-//! recycled, never reallocated in steady state. Game-thread production is one
-//! refresh per 4 game hours (hundreds of milliseconds at speed 5) against an
-//! expected decode cost in the tens of milliseconds, so the steady-state queue
-//! depth is ~1; depth 2 absorbs stalls and anything beyond drops through the
-//! existing queue-full gap path (not the staging-overflow typed fallback).
-//! Live measurement (not this change) confirms or resizes.
+//! Storage: 256 FIFO slots hold complete jobs, not just indices. Before the
+//! hook is installed, each family receives three reusable payload buffers.
+//! Exhaustion or lock contention returns an empty staging object and invokes
+//! the existing typed fallback; it does not allocate another payload. The
+//! private worker grows only overflowed storage and returns owned buffers.
+//! Raw payload storage is additional to the typed frame pool. Queue depth,
+//! process memory and per-family span/byte capacities require live measurement;
+//! a sum of byte arenas alone is not a bound on aggregate allocation.
 //!
 //! Calibration: per-pilot-table copy ns, decode ns and raw bytes are monotonic
 //! additive counters readable from status (`calibration_json`, merged into the
@@ -61,7 +55,7 @@ use crate::{
         economy::EconomyRestJob,
         fog::{IntelJob, RadarJob},
         governance::{FocusJob, ResearchJob},
-        intel::{CapitulationJob, IntelRestJob, RelationsJob},
+        intel::{CapitulationJob, RelationsJob},
         lexical::LexicalJob,
         naval_history::{NavalJob, RailJob, SunkJob, SupremacyJob},
         production::{ProductionRestJob, VariantsJob},
@@ -77,7 +71,7 @@ use replay::rows::TableId;
 use serde_json::{Value, json};
 use std::sync::{
     Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
 };
 
 /// Pilot family in calibration order: [technologies, slots, definitions].
@@ -312,28 +306,6 @@ pub const ECONOMY_REST: [TableId; 10] = [
     TableId::PurchaseContracts,
 ];
 
-/// Intel hourly remainders in calibration/report order: [subjects, autonomy,
-/// agencies, operatives, cryptology, networks, flags, variables, operations,
-/// assignments, tokens, incoming, country intel]. Hourly like every Tier-H
-/// table (no refresh gate). The operation census is anchor-charged to the
-/// operations slot; flag/variable scopes to their own slots, matching the
-/// read-group convention.
-pub const INTEL_REST: [TableId; 13] = [
-    TableId::Subjects,
-    TableId::Autonomy,
-    TableId::IntelligenceAgencies,
-    TableId::OperativeMemberships,
-    TableId::Cryptology,
-    TableId::IntelNetworks,
-    TableId::ScriptFlags,
-    TableId::ScriptVariables,
-    TableId::Operations,
-    TableId::OperationAssignments,
-    TableId::OperationTokens,
-    TableId::IncomingDiplomaticActions,
-    TableId::CountryIntel,
-];
-
 /// Hourly weather family in calibration/report order: [limits, regions,
 /// provinces]. Hourly like every Tier-H table (no refresh gate). The manager
 /// header is anchor-charged to the limits slot, matching the read-group
@@ -355,7 +327,7 @@ const JOB_POOL_KEEP: usize = 2;
 /// One FIFO item. The payload's byte buffers already live on the heap inside
 /// its vectors; pooled-frame typed rows are filled by the worker before the
 /// ready-queue handoff.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DecodeJob {
     pub index: usize,
     pub seq: u64,
@@ -379,7 +351,6 @@ pub struct DecodeJob {
     pub production_rest_refresh: bool,
     pub construction_rest_refresh: bool,
     pub economy_rest_refresh: bool,
-    pub intel_rest_refresh: bool,
     pub air_bases_refresh: bool,
     pub air_history_refresh: bool,
     pub rail_refresh: bool,
@@ -410,7 +381,6 @@ pub struct DecodeJob {
     pub production_rest_payload: Option<ProductionRestJob>,
     pub construction_rest_payload: Option<ConstructionRestJob>,
     pub economy_rest_payload: Option<EconomyRestJob>,
-    pub intel_rest_payload: Option<IntelRestJob>,
     pub air_bases_payload: Option<AirBasesJob>,
     pub air_history_payload: Option<AirHistoryJob>,
     pub rail_payload: Option<RailJob>,
@@ -703,51 +673,6 @@ static ECONOMY_REST_RAW_BYTES: [AtomicU64; 10] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
-static INTEL_REST_COPY_NS: [AtomicU64; 13] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static INTEL_REST_DECODE_NS: [AtomicU64; 13] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static INTEL_REST_RAW_BYTES: [AtomicU64; 13] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
 static AIR_BASES_COPY_NS: [AtomicU64; 3] =
     [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 static AIR_BASES_DECODE_NS: [AtomicU64; 3] =
@@ -809,7 +734,6 @@ static SESSION_JOB_POOL: Mutex<Vec<SessionJob>> = Mutex::new(Vec::new());
 static PRODUCTION_REST_JOB_POOL: Mutex<Vec<ProductionRestJob>> = Mutex::new(Vec::new());
 static CONSTRUCTION_REST_JOB_POOL: Mutex<Vec<ConstructionRestJob>> = Mutex::new(Vec::new());
 static ECONOMY_REST_JOB_POOL: Mutex<Vec<EconomyRestJob>> = Mutex::new(Vec::new());
-static INTEL_REST_JOB_POOL: Mutex<Vec<IntelRestJob>> = Mutex::new(Vec::new());
 static AIR_BASES_JOB_POOL: Mutex<Vec<AirBasesJob>> = Mutex::new(Vec::new());
 static AIR_HISTORY_JOB_POOL: Mutex<Vec<AirHistoryJob>> = Mutex::new(Vec::new());
 static RAIL_JOB_POOL: Mutex<Vec<RailJob>> = Mutex::new(Vec::new());
@@ -912,18 +836,26 @@ pub fn acquire_job() -> ResearchJob {
     {
         return job;
     }
-    ResearchJob::new()
+    ResearchJob::default()
 }
 
 /// Return a payload job to the pool after clearing it. Growth decided here
 /// runs on the calling (off-game-thread) side; the game thread never grows.
-pub fn recycle_job(mut job: ResearchJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_job(job: ResearchJob) {
+    defer_payload(RetiredPayload::Research(job));
+}
+
+fn release_job(mut job: ResearchJob) {
+    if job.metas.capacity() == 0 {
+        return;
+    }
     if job.grow_for_next() {
         // Overflowed capacities double off the game thread until copies fit.
         job.grow();
     }
-    if let Ok(mut pool) = JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -938,17 +870,25 @@ pub fn acquire_relations_job() -> RelationsJob {
     {
         return job;
     }
-    RelationsJob::new()
+    RelationsJob::default()
 }
 
 /// Return a relations payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_relations_job(mut job: RelationsJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_relations_job(job: RelationsJob) {
+    defer_payload(RetiredPayload::Relations(job));
+}
+
+fn release_relations_job(mut job: RelationsJob) {
+    if job.countries.capacity() == 0 {
+        return;
+    }
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = RELATIONS_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = RELATIONS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -963,17 +903,25 @@ pub fn acquire_characters_job() -> CharactersJob {
     {
         return job;
     }
-    CharactersJob::new()
+    CharactersJob::default()
 }
 
 /// Return a characters payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_characters_job(mut job: CharactersJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_characters_job(job: CharactersJob) {
+    defer_payload(RetiredPayload::Characters(job));
+}
+
+fn release_characters_job(mut job: CharactersJob) {
+    if job.spans.capacity() == 0 {
+        return;
+    }
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = CHARACTERS_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = CHARACTERS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -988,17 +936,26 @@ pub fn acquire_projects_job() -> ProjectsJob {
     {
         return job;
     }
-    ProjectsJob::new()
+    ProjectsJob::default()
 }
 
 /// Return a projects payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_projects_job(mut job: ProjectsJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_projects_job(job: ProjectsJob) {
+    defer_payload(RetiredPayload::Projects(job));
+}
+
+fn release_projects_job(mut job: ProjectsJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Projects", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = PROJECTS_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = PROJECTS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1013,17 +970,26 @@ pub fn acquire_lexical_job() -> LexicalJob {
     {
         return job;
     }
-    LexicalJob::new()
+    LexicalJob::default()
 }
 
 /// Return a lexical payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_lexical_job(mut job: LexicalJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_lexical_job(job: LexicalJob) {
+    defer_payload(RetiredPayload::Lexical(job));
+}
+
+fn release_lexical_job(mut job: LexicalJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Lexical", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = LEXICAL_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = LEXICAL_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1038,17 +1004,26 @@ pub fn acquire_variants_job() -> VariantsJob {
     {
         return job;
     }
-    VariantsJob::new()
+    VariantsJob::default()
 }
 
 /// Return a variants payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_variants_job(mut job: VariantsJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_variants_job(job: VariantsJob) {
+    defer_payload(RetiredPayload::Variants(job));
+}
+
+fn release_variants_job(mut job: VariantsJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Variants", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = VARIANTS_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = VARIANTS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1063,17 +1038,26 @@ pub fn acquire_buildings_job() -> BuildingsJob {
     {
         return job;
     }
-    BuildingsJob::new()
+    BuildingsJob::default()
 }
 
 /// Return a buildings payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_buildings_job(mut job: BuildingsJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_buildings_job(job: BuildingsJob) {
+    defer_payload(RetiredPayload::Buildings(job));
+}
+
+fn release_buildings_job(mut job: BuildingsJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Buildings", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = BUILDINGS_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = BUILDINGS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1088,17 +1072,26 @@ pub fn acquire_wars_job() -> WarsJob {
     {
         return job;
     }
-    WarsJob::new()
+    WarsJob::default()
 }
 
 /// Return a wars payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_wars_job(mut job: WarsJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_wars_job(job: WarsJob) {
+    defer_payload(RetiredPayload::Wars(job));
+}
+
+fn release_wars_job(mut job: WarsJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Wars", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = WARS_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = WARS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1114,17 +1107,26 @@ pub fn acquire_divisions_job() -> DivisionsJob {
     {
         return job;
     }
-    DivisionsJob::new()
+    DivisionsJob::default()
 }
 
 /// Return a divisions payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_divisions_job(mut job: DivisionsJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_divisions_job(job: DivisionsJob) {
+    defer_payload(RetiredPayload::Divisions(job));
+}
+
+fn release_divisions_job(mut job: DivisionsJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Divisions", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = DIVISIONS_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = DIVISIONS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1139,17 +1141,26 @@ pub fn acquire_focus_job() -> FocusJob {
     {
         return job;
     }
-    FocusJob::new()
+    FocusJob::default()
 }
 
 /// Return a focus payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_focus_job(mut job: FocusJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_focus_job(job: FocusJob) {
+    defer_payload(RetiredPayload::Focus(job));
+}
+
+fn release_focus_job(mut job: FocusJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Focus", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = FOCUS_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = FOCUS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1165,17 +1176,26 @@ pub fn acquire_map_job() -> MapJob {
     {
         return job;
     }
-    MapJob::new()
+    MapJob::default()
 }
 
 /// Return a map-pack payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_map_job(mut job: MapJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_map_job(job: MapJob) {
+    defer_payload(RetiredPayload::Map(job));
+}
+
+fn release_map_job(mut job: MapJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Map", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = MAP_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = MAP_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1191,17 +1211,26 @@ pub fn acquire_air_wing_job() -> AirWingJob {
     {
         return job;
     }
-    AirWingJob::new()
+    AirWingJob::default()
 }
 
 /// Return a wing-pack payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_air_wing_job(mut job: AirWingJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_air_wing_job(job: AirWingJob) {
+    defer_payload(RetiredPayload::AirWing(job));
+}
+
+fn release_air_wing_job(mut job: AirWingJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("AirWing", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = AIR_WING_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = AIR_WING_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1217,17 +1246,26 @@ pub fn acquire_air_stats_job() -> AirStatsJob {
     {
         return job;
     }
-    AirStatsJob::new()
+    AirStatsJob::default()
 }
 
 /// Return a statistics payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_air_stats_job(mut job: AirStatsJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_air_stats_job(job: AirStatsJob) {
+    defer_payload(RetiredPayload::AirStats(job));
+}
+
+fn release_air_stats_job(mut job: AirStatsJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("AirStats", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = AIR_STATS_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = AIR_STATS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1243,17 +1281,26 @@ pub fn acquire_naval_job() -> NavalJob {
     {
         return job;
     }
-    NavalJob::new()
+    NavalJob::default()
 }
 
 /// Return a naval-pack payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_naval_job(mut job: NavalJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_naval_job(job: NavalJob) {
+    defer_payload(RetiredPayload::Naval(job));
+}
+
+fn release_naval_job(mut job: NavalJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Naval", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = NAVAL_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = NAVAL_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1269,17 +1316,26 @@ pub fn acquire_players_job() -> PlayersJob {
     {
         return job;
     }
-    PlayersJob::new()
+    PlayersJob::default()
 }
 
 /// Return a players-pair payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_players_job(mut job: PlayersJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_players_job(job: PlayersJob) {
+    defer_payload(RetiredPayload::Players(job));
+}
+
+fn release_players_job(mut job: PlayersJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Players", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = PLAYERS_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = PLAYERS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1295,17 +1351,26 @@ pub fn acquire_session_job() -> SessionJob {
     {
         return job;
     }
-    SessionJob::new()
+    SessionJob::default()
 }
 
 /// Return a session-family payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_session_job(mut job: SessionJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_session_job(job: SessionJob) {
+    defer_payload(RetiredPayload::Session(job));
+}
+
+fn release_session_job(mut job: SessionJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Session", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = SESSION_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = SESSION_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1321,17 +1386,26 @@ pub fn acquire_production_rest_job() -> ProductionRestJob {
     {
         return job;
     }
-    ProductionRestJob::new()
+    ProductionRestJob::default()
 }
 
 /// Return a production-rest payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_production_rest_job(mut job: ProductionRestJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_production_rest_job(job: ProductionRestJob) {
+    defer_payload(RetiredPayload::ProductionRest(job));
+}
+
+fn release_production_rest_job(mut job: ProductionRestJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("ProductionRest", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = PRODUCTION_REST_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = PRODUCTION_REST_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1347,17 +1421,26 @@ pub fn acquire_construction_rest_job() -> ConstructionRestJob {
     {
         return job;
     }
-    ConstructionRestJob::new()
+    ConstructionRestJob::default()
 }
 
 /// Return a construction-rest payload job to the pool after clearing it.
 /// Growth decided here runs on the calling (off-game-thread) side.
-pub fn recycle_construction_rest_job(mut job: ConstructionRestJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_construction_rest_job(job: ConstructionRestJob) {
+    defer_payload(RetiredPayload::ConstructionRest(job));
+}
+
+fn release_construction_rest_job(mut job: ConstructionRestJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("ConstructionRest", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = CONSTRUCTION_REST_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = CONSTRUCTION_REST_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1373,43 +1456,26 @@ pub fn acquire_economy_rest_job() -> EconomyRestJob {
     {
         return job;
     }
-    EconomyRestJob::new()
+    EconomyRestJob::default()
 }
 
 /// Return an economy-rest payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_economy_rest_job(mut job: EconomyRestJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_economy_rest_job(job: EconomyRestJob) {
+    defer_payload(RetiredPayload::EconomyRest(job));
+}
+
+fn release_economy_rest_job(mut job: EconomyRestJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("EconomyRest", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = ECONOMY_REST_JOB_POOL.try_lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-    {
-        pool.push(job);
-    }
-}
-
-/// Recycled hourly intel-remainders raw-payload job. Cold calls allocate;
-/// steady state reuses jobs with their capacities, so neither thread allocates
-/// per hour.
-pub fn acquire_intel_rest_job() -> IntelRestJob {
-    if let Ok(mut pool) = INTEL_REST_JOB_POOL.try_lock()
-        && let Some(job) = pool.pop()
-    {
-        return job;
-    }
-    IntelRestJob::new()
-}
-
-/// Return an intel-remainders payload job to the pool after clearing it.
-/// Growth decided here runs on the calling (off-game-thread) side.
-pub fn recycle_intel_rest_job(mut job: IntelRestJob) {
     job.clear();
-    if job.grow_for_next() {
-        job.grow();
-    }
-    if let Ok(mut pool) = INTEL_REST_JOB_POOL.try_lock()
+    if let Ok(mut pool) = ECONOMY_REST_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1425,17 +1491,26 @@ pub fn acquire_air_bases_job() -> AirBasesJob {
     {
         return job;
     }
-    AirBasesJob::new()
+    AirBasesJob::default()
 }
 
 /// Return a shared-bases payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_air_bases_job(mut job: AirBasesJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_air_bases_job(job: AirBasesJob) {
+    defer_payload(RetiredPayload::AirBases(job));
+}
+
+fn release_air_bases_job(mut job: AirBasesJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("AirBases", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = AIR_BASES_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = AIR_BASES_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1451,17 +1526,26 @@ pub fn acquire_air_history_job() -> AirHistoryJob {
     {
         return job;
     }
-    AirHistoryJob::new()
+    AirHistoryJob::default()
 }
 
 /// Return a shared-history payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_air_history_job(mut job: AirHistoryJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_air_history_job(job: AirHistoryJob) {
+    defer_payload(RetiredPayload::AirHistory(job));
+}
+
+fn release_air_history_job(mut job: AirHistoryJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("AirHistory", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = AIR_HISTORY_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = AIR_HISTORY_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1477,17 +1561,26 @@ pub fn acquire_rail_job() -> RailJob {
     {
         return job;
     }
-    RailJob::new()
+    RailJob::default()
 }
 
 /// Return a shared-railway payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_rail_job(mut job: RailJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_rail_job(job: RailJob) {
+    defer_payload(RetiredPayload::Rail(job));
+}
+
+fn release_rail_job(mut job: RailJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Rail", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = RAIL_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = RAIL_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1503,17 +1596,26 @@ pub fn acquire_supremacy_job() -> SupremacyJob {
     {
         return job;
     }
-    SupremacyJob::new()
+    SupremacyJob::default()
 }
 
 /// Return a supremacy payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_supremacy_job(mut job: SupremacyJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_supremacy_job(job: SupremacyJob) {
+    defer_payload(RetiredPayload::Supremacy(job));
+}
+
+fn release_supremacy_job(mut job: SupremacyJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Supremacy", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = SUPREMACY_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = SUPREMACY_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1529,17 +1631,26 @@ pub fn acquire_sunk_job() -> SunkJob {
     {
         return job;
     }
-    SunkJob::new()
+    SunkJob::default()
 }
 
 /// Return a sunk-ships payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_sunk_job(mut job: SunkJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_sunk_job(job: SunkJob) {
+    defer_payload(RetiredPayload::Sunk(job));
+}
+
+fn release_sunk_job(mut job: SunkJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Sunk", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = SUNK_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = SUNK_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1554,17 +1665,26 @@ pub fn acquire_radar_job() -> RadarJob {
     {
         return job;
     }
-    RadarJob::new()
+    RadarJob::default()
 }
 
 /// Return a radar payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_radar_job(mut job: RadarJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_radar_job(job: RadarJob) {
+    defer_payload(RetiredPayload::Radar(job));
+}
+
+fn release_radar_job(mut job: RadarJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Radar", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = RADAR_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = RADAR_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1579,17 +1699,26 @@ pub fn acquire_intel_job() -> IntelJob {
     {
         return job;
     }
-    IntelJob::new()
+    IntelJob::default()
 }
 
 /// Return an intel payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_intel_job(mut job: IntelJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_intel_job(job: IntelJob) {
+    defer_payload(RetiredPayload::Intel(job));
+}
+
+fn release_intel_job(mut job: IntelJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Intel", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = INTEL_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = INTEL_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1604,17 +1733,26 @@ pub fn acquire_weather_job() -> WeatherJob {
     {
         return job;
     }
-    WeatherJob::new()
+    WeatherJob::default()
 }
 
 /// Return a weather payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_weather_job(mut job: WeatherJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_weather_job(job: WeatherJob) {
+    defer_payload(RetiredPayload::Weather(job));
+}
+
+fn release_weather_job(mut job: WeatherJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Weather", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = WEATHER_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = WEATHER_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
@@ -1630,28 +1768,290 @@ pub fn acquire_capitulation_job() -> CapitulationJob {
     {
         return job;
     }
-    CapitulationJob::new()
+    CapitulationJob::default()
 }
 
 /// Return a capitulation payload job to the pool after clearing it. Growth
 /// decided here runs on the calling (off-game-thread) side.
-pub fn recycle_capitulation_job(mut job: CapitulationJob) {
-    job.clear();
+/// Retire raw storage without clearing, growing or freeing it on the game thread.
+pub fn recycle_capitulation_job(job: CapitulationJob) {
+    defer_payload(RetiredPayload::Capitulation(job));
+}
+
+fn release_capitulation_job(mut job: CapitulationJob) {
+    if job.log.spans.capacity() == 0 {
+        return;
+    }
+    crate::raw::note_growth("Capitulation", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
-    if let Ok(mut pool) = CAPITULATION_JOB_POOL.try_lock()
+    job.clear();
+    if let Ok(mut pool) = CAPITULATION_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
     {
         pool.push(job);
     }
 }
 
+// At most two retired payloads per family per owned frame can be waiting.
+// Queue storage is allocated before the hook is enabled; the game thread
+// only moves vector handles here. Growth and allocator traffic stay off it.
+#[allow(clippy::large_enum_variant)]
+enum RetiredPayload {
+    Research(ResearchJob),
+    Relations(RelationsJob),
+    Characters(CharactersJob),
+    Projects(ProjectsJob),
+    Lexical(LexicalJob),
+    Variants(VariantsJob),
+    Buildings(BuildingsJob),
+    Wars(WarsJob),
+    Divisions(DivisionsJob),
+    Focus(FocusJob),
+    Map(MapJob),
+    AirWing(AirWingJob),
+    AirStats(AirStatsJob),
+    Naval(NavalJob),
+    Players(PlayersJob),
+    Session(SessionJob),
+    ProductionRest(ProductionRestJob),
+    ConstructionRest(ConstructionRestJob),
+    EconomyRest(EconomyRestJob),
+    AirBases(AirBasesJob),
+    AirHistory(AirHistoryJob),
+    Rail(RailJob),
+    Supremacy(SupremacyJob),
+    Sunk(SunkJob),
+    Radar(RadarJob),
+    Intel(IntelJob),
+    Weather(WeatherJob),
+    Capitulation(CapitulationJob),
+}
+static RETIRED_PAYLOADS: AtomicPtr<ArrayQueue<RetiredPayload>> =
+    AtomicPtr::new(std::ptr::null_mut());
+
+fn prepare_retirement() {
+    if !RETIRED_PAYLOADS.load(Ordering::Acquire).is_null() {
+        return;
+    }
+    let queue = Box::into_raw(Box::new(ArrayQueue::new(BUFFERS * 28 * 2)));
+    if RETIRED_PAYLOADS
+        .compare_exchange(
+            std::ptr::null_mut(),
+            queue,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        // Another initializer won; this allocation was never published.
+        unsafe {
+            drop(Box::from_raw(queue));
+        }
+    }
+}
+
+/// Retain pools while callbacks can still reach the DLL on a failed detach.
+/// Normal detach/cancel releases them before self-unload; Rust statics do
+/// not run destructors when Windows unloads a DLL.
+pub struct PayloadPools;
+
+impl Drop for PayloadPools {
+    fn drop(&mut self) {
+        if !sampling::SHARED.load(Ordering::Acquire).is_null() {
+            return;
+        }
+        reclaim_payloads();
+        if let Ok(mut pool) = JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = RELATIONS_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = CHARACTERS_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = PROJECTS_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = LEXICAL_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = VARIANTS_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = BUILDINGS_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = WARS_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = DIVISIONS_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = FOCUS_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = MAP_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = AIR_WING_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = AIR_STATS_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = NAVAL_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = PLAYERS_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = SESSION_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = PRODUCTION_REST_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = CONSTRUCTION_REST_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = ECONOMY_REST_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = AIR_BASES_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = AIR_HISTORY_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = RAIL_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = SUPREMACY_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = SUNK_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = RADAR_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = INTEL_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = WEATHER_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        if let Ok(mut pool) = CAPITULATION_JOB_POOL.lock() {
+            *pool = Vec::new();
+        }
+        let queue = RETIRED_PAYLOADS.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if !queue.is_null() {
+            // The loader clears SHARED only after callback quiescence and
+            // joining/draining the decode worker. No queue borrow survives.
+            unsafe {
+                drop(Box::from_raw(queue));
+            }
+        }
+    }
+}
+
+pub fn prepare_payload_pools() -> PayloadPools {
+    prepare_retirement();
+    for _ in 0..JOB_POOL_KEEP + 1 {
+        release_job(ResearchJob::new());
+        release_relations_job(RelationsJob::new());
+        release_characters_job(CharactersJob::new());
+        release_projects_job(ProjectsJob::new());
+        release_lexical_job(LexicalJob::new());
+        release_variants_job(VariantsJob::new());
+        release_buildings_job(BuildingsJob::new());
+        release_wars_job(WarsJob::new());
+        release_divisions_job(DivisionsJob::new());
+        release_focus_job(FocusJob::new());
+        release_map_job(MapJob::new());
+        release_air_wing_job(AirWingJob::new());
+        release_air_stats_job(AirStatsJob::new());
+        release_naval_job(NavalJob::new());
+        release_players_job(PlayersJob::new());
+        release_session_job(SessionJob::new());
+        release_production_rest_job(ProductionRestJob::new());
+        release_construction_rest_job(ConstructionRestJob::new());
+        release_economy_rest_job(EconomyRestJob::new());
+        release_air_bases_job(AirBasesJob::new());
+        release_air_history_job(AirHistoryJob::new());
+        release_rail_job(RailJob::new());
+        release_supremacy_job(SupremacyJob::new());
+        release_sunk_job(SunkJob::new());
+        release_radar_job(RadarJob::new());
+        release_intel_job(IntelJob::new());
+        release_weather_job(WeatherJob::new());
+        release_capitulation_job(CapitulationJob::new());
+    }
+    PayloadPools
+}
+
+fn defer_payload(payload: RetiredPayload) {
+    let queue = RETIRED_PAYLOADS.load(Ordering::Acquire);
+    assert!(
+        !queue.is_null(),
+        "payload retirement initialized before hook"
+    );
+    // Preparation precedes enabling the hook; reclamation follows quiescence.
+    let queue = unsafe { &*queue };
+    assert!(
+        queue.push(payload).is_ok(),
+        "owned-frame retirement bound exceeded"
+    );
+}
+
+fn reclaim_payloads() {
+    let queue = RETIRED_PAYLOADS.load(Ordering::Acquire);
+    if queue.is_null() {
+        return;
+    }
+    // Only the decode worker or the quiescent loader drains this queue.
+    let queue = unsafe { &*queue };
+    while let Some(payload) = queue.pop() {
+        match payload {
+            RetiredPayload::Research(job) => release_job(job),
+            RetiredPayload::Relations(job) => release_relations_job(job),
+            RetiredPayload::Characters(job) => release_characters_job(job),
+            RetiredPayload::Projects(job) => release_projects_job(job),
+            RetiredPayload::Lexical(job) => release_lexical_job(job),
+            RetiredPayload::Variants(job) => release_variants_job(job),
+            RetiredPayload::Buildings(job) => release_buildings_job(job),
+            RetiredPayload::Wars(job) => release_wars_job(job),
+            RetiredPayload::Divisions(job) => release_divisions_job(job),
+            RetiredPayload::Focus(job) => release_focus_job(job),
+            RetiredPayload::Map(job) => release_map_job(job),
+            RetiredPayload::AirWing(job) => release_air_wing_job(job),
+            RetiredPayload::AirStats(job) => release_air_stats_job(job),
+            RetiredPayload::Naval(job) => release_naval_job(job),
+            RetiredPayload::Players(job) => release_players_job(job),
+            RetiredPayload::Session(job) => release_session_job(job),
+            RetiredPayload::ProductionRest(job) => release_production_rest_job(job),
+            RetiredPayload::ConstructionRest(job) => release_construction_rest_job(job),
+            RetiredPayload::EconomyRest(job) => release_economy_rest_job(job),
+            RetiredPayload::AirBases(job) => release_air_bases_job(job),
+            RetiredPayload::AirHistory(job) => release_air_history_job(job),
+            RetiredPayload::Rail(job) => release_rail_job(job),
+            RetiredPayload::Supremacy(job) => release_supremacy_job(job),
+            RetiredPayload::Sunk(job) => release_sunk_job(job),
+            RetiredPayload::Radar(job) => release_radar_job(job),
+            RetiredPayload::Intel(job) => release_intel_job(job),
+            RetiredPayload::Weather(job) => release_weather_job(job),
+            RetiredPayload::Capitulation(job) => release_capitulation_job(job),
+        }
+    }
+}
+
 /// Enqueue a frame for decode (or ordered forwarding for skip hours).
-/// Starts the worker lazily; never blocks. A full queue returns the job for
+/// The loader starts the worker before enabling the hook. A full queue returns the job for
 /// the existing gap path and counts the drop on the existing counters.
 pub fn enqueue(shared: &Shared, job: DecodeJob) -> Option<DecodeJob> {
-    ensure_worker();
     match shared.decode_queue.push(job) {
         Ok(()) => {
             JOBS.fetch_add(1, Ordering::Relaxed);
@@ -1672,6 +2072,7 @@ pub fn enqueue(shared: &Shared, job: DecodeJob) -> Option<DecodeJob> {
 /// off to the spool ready queue in the same order; no reorder buffer exists.
 fn decode_loop() {
     loop {
+        reclaim_payloads();
         if STOP.load(Ordering::Acquire) {
             break;
         }
@@ -1682,25 +2083,118 @@ fn decode_loop() {
         }
         let shared = unsafe { &*shared_ptr };
         match shared.decode_queue.pop() {
-            Some(job) => process_job(shared, &job),
+            Some(job) => process_owned_job(shared, job),
             None => std::thread::sleep(std::time::Duration::from_millis(1)),
         }
     }
 }
 
-fn ensure_worker() {
-    if let Ok(mut slot) = WORKER.try_lock() {
-        let running = slot.as_ref().is_some_and(|handle| !handle.is_finished());
-        if !running {
-            STOP.store(false, Ordering::Release);
-            if let Ok(handle) = std::thread::Builder::new()
-                .name("hoi4-decode".into())
-                .spawn(decode_loop)
-            {
-                *slot = Some(handle);
-            }
-        }
+/// The worker owns the raw payloads through decoding, then returns every
+/// family to its pool. Dropping this envelope without recycling used to
+/// allocate a fresh payload on the game thread on every subsequent hour.
+fn process_owned_job(shared: &Shared, mut job: DecodeJob) {
+    process_job(shared, &job);
+    if let Some(payload) = job.payload.take() {
+        release_job(payload);
     }
+    if let Some(payload) = job.relations_payload.take() {
+        release_relations_job(payload);
+    }
+    if let Some(payload) = job.characters_payload.take() {
+        release_characters_job(payload);
+    }
+    if let Some(payload) = job.projects_payload.take() {
+        release_projects_job(payload);
+    }
+    if let Some(payload) = job.lexical_payload.take() {
+        release_lexical_job(payload);
+    }
+    if let Some(payload) = job.variants_payload.take() {
+        release_variants_job(payload);
+    }
+    if let Some(payload) = job.buildings_payload.take() {
+        release_buildings_job(payload);
+    }
+    if let Some(payload) = job.wars_payload.take() {
+        release_wars_job(payload);
+    }
+    if let Some(payload) = job.divisions_payload.take() {
+        release_divisions_job(payload);
+    }
+    if let Some(payload) = job.focus_payload.take() {
+        release_focus_job(payload);
+    }
+    if let Some(payload) = job.map_payload.take() {
+        release_map_job(payload);
+    }
+    if let Some(payload) = job.air_wing_payload.take() {
+        release_air_wing_job(payload);
+    }
+    if let Some(payload) = job.air_stats_payload.take() {
+        release_air_stats_job(payload);
+    }
+    if let Some(payload) = job.naval_payload.take() {
+        release_naval_job(payload);
+    }
+    if let Some(payload) = job.players_payload.take() {
+        release_players_job(payload);
+    }
+    if let Some(payload) = job.session_payload.take() {
+        release_session_job(payload);
+    }
+    if let Some(payload) = job.production_rest_payload.take() {
+        release_production_rest_job(payload);
+    }
+    if let Some(payload) = job.construction_rest_payload.take() {
+        release_construction_rest_job(payload);
+    }
+    if let Some(payload) = job.economy_rest_payload.take() {
+        release_economy_rest_job(payload);
+    }
+    if let Some(payload) = job.air_bases_payload.take() {
+        release_air_bases_job(payload);
+    }
+    if let Some(payload) = job.air_history_payload.take() {
+        release_air_history_job(payload);
+    }
+    if let Some(payload) = job.rail_payload.take() {
+        release_rail_job(payload);
+    }
+    if let Some(payload) = job.supremacy_payload.take() {
+        release_supremacy_job(payload);
+    }
+    if let Some(payload) = job.sunk_payload.take() {
+        release_sunk_job(payload);
+    }
+    if let Some(payload) = job.radar_payload.take() {
+        release_radar_job(payload);
+    }
+    if let Some(payload) = job.intel_payload.take() {
+        release_intel_job(payload);
+    }
+    if let Some(payload) = job.weather_payload.take() {
+        release_weather_job(payload);
+    }
+    if let Some(payload) = job.capitulation_payload.take() {
+        release_capitulation_job(payload);
+    }
+}
+
+pub fn start_worker() -> Result<(), String> {
+    let mut slot = WORKER
+        .lock()
+        .map_err(|_| "decode worker lock poisoned".to_string())?;
+    if slot.as_ref().is_some_and(|handle| !handle.is_finished()) {
+        return Err("decode worker already running".into());
+    }
+    STOP.store(false, Ordering::Release);
+    *slot = Some(
+        std::thread::Builder::new()
+            .name("hoi4-decode".into())
+            .spawn(decode_loop)
+            .map_err(|error| format!("cannot start decode worker: {error}"))?,
+    );
+    Ok(())
 }
 
 /// Decode one FIFO item and hand its pooled frame to the spool ready queue
@@ -2034,23 +2528,6 @@ pub fn process_job(shared: &Shared, job: &DecodeJob) {
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
-    if job.intel_rest_refresh
-        && let Some(payload) = job.intel_rest_payload.as_ref()
-    {
-        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
-        let mut decode_ticks = [0; 13];
-        frame.extended.intel_rest_pilot().decode_intel_rest_payload(
-            shared.base,
-            payload,
-            &mut decode_ticks,
-        );
-        for (total, ticks) in INTEL_REST_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
-    }
     if job.air_bases_refresh
         && let Some(payload) = job.air_bases_payload.as_ref()
     {
@@ -2223,7 +2700,7 @@ pub fn detach_drain() {
     }
     let shared = unsafe { &*shared_ptr };
     while let Some(job) = shared.decode_queue.pop() {
-        process_job(shared, &job);
+        process_owned_job(shared, job);
     }
     STOP.store(false, Ordering::Release);
 }
@@ -2406,15 +2883,6 @@ pub fn calibration() -> Calibration {
         economy_rest_raw_bytes: ECONOMY_REST_RAW_BYTES
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
-        intel_rest_copy_ns: INTEL_REST_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        intel_rest_decode_ns: INTEL_REST_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        intel_rest_raw_bytes: INTEL_REST_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
         air_bases_copy_ns: AIR_BASES_COPY_NS
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
@@ -2565,9 +3033,6 @@ pub struct Calibration {
     pub economy_rest_copy_ns: [u64; 10],
     pub economy_rest_decode_ns: [u64; 10],
     pub economy_rest_raw_bytes: [u64; 10],
-    pub intel_rest_copy_ns: [u64; 13],
-    pub intel_rest_decode_ns: [u64; 13],
-    pub intel_rest_raw_bytes: [u64; 13],
     pub air_bases_copy_ns: [u64; 3],
     pub air_bases_decode_ns: [u64; 3],
     pub air_bases_raw_bytes: [u64; 3],
@@ -2602,6 +3067,7 @@ impl Calibration {
     pub fn json(&self) -> Value {
         json!({
             "scope": "decode worker totals since attach; monotonic",
+            "raw_growth": crate::raw::growth_diagnostics(),
             "jobs": self.jobs,
             "refresh_jobs": self.refresh_jobs,
             "full_refresh_jobs": self.full_refresh_jobs,
@@ -2684,10 +3150,6 @@ impl Calibration {
             "economy_rest_decode_ns": self.economy_rest_decode_ns.as_slice(),
             "economy_rest_raw_bytes": self.economy_rest_raw_bytes.as_slice(),
             "economy_rest_tables": ["CountryFuel", "CountryExperience", "ProvinceSupply", "HubMotorization", "DisruptedSupply", "ForeignHomebases", "ResourceDefinitions", "CountryResources", "ResourceExchanges", "PurchaseContracts"],
-            "intel_rest_copy_ns": self.intel_rest_copy_ns.as_slice(),
-            "intel_rest_decode_ns": self.intel_rest_decode_ns.as_slice(),
-            "intel_rest_raw_bytes": self.intel_rest_raw_bytes.as_slice(),
-            "intel_rest_tables": ["Subjects", "Autonomy", "IntelligenceAgencies", "OperativeMemberships", "Cryptology", "IntelNetworks", "ScriptFlags", "ScriptVariables", "Operations", "OperationAssignments", "OperationTokens", "IncomingDiplomaticActions", "CountryIntel"],
             "air_bases_copy_ns": self.air_bases_copy_ns.as_slice(),
             "air_bases_decode_ns": self.air_bases_decode_ns.as_slice(),
             "air_bases_raw_bytes": self.air_bases_raw_bytes.as_slice(),
@@ -2887,14 +3349,6 @@ pub(crate) fn add_economy_rest_raw_bytes(table: usize, bytes: u64) {
     ECONOMY_REST_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
 }
 
-pub(crate) fn add_intel_rest_copy_ns(table: usize, ns: u64) {
-    INTEL_REST_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
-}
-
-pub(crate) fn add_intel_rest_raw_bytes(table: usize, bytes: u64) {
-    INTEL_REST_RAW_BYTES[table].fetch_add(bytes, Ordering::Relaxed);
-}
-
 pub(crate) fn add_air_bases_copy_ns(table: usize, ns: u64) {
     AIR_BASES_COPY_NS[table].fetch_add(ns, Ordering::Relaxed);
 }
@@ -2976,6 +3430,11 @@ pub fn new_queue() -> DecodeQueue {
 
 #[cfg(test)]
 pub(crate) fn reset_calibration_for_test() {
+    prepare_retirement();
+    reclaim_payloads();
+    // Production prepares bounded payload storage before installing the hook.
+    // Tests exercise that lifecycle rather than relying on cold tick allocation.
+    std::mem::forget(prepare_payload_pools());
     for cell in COPY_NS
         .iter()
         .chain(DECODE_NS.iter())
@@ -3034,9 +3493,6 @@ pub(crate) fn reset_calibration_for_test() {
         .chain(ECONOMY_REST_COPY_NS.iter())
         .chain(ECONOMY_REST_DECODE_NS.iter())
         .chain(ECONOMY_REST_RAW_BYTES.iter())
-        .chain(INTEL_REST_COPY_NS.iter())
-        .chain(INTEL_REST_DECODE_NS.iter())
-        .chain(INTEL_REST_RAW_BYTES.iter())
         .chain(AIR_BASES_COPY_NS.iter())
         .chain(AIR_BASES_DECODE_NS.iter())
         .chain(AIR_BASES_RAW_BYTES.iter())
@@ -3089,6 +3545,205 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
+    fn exhausted_or_contended_payload_pools_decline_without_allocating() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        let mut pool = JOB_POOL.lock().unwrap();
+        let contended = acquire_job();
+        assert_eq!(contended.metas.capacity(), 0);
+        assert_eq!(contended.tech_pool.capacity(), 0);
+        let owned = std::mem::take(&mut *pool);
+        drop(pool);
+        let exhausted = acquire_job();
+        assert_eq!(exhausted.metas.capacity(), 0);
+        assert_eq!(exhausted.templates.capacity(), 0);
+        release_job(exhausted);
+        assert!(JOB_POOL.lock().unwrap().is_empty());
+        *JOB_POOL.lock().unwrap() = owned;
+    }
+
+    #[test]
+    fn worker_returns_every_owned_payload_to_its_reuse_pool() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        let shared = Shared::new(0, 0, 1);
+        let index = shared.free.pop().expect("pooled frame");
+        JOB_POOL.lock().unwrap().clear();
+        RELATIONS_JOB_POOL.lock().unwrap().clear();
+        CHARACTERS_JOB_POOL.lock().unwrap().clear();
+        PROJECTS_JOB_POOL.lock().unwrap().clear();
+        LEXICAL_JOB_POOL.lock().unwrap().clear();
+        VARIANTS_JOB_POOL.lock().unwrap().clear();
+        BUILDINGS_JOB_POOL.lock().unwrap().clear();
+        WARS_JOB_POOL.lock().unwrap().clear();
+        DIVISIONS_JOB_POOL.lock().unwrap().clear();
+        FOCUS_JOB_POOL.lock().unwrap().clear();
+        MAP_JOB_POOL.lock().unwrap().clear();
+        AIR_WING_JOB_POOL.lock().unwrap().clear();
+        AIR_STATS_JOB_POOL.lock().unwrap().clear();
+        NAVAL_JOB_POOL.lock().unwrap().clear();
+        PLAYERS_JOB_POOL.lock().unwrap().clear();
+        SESSION_JOB_POOL.lock().unwrap().clear();
+        PRODUCTION_REST_JOB_POOL.lock().unwrap().clear();
+        CONSTRUCTION_REST_JOB_POOL.lock().unwrap().clear();
+        ECONOMY_REST_JOB_POOL.lock().unwrap().clear();
+        AIR_BASES_JOB_POOL.lock().unwrap().clear();
+        AIR_HISTORY_JOB_POOL.lock().unwrap().clear();
+        RAIL_JOB_POOL.lock().unwrap().clear();
+        SUPREMACY_JOB_POOL.lock().unwrap().clear();
+        SUNK_JOB_POOL.lock().unwrap().clear();
+        RADAR_JOB_POOL.lock().unwrap().clear();
+        INTEL_JOB_POOL.lock().unwrap().clear();
+        WEATHER_JOB_POOL.lock().unwrap().clear();
+        CAPITULATION_JOB_POOL.lock().unwrap().clear();
+        let air = AirStatsJob::new();
+        let air_allocation = air.log.bytes.as_ptr();
+        let job = DecodeJob {
+            index,
+            game_elapsed: 17,
+            payload: Some(ResearchJob::new()),
+            relations_payload: Some(RelationsJob::new()),
+            characters_payload: Some(CharactersJob::new()),
+            projects_payload: Some(ProjectsJob::new()),
+            lexical_payload: Some(LexicalJob::new()),
+            variants_payload: Some(VariantsJob::new()),
+            buildings_payload: Some(BuildingsJob::new()),
+            wars_payload: Some(WarsJob::new()),
+            divisions_payload: Some(DivisionsJob::new()),
+            focus_payload: Some(FocusJob::new()),
+            map_payload: Some(MapJob::new()),
+            air_wing_payload: Some(AirWingJob::new()),
+            air_stats_payload: Some(air),
+            naval_payload: Some(NavalJob::new()),
+            players_payload: Some(PlayersJob::new()),
+            session_payload: Some(SessionJob::new()),
+            production_rest_payload: Some(ProductionRestJob::new()),
+            construction_rest_payload: Some(ConstructionRestJob::new()),
+            economy_rest_payload: Some(EconomyRestJob::new()),
+            air_bases_payload: Some(AirBasesJob::new()),
+            air_history_payload: Some(AirHistoryJob::new()),
+            rail_payload: Some(RailJob::new()),
+            supremacy_payload: Some(SupremacyJob::new()),
+            sunk_payload: Some(SunkJob::new()),
+            radar_payload: Some(RadarJob::new()),
+            intel_payload: Some(IntelJob::new()),
+            weather_payload: Some(WeatherJob::new()),
+            capitulation_payload: Some(CapitulationJob::new()),
+            ..Default::default()
+        };
+        process_owned_job(&shared, job);
+        assert_eq!(shared.ready.pop(), Some(index));
+        assert_eq!(shared.completed[index].load(Ordering::Acquire), 17);
+        assert_eq!(JOB_POOL.lock().unwrap().len(), 1, "JOB_POOL");
+        assert_eq!(
+            RELATIONS_JOB_POOL.lock().unwrap().len(),
+            1,
+            "RELATIONS_JOB_POOL"
+        );
+        assert_eq!(
+            CHARACTERS_JOB_POOL.lock().unwrap().len(),
+            1,
+            "CHARACTERS_JOB_POOL"
+        );
+        assert_eq!(
+            PROJECTS_JOB_POOL.lock().unwrap().len(),
+            1,
+            "PROJECTS_JOB_POOL"
+        );
+        assert_eq!(
+            LEXICAL_JOB_POOL.lock().unwrap().len(),
+            1,
+            "LEXICAL_JOB_POOL"
+        );
+        assert_eq!(
+            VARIANTS_JOB_POOL.lock().unwrap().len(),
+            1,
+            "VARIANTS_JOB_POOL"
+        );
+        assert_eq!(
+            BUILDINGS_JOB_POOL.lock().unwrap().len(),
+            1,
+            "BUILDINGS_JOB_POOL"
+        );
+        assert_eq!(WARS_JOB_POOL.lock().unwrap().len(), 1, "WARS_JOB_POOL");
+        assert_eq!(
+            DIVISIONS_JOB_POOL.lock().unwrap().len(),
+            1,
+            "DIVISIONS_JOB_POOL"
+        );
+        assert_eq!(FOCUS_JOB_POOL.lock().unwrap().len(), 1, "FOCUS_JOB_POOL");
+        assert_eq!(MAP_JOB_POOL.lock().unwrap().len(), 1, "MAP_JOB_POOL");
+        assert_eq!(
+            AIR_WING_JOB_POOL.lock().unwrap().len(),
+            1,
+            "AIR_WING_JOB_POOL"
+        );
+        assert_eq!(
+            AIR_STATS_JOB_POOL.lock().unwrap().len(),
+            1,
+            "AIR_STATS_JOB_POOL"
+        );
+        assert_eq!(NAVAL_JOB_POOL.lock().unwrap().len(), 1, "NAVAL_JOB_POOL");
+        assert_eq!(
+            PLAYERS_JOB_POOL.lock().unwrap().len(),
+            1,
+            "PLAYERS_JOB_POOL"
+        );
+        assert_eq!(
+            SESSION_JOB_POOL.lock().unwrap().len(),
+            1,
+            "SESSION_JOB_POOL"
+        );
+        assert_eq!(
+            PRODUCTION_REST_JOB_POOL.lock().unwrap().len(),
+            1,
+            "PRODUCTION_REST_JOB_POOL"
+        );
+        assert_eq!(
+            CONSTRUCTION_REST_JOB_POOL.lock().unwrap().len(),
+            1,
+            "CONSTRUCTION_REST_JOB_POOL"
+        );
+        assert_eq!(
+            ECONOMY_REST_JOB_POOL.lock().unwrap().len(),
+            1,
+            "ECONOMY_REST_JOB_POOL"
+        );
+        assert_eq!(
+            AIR_BASES_JOB_POOL.lock().unwrap().len(),
+            1,
+            "AIR_BASES_JOB_POOL"
+        );
+        assert_eq!(
+            AIR_HISTORY_JOB_POOL.lock().unwrap().len(),
+            1,
+            "AIR_HISTORY_JOB_POOL"
+        );
+        assert_eq!(RAIL_JOB_POOL.lock().unwrap().len(), 1, "RAIL_JOB_POOL");
+        assert_eq!(
+            SUPREMACY_JOB_POOL.lock().unwrap().len(),
+            1,
+            "SUPREMACY_JOB_POOL"
+        );
+        assert_eq!(SUNK_JOB_POOL.lock().unwrap().len(), 1, "SUNK_JOB_POOL");
+        assert_eq!(RADAR_JOB_POOL.lock().unwrap().len(), 1, "RADAR_JOB_POOL");
+        assert_eq!(INTEL_JOB_POOL.lock().unwrap().len(), 1, "INTEL_JOB_POOL");
+        assert_eq!(
+            WEATHER_JOB_POOL.lock().unwrap().len(),
+            1,
+            "WEATHER_JOB_POOL"
+        );
+        assert_eq!(
+            CAPITULATION_JOB_POOL.lock().unwrap().len(),
+            1,
+            "CAPITULATION_JOB_POOL"
+        );
+        let air = acquire_air_stats_job();
+        assert_eq!(air.log.bytes.as_ptr(), air_allocation);
+        recycle_air_stats_job(air);
+    }
+
+    #[test]
     fn pilot_gate_matches_stagger_slot_two_and_force_full() {
         // Slot 2 refreshes exactly on H%4==2; branch starts and keyframes
         // force a full refresh regardless of hour.
@@ -3097,6 +3752,32 @@ mod tests {
             assert_eq!(pilot_refresh_hour(hour, false), refresh, "hour {hour}");
             assert!(pilot_refresh_hour(hour, true), "forced hour {hour}");
         }
+    }
+
+    #[test]
+    fn overflow_growth_is_deferred_and_keeps_its_flag_until_reclaimed() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_calibration_for_test();
+        AIR_STATS_JOB_POOL.lock().unwrap().clear();
+        let mut job = AirStatsJob::new();
+        job.log = crate::raw::RawLog::new(1, 1);
+        let bytes = [0u8; 2];
+        let memory = engine::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        assert!(job.log.take(&memory, 0x1000, 1, 1).is_some());
+        assert!(job.log.take(&memory, 0x1001, 1, 1).is_none());
+        recycle_air_stats_job(job);
+        // The game-side retirement neither grows nor publishes a reusable job.
+        assert!(AIR_STATS_JOB_POOL.lock().unwrap().is_empty());
+        reclaim_payloads();
+        let job = acquire_air_stats_job();
+        assert!(job.log.spans.capacity() >= 2);
+        assert!(job.log.bytes.capacity() >= 2);
+        assert!(!job.log.overflowed);
+        // Do not leave the intentionally tiny fixture in another test's pool.
+        drop(job);
     }
 
     #[test]
@@ -3195,7 +3876,6 @@ mod tests {
                 production_rest_refresh: false,
                 construction_rest_refresh: false,
                 economy_rest_refresh: false,
-                intel_rest_refresh: false,
                 air_bases_refresh: false,
                 air_history_refresh: false,
                 rail_refresh: false,
@@ -3226,7 +3906,6 @@ mod tests {
                 production_rest_payload: None,
                 construction_rest_payload: None,
                 economy_rest_payload: None,
-                intel_rest_payload: None,
                 air_bases_payload: None,
                 air_history_payload: None,
                 rail_payload: None,
@@ -3281,7 +3960,6 @@ mod tests {
                 production_rest_refresh: false,
                 construction_rest_refresh: false,
                 economy_rest_refresh: false,
-                intel_rest_refresh: false,
                 air_bases_refresh: false,
                 air_history_refresh: false,
                 rail_refresh: false,
@@ -3312,7 +3990,6 @@ mod tests {
                 production_rest_payload: None,
                 construction_rest_payload: None,
                 economy_rest_payload: None,
-                intel_rest_payload: None,
                 air_bases_payload: None,
                 air_history_payload: None,
                 rail_payload: None,
@@ -3349,7 +4026,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3380,7 +4056,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3458,7 +4133,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3489,7 +4163,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3548,7 +4221,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3579,7 +4251,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3653,7 +4324,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3684,7 +4354,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3761,7 +4430,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3792,7 +4460,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3866,7 +4533,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -3897,7 +4563,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -3969,7 +4634,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4000,7 +4664,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4072,7 +4735,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4103,7 +4765,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4169,7 +4830,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4200,7 +4860,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4273,7 +4932,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4304,7 +4962,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4367,7 +5024,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_pools_cover_analytic_worst_cases() {
+    fn initial_payload_capacities_cover_documented_seed_shapes() {
         use crate::extended::{
             air::AirStatsJob, characters::CharactersJob, construction::BuildingsJob,
             governance::ResearchJob, intel::RelationsJob, lexical::LexicalJob,
@@ -4386,9 +5043,8 @@ mod tests {
         // — never triggers in steady state. This is distinct from a full
         // decode queue, which takes the existing whole-frame drop plus
         // `LossBatch` gap path. A
-        // force-full hour stages every family at once; the combined live set
-        // stays under half the measured 513 MB pool peak (per-capture
-        // reports), so the split never exceeds the memory it replaces.
+        // force-full hour stages every family at once. These are seed-shape
+        // assertions, not an aggregate memory bound or a growth limit.
         let research = ResearchJob::new();
         assert!(research.tech_pool.capacity() >= 242_328 * 52);
         assert!(research.researched_pool.capacity() >= 242_328 * 16);
@@ -4437,26 +5093,9 @@ mod tests {
         let air_stats = AirStatsJob::new();
         assert!(air_stats.log.spans.capacity() >= 330 * 64);
         assert!(air_stats.log.bytes.capacity() >= 330 * 2048);
-        // Combined worst-case live set (one staged job per family, as on a
-        // force-full hour) stays under half the measured pool peak.
-        let combined = research.tech_pool.capacity()
-            + research.researched_pool.capacity()
-            + research.id_pool.capacity()
-            + relations.slot_pool.capacity()
-            + characters.bytes.capacity()
-            + projects.log.bytes.capacity()
-            + lexical.log.bytes.capacity()
-            + variants.log.bytes.capacity()
-            + buildings.log.bytes.capacity()
-            + wars.log.bytes.capacity()
-            + divisions.log.bytes.capacity()
-            + focus.log.spans.capacity()
-            + focus.log.bytes.capacity()
-            + air_stats.log.bytes.capacity();
-        assert!(combined < 256 << 20, "combined caps {combined}");
-        // The FIFO holds one lightweight job per pooled buffer by
-        // construction (see the pool-invariant test); 256 slots absorb any
-        // realistic stall with the high-water above proving the depth live.
+        // Queue capacity follows the typed-frame ownership bound. Raw spans,
+        // metadata and all three owned jobs must also be counted in memory
+        // reporting; byte arenas alone substantially undercount the live set.
         assert_eq!(BUFFERS, 256);
     }
 
@@ -4490,7 +5129,6 @@ mod tests {
                 production_rest_refresh: false,
                 construction_rest_refresh: false,
                 economy_rest_refresh: false,
-                intel_rest_refresh: false,
                 air_bases_refresh: false,
                 air_history_refresh: false,
                 rail_refresh: false,
@@ -4521,7 +5159,6 @@ mod tests {
                 production_rest_payload: None,
                 construction_rest_payload: None,
                 economy_rest_payload: None,
-                intel_rest_payload: None,
                 air_bases_payload: None,
                 air_history_payload: None,
                 rail_payload: None,
@@ -4584,7 +5221,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4615,7 +5251,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4682,7 +5317,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4712,7 +5346,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4753,6 +5386,7 @@ mod tests {
         let ctx = AirWingCopyContext {
             base: wing_test_kit::BASE,
             game_state: wing_test_kit::GAME_STATE,
+            needed: [true; 2],
         };
         let mut first = acquire_air_wing_job();
         let report = crate::extended::air::copy_air_refresh(&memory, ctx, &mut first, None);
@@ -4779,7 +5413,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4810,7 +5443,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4876,7 +5508,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -4907,7 +5538,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -4993,7 +5623,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -5024,7 +5653,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -5087,6 +5715,7 @@ mod tests {
         let air_ctx = AirWingCopyContext {
             base: air_kit::BASE,
             game_state: air_kit::GAME_STATE,
+            needed: [true; 2],
         };
         let air_report =
             crate::extended::air::copy_air_refresh(&air_memory, air_ctx, &mut air_job, None);
@@ -5194,7 +5823,6 @@ mod tests {
             production_rest_refresh: true,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -5225,7 +5853,6 @@ mod tests {
             production_rest_payload: Some(first),
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -5308,7 +5935,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: true,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -5339,7 +5965,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: Some(first),
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -5418,6 +6043,7 @@ mod tests {
         let air_ctx = AirWingCopyContext {
             base: air_kit::BASE,
             game_state: air_kit::GAME_STATE,
+            needed: [true; 2],
         };
         let mut air_job = acquire_air_wing_job();
         let air_report =
@@ -5467,7 +6093,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -5498,7 +6123,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,
@@ -5591,7 +6215,6 @@ mod tests {
             production_rest_refresh: false,
             construction_rest_refresh: false,
             economy_rest_refresh: false,
-            intel_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
             rail_refresh: false,
@@ -5622,7 +6245,6 @@ mod tests {
             production_rest_payload: None,
             construction_rest_payload: None,
             economy_rest_payload: None,
-            intel_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
             rail_payload: None,

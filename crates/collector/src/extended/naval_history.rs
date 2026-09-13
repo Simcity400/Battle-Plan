@@ -1478,10 +1478,13 @@ pub(crate) const NAVAL_PACK_N: usize = 9;
 const THEATRE_MASK: u32 = 0x3F;
 const OOB_MASK: u32 = 0x1C0;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct NavalJob {
     pub log: RawLog<NAVAL_PACK_N>,
     pub game_state: usize,
+    wing_rows: Vec<cair_wing::Row>,
+    wing_sources: Vec<ctheatre::WingMembership>,
+    wing_outcome: Option<Outcome>,
 }
 
 impl NavalJob {
@@ -1489,20 +1492,30 @@ impl NavalJob {
         Self {
             log: RawLog::new(1 << 17, 4 << 20),
             game_state: 0,
+            wing_rows: vec![cair_wing::Row::default(); 4096],
+            wing_sources: Vec::with_capacity(4096),
+            wing_outcome: None,
         }
     }
 
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
+        self.wing_sources.clear();
+        self.wing_outcome = None;
     }
 
     pub fn grow_for_next(&self) -> bool {
-        self.log.grow_for_next()
+        self.log.grow_for_next() || matches!(self.wing_outcome, Some(Outcome::Truncated { .. }))
     }
 
     pub fn grow(&mut self) {
         self.log.grow();
+        if let Some(Outcome::Truncated { len, unread_rows }) = self.wing_outcome {
+            let target = (len + unread_rows as usize).max(self.wing_rows.len() * 2);
+            self.wing_rows.resize(target, cair_wing::Row::default());
+            self.wing_sources.reserve_exact(target.saturating_sub(self.wing_sources.len()));
+        }
     }
 }
 
@@ -1994,124 +2007,44 @@ fn copy_naval_pass(
         return;
     }
     let started = qpc();
-    copy_naval_wings(&mut job.log, memory, base, game_state);
+    copy_naval_wings(job, memory, base, game_state);
     ticks[0] += qpc().saturating_sub(started).max(0) as u64;
 }
 
-/// Mirror of the wing GROUP_HANDLE reads feeding the air-theatre reverse
-/// census. Records the wing census (manager/owners/pools/wings with
-/// THEATRE_MASK) plus one GROUP_HANDLE span per wing. Takes run
-/// unconditionally; the replay derives wing membership itself. Empty air
-/// theatres still record wing handles (superset, harmless).
+/// The reverse census needs authenticated wing identities and group handles.
+/// The former mirror copied only group handles, then tried to replay the full
+/// wing walker from missing bytes. Use the existing reader into bounded,
+/// reusable storage until a complete cheaper copy contract is measured.
 fn copy_naval_wings(
-    log: &mut RawLog<NAVAL_PACK_N>,
+    job: &mut NavalJob,
     memory: &impl engine::Memory,
     base: usize,
     game_state: usize,
 ) {
-    use engine::{cair_wing, cair_wing_pool, cstrategic_air, cstrategic_air_manager};
-    let countries = match nspan(log, memory, game_state.checked_add(engine::cgame_state::COUNTRIES), 16, THEATRE_MASK) {
-        Some(start) => start,
-        None => return,
-    };
-    let links = match nspan(log, memory, game_state.checked_add(engine::cgame_state::COUNTRY_LINKS), 16, THEATRE_MASK) {
-        Some(start) => start,
-        None => return,
-    };
-    let manager_ptr = match nspan(log, memory, game_state.checked_add(engine::cgame_state::STRATEGIC_AIR_MANAGER), 8, THEATRE_MASK)
-        .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)) {
-        Some(manager_ptr) => manager_ptr,
-        None => return,
-    };
-    let _ = nspan(log, memory, Some(manager_ptr), 8, THEATRE_MASK);
-    let owners_header = match nspan(log, memory, manager_ptr.checked_add(cstrategic_air_manager::COUNTRY_AIR), 16, THEATRE_MASK) {
-        Some(start) => start,
-        None => return,
-    };
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[countries..countries + 16]);
-    let countries_array = match Array::from_header(raw, 8) {
-        Some(array) => array,
-        None => return,
-    };
-    raw.copy_from_slice(&log.bytes[links..links + 16]);
-    let links_array = match Array::from_header(raw, 4) {
-        Some(array) => array,
-        None => return,
-    };
-    raw.copy_from_slice(&log.bytes[owners_header..owners_header + 16]);
-    let owners = match Array::from_header(raw, 8) {
-        Some(array) => array,
-        None => return,
-    };
-    if owners.count == 0 || countries_array.count < 2 || links_array.count == 0 {
-        return;
-    }
-    for slot in 0..owners.count {
-        let owner_addr = owners.data.checked_add((slot as usize).saturating_mul(8));
-        let owner_pointer = match nspan(log, memory, owner_addr, 8, THEATRE_MASK)
-            .and_then(|s| usize::try_from(npool_u64(log, s)).ok()) {
-            Some(owner_pointer) => owner_pointer,
-            None => continue,
-        };
-        if owner_pointer == 0 {
-            continue;
-        }
-        let _ = nspan(log, memory, Some(owner_pointer), 8, THEATRE_MASK);
-        let pools_header = match nspan(log, memory, owner_pointer.checked_add(cstrategic_air::POOLS), 16, THEATRE_MASK) {
-            Some(start) => start,
-            None => continue,
-        };
-        let mut header = [0u8; 16];
-        header.copy_from_slice(&log.bytes[pools_header..pools_header + 16]);
-        let pools = match Array::from_header(header, 8) {
-            Some(array) => array,
-            None => continue,
-        };
-        for pool_index in 0..pools.count {
-            let pool_addr = pools.data.checked_add((pool_index as usize).saturating_mul(8));
-            let pool = match nspan(log, memory, pool_addr, 8, THEATRE_MASK)
-                .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)) {
-                Some(pool) => pool,
-                None => continue,
-            };
-            let wings_header = match nspan(log, memory, pool.checked_add(cair_wing_pool::WINGS), 16, THEATRE_MASK) {
-                Some(start) => start,
-                None => continue,
-            };
-            let mut wings_raw = [0u8; 16];
-            wings_raw.copy_from_slice(&log.bytes[wings_header..wings_header + 16]);
-            let wings = match Array::from_header(wings_raw, 8) {
-                Some(array) => array,
-                None => continue,
-            };
-            for wing_index in 0..wings.count {
-                let wing_addr = wings.data.checked_add((wing_index as usize).saturating_mul(8));
-                let wing = match nspan(log, memory, wing_addr, 8, THEATRE_MASK)
-                    .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)) {
-                    Some(wing) => wing,
-                    None => continue,
-                };
-                let _ = nspan(log, memory, wing.checked_add(cair_wing::GROUP_HANDLE), 8, THEATRE_MASK);
-                if log.overflowed {
-                    return;
-                }
+    let mut failure = None;
+    let outcome = cair_wing::walk_with(memory, base, game_state, &mut job.wing_rows,
+        |pointer, _, row| {
+            match ctheatre::read_wing_membership(memory, pointer, row) {
+                Ok(source) => job.wing_sources.push(source),
+                Err(reason) => { failure.get_or_insert(reason); }
             }
-        }
-    }
-    let _ = (base, countries_array, links_array);
+        });
+    job.wing_outcome = Some(match outcome {
+        Outcome::Rows { .. } => failure.map_or(outcome, |reason| Outcome::Unavailable { reason }),
+        _ => outcome,
+    });
 }
 
 pub(crate) fn copy_naval_refresh(
     memory: &impl engine::Memory,
     ctx: NavalCopyContext,
     first: &mut NavalJob,
-    second: Option<&mut NavalJob>,
+    mut second: Option<&mut NavalJob>,
 ) -> NavalCopyReport {
     let mut ticks = [0u64; NAVAL_PACK_N];
     copy_naval_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
     let mut matched = [true; NAVAL_PACK_N];
-    if let Some(second_job) = second {
+    if let Some(second_job) = second.as_deref_mut() {
         let mut second_ticks = [0u64; NAVAL_PACK_N];
         copy_naval_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
         for (total, extra) in ticks.iter_mut().zip(second_ticks) {
@@ -2125,8 +2058,12 @@ pub(crate) fn copy_naval_refresh(
                 raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
             *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
+        matched[5] &= matches!(first.wing_outcome, Some(Outcome::Rows { .. }))
+            && first.wing_outcome == second_job.wing_outcome
+            && first.wing_sources == second_job.wing_sources;
     }
-    let raw_ok = !first.log.overflowed;
+    let raw_ok = !first.log.overflowed
+        && second.is_none_or(|job| !job.log.overflowed);
     NavalCopyReport { raw_ok, matched, copy_ticks: ticks, raw_bytes: first.log.raw_bytes }
 }
 
@@ -2178,34 +2115,19 @@ pub(crate) fn decode_naval_payload(
     captured.air_members.outcome = bounded(first.air_members, captured.air_members.rows.len());
     captured.theatre_names.len = first.names_len;
     captured.theatre_names.required = first.names_required;
-    // Wing reverse census: replay wing walk collecting (pointer,row), then
-    // visit each through the naval source path (GROUP_HANDLE reads).
-    let mut wing_rows: Vec<cair_wing::Row> = Vec::new();
-    loop {
-        let mut collected: Vec<(usize, cair_wing::Row)> = Vec::new();
-        let outcome = cair_wing::walk_with(
-            &recorded,
-            base,
-            job.game_state,
-            &mut wing_rows,
-            |pointer, _, row| {
-                collected.push((pointer, *row));
-            },
-        );
-        match outcome {
-            Outcome::Truncated { .. } => {
-                wing_rows.resize(wing_rows.len() * 2 + 16, cair_wing::Row::default());
-                continue;
-            }
-            _ => {
-                for (pointer, row) in &collected {
-                    captured.visit_wing(&recorded, base, *pointer, row, false);
-                }
-                captured.finish_wings(outcome, false);
-                break;
-            }
-        }
-    }
+    // Preserve the complete authoritative reverse census without attempting
+    // an unrelated full wing decode from an incomplete mirror.
+    let source_len = job.wing_sources.len();
+    let copied = source_len.min(captured.wing_sources.rows.len());
+    captured.wing_sources.rows[..copied].copy_from_slice(&job.wing_sources[..copied]);
+    captured.wing_sources.outcome = match job.wing_outcome {
+        Some(Outcome::Rows { .. }) if copied < source_len => Outcome::Truncated {
+            len: copied, unread_rows: (source_len - copied) as u32,
+        },
+        Some(outcome) => outcome,
+        None => source_unavailable(),
+    };
+    captured.wings_finished[0] = true;
     decode_ticks[0] += qpc().saturating_sub(started).max(0) as u64;
     captured.raw_mode = false;
 }
@@ -2255,7 +2177,7 @@ const RAIL_MIRROR_BATCH: usize = 64;
 /// One hour of raw shared railway payload. Flat pools recycle capacities
 /// and the steady state allocates on neither thread; growth happens on the
 /// decode side only (see `crate::decode::recycle_rail_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct RailJob {
     pub log: RawLog<RAIL_N>,
     pub game_state: usize,
@@ -2742,12 +2664,12 @@ impl Captured {
         memory: &impl Memory,
         ctx: RailCopyContext,
         first: &mut RailJob,
-        second: Option<&mut RailJob>,
+        mut second: Option<&mut RailJob>,
     ) -> RailCopyReport {
         let mut ticks = [0u64; RAIL_N];
         copy_rail_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
         let mut matched = [true; RAIL_N];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let mut second_ticks = [0u64; RAIL_N];
             copy_rail_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
             for (total, extra) in ticks.iter_mut().zip(second_ticks) {
@@ -2766,7 +2688,8 @@ impl Captured {
         self.cooldowns.mismatches = usize::from(ctx.needed[0] && !matched[0]);
         self.edges.checked = ctx.needed[1];
         self.edges.mismatches = usize::from(ctx.needed[1] && !matched[1]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         RailCopyReport {
             raw_ok,
             matched,
@@ -2829,7 +2752,7 @@ const SUPREMACY_MIRROR_BATCH: usize = 32;
 /// One hour of raw supremacy payload. Flat pools recycle capacities and the
 /// steady state allocates on neither thread; growth happens on the decode
 /// side only (see `crate::decode::recycle_supremacy_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct SupremacyJob {
     pub log: RawLog<SUPREMACY_N>,
     pub game_state: usize,
@@ -3100,12 +3023,12 @@ impl Captured {
         memory: &impl Memory,
         ctx: SupremacyCopyContext,
         first: &mut SupremacyJob,
-        second: Option<&mut SupremacyJob>,
+        mut second: Option<&mut SupremacyJob>,
     ) -> SupremacyCopyReport {
         let mut ticks = [0u64; SUPREMACY_N];
         copy_supremacy_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
         let mut matched = [true; SUPREMACY_N];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let mut second_ticks = [0u64; SUPREMACY_N];
             copy_supremacy_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
             for (total, extra) in ticks.iter_mut().zip(second_ticks) {
@@ -3120,7 +3043,8 @@ impl Captured {
         // Conservative checked bookkeeping mirroring the typed path.
         self.supremacy.checked = ctx.needed[0];
         self.supremacy.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         SupremacyCopyReport {
             raw_ok,
             matched,
@@ -3173,7 +3097,7 @@ const SUNK_MASK: u32 = 0x01;
 /// One hour of raw sunk-ships payload. Flat pools recycle capacities and the
 /// steady state allocates on neither thread; growth happens on the decode
 /// side only (see `crate::decode::recycle_sunk_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct SunkJob {
     pub log: RawLog<SUNK_N>,
     pub game_state: usize,
@@ -3522,12 +3446,12 @@ impl Captured {
         memory: &impl Memory,
         ctx: SunkCopyContext,
         first: &mut SunkJob,
-        second: Option<&mut SunkJob>,
+        mut second: Option<&mut SunkJob>,
     ) -> SunkCopyReport {
         let mut ticks = [0u64; SUNK_N];
         copy_sunk_pass(first, memory, ctx.base, ctx.game_state, ctx.hour, &mut ticks);
         let mut matched = [true; SUNK_N];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let mut second_ticks = [0u64; SUNK_N];
             copy_sunk_pass(
                 second_job,
@@ -3549,7 +3473,8 @@ impl Captured {
         // Conservative checked bookkeeping mirroring the typed path.
         self.sunk.checked = ctx.needed[0];
         self.sunk.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         SunkCopyReport {
             raw_ok,
             matched,
@@ -4023,6 +3948,7 @@ mod tests {
         let mut tiny = NavalJob {
             log: crate::raw::RawLog::new(1, 1),
             game_state: 0,
+            ..Default::default()
         };
         let report = super::copy_naval_refresh(&memory, ctx, &mut tiny, None);
         assert!(!report.raw_ok);
@@ -4718,6 +4644,10 @@ pub(crate) mod naval_test_kit {
         p32(&mut bytes, LTAB + 8, 1);
         p64(&mut bytes, C0, ccountry::VTABLE_RVA as u64);
         p32(&mut bytes, C0 + ccountry::ID, 1);
+        // A valid empty wing census is different from a missing manager.
+        p64(&mut bytes, GAME_STATE + engine::cgame_state::STRATEGIC_AIR_MANAGER, 0x40000);
+        p64(&mut bytes, 0x40000, engine::cstrategic_air_manager::VTABLE_RVA as u64);
+        header(&mut bytes, 0x40000 + engine::cstrategic_air_manager::COUNTRY_AIR, 0x41000, 3);
         // Land theatres: one theatre, one group named "AB", two members.
         header(&mut bytes, C0 + ccountry::THEATRES, 0x36000, 1);
         p64(&mut bytes, 0x36000, THEATRE as u64);

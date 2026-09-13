@@ -736,7 +736,7 @@ const NAVAL_ROOT_MASK: u32 = NAVAL_COMBAT_MASK | NAVAL_PART_MASK;
 /// One hour of raw map-pack payload. Flat pools recycle capacities and the
 /// steady state allocates on neither thread; growth happens on the decode
 /// side only (see `crate::decode::recycle_map_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct MapJob {
     pub log: RawLog<MAP_PACK_N>,
     pub game_state: usize,
@@ -775,10 +775,8 @@ impl MapJob {
     /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
         self.log.grow();
-        self.order_seen
-            .reserve_exact(self.order_seen.capacity().max(1));
-        self.order_stack
-            .reserve_exact(self.order_stack.capacity().max(1));
+        crate::raw::double_capacity(&mut self.order_seen);
+        crate::raw::double_capacity(&mut self.order_stack);
     }
 }
 
@@ -2138,6 +2136,9 @@ fn copy_wing_walk(
                     continue;
                 }
                 // Row scatter exactly like the typed reader.
+                let mut region = 0;
+                let mut primary_valid = false;
+                let mut secondary_valid = false;
                 for (offset, len) in [
                     (0usize, 8),
                     (cair_wing::SECONDARY, 16),
@@ -2149,10 +2150,40 @@ fn copy_wing_walk(
                     (cair_wing::MISSION + air_mission::REGION, 8),
                     (cair_wing::COUNTRY_OVERRIDE, 4),
                 ] {
-                    let _ = mspan(log, memory, wing.checked_add(offset), len, WING_MASK);
+                    let Some(start) = mspan(log, memory, wing.checked_add(offset), len, WING_MASK)
+                    else {
+                        return;
+                    };
+                    if offset == 0 {
+                        primary_valid = base.checked_add(cair_wing::VTABLE_RVA)
+                            == usize::try_from(map_pool_u64(log, start)).ok();
+                    } else if offset == cair_wing::SECONDARY {
+                        secondary_valid = base.checked_add(cair_wing::SECONDARY_VTABLE_RVA)
+                            == usize::try_from(map_pool_u64(log, start)).ok()
+                            && map_pool_u64(log, start + 8) != 0;
+                    } else if offset == cair_wing::MISSION + air_mission::REGION {
+                        let Ok(pointer) = usize::try_from(map_pool_u64(log, start)) else {
+                            return;
+                        };
+                        region = pointer;
+                    }
                 }
                 // Mission-region authentication when non-null.
-                let _ = cstrategic_region::VTABLE_RVA;
+                if !primary_valid || !secondary_valid {
+                    return;
+                }
+                if region != 0 {
+                    for (offset, len) in [
+                        (0, 8),
+                        (cstrategic_region::SECONDARY, 8),
+                        (cstrategic_region::ID, 4),
+                    ] {
+                        if mspan(log, memory, region.checked_add(offset), len, WING_MASK).is_none()
+                        {
+                            return;
+                        }
+                    }
+                }
                 if log.overflowed {
                     return;
                 }
@@ -2435,7 +2466,14 @@ fn copy_order_walk(job: &mut MapJob, memory: &impl engine::Memory, base: usize) 
             return;
         }
         job.order_seen.push(order);
-        let _ = mspan(log, memory, Some(order), 8, ORDER_MASK);
+        let Some(identity) = mspan(log, memory, Some(order), 8, ORDER_MASK) else {
+            continue;
+        };
+        if base.checked_add(corder_instance::VTABLE_RVA)
+            != usize::try_from(map_pool_u64(log, identity)).ok()
+        {
+            continue;
+        }
         for (offset, len) in [
             (corder_instance::TYPE, 4),
             (corder_instance::OWNER, 8),
@@ -2447,14 +2485,11 @@ fn copy_order_walk(job: &mut MapJob, memory: &impl engine::Memory, base: usize) 
             let _ = mspan(log, memory, order.checked_add(offset), len, ORDER_MASK);
         }
         copy_order_vectors(log, memory, order);
-        // Successor, predecessor, member and virtual edge vectors seed
-        // further traversal; record headers and push entries.
+        // Only the two successor graphs are traversed by the typed walk.
+        // Assigned members point into units, not COrderInstance objects.
         for offset in [
             corder_instance::SUCCESSOR_DATA,
-            corder_instance::PREDECESSOR_DATA,
-            corder_instance::ASSIGNED_MEMBER_DATA,
             corder_instance::VIRTUAL_SUCCESSOR_DATA,
-            corder_instance::VIRTUAL_PREDECESSOR_DATA,
         ] {
             let header = match mspan(log, memory, order.checked_add(offset), 16, ORDER_MASK) {
                 Some(start) => start,
@@ -2539,12 +2574,12 @@ pub(crate) fn copy_map_refresh(
     memory: &impl engine::Memory,
     ctx: MapCopyContext,
     first: &mut MapJob,
-    second: Option<&mut MapJob>,
+    mut second: Option<&mut MapJob>,
 ) -> MapCopyReport {
     let mut ticks = [0u64; MAP_PACK_N];
     copy_map_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
     let mut matched = [true; MAP_PACK_N];
-    if let Some(second_job) = second {
+    if let Some(second_job) = second.as_deref_mut() {
         let mut second_ticks = [0u64; MAP_PACK_N];
         copy_map_pass(
             second_job,
@@ -2562,7 +2597,7 @@ pub(crate) fn copy_map_refresh(
             *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
     }
-    let raw_ok = !first.log.overflowed;
+    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
     MapCopyReport {
         raw_ok,
         matched,
@@ -2677,7 +2712,7 @@ const P_CONTROLLERS: u32 = 0x02;
 /// One hour of raw players payload. Flat pools recycle capacities and the
 /// steady state allocates on neither thread; growth happens on the decode
 /// side only (see `crate::decode::recycle_players_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct PlayersJob {
     pub log: RawLog<2>,
     pub game_state: usize,
@@ -3050,7 +3085,7 @@ impl MapCaptured {
         memory: &impl engine::Memory,
         ctx: PlayersCopyContext,
         first: &mut PlayersJob,
-        second: Option<&mut PlayersJob>,
+        mut second: Option<&mut PlayersJob>,
     ) -> PlayersCopyReport {
         let started = qpc();
         first.clear();
@@ -3059,7 +3094,7 @@ impl MapCaptured {
         let mut ticks = [0u64; 2];
         ticks[0] = elapsed(started);
         let mut matched = [true; 2];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let second_started = qpc();
             second_job.clear();
             second_job.game_state = ctx.game_state;
@@ -3077,7 +3112,7 @@ impl MapCaptured {
         self.players.mismatches = usize::from(ctx.needed[0] && !matched[0]);
         self.human_controllers.checked = ctx.needed[1];
         self.human_controllers.mismatches = usize::from(ctx.needed[1] && !matched[1]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
         PlayersCopyReport {
             raw_ok,
             matched,

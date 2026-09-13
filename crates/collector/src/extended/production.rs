@@ -686,7 +686,7 @@ const M_P_CENSUS: u32 = 0xFF;
 /// One hour of raw production-rest payload. Flat pools recycle capacities
 /// and the steady state allocates on neither thread; growth happens on the
 /// decode side only (see `crate::decode::recycle_production_rest_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct ProductionRestJob {
     pub log: RawLog<8>,
     pub game_state: usize,
@@ -726,7 +726,7 @@ impl ProductionRestJob {
     /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
         self.log.grow();
-        self.census.reserve_exact(self.census.capacity().max(1));
+crate::raw::double_capacity(&mut self.census);
     }
 }
 
@@ -1476,7 +1476,7 @@ impl Captured {
         memory: &impl Memory,
         ctx: ProductionRestCopyContext,
         first: &mut ProductionRestJob,
-        second: Option<&mut ProductionRestJob>,
+        mut second: Option<&mut ProductionRestJob>,
     ) -> ProductionRestCopyReport {
         let started = qpc();
         first.clear();
@@ -1485,7 +1485,7 @@ impl Captured {
         let mut ticks = [0u64; 8];
         ticks[0] = elapsed(started);
         let mut matched = [true; 8];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let second_started = qpc();
             second_job.clear();
             second_job.game_state = ctx.game_state;
@@ -1518,7 +1518,8 @@ impl Captured {
         self.deployment_equipment.mismatches = usize::from(ctx.needed[6] && !matched[6]);
         self.license_records.checked = ctx.needed[7];
         self.license_records.mismatches = usize::from(ctx.needed[7] && !matched[7]);
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         ProductionRestCopyReport {
             raw_ok,
             matched,
@@ -2033,7 +2034,7 @@ const M_UPGRADES: u32 = 0x08;
 /// One refresh of raw variant detail payload. Flat pools recycle capacities
 /// and the steady state allocates on neither thread; growth happens on the
 /// decode side only (see `crate::decode::recycle_variants_job`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct VariantsJob {
     pub log: RawLog<4>,
 }
@@ -2344,7 +2345,7 @@ impl Captured {
         ctx: VariantsCopyContext,
         variants: &Sources<'_, cequipment_variant::RegistryRow>,
         first: &mut VariantsJob,
-        second: Option<&mut VariantsJob>,
+        mut second: Option<&mut VariantsJob>,
     ) -> VariantsCopyReport {
         let started = qpc();
         // A failed or incomplete census blocks every detail check exactly
@@ -2366,7 +2367,7 @@ impl Captured {
         let mut ticks = [0u64; 4];
         ticks[0] = elapsed(started);
         let mut matched = [true; 4];
-        if let Some(second_job) = second {
+        if let Some(second_job) = second.as_deref_mut() {
             let second_started = qpc();
             if let Ok(source) = complete_source(variants.second, variants.second_outcome) {
                 copy_variant_definitions(&mut second_job.log, memory, source);
@@ -2417,7 +2418,8 @@ impl Captured {
                 }
             }
         }
-        let raw_ok = !first.log.overflowed;
+        let raw_ok = !first.log.overflowed
+            && second.is_none_or(|job| !job.log.overflowed);
         VariantsCopyReport {
             raw_ok,
             matched,

@@ -364,6 +364,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     let mut hook =
         unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }?;
     let shared = Arc::new(Shared::new(base, hook.trampoline(), frequency as u64));
+    let _payload_pools = decode::prepare_payload_pools();
     let spool_id = Arc::new(AtomicU32::new(0));
     if config.cancel_file.exists() || detach.signaled() {
         return Err("recording cancelled before hook installation".into());
@@ -379,10 +380,10 @@ fn run(module: HMODULE) -> Result<(), String> {
             spool_loop(&spool_shared, &config, session, processor, &spool_status)
         })
         .map_err(|e| e.to_string())?;
+    let mut installation_error = decode::start_worker().err();
     SHARED.store(Arc::as_ptr(&shared).cast_mut(), Ordering::Release);
     let deadline = Instant::now() + Duration::from_secs(15);
-    let mut installation_error = None;
-    loop {
+    while installation_error.is_none() {
         match hook.set_enabled(true) {
             Ok(true) => break,
             Ok(false) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),

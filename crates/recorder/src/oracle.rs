@@ -297,6 +297,10 @@ fn lexical_tokens<'a>(frame: &'a DecodedFrame, report: &mut Report) -> io::Resul
 
 #[derive(Debug, Default)]
 struct Report {
+    /// Positive game-thread costs identify refresh groups actually walked,
+    /// including forced branch/keyframe refreshes outside their usual slot.
+    /// A reconstructed snapshot alone is not proof: it may contain cached rows.
+    observed_refresh_slots: BTreeSet<u32>,
     countries: usize,
     provinces: usize,
     states: usize,
@@ -373,6 +377,14 @@ impl Report {
 
     fn record_tables(&mut self, frame: &DecodedFrame) {
         self.recorded_tables = recorded_table_counts(frame);
+        self.observed_refresh_slots.clear();
+        for table in TableId::ALL {
+            if frame.metrics.table_ns[table.index()] != 0
+                && let Some(slot) = replay::cadence::refresh_slot(table)
+            {
+                self.observed_refresh_slots.insert(slot);
+            }
+        }
         for table in [TableId::LexicalTokens, TableId::ScriptVariables] {
             if let TableView::Unavailable { reason } = &frame.tables[table.index()] {
                 self.limitation(
@@ -381,6 +393,12 @@ impl Report {
                 );
             }
         }
+    }
+
+    fn refresh_is_current(&self, table: TableId, hour: Hour) -> bool {
+        replay::cadence::is_refresh(table, hour)
+            || replay::cadence::refresh_slot(table)
+                .is_some_and(|slot| self.observed_refresh_slots.contains(&slot))
     }
 
     fn compared(&mut self, table: &str, rows: usize) {
@@ -2074,7 +2092,7 @@ fn compare_relation_opinions(
     report: &mut Report,
 ) -> io::Result<()> {
     // Tier-4 slot1; cadence table is the single source of truth.
-    if !replay::cadence::is_refresh(replay::rows::TableId::RelationOpinions, frame.hour) {
+    if !report.refresh_is_current(replay::rows::TableId::RelationOpinions, frame.hour) {
         report.limitation(
             "RelationOpinions refreshed every 4th hour; off-hours replay holds last refresh",
             format!(
@@ -2149,7 +2167,7 @@ fn compare_relation_tuples(
     report: &mut Report,
 ) -> io::Result<()> {
     // Tier-4 slot1; cadence table is the single source of truth.
-    if !replay::cadence::is_refresh(replay::rows::TableId::RelationTuples, frame.hour) {
+    if !report.refresh_is_current(replay::rows::TableId::RelationTuples, frame.hour) {
         report.limitation(
             "RelationTuples refreshed every 4th hour; off-hours replay holds last refresh",
             format!(
@@ -4699,6 +4717,29 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         });
         let report = tuple_report(&raw, &save, named);
         assert!(report.failed_comparisons["RelationTuples"].contains("outside 0/1"));
+    }
+
+    #[test]
+    fn forced_off_slot_refresh_is_compared_even_when_rows_are_unchanged() {
+        let (mut frame, mut save, _, _) = relation_fixture();
+        frame.hour = 0;
+        frame.metrics.table_ns[TableId::RelationOpinions.index()] = 1;
+        saved_relation(&mut save, b"GER", b"D01", Some(5), &[]);
+        opinions(
+            &mut frame,
+            vec![replay::rows::RelationOpinionRow {
+                owner_country: 102,
+                target_country: 201,
+                opinion: 999,
+            }],
+        );
+        let mut report = Report::default();
+        report.record_tables(&frame);
+        assert!(report.refresh_is_current(TableId::RelationTuples, frame.hour));
+        assert!(!report.refresh_is_current(TableId::ResearchSlots, frame.hour));
+        let context = country_context(&frame).unwrap();
+        compare_relation_opinions(&frame, &save, &context.links, &mut report).unwrap();
+        assert!(!report.differences.is_empty());
     }
 
     #[test]
