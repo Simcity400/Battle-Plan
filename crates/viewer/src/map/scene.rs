@@ -34,8 +34,17 @@ use super::{
 pub const SAMPLE_COUNT: u32 = 4;
 /// Depth buffer format; the engine's exact format does not reach a pixel.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-/// Egui expects gamma-encoded RGB in an unorm view, and the game's back buffer
-/// is not sRGB either (R1 section 4.4), so the same bytes serve both.
+// colour: the output stage. Egui expects gamma-encoded RGB in an unorm view,
+// and the game's back buffer is not sRGB either, so the same bytes serve both.
+// R1 section 4.4 inferred that from the shaders; the binary settles it. The
+// (`clausewitz/pdx_gfx/gfx_dx11.cpp`), which fills a `DXGI_SWAP_CHAIN_DESC1`
+// whose `Format` field is the literal `0x1c` = 28 = `DXGI_FORMAT_R8G8B8A8_UNORM`
+// (not 29, the `_SRGB` twin) and hands it to `IDXGIFactory2::CreateSwapChainForHwnd`
+// (vtable +0x78); the back-buffer render-target view is then created with a null
+// descriptor, so it inherits that unorm format. Encoding the final colour with
+// the sRGB transfer function was measured on both reference pairs and is far
+// worse: the daylight pair goes from mae 16.74 to 30.24 and the night pair from
+// 36.05 to 54.60.
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// The frame constants plus the two viewer-only uniform blocks.

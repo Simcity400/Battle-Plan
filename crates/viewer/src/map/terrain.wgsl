@@ -91,6 +91,11 @@ fn terrain_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     let lod = clamp(mipmap_level(tile_repeat) - 0.5, 0.0, 6.0);
     let mip_texels = pow(2.0, ATLAS_TEXEL_POW2_EXPONENT - lod);
 
+    // `pdxmap.shader:247`, verbatim. The map's world z runs opposite to the
+    // bitmap's rows, so the `.g` channel that lands in world z could have needed
+    // a sign flip; it does not. Negating it was measured on both reference pairs
+    // and is much worse (daylight mae 16.74 to 23.06, night 36.05 to 58.49), and
+    // the engine applies no negation either.
     var normal = normalize(textureSample(height_normal, linear_wrap, input.uv2).rbg - vec3<f32>(0.5));
 
     let uv_w = sample_terrain_uv(index.index_u.w, index.index_v.w, tile_repeat, mip_texels);

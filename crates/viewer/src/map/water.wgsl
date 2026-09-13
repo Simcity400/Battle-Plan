@@ -137,6 +137,14 @@ fn water_main(input: WaterVertex) -> @location(0) vec4<f32> {
     if det > 0.0 {
         spec = exp(-0.5 * e / det) / sqrt(det);
     }
+    // Re-derived against `pdxwater.shader:302-309` and `SampleWater`/`BlendLEAN`
+    // (`standardfuncsgfx.fxh:1165-1241`) while hunting the sea's brightness gap,
+    // and measured: over the open North Sea at the daylight reference frame the
+    // whole specular term reaches only 1/255 of the frame, because `vGlossiness`
+    // = spec/9 * (1 - specMap) is a fraction and the `water` effect declares no
+    // defines, so `_Glossiness` is the Phong exponent directly and
+    // `pow(NdotH, <1)` never concentrates a highlight. The sea's shortfall is
+    // not here.
 
     var refractive_uv = (input.screen_pos.xy / input.screen_pos.w) * 0.5 + vec2<f32>(0.5);
     refractive_uv.y = 1.0 - refractive_uv.y;
