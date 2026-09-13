@@ -101,8 +101,8 @@ impl Camera {
     /// `None` when the point is at or behind the eye plane, where the
     /// perspective divide has no meaning.
     // The `names` and `icons` passes anchor their screen-space sprites with
-    // this (R1 "Map-icon anchoring"); no pass in this slice draws in 2D yet.
-    #[allow(dead_code)]
+    // this (R1 "Map-icon anchoring"); a screen-space pass wants
+    // [`project_wrapped`], which is this with the map's x seam accounted for.
     pub fn project(&self, world: [f32; 3], viewport: [u32; 2]) -> Option<[f32; 2]> {
         let m = self.view_projection(viewport);
         let mut clip = [0.0f32; 4];
@@ -119,6 +119,49 @@ impl Camera {
             (clip[0] / clip[3] * 0.5 + 0.5) * viewport[0].max(1) as f32,
             (0.5 - clip[1] / clip[3] * 0.5) * viewport[1].max(1) as f32,
         ])
+    }
+
+    /// Projects a world anchor, trying the map's two x-seam copies as well.
+    ///
+    /// The map wraps at [`MAP_SIZE_X`], and the world passes cover a view that
+    /// runs past either edge by drawing their geometry again a map width away
+    /// (`map::border_pass::wrap_offsets`). A screen-space icon has no geometry
+    /// to copy, so it is the anchor that moves instead: a province just across
+    /// the seam from the camera is seen a whole map width from where its
+    /// `map/unitstacks.txt` position puts it, and projecting that position
+    /// unshifted drops the icon off the frame entirely.
+    ///
+    /// The three candidates are the anchor and the anchor shifted by plus and
+    /// minus a map width. **At most one is kept** — see [`wrap_offset`] — so an
+    /// anchor never draws twice. `None` only when no candidate projects at all.
+    ///
+    /// [`wrap_offset`]: Camera::wrap_offset
+    pub fn project_wrapped(&self, world: [f32; 3], viewport: [u32; 2]) -> Option<[f32; 2]> {
+        let offset = self.wrap_offset(world, viewport);
+        self.project([world[0] + offset, world[1], world[2]], viewport)
+    }
+
+    /// Which of the map's three x-seam copies of `world` the frame sees, as a
+    /// world x translation of `0`, `-MAP_SIZE_X` or `MAP_SIZE_X`.
+    ///
+    /// The copy kept is the one whose projection lands nearest the middle of
+    /// the viewport, which is the one the visible rectangle reaches: the other
+    /// two are a whole map width away in world x and so at least the width of
+    /// the frame away on screen at every height the engine allows. `0` when no
+    /// candidate projects at all, where the caller's own projection fails too.
+    ///
+    /// A caller that projects two anchors and reads the direction between them
+    /// needs both on the *same* copy, which is what this exposes.
+    pub fn wrap_offset(&self, world: [f32; 3], viewport: [u32; 2]) -> f32 {
+        let middle = viewport[0].max(1) as f32 * 0.5;
+        [0.0, -MAP_SIZE_X, MAP_SIZE_X]
+            .into_iter()
+            .filter_map(|offset| {
+                let screen = self.project([world[0] + offset, world[1], world[2]], viewport)?;
+                Some((offset, (screen[0] - middle).abs()))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map_or(0.0, |(offset, _)| offset)
     }
 
     /// Where a screen pixel's view ray meets the water plane, as world `(x, z)`.
@@ -483,6 +526,60 @@ mod tests {
         assert!(camera.height > MIN_HEIGHT && camera.height < MAX_HEIGHT);
         let rect = camera.visible_ground(VIEWPORT, 0.0).unwrap();
         assert!(rect[0] <= 0.0 && rect[1] <= 0.0 && rect[2] >= 400.0 && rect[3] >= 200.0);
+    }
+
+    #[test]
+    fn an_anchor_across_the_seam_is_projected_through_the_wrap_copy() {
+        // Just west of the seam, so the frame runs past x = MAP_SIZE_X.
+        let camera = Camera {
+            center: [MAP_SIZE_X - 32.0, 1000.0],
+            height: 600.0,
+        };
+        // A province 40 units east of the seam: its own x is 40, but it is
+        // seen at 5672, which only the +MAP_SIZE_X candidate reaches.
+        let anchor = [40.0, WATER_HEIGHT, 1000.0];
+        let plain = camera.project(anchor, VIEWPORT).unwrap();
+        let wrapped = camera.project_wrapped(anchor, VIEWPORT).unwrap();
+        assert!(
+            plain[0] < 0.0,
+            "the unshifted anchor is off the frame: {plain:?}"
+        );
+        let expected = camera
+            .project([40.0 + MAP_SIZE_X, WATER_HEIGHT, 1000.0], VIEWPORT)
+            .unwrap();
+        assert_eq!(wrapped, expected);
+        assert!(
+            wrapped[0] > 0.0 && wrapped[0] < VIEWPORT[0] as f32,
+            "{wrapped:?}"
+        );
+    }
+
+    #[test]
+    fn an_anchor_across_the_left_seam_is_projected_through_the_wrap_copy() {
+        let camera = Camera {
+            center: [40.0, 1000.0],
+            height: 600.0,
+        };
+        let anchor = [MAP_SIZE_X - 40.0, WATER_HEIGHT, 1000.0];
+        let wrapped = camera.project_wrapped(anchor, VIEWPORT).unwrap();
+        let expected = camera
+            .project([-40.0, WATER_HEIGHT, 1000.0], VIEWPORT)
+            .unwrap();
+        assert_eq!(wrapped, expected);
+        assert!(
+            wrapped[0] > 0.0 && wrapped[0] < VIEWPORT[0] as f32,
+            "{wrapped:?}"
+        );
+    }
+
+    #[test]
+    fn an_anchor_the_camera_already_sees_keeps_its_own_position() {
+        for (world, _) in FITTED_CITIES {
+            assert_eq!(
+                REFERENCE.project_wrapped(world, VIEWPORT),
+                REFERENCE.project(world, VIEWPORT)
+            );
+        }
     }
 
     #[test]

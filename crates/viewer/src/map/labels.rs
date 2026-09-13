@@ -373,7 +373,7 @@ pub fn build(
         let Some(anchor) = inputs.content.anchors.get(&province.id) else {
             continue;
         };
-        let Some(screen) = inputs.camera.project(*anchor, inputs.viewport) else {
+        let Some(screen) = inputs.camera.project_wrapped(*anchor, inputs.viewport) else {
             continue;
         };
         let origin = [
