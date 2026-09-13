@@ -30,6 +30,7 @@ use std::{
 
 use installed_content::map::{MapData, ProvinceKind};
 use replay::{
+    BranchId, Hour,
     frame::DecodedFrame,
     rows::{CountryRow, ProvinceRow, tables},
 };
@@ -163,8 +164,12 @@ impl PoliticalLayers {
 /// built (section "Refresh" of algorithm A: the replay never interpolates, so an hour boundary is
 /// the only thing that can change the field). Nothing else invalidates it: the country colours come
 /// from static content and the camera reaches the field only through the shader.
+///
+/// The window calls `ensure` on every repaint, so a frame that is already on screen must not even
+/// pay for the row fingerprint; the branch, hour and mode it was built at answer that case first.
 #[derive(Default)]
 pub struct PoliticalCache {
+    at: Option<(BranchId, Hour, Mode)>,
     key: Option<FrameKey>,
     layers: Option<PoliticalLayers>,
 }
@@ -178,14 +183,22 @@ impl PoliticalCache {
     ///
     /// Returns whether a rebuild happened, which is what the caller uploads on.
     pub fn ensure(&mut self, map: &MapData, frame: &DecodedFrame, mode: Mode) -> io::Result<bool> {
+        let at = (frame.branch, frame.hour, mode);
+        if self.at == Some(at) && self.layers.is_some() {
+            return Ok(false);
+        }
         let key = FrameKey::new(frame, mode)?;
         if self.key.as_ref() == Some(&key) && self.layers.is_some() {
+            // A different hour that changed no province: keep the textures, note the new position.
+            self.at = Some(at);
             return Ok(false);
         }
         // A failed rebuild must not leave a stale frame looking current.
+        self.at = None;
         self.key = None;
         self.layers = None;
         let layers = build(map, frame, mode)?;
+        self.at = Some(at);
         self.key = Some(key);
         self.layers = Some(layers);
         Ok(true)
@@ -626,6 +639,8 @@ mod tests {
         let mut cache = PoliticalCache::new();
         assert!(cache.ensure(&map, &occupied(), Mode::Controller).unwrap());
         assert!(cache.layers().is_some());
+        // The very same frame costs nothing at all, not even the row fingerprint.
+        assert!(!cache.ensure(&map, &occupied(), Mode::Controller).unwrap());
         // The same rows at a different hour are the same political frame.
         let mut later = occupied();
         later.hour += 1;
@@ -633,15 +648,21 @@ mod tests {
         // The mode is part of the key.
         assert!(cache.ensure(&map, &later, Mode::Owner).unwrap());
         assert!(!cache.ensure(&map, &occupied(), Mode::Owner).unwrap());
-        // A changed controller is a rebuild even at the same hour.
-        let liberated = frame(vec![
+        // A changed controller at the next hour is a rebuild.
+        let mut liberated = frame(vec![
             province(1, 10, 100, 100),
             province(2, 10, 100, 100),
             province(3, 11, 100, 100),
             province(4, 11, 100, 100),
             province(5, 0, 0, 0),
         ]);
+        liberated.hour = occupied().hour + 2;
         assert!(cache.ensure(&map, &liberated, Mode::Owner).unwrap());
+        // A different branch is a different frame even at the same hour.
+        let mut forked = occupied();
+        forked.branch += 1;
+        forked.hour = liberated.hour;
+        assert!(cache.ensure(&map, &forked, Mode::Owner).unwrap());
     }
 
     #[test]
@@ -649,7 +670,8 @@ mod tests {
         let map = map();
         let mut cache = PoliticalCache::new();
         cache.ensure(&map, &occupied(), Mode::Controller).unwrap();
-        let broken = frame(vec![province(99, 10, 100, 100)]);
+        let mut broken = frame(vec![province(99, 10, 100, 100)]);
+        broken.hour = occupied().hour + 1;
         assert!(cache.ensure(&map, &broken, Mode::Controller).is_err());
         assert!(cache.layers().is_none());
         // The next good frame is built again rather than served from the cache.
