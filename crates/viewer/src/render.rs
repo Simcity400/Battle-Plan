@@ -18,11 +18,11 @@ use crate::map::{
     // borders
     border_pass::{BorderAssets, StraitVertex},
     borders::BorderMeshes,
-    camera::Camera,
-    frame::DayNight,
     // political fill
     political::PoliticalLayers,
-    scene::{OUTPUT_FORMAT, Scene, extent, invalid},
+    scene::{OUTPUT_FORMAT, Request, Scene, extent, invalid},
+    // names
+    sprites::MapIcons,
     textures::MapAssets,
 };
 
@@ -238,6 +238,11 @@ pub struct DumpReport {
     pub quads: u32,
     /// Grid step in map pixels.
     pub step: f32,
+    // names
+    /// Name-layer vertices and icon quads the frame drew.
+    pub overlay: (u32, u32),
+    /// Font and sprite pages uploaded for the icon layer.
+    pub icon_pages: usize,
 }
 
 /// Renders one frame headlessly through the same [`Scene`] the window uses.
@@ -245,13 +250,13 @@ pub fn dump_png(
     assets: &MapAssets,
     // political fill + borders
     layers: MapLayers<'_>,
-    camera: Camera,
-    day_night: DayNight,
-    size: [u32; 2],
+    // names
+    icons: &MapIcons,
+    request: Request<'_>,
     path: &Path,
     banner: Option<&str>,
 ) -> io::Result<DumpReport> {
-    camera.validate()?;
+    request.camera.validate()?;
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = instance
@@ -268,7 +273,7 @@ pub fn dump_png(
             .request_device(&device_descriptor(&adapter))
             .await
             .map_err(io::Error::other)?;
-        let mut scene = Scene::new(&device, &queue, assets)?;
+        let mut scene = Scene::new(&device, &queue, assets, icons)?;
         // political fill + borders
         let textures = &layers.political.textures;
         scene.set_gradient_textures(
@@ -289,7 +294,7 @@ pub fn dump_png(
         scene.set_land_classes(&device, &layers.political.regions)?;
         // A first frame warms the pipeline caches so the timing below measures
         // the steady-state cost the window pays.
-        scene.render(&device, &queue, size, camera, day_night, 0.0)?;
+        scene.render(&device, &queue, request)?;
         device
             .poll(wgpu::PollType::Wait {
                 submission_index: None,
@@ -297,8 +302,9 @@ pub fn dump_png(
             })
             .map_err(io::Error::other)?;
         let start = std::time::Instant::now();
-        // The animation time is 0 so a headless dump is deterministic.
-        scene.render(&device, &queue, size, camera, day_night, 0.0)?;
+        // The animation time is 0 and the overlay is the same one, so a
+        // headless dump is deterministic.
+        scene.render(&device, &queue, request)?;
         device
             .poll(wgpu::PollType::Wait {
                 submission_index: None,
@@ -316,6 +322,9 @@ pub fn dump_png(
             render_seconds,
             quads: grid.quads(),
             step: grid.step,
+            // names
+            overlay: scene.overlay_counts(),
+            icon_pages: scene.icon_page_count(),
         })
     })
 }

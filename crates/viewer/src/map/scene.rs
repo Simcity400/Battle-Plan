@@ -24,6 +24,11 @@ use super::{
     },
     water::{WaterInputs, WaterPass},
 };
+// names
+use super::{
+    name_pass::{NamePass, Placements},
+    sprites::{Batch, IconTextures, MapIcons, SpritePass},
+};
 
 /// `multi_sampling=4` in the reference profile (R1 section 0).
 pub const SAMPLE_COUNT: u32 = 4;
@@ -188,11 +193,51 @@ pub struct Scene {
     /// Kept so the border pass can be built after the scene, once the document has traced it.
     globals_layout: wgpu::BindGroupLayout,
     borders: Option<BorderPass>,
+    // names
+    icon_textures: IconTextures,
+    name_pass: NamePass,
+    sprite_pass: SpritePass,
+    empty_batch: Batch,
+    empty_placements: Placements,
+}
+
+/// One frame's worth of arguments to [`Scene::render`].
+#[derive(Clone, Copy)]
+pub struct Request<'a> {
+    /// Render target size in device pixels.
+    pub size: [u32; 2],
+    pub camera: Camera,
+    pub day_night: DayNight,
+    /// `vGlobalTime`, which drives the water animation.
+    pub animation_time: f32,
+    // names
+    pub overlay: Overlay<'a>,
+}
+
+// names
+/// What the two overlay passes draw on top of the world passes this frame.
+///
+/// Both are built by the caller, which owns the camera the labels were
+/// projected with, so the overlay and the frame it is drawn into always agree.
+#[derive(Clone, Copy, Default)]
+pub struct Overlay<'a> {
+    /// The placed country and state names, in world space.
+    pub names: Option<&'a Placements>,
+    /// The integrated cross-fade, country first (R2 section 4.5).
+    pub layer_alpha: [f32; 2],
+    /// Screen-space icon quads, in the order the caller pushed them.
+    pub sprites: Option<&'a Batch>,
 }
 
 impl Scene {
     /// Uploads every game texture and builds both pipelines.
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, assets: &MapAssets) -> io::Result<Self> {
+    // names: `icons` was added for the name and icon layers.
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        assets: &MapAssets,
+        icons: &MapIcons,
+    ) -> io::Result<Self> {
         if !device
             .features()
             .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
@@ -289,6 +334,11 @@ impl Scene {
             &[0, 0, 0, 0],
         )?;
 
+        // names
+        let icon_textures = IconTextures::new(device, queue, icons)?;
+        let name_pass = NamePass::new(device, &globals_layout, &icon_textures, OUTPUT_FORMAT)?;
+        let sprite_pass = SpritePass::new(device, &icon_textures, OUTPUT_FORMAT)?;
+
         let mut scene = Self {
             globals,
             globals_bind_group,
@@ -327,6 +377,12 @@ impl Scene {
             // borders
             globals_layout,
             borders: None,
+            // names
+            icon_textures,
+            name_pass,
+            sprite_pass,
+            empty_batch: Batch::default(),
+            empty_placements: Placements::default(),
         };
         scene.rebind_terrain(device);
         Ok(scene)
@@ -479,16 +535,21 @@ impl Scene {
         }
     }
 
-    /// Draws terrain, sea bed, the refraction copy and the water plane.
+    /// Draws terrain, the sea bed, the refraction copy, the water plane and
+    /// the border meshes, and after them the two overlay layers of [`Overlay`].
     pub fn render(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        size: [u32; 2],
-        camera: Camera,
-        day_night: DayNight,
-        animation_time: f32,
+        request: Request<'_>,
     ) -> io::Result<()> {
+        let Request {
+            size,
+            camera,
+            day_night,
+            animation_time,
+            overlay,
+        } = request;
         camera.validate()?;
         validate_size(size, device.limits().max_texture_dimension_2d)?;
         if self.targets.as_ref().is_none_or(|t| t.size != size) {
@@ -513,6 +574,21 @@ impl Scene {
                 // The half-pixel offset is zero: wgpu samples at texel centres.
                 time_half_pixel: [animation_time, 0.0, 0.0, 0.0],
             }),
+        );
+        // names: both overlay passes rebuild their vertex buffers before the
+        // frame's encoder starts, because they write through the queue.
+        self.name_pass.upload(
+            device,
+            queue,
+            overlay.names.unwrap_or(&self.empty_placements),
+            camera,
+            overlay.layer_alpha,
+        );
+        self.sprite_pass.upload(
+            device,
+            queue,
+            overlay.sprites.unwrap_or(&self.empty_batch),
+            size,
         );
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") });
@@ -540,6 +616,11 @@ impl Scene {
                 },
             );
         }
+        // names: the world-space name layer over the world passes, then the
+        // screen-space icon layer last of all (R2 5.5: the icon layer wins).
+        self.name_pass
+            .draw(&mut encoder, targets, &self.globals_bind_group);
+        self.sprite_pass.draw(&mut encoder, targets);
         queue.submit([encoder.finish()]);
         Ok(())
     }
@@ -560,6 +641,17 @@ impl Scene {
 
     pub fn view(&self) -> Option<&wgpu::TextureView> {
         self.targets.as_ref().map(Targets::output_view)
+    }
+
+    // names
+    /// Name-layer vertices and icon quads the last frame drew, for reporting.
+    pub fn overlay_counts(&self) -> (u32, u32) {
+        (self.name_pass.vertex_count(), self.sprite_pass.quad_count())
+    }
+
+    /// Icon pages uploaded once per scene, for reporting.
+    pub fn icon_page_count(&self) -> usize {
+        self.icon_textures.page_count()
     }
 }
 

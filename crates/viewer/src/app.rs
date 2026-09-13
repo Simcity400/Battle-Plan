@@ -9,6 +9,12 @@ use crate::{
         scene::Scene,
     },
 };
+// names
+use crate::map::{
+    labels::LabelReport,
+    name_pass::{LayerFade, Placements},
+    scene::{Overlay, Request},
+};
 use eframe::{egui, wgpu};
 use replay::{branches::Parentage, container::SeekResult, frame::TableView, rows::TableId};
 use std::{
@@ -41,6 +47,12 @@ pub struct Viewer {
     political: PoliticalCache,
     /// Cleared with the scene: the border geometry has to be uploaded into a new one.
     borders_uploaded: bool,
+    // names
+    placements: Option<Placements>,
+    placements_at: Option<(replay::BranchId, i32, bool)>,
+    fade: LayerFade,
+    last_frame: Instant,
+    label_report: LabelReport,
 }
 
 impl Viewer {
@@ -51,6 +63,10 @@ impl Viewer {
         error: Option<String>,
     ) -> Self {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
+        // names: the cross-fade starts already settled at the opening height.
+        let camera_height = options
+            .camera
+            .map_or(crate::map::camera::MAX_HEIGHT, |camera| camera.height);
         let mut viewer = Self {
             game_text: config.game_dir.to_string_lossy().into_owned(),
             user_text: config.user_dir.to_string_lossy().into_owned(),
@@ -74,6 +90,12 @@ impl Viewer {
             // political fill
             political: PoliticalCache::new(),
             borders_uploaded: false,
+            // names
+            placements: None,
+            placements_at: None,
+            fade: LayerFade::instant(camera_height),
+            last_frame: Instant::now(),
+            label_report: LabelReport::default(),
         };
         if !viewer.settings
             && let Some(path) = viewer.options.replay.clone()
@@ -118,6 +140,9 @@ impl Viewer {
         self.playing = false;
         self.camera = self.options.camera;
         self.camera_manual = self.options.camera.is_some();
+        // names
+        self.placements = None;
+        self.placements_at = None;
     }
 
     fn poll(&mut self) {
@@ -421,8 +446,14 @@ impl Viewer {
             .ok_or("WGPU renderer is unavailable")?;
         if self.scene.is_none() {
             self.scene = Some(
-                Scene::new(&state.device, &state.queue, &document.assets)
-                    .map_err(|error| error.to_string())?,
+                Scene::new(
+                    &state.device,
+                    &state.queue,
+                    &document.assets,
+                    // names
+                    &document.icons,
+                )
+                .map_err(|error| error.to_string())?,
             );
             // political fill: a fresh scene holds no uploaded layers or geometry.
             self.political = PoliticalCache::new();
@@ -493,15 +524,44 @@ impl Viewer {
                 camera.zoom((scroll * 0.002).exp(), physical(pointer), pixels);
             }
         }
+        // names: the engine integrates the layer cross-fade by the frame delta
+        // and clamps to [0, 1], so it takes one second whatever the zoom speed.
+        let camera = *camera;
+        let delta = self.last_frame.elapsed().as_secs_f32();
+        self.last_frame = Instant::now();
+        self.fade = self.fade.step(camera.height, delta);
+        let states = LayerFade::wants_states(camera.height) || self.fade.state > 0.0;
+        let names_key = (document.playback.branch(), document.playback.hour(), states);
+        if self.placements_at != Some(names_key) {
+            match document.place_names(states) {
+                Ok(placements) => {
+                    self.placements = Some(placements);
+                    self.placements_at = Some(names_key);
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        let (label_batch, label_report) = document
+            .label_batch(camera, pixels)
+            .map_err(|error| error.to_string())?;
+        self.label_report = label_report;
         let scene = self.scene.as_mut().unwrap();
         scene
             .render(
                 &state.device,
                 &state.queue,
-                pixels,
-                *camera,
-                DayNight::at_hour(document.playback.hour()),
-                self.started.elapsed().as_secs_f32(),
+                Request {
+                    size: pixels,
+                    camera,
+                    day_night: DayNight::at_hour(document.playback.hour()),
+                    animation_time: self.started.elapsed().as_secs_f32(),
+                    // names
+                    overlay: Overlay {
+                        names: self.placements.as_ref(),
+                        layer_alpha: self.fade.as_array(),
+                        sprites: Some(&label_batch),
+                    },
+                },
             )
             .map_err(|e| e.to_string())?;
         if self.generation != scene.generation() {
@@ -568,7 +628,10 @@ impl eframe::App for Viewer {
                     self.camera = None;
                     self.camera_manual = false;
                 }
-                ui.weak("Omniscient · Terrain, water, political fill and borders");
+                // names: the header names every layer that reaches a pixel.
+                ui.weak(
+                    "Omniscient · Terrain, water, political fill, borders, names and labels",
+                );
             });
             ui.add_space(5.0);
             if let Some(error) = &self.error {

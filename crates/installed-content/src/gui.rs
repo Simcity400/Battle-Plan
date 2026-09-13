@@ -82,6 +82,27 @@ pub fn find_any<'a>(document: &'a Document, kinds: &[&str], name: &str) -> Optio
     kinds.iter().find_map(|kind| find(document, kind, name))
 }
 
+/// Finds an element of a kind by its `name` at any depth **below** `items`.
+///
+/// A `.gui` file reuses child names across windows — `mapicons.gui` has an
+/// `icon` and a `text` in both label windows — so a caller that already found
+/// the parent has to search inside it rather than the whole document.
+pub fn find_child<'a>(items: &'a [Item], kinds: &[&str], name: &str) -> Option<&'a [Item]> {
+    kinds.iter().find_map(|kind| search(items, kind, name))
+}
+
+/// A plain numeric field such as `maxWidth`, which is not inside a block.
+pub fn number(items: &[Item], key: &str) -> io::Result<Option<f64>> {
+    let Some(value) = last(items, key.as_bytes()) else {
+        return Ok(None);
+    };
+    let scalar = text(value, key)?;
+    scalar
+        .parse()
+        .map(Some)
+        .map_err(|_| invalid(format!("{key} is not a number: {scalar:?}")))
+}
+
 fn pair(
     items: &[Item],
     key: &[u8],
@@ -169,6 +190,25 @@ guiTypes = {
 
     fn document() -> Document {
         parser::parse(GUI).unwrap()
+    }
+
+    #[test]
+    fn a_child_is_searched_for_inside_its_own_parent_and_plain_numbers_are_read() {
+        let document = document();
+        let container = find(&document, "containerWindowType", "unit_counter").unwrap();
+        let count = find_child(container, &["instantTextboxType"], "count").unwrap();
+        assert_eq!(
+            position(count).unwrap(),
+            Some((Length::Pixels(36), Length::Pixels(8)))
+        );
+        // `maxWidth` sits beside the blocks, not inside `size`.
+        assert_eq!(number(count, "maxWidth").unwrap(), Some(60.0));
+        assert_eq!(number(count, "maxHeight").unwrap(), None);
+        // The first window has no `count`, so searching inside it finds none.
+        let other = find(&document, "containerWindowType", "mapicons_container").unwrap();
+        assert!(find_child(other, &["instantTextboxType"], "count").is_none());
+        // A non-numeric value is a named error rather than a silent zero.
+        assert!(number(count, "font").is_err());
     }
 
     #[test]

@@ -25,6 +25,13 @@ use crate::{
     },
     playback::Playback,
 };
+// names
+use crate::map::{
+    camera::Camera,
+    labels::{self, LabelContent, LabelReport},
+    name_pass::{self, NameContent, PlacementInputs, Placements},
+    sprites::{Batch, MapIcons},
+};
 
 pub struct Document {
     pub playback: Playback,
@@ -44,6 +51,13 @@ pub struct Document {
     pub straits: Vec<StraitVertex>,
     /// Wall time of the border trace, for reporting.
     pub border_trace: Duration,
+    // names
+    /// Fonts and map-icon sprites, uploaded once by the scene.
+    pub icons: MapIcons,
+    /// Province adjacency, province bounds and the localisation.
+    pub names: NameContent,
+    /// The label window layout and the unit-stack anchors.
+    pub labels: LabelContent,
 }
 
 impl Document {
@@ -70,6 +84,25 @@ impl Document {
         let map = map::load(&content.layers)?;
         let (terrain, default_map) = installed_content::terrain::read(&content.layers)?;
         let assets = MapAssets::load(&content.layers, &terrain, &default_map, &mut warnings)?;
+        // names
+        let icons = MapIcons::load(&content.layers)?;
+        let names = NameContent::load(&content.layers, &map)?;
+        let labels = LabelContent::load(&content.layers, &map, assets.heightmap_texels())?;
+        if !labels.centroid_fallbacks.is_empty() {
+            warnings.push(format!(
+                "{} provinces have no victory-point unit stack and their label is anchored at the province centroid instead.",
+                labels.centroid_fallbacks.len()
+            ));
+        }
+        warnings.push(
+            "Country names come from the recorded ruling party's ideology group; cosmetic tags and dynamic country names are not recorded, so a country under one differs from the game.".into(),
+        );
+        warnings.push(
+            "Victory-point labels come from the static localisation; runtime renames (set_province_name, which turns Danzig into Gdańsk) are not recorded.".into(),
+        );
+        warnings.push(
+            "Fonts are read from gfx/fonts, which is outside the content coverage policy and is not hash-verified.".into(),
+        );
         warnings.push(
             "Country colors come from the game's static content; runtime and cosmetic color overrides were not captured.".into(),
         );
@@ -108,10 +141,15 @@ impl Document {
             assets,
             warnings,
             source_path: path.to_path_buf(),
+            // borders
             border_assets,
             border_meshes,
             straits,
             border_trace,
+            // names
+            icons,
+            names,
+            labels,
         })
     }
 
@@ -128,6 +166,44 @@ impl Document {
                 "branch {branch}, hour {hour} is a gap: {reason}"
             ))),
         }
+    }
+
+    // names
+    /// Places the country name layer, and the state layer when `states`.
+    pub fn place_names(&self, states: bool) -> io::Result<Placements> {
+        name_pass::place(
+            &PlacementInputs {
+                map: &self.map,
+                heightmap: &self.assets.heightmap,
+                content: &self.names,
+                font: &self.icons.fonts.map,
+                states,
+            },
+            self.frame()?,
+        )
+    }
+
+    /// Builds this frame's victory-point and capital label quads.
+    pub fn label_batch(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+    ) -> io::Result<(Batch, LabelReport)> {
+        let mut batch = Batch::default();
+        let report = labels::build(
+            &labels::LabelInputs {
+                content: &self.labels,
+                localisation: &self.names.localisation,
+                font: &self.icons.fonts.label,
+                sheet: &self.icons.victory_points,
+                map: &self.map,
+                camera,
+                viewport,
+            },
+            self.frame()?,
+            &mut batch,
+        )?;
+        Ok((batch, report))
     }
 }
 

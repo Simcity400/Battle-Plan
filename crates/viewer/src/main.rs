@@ -7,6 +7,11 @@ mod render;
 
 use installed_content::ResolveOptions;
 use map::{camera::Camera, frame::DayNight, political};
+// names
+use map::{
+    name_pass::LayerFade,
+    scene::{Overlay, Request},
+};
 use replay::{BranchId, Hour, container::SeekResult};
 use serde::{Deserialize, Serialize};
 use std::{ffi::OsString, fs, io, path::PathBuf};
@@ -454,6 +459,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .collect::<Vec<_>>()
             .join("; ");
         let hour = document.playback.hour();
+        // names: a headless render has no frame history, so the layer
+        // cross-fade jumps straight to its settled value (R2 section 4.5) and
+        // the state layer is only placed when that value is nonzero.
+        let fade = LayerFade::instant(camera.height);
+        let placements = document.place_names(LayerFade::wants_states(camera.height))?;
+        for warning in &placements.warnings {
+            eprintln!("Warning: {warning}");
+        }
+        let (label_batch, label_report) = document.label_batch(camera, options.size)?;
         let report = render::dump_png(
             &document.assets,
             // political fill + borders
@@ -463,9 +477,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 border_meshes: &document.border_meshes,
                 straits: &document.straits,
             },
-            camera,
-            DayNight::at_hour(hour),
-            options.size,
+            // names
+            &document.icons,
+            Request {
+                size: options.size,
+                camera,
+                day_night: DayNight::at_hour(hour),
+                // The animation time is 0 so a headless dump is deterministic.
+                animation_time: 0.0,
+                overlay: Overlay {
+                    names: Some(&placements),
+                    layer_alpha: fade.as_array(),
+                    sprites: Some(&label_batch),
+                },
+            },
             output,
             (!unverified.is_empty()).then_some(unverified.as_str()),
         )?;
@@ -503,6 +528,44 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.border_meshes.meshes.len(),
             document.straits.len(),
             document.border_trace.as_secs_f64() * 1000.0
+        );
+        // names
+        for line in document.icons.fonts.summary() {
+            println!("Font: {line}");
+        }
+        println!(
+            "Localisation: {} keys, e.g. GER_fascism={:?} VICTORY_POINTS_6521={:?}",
+            document.names.localisation.len(),
+            document.names.localisation.get("GER_fascism"),
+            document.names.localisation.get("VICTORY_POINTS_6521")
+        );
+        println!(
+            "Names: {} country areas, {} state areas, {} glyph vertices at layer alpha {:?};              province graph {} edges; {} icon pages",
+            placements.country.len(),
+            placements.state.len(),
+            report.overlay.0,
+            fade.as_array(),
+            document.names.graph.edge_count(),
+            report.icon_pages
+        );
+        let mut placed: Vec<&map::name_pass::WorldName> = placements.country.iter().collect();
+        placed.sort_by(|a, b| {
+            b.font_size
+                .partial_cmp(&a.font_size)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for name in placed.iter().take(12) {
+            println!("  {}", name.summary());
+        }
+        println!(
+            "Labels: {} icons, {} texts in {} quads; allegiance measured against {}",
+            label_report.icons,
+            label_report.texts,
+            report.overlay.1,
+            label_report
+                .perspective
+                .as_deref()
+                .unwrap_or("no human country")
         );
         return Ok(());
     }

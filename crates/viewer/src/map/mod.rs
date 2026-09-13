@@ -7,10 +7,15 @@ pub mod borders;
 pub mod camera;
 pub mod frame;
 pub mod gradient;
+// names
+pub mod labels;
+pub mod name_pass;
 pub mod names;
 // political fill
 pub mod political;
 pub mod scene;
+pub mod sprites;
 pub mod terrain;
+pub mod text;
 pub mod textures;
 pub mod water;
