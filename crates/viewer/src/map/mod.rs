@@ -15,6 +15,8 @@ pub mod names;
 pub mod political;
 // colour
 pub mod post;
+// rivers
+pub mod rivers;
 pub mod scene;
 pub mod sprites;
 pub mod terrain;

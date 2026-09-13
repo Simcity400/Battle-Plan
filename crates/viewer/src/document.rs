@@ -25,6 +25,8 @@ use crate::{
     },
     playback::Playback,
 };
+// rivers
+use crate::map::rivers::{self, RiverAssets, RiverImage, RiverMesh};
 // names
 use crate::map::{
     camera::Camera,
@@ -58,6 +60,15 @@ pub struct Document {
     pub names: NameContent,
     /// The label window layout and the unit-stack anchors.
     pub labels: LabelContent,
+    // rivers
+    /// `map/terrain/RiverSurface_*`.
+    pub river_assets: RiverAssets,
+    /// The ribbons traced from `map/rivers.bmp`.
+    pub river_mesh: RiverMesh,
+    /// What the trace found, including the rivers the engine reports and drops.
+    pub river_trace: rivers::Trace,
+    /// Wall time of the river trace and widening, for reporting.
+    pub river_build: Duration,
 }
 
 impl Document {
@@ -135,6 +146,31 @@ impl Document {
                 border_meshes.one_pixel_provinces.len()
             ));
         }
+        // rivers
+        let river_assets = RiverAssets::load(&content.layers)?;
+        let started = Instant::now();
+        let (river_mesh, river_trace) = rivers::build(
+            &RiverImage {
+                width: assets.rivers.width,
+                height: assets.rivers.height,
+                indices: &assets.rivers.indices,
+            },
+            &heights,
+        )?;
+        let river_build = started.elapsed();
+        if river_trace.unreachable > 0 {
+            warnings.push(format!(
+                "{} river pixels of map/rivers.bmp are not reachable from any source or junction marker and are not drawn; the game does not draw them either.",
+                river_trace.unreachable
+            ));
+        }
+        if !river_trace.too_small.is_empty() {
+            warnings.push(format!(
+                "{} rivers of map/rivers.bmp are shorter than {} pixels; the game reports these as \"Too small river found at\" and draws none of them.",
+                river_trace.too_small.len(),
+                rivers::MIN_RIVER_POINTS
+            ));
+        }
         Ok(Self {
             playback: Playback::new(replay)?,
             map,
@@ -150,6 +186,11 @@ impl Document {
             icons,
             names,
             labels,
+            // rivers
+            river_assets,
+            river_mesh,
+            river_trace,
+            river_build,
         })
     }
 

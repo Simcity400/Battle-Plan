@@ -496,6 +496,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 border_assets: &document.border_assets,
                 border_meshes: &document.border_meshes,
                 straits: &document.straits,
+                // rivers
+                river_assets: &document.river_assets,
+                river_mesh: &document.river_mesh,
             },
             // names
             &document.icons,
@@ -550,6 +553,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.border_meshes.meshes.len(),
             document.straits.len(),
             document.border_trace.as_secs_f64() * 1000.0
+        );
+        // rivers
+        println!(
+            "Rivers: {} ribbons from {} sources and {} of {} junction markers, {} vertices and {} indices; {} too small, {} circular, {} unreachable pixels; built in {:.0} ms",
+            document.river_mesh.ribbons,
+            document.river_trace.sources,
+            document.river_trace.junctions_used,
+            document.river_trace.junctions,
+            document.river_mesh.vertices.len(),
+            document.river_mesh.indices.len(),
+            document.river_trace.too_small.len(),
+            document.river_trace.circular.len(),
+            document.river_trace.unreachable,
+            document.river_build.as_secs_f64() * 1000.0
         );
         // names
         for line in document.icons.fonts.summary() {

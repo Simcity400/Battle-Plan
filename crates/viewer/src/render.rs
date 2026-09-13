@@ -20,6 +20,8 @@ use crate::map::{
     borders::BorderMeshes,
     // political fill
     political::PoliticalLayers,
+    // rivers
+    rivers::{RiverAssets, RiverMesh},
     scene::{OUTPUT_FORMAT, Request, Scene, extent, invalid},
     // names
     sprites::MapIcons,
@@ -34,6 +36,9 @@ pub struct MapLayers<'a> {
     pub border_assets: &'a BorderAssets,
     pub border_meshes: &'a BorderMeshes,
     pub straits: &'a [StraitVertex],
+    // rivers
+    pub river_assets: &'a RiverAssets,
+    pub river_mesh: &'a RiverMesh,
 }
 
 pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
@@ -292,6 +297,8 @@ pub fn dump_png(
             layers.straits,
         )?;
         scene.set_land_classes(&device, &layers.political.regions)?;
+        // rivers
+        scene.set_rivers(&device, &queue, layers.river_assets, layers.river_mesh)?;
         // A first frame warms the pipeline caches so the timing below measures
         // the steady-state cost the window pays.
         scene.render(&device, &queue, request)?;
