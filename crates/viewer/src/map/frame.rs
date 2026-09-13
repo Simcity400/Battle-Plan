@@ -57,13 +57,23 @@ pub const SECOND_LATITUDE: f32 = 100.0;
 pub const SUN_DECLINATION_DEGREES: f32 = 1.62;
 
 /// `GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_COUNTRY` (`00_graphics.lua:890`).
-pub const GB_CAM_DIST_OVERRIDE_COUNTRY: f32 = 0.0;
-/// `GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_STATE` (`00_graphics.lua:891`).
+///
+/// The `GRADIENT_BORDERS_*_<NAME>` suffixes are **map modes**, not channels:
+/// `00_graphics.lua:890-902` lists COUNTRY, STATE, SUPPLY_AREA,
+/// STRATEGIC_REGIONS, RESISTANCE, FACTIONS, TERRAIN, INTEL_LEDGER, DIPLOMACY,
+/// DIPLOMACY_ON_INTEL_LEDGER and PEACE_CONFERENCE — eleven of them for a vector
+/// with two slots, and TERRAIN and FACTIONS are map modes with no plausible
+/// channel meaning. R2 section 1.3 read them as one per channel and R1
+/// section 7 carried that reading forward; both channels of the political
+/// (country) map mode take this one value.
+pub const GB_CAM_DIST_OVERRIDE: f32 = 0.0;
+/// `GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_STATE` (`00_graphics.lua:891`),
+/// which belongs to the *state* map mode the viewer does not draw yet.
+#[allow(dead_code)]
 pub const GB_CAM_DIST_OVERRIDE_STATE: f32 = 0.4;
-/// Per-channel outline cutoffs. UNVERIFIED: R1 section 3.1 leaves `.zw` to the
-/// border-field generator, so both channels take the value the generator's
-/// 5.25/255 full width implies for a 249-of-255 country edge.
-pub const GB_OUTLINE_CUTOFF: [f32; 2] = [0.973, 0.973];
+/// `GRADIENT_BORDERS_OUTLINE_CUTOFF_COUNTRY` (`00_graphics.lua:880`), on both
+/// channels for the same reason as the camera override.
+pub const GB_OUTLINE_CUTOFF: f32 = 0.973;
 
 /// `GB_TextureHeight`: the gradient-border texture height in texels. The two
 /// channels are stacked vertically, so this is twice a map half-height plus the
@@ -197,10 +207,10 @@ impl FrameConstants {
             // identity rather than fail, since no map pass reads this field yet.
             inv_view_projection: camera.inverse(viewport).unwrap_or(IDENTITY),
             gb_cam_dist_override_outline_cutoff: [
-                GB_CAM_DIST_OVERRIDE_COUNTRY,
-                GB_CAM_DIST_OVERRIDE_STATE,
-                GB_OUTLINE_CUTOFF[0],
-                GB_OUTLINE_CUTOFF[1],
+                GB_CAM_DIST_OVERRIDE,
+                GB_CAM_DIST_OVERRIDE,
+                GB_OUTLINE_CUTOFF,
+                GB_OUTLINE_CUTOFF,
             ],
             virtual_sun_pos: [sun[0], sun[1], sun[2], SUN_HEIGHT_WATER],
             virtual_moon_pos: [moon[0], moon[1], moon[2], MOON_HEIGHT_WATER],
@@ -297,9 +307,12 @@ mod tests {
             constants.fow_opacity_time_snow_mud_day_night,
             [0.0, 0.0, 0.0, 1.0]
         );
+        // Both channels take the COUNTRY map mode's defines; `map::political`
+        // leaves channel 2 empty, so its override would not reach a pixel
+        // either way, but 0.4 is the state map mode's value and not this one's.
         assert_eq!(
             constants.gb_cam_dist_override_outline_cutoff,
-            [0.0, 0.4, 0.973, 0.973]
+            [0.0, 0.0, 0.973, 0.973]
         );
         assert_eq!(constants.gb_texture_height_sun_specular[0], 2050.0);
         assert_eq!(constants.moon_diffuse_intensity, [0.2176, 0.5566, 1.0, 2.5]);

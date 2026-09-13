@@ -367,6 +367,19 @@ fn province_table_len(map: &MapData, provinces: &[ProvinceRow]) -> io::Result<us
 
 /// Builds both gradient-border textures for one recorded hour.
 ///
+/// Layer 1 is the country layer. **Layer 2 is empty**: the political map mode paints no state
+/// bands. R2 section 1.3 called layer 2 the state layer on the strength of the `..._STATE` defines,
+/// but those suffixes name *map modes* — `00_graphics.lua:890-902` has eleven of them, including
+/// TERRAIN and FACTIONS, for a two-slot vector — so `GRADIENT_BORDERS_THICKNESS_STATE` and
+/// `..._CAMERA_DISTANCE_OVERRIDE_STATE` belong to the state map mode and say nothing about this
+/// one. `array_loaded.png` settles it: the game draws no band inside a country at its state
+/// boundaries, and painting one costs 0.8 mae and 0.023 ssim against that screenshot.
+///
+/// The layer 2 code path stays whole for the state map mode: the region keys are still derived into
+/// [`Regions::state_of`] — the border classifier reads them to tell a state border from a province
+/// border — the colour rule is still [`Regions::state_color`], and the only thing this mode changes
+/// is that no province is a member, which leaves both textures' bottom half zero.
+///
 /// The generator takes about a quarter of a second on the shipped 5632 x 2048 map, which is why
 /// [`PoliticalCache`] exists; the headless dump blocks on it once per frame.
 pub fn build(map: &MapData, frame: &DecodedFrame, mode: Mode) -> io::Result<PoliticalLayers> {
@@ -378,11 +391,12 @@ pub fn build(map: &MapData, frame: &DecodedFrame, mode: Mode) -> io::Result<Poli
     };
     let country_color = |key: u32| regions.country_color(key);
     let state_color = |key: u32| regions.state_color(key);
+    let unpainted = vec![NO_REGION; regions.state_of.len()];
     let start = Instant::now();
     let textures = gradient::build(
         &province_map,
         &Layer::new(LayerKind::Country, &regions.country_of, &country_color),
-        &Layer::new(LayerKind::State, &regions.state_of, &state_color),
+        &Layer::new(LayerKind::State, &unpainted, &state_color),
     )?;
     let build = start.elapsed();
     Ok(PoliticalLayers {
@@ -679,20 +693,27 @@ mod tests {
     }
 
     #[test]
-    fn the_built_textures_carry_the_two_layers_at_half_resolution() {
+    fn the_built_textures_paint_the_country_layer_and_leave_the_state_layer_empty() {
         let layers = build(&map(), &occupied(), Mode::Controller).unwrap();
         let textures = &layers.textures;
         assert_eq!(textures.width, 3);
         assert_eq!(textures.layer_rows(), 1);
         assert_eq!(textures.height, 4);
-        // Layer 1 paints the two controllers; layer 2 paints the two states.
+        // Layer 1 paints the two controllers.
         assert!(
-            textures
-                .channel1
-                .iter()
+            (0..textures.width)
+                .filter_map(|x| textures.channel1_texel(0, x, 0))
                 .any(|texel| texel[3] > 0 && texel[..3] != [0, 0, 0])
         );
-        // Channel 2's green is the region opacity wherever the field reaches.
+        // Layer 2 is untouched, so the whole bottom half of both textures is zero.
+        for x in 0..textures.width {
+            assert_eq!(textures.channel1_texel(1, x, 0), Some([0; 4]));
+            assert_eq!(textures.channel2_texel(1, x, 0), Some([0; 4]));
+        }
+        // The state keys the border classifier reads survive the empty layer.
+        assert_eq!(layers.regions.state_of[1], 10);
+        assert_eq!(layers.regions.state_of[3], 11);
+        // Channel 2's green is the region opacity wherever the layer has a member.
         for (index, texel) in textures.channel2.iter().enumerate() {
             assert_eq!(texel[1] > 0, textures.channel1[index][3] > 0);
             assert_eq!(texel[2], 0, "political mode never pulses a layer");
