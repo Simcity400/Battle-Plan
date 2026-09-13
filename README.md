@@ -20,9 +20,10 @@ Keep `collector.dll` beside `recorder.exe`. Start the recorder, then play normal
 .\.cargo-target\release\recorder.exe oracle <campaign.battleplan> <save.hoi4> --hour <n> --branch <id>
 .\.cargo-target\release\viewer.exe <campaign.battleplan>
 .\.cargo-target\release\viewer.exe --dump <campaign.battleplan> --hour <n> --branch <id> --out <frame.png>
+.\.cargo-target\release\viewer.exe --compare <game.png> <viewer.png> --exclude-game-ui --diff <difference.png>
 ```
 
-On first run the viewer asks for the game and Paradox user folders and stores them beside the executable in `viewer.json`. It offers political and control maps, a session and branch picker, an hourly scrubber and play, pause and speed controls. Windowed playback and headless export use the same wgpu renderer. An hour present on several branches requires a branch selection. Both executables print `--help`.
+On first run the viewer asks for the game and Paradox user folders and stores them beside the executable in `viewer.json`. It offers political and control maps, a session and branch picker, an hourly scrubber and play, pause and speed controls. Windowed playback and headless export use the same wgpu renderer. An hour present on several branches requires a branch selection. Both executables print `--help`. `--compare` scores a reference pair of same-sized PNGs, printing the mean absolute error, a luminance SSIM pyramid and a CIE76 colour distance for the frame and for each cell of a `--regions <cols>x<rows>` grid; `--mask <mask.png>`, `--exclude <x,y,w,h>` and `--exclude-game-ui` drop the game's interface, `--diff <out.png>` writes the amplified difference and `--json <out.json>` writes the same numbers as JSON.
 
 ## Rules
 
