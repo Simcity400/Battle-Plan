@@ -938,14 +938,14 @@ fn ability_row(row: &active_ability_record::Row, bytes: &[u8]) -> ActiveAbilityR
 // view spans, heap string payloads by header length, role-map nodes with
 // batched gathers, and unit/trait/experience nesting. No row is decoded on
 // the game thread. The single FIFO decode worker replays the existing
-// `walk_family` against the recorded spans (`RecordedMemory`), so typed
+// `walk_family` against the shared recorded spans, so typed
 // rows, ordinals, skips, truncation counts and failure reasons are identical
 // by construction: every read the walk performs on its success paths is in
 // the log, and every recorded failure reproduces the walk's own reason at
 // the same read site.
 //
-// Read-set rules the mirror follows (log order is irrelevant; the log is a
-// set keyed by exact address and length):
+// Read-set rules the mirror follows (repeated address/length observations
+// retain their order, including failed reads):
 // - reads served locally by `ccharacter::View` need no log entry beyond the
 //   seven view spans themselves;
 // - pooled capacities are ignored while copying (a superset is recorded and
@@ -953,9 +953,9 @@ fn ability_row(row: &active_ability_record::Row, bytes: &[u8]) -> ActiveAbilityR
 // - on any failed span the mirror aborts that sub-path exactly where the
 //   typed walk would fail it, and failed batch flags (`Dead`) skip later
 //   sub-copies exactly where `Batch::append` would skip the typed walk;
-// - intra-copy tearing is the documented double-read limitation: the mirror
-//   reads each site once and shares the parsed values, so the log is always
-//   self-consistent.
+// - shared view bytes are parsed from the current copy only. Stable double
+//   reads do not prove that the engine world was wholly updated at either
+//   observation; that remains the documented boundary limitation.
 // Conservative rule (as the research pilot): any live failure attributed to
 // a table blocks that table's check even when both copies agree, so
 // same-hour tearing never advances the windows. A readable-but-invalid

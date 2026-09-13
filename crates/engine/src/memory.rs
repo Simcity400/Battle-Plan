@@ -595,7 +595,14 @@ mod tests {
         // overflow and inaccessible null-page sources are contained by the
         // checked C gather; Rust never dereferences these source pointers.
         let memory = unsafe { LiveMemory::new() };
-        for bad_pointer in [0, usize::MAX, 1] {
+        for bad_pointer in [
+            0,
+            usize::MAX,
+            1,
+            0x0072_6f74_6361_665f,
+            0x0000_8000_0000_0000,
+            0xffff_0000_0000_0000,
+        ] {
             let mut bytes = [0xa5; 96];
             assert_eq!(
                 memory.copy_records(
@@ -816,6 +823,64 @@ mod tests {
         assert!(!is_canonical_range(0x0000_7FFF_FFFF_FFF0, 32));
         assert!(is_canonical_range(0x2000, 0));
         assert!(!is_canonical_range(usize::MAX - 3, 8));
+    }
+
+    #[test]
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    fn records_gate_derived_noncanonical_fields_in_copy_order() {
+        let source = 0x1234_5678_9abc_def0_u64.to_le_bytes();
+        let pointer = source.as_ptr() as usize;
+        let fields = [
+            RecordField {
+                source_offset: usize::MAX,
+                destination_offset: 0,
+                len: 0,
+            },
+            RecordField {
+                source_offset: 0,
+                destination_offset: 0,
+                len: 8,
+            },
+            RecordField {
+                source_offset: usize::MAX,
+                destination_offset: 8,
+                len: 0,
+            },
+            RecordField {
+                source_offset: 0x0000_8000_0000_0000 - pointer,
+                destination_offset: 8,
+                len: 8,
+            },
+            RecordField {
+                source_offset: 0,
+                destination_offset: 16,
+                len: 8,
+            },
+        ];
+        // SAFETY: the only readable source is immutable Rust-owned storage;
+        // The gather rejects the derived noncanonical address before reading it.
+        let memory = unsafe { LiveMemory::new() };
+        let mut bytes = [0xa5; 24];
+        assert_eq!(memory.copy_records(&[pointer], &fields, 24, &mut bytes), 3);
+        assert_eq!(bytes[..8], source);
+        assert_eq!(bytes[8..], [0xa5; 16]);
+        // An earlier unreadable canonical field wins over the later invalid
+        // derived field. Empty fields count but do not inspect their source.
+        bytes.fill(0xa5);
+        assert_eq!(memory.copy_records(&[1], &fields, 24, &mut bytes), 1);
+        assert_eq!(bytes, [0xa5; 24]);
+        // A range crossing the canonical gap must fail before copying any of
+        // it, even though its starting address is itself canonical.
+        let crossing = [RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: 24,
+        }];
+        assert_eq!(
+            memory.copy_records(&[0x0000_7fff_ffff_fff0], &crossing, 24, &mut bytes),
+            0
+        );
+        assert_eq!(bytes, [0xa5; 24]);
     }
 
     #[test]

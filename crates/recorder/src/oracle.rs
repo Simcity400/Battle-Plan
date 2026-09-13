@@ -1937,9 +1937,9 @@ fn compare_war_relations(
     Ok(())
 }
 
-/// Prints the engine's own allocation counters on both sides and states whether
-/// the save was written at the sampled tick. It never waives a difference: the
-/// witness measures the gap, and every other comparison still fails on its own.
+/// Prints the tracked engine counters on both sides. A changed counter witnesses
+/// intervening work; equality does not prove the absence of same-hour writes or
+/// untracked allocations. The witness never waives a field difference.
 fn compare_boundary_counters(
     frame: &DecodedFrame,
     save: &Save,
@@ -2046,7 +2046,7 @@ fn compare_boundary_counters(
         "no counter was recorded at the sampled tick, so the boundary is not measured; this comparison establishes nothing about when the save was written".to_string()
     } else if advanced.is_empty() && regressed.is_empty() {
         format!(
-            "every one of the {} recorded counters equals the save header, so the save was written at the sampled tick with no intervening engine allocation",
+            "all {} recorded counters equal the save header; this does not prove that the save matches the sampled instant: same-hour writes and untracked allocations remain possible",
             recorded.len() - unreadable
         )
     } else {
@@ -2072,7 +2072,7 @@ fn compare_boundary_counters(
     }
     report.boundary_verdict = Some(verdict);
     report.limitation(
-        "the boundary witness measures engine allocation between the sampled tick and the save; it never waives a difference and an equal witness does not prove that no non-allocating command ran",
+        "the boundary witness compares tracked engine counters between the sampled tick and the save; it never waives a difference, and equality does not exclude same-hour writes or untracked allocations",
         "boundary counters",
     );
     Ok(())
@@ -4847,7 +4847,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
     }
 
     #[test]
-    fn the_boundary_witness_states_whether_the_save_was_written_at_the_sampled_tick() {
+    fn the_boundary_witness_reports_changes_without_certifying_an_equal_instant() {
         let (mut frame, save, membership, equipment) = relation_fixture();
         let counters = save.counters;
         let TableView::Complete(TableRows::Clock(rows)) = &mut frame.tables[TableId::Clock.index()]
@@ -4870,7 +4870,15 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         rows[0].multiplayer_random_count = Some(counters.multiplayer_random_count);
         let report = compare(&frame, &save, &membership, &equipment).unwrap();
         let verdict = report.boundary_verdict.clone().unwrap();
-        assert!(verdict.contains("written at the sampled tick"), "{verdict}");
+        assert!(
+            verdict.contains("all 13 recorded counters equal"),
+            "{verdict}"
+        );
+        assert!(verdict.contains("does not prove"), "{verdict}");
+        assert!(
+            verdict.contains("same-hour writes and untracked allocations"),
+            "{verdict}"
+        );
         assert_eq!(report.boundary_witness.len(), 13);
         assert!(differences(&report).is_empty());
         assert_eq!(
