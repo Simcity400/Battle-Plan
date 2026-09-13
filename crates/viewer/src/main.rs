@@ -11,7 +11,8 @@ use replay::{BranchId, Hour, container::SeekResult};
 use serde::{Deserialize, Serialize};
 use std::{ffi::OsString, fs, io, path::PathBuf};
 
-const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span>\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>";
+const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span>\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+         --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -35,6 +36,7 @@ struct Options {
     json: Option<PathBuf>,
     regions: Option<(u32, u32)>,
     upscale: Option<f64>,
+    dim: Option<f64>,
     excludes: Vec<compare::Rect>,
     exclude_game_ui: bool,
 }
@@ -85,6 +87,19 @@ impl Options {
                         .and_then(|value| value.into_string().ok())
                         .ok_or_else(|| invalid(USAGE))?;
                     options.regions = Some(parse_regions(&value)?);
+                }
+                Some("--dim") => {
+                    let value = args
+                        .next()
+                        .and_then(|value| value.into_string().ok())
+                        .ok_or_else(|| invalid(USAGE))?;
+                    let factor = value
+                        .parse::<f64>()
+                        .map_err(|_| invalid("invalid dim factor"))?;
+                    if !factor.is_finite() || !(0.0..=1.0).contains(&factor) {
+                        return Err(invalid("the dim factor must be between 0 and 1"));
+                    }
+                    options.dim = Some(factor);
                 }
                 Some("--upscale") => {
                     let value = args
@@ -195,11 +210,12 @@ impl Options {
             || options.json.is_some()
             || options.regions.is_some()
             || options.upscale.is_some()
+            || options.dim.is_some()
             || !options.excludes.is_empty()
             || options.exclude_game_ui
         {
             return Err(invalid(
-                "--mask, --diff, --json, --regions, --upscale, --exclude and --exclude-game-ui require --compare",
+                "--mask, --diff, --json, --regions, --upscale, --dim, --exclude and --exclude-game-ui require --compare",
             ));
         }
         if dump != options.dump.is_some() || (dump && options.hour.is_none()) {
@@ -207,6 +223,16 @@ impl Options {
         }
         Ok(options)
     }
+}
+
+/// Multiplies every channel of an image, for a screenshot taken behind the game's menu overlay.
+fn dim(image: &compare::Image, factor: f64) -> io::Result<compare::Image> {
+    let scaled = image
+        .rgb()
+        .iter()
+        .map(|&channel| (f64::from(channel) * factor).round().clamp(0.0, 255.0) as u8)
+        .collect();
+    compare::Image::from_rgb(image.width(), image.height(), scaled)
 }
 
 /// Parses the `<cols>x<rows>` form taken by `--regions`.
@@ -229,6 +255,14 @@ fn run_compare(options: &Options, paths: &[PathBuf; 2]) -> io::Result<()> {
     let mut viewer = compare::read_png(&paths[1])?;
     if let Some(factor) = options.upscale {
         viewer = compare::upscale(&viewer, factor)?;
+    }
+    // The game dims the whole frame, interface included, while its escape and save menus are open:
+    // every hour-independent interface pixel of `checkpoint2_save1_menu.png` is at exactly half the
+    // value of the same pixel in `array_loaded.png` (median of 501 483 samples, quartiles 0.490 and
+    // 0.500). A screenshot taken through that overlay can only be scored against a render put
+    // through the same factor.
+    if let Some(factor) = options.dim {
+        viewer = dim(&viewer, factor)?;
     }
     if !game.same_size(&viewer) {
         return Err(invalid(format!(
@@ -529,6 +563,8 @@ mod tests {
             "8x6",
             "--upscale",
             "1.25",
+            "--dim",
+            "0.5",
             "--exclude-game-ui",
             "--exclude",
             "1,2,3,4",
@@ -544,6 +580,7 @@ mod tests {
         assert_eq!(options.json, Some(PathBuf::from("out.json")));
         assert_eq!(options.regions, Some((8, 6)));
         assert_eq!(options.upscale, Some(1.25));
+        assert_eq!(options.dim, Some(0.5));
         assert!(options.exclude_game_ui);
         assert_eq!(options.excludes.len(), 2);
         assert_eq!(options.excludes[1].x, 5);
@@ -578,6 +615,7 @@ mod tests {
             vec!["c.battleplan", "--json", "j.json"],
             vec!["c.battleplan", "--regions", "2x2"],
             vec!["c.battleplan", "--upscale", "1.25"],
+            vec!["c.battleplan", "--dim", "0.5"],
             vec!["c.battleplan", "--exclude", "1,2,3,4"],
             vec!["c.battleplan", "--exclude-game-ui"],
         ] {
@@ -667,5 +705,24 @@ mod tests {
         assert!(parse(&["--compare", "a.png", "b.png", "--upscale", "0"]).is_err());
         assert!(parse(&["--compare", "a.png", "b.png", "--upscale", "-1"]).is_err());
         assert!(parse(&["--compare", "a.png", "b.png", "--upscale", "x"]).is_err());
+    }
+
+    #[test]
+    fn the_dim_factor_is_a_fraction_and_halves_every_channel() {
+        assert_eq!(
+            parse(&["--compare", "a.png", "b.png", "--dim", "1"])
+                .unwrap()
+                .dim,
+            Some(1.0)
+        );
+        for bad in ["-0.1", "1.1", "2", "x"] {
+            assert!(
+                parse(&["--compare", "a.png", "b.png", "--dim", bad]).is_err(),
+                "`{bad}` should be refused"
+            );
+        }
+        let image = compare::Image::from_rgb(2, 1, vec![255, 100, 0, 7, 8, 9]).unwrap();
+        assert_eq!(dim(&image, 0.5).unwrap().rgb(), [128, 50, 0, 4, 4, 5]);
+        assert_eq!(dim(&image, 1.0).unwrap().rgb(), image.rgb());
     }
 }
