@@ -1,7 +1,13 @@
 use crate::{
     Config, Options, choose_initial,
-    document::{Document, Palette},
-    map::{camera::Camera, frame::DayNight, scene::Scene},
+    document::Document,
+    map::{
+        camera::Camera,
+        frame::DayNight,
+        // political fill
+        political::{self, PoliticalCache},
+        scene::Scene,
+    },
 };
 use eframe::{egui, wgpu};
 use replay::{branches::Parentage, container::SeekResult, frame::TableView, rows::TableId};
@@ -23,8 +29,6 @@ pub struct Viewer {
     scene: Option<Scene>,
     texture: Option<egui::TextureId>,
     generation: u64,
-    palette: Option<Palette>,
-    palette_at: Option<(u64, i32, bool)>,
     map_error: Option<String>,
     camera: Option<Camera>,
     camera_manual: bool,
@@ -33,6 +37,10 @@ pub struct Viewer {
     speed: u32,
     last_step: Instant,
     started: Instant,
+    // political fill
+    political: PoliticalCache,
+    /// Cleared with the scene: the border geometry has to be uploaded into a new one.
+    borders_uploaded: bool,
 }
 
 impl Viewer {
@@ -58,13 +66,14 @@ impl Viewer {
             scene: None,
             texture: None,
             generation: 0,
-            palette: None,
-            palette_at: None,
             map_error: None,
             playing: false,
             speed: 24,
             last_step: Instant::now(),
             started: Instant::now(),
+            // political fill
+            political: PoliticalCache::new(),
+            borders_uploaded: false,
         };
         if !viewer.settings
             && let Some(path) = viewer.options.replay.clone()
@@ -100,8 +109,9 @@ impl Viewer {
         self.loading = Some(receiver);
         self.document = None;
         self.scene = None;
-        self.palette = None;
-        self.palette_at = None;
+        // political fill
+        self.political = PoliticalCache::new();
+        self.borders_uploaded = false;
         self.generation = 0;
         self.error = None;
         self.map_error = None;
@@ -357,6 +367,49 @@ impl Viewer {
         });
     }
 
+    // political fill
+    /// Rebuilds and uploads the political layers, and re-buckets the land borders with them.
+    ///
+    /// Both are keyed on the Provinces rows and the mode, so a step to an hour that changed neither
+    /// costs nothing (`map::political::PoliticalCache`).
+    fn refresh_layers(
+        &mut self,
+        state: &eframe::egui_wgpu::RenderState,
+        document: &Document,
+    ) -> Result<(), std::io::Error> {
+        let mode = political::Mode::from_control(self.control);
+        let rebuilt = self
+            .political
+            .ensure(&document.map, document.frame()?, mode)?;
+        let scene = self
+            .scene
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("the map scene was not created"))?;
+        if !self.borders_uploaded {
+            scene.set_borders(
+                &state.device,
+                &state.queue,
+                &document.border_assets,
+                &document.border_meshes,
+                &document.straits,
+            )?;
+            self.borders_uploaded = true;
+        }
+        if let (true, Some(layers)) = (rebuilt, self.political.layers()) {
+            let textures = &layers.textures;
+            scene.set_gradient_textures(
+                &state.device,
+                &state.queue,
+                &textures.channel1,
+                &textures.channel2,
+                textures.width,
+                textures.height,
+            )?;
+            scene.set_land_classes(&state.device, &layers.regions)?;
+        }
+        Ok(())
+    }
+
     fn map(
         &mut self,
         ui: &mut egui::Ui,
@@ -366,40 +419,38 @@ impl Viewer {
         let state = frame
             .wgpu_render_state()
             .ok_or("WGPU renderer is unavailable")?;
-        let key = (
-            document.playback.branch(),
-            document.playback.hour(),
-            self.control,
-        );
-        if self.palette_at != Some(key) {
-            self.palette_at = Some(key);
-            self.palette = None;
-            self.map_error = None;
-            match document.palette(self.control) {
-                Ok(palette) => self.palette = Some(palette),
-                Err(error) => self.map_error = Some(error.to_string()),
-            }
+        if self.scene.is_none() {
+            self.scene = Some(
+                Scene::new(&state.device, &state.queue, &document.assets)
+                    .map_err(|error| error.to_string())?,
+            );
+            // political fill: a fresh scene holds no uploaded layers or geometry.
+            self.political = PoliticalCache::new();
+            self.borders_uploaded = false;
         }
+        // political fill
+        self.map_error = self
+            .refresh_layers(state, document)
+            .err()
+            .map(|error| error.to_string());
         if let Some(error) = &self.map_error {
             ui.centered_and_justified(|ui| {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
             });
             return Ok(());
         }
-        let palette = self.palette.as_ref().ok_or("Map palette is unavailable")?;
-        for warning in &palette.warnings {
+        let layers = self
+            .political
+            .layers()
+            .ok_or("The political layers are unavailable")?;
+        for warning in layers.warnings() {
             ui.colored_label(egui::Color32::YELLOW, warning);
         }
-        let (owned, distinct) = palette.political_summary();
+        let (filled, distinct) = layers.summary();
         ui.weak(format!(
-            "Political layer: {owned} provinces with a resolved owner in {distinct} country colors; the gradient-border fill is not drawn yet"
+            "Political layer: {filled} provinces filled in {distinct} country colors, rebuilt in {:.0} ms",
+            layers.build.as_secs_f64() * 1000.0
         ));
-        if self.scene.is_none() {
-            self.scene = Some(
-                Scene::new(&state.device, &state.queue, &document.assets)
-                    .map_err(|error| error.to_string())?,
-            );
-        }
         let size = ui.available_size().max(egui::vec2(1.0, 1.0));
         let pixels = [
             (size.x * ui.ctx().pixels_per_point()).round() as u32,
@@ -506,15 +557,18 @@ impl eframe::App for Viewer {
                     self.settings = true;
                 }
                 ui.separator();
+                // political fill
                 ui.selectable_value(&mut self.control, false, "Political")
-                    .on_hover_text("Stored for the gradient-border pass; no fill is drawn yet");
+                    .on_hover_text("Fill each province in its owner's map colour");
                 ui.selectable_value(&mut self.control, true, "Control")
-                    .on_hover_text("Stored for the gradient-border pass; no fill is drawn yet");
+                    .on_hover_text(
+                        "Fill each province in its controller's map colour, as the game's own political map does",
+                    );
                 if ui.button("Fit map").clicked() {
                     self.camera = None;
                     self.camera_manual = false;
                 }
-                ui.weak("Omniscient · Terrain and water");
+                ui.weak("Omniscient · Terrain, water, political fill and borders");
             });
             ui.add_space(5.0);
             if let Some(error) = &self.error {

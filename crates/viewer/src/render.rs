@@ -15,11 +15,26 @@ use std::{
 use eframe::wgpu;
 
 use crate::map::{
+    // borders
+    border_pass::{BorderAssets, StraitVertex},
+    borders::BorderMeshes,
     camera::Camera,
     frame::DayNight,
+    // political fill
+    political::PoliticalLayers,
     scene::{OUTPUT_FORMAT, Scene, extent, invalid},
     textures::MapAssets,
 };
+
+// political fill + borders
+/// Everything a headless render needs beyond the terrain and water assets.
+pub struct MapLayers<'a> {
+    /// The hour's gradient-border textures and the region keys behind them.
+    pub political: &'a PoliticalLayers,
+    pub border_assets: &'a BorderAssets,
+    pub border_meshes: &'a BorderMeshes,
+    pub straits: &'a [StraitVertex],
+}
 
 pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
     let mut configuration = eframe::egui_wgpu::WgpuConfiguration::default();
@@ -228,6 +243,8 @@ pub struct DumpReport {
 /// Renders one frame headlessly through the same [`Scene`] the window uses.
 pub fn dump_png(
     assets: &MapAssets,
+    // political fill + borders
+    layers: MapLayers<'_>,
     camera: Camera,
     day_night: DayNight,
     size: [u32; 2],
@@ -252,6 +269,24 @@ pub fn dump_png(
             .await
             .map_err(io::Error::other)?;
         let mut scene = Scene::new(&device, &queue, assets)?;
+        // political fill + borders
+        let textures = &layers.political.textures;
+        scene.set_gradient_textures(
+            &device,
+            &queue,
+            &textures.channel1,
+            &textures.channel2,
+            textures.width,
+            textures.height,
+        )?;
+        scene.set_borders(
+            &device,
+            &queue,
+            layers.border_assets,
+            layers.border_meshes,
+            layers.straits,
+        )?;
+        scene.set_land_classes(&device, &layers.political.regions)?;
         // A first frame warms the pipeline caches so the timing below measures
         // the steady-state cost the window pays.
         scene.render(&device, &queue, size, camera, day_night, 0.0)?;

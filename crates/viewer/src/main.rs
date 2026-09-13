@@ -6,7 +6,7 @@ mod playback;
 mod render;
 
 use installed_content::ResolveOptions;
-use map::{camera::Camera, frame::DayNight};
+use map::{camera::Camera, frame::DayNight, political};
 use replay::{BranchId, Hour, container::SeekResult};
 use serde::{Deserialize, Serialize};
 use std::{ffi::OsString, fs, io, path::PathBuf};
@@ -400,8 +400,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             options.allow_unverified,
         )?;
         choose_initial(&mut document, &options)?;
-        let palette = document.palette(options.control)?;
-        for warning in document.warnings.iter().chain(&palette.warnings) {
+        // political fill
+        let mode = political::Mode::from_control(options.control);
+        let layers = political::build(&document.map, document.frame()?, mode)?;
+        for warning in document.warnings.iter().chain(layers.warnings()) {
             eprintln!("Warning: {warning}");
         }
         let camera = options.camera.unwrap_or_else(|| {
@@ -420,6 +422,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let hour = document.playback.hour();
         let report = render::dump_png(
             &document.assets,
+            // political fill + borders
+            render::MapLayers {
+                political: &layers,
+                border_assets: &document.border_assets,
+                border_meshes: &document.border_meshes,
+                straits: &document.straits,
+            },
             camera,
             DayNight::at_hour(hour),
             options.size,
@@ -442,9 +451,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             report.step,
             report.render_seconds * 1000.0
         );
-        let (owned, distinct) = palette.political_summary();
+        // political fill + borders
+        let (filled, distinct) = layers.summary();
         println!(
-            "Political layer: {owned} provinces with a resolved owner in {distinct} country colors; the gradient-border fill is not drawn yet"
+            "Political layer: {filled} provinces filled in {distinct} country colors ({}); gradient fields rebuilt in {:.0} ms",
+            mode.field(),
+            layers.build.as_secs_f64() * 1000.0
+        );
+        let border_vertices: usize = document
+            .border_meshes
+            .meshes
+            .iter()
+            .map(|mesh| mesh.vertex_count())
+            .sum();
+        println!(
+            "Borders: {border_vertices} vertices over {} classes and {} strait vertices; traced in {:.0} ms",
+            document.border_meshes.meshes.len(),
+            document.straits.len(),
+            document.border_trace.as_secs_f64() * 1000.0
         );
         return Ok(());
     }

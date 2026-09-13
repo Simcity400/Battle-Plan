@@ -10,9 +10,14 @@ use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 
 use super::{
-    camera::Camera,
+    // borders
+    border_pass::{BorderAssets, BorderFrame, BorderPass, StraitVertex, wrap_offsets},
+    borders::BorderMeshes,
+    camera::{Camera, MAP_SIZE_X},
     frame::{DayNight, FrameConstants},
-    terrain::{Grid, TerrainInputs, TerrainPass, grid_for},
+    // political fill
+    political::Regions,
+    terrain::{Grid, MARGIN, TerrainInputs, TerrainPass, grid_for},
     textures::{
         Bound, GRADIENT_HEIGHT, GRADIENT_WIDTH, MapAssets, SNOW_MUD_HEIGHT, SNOW_MUD_WIDTH,
         Samplers, data_texture, upload, write_data,
@@ -179,6 +184,10 @@ pub struct Scene {
     targets: Option<Targets>,
     grid: Grid,
     generation: u64,
+    // borders
+    /// Kept so the border pass can be built after the scene, once the document has traced it.
+    globals_layout: wgpu::BindGroupLayout,
+    borders: Option<BorderPass>,
 }
 
 impl Scene {
@@ -315,6 +324,9 @@ impl Scene {
                 counts: [0, 0],
             },
             generation: 0,
+            // borders
+            globals_layout,
+            borders: None,
         };
         scene.rebind_terrain(device);
         Ok(scene)
@@ -439,6 +451,34 @@ impl Scene {
         Ok(())
     }
 
+    // borders
+    /// Builds the border pass and uploads the traced meshes and strait ribbons.
+    ///
+    /// Called once per document: the geometry depends only on content, and only the class of a land
+    /// edge changes with the hour ([`Scene::set_land_classes`]).
+    pub fn set_borders(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        assets: &BorderAssets,
+        meshes: &BorderMeshes,
+        straits: &[StraitVertex],
+    ) -> io::Result<()> {
+        let mut pass = BorderPass::new(device, queue, &self.globals_layout, OUTPUT_FORMAT, assets)?;
+        pass.upload(device, meshes, straits)?;
+        self.borders = Some(pass);
+        Ok(())
+    }
+
+    // borders
+    /// Re-buckets the land border edges for one hour's political regions.
+    pub fn set_land_classes(&mut self, device: &wgpu::Device, regions: &Regions) -> io::Result<()> {
+        match &mut self.borders {
+            Some(pass) => pass.set_land_classes(device, regions),
+            None => Ok(()),
+        }
+    }
+
     /// Draws terrain, sea bed, the refraction copy and the water plane.
     pub fn render(
         &mut self,
@@ -486,6 +526,20 @@ impl Scene {
         );
         self.water
             .draw(&mut encoder, targets, &self.globals_bind_group);
+        // borders
+        if let Some(borders) = &self.borders {
+            borders.draw(
+                &mut encoder,
+                queue,
+                targets,
+                &self.globals_bind_group,
+                BorderFrame {
+                    camera_height: camera.height,
+                    global_time: animation_time,
+                    offsets: &wrap_offsets(camera.visible_ground(size, MARGIN), MAP_SIZE_X),
+                },
+            );
+        }
         queue.submit([encoder.finish()]);
         Ok(())
     }

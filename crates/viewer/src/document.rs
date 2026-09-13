@@ -1,26 +1,30 @@
 //! A replay and the verified local game content used to draw its current hour.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use installed_content::{
     ResolveOptions,
-    map::{self, MapData, ProvinceKind},
+    map::{self, MapData},
 };
 use replay::{
     container::{Replay, SeekResult},
     frame::DecodedFrame,
     identity::Verification,
-    rows::{CountryRow, tables},
 };
 
-use crate::{map::textures::MapAssets, playback::Playback};
-
-const WATER: [u8; 4] = [31, 56, 77, 255];
-const UNKNOWN_LAND: [u8; 4] = [100, 103, 107, 255];
+use crate::{
+    map::textures::MapAssets,
+    // borders
+    map::{
+        border_pass::{BorderAssets, StraitVertex, Topology, strait_quads},
+        borders::{self, BorderMeshes, HeightField, ProvinceMap},
+    },
+    playback::Playback,
+};
 
 pub struct Document {
     pub playback: Playback,
@@ -30,35 +34,16 @@ pub struct Document {
     /// Persistent content verification and presentation limitations.
     pub warnings: Vec<String>,
     pub source_path: PathBuf,
-}
-
-pub struct Palette {
-    /// Indexed by province id, including the province-zero sentinel.
-    pub colors: Vec<[u8; 4]>,
-    /// Resolved country slot plus one; zero means no resolved country.
-    pub owner_keys: Vec<u32>,
-    /// Limitations at this hour, separate from persistent content warnings.
-    pub warnings: Vec<String>,
-}
-
-impl Palette {
-    /// What the political layer holds this hour: provinces with a resolved
-    /// owner, and the distinct country colours among them.
-    ///
-    /// The fill itself is drawn by the gradient-border pass, which the border
-    /// worker is still building, so the viewer reports the state it is holding
-    /// rather than pretending it is on screen.
-    pub fn political_summary(&self) -> (usize, usize) {
-        let owned = self
-            .owner_keys
-            .iter()
-            .enumerate()
-            .filter(|(_, key)| **key != 0)
-            .map(|(province, _)| self.colors[province])
-            .collect::<Vec<_>>();
-        let distinct = owned.iter().collect::<BTreeSet<_>>().len();
-        (owned.len(), distinct)
-    }
+    // borders
+    /// `map/terrain/border_*_0.dds` and `strait.dds`.
+    pub border_assets: BorderAssets,
+    /// The traced border strips. Every land edge sits in the `Province` bucket until the hour's
+    /// political regions re-bucket it; see `map::border_pass`.
+    pub border_meshes: BorderMeshes,
+    /// The strait ribbons from `map/adjacencies.csv`.
+    pub straits: Vec<StraitVertex>,
+    /// Wall time of the border trace, for reporting.
+    pub border_trace: Duration,
 }
 
 impl Document {
@@ -88,18 +73,53 @@ impl Document {
         warnings.push(
             "Country colors come from the game's static content; runtime and cosmetic color overrides were not captured.".into(),
         );
+        // borders
+        let border_assets = BorderAssets::load(&content.layers)?;
+        let states = installed_content::states::read(&content.layers)?;
+        let regions = installed_content::regions::read(&content.layers)?;
+        let adjacencies = installed_content::adjacencies::read(&content.layers)?;
+        let topology = Topology::new(&map, &states, &regions, &adjacencies)?;
+        let heights = HeightField {
+            width: assets.heightmap.width,
+            height: assets.heightmap.height,
+            values: assets.heightmap_texels(),
+        };
+        let straits = strait_quads(&adjacencies, &heights, border_assets.strait_aspect())?;
+        let started = Instant::now();
+        let border_meshes = borders::build(
+            &ProvinceMap {
+                width: map.width,
+                height: map.height,
+                ids: &map.province_ids,
+            },
+            &|a, b| topology.trace_class(a, b),
+            &heights,
+        )?;
+        let border_trace = started.elapsed();
+        if !border_meshes.one_pixel_provinces.is_empty() {
+            warnings.push(format!(
+                "{} provinces cover a single pixel of map/provinces.bmp; the game reports these too and no border is traced through them.",
+                border_meshes.one_pixel_provinces.len()
+            ));
+        }
         Ok(Self {
             playback: Playback::new(replay)?,
             map,
             assets,
             warnings,
             source_path: path.to_path_buf(),
+            border_assets,
+            border_meshes,
+            straits,
+            border_trace,
         })
     }
 
-    pub fn palette(&self, control: bool) -> io::Result<Palette> {
+    // political fill
+    /// The decoded frame of the hour on screen, or a named error for a recorded gap.
+    pub fn frame(&self) -> io::Result<&DecodedFrame> {
         match self.playback.current() {
-            SeekResult::Frame(frame) => palette(&self.map, frame, control),
+            SeekResult::Frame(frame) => Ok(frame),
             SeekResult::Gap {
                 branch,
                 hour,
@@ -135,275 +155,10 @@ fn check_verification(
     Ok(())
 }
 
-fn palette(map: &MapData, frame: &DecodedFrame, control: bool) -> io::Result<Palette> {
-    let countries = frame
-        .complete::<tables::Countries>()?
-        .iter()
-        .map(|country| (country.canonical_slot, country))
-        .collect::<BTreeMap<_, _>>();
-    let links = frame
-        .complete::<tables::CountryLinks>()?
-        .iter()
-        .map(|link| (link.id, link.canonical_slot))
-        .collect::<BTreeMap<_, _>>();
-    let provinces = frame.complete::<tables::Provinces>()?;
-    let count = map
-        .definitions
-        .last_key_value()
-        .and_then(|(&id, _)| usize::try_from(id).ok().and_then(|id| id.checked_add(1)))
-        .ok_or_else(|| {
-            invalid("map has no definitions or its province ids exceed address space")
-        })?;
-    let mut result = Palette {
-        colors: vec![UNKNOWN_LAND; count],
-        owner_keys: vec![0; count],
-        warnings: Vec::new(),
-    };
-    let mut observed = BTreeSet::new();
-    let mut unknown = Vec::new();
-    for province in provinces {
-        let definition = map.definitions.get(&province.id).ok_or_else(|| {
-            invalid(format!(
-                "recorded province {} is absent from map/definition.csv",
-                province.id
-            ))
-        })?;
-        observed.insert(province.id);
-        let index = province.id as usize;
-        if matches!(definition.kind, ProvinceKind::Sea | ProvinceKind::Lake) {
-            result.colors[index] = WATER;
-            continue;
-        }
-        let reference = if control {
-            province.controller
-        } else {
-            province.owner
-        };
-        if reference == 0 {
-            unknown.push(province.id);
-            continue;
-        }
-        let slot = links.get(&reference).ok_or_else(|| {
-            invalid(format!(
-                "province {} references missing country link {reference}",
-                province.id
-            ))
-        })?;
-        let country = countries.get(slot).ok_or_else(|| {
-            invalid(format!(
-                "province {} country link {reference} resolves to missing country slot {slot}",
-                province.id
-            ))
-        })?;
-        result.colors[index] = country_color(map, country)?;
-        result.owner_keys[index] = slot
-            .checked_add(1)
-            .ok_or_else(|| invalid("country slot exceeds the map border key range"))?;
-    }
-    for &id in map.definitions.keys() {
-        if id != 0 && !observed.contains(&id) {
-            return Err(invalid(format!(
-                "hour {} has no recorded row for map province {id}",
-                frame.hour
-            )));
-        }
-    }
-    if !unknown.is_empty() {
-        let field = if control { "controller" } else { "owner" };
-        let examples = unknown
-            .iter()
-            .take(12)
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-        result.warnings.push(format!(
-            "{} land provinces have a zero {field} reference and are shown grey; province ids {examples}{}",
-            unknown.len(),
-            if unknown.len() > 12 { ", …" } else { "" }
-        ));
-    }
-    Ok(result)
-}
-
-fn country_color(map: &MapData, country: &CountryRow) -> io::Result<[u8; 4]> {
-    let tag = String::from_utf8_lossy(&country.tag);
-    let rgb = map.country_colors.rgb.get(&country.tag).ok_or_else(|| {
-        let reason = map
-            .country_colors
-            .unavailable
-            .get(&country.tag)
-            .map(String::as_str)
-            .unwrap_or("no static color exists in the recorded game content");
-        invalid(format!("country {tag} color is unavailable: {reason}"))
-    })?;
-    Ok([rgb[0], rgb[1], rgb[2], 255])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::map::{CountryColors, ProvinceDefinition};
-    use replay::{
-        frame::{Metrics, TableView},
-        identity::Roster,
-        rows::{CountryLinkRow, ProvinceRow, TableId, TableRows},
-    };
-
-    fn map() -> MapData {
-        MapData {
-            width: 3,
-            height: 1,
-            province_ids: vec![1, 2, 3],
-            definitions: [
-                (0, ProvinceKind::Land),
-                (1, ProvinceKind::Land),
-                (2, ProvinceKind::Land),
-                (3, ProvinceKind::Sea),
-            ]
-            .into_iter()
-            .map(|(id, kind)| {
-                (
-                    id,
-                    ProvinceDefinition {
-                        id,
-                        rgb: [id as u8, 0, 0],
-                        kind,
-                    },
-                )
-            })
-            .collect(),
-            country_colors: CountryColors {
-                rgb: [(b"GER".to_vec(), [102, 96, 87])].into(),
-                unavailable: BTreeMap::new(),
-            },
-        }
-    }
-
-    fn frame() -> DecodedFrame {
-        let mut tables = std::array::from_fn(|_| TableView::Unavailable {
-            reason: "not needed for map".into(),
-        });
-        tables[TableId::Countries.index()] =
-            TableView::Complete(TableRows::Countries(vec![CountryRow {
-                id: 100,
-                canonical_slot: 1,
-                tag: b"GER".to_vec(),
-                ..Default::default()
-            }]));
-        tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
-            CountryLinkRow {
-                id: 100,
-                canonical_slot: 1,
-            },
-            CountryLinkRow {
-                id: 101,
-                canonical_slot: 1,
-            },
-        ]));
-        tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![
-            ProvinceRow {
-                id: 1,
-                owner: 100,
-                controller: 0,
-                victory_points: 10,
-                ..Default::default()
-            },
-            ProvinceRow {
-                id: 2,
-                owner: 101,
-                controller: 100,
-                victory_points: -5,
-                ..Default::default()
-            },
-            ProvinceRow {
-                id: 3,
-                ..Default::default()
-            },
-        ]));
-        DecodedFrame {
-            branch: 1,
-            hour: 42,
-            tables,
-            metrics: Metrics::default(),
-        }
-    }
-
-    #[test]
-    fn aliases_share_country_borders_and_unrelated_table_failure_does_not_hide_map() {
-        let palette = palette(&map(), &frame(), false).unwrap();
-        assert_eq!(palette.colors[1], [102, 96, 87, 255]);
-        assert_eq!(palette.colors[1], palette.colors[2]);
-        assert_eq!(palette.owner_keys[1], palette.owner_keys[2]);
-        assert_ne!(palette.owner_keys[1], 0);
-        assert_eq!(palette.colors[3], WATER);
-        assert!(palette.warnings.is_empty());
-    }
-
-    #[test]
-    fn zero_control_is_named_and_never_inherits_owner() {
-        let palette = palette(&map(), &frame(), true).unwrap();
-        assert_eq!(palette.colors[1], UNKNOWN_LAND);
-        assert_eq!(palette.owner_keys[1], 0);
-        assert_eq!(palette.colors[2], [102, 96, 87, 255]);
-        assert!(palette.warnings[0].contains("zero controller"));
-        assert!(palette.warnings[0].contains("province ids 1"));
-    }
-
-    #[test]
-    fn required_table_failure_and_absent_province_are_refused() {
-        let mut frame = frame();
-        frame.tables[TableId::CountryLinks.index()] = TableView::Truncated {
-            rows: TableRows::CountryLinks(Vec::new()),
-            missing: 7,
-        };
-        assert!(
-            palette(&map(), &frame, false)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("CountryLinks is truncated (7 missing rows)")
-        );
-        let mut frame = super::tests::frame();
-        let TableView::Complete(TableRows::Provinces(rows)) =
-            &mut frame.tables[TableId::Provinces.index()]
-        else {
-            unreachable!()
-        };
-        rows.pop();
-        assert!(
-            palette(&map(), &frame, false)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("no recorded row for map province 3")
-        );
-    }
-
-    #[test]
-    fn missing_country_color_and_dangling_links_are_named_errors() {
-        let mut map = map();
-        map.country_colors.rgb.clear();
-        map.country_colors
-            .unavailable
-            .insert(b"GER".to_vec(), "runtime color only".into());
-        assert!(
-            palette(&map, &frame(), false)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("country GER color is unavailable: runtime color only")
-        );
-        let mut frame = frame();
-        frame.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(Vec::new()));
-        assert!(
-            palette(&super::tests::map(), &frame, false)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("province 1 references missing country link 100")
-        );
-    }
+    use replay::identity::Roster;
 
     #[test]
     fn every_unverified_identity_requires_override_and_keeps_its_reason() {
