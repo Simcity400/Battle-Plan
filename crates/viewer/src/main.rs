@@ -263,7 +263,8 @@ impl Options {
         // carry, so it is a verification aid for scoring one frame, not a viewer setting.
         if !options.demilitarized.is_empty() && !dump {
             return Err(invalid(
-                "--demilitarized substitutes a save's demilitarized=yes flag for the missing                  recording and requires --dump",
+                "--demilitarized substitutes a save's demilitarized=yes flag for the missing \
+                 recording and requires --dump",
             ));
         }
         Ok(options)
