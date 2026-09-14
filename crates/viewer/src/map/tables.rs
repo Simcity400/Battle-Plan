@@ -199,6 +199,10 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
         "land counters count only the recorded divisions, and a land combat's attack direction may \
          be missing",
     );
+    out.note::<tables::DivisionTemplates>(
+        frame,
+        "a land counter whose division's template is among the missing rows draws no unit-type          icon, and its dark overlay panel is left bare",
+    );
     out.note::<tables::TaskForces>(
         frame,
         "naval counters cover only the recorded task forces, and a naval base holding one of the \

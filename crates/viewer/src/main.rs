@@ -839,9 +839,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         println!(
-            "Counter assets: {} sprite sheets, {} small flags packed{}",
+            "Counter assets: {} sprite sheets, {} small flags and {} unit-type frames packed{}",
             document.icons.counters.sheet_count(),
             document.icons.counters.flags.len(),
+            document.icons.counters.types.len(),
             if counter_report.missing_flags.is_empty() {
                 String::new()
             } else {
