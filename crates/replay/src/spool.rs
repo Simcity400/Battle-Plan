@@ -11,6 +11,7 @@ use std::{
 use crate::{
     branches::{BranchStart, Gap},
     codec::{Decoder, invalid, put_string},
+    format::FormatVersion,
     frame::Frame,
     identity::SessionStart,
 };
@@ -177,7 +178,10 @@ impl Record {
         Ok(match input.u8()? {
             0 => Self::SessionStart(SessionStart::decode(input)?),
             1 => Self::BranchStart(BranchStart::decode(input)?),
-            2 => Self::Frame(Frame::decode(input)?),
+            // A spool segment carries the `H4SH` record magic this build
+            // writes, so its frames are always the current layout; older
+            // segments are refused whole at the magic.
+            2 => Self::Frame(Frame::decode(input, FormatVersion::CURRENT)?),
             3 => Self::Gap(Gap::decode(input)?),
             tag @ 4..=6 => Self::Control(ControlRecord::decode_tag(tag, input)?),
             _ => return Err(invalid("unknown spool record tag")),

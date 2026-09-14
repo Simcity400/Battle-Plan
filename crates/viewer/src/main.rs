@@ -22,7 +22,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -71,6 +71,9 @@ struct Options {
     // colour
     /// `--postfx off` renders without the engine's colour grading.
     postfx: bool,
+    /// `--dump --no-water` skips the water plane, which is what the game's
+    /// `debug_water` console toggle does; see `map::scene::Request::no_water`.
+    no_water: bool,
     // borders
     /// `--dump --demilitarized <ids>`: state ids to treat as demilitarised **in addition to** the
     /// hour's recorded `StateFlags`, so an hour whose flags are short can still be scored against
@@ -95,6 +98,7 @@ impl Options {
             // on unless `--postfx off` turns it off. The measurements behind
             // that are in `map::post`.
             postfx: true,
+            no_water: false,
             ..Default::default()
         };
         let mut args = args.peekable();
@@ -126,6 +130,7 @@ impl Options {
                     options.json = Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
                 }
                 // colour
+                Some("--no-water") => options.no_water = true,
                 Some("--postfx") => {
                     let value = args
                         .next()
@@ -312,12 +317,26 @@ impl Options {
         if options.out.is_some() && options.replay.is_none() {
             return Err(invalid(USAGE));
         }
+        if options.no_water && !options.headless_dump {
+            return Err(invalid(
+                "--no-water skips the water plane so the underwater pass can be scored on its own \
+                 and is a --dump verification aid",
+            ));
+        }
         // borders: the override adds a save's flag to an hour whose recorded flags are short, so
         // it is a verification aid for scoring one frame, not a viewer setting.
         if !options.demilitarized.is_empty() && !options.headless_dump {
             return Err(invalid(
                 "--demilitarized adds a save's demilitarized=yes states to the hour's recorded \
                  StateFlags and requires --dump",
+            ));
+        }
+        // borders: the same reasoning as above — this one reproduces a game console toggle so a
+        // layer can be scored on its own, and it is not a viewer setting either.
+        if options.debug_borders && !options.headless_dump {
+            return Err(invalid(
+                "--debug-borders reproduces the game console's debug_borders for scoring one \
+                 frame and requires --dump",
             ));
         }
         Ok(options)
@@ -653,6 +672,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 animation_time: 0.0,
                 // colour
                 postfx: options.postfx,
+                no_water: options.no_water,
                 overlay: Overlay {
                     names: Some(&placements),
                     layer_alpha: fade.as_array(),
@@ -1097,6 +1117,28 @@ mod tests {
 
         assert!(parse(&["--dump", "campaign.battleplan", "--hour", "1"]).is_err());
         assert!(parse(&["--dump", "campaign.battleplan", "--out", "f.png"]).is_err());
+    }
+
+    // borders
+    #[test]
+    fn the_layer_toggle_is_a_dump_only_verification_aid() {
+        let dump = parse(&[
+            "--dump",
+            "campaign.battleplan",
+            "--hour",
+            "60826315",
+            "--out",
+            "frame.png",
+            "--debug-borders",
+        ])
+        .unwrap();
+        assert!(dump.debug_borders);
+        assert!(
+            !parse(&["--dump", "c.battleplan", "--hour", "1", "--out", "f.png"])
+                .unwrap()
+                .debug_borders
+        );
+        assert!(parse(&["c.battleplan", "--debug-borders"]).is_err());
     }
 
     // capture

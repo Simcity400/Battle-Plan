@@ -69,9 +69,11 @@
 // What is left is brightness, not hue. Solving the graded game pixel back through the post chain —
 // which the CPU mirror reproduces to within a byte, with the adapted luminance pinned by the
 // `hdr_*_adjustment` clamps — the ribbon wants about 1.6x this scene level, uniformly across the
-// three channels, at `EXPOSURE_SCALE = 0.32`. The open sea in the same frame wants 1.4x to 1.6x and
-// the land about 1.0x, so this is the water-versus-land gap `water.wgsl` records and not something
-// the river pass does differently. The colour grade is not hiding it either: the night LUT
+// three channels, at `SCENE_BRIGHTNESS = 0.32`. The open sea in the same frame wants 1.4x to 1.6x
+// and the land about 1.0x, so this is the water-versus-land level difference `water.wgsl` records
+// and not something the river pass does differently. That difference is a level and not a hue:
+// measured again on four frames, sea and land want the same per-channel rotation and differ only
+// in how much of it, which `water.wgsl` sets out. The colour grade is not hiding it either: the night LUT
 // `colorcorrection_green_night3.tga` does lift blue-cyan hard, which is what turns this scene into a
 // pale ribbon at all, but it cannot invent the missing factor.
 

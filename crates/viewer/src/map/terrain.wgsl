@@ -5,6 +5,61 @@
 // equivalent and strictly more accurate), so `QuadOffset_Scale_IsDetail` and
 // the `vSnap` T-junction stitching have no counterpart here. Everything the
 // pixel shaders do is ported literally; each departure is commented.
+//
+// # This pass is where the scene's brightness gap lives (measured 2026-09-14)
+//
+// `SCENE_BRIGHTNESS` in `map::post` says the scene this viewer hands the colour
+// grade is about 2.7x brighter than the game's. The game's own console layer
+// toggles locate it here rather than in the political fill, the trees or the
+// water. `pairE_h200_nofill.png` is the reference hour with `debug_borders`,
+// which removes the gradient fill and the border strips; `--debug-borders` puts
+// this viewer in the same state; the camera is (3009.83, 1568.00, 163.934),
+// fitted by matching bare terrain to bare terrain and independently from the
+// victory-point labels. Masks are the game's own: a pixel is bare terrain when
+// blanking the terrain changes it and removing the trees, the rivers and the
+// city sprawl does not. Scene values, both frames carried back through the post
+// chain with the winter cube the snow rule selects:
+//
+// | surface | game | this viewer | game / ours |
+// |---|---|---|---|
+// | bare terrain (809k px) | 0.060 0.076 0.052 | 0.255 0.310 0.165 | 0.24 0.25 0.32 |
+// | terrain under trees | 0.089 0.104 0.097 | 0.251 0.306 0.184 | 0.35 0.34 0.53 |
+// | terrain under city sprawl | 0.119 0.129 0.127 | 0.286 0.322 0.216 | 0.42 0.40 0.59 |
+// | open water | 0.103 0.127 0.185 | 0.251 0.286 0.345 | 0.41 0.44 0.54 |
+// | whole frame | 0.072 0.089 0.068 | 0.251 0.290 0.192 | 0.29 0.31 0.35 |
+//
+// So the bare lit terrain is the worst of it at a factor of four, the sea is
+// only 2.3x out, and the two rows between them are where the game draws a layer
+// this viewer does not: its tree canopy and its city sprawl add scene of their
+// own, which is why the ratio there sits between the two. One constant fitted
+// over the whole frame is therefore a compromise, and it shows in the graded
+// frame at the same camera: with `SCENE_BRIGHTNESS` applied, this viewer's bare
+// terrain comes out at 1.8, 1.3 and 1.1 times the game's three channels while
+// its open water comes out at 1.0, 0.78 and 0.72 of them.
+//
+// The hue is a smaller story than the level here. Over bare terrain the three
+// channels want 0.24, 0.25 and 0.32, so the blue deficit the daylight pairs show
+// is only 1.3x relative to red once the political fill and the sea are out of
+// the frame; the 2.45x that `map::post` records is a whole-frame number and
+// belongs mostly to the sea and to the filled land.
+//
+// Two cautions on the sea row. The whole-frame fits at the four scored cameras
+// say the sea wants the *same* per-channel correction as the land (the sea pass
+// records that), where this table has it 1.7x closer to one. The masks are not
+// the same thing: the sea here is the rivers, lakes and coastal shelf a camera
+// 164 units up sees, under the game's weather haze, while the scored cameras
+// look at the open North Sea and Baltic. And the game's `debug_water` removes
+// the underwater draw along with the plane, so `pairE_05_nowater` shows lit
+// terrain below the waterline; that only affects which pixels the mask calls
+// water, not the comparison itself, which is between the two full frames.
+//
+// Not the fill: at this camera the engine's own
+// `gradient_border_distance_to_alpha` gives an interior fill of exactly zero,
+// and the game agrees — over inland terrain more than seven pixels from any
+// border strip the median difference between `pairE_h200_fill` and
+// `pairE_h200_nofill` is 1, 1 and 2 levels of 255, against this viewer's 0.
+// Scripts: `C:\hoi4_scratch\replay_map\scene\pairE_compare.py`,
+// `fitE_terrain.py`.
 
 @group(1) @binding(0) var terrain_diffuse: texture_2d<f32>;
 @group(1) @binding(1) var height_normal: texture_2d<f32>;
@@ -248,6 +303,51 @@ fn terrain_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     return vec4<f32>(out, saturate(city_lights_mask * night_factor * CITY_LIGHTS_BLOOM_FACTOR));
 }
 
+// `PixelShaderUnderwater` (`pdxmap.shader:407-455`), checked against the source
+// line by line and measured term by term on four frames; `water.wgsl` carries
+// the numbers and the scripts, and this is what the check settled.
+//
+// The `underwater` effect (`pdxmap.shader:495-499`) names no defines, where
+// `terrain` names `PDX_IMPROVED_BLINN_PHONG` and `terrain_low_gfx` names
+// `LOW_END_GFX`; the engine compiles it by that name and no other
+// (`FUN_141261100` calls the effect loader with `"gfx/FX/pdxmap.lua"` and the
+// literal `"underwater"`, exactly as it does for `terrain`, `terrain_low_gfx`
+// and `terrainunlit`, and the only other arguments are a vertex declaration and
+// an out-list). So this pass takes the plain Phong branch of `CalculateSunLight`
+// and `_Glossiness` is the specular exponent directly, which is why
+// `MAP_SPECULAR_WIDTH` of 15 is passed to `calculate_sun_light_phong` and not
+// through `GetNonLinearGlossiness`.
+//
+// Two facts the measurements added, both about the sea floor:
+//
+// * `map/heightmap.bmp` is the byte 89 over every ocean — 7.47 M of its 11.5 M
+//   pixels — so `prepos.y` here is 8.9 and `vWaterAlpha` is a constant 0.4675
+//   over open water. The `vMin` 5.3 and `vMax` 13.0 the shader calls a "depth
+//   fog" never vary: `vMax` is above `WATER_HEIGHT` and the floor never drops
+//   below 8.9. Every open-sea refraction the water plane samples is therefore
+//   53 % water tint and 47 % lit sea bed, not the tint alone.
+// * The sea bed is lit at about 0.60 of its albedo by day where the water
+//   surface beside it is lit at 1.02, and that is the engine's own doing rather
+//   than a porting slip: this pass calls `CalculateSunDirection`, which uses the
+//   virtual sun's real `y`, while `pdxwater.shader` calls
+//   `CalculateSunDirectionWater`, which swaps in `*_HEIGHT_WATER` through the
+//   `.xwz` swizzle and puts the source nearly overhead.
+//
+// The game's own `debug_water` toggle takes this draw away together with the
+// water plane, and what it leaves is lit terrain: `pdxmap.shader:232`'s
+// commented-out clip really is off and the engine draws `PixelShaderTerrain`
+// below water too, under this pass. `terrain_main` above discards it instead,
+// which is invisible while the underwater draw covers it and is what
+// `map/water.wgsl` records against the `pairE` frames.
+//
+// The two textures were cross-checked against CPU decodes at the probed `uv2`:
+// the tint is `colormap_water_0.dds` (matching to within the 8-bit probe's own
+// step, which also rules out a flipped `v`) and the diffuse is
+// `underwater_terrain_0.dds`, whose whole-file mean 0.1781 0.2171 0.2434 is
+// what the shader reads because the file's spatial standard deviation is only
+// 0.013. Which sampler slot the engine binds each of them to is inferred from
+// the asset set rather than read from the decompile; `water.wgsl` records that
+// as the one UNVERIFIED item here.
 @fragment
 fn underwater_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     if WATER_HEIGHT - input.prepos.y + TERRAIN_WATER_CLIP_HEIGHT < 0.0 {

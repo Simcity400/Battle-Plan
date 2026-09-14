@@ -11,6 +11,7 @@ use crate::{
     BranchId, FORMAT_VERSION, Hour, KEYFRAME_INTERVAL, SessionId,
     branches::{BranchReason, BranchStart, BranchTracker, Gap},
     codec::{Decoder, invalid, put_bytes, put_string},
+    format::FormatVersion,
     frame::{DecodedFrame, Frame, FrameDecoder, TABLE_COUNT, TableView},
     identity::{Identity, SessionStart, Verification},
     rows::{TableId, TableRows},
@@ -91,6 +92,9 @@ impl RecoveryNote {
 /// The byte backing can later become a mapping without changing block semantics.
 pub struct Replay {
     bytes: Vec<u8>,
+    /// The version in this file's header, which fixes how many tables each of
+    /// its frames carries. Only `FormatVersion::CURRENT` may be appended to.
+    pub format: FormatVersion,
     pub campaign_id: Vec<u8>,
     pub identity: Identity,
     pub keyframe_interval: u32,
@@ -276,6 +280,15 @@ impl Replay {
         segments: &[&[Record]],
         observe: &mut FrameObserver<'_>,
     ) -> io::Result<Self> {
+        // Appending keeps the existing blocks byte for byte and writes the new
+        // ones at the current version, so an older file would end up with two
+        // frame layouts under one header word. Old files are read, never grown.
+        if self.format != FormatVersion::CURRENT {
+            return Err(invalid(format!(
+                "cannot append to a format {} replay; this build writes {FORMAT_VERSION}",
+                self.format.version()
+            )));
+        }
         let pending = collect(
             segments,
             &self.identity,
@@ -488,12 +501,7 @@ impl Replay {
         }
         let mut header = Decoder::new(&bytes[..trailer_start]);
         expect_magic(&mut header, HEADER_MAGIC)?;
-        let version = header.u16()?;
-        if version != FORMAT_VERSION {
-            return Err(invalid(format!(
-                "unsupported replay format version {version}; expected {FORMAT_VERSION}"
-            )));
-        }
+        let format = FormatVersion::read(header.u16()?)?;
         let keyframe_interval = header.u32()?;
         if keyframe_interval != KEYFRAME_INTERVAL {
             return Err(invalid("unsupported keyframe interval"));
@@ -540,6 +548,7 @@ impl Replay {
         )?;
         Ok(Self {
             bytes,
+            format,
             campaign_id,
             identity,
             keyframe_interval,
@@ -657,7 +666,7 @@ impl Replay {
             let payload_length = decoder.u32()? as usize;
             let payload = decoder.take(payload_length)?;
             let mut frame_decoder = Decoder::new(payload);
-            let frame = Frame::decode(&mut frame_decoder)?;
+            let frame = Frame::decode(&mut frame_decoder, self.format)?;
             frame_decoder.finish()?;
             if frame.branch != index.branch
                 || frame.keyframe != (position == 0)
@@ -1639,19 +1648,160 @@ mod tests {
         assert!(malformed.into_history().is_err());
     }
 
+    /// Rewrite a replay this build wrote as the format-14 file the older build
+    /// would have written for the same frames.
+    ///
+    /// Format 17 only appended `TableId`s 148..=154, so downgrading a frame is
+    /// dropping the trailing entries of its timing array and the trailing
+    /// entries of its table list; `encode_with_sizes` reports exactly how many
+    /// bytes each of those tables took, so no encoder logic is restated here.
+    /// Every block, index entry, trailer and CRC is rebuilt around the shorter
+    /// frames, so the result is a real file, not a patched header word.
+    fn downgrade_to_format_14(replay: &Replay) -> Vec<u8> {
+        let recorded = FormatVersion::LEGACY_14.recorded_tables();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(HEADER_MAGIC);
+        bytes.extend_from_slice(&FormatVersion::LEGACY_14.version().to_le_bytes());
+        bytes.extend_from_slice(&replay.keyframe_interval.to_le_bytes());
+        put_bytes(&mut bytes, &replay.campaign_id).unwrap();
+        let mut identity = Vec::new();
+        replay.identity.encode(&mut identity).unwrap();
+        put_bytes(&mut bytes, &identity).unwrap();
+        let mut blocks = Vec::new();
+        for entry in &replay.index {
+            let frames = replay.read_block(entry).unwrap();
+            let mut block = RawBlock::new(&frames[0]);
+            for frame in &frames {
+                let mut payload = Vec::new();
+                let sizes = frame.encode_with_sizes(&mut payload).unwrap();
+                let trailing: usize = sizes[recorded..].iter().sum();
+                payload.truncate(payload.len() - trailing);
+                // branch, hour, keyframe flag and total time precede the array.
+                let timings = 8 + 4 + 1 + 8 + recorded * 8;
+                payload.drain(timings..timings + (TABLE_COUNT - recorded) * 8);
+                put_bytes(&mut block.frames, &payload).unwrap();
+                block.count += 1;
+                block.last_hour = frame.hour;
+            }
+            blocks.push(block);
+        }
+        let mut index = Vec::new();
+        append_blocks(&mut bytes, &mut index, &blocks).unwrap();
+        finish_file(
+            &mut bytes,
+            &replay.sessions,
+            &replay.branches,
+            &replay.gaps,
+            &replay.controls,
+            &replay.recovery_notes,
+            &index,
+        )
+        .unwrap();
+        bytes
+    }
+
     #[test]
-    fn old_replay_version_is_refused_before_decoding_frames() {
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
-        let mut bytes = replay.bytes().to_vec();
-        let previous_version = FORMAT_VERSION - 1;
-        bytes[4..6].copy_from_slice(&previous_version.to_le_bytes());
-        let error = Replay::open(bytes).err().unwrap().to_string();
+    fn a_format_14_replay_decodes_the_tables_it_recorded() {
+        let hours = [1, 2, 721];
+        let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();
+        let old = Replay::open(downgrade_to_format_14(&current)).unwrap();
+        assert_eq!(old.format, FormatVersion::LEGACY_14);
+        assert_eq!(old.campaign_id, current.campaign_id);
+        assert_eq!(old.identity, current.identity);
+        assert_eq!(old.sessions, current.sessions);
+        assert_eq!(old.branches, current.branches);
+        let recorded = FormatVersion::LEGACY_14.recorded_tables();
+        for hour in hours {
+            let SeekResult::Frame(frame) = old.seek(1, hour).unwrap() else {
+                panic!("hour {hour} did not decode at format 14");
+            };
+            let SeekResult::Frame(expected) = current.seek(1, hour).unwrap() else {
+                panic!("hour {hour} did not decode at the current version");
+            };
+            assert_eq!(frame.branch, expected.branch);
+            assert_eq!(frame.hour, expected.hour);
+            // Every table format 14 recorded decodes to exactly what the same
+            // frame decodes to now: no earlier table's encoding changed.
+            for table in TableId::ALL.into_iter().take(recorded) {
+                assert_eq!(
+                    frame.tables[table.index()],
+                    expected.tables[table.index()],
+                    "{table:?} decoded differently at format 14"
+                );
+            }
+            // The seven tables format 17 appended report the reason a consumer
+            // states as a limitation instead of drawing them.
+            for table in TableId::ALL.into_iter().skip(recorded) {
+                assert_eq!(
+                    frame.tables[table.index()],
+                    TableView::Unavailable {
+                        reason: "not recorded by format 14".into()
+                    },
+                    "{table:?} must be unavailable, not decoded"
+                );
+            }
+        }
+        // A file that predates a table is still a whole campaign.
+        old.into_history().unwrap();
+    }
+
+    #[test]
+    fn a_format_14_replay_may_be_read_but_never_appended_to() {
+        let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
+        let old = Replay::open(downgrade_to_format_14(&current)).unwrap();
+        let error = old
+            .append(&[records(2, &[3, 4])])
+            .err()
+            .unwrap()
+            .to_string();
         assert_eq!(
             error,
-            format!(
-                "unsupported replay format version {previous_version}; expected {FORMAT_VERSION}"
-            )
+            "cannot append to a format 14 replay; this build writes 17"
         );
+        // The same records still grow a file the writer wrote itself.
+        current.append(&[records(2, &[3, 4])]).unwrap();
+    }
+
+    #[test]
+    fn a_format_14_replay_keeps_every_crc_and_trailer_check() {
+        let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
+        let bytes = downgrade_to_format_14(&current);
+        assert!(Replay::open(bytes.clone()).is_ok());
+        let footer_start = bytes.len() - FOOTER_SIZE;
+        let mut damaged = bytes.clone();
+        damaged[footer_start - 1] ^= 0x20;
+        assert_eq!(
+            Replay::open(damaged).err().unwrap().to_string(),
+            "trailer CRC mismatch"
+        );
+        // A damaged block is still a refused block, not a short read that
+        // silently drops the tables format 14 did record.
+        let mut corrupt = bytes;
+        let block = Replay::open(corrupt.clone()).unwrap().index[0].clone();
+        corrupt[(block.offset + block.length - 1) as usize] ^= 0x40;
+        let replay = Replay::open(corrupt).unwrap();
+        assert!(matches!(
+            replay.seek(1, 1).unwrap(),
+            SeekResult::Gap { reason, .. } if reason.contains("unreadable block")
+        ));
+    }
+
+    #[test]
+    fn a_version_this_build_never_wrote_is_refused_before_decoding_frames() {
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
+        // 15 and 16 were never written: FORMAT_VERSION went from 14 to 17.
+        for version in [13u16, 15, 16, FORMAT_VERSION + 1] {
+            let mut bytes = replay.bytes().to_vec();
+            bytes[4..6].copy_from_slice(&version.to_le_bytes());
+            let error = Replay::open(bytes).err().unwrap().to_string();
+            assert_eq!(
+                error,
+                format!(
+                    "unsupported replay format version {version}; this build reads 14, 17 and \
+                     writes {FORMAT_VERSION}"
+                )
+            );
+        }
     }
 
     #[test]

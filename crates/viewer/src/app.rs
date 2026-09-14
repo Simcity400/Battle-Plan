@@ -913,6 +913,8 @@ impl Viewer {
                     animation_time,
                     // colour
                     postfx: self.postfx,
+                    // The window has no verification aids; `--dump` owns them.
+                    no_water: false,
                     // names
                     overlay: Overlay {
                         names: self.placements.as_ref(),

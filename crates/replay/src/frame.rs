@@ -3,6 +3,7 @@
 use crate::{
     BranchId, Hour, KEYFRAME_INTERVAL,
     codec::{Decoder, invalid, put_string},
+    format::FormatVersion,
     rows::{self, DeltaRow, TableId, TableRows, TableSchema},
 };
 use std::{
@@ -278,13 +279,17 @@ impl Frame {
         Ok(sizes)
     }
 
-    pub fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+    /// `format` is the version of the file this payload came out of. A frame
+    /// carries exactly one timing entry and one update per table that version
+    /// recorded, and those tables are the leading entries of `TableId::ALL`,
+    /// so an older version is decoded by reading a shorter prefix.
+    pub fn decode(input: &mut Decoder<'_>, format: FormatVersion) -> io::Result<Self> {
         let branch = input.u64()?;
         let hour = input.i32()?;
         let keyframe = input.bool()?;
         let total_ns = input.u64()?;
         let mut table_ns = [0; TABLE_COUNT];
-        for ns in &mut table_ns {
+        for ns in &mut table_ns[..format.recorded_tables()] {
             *ns = input.u64()?;
         }
         let metrics = Metrics {
@@ -294,7 +299,7 @@ impl Frame {
             dropped_frames: input.u64()?,
         };
         let mut tables = Vec::with_capacity(TABLE_COUNT);
-        for table in TableId::ALL {
+        for table in TableId::ALL.into_iter().take(format.recorded_tables()) {
             let update = match input.u8()? {
                 0 => TableUpdate::Snapshot(decode_rows(table, input)?),
                 1 => {
@@ -353,6 +358,15 @@ impl Frame {
                 return Err(invalid("keyframe contains a dependent or partial table"));
             }
             tables.push(update);
+        }
+        // A table the file's version predates is reported through the same
+        // unavailable path a table the collector could not read takes, so every
+        // consumer already states it instead of drawing it.
+        let missing = format.missing_reason();
+        while tables.len() < TABLE_COUNT {
+            tables.push(TableUpdate::Unavailable {
+                reason: missing.clone(),
+            });
         }
         Ok(Self {
             branch,
@@ -1563,7 +1577,7 @@ mod tests {
         let mut bytes = Vec::new();
         frame.encode(&mut bytes).unwrap();
         let mut decoder = Decoder::new(&bytes);
-        let result = Frame::decode(&mut decoder).unwrap();
+        let result = Frame::decode(&mut decoder, FormatVersion::CURRENT).unwrap();
         decoder.finish().unwrap();
         assert_eq!(&result, frame);
         result
@@ -2362,7 +2376,7 @@ mod tests {
         put_count(&mut bytes, 2).unwrap();
         crate::codec::put_varint(&mut bytes, u128::from(u64::MAX));
         crate::codec::put_varint(&mut bytes, 1);
-        assert!(Frame::decode(&mut Decoder::new(&bytes)).is_err());
+        assert!(Frame::decode(&mut Decoder::new(&bytes), FormatVersion::CURRENT).is_err());
     }
 
     #[test]
@@ -2693,7 +2707,7 @@ mod tests {
         let mut bytes = Vec::new();
         valid.encode(&mut bytes).unwrap();
         bytes[12] = 1; // The keyframe byte follows the u64 branch and i32 hour.
-        assert!(Frame::decode(&mut Decoder::new(&bytes)).is_err());
+        assert!(Frame::decode(&mut Decoder::new(&bytes), FormatVersion::CURRENT).is_err());
         assert_eq!(decoder.apply(&wire(&valid)).unwrap(), expected);
     }
 
