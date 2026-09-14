@@ -8,7 +8,8 @@ then reads only its clock; it sends no input and does not inject.
 The script does not modify settings or certify that a save finished loading.
 
 Screenshot, Click and Move coordinates are relative to the outer game window.
-Move positions the cursor without clicking or pressing a key. After setting
+Move positions the cursor without clicking or pressing a key. Wheel positions the
+cursor and turns the mouse wheel by Delta notches (negative zooms the map out). After setting
 speed and unpausing, move well inside the map before each timed run to avoid
 edge scrolling during either the baseline or the capture.
 Interactive actions briefly borrow foreground focus through a thread-attached
@@ -27,11 +28,13 @@ powershell -File tools/smoke.ps1 -Action Click -X 640 -Y 480
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Move -GameId 1234 -X 1280 -Y 720
 .EXAMPLE
+powershell -File tools/smoke.ps1 -Action Wheel -X 1280 -Y 720 -Delta -3
+.EXAMPLE
 powershell -File tools/smoke.ps1 -Action Baseline -Seconds 120 -Out captures\baseline
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Smoke', 'Launch', 'Screenshot', 'Key', 'Click', 'Move', 'Text', 'Console', 'Baseline')]
+    [ValidateSet('Smoke', 'Launch', 'Screenshot', 'Key', 'Click', 'Move', 'Wheel', 'Text', 'Console', 'Baseline')]
     [string]$Action = 'Smoke',
     [string]$GameExe = 'X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe',
     [string]$UserDirectory = 'C:\Users\Example\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV',
@@ -46,6 +49,7 @@ param(
     [string]$Key,
     [ValidateRange(-1, 32767)][int]$X = -1,
     [ValidateRange(-1, 32767)][int]$Y = -1,
+    [ValidateRange(-50, 50)][int]$Delta = 0,
     [ValidateLength(1, 512)][string]$Text,
     [ValidateRange(1, 254)][int]$ConsoleKey = 0xC0
 )
@@ -427,6 +431,19 @@ public static class Hoi4ProbeInput {
         System.Threading.Thread.Sleep(100);
         CheckTarget(window, process);
     }
+    public static void Wheel(IntPtr window, uint process, int x, int y, int notches) {
+        CheckTarget(window, process);
+        if (!SetCursorPos(x, y)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        System.Threading.Thread.Sleep(100);
+        int step = notches < 0 ? -1 : 1;
+        for (int sent = 0; sent != notches; sent += step) {
+            var turn = new Input[1];
+            turn[0].Data.Mouse.Flags = 0x0800;
+            turn[0].Data.Mouse.Data = unchecked((uint)(step * 120));
+            Send(window, process, turn);
+            System.Threading.Thread.Sleep(60);
+        }
+    }
     public static void Click(IntPtr window, uint process, int x, int y) {
         CheckTarget(window, process);
         if (!SetCursorPos(x, y)) throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -496,7 +513,7 @@ try {
         [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$keys[$Key])
         [pscustomobject]@{ Action = $Action; GameId = $game.Id; Key = $Key }
     }
-    { $_ -eq 'Click' -or $_ -eq 'Move' } {
+    { $_ -eq 'Click' -or $_ -eq 'Move' -or $_ -eq 'Wheel' } {
         if ($X -lt 0 -or $Y -lt 0 -or $X -ge $width -or $Y -ge $height) { throw "$Action coordinates must lie inside the screenshot rectangle." }
         $client = New-Object Hoi4ProbeInput+Rect
         $origin = New-Object Hoi4ProbeInput+Point
@@ -506,15 +523,18 @@ try {
         $screenX = $rect.Left + $X
         $screenY = $rect.Top + $Y
         if ($screenX -lt $origin.X -or $screenY -lt $origin.Y -or $screenX -ge $origin.X + $client.Right -or $screenY -ge $origin.Y + $client.Bottom) {
-            if ($Action -eq 'Move') { throw 'Move coordinates must be inside the game client area, not the window frame.' }
+            if ($Action -ne 'Click') { throw "$Action coordinates must be inside the game client area, not the window frame." }
             throw 'Clicks must be inside the game client area, not the window frame.'
         }
         if ($Action -eq 'Move') {
             [Hoi4ProbeInput]::Move($window, [uint32]$game.Id, $screenX, $screenY)
+        } elseif ($Action -eq 'Wheel') {
+            if ($Delta -eq 0) { throw 'Wheel requires a nonzero -Delta.' }
+            [Hoi4ProbeInput]::Wheel($window, [uint32]$game.Id, $screenX, $screenY, $Delta)
         } else {
             [Hoi4ProbeInput]::Click($window, [uint32]$game.Id, $screenX, $screenY)
         }
-        [pscustomobject]@{ Action = $Action; GameId = $game.Id; X = $X; Y = $Y }
+        [pscustomobject]@{ Action = $Action; GameId = $game.Id; X = $X; Y = $Y; Delta = $Delta }
     }
     { $_ -eq 'Text' -or $_ -eq 'Console' } {
         if (-not $Text -or $Text -match '[\r\n\x00-\x1F]') { throw 'Text and Console require one nonempty line without control characters.' }
