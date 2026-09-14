@@ -24,6 +24,57 @@
 //
 // The specification is `C:\hoi4_scratch\replay_map\research\r2\R2-borders-names-icons.md`
 // section 3.2 and 3.3; section numbers below refer to it.
+//
+// # Why the game's rivers are bright at night, and where ours still fall short
+//
+// The game's night screenshots (`captures\map_ref_20260914\screens\`, 1:00 on
+// 14 Sep 1943) show rivers as pale blue ribbons much brighter than the land around them. The hour
+// itself is not decodable from any replay we can read, but `(hour mod 24)` is all the sun and moon
+// depend on, so hour 60826824 on the `array` replay's branch 2 has the identical lighting and gives
+// an exact comparison for the water, which takes nothing from the replay tables.
+//
+// Every term was written straight to the frame and read back at a mid-ribbon pixel (screen 860,493
+// of a 2048x1152 dump at the reference camera). Linear values, before the colour grade:
+//
+// | term | value |
+// |---|---|
+// | `WaterColor` (`colormap_water_0.dds` at `vWorldUV`) | 0.259 0.333 0.451 |
+// | `texCUBE( ReflectionCubeMap ) * 1.3` | 0.502 0.522 0.557 |
+// | `fresnel` | 0.502 |
+// | after the fresnel mix, and `_Diffuse` (mid-ribbon, no bank, no snow) | 0.388 0.424 0.482 |
+// | `spec` (the LEAN Gaussian) | about 11.8 |
+// | `vGlossiness = spec / 0.5` | about 23.6 |
+// | `vSpecularIntensity` = `0.085 * (1 - gradientBorderFactor * 0.5)` | 0.051 |
+// | `AmbientLight` | 0.033 0.033 0.033 |
+// | `CalculateSunLight` diffuse (NdotL 0.92 on `MoonDiffuseIntensity * 2.5`) | 0.502 1.286 2.322 |
+// | `CalculateSunLight` specular | 0.047 0.126 0.220 |
+// | `ComposeLight` | 0.255 0.682 1.310 |
+// | `vBloomAlpha` | 0.60 |
+// | `DayNightWithBlend` with `lerp(0.2, 1.0, 0.60)` = blend 0.68 | 0.153 0.357 0.671 |
+//
+// So the whole candidate list is already live and correct here. The moon carries the ribbon: its
+// `(0.2176, 0.5566, 1.0) * 2.5` is nine times the sea's daylight-normalised ambient and it is nearly
+// overhead at this hour, which is what makes the night river blue rather than dark. The broad moon
+// highlight the low `vSpecularIntensity` buys is real too — `spec` is 11.8, not the 0 the sea sees,
+// because the river's `SampleWater` overload skips the `SpecularMap` flatten that shrinks the sea's
+// wave-slope covariance by `specMap^2` — and it contributes about a sixth of the blue. And the
+// double gradient-border call leaves `vBloomAlpha` at 0.60 rather than the sea's 1.0, so the ribbon
+// takes a blend of 0.68 and keeps most of its colour where the sea beside it is fully desaturated;
+// that difference is why the game's rivers read as *coloured* lines over a grey-blue sea.
+//
+// `SHADOW_WEIGHT_RIVER` is not a candidate: `GetShadowScaled` (`shadow.fxh:44`) returns
+// `(1 - s) + s * shadowValue`, which is 1 for any weight when the shadow value is 1, and the
+// reference profile has no caster.
+//
+// What is left is brightness, not hue. Solving the graded game pixel back through the post chain —
+// which the CPU mirror reproduces to within a byte, with the adapted luminance pinned by the
+// `hdr_*_adjustment` clamps — the ribbon wants about 1.6x this scene level, uniformly across the
+// three channels, at `EXPOSURE_SCALE = 0.32`. The open sea in the same frame wants 1.4x to 1.6x and
+// the land about 1.0x, so this is the water-versus-land gap `water.wgsl` records and not something
+// the river pass does differently. The colour grade is not hiding it either: the night LUT
+// `colorcorrection_green_night3.tga` does lift blue-cyan hard, which is what turns this scene into a
+// pale ribbon at all, but it cannot invent the missing factor.
+
 
 /// `SHADOW_WEIGHT_RIVER` (`constants.fxh:174`). Recorded for the shadow pass; see the header.
 const SHADOW_WEIGHT_RIVER: f32 = 0.4;

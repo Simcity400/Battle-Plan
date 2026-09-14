@@ -3,6 +3,61 @@
 // The engine draws the sea as a flat plane at WATER_HEIGHT. Its `uv` is the
 // flipped, top-down one (`pdxwater.shader:200`), the same coordinate the
 // terrain calls `uv2`, so every map-sized texture below is sampled top-down.
+//
+// # The sea is still short, and the shortfall is not in this file
+//
+// Every term below was written straight to the frame and read back at one open
+// North Sea pixel (screen 240,480 of a 2048x1152 dump at the reference camera),
+// once at night (hour 60826315) and once by day (hour 60832933). Linear values,
+// before the colour grade:
+//
+// | term | night | day |
+// |---|---|---|
+// | `WaterRefraction` (the underwater pass) | 0.126 0.220 0.349 | 0.157 0.220 0.294 |
+// | `ReflectionCubeMap` | 0.431 0.443 0.471 | 0.431 0.443 0.471 |
+// | `fresnel` | 0.502 | 0.502 |
+// | after the fresnel mix | 0.278 0.329 0.408 | 0.294 0.329 0.380 |
+// | `gradient_border_apply` | no change (see below) | no change |
+// | after the 0.2 darkness offset = `_Diffuse` | 0.224 0.267 0.329 | 0.235 0.267 0.306 |
+// | `AmbientLight` | 0.030 0.030 0.030 | 0.030 0.030 0.060 |
+// | `CalculateSunLight` diffuse | 0.235 0.596 1.067 | 0.988 0.988 0.988 |
+// | `CalculateSunLight` specular | 0 0 0 | 0 0 0 |
+// | `ComposeLight` | 0.059 0.165 0.361 | 0.243 0.271 0.322 |
+// | `ApplyDistanceFog` (factor 0.05) | 0.063 0.173 0.373 | 0.235 0.275 0.337 |
+// | `DayNightWithBlend` | 0.039 0.071 0.122 | unchanged, day side |
+//
+// Every line is what the game shader asks for given its input, and each input
+// was checked: the cube face is the +Y sky face of `reflection.dds` and it
+// really is that near-grey; the refraction really is `colormap_water_0.dds`
+// times `WATER_COLOR_LIGHTNESS`, cross-checked against a CPU decode of the same
+// texel; the fresnel sits at 0.5 for every viewing angle this camera has,
+// because `saturate(0.5 + 0.5 * pow(1 - dot*0.5, 10))` is 0.5004 at normal
+// incidence. `vBloomAlpha` is 1 at sea and that is correct: the gradient field
+// carries no sea region, so `gradient_border_apply` returns `1 - max(0, 0) = 1`
+// and `DayNightWithBlend` gets the full 0.8 night desaturation.
+//
+// Against the game the sea is still short. The post chain is mirrored exactly
+// enough on the CPU to reproduce this viewer's own graded output to within a
+// byte, and both reference frames have their adapted luminance pinned by the
+// `hdr_*_adjustment` clamps, so the scene level the game's pixels imply can be
+// solved for rather than guessed. At `EXPOSURE_SCALE = 0.32` the land solves to
+// about 1.0x of what this viewer draws, and the open sea to 1.20 1.34 1.64 by
+// day and 1.37 1.38 1.55 at night — a real water-versus-land imbalance, not a
+// global exposure one, and the same 1.6x the river pass measures.
+//
+// Solved backwards through this shader, the game's sea wants
+// `refractiveColor * (1 - fresnel) + reflectiveColor * fresnel` to be
+// 0.353 0.446 0.628 where it computes 0.294 0.329 0.380. With the fresnel
+// pinned at 0.5 and the cube fixed, that asks for a refraction of
+// 0.274 0.450 0.784. `colormap_water_0.dds` at that texel decodes to
+// 0.376 0.566 0.796 — so the sea lands where the game has it if the underwater
+// pass hands over the water tint *undimmed*, and misses it by that same 2x with
+// `WATER_COLOR_LIGHTNESS = 0.5` applied. That factor is explicit in
+// `pdxmap.shader:422` and the underwater pass is not this file's, so it is
+// recorded here rather than worked around: do not compensate for it with a
+// constant `pdxwater.shader` does not have. The other unported candidate is the
+// bloom add, which `green_night` drives hard (`BLOOM_SCALE 1.5`,
+// `BRIGHT_THRESHOLD 0.8`) and which would lift exactly the bright night water.
 
 @group(1) @binding(0) var height_texture: texture_2d<f32>;
 @group(1) @binding(1) var lean_texture1: texture_2d<f32>;
@@ -145,6 +200,18 @@ fn water_main(input: WaterVertex) -> @location(0) vec4<f32> {
     // defines, so `_Glossiness` is the Phong exponent directly and
     // `pow(NdotH, <1)` never concentrates a highlight. The sea's shortfall is
     // not here.
+    //
+    // Measured again with the intermediates written straight to the frame, at
+    // the open North Sea of the night pair: `spec` is exactly 0 there, and it is
+    // 0 for a reason rather than by a porting slip. The LEAN moments come back
+    // `B = (0.0155, -0.0084)`, `M = (0.0222, 0.0241, 0.0006)`, so the wave-slope
+    // covariance is `sigma = (0.0219, 0.0241, 0.0007)`, an rms slope of 0.15;
+    // `vSpecMap` is 0.18 out there and the flatten shrinks that by `specMap^2`,
+    // to `sigma = (7.7e-4, 8.0e-4, 2e-5)`, `det = 6.2e-7`. The half-vector's
+    // slope `HWave` is (0.5, 0.2) with the moon that low, so `e/det` is about
+    // 1270 and `exp(-635)` underflows. The engine computes the same zero: this
+    // is the Gaussian saying the moon glint is nowhere near this pixel, and only
+    // becomes visible where the sun or moon is close to the mirror direction.
 
     var refractive_uv = (input.screen_pos.xy / input.screen_pos.w) * 0.5 + vec2<f32>(0.5);
     refractive_uv.y = 1.0 - refractive_uv.y;
