@@ -185,6 +185,7 @@ impl Document {
                 ids: &map.province_ids,
             },
             &|a, b| topology.trace_class(a, b),
+            &|province| topology.is_water(province),
             &heights,
         )?;
         let border_trace = started.elapsed();
