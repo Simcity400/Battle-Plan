@@ -68,6 +68,10 @@ pub const WATER_HEIGHT: f32 = 9.5;
 /// `0x140b4c120:544`): despite the name it is a spawn/despawn switch, not a
 /// scale (section 4.2).
 pub const CITY_SPRAWL_SHRINK_DISTANCE: f32 = 220.0;
+/// `MAP_BUILDINGS_SHRINK_DISTANCE` (consumer `0x140b4c120:552`): above this
+/// the engine hides every building entity except the `always_shown` types
+/// (section 5.3).
+pub const MAP_BUILDINGS_SHRINK_DISTANCE: f32 = 180.0;
 /// `DRAW_MAP_OBJECTS_CUTOFF` (`0x140b4c120:543`): the master gate over every
 /// map object.
 pub const DRAW_MAP_OBJECTS_CUTOFF: f32 = 1100.0;

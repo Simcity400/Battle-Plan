@@ -494,6 +494,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let layers = political::build(&document.map, document.frame()?, mode)?;
         // weather
         let snow_mud = document.snow_mud()?;
+        // close zoom
+        let (map_building_field, building_summary) = document.map_building_field()?;
         for warning in document.warnings.iter().chain(layers.warnings()) {
             eprintln!("Warning: {warning}");
         }
@@ -553,6 +555,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 snow_mud: &snow_mud,
                 // close zoom
                 sprawl: &document.sprawl,
+                map_buildings: &document.map_buildings,
+                map_building_field: &map_building_field,
                 // trees
                 tree_assets: &document.tree_assets,
                 tree_geometry: &document.tree_geometry,
@@ -680,6 +684,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             report.sprawl_drawn,
             document.sprawl_build.as_secs_f64() * 1000.0
         );
+        println!(
+            "Map buildings: {} authored slots, {} built rows, {} entities placed, {} drawn; \
+             {} rows with an unnamed type token, {} with no slot at their location",
+            building_summary.slots,
+            building_summary.built,
+            building_summary.placed,
+            report.map_buildings_drawn,
+            building_summary.unnamed_tokens,
+            building_summary.missing_slots
+        );
+        for (name, count) in &building_summary.missing_by_type {
+            println!("  no authored slot: {name} x{count}");
+        }
+        for (name, count) in &building_summary.unresolved_by_type {
+            println!("  no entity: {name} x{count}");
+        }
         // weather
         println!(
             "Snow and mud: {}; {}x{} grid rasterised in {:.0} ms",

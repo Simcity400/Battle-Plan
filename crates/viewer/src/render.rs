@@ -19,12 +19,14 @@ use crate::map::{
     border_pass::{BorderAssets, StraitVertex},
     borders::BorderMeshes,
     demilitarized::Zone,
+    // close zoom
+    map_buildings::MapBuildingAssets,
+    models::ModelField,
     // political fill
     political::PoliticalLayers,
     // rivers
     rivers::{RiverAssets, RiverMesh},
     scene::{OUTPUT_FORMAT, Request, Scene, extent, invalid},
-    // close zoom
     sprawl::Sprawl,
     // names
     sprites::MapIcons,
@@ -54,6 +56,9 @@ pub struct MapLayers<'a> {
     pub snow_mud: &'a SnowMud,
     // close zoom
     pub sprawl: &'a Sprawl,
+    pub map_buildings: &'a MapBuildingAssets,
+    /// This hour's placed buildings, from [`MapBuildingAssets::field`].
+    pub map_building_field: &'a ModelField,
     // trees
     pub tree_assets: &'a TreeAssets,
     pub tree_geometry: &'a TreeGeometry,
@@ -273,6 +278,8 @@ pub struct DumpReport {
     // close zoom
     /// City-sprawl houses the frame drew, over every wrap copy.
     pub sprawl_drawn: u32,
+    /// Map buildings the frame drew, over every wrap copy.
+    pub map_buildings_drawn: u32,
     // borders
     /// Province boundaries the demilitarised-zone pass drew.
     pub demilitarized_edges: usize,
@@ -342,6 +349,12 @@ pub fn dump_png(
         )?;
         // close zoom
         scene.set_sprawl(&device, &queue, layers.sprawl)?;
+        scene.set_map_buildings(
+            &device,
+            &queue,
+            layers.map_buildings,
+            layers.map_building_field.clone(),
+        )?;
         // weather
         let snow_mud = layers.snow_mud;
         scene.set_snow_mud(
@@ -388,6 +401,7 @@ pub fn dump_png(
             tree_instances: scene.tree_instances(),
             // close zoom
             sprawl_drawn: scene.sprawl_drawn(),
+            map_buildings_drawn: scene.map_buildings_drawn(),
             // borders
             demilitarized_edges: scene.demilitarized_edges(),
         })

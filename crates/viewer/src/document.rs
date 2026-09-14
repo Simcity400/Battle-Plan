@@ -33,6 +33,7 @@ use crate::map::rivers::{self, RiverAssets, RiverImage, RiverMesh};
 // trees
 use crate::map::trees::{self, TreeAssets, TreeField, TreeGeometry, TreeImage};
 // close zoom
+use crate::map::map_buildings::MapBuildingAssets;
 use crate::map::sprawl::{self, Sprawl};
 // names
 use crate::map::{
@@ -104,6 +105,9 @@ pub struct Document {
     pub sprawl: Sprawl,
     /// How long generating the sprawl took.
     pub sprawl_build: Duration,
+    /// The map-building slot table, types and meshes; the placed buildings are
+    /// per hour and come from [`Document::map_building_field`].
+    pub map_buildings: MapBuildingAssets,
 }
 
 impl Document {
@@ -249,6 +253,19 @@ impl Document {
         let sprawl_plan = sprawl::generate(&cities, &city_styles, &assets.spawn_city, &heights)?;
         let sprawl = Sprawl::load(&content.layers, &sprawl_plan, &mut warnings)?;
         let sprawl_build = started.elapsed();
+        let map_buildings = MapBuildingAssets::load(
+            &content.layers,
+            &crate::map::map_buildings::ProvinceMap {
+                width: map.width,
+                height: map.height,
+                ids: &map.province_ids,
+            },
+            &mut warnings,
+        )?;
+        warnings.push(
+            "Map buildings are drawn healthy: the replay records healthy_level and partial_health but not the scale the engine's destroyed and damaged thresholds are measured on, and the factory smoke is a particle system that is not ported."
+                .into(),
+        );
         Ok(Self {
             playback: Playback::new(replay)?,
             map,
@@ -281,7 +298,19 @@ impl Document {
             // close zoom
             sprawl,
             sprawl_build,
+            map_buildings,
         })
+    }
+
+    // close zoom
+    /// This hour's placed map buildings.
+    pub fn map_building_field(
+        &self,
+    ) -> io::Result<(
+        crate::map::models::ModelField,
+        crate::map::map_buildings::MapBuildingSummary,
+    )> {
+        self.map_buildings.field(self.frame()?)
     }
 
     // political fill
