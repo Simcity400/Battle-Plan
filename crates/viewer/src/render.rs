@@ -298,6 +298,10 @@ pub struct DumpReport {
     // borders
     /// Province boundaries the demilitarised-zone pass drew.
     pub demilitarized_edges: usize,
+    // shadows
+    /// Whether the frame ran the cast-shadow chain, which it does below
+    /// `DRAW_SHADOWS_CUTOFF` and not above it (`map::shadow`).
+    pub shadows: bool,
 }
 
 /// Renders one frame headlessly through the same [`Scene`] the window uses.
@@ -435,6 +439,8 @@ pub fn dump_png(
             unit_models_drawn: scene.unit_models_drawn(),
             // borders
             demilitarized_edges: scene.demilitarized_edges(),
+            // shadows
+            shadows: scene.shadows(),
         })
     })
 }

@@ -5,19 +5,11 @@
 // material and are nonetheless drawn through these two shaders. Everything the
 // game's pixel shader does is ported below; each departure is commented.
 //
+// The canopy is also a shadow caster and a shadow receiver: `treeshadow` and
+// `treeunlit` are at the foot of this file and `map::shadow` drives them.
+//
 // Dropped, with the reason:
 //
-// * `ShadowMap`, and its reason has been corrected. `graphics.shadows=no` is
-//   not what gates the map's shadow pass — `mapRenderingOptions.draw_shadows`
-//   is, the reference profile has it on, and below camera height 400 the engine
-//   really does draw the `treeunlit` pre-pass this port lacks, so the buffer is
-//   not the all-ones clear there and the canopy the game draws shadows itself.
-//   Above 400 the term is exactly 1, because `ShadowFadeFactor` is 0 and the
-//   saturate inside `GetShadowScaled` takes over. `fShadowTerm` is the literal
-//   1.0 here, as it is in the terrain and river ports, and `terrain.wgsl`'s
-//   header measures what that costs: nothing that can explain the scene's
-//   brightness gap, since `GetShadowScaled(SHADOW_WEIGHT_TREE, ...)` cannot
-//   scale the sun below 0.3 and the frame demands 0.17.
 // * `CalculatePointLights`. Point lights come from combats and effects, which
 //   no recorded table carries and which neither reference frame has
 //   (R3 section 2.4).
@@ -101,21 +93,27 @@ struct TreeVarying {
     @location(6) season_u: f32,
 }
 
-@vertex
-fn tree_vertex(
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) tangent: vec4<f32>,
-    @location(3) uv0: vec2<f32>,
-    @location(4) uv1: vec2<f32>,
-    // Per instance: the 24-byte record `map::trees::TreeInstance`, which is the
-    // engine's own (R3 section 3.2).
-    @location(5) instance_position: vec3<f32>,
-    @location(6) instance_rotation: f32,
-    @location(7) instance_slope: vec2<f32>,
-) -> TreeVarying {
-    let rotation = instance_rotation;
-    let random = rotation / TAU;
+/// Where one instance of one tree vertex ends up, and the rotation the vertex
+/// shaders also apply to the normal and the tangent.
+///
+/// `tree.shader` repeats these lines in `VertexShader` and in
+/// `VertexShaderShadow`; here they are written once and both call it.
+struct TreePlacement {
+    world: vec3<f32>,
+    rand_sin: f32,
+    rand_cos: f32,
+    /// `vRandom`, the instance's rotation as a fraction of a turn.
+    random: f32,
+}
+
+fn tree_placement(
+    position: vec3<f32>,
+    uv1: vec2<f32>,
+    instance_position: vec3<f32>,
+    instance_rotation: f32,
+    instance_slope: vec2<f32>,
+) -> TreePlacement {
+    let random = instance_rotation / TAU;
     // `vSummedRandom = vUV1.x + vRandom; if >= 1 subtract 1`, which is `fract`
     // only because both terms are already inside the unit interval.
     var summed = uv1.x + random;
@@ -125,8 +123,8 @@ fn tree_vertex(
 
     var p = position;
     p.y *= 0.75 + summed * 0.5;
-    let rand_sin = sin(rotation);
-    let rand_cos = cos(rotation);
+    let rand_sin = sin(instance_rotation);
+    let rand_cos = cos(instance_rotation);
     p = vec3<f32>(
         p.x * rand_cos - p.z * rand_sin,
         p.y,
@@ -140,6 +138,26 @@ fn tree_vertex(
         instance_position.y,
         instance_position.z,
     );
+    return TreePlacement(p, rand_sin, rand_cos, random);
+}
+
+@vertex
+fn tree_vertex(
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) tangent: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) uv1: vec2<f32>,
+    // Per instance: the 24-byte record `map::trees::TreeInstance`, which is the
+    // engine's own (R3 section 3.2).
+    @location(5) instance_position: vec3<f32>,
+    @location(6) instance_rotation: f32,
+    @location(7) instance_slope: vec2<f32>,
+) -> TreeVarying {
+    let placement = tree_placement(position, uv1, instance_position, instance_rotation, instance_slope);
+    let p = placement.world;
+    let rand_sin = placement.rand_sin;
+    let rand_cos = placement.rand_cos;
 
     var out: TreeVarying;
     out.world = p;
@@ -157,7 +175,7 @@ fn tree_vertex(
         tangent.x * rand_sin + tangent.z * rand_cos,
     );
     out.bitangent = cross(out.tangent, out.normal) * tangent.w;
-    out.tint_uv = uv1 + vec2<f32>(random, 0.0);
+    out.tint_uv = uv1 + vec2<f32>(placement.random, 0.0);
     out.season_u = tree.season_column / TREE_SEASON_COLUMNS + 1.0 / (2.0 * TREE_SEASON_COLUMNS);
     return out;
 }
@@ -279,7 +297,14 @@ fn tree_fragment(input: TreeVarying) -> @location(0) vec4<f32> {
     // oddity does not reach a pixel; it is ported as written.
     properties.non_linear_glossiness = get_non_linear_glossiness(TREE_SPECULAR);
 
-    let light = calculate_sun_light_phong(properties, 1.0, calculate_sun_direction(input.world));
+    // `GetShadowScaled( SHADOW_WEIGHT_TREE, In.vScreenCoord, ShadowMap )`
+    // (`tree.shader:381`), without the terrain's 0.1 floor. `map::shadow` fills
+    // the buffer below camera height 400 and binds its clear value above it.
+    let light = calculate_sun_light_phong(
+        properties,
+        get_shadow_scaled(SHADOW_WEIGHT_TREE, input.position),
+        calculate_sun_direction(input.world),
+    );
     var diffuse_light = light.diffuse;
 
     // `texCUBEbias( EnvironmentMap, float4( reflect(...), 3 - vRoughness * 3 ) )`:
@@ -305,4 +330,81 @@ fn tree_fragment(input: TreeVarying) -> @location(0) vec4<f32> {
     out = day_night_with_blend(out, globe_normal, 1.0);
 
     return vec4<f32>(out, tree.tree_fade);
+}
+
+// ------------------------------------------------------- the two shadow effects
+/// `SHADOW_WEIGHT_TREE` (`constants.fxh:175`).
+const SHADOW_WEIGHT_TREE: f32 = 0.7;
+/// `clip( 0.1f - GetTreeMask(...) )` in `PixelShaderShadow` (`tree.shader:417`)
+/// against `0.17` in the lit and unlit ones: a tree in the margin of the mask
+/// stops casting before it stops being drawn.
+const TREE_SHADOW_MASK_CUTOFF: f32 = 0.1;
+
+/// `VS_OUTPUT_SHADOW` (`tree.shader:178-184`).
+struct TreeShadowVarying {
+    @builtin(position) position: vec4<f32>,
+    /// `Out.fDepth = Out.vPosition.zw`.
+    @location(0) depth: vec2<f32>,
+    @location(1) uv0: vec2<f32>,
+    @location(2) world: vec3<f32>,
+}
+
+/// `VertexShaderShadow` (`tree.shader:262-295`). `ViewProjectionMatrix` is the
+/// light's in this pass, because the engine swaps the frame constants rather
+/// than the shader; `map::shadow` does the same.
+@vertex
+fn tree_shadow_vertex(
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) tangent: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) uv1: vec2<f32>,
+    @location(5) instance_position: vec3<f32>,
+    @location(6) instance_rotation: f32,
+    @location(7) instance_slope: vec2<f32>,
+) -> TreeShadowVarying {
+    let placement = tree_placement(position, uv1, instance_position, instance_rotation, instance_slope);
+    var out: TreeShadowVarying;
+    out.world = placement.world;
+    out.position = globals.frame.view_projection * vec4<f32>(placement.world, 1.0);
+    out.depth = out.position.zw;
+    out.uv0 = uv0;
+    return out;
+}
+
+/// `PixelShaderShadow` (`tree.shader:412-421`), the `treeshadow` effect.
+///
+/// `float4( In.fDepth.xxx * In.fDepth.y, 1 )` is written as the game writes it.
+/// The light's projection is orthographic, so `w` is 1 and the product is the
+/// depth; `pdxmesh.shader` divides by `w` in the same place, and the two agree
+/// only there. The alpha test has no camera-height condition here, unlike the
+/// lit and unlit twins: a canopy casts a cut-out shadow at every zoom.
+@fragment
+fn tree_shadow_fragment(input: TreeShadowVarying) -> @location(0) vec4<f32> {
+    let diffuse = textureSample(tree_diffuse, linear_wrap, input.uv0);
+    if diffuse.a < TREE_ALPHA_TEST {
+        discard;
+    }
+    if tree_mask(input.world) >= TREE_SHADOW_MASK_CUTOFF {
+        discard;
+    }
+    return vec4<f32>(vec3<f32>(input.depth.x * input.depth.y), 1.0);
+}
+
+/// `PixelShaderUnlit` (`tree.shader:425-445`), the `treeunlit` effect and the
+/// tree half of the screen-space pre-pass. It shares `VertexShader` with the
+/// lit effect, so it takes [`TreeVarying`] unchanged.
+///
+/// The two fog factors are zero for the same reason `terrain_unlit_main`'s are,
+/// which also makes the engine's `ExtraHeight` term unobservable.
+@fragment
+fn tree_unlit_fragment(input: TreeVarying) -> @location(0) vec4<f32> {
+    let diffuse = textureSample(tree_diffuse, linear_wrap, input.uv0);
+    if cam_pos().y < TREE_ALPHA_TEST_HEIGHT && diffuse.a < TREE_ALPHA_TEST {
+        discard;
+    }
+    if tree_mask(input.world) >= TREE_MASK_CUTOFF {
+        discard;
+    }
+    return vec4<f32>(calculate_shadow(shadow_proj(input.world)), 0.0, 0.0, 1.0);
 }

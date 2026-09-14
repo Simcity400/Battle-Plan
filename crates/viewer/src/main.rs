@@ -74,6 +74,10 @@ struct Options {
     /// `--dump --no-water` skips the water plane, which is what the game's
     /// `debug_water` console toggle does; see `map::scene::Request::no_water`.
     no_water: bool,
+    /// `--dump --no-shadows` skips the cast-shadow chain, which is what the
+    /// game's `Draw.Shadows` console toggle does; see
+    /// `map::scene::Request::no_shadows`.
+    no_shadows: bool,
     // borders
     /// `--dump --demilitarized <ids>`: state ids to treat as demilitarised **in addition to** the
     /// hour's recorded `StateFlags`, so an hour whose flags are short can still be scored against
@@ -99,6 +103,7 @@ impl Options {
             // that are in `map::post`.
             postfx: true,
             no_water: false,
+            no_shadows: false,
             ..Default::default()
         };
         let mut args = args.peekable();
@@ -131,6 +136,7 @@ impl Options {
                 }
                 // colour
                 Some("--no-water") => options.no_water = true,
+                Some("--no-shadows") => options.no_shadows = true,
                 Some("--postfx") => {
                     let value = args
                         .next()
@@ -321,6 +327,14 @@ impl Options {
             return Err(invalid(
                 "--no-water skips the water plane so the underwater pass can be scored on its own \
                  and is a --dump verification aid",
+            ));
+        }
+        // shadows: the same reasoning — the game has this switch too, and the
+        // pair it makes is how the cast-shadow chain is measured.
+        if options.no_shadows && !options.headless_dump {
+            return Err(invalid(
+                "--no-shadows skips the cast-shadow chain so its effect can be measured on its \
+                 own and is a --dump verification aid",
             ));
         }
         // borders: the override adds a save's flag to an hour whose recorded flags are short, so
@@ -673,6 +687,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // colour
                 postfx: options.postfx,
                 no_water: options.no_water,
+                // shadows
+                no_shadows: options.no_shadows,
                 overlay: Overlay {
                     names: Some(&placements),
                     layer_alpha: fade.as_array(),
@@ -754,6 +770,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|piece| format!("{} x{}", piece.path, piece.scale))
                 .collect::<Vec<_>>()
                 .join(", ")
+        );
+        // shadows
+        println!(
+            "Shadows: cast-shadow chain {} at height {:.3} (cutoff {}), ShadowFadeFactor {:.4}",
+            if report.shadows { "drawn" } else { "skipped" },
+            camera.height,
+            map::frame::DRAW_SHADOWS_CUTOFF,
+            map::frame::shadow_fade_factor(camera.height),
         );
         // trees
         let season = document.tree_season();

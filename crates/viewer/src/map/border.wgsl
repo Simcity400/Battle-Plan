@@ -10,8 +10,11 @@
 //   copies by translating the *camera* (R2 section 2.3, `param_7` is the 1/2/4 view mask of the
 //   three copies at `view`, `view+0x230`, `view+0x450`); the border meshes are cut at the x seam, so
 //   the viewer translates the geometry instead and gets the same picture.
-// * `GetShadowScaled( SHADOW_WEIGHT_BORDER, ... )` is 1: the reference profile is `shadows=no` and
-//   there is no shadow map to sample (R1 section 3.4).
+// * Nothing on the shadow term: `GetShadowScaled( SHADOW_WEIGHT_BORDER, ... )` is ported and reads
+//   the buffer `map::shadow` fills. The earlier reading here — the reference profile is
+//   `shadows=no`, so there is nothing to sample — was wrong in its premise: what gates the map's
+//   shadow pass is `mapRenderingOptions.draw_shadows`, which the reference profile has on, and
+//   `graphics.shadows` reaches no function on the map path at all (`terrain.wgsl`'s header).
 // * `MipMapLodBias = -0.5` is applied with `textureSampleBias` because wgpu's sampler has no lod
 //   bias; `MipMapMaxLod = 4` is the sampler's `lod_max_clamp`.
 
@@ -56,6 +59,9 @@ fn cam_look_at_dir() -> vec3<f32> {
     return globals.frame.cam_look_at_dir_global_time.xyz;
 }
 
+/// `SHADOW_WEIGHT_BORDER` (`constants.fxh:172`).
+const SHADOW_WEIGHT_BORDER: f32 = 0.7;
+
 @vertex
 fn border_vertex(
     @location(0) position: vec3<f32>,
@@ -99,7 +105,13 @@ fn border_fragment(input: BorderVarying) -> @location(0) vec4<f32> {
         color.a,
     );
 
-    // `fShadowTerm` is 1 (see the header), so the multiply is left out rather than written as `* 1`.
+    // `vColor.rgb *= GetShadowScaled( SHADOW_WEIGHT_BORDER, Input.vScreenCoord, ShadowMap )`
+    // (`border.shader:137-138`), read at this pixel out of the buffer `map::shadow` fills below
+    // camera height 400.
+    color = vec4<f32>(
+        color.rgb * get_shadow_scaled(SHADOW_WEIGHT_BORDER, input.position),
+        color.a,
+    );
     let fow = apply_fow(color.rgb, 0.0, 0.0);
     var rgb = mix(fow, color.rgb, BORDER_FOW_REMOVAL_FACTOR);
     rgb = apply_distance_fog(rgb, input.pos) * max(1.0, pulse);

@@ -36,6 +36,8 @@ pub mod post;
 // rivers
 pub mod rivers;
 pub mod scene;
+// shadows: the light's depth map, the screen-space pre-pass and the blurs
+pub mod shadow;
 pub mod sprawl;
 pub mod sprites;
 /// What each hour's tables hold, and what a gap in one costs the render.

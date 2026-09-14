@@ -47,6 +47,29 @@ fn has(flag: u32) -> bool {
     return (slot.flags & flag) != 0u;
 }
 
+/// `mul( WorldMatrix, vPosition )` for a map object: a rotation about +Y, the
+/// only rotation `map/buildings.txt`, `map/unitstacks.txt` and the sprawl
+/// generator carry, plus the uniform scale and the translation.
+fn mesh_rotation(instance_rotation: f32) -> mat3x3<f32> {
+    let s = sin(instance_rotation);
+    let c = cos(instance_rotation);
+    return mat3x3<f32>(
+        vec3<f32>(c, 0.0, s),
+        vec3<f32>(0.0, 1.0, 0.0),
+        vec3<f32>(-s, 0.0, c),
+    );
+}
+
+fn mesh_world(
+    rotate: mat3x3<f32>,
+    position: vec3<f32>,
+    instance_position: vec3<f32>,
+    instance_scale: f32,
+) -> vec3<f32> {
+    return rotate * (position * instance_scale) + instance_position
+        + vec3<f32>(slot.world_offset_x, 0.0, 0.0);
+}
+
 struct MeshOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) normal: vec3<f32>,
@@ -66,18 +89,9 @@ fn mesh_vertex(
     @location(5) instance_rotation: f32,
     @location(6) instance_scale: f32,
 ) -> MeshOut {
-    let s = sin(instance_rotation);
-    let c = cos(instance_rotation);
-    // Rotation about +Y, the only rotation `map/buildings.txt`,
-    // `map/unitstacks.txt` and the sprawl generator carry.
-    let rotate = mat3x3<f32>(
-        vec3<f32>(c, 0.0, s),
-        vec3<f32>(0.0, 1.0, 0.0),
-        vec3<f32>(-s, 0.0, c),
-    );
+    let rotate = mesh_rotation(instance_rotation);
     var out: MeshOut;
-    let world = rotate * (position * instance_scale) + instance_position
-        + vec3<f32>(slot.world_offset_x, 0.0, 0.0);
+    let world = mesh_world(rotate, position, instance_position, instance_scale);
     out.world = world;
     out.clip = globals.frame.view_projection * vec4<f32>(world, 1.0);
     out.normal = normalize(rotate * normal);
@@ -323,4 +337,58 @@ fn mesh_fragment(input: MeshOut) -> @location(0) vec4<f32> {
     // by `MinMeshAlpha`; this pass writes colour only, so it never reaches a
     // target, but the value is kept as the shader computes it.
     return vec4<f32>(color, max(alpha, globals.frame.ambient_pos_y_min_mesh_alpha.w) * slot.alpha);
+}
+
+// ----------------------------------------------------------- the shadow effect
+/// `VS_OUTPUT_PDXMESHSHADOW` (`pdxmesh.shader`), which carries the clip depth
+/// and the uv the alpha-blend variant tests.
+struct MeshShadowOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) depth: vec2<f32>,
+    @location(1) uv0: vec2<f32>,
+}
+
+/// `VertexPdxMeshStandardShadow` (`pdxmesh.shader:329-342`). Every `*Shadow`
+/// effect of the family this port draws takes this one vertex shader; the
+/// skinned twin belongs to animated meshes, which the map objects are not.
+/// `ViewProjectionMatrix` is the light's here, because `map::shadow` swaps the
+/// frame constants exactly as the engine does.
+@vertex
+fn mesh_shadow_vertex(
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) tangent: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) instance_position: vec3<f32>,
+    @location(5) instance_rotation: f32,
+    @location(6) instance_scale: f32,
+) -> MeshShadowOut {
+    let world = mesh_world(
+        mesh_rotation(instance_rotation),
+        position,
+        instance_position,
+        instance_scale,
+    );
+    var out: MeshShadowOut;
+    out.clip = globals.frame.view_projection * vec4<f32>(world, 1.0);
+    out.depth = out.clip.zw;
+    out.uv0 = uv0;
+    return out;
+}
+
+/// `PixelPdxMeshStandardShadow` (`pdxmesh.shader:661-668`) and
+/// `PixelPdxMeshAlphaBlendShadow` (`:680-689`), which differ only in the alpha
+/// test; the flag word picks between them the way it picks between the lit
+/// variants.
+///
+/// `In.vDepthUV0.xxx / In.vDepthUV0.y` is `z / w`, where `tree.shader` writes
+/// `z * w` in the same place. The two agree only for an orthographic light, and
+/// that is the evidence `map::shadow` rests its projection on.
+@fragment
+fn mesh_shadow_fragment(input: MeshShadowOut) -> @location(0) vec4<f32> {
+    if has(FLAG_ALPHA_TEST)
+        && textureSample(diffuse_map, linear_wrap, input.uv0).a < 0.5 {
+        discard;
+    }
+    return vec4<f32>(vec3<f32>(input.depth.x / input.depth.y), 1.0);
 }

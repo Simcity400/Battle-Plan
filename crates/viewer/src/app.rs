@@ -923,6 +923,8 @@ impl Viewer {
                     postfx: self.postfx,
                     // The window has no verification aids; `--dump` owns them.
                     no_water: false,
+                    // shadows: the window always draws them, as the game does.
+                    no_shadows: false,
                     // names
                     overlay: Overlay {
                         names: self.placements.as_ref(),

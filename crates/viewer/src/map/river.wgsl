@@ -7,12 +7,11 @@
 // Deviations from the game shader, each with the line it replaces:
 //
 // * `LOW_END_GFX` is off; the `river_low_gfx` effect is not ported.
-// * `GetShadowScaled( SHADOW_WEIGHT_RIVER, ... )` is 1. Above camera height 400 that is exact:
-//   `ShadowFadeFactor` is 0 there and the saturate inside `GetShadowScaled` pins the term to 1
-//   whatever the buffer holds. Below it the engine runs a shadow pass this port has not got, worth
-//   at most `1 - SHADOW_WEIGHT_RIVER = 0.6` on the sun of an occluded pixel; `terrain.wgsl`'s
-//   header carries what the engine binds and the measurement that rules the term out as the
-//   scene's brightness gap.
+// * Nothing: `GetShadowScaled( SHADOW_WEIGHT_RIVER, ... )` is ported, and `map::shadow` fills the
+//   buffer it reads below camera height 400 and binds the all-ones clear value above it, where
+//   `ShadowFadeFactor` is 0 and the saturate inside `GetShadowScaled` pins the term to 1 anyway.
+//   `terrain.wgsl`'s header carries what the engine binds and the measurement that rules the term
+//   out as the scene's brightness gap.
 // * `CalculatePointLights` is dropped with its two maps: the lights come from combats and effects,
 //   not from the map, and the replay records none (R1 section 3.4, `RENDERING.md` section 5).
 // * `ProvinceSecondaryColorMap` (sampler 6) is declared by the game shader and never read, and the
@@ -65,7 +64,7 @@
 // takes a blend of 0.68 and keeps most of its colour where the sea beside it is fully desaturated;
 // that difference is why the game's rivers read as *coloured* lines over a grey-blue sea.
 //
-// `SHADOW_WEIGHT_RIVER` is not a candidate, and this is now measured rather than assumed:
+// `SHADOW_WEIGHT_RIVER` is not a candidate, and this was measured rather than assumed:
 // `GetShadowScaled` (`shadow.fxh:44`) returns `(1 - s) + s * saturate( shadowValue )`, so it cannot
 // scale the sun below `1 - s`, and the factor the game's scene demands on our sun term is 0.17 on
 // land and 0.41 on water — under both floors, and the same at camera heights where the engine draws
@@ -83,7 +82,8 @@
 // pale ribbon at all, but it cannot invent the missing factor.
 
 
-/// `SHADOW_WEIGHT_RIVER` (`constants.fxh:174`). Recorded for the shadow pass; see the header.
+/// `SHADOW_WEIGHT_RIVER` (`constants.fxh:174`), the lowest of the map's five receiver weights:
+/// a fully shadowed river keeps 0.6 of its sun.
 const SHADOW_WEIGHT_RIVER: f32 = 0.4;
 /// `SNOW_ICE_NOISE_TILING` (`constants.fxh:84`).
 const SNOW_ICE_NOISE_TILING: f32 = 0.0625;
@@ -393,13 +393,14 @@ fn river_fragment(input: RiverVarying) -> @location(0) vec4<f32> {
     // `spec` is an unbounded Gaussian highlight and `exp2` of it overflows to infinity.
     properties.non_linear_glossiness = 0.0;
 
-    // `fShadowTerm` is 1 (see the header). The light direction is `CalculateSunDirection`, not the
-    // `CalculateSunDirectionWater` the wave highlight above uses: the game shader calls the
-    // two-argument `CalculateSunLight` overload, which takes the sun direction from
-    // `vVirtualSunPos.xyz` rather than the `*_HEIGHT_WATER` swizzle.
+    // `GetShadowScaled( SHADOW_WEIGHT_RIVER, Input.vScreenCoord, ShadowMap )` (`river.shader:384`),
+    // read at this pixel out of the buffer `map::shadow` fills below camera height 400. The light
+    // direction is `CalculateSunDirection`, not the `CalculateSunDirectionWater` the wave highlight
+    // above uses: the game shader calls the two-argument `CalculateSunLight` overload, which takes
+    // the sun direction from `vVirtualSunPos.xyz` rather than the `*_HEIGHT_WATER` swizzle.
     let light = calculate_sun_light_phong(
         properties,
-        1.0,
+        get_shadow_scaled(SHADOW_WEIGHT_RIVER, input.position),
         calculate_sun_direction(input.pre_pos_fade.xyz),
     );
     var out = compose_light(properties, light.diffuse, light.specular);

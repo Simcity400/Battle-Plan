@@ -236,12 +236,45 @@
 // So the shadow term is closed as a candidate for the brightness gap, and the
 // sun-term scalar it would have to be is now measured: **0.17 on land and 0.41
 // on water, flat in colour, and within half of itself over a thirtyfold change
-// of camera height with no step at the cutoff**. What is still owed to
-// the port, and is a separate and much smaller thing, is the shadow pass itself
-// below height 400: a 2048-square depth render of the terrain, the trees and the
-// meshes from the sun, the screen-space `terrainunlit`/`treeunlit` pre-pass and
-// its two blurs. Its whole range is a factor between 0.3 and 1 on the sun of the
-// pixels a caster occludes, so it cannot move a frame by four.
+// of camera height with no step at the cutoff**.
+//
+// ## The pass itself is ported, and it moves the gap by a per cent (2026-09-14)
+//
+// What was still owed to the port, and is a separate and much smaller thing,
+// was the shadow pass below height 400. `map::shadow` now draws it: the
+// 2048-square depth map with the trees and the map-object meshes as its casters
+// — **not** the terrain, which declares no shadow effect and so cannot shade
+// itself — the screen-space `terrainunlit`/`treeunlit` pre-pass, and its two
+// blurs. `--no-shadows` turns it off, which is the game's own `Draw.Shadows`
+// console toggle, so the pair is measurable in one binary. Over the same masks
+// and the same pairE frame as the table above, medians and game-over-ours
+// ratios with the chain off and on:
+//
+// | surface | off | ratio | on | ratio |
+// |---|---|---|---|---|
+// | bare terrain (844k px) | 0.259 0.310 0.169 | 0.236 0.249 0.319 | 0.255 0.306 0.165 | 0.240 0.252 0.326 |
+// | under trees (208k) | 0.255 0.306 0.184 | 0.361 0.349 0.542 | 0.247 0.298 0.180 | 0.373 0.358 0.554 |
+// | under cities (154k) | 0.286 0.322 0.216 | 0.418 0.401 0.588 | 0.282 0.314 0.212 | 0.424 0.411 0.599 |
+// | open water (294k) | 0.251 0.286 0.345 | 0.412 0.445 0.536 | 0.251 0.286 0.345 | 0.412 0.445 0.536 |
+// | whole frame (1.72M) | 0.251 0.294 0.196 | 0.290 0.308 0.356 | 0.247 0.290 0.192 | 0.295 0.312 0.363 |
+//
+// The land ratio moves 0.236 to 0.240 and the tree ratio 0.361 to 0.373; open
+// water does not move at all, because nothing in the reference frame casts onto
+// the open sea and the term there is 1 either way. So the remaining sun-term
+// gap is untouched in kind and barely touched in size: a refit of
+// `SCENE_BRIGHTNESS` on this frame would want 1.7 % less of the scene than
+// before, and the 0.17 land and 0.41 water scalars stand.
+//
+// That is the predicted size. The whole range of the pass is a factor between
+// 0.3 and 1 on the sun of the pixels a caster occludes, and at the reference
+// framings the occluded pixels are a small share of the frame: 17 % at height
+// 164, where the buildings and the sprawl still draw, and 0.7 % at height 303,
+// where they do not and only the canopy casts.
+
+/// `SHADOW_WEIGHT_TERRAIN` (`constants.fxh:170`), the share of the sun the
+/// screen-space shadow buffer is allowed to take: a fully shadowed pixel keeps
+/// `1 - SHADOW_WEIGHT_TERRAIN` of it.
+const SHADOW_WEIGHT_TERRAIN: f32 = 0.7;
 
 @group(1) @binding(0) var terrain_diffuse: texture_2d<f32>;
 @group(1) @binding(1) var height_normal: texture_2d<f32>;
@@ -446,12 +479,10 @@ fn terrain_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     properties.non_linear_glossiness = get_non_linear_glossiness(glossiness);
 
     // `max( GetShadowScaled( SHADOW_WEIGHT_TERRAIN, Input.vScreenCoord,
-    // ShadowMap ), 0.1 )`. Exact above camera height 400, where
-    // `ShadowFadeFactor` is 0 and the saturate inside `GetShadowScaled` pins the
-    // term to 1; below it this is the one input the pass is missing, because the
-    // engine really does run its shadow pass there. The header measures what
-    // that costs and rules it out as the scene's brightness gap.
-    let shadow_term = 1.0;
+    // ShadowMap ), 0.1 )`. `map::shadow` fills the buffer below camera height
+    // 400 and binds its all-ones clear value above it, where `ShadowFadeFactor`
+    // is 0 and the saturate inside `GetShadowScaled` pins the term to 1 anyway.
+    let shadow_term = max(get_shadow_scaled(SHADOW_WEIGHT_TERRAIN, input.position), 0.1);
     var light = calculate_sun_light(properties, shadow_term, calculate_sun_direction(input.prepos));
     // No point lights: they come from combats and effects, not from the map
     // itself, and the reference frame has none (R1 section 3.4).
@@ -562,8 +593,28 @@ fn underwater_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     properties.non_linear_glossiness = get_non_linear_glossiness(glossiness);
 
     // `GetShadowScaled( SHADOW_WEIGHT_TERRAIN, ... )` without the lit pass's
-    // 0.1 floor; the same shadow finding covers it (see the header).
-    let light = calculate_sun_light_phong(properties, 1.0, calculate_sun_direction(input.prepos));
+    // 0.1 floor (`pdxmap.shader:444`).
+    let light = calculate_sun_light_phong(
+        properties,
+        get_shadow_scaled(SHADOW_WEIGHT_TERRAIN, input.position),
+        calculate_sun_direction(input.prepos),
+    );
     let lit = compose_light(properties, light.diffuse, light.specular);
     return vec4<f32>(mix(water_color_tint, lit, water_alpha), 1.0);
+}
+
+// `pdxmap.shader:457-470`: the `terrainunlit` effect, the terrain half of the
+// screen-space shadow pre-pass. It shares `VertexShader` with the lit effect,
+// so this is the same grid drawn again through the camera, writing what the lit
+// passes will read back at their own pixel.
+//
+// The engine's `GetFogFactors` fills `.g` and `.b`. Both are zero for this
+// viewer and for the reference profile: `FogAlphaFactor` is the intel map's
+// alpha times `FOWFadeFactor`, and `PLAN.md` section 2 makes the viewer
+// omniscient while `FUN_140ff3fc0` writes `FOWFadeFactor` as a literal zero
+// outside the five fog-of-war map modes. `common.wgsl`'s `apply_fow` records
+// the same reading at the other end of the buffer.
+@fragment
+fn terrain_unlit_main(input: TerrainVertex) -> @location(0) vec4<f32> {
+    return vec4<f32>(calculate_shadow(shadow_proj(input.prepos)), 0.0, 0.0, 1.0);
 }

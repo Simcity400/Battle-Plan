@@ -7,6 +7,7 @@ use eframe::wgpu;
 use super::{
     camera::{Camera, MAP_SIZE_Y},
     scene::{DEPTH_FORMAT, SAMPLE_COUNT, Targets, module, sampler_entry, texture_entry},
+    shadow::BUFFER_FORMAT,
     textures::{Bound, Samplers},
 };
 
@@ -110,6 +111,10 @@ pub struct TerrainInputs<'a> {
 pub struct TerrainPass {
     terrain: wgpu::RenderPipeline,
     underwater: wgpu::RenderPipeline,
+    /// `pdxmap.shader`'s `terrainunlit`, the terrain half of the shadow
+    /// pre-pass (`map::shadow`). Same grid, same vertex stage, a different
+    /// target and no multisampling.
+    unlit: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     bind_group: Option<wgpu::BindGroup>,
 }
@@ -191,6 +196,42 @@ impl TerrainPass {
                 cache: None,
             })
         };
+        let unlit = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("terrainunlit"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vertex_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("terrain_unlit_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: BUFFER_FORMAT,
+                    // `BlendEnable = no`, `WriteMask = "RED|GREEN|BLUE|ALPHA"`
+                    // (`pdxmap.shader:474-479`).
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         Ok(Self {
             // The sea bed goes down first and the lit terrain over it, so the
             // terrain needs `LessEqual` to win on the shared geometry; the two
@@ -205,6 +246,7 @@ impl TerrainPass {
                 "underwater_main",
                 Some(wgpu::CompareFunction::Less),
             ),
+            unlit,
             layout,
             bind_group: None,
         })
@@ -261,6 +303,29 @@ impl TerrainPass {
             layout: &self.layout,
             entries: &bindings,
         }));
+    }
+
+    /// Draws the grid again with `terrainunlit`, into the shadow pre-pass the
+    /// caller opened. The engine declares no unlit twin of `underwater`, so the
+    /// sea bed writes nothing and the pixels below the water plane keep the
+    /// buffer's fully lit clear value.
+    pub fn draw_unlit(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        globals: &wgpu::BindGroup,
+        grid: Grid,
+    ) {
+        let vertices = grid.quads() * 6;
+        let Some(bind_group) = &self.bind_group else {
+            return;
+        };
+        if vertices == 0 {
+            return;
+        }
+        pass.set_pipeline(&self.unlit);
+        pass.set_bind_group(0, globals, &[]);
+        pass.set_bind_group(1, bind_group, &[]);
+        pass.draw(0..vertices, 0..1);
     }
 
     /// Draws the sea bed and then the lit terrain into a cleared scene target.

@@ -145,9 +145,27 @@ struct Globals {
     counts: vec4<u32>,
     /// `vTime_HalfPixelOffset.xyz`.
     time_half_pixel: vec4<f32>,
+    /// `ShadowMapTextureMatrix`, the light's view-projection with the texture
+    /// bias folded in. It is a per-draw constant in the engine
+    /// (`pdxmap.shader`'s `cb1`, `tree.shader`'s `ConstantBuffer(1, 32)`) and a
+    /// frame constant here, because every caster and every receiver in one
+    /// frame takes the same one. See `map::shadow`.
+    shadow_matrix: mat4x4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
+/// `ShadowMap`.
+///
+/// One binding serves both of the engine's: the 2048-square depth map the
+/// `terrainunlit` and `treeunlit` pre-pass reads through `CalculateShadow`, and
+/// the backbuffer-sized `(shadow, FogColorFactor, FogAlphaFactor, 1)` target
+/// the lit passes read through `GetShadowScaled` and `ApplyFOW`. The engine
+/// binds the two to the same sampler slot at different points in the frame
+/// (`terrain.wgsl`'s header), and so does this port: `map::shadow` hands the
+/// pre-pass a bind group holding the depth map and everything after it one
+/// holding the blurred screen-space buffer.
+@group(0) @binding(1) var shadow_map: texture_2d<f32>;
+@group(0) @binding(2) var shadow_map_sampler: sampler;
 
 fn cam_pos() -> vec3<f32> { return globals.frame.cam_pos_hdr_range.xyz; }
 fn hdr_range() -> f32 { return globals.frame.cam_pos_hdr_range.w; }
@@ -252,6 +270,95 @@ fn calculate_distance_fog_factor(pos: vec3<f32>) -> f32 {
 
 fn apply_distance_fog(color: vec3<f32>, pos: vec3<f32>) -> vec3<f32> {
     return mix(color, FOG_COLOR, calculate_distance_fog_factor(pos));
+}
+
+// -------------------------------------------------------------- shadow.fxh
+/// The depth map's side, which `CalculateShadow` hard-codes as its texel size.
+const SHADOW_MAP_SIZE: f32 = 2048.0;
+/// `const float fBias = 0.001f` (`shadow.fxh:26`).
+const SHADOW_BIAS: f32 = 0.001;
+
+/// `ShadowFadeFactor` (`standardfuncsgfx.fxh:19`), which `map::frame` fills
+/// from the camera height.
+fn shadow_fade_factor() -> f32 { return globals.frame.ambient_pos_x_shadow_fade.w; }
+
+/// `Out.vShadowProj = mul( ShadowMapTextureMatrix, float4( vPos, 1 ) )`, the
+/// line every caster's and receiver's vertex shader carries
+/// (`pdxmap.shader:207`, `tree.shader:242`).
+fn shadow_proj(world: vec3<f32>) -> vec4<f32> {
+    return globals.shadow_matrix * vec4<f32>(world, 1.0);
+}
+
+/// `CalculateShadow` (`shadow.fxh:6-42`): a five-tap PCF cross over the depth
+/// map, each tap shadowed when the stored depth is both below the 0.99 "nothing
+/// was drawn here" mark and below this fragment's own depth less the bias.
+///
+/// `tex2Dproj` is `SampleLevel( samp, uv.xy / uv.w, 0 )`
+/// (`defines_hlsl_dx11.fxh:54`), an ordinary filtered fetch and not a hardware
+/// comparison, so this is a literal port. Note that the game compares against
+/// the *undivided* `vShadowProj.z`: the light's projection is orthographic, so
+/// `w` is 1 and the two agree.
+fn calculate_shadow(proj: vec4<f32>) -> f32 {
+    let texel = 0.5 / SHADOW_MAP_SIZE;
+    var offsets = array<vec2<f32>, 5>(
+        vec2<f32>(-texel, 0.0),
+        vec2<f32>(0.0, texel),
+        vec2<f32>(texel, 0.0),
+        vec2<f32>(0.0, -texel),
+        vec2<f32>(0.0, 0.0),
+    );
+    let b = proj.z - SHADOW_BIAS;
+    var term = 0.0;
+    for (var i = 0; i < 5; i++) {
+        let uv = (proj.xy + offsets[i]) / proj.w;
+        let a = textureSampleLevel(shadow_map, shadow_map_sampler, uv, 0.0).r;
+        term += select(1.0, 0.1, a < 0.99 && a < b);
+    }
+    return term / 5.0;
+}
+
+/// `GetShadowScaled` (`shadow.fxh:44-54`), reading the screen-space buffer the
+/// pre-pass wrote at this fragment's own pixel.
+///
+/// `position` is the fragment's framebuffer position, which is the engine's
+/// `Input.vScreenCoord.xy / .w` by another route: both are the pixel centre in
+/// texture coordinates once divided by the target's size, and the buffer is
+/// screen-aligned, so the sample lands on the texel the pre-pass wrote.
+///
+/// `ShadowFadeFactor` is 0 at and above `DRAW_SHADOWS_CUTOFF`, where the added
+/// 1 and the saturate pin the value to 1 whatever the buffer holds. That is why
+/// the engine does not bother running the pass up there, and why this port
+/// binds its all-ones stand-in instead.
+fn get_shadow_scaled(scaler: f32, position: vec4<f32>) -> f32 {
+    return shadow_scaled_at(scaler, position.xy / vec2<f32>(textureDimensions(shadow_map)));
+}
+
+/// The same, for the one pass that does not sample at its own pixel:
+/// `pdxwater.shader:386-388` offsets `vScreenCoord` by the refraction
+/// distortion first, so the water reads the shadow of the sea bed it refracts.
+/// `coord` is the engine's `vScreenCoord`, whose `xy` is the clip position
+/// mapped into `[0, w]` with `y` down and whose `w` is the clip `w`.
+fn get_shadow_scaled_projective(scaler: f32, coord: vec4<f32>) -> f32 {
+    return shadow_scaled_at(scaler, coord.xy / coord.w);
+}
+
+fn shadow_scaled_at(scaler: f32, uv: vec2<f32>) -> f32 {
+    let s = saturate(scaler);
+    var value = textureSampleLevel(shadow_map, shadow_map_sampler, uv, 0.0).r;
+    value += 1.0 - shadow_fade_factor();
+    value = saturate(value);
+    return (1.0 - s) + s * value;
+}
+
+/// `Out.vScreenCoord` (`pdxwater.shader:211-217` and the same five lines in
+/// `river.shader`, `border.shader` and `pdxmap.shader`), from a clip position.
+fn screen_coord(clip: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(
+        clip.x * 0.5 + clip.w * 0.5,
+        clip.w * 0.5 - clip.y * 0.5,
+        clip.w,
+        clip.w,
+    );
 }
 
 // ----------------------------------------------------------------- fow.fxh

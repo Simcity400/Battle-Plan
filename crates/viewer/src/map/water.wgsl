@@ -247,6 +247,10 @@
 // `powersplit.py`, `structure_sea.py`, `texcheck.py`, `fitcoast4.py`,
 // `pairE_compare.py`, `pairE_land.py`, `shoreband2.py`, `score.sh`, `cmp.sh`).
 
+/// `SHADOW_WEIGHT_WATER` (`constants.fxh:173`): open water keeps half its sun
+/// even under a full shadow.
+const SHADOW_WEIGHT_WATER: f32 = 0.5;
+
 @group(1) @binding(0) var height_texture: texture_2d<f32>;
 @group(1) @binding(1) var lean_texture1: texture_2d<f32>;
 @group(1) @binding(2) var lean_texture2: texture_2d<f32>;
@@ -467,14 +471,26 @@ fn water_main(input: WaterVertex) -> @location(0) vec4<f32> {
     properties.specular_color = vec3<f32>(specular_intensity);
     properties.non_linear_glossiness = get_non_linear_glossiness(glossiness);
 
-    // `GetShadowScaled( SHADOW_WEIGHT_WATER, vShadowCoord, ShadowMap )`, where
-    // `vShadowCoord.xz` is the screen coordinate warped by the refraction
-    // distortion. `terrain.wgsl`'s header settles what the engine binds there
-    // and measures the term: exact above camera height 400, and below it a
-    // shadow pass this port has not got, bounded by `1 - SHADOW_WEIGHT_WATER`
-    // of 0.5 while the sea's own gap demands 0.41.
+    // `GetShadowScaled( SHADOW_WEIGHT_WATER, vShadowCoord, ShadowMap )`
+    // (`pdxwater.shader:386-388`). `vShadowCoord` is `vScreenCoord` with
+    // `vRefractionDistortion * 20` added to `.xz` — the screen `x` and the
+    // projective `z`, not `.xy`, which is what the game writes and so what this
+    // writes; `GetShadowScaled` divides `xy` by `w`, so only the `x` term
+    // reaches the sample and the `z` one is inert. The buffer it reads is the
+    // one `map::shadow` fills below camera height 400.
     // The `water` effect declares no defines either, so it is the Phong branch.
-    let light = calculate_sun_light_phong(properties, 1.0, sun_dir_water);
+    var shadow_coord = screen_coord(input.screen_pos);
+    shadow_coord = vec4<f32>(
+        shadow_coord.x + refraction_distortion.x * 20.0,
+        shadow_coord.y,
+        shadow_coord.z + refraction_distortion.y * 20.0,
+        shadow_coord.w,
+    );
+    let light = calculate_sun_light_phong(
+        properties,
+        get_shadow_scaled_projective(SHADOW_WEIGHT_WATER, shadow_coord),
+        sun_dir_water,
+    );
     var out = compose_light(properties, light.diffuse, light.specular);
 
     out = apply_fow(out, 0.0, 0.0);
