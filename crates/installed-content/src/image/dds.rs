@@ -254,6 +254,28 @@ fn legacy_source(flags: u32, fourcc: u32, bits: u32, masks: [u32; 4]) -> io::Res
 }
 
 /// Maps a DX10 `dxgiFormat` onto a decodable source.
+///
+/// Each `_SRGB` twin decodes to the same bytes as its `_UNORM` source, and the
+/// map renderer types every one of them linear (`viewer`'s `map::textures`).
+/// That is the engine's own behaviour rather than a simplification:
+/// four-character code with `DX10` only to step the payload pointer from
+/// `header + 128` to `header + 148`, reads `dxgiFormat` nowhere, and falls
+/// through to its four-bytes-per-pixel branch — `pfFlags & 0x20240` is zero for
+/// a `DDPF_FOURCC` header — where it stores the enum `0xd`. So a DX10 file
+/// reaches the GPU as `B8G8R8A8_UNORM` whatever it names. Nine of the 31,791
+/// `.dds` the game ships carry a DX10 header and all nine name an sRGB
+/// format — six
+/// `B8G8R8A8_UNORM_SRGB` and three `R8G8B8A8_UNORM_SRGB`, every one under
+/// `gfx/interface` or `gfx/event_pictures` and none under `map/`.
+///
+/// The three `R8G8B8A8_UNORM_SRGB` files are the one place this decoder and the
+/// engine differ: the masks below read them in the channel order their DXGI
+/// name gives, where the engine's fall-through reads every DX10 file as BGRA and
+/// so draws those three with red and blue swapped. They are
+/// `gfx/interface/main_lobby_button_transparent.dds`,
+/// `main_lobby_button_white.dds` and `small_flag_frame_thin3_gold.dds`; no pass
+/// in this port loads any of them, so the divergence is recorded rather than
+/// reproduced.
 fn dx10_source(format: u32) -> io::Result<Source> {
     match format {
         71 | 72 => Ok(Source::Blocks(TextureFormat::Bc1)),
