@@ -22,11 +22,20 @@
 //! walk. [`parse`] returns that tree verbatim and [`read`] projects the
 //! `.mesh` shape of it (section 1.2) into typed vertex streams.
 //!
-//! Skeletons, skins and animations are **not** decoded. The tree layer this
-//! module was written for draws static canopy tiles, and R3 section 1.3 records
-//! that no map object animates at rest. Their presence is recorded on
-//! [`SubMesh::has_skin`] and [`Mesh::has_skeleton`] so a later pass knows the
-//! streams exist without this module inventing a representation for them.
+//! Skins are **not** decoded: no pass here deforms a mesh, and a skinned mesh
+//! drawn from its own vertex stream is its bind pose. Their presence is
+//! recorded on [`SubMesh::has_skin`].
+//!
+//! Skeletons and the `[info]` half of `.anim` **are**, because several shipped
+//! unit entities are attachment rigs: `GER_motorized_entity`'s own mesh is a
+//! three-vertex plane and the truck and rifleman the game draws for a motorized
+//! division are its `attach` blocks at the rig's `vehicle` and `infantry`
+//! joints. [`Mesh::skeleton`] carries the joints and [`read_animation`] the
+//! rest pose those joints take, which is the transform an attachment hangs
+//! from; see [`Descriptors::resolve_entity`]. The `[samples]` half of `.anim`
+//! is not decoded: this pass draws one still hour and never advances a clock,
+//! so a sampled frame would be an invention, and every joint that carries an
+//! attachment on the four shipped rigs declares no animated channel at all.
 
 use std::{collections::BTreeMap, io};
 
@@ -306,6 +315,194 @@ fn close_to(stack: &mut Vec<Node>, depth: usize) {
     }
 }
 
+// ----------------------------------------------------------------- transforms
+
+/// An affine transform: three basis columns and a translation.
+///
+/// This is the layout a `tx` property carries. The twelve floats are four
+/// triples; the **column** reading of the first three is measured rather than
+/// assumed. Applying `GER_infantry.mesh`'s `RightHand` inverse bind to the 80
+/// vertices that joint alone skins puts them a mean 0.496 from the joint's own
+/// origin read as columns and 1.338 read as rows, and `RightUpLeg` 0.863
+/// against 1.029.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transform {
+    /// `basis[c]` is where the `c`-th unit axis lands.
+    pub basis: [[f32; 3]; 3],
+    pub translation: [f32; 3],
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl Transform {
+    pub const IDENTITY: Self = Self {
+        basis: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        translation: [0.0; 3],
+    };
+
+    /// The twelve floats of a `tx` property, four columns of three.
+    pub fn from_columns(values: &[f32]) -> Option<Self> {
+        let values: &[f32; 12] = values.get(..12)?.try_into().ok()?;
+        Some(Self {
+            basis: [
+                [values[0], values[1], values[2]],
+                [values[3], values[4], values[5]],
+                [values[6], values[7], values[8]],
+            ],
+            translation: [values[9], values[10], values[11]],
+        })
+    }
+
+    /// A translation, a rotation quaternion `(x, y, z, w)` and a uniform scale,
+    /// which is how `.anim` states a joint's rest pose (section 1.3).
+    pub fn from_trs(translation: [f32; 3], rotation: [f32; 4], scale: f32) -> Self {
+        let length = rotation.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let [x, y, z, w] = if length > 0.0 {
+            [
+                rotation[0] / length,
+                rotation[1] / length,
+                rotation[2] / length,
+                rotation[3] / length,
+            ]
+        } else {
+            [0.0, 0.0, 0.0, 1.0]
+        };
+        // Columns of the rotation matrix, then the uniform scale on each.
+        let basis = [
+            [
+                1.0 - 2.0 * (y * y + z * z),
+                2.0 * (x * y + z * w),
+                2.0 * (x * z - y * w),
+            ],
+            [
+                2.0 * (x * y - z * w),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z + x * w),
+            ],
+            [
+                2.0 * (x * z + y * w),
+                2.0 * (y * z - x * w),
+                1.0 - 2.0 * (x * x + y * y),
+            ],
+        ];
+        Self {
+            basis: basis.map(|axis| axis.map(|value| value * scale)),
+            translation,
+        }
+    }
+
+    /// `self` applied after `inner`: the transform that maps `inner`'s space
+    /// through `self`'s.
+    pub fn compose(&self, inner: &Self) -> Self {
+        Self {
+            basis: inner.basis.map(|axis| self.transform_vector(axis)),
+            translation: self.transform_point(inner.translation),
+        }
+    }
+
+    pub fn transform_point(&self, point: [f32; 3]) -> [f32; 3] {
+        let [x, y, z] = self.transform_vector(point);
+        [
+            x + self.translation[0],
+            y + self.translation[1],
+            z + self.translation[2],
+        ]
+    }
+
+    pub fn transform_vector(&self, vector: [f32; 3]) -> [f32; 3] {
+        let [a, b, c] = self.basis;
+        [
+            a[0] * vector[0] + b[0] * vector[1] + c[0] * vector[2],
+            a[1] * vector[0] + b[1] * vector[1] + c[1] * vector[2],
+            a[2] * vector[0] + b[2] * vector[1] + c[2] * vector[2],
+        ]
+    }
+
+    /// The determinant of the linear part.
+    pub fn determinant(&self) -> f32 {
+        let [a, b, c] = self.basis;
+        a[0] * (b[1] * c[2] - b[2] * c[1]) - b[0] * (a[1] * c[2] - a[2] * c[1])
+            + c[0] * (a[1] * b[2] - a[2] * b[1])
+    }
+
+    /// The inverse, or `None` when the linear part is singular or not finite.
+    ///
+    /// Both cases occur in shipped rigs: `artillery_frame.mesh` writes an
+    /// all-zero `tx` for 33 of its 41 joints and `cavalry_frame.mesh` writes
+    /// `1e12` on the diagonal of two of its five.
+    pub fn inverse(&self) -> Option<Self> {
+        let determinant = self.determinant();
+        if !determinant.is_finite() || determinant.abs() < 1e-12 {
+            return None;
+        }
+        let [a, b, c] = self.basis;
+        let inverse = 1.0 / determinant;
+        // The inverse of the 3x3, as columns.
+        let basis = [
+            [
+                (b[1] * c[2] - b[2] * c[1]) * inverse,
+                (a[2] * c[1] - a[1] * c[2]) * inverse,
+                (a[1] * b[2] - a[2] * b[1]) * inverse,
+            ],
+            [
+                (b[2] * c[0] - b[0] * c[2]) * inverse,
+                (a[0] * c[2] - a[2] * c[0]) * inverse,
+                (a[2] * b[0] - a[0] * b[2]) * inverse,
+            ],
+            [
+                (b[0] * c[1] - b[1] * c[0]) * inverse,
+                (a[1] * c[0] - a[0] * c[1]) * inverse,
+                (a[0] * b[1] - a[1] * b[0]) * inverse,
+            ],
+        ];
+        let linear = Self {
+            basis,
+            translation: [0.0; 3],
+        };
+        let translation = linear.transform_vector(self.translation);
+        let out = Self {
+            basis,
+            translation: [-translation[0], -translation[1], -translation[2]],
+        };
+        out.is_finite().then_some(out)
+    }
+
+    fn is_finite(&self) -> bool {
+        self.basis
+            .iter()
+            .flatten()
+            .chain(self.translation.iter())
+            .all(|value| value.is_finite())
+    }
+
+    /// The mean length of the three basis columns: the uniform scale a joint
+    /// carries, which is 0 on a joint whose attachment the animation hides.
+    pub fn uniform_scale(&self) -> f32 {
+        self.basis
+            .iter()
+            .map(|axis| axis.iter().map(|v| v * v).sum::<f32>().sqrt())
+            .sum::<f32>()
+            / 3.0
+    }
+}
+
+/// One `[skeleton]` joint (section 1.2).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Joint {
+    pub name: String,
+    /// `ix`, the joint's own index.
+    pub index: u32,
+    /// `pa`, the parent's index; absent on a root.
+    pub parent: Option<u32>,
+    /// `tx`, the inverse bind matrix: world space to this joint's own space.
+    /// Absent when the file declares none.
+    pub inverse_bind: Option<Transform>,
+}
+
 /// A `[material]` node: the effect name and the three texture references
 /// (section 1.2). Every name resolves relative to the `.mesh`'s own directory.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -383,26 +580,110 @@ pub struct Mesh {
     /// `loddist`, ascending and starting at 0; empty on a single-LOD mesh.
     pub lod_distances: Vec<f32>,
     pub shapes: Vec<Shape>,
-    /// Whether a `[skeleton]` node was present. Its joints are not decoded.
-    pub has_skeleton: bool,
+    /// The `[skeleton]` joints, in file order.
+    pub skeleton: Vec<Joint>,
     /// The names under the root `[locator]` node, if any.
     pub locators: Vec<String>,
 }
 
 impl Mesh {
-    /// The shape that carries `lod`, or the `index`-th shape on a mesh that
-    /// declares no LOD indices at all.
-    pub fn shape_for_lod(&self, lod: usize) -> Option<&Shape> {
-        self.shapes
+    /// The shapes to draw at each LOD level, outermost first.
+    ///
+    /// A shape that declares `lod` is one rung of a ladder. A mesh where **no**
+    /// shape declares one is not a ladder at all: its shapes are sub-objects
+    /// and they all draw together at the single level, which is what
+    /// `artillery_frame.mesh` needs — its first shape is an undrawable
+    /// `Collision` hull and its drawn plane is the second, so reading the
+    /// shapes as LOD 0 and LOD 1 draws nothing at any distance. Two shipped
+    /// meshes have that shape (`artillery_frame.mesh` and
+    /// `landmark_eiffel_tower.mesh`) and exactly one has two drawable sub-
+    /// objects (`ger_battleship_bismark.mesh`, which no layer here draws);
+    /// every LOD mesh the tree, sprawl and building layers ask for declares
+    /// `lod` on every shape, so this reading moves only those.
+    pub fn lods(&self) -> Vec<Vec<&Shape>> {
+        if self.shapes.iter().all(|shape| shape.lod.is_none()) {
+            return if self.shapes.is_empty() {
+                Vec::new()
+            } else {
+                vec![self.shapes.iter().collect()]
+            };
+        }
+        let levels = self
+            .shapes
             .iter()
-            .find(|shape| shape.lod == Some(lod as i32))
-            .or_else(|| {
+            .filter_map(|shape| shape.lod)
+            .max()
+            .unwrap_or(0)
+            .max(0) as usize
+            + 1;
+        (0..levels)
+            .map(|lod| {
                 self.shapes
                     .iter()
-                    .all(|shape| shape.lod.is_none())
-                    .then(|| self.shapes.get(lod))
-                    .flatten()
+                    .filter(|shape| shape.lod == Some(lod as i32))
+                    .collect()
             })
+            .collect()
+    }
+
+    /// The joint of this name.
+    pub fn joint(&self, name: &str) -> Option<&Joint> {
+        self.skeleton.iter().find(|joint| joint.name == name)
+    }
+
+    /// The joint's bind-pose transform in the mesh's own space, composed from
+    /// the inverse bind matrix the file carries.
+    ///
+    /// `tx` is the **world** inverse bind, not a local one: on
+    /// `motorized_frame.mesh` the `infantry` joint's `tx` translates by
+    /// `(-1.88863, 0, 0)` and the idle animation rests that joint at
+    /// `(1.88863, 0, 0)`, so inverting `tx` alone reproduces the pose with no
+    /// parent walk. `None` when the file declares no `tx` for the joint or
+    /// declares a singular one.
+    pub fn bind_pose(&self, name: &str) -> Option<Transform> {
+        self.joint(name)?.inverse_bind?.inverse()
+    }
+
+    /// The joint's pose in the mesh's own space under one animation's rest
+    /// values, composed down the skeleton's `pa` chain.
+    ///
+    /// The `.anim` states each joint **relative to its parent** and carries no
+    /// parent of its own, so the two files are read together: the `[skeleton]`
+    /// gives the tree and the `[info]` block the transform on each link. For a
+    /// rig this is one link — every attachment joint of `motorized_frame`,
+    /// `cavalry_frame`, `bicycle_frame` and `artillery_frame` hangs off an
+    /// identity root — and for a rifleman it is eight, from the hip out to
+    /// `Right_Hand_node`.
+    ///
+    /// A joint the animation does not name contributes its own bind transform
+    /// relative to its parent's, so a partial `.anim` still places its joint.
+    /// `None` when the skeleton has no joint of that name.
+    pub fn rest_pose(&self, animation: &Animation, name: &str) -> Option<Transform> {
+        let mut chain = Vec::new();
+        let mut joint = self.joint(name)?;
+        for _ in 0..=self.skeleton.len() {
+            chain.push(joint);
+            let Some(parent) = joint.parent else { break };
+            let Some(parent) = self.skeleton.iter().find(|other| other.index == parent) else {
+                break;
+            };
+            if parent.index == joint.index {
+                break;
+            }
+            joint = parent;
+        }
+        let mut out = Transform::IDENTITY;
+        for (position, joint) in chain.iter().enumerate().rev() {
+            let local = animation.rest(&joint.name).or_else(|| {
+                let world = joint.inverse_bind?.inverse()?;
+                match chain.get(position + 1) {
+                    Some(parent) => Some(parent.inverse_bind?.compose(&world)),
+                    None => Some(world),
+                }
+            })?;
+            out = out.compose(&local);
+        }
+        Some(out)
     }
 }
 
@@ -422,16 +703,19 @@ pub fn read(bytes: &[u8]) -> io::Result<Mesh> {
         .and_then(Value::floats)
         .unwrap_or(&[])
         .to_vec();
-    let mut has_skeleton = false;
+    let mut skeleton = Vec::new();
     let mut shapes = Vec::new();
     for child in &object.children {
         if child.name == "skeleton" {
-            has_skeleton = true;
+            skeleton.extend(read_joints(child));
             continue;
         }
         // `[skeleton]` sits beside the shape's `[mesh]` nodes at depth 3
-        // (section 1.2); the depth-1 form above is accepted for robustness.
-        has_skeleton |= child.child("skeleton").is_some();
+        // (section 1.2), which is where every shipped unit mesh puts it; the
+        // depth-2 form above is accepted for robustness.
+        if let Some(node) = child.child("skeleton") {
+            skeleton.extend(read_joints(node));
+        }
         let mut meshes = Vec::new();
         for node in child.children_named("mesh") {
             meshes.push(read_sub_mesh(&child.name, node)?);
@@ -461,8 +745,127 @@ pub fn read(bytes: &[u8]) -> io::Result<Mesh> {
     Ok(Mesh {
         lod_distances,
         shapes,
-        has_skeleton,
+        skeleton,
         locators,
+    })
+}
+
+/// The joints under one `[skeleton]` node, skipping any child that declares no
+/// `ix`.
+fn read_joints(node: &Node) -> Vec<Joint> {
+    node.children
+        .iter()
+        .filter_map(|child| {
+            let index = child.property("ix")?.ints()?.first().copied()?;
+            Some(Joint {
+                name: child.name.clone(),
+                index: u32::try_from(index).ok()?,
+                parent: child
+                    .property("pa")
+                    .and_then(Value::ints)
+                    .and_then(|values| values.first().copied())
+                    .and_then(|value| u32::try_from(value).ok()),
+                inverse_bind: child
+                    .property("tx")
+                    .and_then(Value::floats)
+                    .and_then(Transform::from_columns),
+            })
+        })
+        .collect()
+}
+
+/// A decoded `.anim` file's `[info]` block: the rest pose of every joint.
+///
+/// The `[samples]` block is deliberately not decoded; see the module comment.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Animation {
+    /// `fps`, the sample rate.
+    pub fps: f32,
+    /// `sa`, the number of frames.
+    pub samples: u32,
+    /// One entry per joint, in skeleton index order.
+    pub joints: Vec<AnimationJoint>,
+}
+
+impl Animation {
+    /// The rest pose of one joint, as a transform in its parent's space.
+    pub fn rest(&self, name: &str) -> Option<Transform> {
+        let joint = self.joints.iter().find(|joint| joint.name == name)?;
+        Some(Transform::from_trs(
+            joint.translation,
+            joint.rotation,
+            joint.scale,
+        ))
+    }
+}
+
+/// One joint's rest pose inside an `.anim` (section 1.3).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AnimationJoint {
+    pub name: String,
+    /// `sa`, the animated channels: a subset of `"tqs"` in that order. Empty
+    /// means the joint is static, which every attachment joint of the four
+    /// shipped rigs is.
+    pub channels: String,
+    /// `t`, the rest translation.
+    pub translation: [f32; 3],
+    /// `q`, the rest rotation quaternion `(x, y, z, w)`.
+    pub rotation: [f32; 4],
+    /// `s`, the rest uniform scale. **Zero hides the joint's attachment**:
+    /// that is how a rifleman's idle animation holds one of his four rifles
+    /// and how `cavalry_frame`'s idle drops its separate rider and horse in
+    /// favour of the combined model on its `cavalry` joint.
+    pub scale: f32,
+}
+
+/// Decodes the `[info]` block of a `.anim` file (section 1.3).
+pub fn read_animation(bytes: &[u8]) -> io::Result<Animation> {
+    let root = parse(bytes)?;
+    let info = root
+        .child("info")
+        .ok_or_else(|| invalid("a PDX animation carries no [info] node"))?;
+    let single = |name: &str| {
+        info.property(name)
+            .and_then(Value::floats)
+            .and_then(|values| values.first().copied())
+    };
+    let joints = info
+        .children
+        .iter()
+        .map(|child| {
+            let translation = child
+                .property("t")
+                .and_then(triple)
+                .unwrap_or([0.0, 0.0, 0.0]);
+            let rotation = child
+                .property("q")
+                .and_then(Value::floats)
+                .and_then(|values| values.get(..4))
+                .map_or([0.0, 0.0, 0.0, 1.0], |values| {
+                    [values[0], values[1], values[2], values[3]]
+                });
+            AnimationJoint {
+                name: child.name.clone(),
+                channels: child.string("sa").unwrap_or_default().to_string(),
+                translation,
+                rotation,
+                scale: child
+                    .property("s")
+                    .and_then(Value::floats)
+                    .and_then(|values| values.first().copied())
+                    .unwrap_or(1.0),
+            }
+        })
+        .collect();
+    Ok(Animation {
+        fps: single("fps").unwrap_or(0.0),
+        samples: info
+            .property("sa")
+            .and_then(Value::ints)
+            .and_then(|values| values.first().copied())
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(0),
+        joints,
     })
 }
 
@@ -591,13 +994,45 @@ pub struct MeshDefinition {
     /// `scale`, default 1.0.
     pub scale: f32,
     pub settings: Vec<MeshSetting>,
+    /// `animation = { id = … type = … }`: the animation **name** this mesh
+    /// plays for each state animation id, in file order.
+    pub animations: Vec<(String, String)>,
+}
+
+/// One `attach` block of an `entity` (section 1.5).
+///
+/// The block is `attach = { name = "<own name>" <joint> = "<entity>" }`: the
+/// `name` is the attachment's own handle, which `propagate_state` addresses and
+/// which a `clone` overrides by, and the one other key is a joint of the
+/// parent's skeleton verbatim — `Right_Hand_node`, `Root_node_2`, `vehicle`,
+/// `infantry`, `horse`, `artillery`, `bike` are all joint names in the
+/// matching `.mesh`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Attachment {
+    /// The attachment's own handle.
+    pub name: String,
+    /// The parent skeleton's joint it hangs from.
+    pub joint: String,
+    /// The entity attached there.
+    pub entity: String,
+}
+
+impl Attachment {
+    /// What a `clone` overrides this attachment by: its own handle, or its
+    /// joint when the block names no handle.
+    pub fn handle(&self) -> &str {
+        if self.name.is_empty() {
+            &self.joint
+        } else {
+            &self.name
+        }
+    }
 }
 
 /// One `entity` block of a `gfx/entities/*.asset` file (section 1.5).
 ///
-/// Only the four keys a static map object needs are kept: `state`, `attach`,
-/// `event` and the particle machinery matter below camera height 180, which no
-/// pass reads yet (R3 section 5.3).
+/// The `event` and particle machinery is still dropped; nothing here fires an
+/// event or advances a clock.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EntityDefinition {
     pub name: String,
@@ -606,6 +1041,23 @@ pub struct EntityDefinition {
     /// `clone`, the entity this one inherits from before its own overrides.
     pub clone: Option<String>,
     pub scale: Option<f32>,
+    /// `attach`, in file order.
+    pub attachments: Vec<Attachment>,
+    /// `default_state`; the engine's own default is `idle`.
+    pub default_state: Option<String>,
+    /// `state = { name = … animation = … }` pairs, in file order. A state name
+    /// occurs several times when the engine picks between weighted variants;
+    /// the first is taken.
+    pub states: Vec<(String, String)>,
+}
+
+/// One `animation = { name = … file = … }` block of a `gfx/models/**/*.asset`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AnimationDefinition {
+    pub name: String,
+    /// The `.anim` path, already resolved against the descriptor's own
+    /// directory and relative to the content root.
+    pub file: String,
 }
 
 /// What a name resolved to: the `.mesh` to load, its world scale and its
@@ -627,6 +1079,130 @@ pub struct ResolvedMesh<'a> {
 pub struct Descriptors {
     pub meshes: BTreeMap<String, MeshDefinition>,
     pub entities: BTreeMap<String, EntityDefinition>,
+    /// `animation` blocks, keyed by the name a `pdxmesh` refers to them by.
+    pub animations: BTreeMap<String, AnimationDefinition>,
+}
+
+/// An entity with its `clone` chain already applied (section 1.5).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InheritedEntity<'a> {
+    /// `pdxmesh`, from the nearest link that declares one.
+    pub mesh: Option<&'a str>,
+    /// `scale`, from the nearest link that declares one.
+    pub scale: Option<f32>,
+    /// `default_state`, from the nearest link that declares one.
+    pub default_state: Option<&'a str>,
+    /// Every attachment reachable through the chain, the nearest declaration of
+    /// each `name` winning, in the order the nearest link declares them.
+    pub attachments: Vec<&'a Attachment>,
+    /// State name to animation id, the nearest declaration winning.
+    pub states: BTreeMap<&'a str, &'a str>,
+}
+
+impl Descriptors {
+    /// Resolves an entity's `clone` chain into one flattened definition.
+    ///
+    /// **The engine's `clone` copies the whole entity and then applies the
+    /// overrides**, so a field the child does not declare is the parent's even
+    /// when the child declares some other field. The shipped data needs that
+    /// reading and the frames confirm it: `GER_infantry_entity` is
+    /// `clone = "infantry_rifle_entity"` plus its own `pdxmesh` and its own
+    /// five `attach` handles, and it declares no `scale`, no `default_state`
+    /// and no `idle` state; the game draws it at `infantry_rifle_entity`'s
+    /// `scale = 0.8` (`pairD_in10.png`: the game's helmet is 31.7 device pixels
+    /// across and the unscaled figure's 40) and plays that entity's idle
+    /// animation. A field-by-field override also explains every `attach`
+    /// handle in the file: `GER_artillery_entity` clones `artillery_entity` and
+    /// redeclares exactly the two handles `artillery` and `infantry` that it
+    /// wants to point elsewhere.
+    ///
+    /// The walk is bounded by the number of entities, so a cyclic `clone`
+    /// terminates.
+    pub fn inherit(&self, name: &str) -> Option<InheritedEntity<'_>> {
+        let mut out = InheritedEntity::default();
+        let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
+        let mut current = self.entities.get(name)?;
+        for _ in 0..=self.entities.len() {
+            out.mesh = out.mesh.or(current.mesh.as_deref());
+            out.scale = out.scale.or(current.scale);
+            out.default_state = out.default_state.or(current.default_state.as_deref());
+            for attachment in &current.attachments {
+                if !out
+                    .attachments
+                    .iter()
+                    .any(|held| held.handle() == attachment.handle())
+                {
+                    out.attachments.push(attachment);
+                }
+            }
+            for (state, animation) in &current.states {
+                out.states
+                    .entry(state.as_str())
+                    .or_insert(animation.as_str());
+            }
+            let Some(parent) = current.clone.as_deref() else {
+                break;
+            };
+            if seen.insert(parent, ()).is_some() {
+                break;
+            }
+            let Some(parent) = self.entities.get(parent) else {
+                break;
+            };
+            current = parent;
+        }
+        Some(out)
+    }
+
+    /// Resolves an entity name to its mesh, world scale, attachments and the
+    /// animation its default state plays.
+    ///
+    /// A name that is a `pdxmesh` and not an entity resolves to that mesh with
+    /// no attachments, which is what every `mapobject_<paletteIndex>` the tree
+    /// layer asks for is.
+    pub fn resolve_entity(&self, name: &str) -> Option<ResolvedEntity<'_>> {
+        let Some(inherited) = self.inherit(name) else {
+            let definition = self.meshes.get(name)?;
+            return Some(ResolvedEntity {
+                definition,
+                scale: definition.scale,
+                attachments: Vec::new(),
+                animation: None,
+            });
+        };
+        let definition = self.meshes.get(inherited.mesh?)?;
+        let state = inherited.default_state.unwrap_or(DEFAULT_STATE);
+        let animation = inherited
+            .states
+            .get(state)
+            .and_then(|id| {
+                definition
+                    .animations
+                    .iter()
+                    .find(|(declared, _)| declared == id)
+            })
+            .and_then(|(_, name)| self.animations.get(name.as_str()));
+        Some(ResolvedEntity {
+            definition,
+            scale: inherited.scale.unwrap_or(1.0) * definition.scale,
+            attachments: inherited.attachments,
+            animation,
+        })
+    }
+}
+
+/// The state an entity that declares no `default_state` is in.
+pub const DEFAULT_STATE: &str = "idle";
+
+/// What an entity name resolved to, with its `clone` chain applied.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedEntity<'a> {
+    pub definition: &'a MeshDefinition,
+    /// `entity.scale * pdxmesh.scale`.
+    pub scale: f32,
+    pub attachments: Vec<&'a Attachment>,
+    /// The `.anim` the entity's default state plays, when one resolves.
+    pub animation: Option<&'a AnimationDefinition>,
 }
 
 impl Descriptors {
@@ -643,31 +1219,13 @@ impl Descriptors {
     /// includes every `mapobject_<paletteIndex>` the tree layer asks for
     /// (R3 section 3.1): those are pdxmesh names with no entity.
     ///
-    /// An entity name follows its `pdxmesh`, or its `clone` chain when it
-    /// declares none. The chain is bounded by the number of entities, so a
-    /// cyclic `clone` terminates.
+    /// An entity name follows its whole `clone` chain, field by field; see
+    /// [`Descriptors::inherit`].
     pub fn resolve(&self, name: &str) -> Option<ResolvedMesh<'_>> {
-        let Some(first) = self.entities.get(name) else {
-            let definition = self.meshes.get(name)?;
-            return Some(ResolvedMesh {
-                definition,
-                scale: definition.scale,
-            });
-        };
-        let mut entity = first;
-        let mut scale = entity.scale;
-        for _ in 0..self.entities.len() {
-            if let Some(mesh) = &entity.mesh {
-                let definition = self.meshes.get(mesh)?;
-                return Some(ResolvedMesh {
-                    definition,
-                    scale: scale.unwrap_or(1.0) * definition.scale,
-                });
-            }
-            entity = self.entities.get(entity.clone.as_deref()?)?;
-            scale = scale.or(entity.scale);
-        }
-        None
+        self.resolve_entity(name).map(|entity| ResolvedMesh {
+            definition: entity.definition,
+            scale: entity.scale,
+        })
     }
 }
 
@@ -690,20 +1248,22 @@ pub fn read_descriptors(layers: &ResolvedLayers, paths: &[&str]) -> io::Result<D
         };
         let document =
             parser::parse(&bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
-        collect(&document, &mut out);
+        collect(&document, path, &mut out);
     }
     Ok(out)
 }
 
-/// Reads the `pdxmesh` and `entity` blocks of one already-read descriptor file.
-pub fn parse_descriptors(bytes: &[u8]) -> io::Result<Descriptors> {
+/// Reads the blocks of one already-read descriptor file. `path` is the file's
+/// own path, which an `animation` block's `file` resolves against.
+pub fn parse_descriptors(bytes: &[u8], path: &str) -> io::Result<Descriptors> {
     let document = parser::parse(bytes)?;
     let mut out = Descriptors::default();
-    collect(&document, &mut out);
+    collect(&document, path, &mut out);
     Ok(out)
 }
 
-fn collect(document: &parser::Document, out: &mut Descriptors) {
+fn collect(document: &parser::Document, path: &str, out: &mut Descriptors) {
+    let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
     for item in &document.items {
         match item.key.as_deref() {
             Some(b"objectTypes") => {
@@ -720,9 +1280,33 @@ fn collect(document: &parser::Document, out: &mut Descriptors) {
                     out.entities.insert(definition.name.clone(), definition);
                 }
             }
+            Some(b"animation") => {
+                if let Some(definition) = animation_definition(&item.value, directory) {
+                    out.animations.insert(definition.name.clone(), definition);
+                }
+            }
             _ => {}
         }
     }
+}
+
+fn animation_definition(value: &parser::Value, directory: &str) -> Option<AnimationDefinition> {
+    let items = value.items()?;
+    let name = unquote(text(items, b"name")?);
+    let file = unquote(text(items, b"file")?);
+    if name.is_empty() || file.is_empty() {
+        return None;
+    }
+    Some(AnimationDefinition {
+        name,
+        // The `.anim` sits beside the descriptor that names it; every shipped
+        // block gives a bare file name.
+        file: if file.contains('/') || directory.is_empty() {
+            file
+        } else {
+            format!("{directory}/{file}")
+        },
+    })
 }
 
 fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
@@ -737,6 +1321,14 @@ fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
         .filter(|item| item.key.as_deref() == Some(b"meshsettings"))
         .filter_map(|item| mesh_setting(&item.value))
         .collect();
+    let animations = items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"animation"))
+        .filter_map(|item| {
+            let block = item.value.items()?;
+            Some((unquote(text(block, b"id")?), unquote(text(block, b"type")?)))
+        })
+        .collect();
     Some(MeshDefinition {
         name,
         file,
@@ -744,6 +1336,7 @@ fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
             .and_then(|value| value.trim().parse().ok())
             .unwrap_or(1.0),
         settings,
+        animations,
     })
 }
 
@@ -767,11 +1360,50 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
     if name.is_empty() {
         return None;
     }
+    let attachments = items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"attach"))
+        .filter_map(|item| {
+            let block = item.value.items()?;
+            // The joint is whichever key is not `name`; the shipped blocks
+            // carry exactly those two.
+            let (joint, entity) = block.iter().find_map(|field| {
+                let key = field.key.as_deref()?;
+                if key == b"name" {
+                    return None;
+                }
+                Some((
+                    unquote(std::str::from_utf8(key).ok()?),
+                    unquote(field.value.scalar_str()?),
+                ))
+            })?;
+            Some(Attachment {
+                name: text(block, b"name").map(unquote).unwrap_or_default(),
+                joint,
+                entity,
+            })
+        })
+        .filter(|attachment| !attachment.joint.is_empty() && !attachment.entity.is_empty())
+        .collect();
+    let states = items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"state"))
+        .filter_map(|item| {
+            let block = item.value.items()?;
+            Some((
+                unquote(text(block, b"name")?),
+                unquote(text(block, b"animation")?),
+            ))
+        })
+        .collect();
     Some(EntityDefinition {
         name,
         mesh: text(items, b"pdxmesh").map(unquote),
         clone: text(items, b"clone").map(unquote),
         scale: text(items, b"scale").and_then(|value| value.trim().parse().ok()),
+        attachments,
+        default_state: text(items, b"default_state").map(unquote),
+        states,
     })
 }
 
@@ -882,7 +1514,7 @@ mod tests {
         let mesh = read(&triangle_mesh()).unwrap();
         assert_eq!(mesh.lod_distances, vec![0.0, 100.0]);
         assert_eq!(mesh.locators, vec!["attach_01".to_string()]);
-        assert!(!mesh.has_skeleton);
+        assert!(mesh.skeleton.is_empty());
         assert_eq!(mesh.shapes.len(), 1);
         let shape = &mesh.shapes[0];
         assert_eq!(shape.name, "planeShape");
@@ -913,11 +1545,9 @@ mod tests {
         );
         assert!(!sub.has_skin);
         assert!(sub.is_drawable());
-        assert_eq!(
-            mesh.shape_for_lod(0).map(|shape| shape.name.as_str()),
-            Some("planeShape")
-        );
-        assert_eq!(mesh.shape_for_lod(1), None);
+        let lods = mesh.lods();
+        assert_eq!(lods.len(), 1);
+        assert_eq!(lods[0][0].name, "planeShape");
     }
 
     #[test]
@@ -937,7 +1567,7 @@ mod tests {
     }
 
     #[test]
-    fn a_skin_and_a_skeleton_are_recorded_without_being_decoded() {
+    fn a_skin_is_recorded_and_a_skeleton_decoded() {
         let bytes = Builder::new()
             .node(1, "object")
             .node(2, "bodyShape")
@@ -952,9 +1582,23 @@ mod tests {
             .node(3, "skeleton")
             .node(4, "root")
             .ints("ix", &[0])
+            .node(4, "hand")
+            .ints("ix", &[1])
+            .ints("pa", &[0])
+            .floats(
+                "tx",
+                &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, -2.0, -3.0, 0.0],
+            )
             .bytes;
         let mesh = read(&bytes).unwrap();
-        assert!(mesh.has_skeleton);
+        assert_eq!(mesh.skeleton.len(), 2);
+        assert_eq!(mesh.skeleton[1].name, "hand");
+        assert_eq!(mesh.skeleton[1].parent, Some(0));
+        // `tx` is the world inverse bind, so inverting it is the bind pose.
+        assert_eq!(mesh.bind_pose("hand").unwrap().translation, [2.0, 3.0, 0.0]);
+        // A joint the file gives no `tx` has no bind pose at all.
+        assert_eq!(mesh.skeleton[0].inverse_bind, None);
+        assert_eq!(mesh.bind_pose("root"), None);
         assert!(mesh.shapes[0].meshes[0].has_skin);
         assert!(mesh.shapes[0].meshes[0].uv1.is_none());
     }
@@ -1084,6 +1728,7 @@ mod tests {
                 }
             }
             "#,
+            "gfx/entities/trees.gfx",
         )
         .unwrap();
         let resolved = descriptors.resolve("mapobject_29").unwrap();
@@ -1117,7 +1762,10 @@ mod tests {
             entity = { name = "child" clone = "base" scale = 1.5 }
             entity = { name = "loop_a" clone = "loop_b" }
             entity = { name = "loop_b" clone = "loop_a" }
+            entity = { name = "own_mesh" clone = "scaled" pdxmesh = "m" }
+            entity = { name = "scaled" pdxmesh = "other" scale = 0.8 }
             "#,
+            "gfx/entities/units_infantry.asset",
         )
         .unwrap();
         assert_eq!(descriptors.resolve("base").unwrap().scale, 2.0);
@@ -1125,5 +1773,131 @@ mod tests {
         assert_eq!(descriptors.entities["child"].clone, Some("base".into()));
         // A cyclic clone chain terminates instead of looping.
         assert!(descriptors.resolve("loop_a").is_none());
+        // An entity that declares its own mesh still inherits the clone's
+        // scale: this is `GER_infantry_entity` over `infantry_rifle_entity`.
+        let own = descriptors.resolve("own_mesh").unwrap();
+        assert_eq!(own.definition.file, "a.mesh");
+        assert!((own.scale - 1.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_entity_inherits_its_clone_s_attachments_by_handle_and_its_states() {
+        let descriptors = parse_descriptors(
+            br#"
+            objectTypes = {
+                pdxmesh = {
+                    name = "rig"
+                    file = "rig.mesh"
+                    animation = { id = "idle" type = "rig_idle_animation" }
+                    animation = { id = "move" type = "rig_move_animation" }
+                }
+            }
+            entity = {
+                name = "base"
+                pdxmesh = "rig"
+                default_state = "idle"
+                state = { name = "idle" animation = "idle" }
+                state = { name = "move" animation = "move" }
+                attach = { name = "gun" artillery = "generic_gun_entity" }
+                attach = { name = "crew" infantry = "generic_crew_entity" }
+            }
+            entity = {
+                clone = "base"
+                name = "german"
+                pdxmesh = "rig"
+                attach = { name = "crew" infantry = "GER_crew_entity" }
+            }
+            animation = { name = "rig_idle_animation" file = "rig_idle.anim" }
+            "#,
+            "gfx/entities/units_artillery.asset",
+        )
+        .unwrap();
+        let german = descriptors.inherit("german").unwrap();
+        assert_eq!(german.default_state, Some("idle"));
+        assert_eq!(
+            german
+                .attachments
+                .iter()
+                .map(|attachment| (attachment.joint.as_str(), attachment.entity.as_str()))
+                .collect::<Vec<_>>(),
+            // The child's own handle wins and the parent's other one carries.
+            vec![
+                ("infantry", "GER_crew_entity"),
+                ("artillery", "generic_gun_entity"),
+            ]
+        );
+        assert_eq!(german.states.get("idle"), Some(&"idle"));
+        // The default state picks the animation id, the mesh the animation
+        // name and the descriptor the file.
+        let resolved = descriptors.resolve_entity("german").unwrap();
+        assert_eq!(
+            resolved.animation.map(|animation| animation.file.as_str()),
+            Some("gfx/entities/rig_idle.anim")
+        );
+    }
+
+    #[test]
+    fn an_animation_block_resolves_against_its_own_directory() {
+        let descriptors = parse_descriptors(
+            br#"
+            animation = { name = "rig_idle_animation" file = "rig_idle.anim" }
+            "#,
+            "gfx/models/units/vehicles/animation_vehicles.asset",
+        )
+        .unwrap();
+        assert_eq!(
+            descriptors.animations["rig_idle_animation"].file,
+            "gfx/models/units/vehicles/rig_idle.anim"
+        );
+    }
+
+    #[test]
+    fn a_rest_pose_composes_its_translation_rotation_and_scale() {
+        // A quarter turn about +Y at scale 2: +X lands on -Z.
+        let half = std::f32::consts::FRAC_PI_4;
+        let transform =
+            Transform::from_trs([1.0, 0.0, 0.0], [0.0, half.sin(), 0.0, half.cos()], 2.0);
+        let point = transform.transform_point([1.0, 0.0, 0.0]);
+        assert!((point[0] - 1.0).abs() < 1e-5, "{point:?}");
+        assert!(point[1].abs() < 1e-5, "{point:?}");
+        assert!((point[2] + 2.0).abs() < 1e-5, "{point:?}");
+        assert!((transform.uniform_scale() - 2.0).abs() < 1e-5);
+        // A zero scale is the switch that hides an attachment, and it has no
+        // inverse.
+        let hidden = Transform::from_trs([0.0; 3], [0.0, 0.0, 0.0, 1.0], 0.0);
+        assert_eq!(hidden.uniform_scale(), 0.0);
+        assert!(hidden.inverse().is_none());
+        // So does a matrix whose entries are not finite.
+        let wild = Transform::from_columns(&[1e30; 12]).unwrap();
+        assert!(wild.inverse().is_none());
+    }
+
+    #[test]
+    fn an_animation_info_block_decodes_its_rest_pose() {
+        let bytes = Builder::new()
+            .node(1, "info")
+            .floats("fps", &[30.0])
+            .ints("sa", &[2])
+            .ints("j", &[2])
+            .node(2, "root")
+            .strings("sa", &[""])
+            .floats("t", &[0.0, 0.0, 0.0])
+            .floats("q", &[0.0, 0.0, 0.0, -1.0])
+            .floats("s", &[1.0])
+            .node(2, "vehicle")
+            .strings("sa", &["tq"])
+            .floats("t", &[0.0742, 0.0, 1.25571])
+            .floats("q", &[0.0, 0.0, 0.0, 1.0])
+            .floats("s", &[0.7])
+            .bytes;
+        let animation = read_animation(&bytes).unwrap();
+        assert_eq!(animation.fps, 30.0);
+        assert_eq!(animation.samples, 2);
+        assert_eq!(animation.joints.len(), 2);
+        assert_eq!(animation.joints[1].channels, "tq");
+        let rest = animation.rest("vehicle").unwrap();
+        assert_eq!(rest.translation, [0.0742, 0.0, 1.25571]);
+        assert!((rest.uniform_scale() - 0.7).abs() < 1e-5);
+        assert!(animation.rest("absent").is_none());
     }
 }

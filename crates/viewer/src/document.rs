@@ -374,11 +374,18 @@ impl Document {
 
     // close zoom
     /// This hour's placed unit models.
-    pub fn unit_model_field(&self) -> io::Result<(crate::map::models::ModelField, ModelReport)> {
+    ///
+    /// The perspective is the counter layer's: the engine hides a division's
+    /// 150 rather than the counter's 250.
+    pub fn unit_model_field(
+        &self,
+        perspective: &perspective::Choice,
+    ) -> io::Result<(crate::map::models::ModelField, ModelReport)> {
         let content = &self.counters;
         let definitions = &self.map.definitions;
         self.unit_models.field(
             self.frame()?,
+            &self.vision(perspective)?,
             &|province, slot| content.anchor(province, slot),
             &|province| {
                 !matches!(

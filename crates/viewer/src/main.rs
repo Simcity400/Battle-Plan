@@ -583,7 +583,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let snow_mud = document.snow_mud()?;
         // close zoom
         let (map_building_field, building_summary) = document.map_building_field()?;
-        let (unit_model_field, unit_report) = document.unit_model_field()?;
+        let (unit_model_field, unit_report) = document.unit_model_field(&options.perspective)?;
         for warning in document.warnings.iter().chain(layers.warnings()) {
             eprintln!("Warning: {warning}");
         }
@@ -828,7 +828,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.rail_build.as_secs_f64() * 1000.0
         );
         println!(
-            "Unit models: {} stacks, {} on their tag's entity, {} on their graphical culture's, {} on the bare name, {} on the engine's placeholder box; {} took the sub-unit's sprite key, {} ride a transport, {} stand along a route, {} have no recorded template, {} have no anchor, {} are an attachment rig with nothing of their own to draw; {} drawn at height {:.3} (cutoff {})",
+            "Unit models: {} stacks, {} on their tag's entity, {} on their graphical culture's, {} on the bare name, {} on the engine's placeholder box; {} took the sub-unit's sprite key, {} ride a transport, {} stand along a route, {} have no recorded template, {} have no anchor, {} are hidden from this perspective, {} carry attached entities and {} of those are an attachment rig with no geometry of their own; {} drawn at height {:.3} (cutoff {})",
             unit_report.stacks,
             unit_report.level(map::unit_models::Level::Tag),
             unit_report.level(map::unit_models::Level::Culture),
@@ -839,6 +839,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             unit_report.moving,
             unit_report.untemplated,
             unit_report.unanchored,
+            unit_report.unseen,
+            unit_report.attached,
             unit_report.rigs,
             report.unit_models_drawn,
             camera.height,

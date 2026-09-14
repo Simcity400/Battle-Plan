@@ -243,7 +243,7 @@ pub fn geometry(assets: &FrameAssets) -> FrameGeometry {
     };
     for piece in &assets.pieces {
         let start = out.indices.len() as u32;
-        if let Some(shape) = piece.mesh.shape_for_lod(0) {
+        for shape in piece.mesh.lods().first().into_iter().flatten() {
             for sub in &shape.meshes {
                 if !sub.is_drawable() {
                     continue;

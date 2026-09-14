@@ -103,9 +103,11 @@ pub struct Viewer {
     /// close-zoom sprawl, rails and bridges, have to be uploaded into a new one.
     geometry_uploaded: bool,
     // close zoom
-    /// The hour whose map buildings and unit models are in the scene; both come
-    /// from recorded tables and are rewritten when it changes.
-    close_zoom_hour: Option<(replay::BranchId, i32)>,
+    /// The hour and perspective whose map buildings and unit models are in the
+    /// scene; both come from recorded tables and are rewritten when either
+    /// changes. The perspective is in the key because it decides which
+    /// divisions have a model at all.
+    close_zoom_hour: Option<(replay::BranchId, i32, map::perspective::Choice)>,
     // names
     placements: Option<Placements>,
     placements_at: Option<(replay::BranchId, i32, bool)>,
@@ -583,8 +585,12 @@ impl Viewer {
             scene.set_bridges(&state.device, &state.queue, &document.bridges)?;
             self.geometry_uploaded = true;
         }
-        let hour = (document.playback.branch(), document.playback.hour());
-        if self.close_zoom_hour != Some(hour) {
+        let hour = (
+            document.playback.branch(),
+            document.playback.hour(),
+            self.perspective.clone(),
+        );
+        if self.close_zoom_hour.as_ref() != Some(&hour) {
             let (buildings, _) = document.map_building_field()?;
             scene.set_map_buildings(
                 &state.device,
@@ -592,7 +598,7 @@ impl Viewer {
                 &document.map_buildings,
                 buildings,
             )?;
-            let (units, _) = document.unit_model_field()?;
+            let (units, _) = document.unit_model_field(&self.perspective)?;
             scene.set_unit_models(&state.device, &state.queue, &document.unit_models, units)?;
             self.close_zoom_hour = Some(hour);
         }
