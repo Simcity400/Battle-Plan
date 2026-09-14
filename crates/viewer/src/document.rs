@@ -27,6 +27,8 @@ use crate::{
 };
 // rivers
 use crate::map::rivers::{self, RiverAssets, RiverImage, RiverMesh};
+// trees
+use crate::map::trees::{self, TreeAssets, TreeField, TreeGeometry, TreeImage};
 // names
 use crate::map::{
     camera::Camera,
@@ -77,6 +79,15 @@ pub struct Document {
     /// The counter, base and combat anchors from `map/unitstacks.txt` and
     /// `map/buildings.txt`.
     pub counters: CounterContent,
+    // trees
+    /// The canopy meshes, their textures and the `tree_*` season blocks.
+    pub tree_assets: TreeAssets,
+    /// The canopy geometry, flattened over every LOD of every tree mesh.
+    pub tree_geometry: TreeGeometry,
+    /// Every canopy instance on the map, bucketed by tile.
+    pub tree_field: TreeField,
+    /// Wall time of the instance generation, for reporting.
+    pub tree_build: Duration,
 }
 
 impl Document {
@@ -199,6 +210,22 @@ impl Document {
                 rivers::MIN_RIVER_POINTS
             ));
         }
+        // trees
+        let started = Instant::now();
+        let tree_field = trees::generate(
+            &TreeImage {
+                width: assets.trees.width,
+                height: assets.trees.height,
+                indices: &assets.trees.indices,
+            },
+            &heights,
+        )?;
+        let tree_build = started.elapsed();
+        let tree_assets = TreeAssets::load(&content.layers, &tree_field.palettes, &mut warnings)?;
+        let tree_geometry = trees::geometry(&tree_assets);
+        warnings.push(
+            "Tree meshes and their textures are read from gfx/entities and gfx/models, which are outside the content coverage policy and are not hash-verified.".into(),
+        );
         Ok(Self {
             playback: Playback::new(replay)?,
             map,
@@ -221,6 +248,11 @@ impl Document {
             river_build,
             // counters
             counters,
+            // trees
+            tree_assets,
+            tree_geometry,
+            tree_field,
+            tree_build,
         })
     }
 
@@ -296,6 +328,12 @@ impl Document {
         batch.quads.extend(icons.counters.quads);
         batch.quads.extend(icons.combats.quads);
         Ok((batch, label_report, icons.report))
+    }
+
+    // trees
+    /// `vSeasonColumn` and `vSeasonLerp` for the hour on screen.
+    pub fn tree_season(&self) -> trees::Season {
+        self.tree_assets.seasons.at_hour(self.playback.hour())
     }
 
     // weather

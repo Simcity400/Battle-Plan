@@ -609,6 +609,8 @@ impl Viewer {
                     animation_time: self.started.elapsed().as_secs_f32(),
                     // colour
                     postfx: self.postfx,
+                    // trees
+                    season: document.tree_season(),
                     // names
                     overlay: Overlay {
                         names: self.placements.as_ref(),

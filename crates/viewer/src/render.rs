@@ -26,6 +26,8 @@ use crate::map::{
     // names
     sprites::MapIcons,
     textures::MapAssets,
+    // trees
+    trees::{TreeAssets, TreeField, TreeGeometry},
     // weather
     weather::SnowMud,
 };
@@ -44,6 +46,10 @@ pub struct MapLayers<'a> {
     // weather
     /// The hour's `SnowMudData` grid.
     pub snow_mud: &'a SnowMud,
+    // trees
+    pub tree_assets: &'a TreeAssets,
+    pub tree_geometry: &'a TreeGeometry,
+    pub tree_field: &'a TreeField,
 }
 
 pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
@@ -253,6 +259,9 @@ pub struct DumpReport {
     pub overlay: (u32, u32),
     /// Font and sprite pages uploaded for the icon layer.
     pub icon_pages: usize,
+    // trees
+    /// Canopy instances the frame drew, over every wrap copy.
+    pub tree_instances: u32,
 }
 
 /// Renders one frame headlessly through the same [`Scene`] the window uses.
@@ -304,6 +313,14 @@ pub fn dump_png(
         scene.set_land_classes(&device, &layers.political.regions)?;
         // rivers
         scene.set_rivers(&device, &queue, layers.river_assets, layers.river_mesh)?;
+        // trees
+        scene.set_trees(
+            &device,
+            &queue,
+            layers.tree_assets,
+            layers.tree_geometry.clone(),
+            layers.tree_field,
+        )?;
         // weather
         let snow_mud = layers.snow_mud;
         scene.set_snow_mud(
@@ -346,6 +363,8 @@ pub fn dump_png(
             // names
             overlay: scene.overlay_counts(),
             icon_pages: scene.icon_page_count(),
+            // trees
+            tree_instances: scene.tree_instances(),
         })
     })
 }

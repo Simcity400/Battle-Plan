@@ -27,6 +27,8 @@ pub mod sprites;
 pub mod terrain;
 pub mod text;
 pub mod textures;
+// trees
+pub mod trees;
 pub mod water;
 // weather
 pub mod weather;

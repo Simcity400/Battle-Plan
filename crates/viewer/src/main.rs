@@ -504,6 +504,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 river_mesh: &document.river_mesh,
                 // weather
                 snow_mud: &snow_mud,
+                // trees
+                tree_assets: &document.tree_assets,
+                tree_geometry: &document.tree_geometry,
+                tree_field: &document.tree_field,
             },
             // names
             &document.icons,
@@ -515,6 +519,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 animation_time: 0.0,
                 // colour
                 postfx: options.postfx,
+                // trees
+                season: document.tree_season(),
                 overlay: Overlay {
                     names: Some(&placements),
                     layer_alpha: fade.as_array(),
@@ -573,6 +579,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.river_trace.unreachable,
             document.river_build.as_secs_f64() * 1000.0
         );
+        // trees
+        let season = document.tree_season();
+        println!(
+            "Trees: {} instances in {} buckets over {} kinds, {} canopy vertices;              fade {:.4} at height {:.3}, season column {} lerp {:.2}; {} instances drawn;              generated in {:.0} ms",
+            document.tree_field.instances.len(),
+            document.tree_field.buckets.len(),
+            document.tree_assets.meshes.len(),
+            document.tree_geometry.vertices.len(),
+            map::trees::tree_fade(camera.height),
+            camera.height,
+            season.column,
+            season.lerp,
+            report.tree_instances,
+            document.tree_build.as_secs_f64() * 1000.0
+        );
+        for (palette, tree) in &document.tree_assets.meshes {
+            let instances: u32 = document
+                .tree_field
+                .buckets
+                .iter()
+                .filter(|bucket| bucket.palette == *palette)
+                .map(|bucket| bucket.range.end - bucket.range.start)
+                .sum();
+            println!(
+                "  {}: {} ({} LODs, scale {}) {instances} instances",
+                tree.name,
+                tree.path,
+                tree.mesh.shapes.len(),
+                tree.scale
+            );
+        }
         // weather
         println!(
             "Snow and mud: {}; {}x{} grid rasterised in {:.0} ms",
