@@ -734,7 +734,57 @@ fn compare_core(
             report,
         )
     });
+    report.attempt("ProvinceNames", |report| {
+        compare_province_names(frame, save, report)
+    });
     Ok(report)
+}
+
+fn compare_province_names(
+    frame: &DecodedFrame,
+    save: &Save,
+    report: &mut Report,
+) -> io::Result<()> {
+    let rows = complete::<tables::ProvinceNames>(frame)?;
+    if !report.refresh_is_current(TableId::ProvinceNames, frame.hour) {
+        report.limitation(replay::cadence::STAGGER_LIMITATION, "ProvinceNames");
+        return Ok(());
+    }
+    let mut remaining: BTreeMap<u32, &[u8]> = save
+        .provinces
+        .values()
+        .filter_map(|p| {
+            p.name
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .map(|name| (p.id, name))
+        })
+        .collect();
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        if row.province == 0 || row.name.is_empty() || !seen.insert(row.province) {
+            return Err(invalid(
+                "ProvinceNames has a null, empty or duplicate sparse row",
+            ));
+        }
+        let subject = format!("province {}.name override", row.province);
+        report.scalar_checks += 1;
+        match remaining.remove(&row.province) {
+            Some(saved) if saved == row.name => {}
+            Some(saved) => report.difference(subject, &row.name, saved),
+            None => report.difference(subject, "present", "absent"),
+        }
+    }
+    for (province, _) in remaining {
+        report.difference(
+            format!("province {province}.name override"),
+            "absent",
+            "present",
+        );
+    }
+    report.compared("ProvinceNames", rows.len());
+    report.limitation("province overrides retain literal engine bytes (possibly localization keys), not resolved display strings", "ProvinceNames.name");
+    Ok(())
 }
 
 fn compare_countries(
@@ -956,8 +1006,32 @@ fn compare_extended(
     railway_adjacency: ContentRead<'_, save::naval_history::RailwayAdjacency>,
     report: &mut Report,
 ) {
+    report.attempt("StateFlags", |report| {
+        compare_state_flags(frame, save, report)
+    });
+    report.attempt("LandCombatProgress", |report| {
+        compare_combat_progress(frame, save, report)
+    });
+    report.attempt("DivisionMovement", |report| {
+        compare_division_movement(frame, save, report)
+    });
+    report.attempt("DivisionStatus", |report| {
+        compare_division_status(frame, save, report)
+    });
+    report.attempt("DivisionEta", |report| {
+        compare_division_eta(frame, save, report)
+    });
     let countries = country_context(frame);
     let tokens = lexical_tokens(frame, report);
+    report.attempt("DivisionTemplates", |report| {
+        compare_division_templates(
+            frame,
+            save,
+            required_context("country links", &countries)?,
+            required_context("lexical tokens", &tokens)?,
+            report,
+        )
+    });
     report.attempt("content base resources", |_| {
         required_context("verified base resources", &base_resources).map(|_| ())
     });
@@ -1197,6 +1271,39 @@ fn compare_extended(
     });
 }
 
+fn compare_state_flags(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
+    let rows = complete::<tables::StateFlags>(frame)?;
+    let mut captured = BTreeMap::new();
+    for row in rows {
+        if row.state == 0 || captured.insert(row.state, row.demilitarized).is_some() {
+            return Err(invalid("StateFlags has a null or duplicate state id"));
+        }
+    }
+    for (&id, state) in &save.states {
+        // Writer 1409D4040 always emits token 33e1. There is no omission
+        // normalization, even for false or for states outside the current POV.
+        let expected = state
+            .demilitarized
+            .ok_or_else(|| invalid(format!("save state {id} lacks its demilitarized boolean")))?;
+        let Some(actual) = captured.remove(&id) else {
+            report.difference(format!("state flag {id}"), "absent", "present");
+            continue;
+        };
+        if (actual != 0) != expected {
+            report.difference(format!("state {id}.demilitarized"), actual != 0, expected);
+        }
+    }
+    for id in captured.keys() {
+        report.difference(format!("state flag {id}"), "present", "absent");
+    }
+    report.compared("StateFlags", rows.len());
+    report.limitation(
+        "demilitarized compares exactly as the serialized boolean; the recording retains the native byte but a yes/no save cannot distinguish different nonzero byte values",
+        "StateFlags.demilitarized native byte",
+    );
+    Ok(())
+}
+
 fn compare_players(
     frame: &DecodedFrame,
     save: &Save,
@@ -1345,6 +1452,388 @@ fn compare_land_combats(
         );
     }
     report.limitation("land combat comparison covers recorded locations, native day/duration and ordered side participants; reduced saved combat details cannot certify intervening combat events", "LandCombats");
+    Ok(())
+}
+
+fn compare_division_movement(
+    frame: &DecodedFrame,
+    save: &Save,
+    report: &mut Report,
+) -> io::Result<()> {
+    let rows = complete::<tables::DivisionMovement>(frame)?;
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        if row.division == 0 || !seen.insert(row.division) {
+            return Err(invalid("null or duplicate movement division"));
+        }
+        let Some(saved) = save.divisions.get(&row.division) else {
+            report.difference(
+                format!("division movement {}", row.division),
+                "present",
+                "absent",
+            );
+            continue;
+        };
+        let saved = &saved.presentation;
+        let label = format!("division movement {}", row.division);
+        report.scalar_checks += 5;
+        let expected_prefix = &saved.path[..saved.path.len().min(256)];
+        if row.path != expected_prefix || row.path_total as usize != saved.path.len() {
+            report.difference(
+                format!("{label}.path/prefix/total"),
+                (&row.path, row.path_total),
+                (&saved.path, saved.path.len()),
+            );
+        }
+        for (name, actual, expected) in [
+            ("next", row.next, saved.path.first().copied().unwrap_or(0)),
+            (
+                "destination (last ordinary-route entry)",
+                row.destination,
+                saved.path.last().copied().unwrap_or(0),
+            ),
+            ("source", row.source, saved.previous.unwrap_or(0)),
+        ] {
+            if actual != expected {
+                report.difference(format!("{label}.{name}"), actual, expected);
+            }
+        }
+        if (row.strategic_redeployment != 0) != saved.strategic_redeployment {
+            report.difference(
+                format!("{label}.strategic_redeployment"),
+                row.strategic_redeployment,
+                saved.strategic_redeployment,
+            );
+        }
+        if let Some(value) = &saved.movement_progress {
+            report.scalar(&label, "numerator", Some(row.numerator), Some(value));
+        } else {
+            report.scalar_checks += 1;
+            if row.numerator != 0 {
+                report.difference(
+                    format!("{label}.omitted movement numerator"),
+                    row.numerator,
+                    0,
+                );
+            }
+        }
+        if row.path_total > 256 || row.alternate_total > 256 {
+            report.limitation("route recording is capped at 256 entries per route; total lengths and the last ordinary-route destination are retained; consumers must not treat the prefix as a full route", label);
+        }
+    }
+    for id in save.divisions.keys().filter(|id| !seen.contains(id)) {
+        report.difference(format!("division movement {id}"), "absent", "present");
+    }
+    report.compared("DivisionMovement", rows.len());
+    report.limitation("native fixed5 remaining hours are recorded separately in hourly DivisionEta; route/progress alone cannot reconstruct effective edge speeds", "DivisionMovement ETA companion");
+    report.limitation("native denominator/progress, movement target, alternate route, MovePriority enum, retreat/transfer/combat predicates and render-time stack kind are not independently compared here; stack kind -1 means missing map presentation, not standstill. Engine kind range includes naval transfer19/20, not only0..18. Render-time fields require live consistency/reference-pair assessment", "DivisionMovement unverified fields");
+    Ok(())
+}
+
+fn compare_division_eta(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
+    let rows = complete::<tables::DivisionEta>(frame)?;
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        if row.division == 0 || !seen.insert(row.division) {
+            return Err(invalid("null or duplicate ETA division"));
+        }
+        let label = format!("division ETA {}", row.division);
+        let Some(saved) = save.divisions.get(&row.division) else {
+            report.difference(label, "present", "absent");
+            continue;
+        };
+        let path = &saved.presentation.path;
+        report.scalar_checks += 3;
+        for (name, actual, expected) in [
+            ("next", row.next, path.first().copied().unwrap_or(0)),
+            (
+                "destination",
+                row.destination,
+                path.last().copied().unwrap_or(0),
+            ),
+        ] {
+            if actual != expected {
+                report.difference(format!("{label}.{name}"), actual, expected);
+            }
+        }
+        if row.path_total as usize != path.len() {
+            report.difference(format!("{label}.path_total"), row.path_total, path.len());
+        }
+    }
+    for id in save.divisions.keys().filter(|id| !seen.contains(id)) {
+        report.difference(format!("division ETA {id}"), "absent", "present");
+    }
+    report.compared("DivisionEta", rows.len());
+    report.limitation("next_remaining and destination_remaining are native signed i64 fixed5 remaining hours, not saved timestamps. The save checks full division census and route endpoints/count only; exact duration correctness requires live comparison with the engine ETA at the same sampled instant, including normal, rail and naval-transfer routes. Consistency double reads alone do not certify the arithmetic", "DivisionEta unsaved durations");
+    report.limitation("destination_remaining evaluates the current stored route using BECF90, as displayed by the army-list tooltip. The map-counter full ETA uses BED280/BED3A0 pathfinding and can return a different UI-dependent cached estimate. That cache is not recorded or substituted for the stored-route result; next_remaining matches the single-edge calculation used by the map counter", "DivisionEta stored-route versus pathfinding estimate");
+    report.limitation("DivisionEta is hourly. The native tooltip displays remaining hours using signed fixed5 ceiling, i32 narrowing and positive-only visibility. Adding that duration to the recorded hour gives a projected arrival, not a guaranteed future arrival. Retain native zero/negative/sentinel results without substituting estimates. path_total=0 means no route and no displayed ETA; unavailable/truncated source data is a gap, not zero-duration travel. A native zero result on a nonempty route must not be presented as an independently proven immediate arrival", "DivisionEta consumer contract");
+    Ok(())
+}
+
+fn compare_division_status(
+    frame: &DecodedFrame,
+    save: &Save,
+    report: &mut Report,
+) -> io::Result<()> {
+    let rows = complete::<tables::DivisionStatus>(frame)?;
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        if row.division == 0 || !seen.insert(row.division) {
+            return Err(invalid("null or duplicate status division"));
+        }
+        let Some(saved) = save.divisions.get(&row.division) else {
+            report.difference(
+                format!("division status {}", row.division),
+                "present",
+                "absent",
+            );
+            continue;
+        };
+        for (name, value, saved) in [
+            ("entrenchment", row.entrenchment, &saved.presentation.dig_in),
+            (
+                "entrenchment_cap",
+                row.entrenchment_cap,
+                &saved.presentation.dig_in_cap,
+            ),
+        ] {
+            let label = format!("division status {}", row.division);
+            if let Some(saved) = saved {
+                report.scalar(&label, name, Some(value), Some(saved));
+            } else {
+                report.scalar_checks += 1;
+                if value > 0 {
+                    report.difference(
+                        format!("{label}.{name} positive-only save omission"),
+                        value,
+                        "omitted => nonpositive",
+                    );
+                }
+            }
+        }
+    }
+    for id in save.divisions.keys().filter(|id| !seen.contains(id)) {
+        report.difference(format!("division status {id}"), "absent", "present");
+    }
+    report.compared("DivisionStatus", rows.len());
+    report.limitation("effective maximum HP/organisation, counter supply input, attrition threshold/input/icon, actual exercising and order-membership predicates are derived or unsaved; only entrenchment and its cap compare to save fields. Omitted entrenchment values prove nonpositive, not exactly zero. Source code and double reads do not replace live counter reference pairs", "DivisionStatus unverified fields");
+    report.limitation("supply_ratio is the raw CArmy+40 fixed5 operand: the counter ignores it during naval transfer and applies presentation thresholds/visibility/stack selection. no_orders is the BF02B0-derived pre-visibility predicate and deliberately differs from !has_order for ungrouped units", "DivisionStatus consumer contract");
+    Ok(())
+}
+
+fn compare_division_templates(
+    frame: &DecodedFrame,
+    save: &Save,
+    countries: &CountryContext<'_>,
+    tokens: &TokenNames<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let rows = complete::<tables::DivisionTemplates>(frame)?;
+    if !report.refresh_is_current(TableId::DivisionTemplates, frame.hour) {
+        report.limitation(replay::cadence::STAGGER_LIMITATION, "DivisionTemplates");
+        return Ok(());
+    }
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        if row.template == 0 || !seen.insert(row.template) {
+            return Err(invalid("null or duplicate division template handle"));
+        }
+        let Some(saved) = save.division_templates.get(&row.template) else {
+            report.difference(format!("template {}", row.template), "present", "absent");
+            continue;
+        };
+        let owner = required_country_tag(row.owner, &countries.links)?;
+        report.scalar_checks += 1;
+        if save
+            .division_template_owners
+            .get(&row.template)
+            .map(Vec::as_slice)
+            != Some(owner)
+        {
+            report.difference(
+                format!("template {}.country roster", row.template),
+                owner,
+                save.division_template_owners.get(&row.template),
+            );
+        }
+        report.scalar_checks += 4;
+        if owner != saved.country {
+            report.difference(
+                format!("template {}.owner", row.template),
+                owner,
+                &saved.country,
+            );
+        }
+        if row.name != saved.name {
+            report.difference(
+                format!("template {}.name", row.template),
+                &row.name,
+                &saved.name,
+            );
+        }
+        if row.custom_icon != saved.custom_icon {
+            report.difference(
+                format!("template {}.custom_icon", row.template),
+                row.custom_icon,
+                saved.custom_icon,
+            );
+        }
+        if (row.custom_icon_nato != 0) != saved.custom_icon_nato {
+            report.difference(
+                format!("template {}.custom_icon_nato", row.template),
+                row.custom_icon_nato,
+                saved.custom_icon_nato,
+            );
+        }
+        if row.dimensions.len() != 3 {
+            return Err(invalid("template lacks three grid dimensions"));
+        }
+        let mut composition = BTreeMap::new();
+        let mut unresolved = false;
+        for (kind, units) in [&row.regiments, &row.support, &row.regimental_support]
+            .into_iter()
+            .enumerate()
+        {
+            let height = row.dimensions[kind] >> 16;
+            let width = row.dimensions[kind] & 0xffff;
+            if !units.is_empty()
+                && (height == 0 || width == 0 || units.len() > (width as usize * height as usize))
+            {
+                return Err(invalid("template grid dimensions cannot contain its cells"));
+            }
+            for (index, token) in units.iter().enumerate().filter(|(_, token)| **token != 0) {
+                let Some(name) = tokens.get(token) else {
+                    unresolved = true;
+                    continue;
+                };
+                composition.insert(
+                    (kind as u8, index as u32 / height, index as u32 % height),
+                    name.to_vec(),
+                );
+            }
+        }
+        if unresolved {
+            report.limitation("template grid contains unit tokens absent from the captured lexical dictionary; composition was not compared", format!("DivisionTemplates {}", row.template));
+        } else {
+            report.scalar_checks += 1;
+            if composition != saved.composition {
+                report.difference(
+                    format!("template {}.composition", row.template),
+                    composition,
+                    &saved.composition,
+                );
+            }
+        }
+    }
+    for template in save
+        .division_template_owners
+        .keys()
+        .copied()
+        .chain(
+            save.divisions
+                .values()
+                .filter_map(|division| division.template),
+        )
+        .collect::<BTreeSet<_>>()
+    {
+        if !seen.contains(&template) {
+            report.difference(
+                format!("owned or used division template {template}"),
+                "absent",
+                "present",
+            );
+        }
+    }
+    report.compared("DivisionTemplates", rows.len());
+    report.limitation("composition uses token0 for an empty grid cell; a real subunit with token0 is explicitly unsupported and makes the capture unavailable", "DivisionTemplates composition representation");
+    report.limitation("dictionary census compares the saved country rosters, including unused templates; save-only unowned global registry residues are outside this dictionary. Priority unit selection/name and unit_type category are derived engine caches absent from text saves; effective maxima belong to divisions; no twelve-frame strip mapping or fake-intel presentation is claimed", "DivisionTemplates");
+    Ok(())
+}
+
+fn compare_combat_progress(
+    frame: &DecodedFrame,
+    save: &Save,
+    report: &mut Report,
+) -> io::Result<()> {
+    let rows = complete::<tables::LandCombatProgress>(frame)?;
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        if row.combat == 0 || !seen.insert(row.combat) {
+            return Err(invalid("null or duplicate combat progress handle"));
+        }
+        let label = format!("combat {} progress", row.combat);
+        let Some(saved) = save.land_combats.get(&row.combat) else {
+            report.difference(label, "present", "absent");
+            continue;
+        };
+        // Independent save-side join: the native getter sums all side units,
+        // not just the front subset, using qword addition/multiplication.
+        let sum = |members: &[u64]| -> io::Result<i64> {
+            let mut value = 0_u64;
+            let mut unique = BTreeSet::new();
+            for id in members {
+                if !unique.insert(id) {
+                    return Err(invalid("duplicate saved combat participant"));
+                }
+                let division = save.divisions.get(id).ok_or_else(|| {
+                    invalid("saved combat participant is absent from division roster")
+                })?;
+                value = value.wrapping_add(division.organisation.raw as u64);
+            }
+            Ok(value as i64)
+        };
+        let attacker = sum(&saved.attackers)?;
+        let defender = sum(&saved.defenders)?;
+        let total = attacker.wrapping_add(defender);
+        let expected = if total <= 0 {
+            50_000
+        } else if [i64::MAX, i64::MIN, i64::MIN + 1].contains(&attacker) {
+            100_000
+        } else {
+            let numerator = ((i128::from(attacker) * 100_000) as u64) as i64;
+            numerator
+                .checked_div(total)
+                .ok_or_else(|| invalid("saved combat progress would overflow native division"))?
+                .clamp(0, 100_000)
+        };
+        for (field, actual, expected) in [
+            ("attacker", row.attacker_progress, expected),
+            ("defender", row.defender_progress, 100_000 - expected),
+        ] {
+            report.scalar_checks += 1;
+            if actual != expected {
+                report.difference(format!("{label}.{field}"), actual, expected);
+            }
+        }
+        if row.direction_attacker == 0 {
+            if row.direction_province != 0 {
+                return Err(invalid("combat direction province has no source attacker"));
+            }
+        } else {
+            if !saved.attackers.contains(&row.direction_attacker) {
+                report.difference(
+                    format!("{label}.direction_attacker"),
+                    row.direction_attacker,
+                    &saved.attackers,
+                );
+            } else {
+                let division = &save.divisions[&row.direction_attacker];
+                report.scalar_checks += 1;
+                if Some(row.direction_province) != division.province {
+                    report.difference(
+                        format!("{label}.direction_province"),
+                        row.direction_province,
+                        division.province,
+                    );
+                }
+            }
+        }
+    }
+    for combat in save.land_combats.keys().filter(|id| !seen.contains(id)) {
+        report.difference(format!("combat {combat} progress"), "absent", "present");
+    }
+    report.compared("LandCombatProgress", rows.len());
+    report.limitation("direction selects the first ordered attacker with a live map entity; saves omit that presentation-presence predicate, so only the selected unit's side membership and province are compared; angle/stack-slot geometry is not recorded", "LandCombatProgress.direction_attacker/direction_province");
     Ok(())
 }
 
@@ -2794,7 +3283,7 @@ mod tests {
     ) {
         let save = save::parse(br#"HOI4txt
 date="1936.1.1.1" game_unique_id="campaign" game_unique_seed=7 debug_current_ref_id=65580 unit=4008 order_index=7484 front_index=8230 theatre_index=112 theater_group_index=910 military_deployment_line_index=7783 military_deployment_conveyor_index=736 equipment_variant_index=6284 country_leader_index=1 navy_id=8184 land_combat_id=15224 multiplayer_random_count=-1334833904 version="build"
-states={1={owner="GER"}} provinces={2={controller="GER"}}
+states={1={owner="GER" demilitarized=no}} provinces={2={controller="GER"}}
 countries={GER={politics={political_power=10.00001} command_power=2 stability=0.7 war_support=0.3 convoys={equipment={}}}}
 "#).unwrap();
         let hour = save.date.engine_hour().unwrap();
@@ -2878,6 +3367,11 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                     TableView::Complete(TableRows::SunkShips(vec![
                         replay::rows::SunkShipsRow::default(),
                     ]));
+                tables[TableId::StateFlags.index()] =
+                    TableView::Complete(TableRows::StateFlags(vec![replay::rows::StateFlagRow {
+                        state: 1,
+                        demilitarized: 0,
+                    }]));
                 tables[TableId::WeatherLimits.index()] =
                     TableView::Complete(TableRows::WeatherLimits(vec![
                         replay::rows::WeatherLimitsRow::default(),
@@ -2889,6 +3383,111 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             provinces: BTreeMap::from([(0, None), (1, Some(1)), (2, None)]),
         };
         (frame, save, membership, save::EquipmentTypes::default())
+    }
+
+    #[test]
+    fn state_flags_compare_boolean_and_full_census_without_missing_field_defaults() {
+        use replay::rows::StateFlagRow;
+        let (mut frame, mut saved, _, _) = fixture();
+        let row = StateFlagRow {
+            state: 1,
+            demilitarized: 0,
+        };
+        let mut report = Report::default();
+        compare_state_flags(&frame, &saved, &mut report).unwrap();
+        assert!(report.difference_lines().is_empty());
+
+        saved.states.get_mut(&1).unwrap().demilitarized = Some(true);
+        let mut report = Report::default();
+        compare_state_flags(&frame, &saved, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        for byte in [1, 2, 255] {
+            frame.tables[TableId::StateFlags.index()] =
+                TableView::Complete(TableRows::StateFlags(vec![StateFlagRow {
+                    demilitarized: byte,
+                    ..row.clone()
+                }]));
+            let mut report = Report::default();
+            compare_state_flags(&frame, &saved, &mut report).unwrap();
+            assert!(report.difference_lines().is_empty());
+        }
+        saved.states.get_mut(&1).unwrap().demilitarized = None;
+        assert!(
+            compare_state_flags(&frame, &saved, &mut Report::default())
+                .unwrap_err()
+                .to_string()
+                .contains("lacks its demilitarized")
+        );
+        saved.states.get_mut(&1).unwrap().demilitarized = Some(false);
+
+        for rows in [
+            vec![],
+            vec![
+                row.clone(),
+                StateFlagRow {
+                    state: 978,
+                    demilitarized: 1,
+                },
+            ],
+        ] {
+            frame.tables[TableId::StateFlags.index()] =
+                TableView::Complete(TableRows::StateFlags(rows));
+            let mut report = Report::default();
+            compare_state_flags(&frame, &saved, &mut report).unwrap();
+            assert_eq!(report.differences.len(), 1);
+        }
+        for rows in [
+            vec![row.clone(), row.clone()],
+            vec![StateFlagRow::default()],
+        ] {
+            frame.tables[TableId::StateFlags.index()] =
+                TableView::Complete(TableRows::StateFlags(rows));
+            assert!(compare_state_flags(&frame, &saved, &mut Report::default()).is_err());
+        }
+        frame.tables[TableId::StateFlags.index()] = TableView::Truncated {
+            rows: TableRows::StateFlags(vec![row]),
+            missing: 1,
+        };
+        assert!(compare_state_flags(&frame, &saved, &mut Report::default()).is_err());
+        frame.tables[TableId::StateFlags.index()] = TableView::Unavailable {
+            reason: "state source fault".into(),
+        };
+        assert!(compare_state_flags(&frame, &saved, &mut Report::default()).is_err());
+    }
+
+    #[test]
+    fn province_names_compare_sparse_add_remove_and_exact_bytes() {
+        let (mut frame, mut save, _, _) = fixture();
+        frame.hour = 3;
+        save.provinces.get_mut(&2).unwrap().name = Some(vec![b'G', 0, 255]);
+        frame.tables[TableId::ProvinceNames.index()] =
+            TableView::Complete(TableRows::ProvinceNames(vec![
+                replay::rows::ProvinceNameRow {
+                    province: 2,
+                    name: vec![b'G', 0, 255],
+                },
+            ]));
+        let mut report = Report::default();
+        compare_province_names(&frame, &save, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert_eq!(report.scalar_checks, 1);
+        save.provinces.get_mut(&2).unwrap().name = None;
+        compare_province_names(&frame, &save, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        frame.tables[TableId::ProvinceNames.index()] =
+            TableView::Complete(TableRows::ProvinceNames(vec![]));
+        save.provinces.get_mut(&2).unwrap().name = Some(b"Gdansk".to_vec());
+        let mut report = Report::default();
+        compare_province_names(&frame, &save, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        frame.hour = 4;
+        let mut report = Report::default();
+        compare_province_names(&frame, &save, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert!(!report.limitations.is_empty());
+        report.observed_refresh_slots.insert(3);
+        compare_province_names(&frame, &save, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
     }
 
     fn add_country(frame: &mut DecodedFrame, save: &mut Save, id: u32, slot: u32, tag: &[u8]) {
@@ -2948,6 +3547,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 hit_points: Decimal::parse(b"90071992547.40993").unwrap(),
                 organisation: Decimal::parse(b"53.45454").unwrap(),
                 country_intel: Vec::new(),
+                presentation: Default::default(),
             },
         );
         frame.tables[TableId::Divisions.index()] =
@@ -2972,6 +3572,221 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             unreachable!()
         };
         &mut rows[0]
+    }
+
+    #[test]
+    fn division_eta_oracle_checks_full_routes_census_and_source_gaps_but_not_unsaved_times() {
+        use replay::rows::DivisionEtaRow;
+        let (mut frame, mut saved, _, _) = division_fixture();
+        let id = *saved.divisions.keys().next().unwrap();
+        let row = DivisionEtaRow {
+            division: id,
+            next: 1,
+            destination: 300,
+            path_total: 300,
+            next_remaining: -1,
+            destination_remaining: 4_294_967_295,
+        };
+        saved.divisions.get_mut(&id).unwrap().presentation.path = (1..=300).collect();
+        frame.tables[TableId::DivisionEta.index()] =
+            TableView::Complete(TableRows::DivisionEta(vec![row.clone()]));
+        let mut report = Report::default();
+        compare_division_eta(&frame, &saved, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert_eq!(report.scalar_checks, 3);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|text| text.contains("requires live comparison with the engine ETA"))
+        );
+        let wrong_route = DivisionEtaRow {
+            next: 2,
+            destination: 256,
+            path_total: 256,
+            ..row.clone()
+        };
+        frame.tables[TableId::DivisionEta.index()] =
+            TableView::Complete(TableRows::DivisionEta(vec![wrong_route]));
+        let mut report = Report::default();
+        compare_division_eta(&frame, &saved, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 3);
+        for rows in [
+            vec![],
+            vec![
+                row.clone(),
+                DivisionEtaRow {
+                    division: id + 1,
+                    ..row.clone()
+                },
+            ],
+        ] {
+            frame.tables[TableId::DivisionEta.index()] =
+                TableView::Complete(TableRows::DivisionEta(rows));
+            let mut report = Report::default();
+            compare_division_eta(&frame, &saved, &mut report).unwrap();
+            assert_eq!(report.differences.len(), 1);
+        }
+        for rows in [
+            vec![row.clone(), row.clone()],
+            vec![DivisionEtaRow::default()],
+        ] {
+            frame.tables[TableId::DivisionEta.index()] =
+                TableView::Complete(TableRows::DivisionEta(rows));
+            assert!(compare_division_eta(&frame, &saved, &mut Report::default()).is_err());
+        }
+        saved
+            .divisions
+            .get_mut(&id)
+            .unwrap()
+            .presentation
+            .path
+            .clear();
+        frame.tables[TableId::DivisionEta.index()] =
+            TableView::Complete(TableRows::DivisionEta(vec![DivisionEtaRow {
+                division: id,
+                ..Default::default()
+            }]));
+        let mut report = Report::default();
+        compare_division_eta(&frame, &saved, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        frame.tables[TableId::DivisionEta.index()] = TableView::Truncated {
+            rows: TableRows::DivisionEta(vec![row]),
+            missing: 1,
+        };
+        assert!(compare_division_eta(&frame, &saved, &mut Report::default()).is_err());
+        frame.tables[TableId::DivisionEta.index()] = TableView::Unavailable {
+            reason: "ETA input source fault".into(),
+        };
+        assert!(compare_division_eta(&frame, &saved, &mut Report::default()).is_err());
+    }
+
+    #[test]
+    fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions() {
+        let (mut frame, mut saved, _, _) = division_fixture();
+        let id = *saved.divisions.keys().next().unwrap();
+        let path: Vec<u32> = (1..=300).collect();
+        saved.divisions.get_mut(&id).unwrap().presentation = save::DivisionPresentation {
+            path: path.clone(),
+            previous: Some(7),
+            movement_progress: Some(Decimal::parse(b"90071992547.40993").unwrap()),
+            dig_in: Some(Decimal::parse(b"0.00001").unwrap()),
+            dig_in_cap: None,
+            strategic_redeployment: true,
+        };
+        let movement = replay::rows::DivisionMovementRow {
+            division: id,
+            source: 7,
+            next: 1,
+            destination: 300,
+            numerator: 9_007_199_254_740_993,
+            path_total: 300,
+            path: path[..256].to_vec(),
+            strategic_redeployment: 255,
+            stack_kind: -1,
+            ..Default::default()
+        };
+        let status = replay::rows::DivisionStatusRow {
+            division: id,
+            entrenchment: 1,
+            entrenchment_cap: -100,
+            ..Default::default()
+        };
+        frame.tables[TableId::DivisionMovement.index()] =
+            TableView::Complete(TableRows::DivisionMovement(vec![movement.clone()]));
+        frame.tables[TableId::DivisionStatus.index()] =
+            TableView::Complete(TableRows::DivisionStatus(vec![status.clone()]));
+        let mut report = Report::default();
+        compare_division_movement(&frame, &saved, &mut report).unwrap();
+        compare_division_status(&frame, &saved, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|s| s.contains("recorded separately in hourly DivisionEta"))
+        );
+        assert_eq!(report.scalar_checks, 8);
+        let mut bad = movement.clone();
+        bad.numerator -= 1;
+        frame.tables[TableId::DivisionMovement.index()] =
+            TableView::Complete(TableRows::DivisionMovement(vec![bad]));
+        let mut report = Report::default();
+        compare_division_movement(&frame, &saved, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        frame.tables[TableId::DivisionStatus.index()] =
+            TableView::Complete(TableRows::DivisionStatus(vec![
+                replay::rows::DivisionStatusRow {
+                    entrenchment_cap: 1,
+                    ..status.clone()
+                },
+            ]));
+        let mut report = Report::default();
+        compare_division_status(&frame, &saved, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        frame.tables[TableId::DivisionMovement.index()] =
+            TableView::Complete(TableRows::DivisionMovement(vec![]));
+        let mut report = Report::default();
+        compare_division_movement(&frame, &saved, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        frame.tables[TableId::DivisionMovement.index()] =
+            TableView::Complete(TableRows::DivisionMovement(vec![
+                movement.clone(),
+                movement,
+            ]));
+        assert!(compare_division_movement(&frame, &saved, &mut Report::default()).is_err());
+        frame.tables[TableId::DivisionStatus.index()] = TableView::Truncated {
+            rows: TableRows::DivisionStatus(vec![status]),
+            missing: 1,
+        };
+        assert!(compare_division_status(&frame, &saved, &mut Report::default()).is_err());
+    }
+
+    #[test]
+    fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh() {
+        let (mut frame, mut saved, _, _) = division_fixture();
+        saved.divisions.clear();
+        let template = u64::MAX - 203;
+        saved.division_templates.insert(
+            template,
+            save::DivisionTemplate {
+                template,
+                country: b"GER".to_vec(),
+                name: vec![b'A', 0, 255],
+                custom_icon: -1,
+                custom_icon_nato: false,
+                composition: BTreeMap::from([((0, 0, 1), b"infantry".to_vec())]),
+            },
+        );
+        saved
+            .division_template_owners
+            .insert(template, b"GER".to_vec());
+        let row = replay::rows::DivisionTemplateRow {
+            template,
+            owner: 102,
+            name: vec![b'A', 0, 255],
+            custom_icon: -1,
+            dimensions: vec![0x0002_0001, 0, 0],
+            regiments: vec![0, 7],
+            ..Default::default()
+        };
+        frame.tables[TableId::DivisionTemplates.index()] =
+            TableView::Complete(TableRows::DivisionTemplates(vec![row]));
+        frame.hour = 4; // Off slot3, but a forced refresh has measured work.
+        frame.metrics.table_ns[TableId::DivisionTemplates.index()] = 1;
+        let countries = country_context(&frame).unwrap();
+        let tokens = BTreeMap::from([(7, b"infantry".as_slice())]);
+        let mut report = Report::default();
+        report.record_tables(&frame);
+        compare_division_templates(&frame, &saved, &countries, &tokens, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        frame.tables[TableId::DivisionTemplates.index()] =
+            TableView::Complete(TableRows::DivisionTemplates(vec![]));
+        let countries = country_context(&frame).unwrap();
+        let mut report = Report::default();
+        report.record_tables(&frame);
+        compare_division_templates(&frame, &saved, &countries, &tokens, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1); // Missing unused template cannot pass.
     }
 
     fn relations_fixture() -> (
@@ -4093,6 +4908,68 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn combat_progress_joins_all_saved_units_and_keeps_the_exact_complement() {
+        let (mut frame, mut saved, _, _) = fixture();
+        let combat = (7_u64 << 32) | 62;
+        let first = (1_u64 << 32) | 51;
+        let reserve = (2_u64 << 32) | 51;
+        let defender = (3_u64 << 32) | 51;
+        for (id, organisation, province) in [(first, 1, 1), (reserve, 2, 2), (defender, 6, 2)] {
+            let mut org = Decimal::parse(b"0.00001").unwrap();
+            org.raw = organisation;
+            saved.divisions.insert(
+                id,
+                save::Division {
+                    id,
+                    roster_owner: b"GER".to_vec(),
+                    logical_owner: b"GER".to_vec(),
+                    expeditionary_owner: None,
+                    province: Some(province),
+                    template: None,
+                    hit_points: Decimal::parse(b"1").unwrap(),
+                    organisation: org,
+                    country_intel: Vec::new(),
+                    presentation: Default::default(),
+                },
+            );
+        }
+        saved.land_combats.insert(
+            combat,
+            save::LandCombat {
+                id: combat,
+                province: 2,
+                day: -1,
+                duration: 1,
+                attackers: vec![first, reserve],
+                defenders: vec![defender],
+            },
+        );
+        let set = |frame: &mut DecodedFrame, fraction, complement, province| {
+            frame.tables[TableId::LandCombatProgress.index()] =
+                TableView::Complete(TableRows::LandCombatProgress(vec![
+                    replay::rows::LandCombatProgressRow {
+                        combat,
+                        attacker_progress: fraction,
+                        defender_progress: complement,
+                        direction_attacker: first,
+                        direction_province: province,
+                    },
+                ]));
+        };
+        set(&mut frame, 33_333, 66_667, 1);
+        let mut report = Report::default();
+        compare_combat_progress(&frame, &saved, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert_eq!(report.scalar_checks, 3);
+        set(&mut frame, 33_333, 66_666, 2);
+        let mut report = Report::default();
+        compare_combat_progress(&frame, &saved, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 2);
+        saved.divisions.remove(&reserve);
+        assert!(compare_combat_progress(&frame, &saved, &mut Report::default()).is_err());
     }
 
     #[test]

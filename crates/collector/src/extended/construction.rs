@@ -8,12 +8,11 @@ use crate::{
 };
 use engine::{
     Memory, carmy_manpower_values, cbuilding, cbuilding_production_line, cbuilding_status,
-    cbuilding_template, ccountry, ccountry_collaboration_data, ccountry_collaboration_status,
-    ccountry_occupation_data, ccountry_occupation_status, cgame_state, cgeneral_production_line,
-    coccupation_law, cpdx_array::Array, cproduction_line, cproduction_status, cprovince,
-    crailway_production_line, creferenced_division_template, cresistance, cstate,
-    cstate_garrison_data, cstate_template, manpower_value_entry, msvc_string,
-    pdx_robin_hood_bucket, state_resource_entry, walk::Outcome,
+    ccountry, ccountry_collaboration_data, ccountry_collaboration_status, ccountry_occupation_data,
+    ccountry_occupation_status, cgame_state, cgeneral_production_line, coccupation_law,
+    cpdx_array::Array, cproduction_line, cproduction_status, cprovince, crailway_production_line,
+    creferenced_division_template, cresistance, cstate, cstate_garrison_data, cstate_template,
+    manpower_value_entry, msvc_string, pdx_robin_hood_bucket, state_resource_entry, walk::Outcome,
 };
 use replay::{
     frame::TableView,
@@ -78,13 +77,6 @@ pub struct Captured {
     collaboration: CaptureRows<ccountry_collaboration_data::Row>,
     routes: Arena<u32>,
     law_bytes: Arena<u8>,
-    /// Raw-copy split gate for the Tier-4 slot-3 finished-buildings tables
-    /// (0..2). Set by the game thread on refresh hours with a valid raw
-    /// payload; `capture` then skips the typed buildings walk and the decode
-    /// worker fills these rows before the ready handoff. Preserved across
-    /// `reset` (set per refresh, cleared by the worker after decode). Hourly
-    /// tables are never gated by this flag.
-    pub(crate) raw_mode: bool,
     /// Raw-copy split gate for the hourly construction rest (tables 2..12).
     /// Set by the game thread every hour with a valid raw payload; `capture`
     /// then skips those typed walks and the decode worker fills the rows
@@ -117,7 +109,6 @@ impl Captured {
             collaboration: CaptureRows::new(capacity.rows[11], successful[11]),
             routes: Arena::new(capacity.routes, successful[4]),
             law_bytes: Arena::new(capacity.law_bytes, names),
-            raw_mode: false,
             rest_raw_mode: false,
         }
     }
@@ -229,10 +220,9 @@ impl Captured {
     ) -> ([bool; N], [u64; N]) {
         // Raw refresh bookkeeping belongs to the staged payload and must
         // survive the remaining typed members of this pack.
-        if !self.raw_mode {
-            self.state_buildings.reset();
-            self.province_buildings.reset();
-        }
+        self.state_buildings.reset();
+        self.province_buildings.reset();
+
         if !self.rest_raw_mode {
             self.base_resources.reset();
             self.building_construction.reset();
@@ -250,36 +240,27 @@ impl Captured {
         let mut matched = [false; N];
         let mut ticks = [0; N];
         // Tier-4 finished-buildings catalog shares one walk; off-hours skip.
-        // Raw-copy split: on refresh hours the game thread stages raw bytes
-        // via `copy_buildings_refresh` and the decode worker fills the typed
-        // rows before the ready handoff, so the typed walk is skipped here.
-        // Matched flags and costs come from the raw compare, applied by the
-        // caller after this returns. Hourly tables below always run.
-        let walk = replay::cadence::should_walk(
-            replay::rows::TableId::StateBuildings,
-            hour,
-            force_full,
-        ) && !self.raw_mode;
-        if !self.raw_mode {
-            self.state_buildings.checked = needed[0] && walk;
-            self.province_buildings.checked = needed[1] && walk;
-        }
+        let walk =
+            replay::cadence::should_walk(replay::rows::TableId::StateBuildings, hour, force_full);
+        self.state_buildings.checked = needed[0] && walk;
+        self.province_buildings.checked = needed[1] && walk;
+
         // Hourly construction rest (copy/decode split): every hour the game
         // thread stages raw bytes via `copy_construction_rest_refresh` and the
         // decode worker fills tables 2..12 before the ready handoff. Checked
         // flags and costs come from the raw compare, applied by the caller
         // after this returns; the walks below skip while staged.
         if !self.rest_raw_mode {
-        self.base_resources.checked = needed[2];
-        self.building_construction.checked = needed[3];
-        self.railway_construction.checked = needed[4];
-        self.settings.checked = needed[5];
-        self.laws.checked = needed[6];
-        self.garrisons.checked = needed[7];
-        self.assigned_manpower.checked = needed[8];
-        self.reserve_manpower.checked = needed[9];
-        self.resistance.checked = needed[10];
-        self.collaboration.checked = needed[11];
+            self.base_resources.checked = needed[2];
+            self.building_construction.checked = needed[3];
+            self.railway_construction.checked = needed[4];
+            self.settings.checked = needed[5];
+            self.laws.checked = needed[6];
+            self.garrisons.checked = needed[7];
+            self.assigned_manpower.checked = needed[8];
+            self.reserve_manpower.checked = needed[9];
+            self.resistance.checked = needed[10];
+            self.collaboration.checked = needed[11];
         }
 
         let begin = qpc();
@@ -570,674 +551,7 @@ fn elapsed(begin: i64) -> u64 {
     (qpc() - begin).max(0) as u64
 }
 
-// ===========================================================================
-// Tier-4 slot-3 raw-copy split (StateBuildings, ProvinceBuildings; the split
-// pack is handled per table with independent fault masks over the shared
-// walk's read set).
-//
-// The game thread copies raw bytes only: location roots, pointer pages,
-// field gathers, state-authentication rounds and building records. No row is
-// decoded on the game thread. The single FIFO decode worker replays the
-// existing `cbuilding_status::walk` against the recorded spans
-// (`crate::raw::Recorded`), so typed rows, ordinals, skips, truncation and
-// failure reasons are identical by construction (see `crate::raw`).
-//
-// The mirror traverses structurally and records every discoverable span,
-// never aborting except on overflow: validation, precedence and error scope
-// are local parses, so the replay derives every outcome from the same
-// recorded spans and later extras are harmless.
-// ===========================================================================
-
-/// Fault-attribution bits, one per buildings table in family order.
-const M_STATES: u32 = 0x01;
-const M_PROVINCES: u32 = 0x02;
-const M_BOTH: u32 = 0x03;
-
-/// Location pointer pages are read in 64-entry batches from slot 1,
-/// exactly like the typed cursor.
-const LOCATION_BATCH: u32 = 64;
-
-/// One refresh of raw buildings payload. Flat pools recycle capacities and
-/// the steady state allocates on neither thread; growth happens on the
-/// decode side only (see `crate::decode::recycle_buildings_job`).
-#[derive(Debug, Default)]
-pub(crate) struct BuildingsJob {
-    pub log: RawLog<2>,
-    pub game_state: usize,
-}
-
-impl BuildingsJob {
-    pub fn new() -> Self {
-        Self {
-            // Late-campaign worst case is about 3k state plus 5.2k province
-            // rows with small records; both pools start above that so steady
-            // state never overflows.
-            log: RawLog::new(1 << 18, 16 << 20),
-            game_state: 0,
-        }
-    }
-
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
-    pub fn clear(&mut self) {
-        self.log.clear();
-        self.game_state = 0;
-    }
-
-    pub fn grow_for_next(&self) -> bool {
-        self.log.grow_for_next()
-    }
-
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed refreshes fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
-    pub fn grow(&mut self) {
-        self.log.grow();
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct BuildingsCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
-    pub raw_ok: bool,
-    /// Whole-log raw equality gated by live-fault conservatism, in
-    /// [states, provinces] order.
-    pub matched: [bool; 2],
-    pub copy_ticks: [u64; 2],
-    pub raw_bytes: [u64; 2],
-}
-
-/// Game-thread copy parameters, bundled to keep the refresh entry small.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct BuildingsCopyContext {
-    pub base: usize,
-    pub game_state: usize,
-    pub needed: [bool; 2],
-}
-
-fn pool_u64(log: &RawLog<2>, start: usize) -> u64 {
-    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
-}
-
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
-fn bspan(
-    log: &mut RawLog<2>,
-    memory: &impl Memory,
-    addr: Option<usize>,
-    len: usize,
-    mask: u32,
-) -> Option<usize> {
-    log.take(memory, addr?, len, mask)
-}
-
-/// Mirror of one `walk_locations` pass: roots, pointer pages, field gathers,
-/// state-authentication rounds and building records.
-///
-/// Field/state takes remain a superset (safe under the canonical gate); the
-/// replay derives precedence and outcomes. Building vectors are gated by the
-/// typed walker's exact authentication order (location vtable, location id,
-/// province state authentication, status vtable, status identity/scope,
-/// building/index vectors) with identical pass/fail outcomes: only the
-/// leading authenticated prefix is followed, and the first failure aborts
-/// the walk exactly like the typed `break`/`?`. Unauthenticated bytes (e.g.
-/// ASCII "_factor" runs observed live as `rdx=0x00726f746361665f`) therefore
-/// never become a guarded-copy source. The validity flag (`ok`) is honored:
-/// a record whose gather failed is never consumed as a vector.
-fn copy_buildings_walk(
-    log: &mut RawLog<2>,
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    province_scope: bool,
-    mask: u32,
-) {
-    let states_start = bspan(log, memory, game_state.checked_add(cgame_state::STATES), 16, M_BOTH);
-    let Some(states_start) = states_start else {
-        return;
-    };
-    let mut states_raw = [0u8; 16];
-    states_raw.copy_from_slice(&log.bytes[states_start..states_start + 16]);
-    let states = match Array::from_header(states_raw, 8) {
-        Some(states) => states,
-        None => return,
-    };
-    let locations = if province_scope {
-        let provinces_start = bspan(
-            log,
-            memory,
-            game_state.checked_add(cgame_state::PROVINCES),
-            16,
-            M_PROVINCES,
-        );
-        let Some(provinces_start) = provinces_start else {
-            return;
-        };
-        let mut provinces_raw = [0u8; 16];
-        provinces_raw.copy_from_slice(&log.bytes[provinces_start..provinces_start + 16]);
-        match Array::from_header(provinces_raw, 8) {
-            Some(locations) => locations,
-            None => return,
-        }
-    } else {
-        states
-    };
-    let (id_offset, status_offset, with_state_link) = if province_scope {
-        (cprovince::ID, cprovince::BUILDING_STATUS, true)
-    } else {
-        (cstate::ID, cstate::BUILDING_STATUS, false)
-    };
-    // Expected vtables in the typed walk's order. Overflow aborts like the
-    // typed "module address overflow" without touching building vectors; the
-    // replay derives the same reason from the same base.
-    let location_vtable = match base.checked_add(if province_scope {
-        cprovince::VTABLE_RVA
-    } else {
-        cstate::VTABLE_RVA
-    }) {
-        Some(v) => v as u64,
-        None => return,
-    };
-    let state_vtable = match base.checked_add(cstate::VTABLE_RVA) {
-        Some(v) => v as u64,
-        None => return,
-    };
-    let status_vtable = match base.checked_add(cbuilding_status::VTABLE_RVA) {
-        Some(v) => v as u64,
-        None => return,
-    };
-    let mut first = 1u32;
-    while first < locations.count {
-        let count = (locations.count - first).min(LOCATION_BATCH);
-        // Pointer takes in walk order, one 8-byte span per slot exactly
-        // like the typed scatter. The first failure stops the batch; the
-        // successfully-taken prefix is still fully processed below before
-        // the walk aborts, mirroring the typed visit-then-error order.
-        let mut page = [0u8; 64 * 8];
-        let mut taken = 0u32;
-        let mut page_failed = false;
-        for slot in 0..count {
-            let addr = locations.element(first + slot, 8);
-            match addr.and_then(|addr| bspan(log, memory, Some(addr), 8, mask)) {
-                Some(start) => {
-                    page[slot as usize * 8..slot as usize * 8 + 8]
-                        .copy_from_slice(&log.bytes[start..start + 8]);
-                    taken += 1;
-                }
-                None => {
-                    page_failed = true;
-                    break;
-                }
-            }
-            if log.overflowed {
-                return;
-            }
-        }
-        // Live entries parsed from the taken prefix.
-        let mut live: [(usize, u32); 64] = [(0, 0); 64];
-        let mut live_len = 0usize;
-        for slot in 0..taken as usize {
-            let pointer = usize::try_from(u64::from_le_bytes(
-                page[slot * 8..slot * 8 + 8].try_into().unwrap(),
-            ))
-            .ok()
-            .filter(|&pointer| pointer != 0);
-            if let Some(pointer) = pointer {
-                live[live_len] = (pointer, first + slot as u32);
-                live_len += 1;
-            }
-        }
-        // One guarded gather for the same seven exact fields per location.
-        // No source padding is copied and failure keeps the native prefix.
-        use engine::memory::RecordField;
-        let layout = [
-            RecordField { source_offset: 0, destination_offset: 0, len: 8 },
-            RecordField { source_offset: id_offset, destination_offset: 8, len: 4 },
-            RecordField { source_offset: cprovince::STATE, destination_offset: 12,
-                len: if with_state_link { 8 } else { 0 } },
-            RecordField { source_offset: status_offset, destination_offset: 20, len: 8 },
-            RecordField { source_offset: status_offset + cbuilding_status::FLAGS,
-                destination_offset: 28, len: 12 },
-            RecordField { source_offset: status_offset + cbuilding_status::BUILDINGS,
-                destination_offset: 40, len: 16 },
-            RecordField { source_offset: status_offset + cbuilding_status::BUILDING_INDICES,
-                destination_offset: 56, len: 16 },
-        ];
-        let mut pointers = [0usize; 64];
-        for (pointer, source) in pointers.iter_mut().zip(&live[..live_len]) {
-            *pointer = source.0;
-        }
-        let Some((start, completed)) =
-            log.take_records(memory, &pointers[..live_len], &layout, 72, mask)
-        else { return; };
-        let mut fields: [([u8; 72], bool); 64] = [([0; 72], false); 64];
-        for (slot, (record, ok)) in fields[..live_len].iter_mut().enumerate() {
-            record.copy_from_slice(&log.bytes[start + slot * 72..start + (slot + 1) * 72]);
-            *ok = completed >= (slot + 1) * layout.len();
-        }
-        // State-authentication rounds for the province walk, staged from the
-        // recorded state links exactly like the typed gather. Results gate
-        // building reads below with identical pass/fail outcomes.
-        let mut state_passed = [false; 64];
-        let mut state_ids = [0u32; 64];
-        if with_state_link {
-            copy_state_identities(
-                log,
-                memory,
-                base,
-                &states,
-                &live[..live_len],
-                &fields,
-                mask,
-                &mut state_passed,
-                &mut state_ids,
-            );
-            if log.overflowed {
-                return;
-            }
-        }
-        // Building records for the leading authenticated prefix only,
-        // mirroring the typed walk's break-on-first-failure. Earlier
-        // successes' buildings are read (typed reads them before failing);
-        // the failing location and every later one are never touched, so
-        // unauthenticated ASCII bytes never become a copy source.
-        let mut auth_failed = false;
-        for (slot, ((record, ok), (_, location))) in fields
-            .iter()
-            .take(live_len)
-            .zip(live[..live_len].iter())
-            .enumerate()
-        {
-            if !ok {
-                auth_failed = true;
-                break;
-            }
-            if !authenticate_location_record(
-                record,
-                *location,
-                province_scope,
-                location_vtable,
-                status_vtable,
-                state_vtable,
-                state_passed[slot],
-            ) {
-                auth_failed = true;
-                break;
-            }
-            copy_location_buildings(log, memory, record, mask);
-            if log.overflowed {
-                return;
-            }
-        }
-        if auth_failed {
-            return;
-        }
-        // A failed pointer page aborts the walk after its prefix, exactly
-        // like the typed visit-then-error order.
-        if page_failed {
-            return;
-        }
-        first += count;
-    }
-}
-
-/// Mirror of the state-identity gather: identity round plus table-slot round
-/// for staged nonzero state links. Takes are unconditional (safe under the
-/// canonical gate); the replay derives the completed prefixes.
-///
-/// `out_passed`/`out_state` report per-live-slot authentication with the
-/// typed walk's exact order and outcomes: state vtable, then state id
-/// (nonzero), then state-table match. Null links are sea provinces and pass
-/// without reads (`out_passed` stays false but the location gate treats link
-/// zero as state 0; see `authenticate_location_record`). Records whose gather
-/// failed (`!ok`) are never staged and report failure, matching the typed
-/// `copied < 3` break.
-#[allow(clippy::too_many_arguments)]
-fn copy_state_identities(
-    log: &mut RawLog<2>,
-    memory: &impl Memory,
-    base: usize,
-    states: &Array,
-    live: &[(usize, u32)],
-    fields: &[([u8; 72], bool); 64],
-    mask: u32,
-    out_passed: &mut [bool; 64],
-    out_state: &mut [u32; 64],
-) {
-    for value in out_passed.iter_mut() {
-        *value = false;
-    }
-    for value in out_state.iter_mut() {
-        *value = 0;
-    }
-    let state_vtable = match base.checked_add(cstate::VTABLE_RVA) {
-        Some(v) => v as u64,
-        None => return,
-    };
-    let mut pointers = [0usize; 64];
-    let mut staged_slots = [0usize; 64];
-    let mut staged = 0usize;
-    for (slot, _) in live.iter().enumerate() {
-        let (record, ok) = &fields[slot];
-        if !ok {
-            continue;
-        }
-        let pointer = usize::try_from(u64::from_le_bytes(record[12..20].try_into().unwrap()))
-            .ok()
-            .filter(|&pointer| pointer != 0);
-        if let Some(pointer) = pointer {
-            pointers[staged] = pointer;
-            staged_slots[staged] = slot;
-            staged += 1;
-        }
-    }
-    if staged == 0 {
-        return;
-    }
-    // Round 1: vtable plus id per staged state.
-    let mut identities = [([0u8; 12], false); 64];
-    for (slot, pointer) in pointers[..staged].iter().enumerate() {
-        let vtable = bspan(log, memory, Some(*pointer), 8, mask);
-        let id = bspan(log, memory, pointer.checked_add(cstate::ID), 4, mask);
-        match (vtable, id) {
-            (Some(vtable), Some(id)) => {
-                let mut identity = [0u8; 12];
-                identity[..8].copy_from_slice(&log.bytes[vtable..vtable + 8]);
-                identity[8..].copy_from_slice(&log.bytes[id..id + 4]);
-                identities[slot] = (identity, true);
-            }
-            _ => {
-                identities[slot] = ([0u8; 12], false);
-            }
-        }
-        if log.overflowed {
-            return;
-        }
-    }
-    // Round 2: state-table slot each fully-read id names plus per-slot
-    // authentication evaluation in typed order. Null table slots read
-    // nothing, matching copy_records' stop rule.
-    for (staged_idx, (identity, ok)) in identities[..staged].iter().enumerate() {
-        let live_slot = staged_slots[staged_idx];
-        if !ok {
-            continue;
-        }
-        let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
-        if vtable != state_vtable {
-            continue;
-        }
-        let id = u32::from_le_bytes(identity[8..12].try_into().unwrap());
-        if id == 0 {
-            continue;
-        }
-        let Some(table_addr) = states.element(id, 8) else {
-            continue;
-        };
-        if table_addr == 0 {
-            continue;
-        }
-        let Some(slot_start) = bspan(log, memory, Some(table_addr), 8, mask) else {
-            if log.overflowed {
-                return;
-            }
-            continue;
-        };
-        if log.overflowed {
-            return;
-        }
-        let slot_value = u64::from_le_bytes(
-            log.bytes[slot_start..slot_start + 8].try_into().unwrap(),
-        );
-        if slot_value != pointers[staged_idx] as u64 {
-            continue;
-        }
-        out_passed[live_slot] = true;
-        out_state[live_slot] = id;
-    }
-}
-
-/// Typed-walker gate mirror for one location record, in
-/// `cbuilding_status::walk_locations` order: location vtable, location id,
-/// province state authentication (vtable, id, table match; null link is sea
-/// state 0), status vtable, status identity location/scope, building vector,
-/// index vector. `ok == false` is handled by the caller (break before this
-/// call); this function assumes all seven spans were taken. Returns true only
-/// when the typed walk would stage this location's buildings.
-fn authenticate_location_record(
-    record: &[u8; 72],
-    location: u32,
-    province_scope: bool,
-    location_vtable: u64,
-    status_vtable: u64,
-    state_vtable: u64,
-    state_passed: bool,
-) -> bool {
-    let _ = state_vtable;
-    if u64::from_le_bytes(record[..8].try_into().unwrap()) != location_vtable {
-        return false;
-    }
-    if u32::from_le_bytes(record[8..12].try_into().unwrap()) != location {
-        return false;
-    }
-    if province_scope {
-        let link = u64::from_le_bytes(record[12..20].try_into().unwrap());
-        // Null links are sea provinces (state 0) and need no state reads.
-        // Nonzero links require the gathered authentication above.
-        if link != 0 && !state_passed {
-            return false;
-        }
-    }
-    if u64::from_le_bytes(record[20..28].try_into().unwrap()) != status_vtable {
-        return false;
-    }
-    let flags = u32::from_le_bytes(record[28..32].try_into().unwrap());
-    let status_location = u32::from_le_bytes(record[32..36].try_into().unwrap());
-    if status_location != location
-        || (flags & cbuilding_status::PROVINCE_FLAG != 0) != province_scope
-    {
-        return false;
-    }
-    let mut building_header = [0u8; 16];
-    building_header.copy_from_slice(&record[40..56]);
-    if Array::from_header(building_header, 8).is_none() {
-        return false;
-    }
-    let mut index_header = [0u8; 16];
-    index_header.copy_from_slice(&record[56..72]);
-    if Array::from_header(index_header, 4).is_none() {
-        return false;
-    }
-    true
-}
-
-/// Mirror of one location's building reads: pointer vector, field gathers,
-/// template fields and index entries per building. All takes are
-/// unconditional over discoverable addresses.
-fn copy_location_buildings(log: &mut RawLog<2>, memory: &impl Memory, record: &[u8; 72], mask: u32) {
-    let Ok(buildings_data) = usize::try_from(u64::from_le_bytes(record[40..48].try_into().unwrap()))
-    else {
-        return;
-    };
-    let buildings_count = u32::from_le_bytes(record[52..56].try_into().unwrap());
-    let Ok(indices_data) = usize::try_from(u64::from_le_bytes(record[56..64].try_into().unwrap()))
-    else {
-        return;
-    };
-    let indices_count = u32::from_le_bytes(record[68..72].try_into().unwrap());
-    for ordinal in 0..buildings_count as usize {
-        let addr = (ordinal.checked_mul(8)).and_then(|offset| buildings_data.checked_add(offset));
-        let pointer = addr
-            .and_then(|addr| bspan(log, memory, Some(addr), 8, mask))
-            .and_then(|start| usize::try_from(pool_u64(log, start)).ok())
-            .filter(|&pointer| pointer != 0);
-        let Some(pointer) = pointer else {
-            continue;
-        };
-        // Field gather: vtable, type, level block, health, backlink.
-        let field_takes = [
-            (pointer, 8),
-            (pointer.checked_add(cbuilding::TYPE_ID).unwrap_or(0), 4),
-            (pointer.checked_add(cbuilding::LEVEL).unwrap_or(0), 4),
-            (pointer.checked_add(cbuilding::PARTIAL_HEALTH).unwrap_or(0), 8),
-            (pointer.checked_add(cbuilding::BUILDING_STATUS).unwrap_or(0), 16),
-        ];
-        let mut field_starts = [0usize; 5];
-        let mut fields_ok = true;
-        for (slot, (addr, len)) in field_takes.iter().enumerate() {
-            match bspan(log, memory, Some(*addr), *len, mask) {
-                Some(start) => field_starts[slot] = start,
-                None => {
-                    fields_ok = false;
-                    break;
-                }
-            }
-        }
-        if !fields_ok {
-            continue;
-        }
-        // Template fields and index entry, discovered from recorded bytes
-        // with the walk's own bounds checks.
-        let template = usize::try_from(pool_u64(log, field_starts[4] + 8))
-            .ok()
-            .filter(|&template| template != 0);
-        if let Some(template) = template {
-            let type_id = bspan(
-                log,
-                memory,
-                template.checked_add(cbuilding_template::TYPE_ID),
-                4,
-                mask,
-            );
-            let ordinal_take = bspan(
-                log,
-                memory,
-                template.checked_add(cbuilding_template::DATABASE_ORDINAL),
-                4,
-                mask,
-            );
-            if let Some(ordinal_start) = ordinal_take {
-                let ordinal = u32::from_le_bytes(
-                    log.bytes[ordinal_start..ordinal_start + 4].try_into().unwrap(),
-                );
-                let addr = (ordinal < indices_count)
-                    .then(|| (ordinal as usize).checked_mul(4))
-                    .flatten()
-                    .and_then(|offset| indices_data.checked_add(offset));
-                if let Some(addr) = addr {
-                    let _ = bspan(log, memory, Some(addr), 4, mask);
-                }
-            }
-            let _ = type_id;
-        }
-        if log.overflowed {
-            return;
-        }
-    }
-}
-
 impl Captured {
-    /// Game-thread raw copy for a slot-3 refresh hour. Copies `first` always
-    /// and `second` while either buildings table still needs double-read
-    /// checks, compares the raw logs, and records copy-only costs plus the
-    /// existing checked/mismatches bookkeeping. Returns whether the payload
-    /// is complete (`raw_ok`); on staging overflow the caller falls back to
-    /// the typed walk and enqueues nothing.
-    pub(crate) fn copy_buildings_refresh(
-        &mut self,
-        memory: &impl Memory,
-        ctx: BuildingsCopyContext,
-        first: &mut BuildingsJob,
-        mut second: Option<&mut BuildingsJob>,
-    ) -> BuildingsCopyReport {
-        let started = qpc();
-        first.game_state = ctx.game_state;
-        copy_buildings_walk(
-            &mut first.log,
-            memory,
-            ctx.base,
-            ctx.game_state,
-            false,
-            M_STATES,
-        );
-        copy_buildings_walk(
-            &mut first.log,
-            memory,
-            ctx.base,
-            ctx.game_state,
-            true,
-            M_PROVINCES,
-        );
-        let mut ticks = [0u64; 2];
-        ticks[0] = elapsed(started);
-        let mut matched = [true; 2];
-        if let Some(second_job) = second.as_deref_mut() {
-            let second_started = qpc();
-            copy_buildings_walk(
-                &mut second_job.log,
-                memory,
-                ctx.base,
-                ctx.game_state,
-                false,
-                M_STATES,
-            );
-            copy_buildings_walk(
-                &mut second_job.log,
-                memory,
-                ctx.base,
-                ctx.game_state,
-                true,
-                M_PROVINCES,
-            );
-            ticks[0] += elapsed(second_started);
-            // Per-table partitions: shared roots gate both slots, state /
-            // province private spans only their own.
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal =
-                    raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-            }
-        }
-        self.state_buildings.checked = ctx.needed[0];
-        self.state_buildings.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        self.province_buildings.checked = ctx.needed[1];
-        self.province_buildings.mismatches = usize::from(ctx.needed[1] && !matched[1]);
-        let raw_ok = !first.log.overflowed
-            && second.is_none_or(|job| !job.log.overflowed);
-        BuildingsCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
-        }
-    }
-
-    /// Decode-worker interpretation of a raw refresh payload into the pooled
-    /// typed rows. Outcomes match the typed walk exactly because the
-    /// identical walk runs against the recorded spans; checked/mismatches
-    /// set by the raw compare survive. Clears `raw_mode` so the next capture
-    /// starts clean.
-    pub(crate) fn decode_buildings_payload(
-        &mut self,
-        base: usize,
-        job: &BuildingsJob,
-        decode_ticks: &mut [u64; 2],
-    ) {
-        let started = qpc();
-        let recorded = crate::raw::Recorded::build(&job.log);
-        let walked = cbuilding_status::walk(
-            &recorded,
-            base,
-            job.game_state,
-            &mut self.state_buildings.rows,
-            &mut self.province_buildings.rows,
-        );
-        self.state_buildings.outcome = walked.states;
-        self.province_buildings.outcome = walked.provinces;
-        decode_ticks[0] += elapsed(started);
-        self.raw_mode = false;
-    }
-
     /// Decode-worker interpretation of a raw hourly construction-rest
     /// payload. Replays the existing resource, queue, occupation, resistance
     /// and collaboration walks against the recorded spans, installing
@@ -1360,6 +674,7 @@ pub(crate) struct ConstructionRestJob {
     pub log: RawLog<10>,
     pub game_state: usize,
     census: Vec<ConstructionRestCountry>,
+    capacity_charge: crate::raw_memory::Charge,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1369,7 +684,7 @@ struct ConstructionRestCountry {
 
 impl ConstructionRestJob {
     pub fn new() -> Self {
-        Self {
+        let mut job = Self {
             // Late-campaign worst case is about 1k states with resources and
             // resistance, construction queues with routes, occupation graphs
             // with laws and collaboration links; both pools start above that
@@ -1377,7 +692,10 @@ impl ConstructionRestJob {
             log: RawLog::new(1 << 17, 8 << 20),
             game_state: 0,
             census: Vec::with_capacity(512),
-        }
+            capacity_charge: crate::raw_memory::Charge::default(),
+        };
+        job.update_capacity_charge();
+        job
     }
 
     /// Reset lengths for reuse, keeping every capacity. No allocation.
@@ -1396,7 +714,16 @@ impl ConstructionRestJob {
     /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
         self.log.grow();
-crate::raw::double_capacity(&mut self.census);
+        crate::raw::double_capacity(&mut self.census);
+        self.update_capacity_charge();
+    }
+
+    fn update_capacity_charge(&mut self) {
+        use crate::raw_memory::{Capacity, vector_bytes};
+        self.capacity_charge.set(Capacity {
+            auxiliary_vectors: vector_bytes(&self.census),
+            ..Default::default()
+        });
     }
 }
 
@@ -1442,19 +769,26 @@ fn cspan(
 
 /// Mirror of one MSVC string's reads: 32-byte header plus heap payload and
 /// terminator.
-fn copy_construction_string(
-    log: &mut RawLog<10>,
-    memory: &impl Memory,
-    string: usize,
-    mask: u32,
-) {
+fn copy_construction_string(log: &mut RawLog<10>, memory: &impl Memory, string: usize, mask: u32) {
     let Some(header_start) = cspan(log, memory, Some(string), 32, mask) else {
         return;
     };
     // The walk reads length/capacity/pointer as separate 8-byte spans, not
     // just the 32-byte header above; record those exact spans too.
-    let _ = cspan(log, memory, string.checked_add(msvc_string::LENGTH), 8, mask);
-    let _ = cspan(log, memory, string.checked_add(msvc_string::CAPACITY), 8, mask);
+    let _ = cspan(
+        log,
+        memory,
+        string.checked_add(msvc_string::LENGTH),
+        8,
+        mask,
+    );
+    let _ = cspan(
+        log,
+        memory,
+        string.checked_add(msvc_string::CAPACITY),
+        8,
+        mask,
+    );
     let _ = cspan(log, memory, Some(string), 8, mask);
     let mut header = [0u8; 32];
     header.copy_from_slice(&log.bytes[header_start..header_start + 32]);
@@ -1650,37 +984,35 @@ fn copy_states_walk(log: &mut RawLog<10>, memory: &impl Memory, base: usize, sta
             pointer.checked_add(cstate::TEMPLATE),
             8,
             M_C_RES,
-        )
-            && let Some(template) = usize::try_from(c_pool_u64(log, tptr_start))
-                .ok()
-                .filter(|&p| p != 0)
-            {
-                let _ = cspan(log, memory, Some(template), 8, M_C_RES);
-                let _ = cspan(
-                    log,
-                    memory,
-                    template.checked_add(cstate_template::ID),
-                    4,
-                    M_C_RES,
-                );
-                if let Some(rh_start) = cspan(
-                    log,
-                    memory,
-                    template.checked_add(cstate_template::RESOURCES),
-                    16,
-                    M_C_RES,
-                ) {
-                    let mut raw = [0u8; 16];
-                    raw.copy_from_slice(&log.bytes[rh_start..rh_start + 16]);
-                    if let Some(resources) = Array::from_header(raw, state_resource_entry::STRIDE)
-                    {
-                        for ordinal in 0..resources.count {
-                            let addr = resources.element(ordinal, state_resource_entry::STRIDE);
-                            let _ = cspan(log, memory, addr, 12, M_C_RES);
-                        }
+        ) && let Some(template) = usize::try_from(c_pool_u64(log, tptr_start))
+            .ok()
+            .filter(|&p| p != 0)
+        {
+            let _ = cspan(log, memory, Some(template), 8, M_C_RES);
+            let _ = cspan(
+                log,
+                memory,
+                template.checked_add(cstate_template::ID),
+                4,
+                M_C_RES,
+            );
+            if let Some(rh_start) = cspan(
+                log,
+                memory,
+                template.checked_add(cstate_template::RESOURCES),
+                16,
+                M_C_RES,
+            ) {
+                let mut raw = [0u8; 16];
+                raw.copy_from_slice(&log.bytes[rh_start..rh_start + 16]);
+                if let Some(resources) = Array::from_header(raw, state_resource_entry::STRIDE) {
+                    for ordinal in 0..resources.count {
+                        let addr = resources.element(ordinal, state_resource_entry::STRIDE);
+                        let _ = cspan(log, memory, addr, 12, M_C_RES);
                     }
                 }
             }
+        }
         // Resistance object: header, compliance block, active byte.
         if let Some(resistance) = pointer.checked_add(cstate::RESISTANCE) {
             let _ = cspan(log, memory, Some(resistance), 32, M_C_RESIST);
@@ -1718,14 +1050,16 @@ fn copy_construction_queue(
         game_state.checked_add(cgame_state::STATES),
         16,
         M_C_BLD,
-    ).and_then(|start| Array::from_header(log.bytes[start..start + 16].try_into().unwrap(), 8));
+    )
+    .and_then(|start| Array::from_header(log.bytes[start..start + 16].try_into().unwrap(), 8));
     let provinces = cspan(
         log,
         memory,
         game_state.checked_add(cgame_state::PROVINCES),
         16,
         M_C_BLD,
-    ).and_then(|start| Array::from_header(log.bytes[start..start + 16].try_into().unwrap(), 8));
+    )
+    .and_then(|start| Array::from_header(log.bytes[start..start + 16].try_into().unwrap(), 8));
     for country in census {
         let Some(ptr_start) = cspan(
             log,
@@ -1782,9 +1116,12 @@ fn copy_construction_queue(
                 continue;
             };
             let vtable = c_pool_u64(log, vtable_start);
-            let building_vtable = base.checked_add(cbuilding_production_line::VTABLE_RVA).map(|v| v as u64);
-            let railway_vtable =
-                base.checked_add(crailway_production_line::VTABLE_RVA).map(|v| v as u64);
+            let building_vtable = base
+                .checked_add(cbuilding_production_line::VTABLE_RVA)
+                .map(|v| v as u64);
+            let railway_vtable = base
+                .checked_add(crailway_production_line::VTABLE_RVA)
+                .map(|v| v as u64);
             // Common fields (reference, factories, cost/speed/produced,
             // priority/amount, created date, owner).
             let _ = cspan(
@@ -1840,35 +1177,32 @@ fn copy_construction_queue(
                     pointer.checked_add(cbuilding_production_line::BUILDING),
                     8,
                     M_C_BLD,
-                )
-                    && let Some(target) = usize::try_from(c_pool_u64(log, bptr_start))
+                ) && let Some(target) = usize::try_from(c_pool_u64(log, bptr_start))
+                    .ok()
+                    .filter(|&p| p != 0)
+                {
+                    let _ = cspan(log, memory, Some(target), 8, M_C_BLD);
+                    let _ = cspan(
+                        log,
+                        memory,
+                        target.checked_add(cbuilding::TYPE_ID),
+                        4,
+                        M_C_BLD,
+                    );
+                    if let Some(sptr_start) = cspan(
+                        log,
+                        memory,
+                        target.checked_add(cbuilding::BUILDING_STATUS),
+                        8,
+                        M_C_BLD,
+                    ) && let Some(status) = usize::try_from(c_pool_u64(log, sptr_start))
                         .ok()
                         .filter(|&p| p != 0)
+                        && let (Some(states), Some(provinces)) = (states, provinces)
                     {
-                        let _ = cspan(log, memory, Some(target), 8, M_C_BLD);
-                        let _ = cspan(
-                            log,
-                            memory,
-                            target.checked_add(cbuilding::TYPE_ID),
-                            4,
-                            M_C_BLD,
-                        );
-                        if let Some(sptr_start) = cspan(
-                            log,
-                            memory,
-                            target.checked_add(cbuilding::BUILDING_STATUS),
-                            8,
-                            M_C_BLD,
-                        )
-                            && let Some(status) =
-                                usize::try_from(c_pool_u64(log, sptr_start))
-                                    .ok()
-                                    .filter(|&p| p != 0)
-                            && let (Some(states), Some(provinces)) = (states, provinces)
-                            {
-                                copy_construction_target(log, memory, base, status, states, provinces);
-                            }
+                        copy_construction_target(log, memory, base, status, states, provinces);
                     }
+                }
                 let _ = cspan(
                     log,
                     memory,
@@ -1926,38 +1260,96 @@ fn copy_construction_queue(
 /// Mirror Locations::resolve, including the map-slot round trip. Authenticate
 /// each object before following its state pointer; raw addresses are not types.
 fn copy_construction_target(
-    log: &mut RawLog<10>, memory: &impl Memory, base: usize,
-    status: usize, states: Array, provinces: Array,
+    log: &mut RawLog<10>,
+    memory: &impl Memory,
+    base: usize,
+    status: usize,
+    states: Array,
+    provinces: Array,
 ) {
-    let Some(vt) = cspan(log, memory, Some(status), 8, M_C_BLD) else { return };
-    if Some(c_pool_u64(log, vt)) != base.checked_add(cbuilding_status::VTABLE_RVA).map(|p| p as u64) {
+    let Some(vt) = cspan(log, memory, Some(status), 8, M_C_BLD) else {
+        return;
+    };
+    if Some(c_pool_u64(log, vt))
+        != base
+            .checked_add(cbuilding_status::VTABLE_RVA)
+            .map(|p| p as u64)
+    {
         return;
     }
-    let Some(fields) = cspan(log, memory, status.checked_add(cbuilding_status::FLAGS), 12, M_C_BLD) else { return };
+    let Some(fields) = cspan(
+        log,
+        memory,
+        status.checked_add(cbuilding_status::FLAGS),
+        12,
+        M_C_BLD,
+    ) else {
+        return;
+    };
     let flags = u32::from_le_bytes(log.bytes[fields..fields + 4].try_into().unwrap());
     let location = u32::from_le_bytes(log.bytes[fields + 4..fields + 8].try_into().unwrap());
-    if location == 0 { return; }
+    if location == 0 {
+        return;
+    }
     let province = flags & cbuilding_status::PROVINCE_FLAG != 0;
     let (array, vtable, id_offset, status_offset) = if province {
-        (provinces, cprovince::VTABLE_RVA, cprovince::ID, cprovince::BUILDING_STATUS)
+        (
+            provinces,
+            cprovince::VTABLE_RVA,
+            cprovince::ID,
+            cprovince::BUILDING_STATUS,
+        )
     } else {
-        (states, cstate::VTABLE_RVA, cstate::ID, cstate::BUILDING_STATUS)
+        (
+            states,
+            cstate::VTABLE_RVA,
+            cstate::ID,
+            cstate::BUILDING_STATUS,
+        )
     };
-    let Some(slot) = cspan(log, memory, array.element(location, 8), 8, M_C_BLD) else { return };
+    let Some(slot) = cspan(log, memory, array.element(location, 8), 8, M_C_BLD) else {
+        return;
+    };
     let pointer = c_pool_u64(log, slot) as usize;
-    if pointer == 0 { return; }
-    let Some(vt) = cspan(log, memory, Some(pointer), 8, M_C_BLD) else { return };
+    if pointer == 0 {
+        return;
+    }
+    let Some(vt) = cspan(log, memory, Some(pointer), 8, M_C_BLD) else {
+        return;
+    };
     if Some(c_pool_u64(log, vt)) != base.checked_add(vtable).map(|p| p as u64)
         || pointer.checked_add(status_offset) != Some(status)
-    { return; }
-    let Some(id) = cspan(log, memory, pointer.checked_add(id_offset), 4, M_C_BLD) else { return };
-    if u32::from_le_bytes(log.bytes[id..id + 4].try_into().unwrap()) != location || !province { return; }
-    let Some(state) = cspan(log, memory, pointer.checked_add(cprovince::STATE), 8, M_C_BLD) else { return };
+    {
+        return;
+    }
+    let Some(id) = cspan(log, memory, pointer.checked_add(id_offset), 4, M_C_BLD) else {
+        return;
+    };
+    if u32::from_le_bytes(log.bytes[id..id + 4].try_into().unwrap()) != location || !province {
+        return;
+    }
+    let Some(state) = cspan(
+        log,
+        memory,
+        pointer.checked_add(cprovince::STATE),
+        8,
+        M_C_BLD,
+    ) else {
+        return;
+    };
     let state = c_pool_u64(log, state) as usize;
-    if state == 0 { return; }
-    let Some(vt) = cspan(log, memory, Some(state), 8, M_C_BLD) else { return };
-    if Some(c_pool_u64(log, vt)) != base.checked_add(cstate::VTABLE_RVA).map(|p| p as u64) { return; }
-    let Some(id) = cspan(log, memory, state.checked_add(cstate::ID), 4, M_C_BLD) else { return };
+    if state == 0 {
+        return;
+    }
+    let Some(vt) = cspan(log, memory, Some(state), 8, M_C_BLD) else {
+        return;
+    };
+    if Some(c_pool_u64(log, vt)) != base.checked_add(cstate::VTABLE_RVA).map(|p| p as u64) {
+        return;
+    }
+    let Some(id) = cspan(log, memory, state.checked_add(cstate::ID), 4, M_C_BLD) else {
+        return;
+    };
     let id = u32::from_le_bytes(log.bytes[id..id + 4].try_into().unwrap());
     if id != 0 {
         let _ = cspan(log, memory, states.element(id, 8), 8, M_C_BLD);
@@ -2007,39 +1399,36 @@ fn copy_occupation_walk(
             status.checked_add(ccountry_occupation_status::GARRISON_TEMPLATE),
             8,
             M_C_OCC,
-        )
-            && let Some(template) = usize::try_from(c_pool_u64(log, tptr_start))
-                .ok()
-                .filter(|&p| p != 0)
-            {
-                let _ = cspan(log, memory, Some(template), 8, M_C_OCC);
-                let _ = cspan(
-                    log,
-                    memory,
-                    template.checked_add(creferenced_division_template::TYPE),
-                    8,
-                    M_C_OCC,
-                );
-            }
+        ) && let Some(template) = usize::try_from(c_pool_u64(log, tptr_start))
+            .ok()
+            .filter(|&p| p != 0)
+        {
+            let _ = cspan(log, memory, Some(template), 8, M_C_OCC);
+            let _ = cspan(
+                log,
+                memory,
+                template.checked_add(creferenced_division_template::TYPE),
+                8,
+                M_C_OCC,
+            );
+        }
         if let Some(lptr_start) = cspan(
             log,
             memory,
             status.checked_add(ccountry_occupation_status::DEFAULT_LAW),
             8,
             M_C_OCC,
-        )
-            && let Some(law) = usize::try_from(c_pool_u64(log, lptr_start))
-                .ok()
-                .filter(|&p| p != 0)
-            {
-                let _ = cspan(log, memory, Some(law), 8, M_C_OCC);
-                if let Some(name) = law.checked_add(coccupation_law::NAME) {
-                    copy_construction_string(log, memory, name, M_C_OCC);
-                }
-            }
-        // Reserve manpower container.
-        if let Some(container) = status.checked_add(ccountry_occupation_status::ASSIGNED_MANPOWER)
+        ) && let Some(law) = usize::try_from(c_pool_u64(log, lptr_start))
+            .ok()
+            .filter(|&p| p != 0)
         {
+            let _ = cspan(log, memory, Some(law), 8, M_C_OCC);
+            if let Some(name) = law.checked_add(coccupation_law::NAME) {
+                copy_construction_string(log, memory, name, M_C_OCC);
+            }
+        }
+        // Reserve manpower container.
+        if let Some(container) = status.checked_add(ccountry_occupation_status::ASSIGNED_MANPOWER) {
             let _ = cspan(log, memory, Some(container), 8, M_C_OCC);
             if let Some(data_start) = cspan(
                 log,
@@ -2063,8 +1452,7 @@ fn copy_occupation_walk(
         // 17-byte header plus per-bucket 24-byte spans); each live entry's
         // identity, law table and garrison table are mirrored below so the
         // replay derives identical rows and reasons.
-        if let Some(table) = status.checked_add(ccountry_occupation_status::OCCUPATION_DATA_TABLE)
-        {
+        if let Some(table) = status.checked_add(ccountry_occupation_status::OCCUPATION_DATA_TABLE) {
             copy_occupation_entries(log, memory, base, table);
         }
         if log.overflowed {
@@ -2131,12 +1519,7 @@ fn copy_pdx_visit(
 }
 
 /// Outer occupation-data entries with nested law and garrison walks.
-fn copy_occupation_entries(
-    log: &mut RawLog<10>,
-    memory: &impl Memory,
-    base: usize,
-    table: usize,
-) {
+fn copy_occupation_entries(log: &mut RawLog<10>, memory: &impl Memory, base: usize, table: usize) {
     let Some(entries) = copy_pdx_visit(log, memory, table, M_C_OCC) else {
         return;
     };
@@ -2164,27 +1547,29 @@ fn copy_occupation_entries(
         }
         // Law table nested visit plus per-law literals.
         if let Some(law_table) = value.checked_add(ccountry_occupation_data::LAW_TABLE)
-            && let Some(laws) = copy_pdx_visit(log, memory, law_table, M_C_OCC) {
-                for (_, law) in laws {
-                    let _ = cspan(log, memory, Some(law), 8, M_C_OCC);
-                    if let Some(name) = law.checked_add(coccupation_law::NAME) {
-                        copy_construction_string(log, memory, name, M_C_OCC);
-                    }
-                    if log.overflowed {
-                        return;
-                    }
+            && let Some(laws) = copy_pdx_visit(log, memory, law_table, M_C_OCC)
+        {
+            for (_, law) in laws {
+                let _ = cspan(log, memory, Some(law), 8, M_C_OCC);
+                if let Some(name) = law.checked_add(coccupation_law::NAME) {
+                    copy_construction_string(log, memory, name, M_C_OCC);
+                }
+                if log.overflowed {
+                    return;
                 }
             }
+        }
         // Garrison table nested visit plus per-garrison rows and manpower.
         if let Some(gar_table) = value.checked_add(ccountry_occupation_data::GARRISON_TABLE)
-            && let Some(garrisons) = copy_pdx_visit(log, memory, gar_table, M_C_OCC) {
-                for (gkey, garrison) in garrisons {
-                    copy_garrison_object(log, memory, base, gkey, garrison, value);
-                    if log.overflowed {
-                        return;
-                    }
+            && let Some(garrisons) = copy_pdx_visit(log, memory, gar_table, M_C_OCC)
+        {
+            for (gkey, garrison) in garrisons {
+                copy_garrison_object(log, memory, base, gkey, garrison, value);
+                if log.overflowed {
+                    return;
                 }
             }
+        }
         if log.overflowed {
             return;
         }
@@ -2292,14 +1677,21 @@ fn copy_collaboration_walk(
         );
         for (offset, mask) in [
             (ccountry_collaboration_status::RELATIONS, M_C_COLLAB),
-            (ccountry_collaboration_status::INCOMING_COUNTRIES, M_C_COLLAB),
+            (
+                ccountry_collaboration_status::INCOMING_COUNTRIES,
+                M_C_COLLAB,
+            ),
         ] {
             let Some(h_start) = cspan(log, memory, status.checked_add(offset), 16, mask) else {
                 continue;
             };
             let mut raw = [0u8; 16];
             raw.copy_from_slice(&log.bytes[h_start..h_start + 16]);
-            let stride = if offset == ccountry_collaboration_status::RELATIONS { 8 } else { 4 };
+            let stride = if offset == ccountry_collaboration_status::RELATIONS {
+                8
+            } else {
+                4
+            };
             if let Some(array) = Array::from_header(raw, stride) {
                 for index in 0..array.count {
                     let addr = if stride == 8 {
@@ -2312,9 +1704,9 @@ fn copy_collaboration_walk(
                             && let Some(rel) = usize::try_from(c_pool_u64(log, r_start))
                                 .ok()
                                 .filter(|&p| p != 0)
-                            {
-                                let _ = cspan(log, memory, Some(rel), 24, mask);
-                            }
+                        {
+                            let _ = cspan(log, memory, Some(rel), 24, mask);
+                        }
                     } else {
                         let _ = cspan(log, memory, addr, 4, mask);
                     }
@@ -2359,8 +1751,7 @@ impl Captured {
             // private spans only their own table.
             let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
             for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal =
-                    raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
                 *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
             }
         }
@@ -2384,8 +1775,7 @@ impl Captured {
         self.resistance.mismatches = usize::from(ctx.needed[8] && !matched[8]);
         self.collaboration.checked = ctx.needed[9];
         self.collaboration.mismatches = usize::from(ctx.needed[9] && !matched[9]);
-        let raw_ok = !first.log.overflowed
-            && second.is_none_or(|job| !job.log.overflowed);
+        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
         ConstructionRestCopyReport {
             raw_ok,
             matched,
@@ -2624,232 +2014,6 @@ fn law_table(
     })
 }
 
-/// Shared synthetic address space for the buildings copy/decode split
-/// harness: one state and two provinces (one with a state link) each with
-/// buildings, plus empty and fault-injection coverage.
-#[cfg(test)]
-pub(crate) mod buildings_test_kit {
-    use super::{BuildingsCopyContext, BuildingsCopyReport, BuildingsJob, Capacities, Captured, N};
-    use engine::{
-        cbuilding, cbuilding_status, cbuilding_template, cgame_state, cprovince, cstate,
-    };
-
-    pub(crate) const BASE: usize = 0x140000000;
-    pub(crate) const GAME_STATE: usize = 0x10000;
-    const ADDRESS: usize = 0x10000;
-
-    const SARR: usize = 0x2000;
-    const PARR: usize = 0x2100;
-    pub(crate) const ST1: usize = 0x3000;
-    pub(crate) const PR1: usize = 0x3400;
-    pub(crate) const PR2: usize = 0x3800;
-    // Inline status objects live inside their locations.
-    const SST1: usize = 0x3000 + 0x120;
-    const SPR1: usize = 0x3400 + 0x190;
-    const SPR2: usize = 0x3800 + 0x190;
-    const SB1: usize = 0x5000;
-    const PB1: usize = 0x5200;
-    const TM1: usize = 0x6000;
-    const TM2: usize = 0x6100;
-    const IDX1: usize = 0x6300;
-    const IDX2: usize = 0x6400;
-    const SBARR1: usize = 0x6700;
-    const PBARR1: usize = 0x6710;
-
-    pub(crate) fn memory(bytes: &[u8]) -> engine::memory::SliceMemory<'_> {
-        engine::memory::SliceMemory { base: ADDRESS, bytes }
-    }
-
-    fn put<const COUNT: usize>(bytes: &mut [u8], offset: usize, value: [u8; COUNT]) {
-        bytes[offset..offset + COUNT].copy_from_slice(&value);
-    }
-
-    fn pointer(bytes: &mut [u8], offset: usize, target: usize) {
-        put(bytes, offset, ((ADDRESS + target) as u64).to_le_bytes());
-    }
-
-    fn array(bytes: &mut [u8], offset: usize, data: usize, count: u32) {
-        pointer(bytes, offset, data);
-        put(bytes, offset + 8, count.to_le_bytes());
-        put(bytes, offset + 12, count.to_le_bytes());
-    }
-
-    fn status(
-        bytes: &mut [u8],
-        object: usize,
-        location: u32,
-        province_scope: bool,
-        building: usize,
-        indices: usize,
-    ) {
-        put(
-            bytes,
-            object,
-            ((BASE + cbuilding_status::VTABLE_RVA) as u64).to_le_bytes(),
-        );
-        put(
-            bytes,
-            object + cbuilding_status::FLAGS,
-            (if province_scope { 1_u32 } else { 0_u32 }).to_le_bytes(),
-        );
-        put(
-            bytes,
-            object + cbuilding_status::FLAGS + 4,
-            location.to_le_bytes(),
-        );
-        put(
-            bytes,
-            object + cbuilding_status::FLAGS + 8,
-            1_u32.to_le_bytes(),
-        );
-        array(bytes, object + cbuilding_status::BUILDINGS, building, 1);
-        array(bytes, object + cbuilding_status::BUILDING_INDICES, indices, 1);
-    }
-
-    fn building(bytes: &mut [u8], object: usize, status: usize, ordinal_type: u32, template: usize) {
-        put(
-            bytes,
-            object,
-            ((BASE + cbuilding::VTABLE_RVA) as u64).to_le_bytes(),
-        );
-        put(bytes, object + cbuilding::TYPE_ID, ordinal_type.to_le_bytes());
-        put(bytes, object + cbuilding::LEVEL, 2_i16.to_le_bytes());
-        put(bytes, object + cbuilding::HEALTHY_LEVEL, 2_i16.to_le_bytes());
-        put(
-            bytes,
-            object + cbuilding::PARTIAL_HEALTH,
-            5_000_000_i64.to_le_bytes(),
-        );
-        pointer(bytes, object + cbuilding::BUILDING_STATUS, status);
-        put(bytes, object + cbuilding::BUILDING_STATUS + 8, 0_u64.to_le_bytes());
-        pointer(bytes, object + cbuilding::TEMPLATE, template);
-        put(
-            bytes,
-            template,
-            ((BASE + cbuilding::VTABLE_RVA) as u64).to_le_bytes(),
-        );
-        put(bytes, template + cbuilding_template::TYPE_ID, ordinal_type.to_le_bytes());
-        // Database ordinal doubles as the location index-vector position in
-        // the walk, so it must name a present entry holding this ordinal.
-        put(bytes, template + cbuilding_template::DATABASE_ORDINAL, 0_u32.to_le_bytes());
-    }
-
-    pub(crate) fn fixture() -> Vec<u8> {
-        let mut bytes = vec![0; 0x7000];
-        // Game-state object at the image base; roots at raw offsets.
-        array(&mut bytes, cgame_state::STATES, SARR, 2);
-        array(&mut bytes, cgame_state::PROVINCES, PARR, 3);
-        pointer(&mut bytes, SARR + 8, ST1);
-        pointer(&mut bytes, PARR + 8, PR1);
-        pointer(&mut bytes, PARR + 16, PR2);
-        // State slot 1 with id 1 (ids index the state table). The status
-        // object is inline at +0x120, not a pointer.
-        put(
-            &mut bytes,
-            ST1,
-            ((BASE + cstate::VTABLE_RVA) as u64).to_le_bytes(),
-        );
-        put(&mut bytes, ST1 + cstate::ID, 1_u32.to_le_bytes());
-        status(&mut bytes, SST1, 1, false, SBARR1, IDX1);
-        // Province slot 1 linked to ST1, status inline at +0x190.
-        put(
-            &mut bytes,
-            PR1,
-            ((BASE + cprovince::VTABLE_RVA) as u64).to_le_bytes(),
-        );
-        put(&mut bytes, PR1 + cprovince::ID, 1_u32.to_le_bytes());
-        pointer(&mut bytes, PR1 + cprovince::STATE, ST1);
-        status(&mut bytes, SPR1, 1, true, PBARR1, IDX2);
-        // Province slot 2 with a null state link (sea province) and no
-        // buildings; its null state pointer reads as state 0.
-        put(
-            &mut bytes,
-            PR2,
-            ((BASE + cprovince::VTABLE_RVA) as u64).to_le_bytes(),
-        );
-        put(&mut bytes, PR2 + cprovince::ID, 2_u32.to_le_bytes());
-        status(&mut bytes, SPR2, 2, true, 0x6500, 0x6600);
-        array(&mut bytes, SPR2 + cbuilding_status::BUILDINGS, 0x6500, 0);
-        building(&mut bytes, SB1, SST1, 7, TM1);
-        building(&mut bytes, PB1, SPR1, 9, TM2);
-        // Building pointer vectors and index entries.
-        pointer(&mut bytes, SBARR1, SB1);
-        pointer(&mut bytes, PBARR1, PB1);
-        // Index entries map native ordinals to themselves.
-        put(&mut bytes, IDX1, 0_u32.to_le_bytes());
-        put(&mut bytes, IDX2, 0_u32.to_le_bytes());
-        bytes
-    }
-
-    /// Reference typed walk with identical pooled buffers.
-    pub(crate) fn direct(
-        memory: &impl engine::Memory,
-        capacities: &Capacities,
-    ) -> Captured {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
-        let walked = cbuilding_status::walk(
-            memory,
-            BASE,
-            GAME_STATE,
-            &mut captured.state_buildings.rows,
-            &mut captured.province_buildings.rows,
-        );
-        captured.state_buildings.outcome = walked.states;
-        captured.province_buildings.outcome = walked.provinces;
-        captured
-    }
-
-    /// Raw-copy split: two raw passes compared, then the first payload
-    /// decoded into fresh pooled buffers of the same capacities.
-    pub(crate) fn split(
-        memory: &impl engine::Memory,
-        capacities: &Capacities,
-    ) -> (Captured, BuildingsCopyReport, BuildingsJob) {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
-        let ctx = BuildingsCopyContext {
-            base: BASE,
-            game_state: GAME_STATE,
-            needed: [true, true],
-        };
-        let mut first = BuildingsJob::new();
-        let mut second = BuildingsJob::new();
-        let report = captured.copy_buildings_refresh(memory, ctx, &mut first, Some(&mut second));
-        assert!(report.raw_ok);
-        let mut ticks = [0u64; 2];
-        captured.decode_buildings_payload(BASE, &first, &mut ticks);
-        (captured, report, first)
-    }
-
-    pub(crate) fn assert_matches_direct(split: &Captured, direct: &Captured) {
-        assert_eq!(
-            split.state_buildings.outcome, direct.state_buildings.outcome,
-            "states outcome"
-        );
-        assert_eq!(
-            split.province_buildings.outcome, direct.province_buildings.outcome,
-            "provinces outcome"
-        );
-        let states_len = split.state_buildings.outcome.len();
-        assert_eq!(direct.state_buildings.outcome.len(), states_len, "states length");
-        assert_eq!(
-            &split.state_buildings.rows[..states_len],
-            &direct.state_buildings.rows[..states_len],
-            "state rows"
-        );
-        let provinces_len = split.province_buildings.outcome.len();
-        assert_eq!(
-            direct.province_buildings.outcome.len(),
-            provinces_len,
-            "provinces length"
-        );
-        assert_eq!(
-            &split.province_buildings.rows[..provinces_len],
-            &direct.province_buildings.rows[..provinces_len],
-            "province rows"
-        );
-    }
-}
-
 /// Shared synthetic address space for the hourly construction-rest
 /// copy/decode split: one state with resources and resistance, one
 /// country with a building+railway queue, occupation settings with laws,
@@ -2861,12 +2025,10 @@ pub(crate) mod construction_rest_test_kit {
         ConstructionRestJob, N,
     };
     use engine::{
-        carmy_manpower_values, cbuilding, cbuilding_production_line, cbuilding_status,
-        ccountry, ccountry_collaboration_status,
-        ccountry_occupation_data, ccountry_occupation_status, cgame_state,
-        cgeneral_production_line, coccupation_law, cproduction_line,
-        cproduction_status, crailway_production_line,
-        cresistance, cstate, cstate_garrison_data,
+        carmy_manpower_values, cbuilding, cbuilding_production_line, cbuilding_status, ccountry,
+        ccountry_collaboration_status, ccountry_occupation_data, ccountry_occupation_status,
+        cgame_state, cgeneral_production_line, coccupation_law, cproduction_line,
+        cproduction_status, crailway_production_line, cresistance, cstate, cstate_garrison_data,
         cstate_template, msvc_string,
     };
 
@@ -2916,11 +2078,19 @@ pub(crate) mod construction_rest_test_kit {
         array(&mut bytes, BASE + cgame_state::STATES, 0x2400, 2);
         array(&mut bytes, BASE + cgame_state::PROVINCES, 0x2500, 2);
         for slot in [1, 2] {
-            put(&mut bytes, 0x2000 + slot * 8, &(COUNTRY as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                0x2000 + slot * 8,
+                &(COUNTRY as u64).to_le_bytes(),
+            );
             put(&mut bytes, 0x2100 + slot * 4, &1_u32.to_le_bytes());
         }
         put(&mut bytes, 0x2400 + 8, &(STATE as u64).to_le_bytes());
-        put(&mut bytes, COUNTRY, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            COUNTRY,
+            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        );
         put(&mut bytes, COUNTRY + ccountry::ID, &1_u32.to_le_bytes());
         put(
             &mut bytes,
@@ -2938,11 +2108,27 @@ pub(crate) mod construction_rest_test_kit {
             &(COLLAB as u64).to_le_bytes(),
         );
         // State + template + resources.
-        put(&mut bytes, STATE, &(cstate::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            STATE,
+            &(cstate::VTABLE_RVA as u64).to_le_bytes(),
+        );
         put(&mut bytes, STATE + cstate::ID, &1_u32.to_le_bytes());
-        put(&mut bytes, STATE + cstate::TEMPLATE, &(TEMPLATE as u64).to_le_bytes());
-        put(&mut bytes, TEMPLATE, &(cstate_template::VTABLE_RVA as u64).to_le_bytes());
-        put(&mut bytes, TEMPLATE + cstate_template::ID, &1_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            STATE + cstate::TEMPLATE,
+            &(TEMPLATE as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            TEMPLATE,
+            &(cstate_template::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            TEMPLATE + cstate_template::ID,
+            &1_u32.to_le_bytes(),
+        );
         put(
             &mut bytes,
             TEMPLATE + cstate_template::RESOURCES,
@@ -2962,22 +2148,51 @@ pub(crate) mod construction_rest_test_kit {
         put(&mut bytes, RESDATA + 8, &55_u32.to_le_bytes());
         // Resistance (embedded).
         let res = STATE + cstate::RESISTANCE;
-        put(&mut bytes, res, &(cresistance::VTABLE_RVA as u64).to_le_bytes());
-        put(&mut bytes, res + cresistance::STATE, &(STATE as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            res,
+            &(cresistance::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            res + cresistance::STATE,
+            &(STATE as u64).to_le_bytes(),
+        );
         put(&mut bytes, res + cresistance::LEVEL, &100_i64.to_le_bytes());
         put(&mut bytes, res + cresistance::SPEED, &200_i64.to_le_bytes());
-        put(&mut bytes, res + cresistance::COMPLIANCE, &300_i64.to_le_bytes());
-        put(&mut bytes, res + cresistance::COMPLIANCE_SPEED, &400_i64.to_le_bytes());
+        put(
+            &mut bytes,
+            res + cresistance::COMPLIANCE,
+            &300_i64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            res + cresistance::COMPLIANCE_SPEED,
+            &400_i64.to_le_bytes(),
+        );
         put(&mut bytes, res + cresistance::COUNTRY, &1_u32.to_le_bytes());
         put(&mut bytes, res + cresistance::ACTIVE, &[1]);
         // Production status + construction queue (1 building + 1 railway).
         put(&mut bytes, PROD, &(cstate::VTABLE_RVA as u64).to_le_bytes());
-        put(&mut bytes, PROD + cproduction_status::COUNTRY, &(COUNTRY as u64).to_le_bytes());
-        array(&mut bytes, PROD + cproduction_status::CONSTRUCTION_LINES, QDATA, 2);
+        put(
+            &mut bytes,
+            PROD + cproduction_status::COUNTRY,
+            &(COUNTRY as u64).to_le_bytes(),
+        );
+        array(
+            &mut bytes,
+            PROD + cproduction_status::CONSTRUCTION_LINES,
+            QDATA,
+            2,
+        );
         put(&mut bytes, QDATA, &(BLINE as u64).to_le_bytes());
         put(&mut bytes, QDATA + 8, &(RLINE as u64).to_le_bytes());
         for (pointer, vtable, id) in [
-            (BLINE, cbuilding_production_line::VTABLE_RVA, 0x0000_0001_ffff_ffff_u64),
+            (
+                BLINE,
+                cbuilding_production_line::VTABLE_RVA,
+                0x0000_0001_ffff_ffff_u64,
+            ),
             (
                 RLINE,
                 crailway_production_line::VTABLE_RVA,
@@ -2985,7 +2200,11 @@ pub(crate) mod construction_rest_test_kit {
             ),
         ] {
             put(&mut bytes, pointer, &(vtable as u64).to_le_bytes());
-            put(&mut bytes, pointer + cproduction_line::REFERENCE_TYPE, &id.to_le_bytes());
+            put(
+                &mut bytes,
+                pointer + cproduction_line::REFERENCE_TYPE,
+                &id.to_le_bytes(),
+            );
             put(
                 &mut bytes,
                 pointer + cproduction_line::PRODUCTION_STATUS,
@@ -2996,25 +2215,57 @@ pub(crate) mod construction_rest_test_kit {
                 pointer + cproduction_line::ACTIVE_FACTORIES,
                 &3_i32.to_le_bytes(),
             );
-            put(&mut bytes, pointer + cproduction_line::COST, &10_i64.to_le_bytes());
-            put(&mut bytes, pointer + cproduction_line::SPEED, &20_i64.to_le_bytes());
-            put(&mut bytes, pointer + cproduction_line::PRODUCED, &30_i64.to_le_bytes());
-            put(&mut bytes, pointer + cproduction_line::PRIORITY, &1_i32.to_le_bytes());
-            put(&mut bytes, pointer + cproduction_line::AMOUNT, &2_i32.to_le_bytes());
+            put(
+                &mut bytes,
+                pointer + cproduction_line::COST,
+                &10_i64.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                pointer + cproduction_line::SPEED,
+                &20_i64.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                pointer + cproduction_line::PRODUCED,
+                &30_i64.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                pointer + cproduction_line::PRIORITY,
+                &1_i32.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                pointer + cproduction_line::AMOUNT,
+                &2_i32.to_le_bytes(),
+            );
             put(
                 &mut bytes,
                 pointer + cgeneral_production_line::CREATED_DATE,
                 &100_i32.to_le_bytes(),
             );
         }
-        put(&mut bytes, BLINE + cbuilding_production_line::BUILDING, &(BTARGET as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            BLINE + cbuilding_production_line::BUILDING,
+            &(BTARGET as u64).to_le_bytes(),
+        );
         put(
             &mut bytes,
             BLINE + cbuilding_production_line::REPAIR_LEVELS_REMAINING,
             &0_i32.to_le_bytes(),
         );
-        put(&mut bytes, BTARGET, &(cbuilding::VTABLE_RVA as u64).to_le_bytes());
-        put(&mut bytes, BTARGET + cbuilding::TYPE_ID, &7_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            BTARGET,
+            &(cbuilding::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            BTARGET + cbuilding::TYPE_ID,
+            &7_u32.to_le_bytes(),
+        );
         put(
             &mut bytes,
             BTARGET + cbuilding::BUILDING_STATUS,
@@ -3026,9 +2277,21 @@ pub(crate) mod construction_rest_test_kit {
             STATUS_OBJ,
             &(cbuilding_status::VTABLE_RVA as u64).to_le_bytes(),
         );
-        put(&mut bytes, STATUS_OBJ + cbuilding_status::FLAGS, &0_u32.to_le_bytes());
-        put(&mut bytes, STATUS_OBJ + cbuilding_status::FLAGS + 4, &1_u32.to_le_bytes());
-        put(&mut bytes, STATUS_OBJ + cbuilding_status::FLAGS + 8, &1_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            STATUS_OBJ + cbuilding_status::FLAGS,
+            &0_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            STATUS_OBJ + cbuilding_status::FLAGS + 4,
+            &1_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            STATUS_OBJ + cbuilding_status::FLAGS + 8,
+            &1_u32.to_le_bytes(),
+        );
         put(
             &mut bytes,
             STATUS_OBJ + cbuilding_status::ID,
@@ -3040,10 +2303,27 @@ pub(crate) mod construction_rest_test_kit {
             &1_u32.to_le_bytes(),
         );
         // Railway fields + route.
-        put(&mut bytes, RLINE + crailway_production_line::BASE_LEVEL, &1_i32.to_le_bytes());
-        put(&mut bytes, RLINE + crailway_production_line::TARGET_LEVEL, &2_i32.to_le_bytes());
-        put(&mut bytes, RLINE + crailway_production_line::COMPLETION_FLAG, &[0]);
-        array(&mut bytes, RLINE + crailway_production_line::ROUTE, RDATA, 2);
+        put(
+            &mut bytes,
+            RLINE + crailway_production_line::BASE_LEVEL,
+            &1_i32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            RLINE + crailway_production_line::TARGET_LEVEL,
+            &2_i32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            RLINE + crailway_production_line::COMPLETION_FLAG,
+            &[0],
+        );
+        array(
+            &mut bytes,
+            RLINE + crailway_production_line::ROUTE,
+            RDATA,
+            2,
+        );
         put(&mut bytes, RDATA, &9_u32.to_le_bytes());
         put(&mut bytes, RDATA + 4, &10_u32.to_le_bytes());
         put(
@@ -3057,16 +2337,36 @@ pub(crate) mod construction_rest_test_kit {
             &50_i64.to_le_bytes(),
         );
         // Occupation status.
-        put(&mut bytes, OCC, &(ccountry_occupation_status::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            OCC,
+            &(ccountry_occupation_status::VTABLE_RVA as u64).to_le_bytes(),
+        );
         put(
             &mut bytes,
             OCC + ccountry_occupation_status::SECONDARY_BASE,
             &(ccountry_occupation_status::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
         );
-        put(&mut bytes, OCC + ccountry_occupation_status::GARRISON_TEMPLATE, &0_u64.to_le_bytes());
-        put(&mut bytes, OCC + ccountry_occupation_status::DEFAULT_LAW, &(LAW_OBJ as u64).to_le_bytes());
-        put(&mut bytes, LAW_OBJ, &(coccupation_law::VTABLE_RVA as u64).to_le_bytes());
-        put(&mut bytes, LAW_OBJ + coccupation_law::NAME, b"civilian\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
+        put(
+            &mut bytes,
+            OCC + ccountry_occupation_status::GARRISON_TEMPLATE,
+            &0_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            OCC + ccountry_occupation_status::DEFAULT_LAW,
+            &(LAW_OBJ as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            LAW_OBJ,
+            &(coccupation_law::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            LAW_OBJ + coccupation_law::NAME,
+            b"civilian\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+        );
         put(
             &mut bytes,
             LAW_OBJ + coccupation_law::NAME + msvc_string::LENGTH,
@@ -3092,9 +2392,21 @@ pub(crate) mod construction_rest_test_kit {
         put(&mut bytes, RESERVE_DATA, &1_u32.to_le_bytes());
         put(&mut bytes, RESERVE_DATA + 4, &(-17_i32).to_le_bytes());
         // Occupation robin-hood table with one entry (occupied country 1).
-        put(&mut bytes, OCC + ccountry_occupation_status::OCCUPATION_DATA_TABLE, &(OCC_TABLE as u64).to_le_bytes());
-        put(&mut bytes, OCC + ccountry_occupation_status::OCCUPATION_DATA_TABLE + 8, &1_u32.to_le_bytes());
-        put(&mut bytes, OCC + ccountry_occupation_status::OCCUPATION_DATA_TABLE + 12, &1_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            OCC + ccountry_occupation_status::OCCUPATION_DATA_TABLE,
+            &(OCC_TABLE as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            OCC + ccountry_occupation_status::OCCUPATION_DATA_TABLE + 8,
+            &1_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            OCC + ccountry_occupation_status::OCCUPATION_DATA_TABLE + 12,
+            &1_u32.to_le_bytes(),
+        );
         put(&mut bytes, OCC_TABLE + 4, &[1]);
         put(&mut bytes, OCC_TABLE + 8, &1_u32.to_le_bytes());
         put(&mut bytes, OCC_TABLE + 16, &(OCC_DATA as u64).to_le_bytes());
@@ -3115,7 +2427,11 @@ pub(crate) mod construction_rest_test_kit {
             &1_u32.to_le_bytes(),
         );
         put(&mut bytes, OCC_ROWS, &(OCC_DATA as u64).to_le_bytes());
-        put(&mut bytes, OCC_DATA, &(ccountry_occupation_data::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            OCC_DATA,
+            &(ccountry_occupation_data::VTABLE_RVA as u64).to_le_bytes(),
+        );
         put(
             &mut bytes,
             OCC_DATA + ccountry_occupation_data::PARENT_STATUS,
@@ -3148,8 +2464,16 @@ pub(crate) mod construction_rest_test_kit {
         put(&mut bytes, GAR_DATA + 4, &[1]);
         put(&mut bytes, GAR_DATA + 8, &1_u32.to_le_bytes());
         put(&mut bytes, GAR_DATA + 16, &(GAR_OBJ as u64).to_le_bytes());
-        put(&mut bytes, GAR_OBJ, &(cstate_garrison_data::VTABLE_RVA as u64).to_le_bytes());
-        put(&mut bytes, GAR_OBJ + cstate_garrison_data::STATE, &(STATE as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            GAR_OBJ,
+            &(cstate_garrison_data::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            GAR_OBJ + cstate_garrison_data::STATE,
+            &(STATE as u64).to_le_bytes(),
+        );
         put(
             &mut bytes,
             GAR_OBJ + cstate_garrison_data::OCCUPATION_DATA,
@@ -3184,16 +2508,29 @@ pub(crate) mod construction_rest_test_kit {
         put(&mut bytes, ASSIGN_DATA, &1_u32.to_le_bytes());
         put(&mut bytes, ASSIGN_DATA + 4, &90_i32.to_le_bytes());
         // Collaboration status with no outgoing (empty, shares the walk).
-        put(&mut bytes, COLLAB, &(ccountry_collaboration_status::VTABLE_RVA as u64).to_le_bytes());
-        put(&mut bytes, COLLAB + ccountry_collaboration_status::OWNER, &(COUNTRY as u64).to_le_bytes());
-        array(&mut bytes, COLLAB + ccountry_collaboration_status::RELATIONS, CREL_DATA, 0);
+        put(
+            &mut bytes,
+            COLLAB,
+            &(ccountry_collaboration_status::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            COLLAB + ccountry_collaboration_status::OWNER,
+            &(COUNTRY as u64).to_le_bytes(),
+        );
+        array(
+            &mut bytes,
+            COLLAB + ccountry_collaboration_status::RELATIONS,
+            CREL_DATA,
+            0,
+        );
         array(
             &mut bytes,
             COLLAB + ccountry_collaboration_status::INCOMING_COUNTRIES,
             CINC_DATA,
             0,
         );
-            let _ = CREL;
+        let _ = CREL;
         bytes
     }
 
@@ -3205,10 +2542,7 @@ pub(crate) mod construction_rest_test_kit {
         }
     }
 
-    pub(crate) fn direct(
-        memory: &impl engine::Memory,
-        capacities: &Capacities,
-    ) -> Captured {
+    pub(crate) fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> Captured {
         let mut captured = Captured::with_capacities(capacities, &[0; N]);
         let _ = captured.capture(memory, 0, BASE, &[true; N], 0, true);
         captured.rest_raw_mode = false;
@@ -3227,12 +2561,8 @@ pub(crate) mod construction_rest_test_kit {
         };
         let mut first = ConstructionRestJob::new();
         let mut second = ConstructionRestJob::new();
-        let report = captured.copy_construction_rest_refresh(
-            memory,
-            ctx,
-            &mut first,
-            Some(&mut second),
-        );
+        let report =
+            captured.copy_construction_rest_refresh(memory, ctx, &mut first, Some(&mut second));
         assert!(report.raw_ok);
         captured.rest_raw_mode = report.raw_ok;
         let _ = captured.capture(memory, 0, BASE, &[true; N], 0, true);
@@ -3254,7 +2584,10 @@ pub(crate) mod construction_rest_test_kit {
             split.railway_construction.outcome, direct.railway_construction.outcome,
             "railway outcome"
         );
-        assert_eq!(split.settings.outcome, direct.settings.outcome, "settings outcome");
+        assert_eq!(
+            split.settings.outcome, direct.settings.outcome,
+            "settings outcome"
+        );
         assert_eq!(split.laws.outcome, direct.laws.outcome, "laws outcome");
         assert_eq!(
             split.garrisons.outcome, direct.garrisons.outcome,
@@ -3315,10 +2648,32 @@ pub(crate) mod construction_rest_test_kit {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn construction_rest_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop()
+    {
+        use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
+        static LOCAL: Tracker = Tracker::new();
+        let mut job = ConstructionRestJob::default();
+        job.census.reserve_exact(3);
+        job.capacity_charge = Charge::empty_on(&LOCAL);
+        job.update_capacity_charge();
+        let expected = |job: &ConstructionRestJob| vector_bytes(&job.census);
+        let initial = LOCAL.snapshot().current.auxiliary_vectors;
+        assert_eq!(initial, expected(&job));
+        job.grow();
+        let grown = LOCAL.snapshot().current.auxiliary_vectors;
+        assert!(grown > initial);
+        assert_eq!(grown, expected(&job));
+        job.clear();
+        assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, grown);
+        drop(job);
+        assert_eq!(LOCAL.snapshot().current, Capacity::default());
+    }
+
     use crate::sampling::CONSISTENCY_TARGET;
     use replay::rows::TableSchema;
 
@@ -3659,221 +3014,24 @@ mod tests {
         assert!(fresh.laws.second.is_empty() && fresh.routes.second.is_empty());
     }
 
-    fn split_capacities() -> Capacities {
-        Capacities {
-            rows: [256; N],
-            routes: 1024,
-            law_bytes: 1024,
-        }
-    }
-
-    #[test]
-    fn buildings_copy_ignores_uninitialized_capacity_beyond_native_count() {
-        use super::buildings_test_kit as kit;
-        let mut bytes = kit::fixture();
-        let capacity_offset = kit::ST1 + cstate::BUILDING_STATUS
-            + cbuilding_status::BUILDINGS + 8;
-        bytes[capacity_offset..capacity_offset + 4].copy_from_slice(&2u32.to_le_bytes());
-        // The second allocation slot is outside the one-element census.
-        bytes[0x6708..0x6710].copy_from_slice(&0x726f746361665f_u64.to_le_bytes());
-        let memory = kit::memory(&bytes);
-        let capacities = split_capacities();
-        let direct = kit::direct(&memory, &capacities);
-        let (split, report, _) = kit::split(&memory, &capacities);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 2]);
-        kit::assert_matches_direct(&split, &direct);
-    }
-
-    #[test]
-    fn split_copy_matches_direct_walk() {
-        use super::buildings_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let capacities = split_capacities();
-        let direct = kit::direct(&memory, &capacities);
-        let (split, report, _) = kit::split(&memory, &capacities);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 2]);
-        kit::assert_matches_direct(&split, &direct);
-        // Spot-checks: one state row and one province row (the sea province
-        // holds no buildings and contributes no rows).
-        assert_eq!(split.state_buildings.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(split.state_buildings.rows[0].building_type, 7);
-        assert_eq!(split.state_buildings.rows[0].location, 1);
-        assert_eq!(split.province_buildings.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(split.province_buildings.rows[0].building_type, 9);
-        assert_eq!(split.province_buildings.rows[0].location, 1);
-    }
-
-    #[test]
-    fn buildings_truncation_matrix_matches_direct_with_same_caps() {
-        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-        // copy→decode against the SAME memory with the SAME pooled caps,
-        // asserting identical outcome (incl. len/unread) and identical rows.
-        // Fixture holds 1 state + 1 province building, so cap 1 is both the
-        // one-row and exact-fit arm, cap 0 the zero/overflow-by-one/massive
-        // arm. u32 unread saturation is not reachable and is covered by the
-        // walk's own saturating arithmetic.
-        use super::buildings_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        for rows in [[0; N], [1; N], [2; N], [64; N]] {
-            let capacities = Capacities { rows, routes: 64, law_bytes: 64 };
-            let direct = kit::direct(&memory, &capacities);
-            let (split, report, _) = kit::split(&memory, &capacities);
-            assert!(report.raw_ok, "rows={rows:?}");
-            assert_eq!(report.matched, [true; 2], "rows={rows:?}");
-            kit::assert_matches_direct(&split, &direct);
-        }
-        let capacities = Capacities { rows: [1; N], routes: 64, law_bytes: 64 };
-        let (split, _, _) = kit::split(&memory, &capacities);
-        assert_eq!(split.state_buildings.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(split.province_buildings.outcome, Outcome::Rows { len: 1 });
-    }
-
-    #[test]
-    fn split_copy_matches_direct_walk_under_truncation() {
-        use super::buildings_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let capacities = Capacities {
-            rows: [1; N],
-            routes: 0,
-            law_bytes: 0,
-        };
-        let direct = kit::direct(&memory, &capacities);
-        let (split, report, _) = kit::split(&memory, &capacities);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 2]);
-        kit::assert_matches_direct(&split, &direct);
-    }
-
-    #[test]
-    fn split_copy_matches_direct_walk_on_fault_matrix() {
-        use super::buildings_test_kit as kit;
-        use engine::memory::SliceMemory;
-        struct Fault<'a> {
-            memory: SliceMemory<'a>,
-            fault: std::ops::Range<usize>,
-        }
-        impl engine::Memory for Fault<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                let Some(end) = address.checked_add(output.len()) else {
-                    return false;
-                };
-                if address < self.fault.end && end > self.fault.start {
-                    return false;
-                }
-                self.memory.copy(address, output)
-            }
-        }
-        // (fault offset from the image base, expected raw-compare verdicts in
-        // family order). Outcomes including reason strings must match the
-        // typed walk exactly; verdicts follow the fault-attribution masks,
-        // with the shared state root blocking both tables.
-        for (offset, matched) in [
-            (cgame_state::STATES, [false, false]),
-            (cgame_state::PROVINCES, [true, false]),
-            (kit::ST1, [false, false]),
-            (kit::PR1, [true, false]),
-        ] {
-            let bytes = kit::fixture();
-            let fault = kit::GAME_STATE + offset;
-            let memory = Fault {
-                memory: SliceMemory {
-                    base: kit::GAME_STATE,
-                    bytes: &bytes,
-                },
-                fault: fault..fault + 1,
-            };
-            let capacities = split_capacities();
-            let direct = kit::direct(&memory, &capacities);
-            let (split, report, _) = kit::split(&memory, &capacities);
-            assert!(report.raw_ok, "offset={offset:x}");
-            kit::assert_matches_direct(&split, &direct);
-            assert_eq!(report.matched, matched, "offset={offset:x}");
-        }
-    }
-
-    #[test]
-    fn double_copy_compare_blocks_checks_on_tearing() {
-        use super::buildings_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let capacities = split_capacities();
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = BuildingsCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed: [true, true],
-        };
-        let mut first = BuildingsJob::new();
-        let mut second = BuildingsJob::new();
-        let report =
-            captured.copy_buildings_refresh(&memory, ctx, &mut first, Some(&mut second));
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 2]);
-        // Same-hour tearing between the passes changes the log.
-        let mut torn = bytes.clone();
-        torn[kit::ST1 + cstate::ID] ^= 0xff;
-        let torn_memory = kit::memory(&torn);
-        let ctx = BuildingsCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed: [false, false],
-        };
-        let mut scratch = Captured::with_capacities(&capacities, &[0; N]);
-        let mut after = BuildingsJob::new();
-        let after_report =
-            scratch.copy_buildings_refresh(&memory, ctx, &mut after, None);
-        assert!(after_report.raw_ok);
-        let mut after_torn = BuildingsJob::new();
-        let torn_report =
-            scratch.copy_buildings_refresh(&torn_memory, ctx, &mut after_torn, None);
-        assert!(torn_report.raw_ok);
-        assert!(!after.log.logs_equal(&after_torn.log));
-        let mut repeat = BuildingsJob::new();
-        let repeat_report =
-            scratch.copy_buildings_refresh(&memory, ctx, &mut repeat, None);
-        assert!(repeat_report.raw_ok);
-        assert!(after.log.logs_equal(&repeat.log));
-    }
-
-    #[test]
-    fn staging_overflow_falls_back_to_typed_walk() {
-        use super::buildings_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let capacities = split_capacities();
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = BuildingsCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed: [true, true],
-        };
-        let mut tiny = BuildingsJob {
-            log: crate::raw::RawLog::new(8, 8),
-            game_state: 0,
-        };
-        let report = captured.copy_buildings_refresh(&memory, ctx, &mut tiny, None);
-        assert!(!report.raw_ok);
-        assert!(tiny.log.overflowed);
-        assert!(tiny.grow_for_next());
-    }
-
     #[test]
     fn construction_rest_split_copy_matches_direct_walk() {
         use super::construction_rest_test_kit as kit;
         let bytes = kit::fixture();
-        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let memory = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
         let capacities = kit::capacities();
         let direct = kit::direct(&memory, &capacities);
         let (split, report, _) = kit::split(&memory, &capacities);
         assert_eq!(report.matched, [true; 10]);
         kit::assert_matches_direct(&split, &direct);
         assert_eq!(split.base_resources.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(split.building_construction.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(
+            split.building_construction.outcome,
+            Outcome::Rows { len: 1 }
+        );
         assert_eq!(split.railway_construction.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.resistance.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.reserve_manpower.outcome, Outcome::Rows { len: 1 });
@@ -3891,15 +3049,31 @@ mod tests {
         // walk's own saturating arithmetic.
         use super::construction_rest_test_kit as kit;
         let bytes = kit::fixture();
-        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let memory = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
         for rows in [[0; N], [1; N], [2; N], [64; N]] {
-            let capacities = Capacities { rows, routes: 64, law_bytes: 64 };
+            let capacities = Capacities {
+                rows,
+                routes: 64,
+                law_bytes: 64,
+            };
             let direct = kit::direct(&memory, &capacities);
             let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-            let ctx = ConstructionRestCopyContext { base: 0, game_state: kit::BASE, needed: [true; 10] };
+            let ctx = ConstructionRestCopyContext {
+                base: 0,
+                game_state: kit::BASE,
+                needed: [true; 10],
+            };
             let mut first = ConstructionRestJob::new();
             let mut second = ConstructionRestJob::new();
-            let report = captured.copy_construction_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
+            let report = captured.copy_construction_rest_refresh(
+                &memory,
+                ctx,
+                &mut first,
+                Some(&mut second),
+            );
             assert!(report.raw_ok, "rows={rows:?}");
             assert_eq!(report.matched, [true; 10], "rows={rows:?}");
             captured.rest_raw_mode = true;
@@ -3914,7 +3088,10 @@ mod tests {
     fn construction_rest_split_copy_matches_direct_walk_under_truncation() {
         use super::construction_rest_test_kit as kit;
         let bytes = kit::fixture();
-        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let memory = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
         let capacities = Capacities {
             rows: [1; N],
             routes: 1,
@@ -3951,7 +3128,10 @@ mod tests {
     fn construction_rest_double_copy_compare_blocks_checks_on_tearing() {
         use super::construction_rest_test_kit as kit;
         let bytes = kit::fixture();
-        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let memory = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
         let capacities = kit::capacities();
         let mut captured = Captured::with_capacities(&capacities, &[0; N]);
         let ctx = ConstructionRestCopyContext {
@@ -3968,7 +3148,10 @@ mod tests {
         // A torn resource amount between the passes changes the log.
         let mut torn = bytes.clone();
         torn[0x5100 - kit::BASE] ^= 0xff;
-        let torn_memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &torn };
+        let torn_memory = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &torn,
+        };
         let ctx_none = ConstructionRestCopyContext {
             base: 0,
             game_state: kit::BASE,
@@ -3988,7 +3171,10 @@ mod tests {
     fn construction_rest_staging_overflow_falls_back_to_typed_walk() {
         use super::construction_rest_test_kit as kit;
         let bytes = kit::fixture();
-        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let memory = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
         let capacities = kit::capacities();
         let mut captured = Captured::with_capacities(&capacities, &[0; N]);
         let ctx = ConstructionRestCopyContext {
@@ -4000,6 +3186,7 @@ mod tests {
             log: crate::raw::RawLog::new(8, 8),
             game_state: 0,
             census: Vec::new(),
+            capacity_charge: crate::raw_memory::Charge::default(),
         };
         let report = captured.copy_construction_rest_refresh(&memory, ctx, &mut tiny, None);
         assert!(!report.raw_ok);
@@ -4020,137 +3207,5 @@ mod tests {
         assert!(capacities.rows[2] >= 4096);
         assert!(capacities.routes >= 4096);
         assert!(capacities.law_bytes >= 16384);
-    }
-
-    /// Crash-fix regression (i): readable-but-unauthenticated location vtable
-    /// with ASCII-derived building pointers (`"_factor\0"` run 1).
-    ///
-    /// The typed walk rejects the location before reading its building vector
-    /// (`"building location vtable mismatch"`); the copy must authenticate in
-    /// the same order and never issue a guarded copy for the ASCII
-    /// noncanonical pointer. Outcomes (including reason strings) must be
-    /// identical, and the log must contain no span for the ASCII address.
-    #[test]
-    fn buildings_copy_skips_ascii_vectors_behind_bad_location_vtable() {
-        use super::buildings_test_kit as kit;
-        use engine::{cbuilding_status, cstate};
-        const ASCII_FACTOR: u64 = 0x0072_6f74_6361_665f;
-        let mut bytes = kit::fixture();
-        // Corrupt the state location vtable but keep every span readable.
-        bytes[kit::ST1..kit::ST1 + 8].copy_from_slice(&0x1234_5678_9abc_def0u64.to_le_bytes());
-        // Poison the building vector behind it with the live ASCII pointer.
-        let status = kit::ST1 + cstate::BUILDING_STATUS;
-        let vector = status + cbuilding_status::BUILDINGS;
-        bytes[vector..vector + 8].copy_from_slice(&ASCII_FACTOR.to_le_bytes());
-        bytes[vector + 8..vector + 12].copy_from_slice(&1u32.to_le_bytes());
-        bytes[vector + 12..vector + 16].copy_from_slice(&1u32.to_le_bytes());
-        let memory = kit::memory(&bytes);
-        let capacities = split_capacities();
-        let direct = kit::direct(&memory, &capacities);
-        let (split, report, first) = kit::split(&memory, &capacities);
-        assert!(report.raw_ok);
-        kit::assert_matches_direct(&split, &direct);
-        assert_eq!(
-            direct.state_buildings.outcome,
-            Outcome::Unavailable {
-                reason: "building location vtable mismatch"
-            }
-        );
-        assert!(!first.log.spans.iter().any(|span| {
-            span.addr == ASCII_FACTOR as usize && span.addr != 0
-        }));
-    }
-
-    /// Crash-fix regression (ii): readable-but-unauthenticated province status
-    /// bytes with ASCII-derived building pointers (`"ts_facto"` run 2).
-    ///
-    /// Mirrors (i) on the province scope, which additionally stages state
-    /// authentication. The typed walk fails at
-    /// `"building status vtable mismatch"`; the copy must fail identically
-    /// without touching the ASCII vector.
-    #[test]
-    fn buildings_copy_skips_ascii_vectors_behind_bad_province_status() {
-        use super::buildings_test_kit as kit;
-        use engine::{cbuilding_status, cprovince};
-        const ASCII_FACTO: u64 = 0x6f74_6361_665f_7374;
-        let mut bytes = kit::fixture();
-        let status = kit::PR1 + cprovince::BUILDING_STATUS;
-        bytes[status..status + 8].copy_from_slice(&0xdead_beef_dead_beefu64.to_le_bytes());
-        let vector = status + cbuilding_status::BUILDINGS;
-        bytes[vector..vector + 8].copy_from_slice(&ASCII_FACTO.to_le_bytes());
-        bytes[vector + 8..vector + 12].copy_from_slice(&1u32.to_le_bytes());
-        bytes[vector + 12..vector + 16].copy_from_slice(&1u32.to_le_bytes());
-        let memory = kit::memory(&bytes);
-        let capacities = split_capacities();
-        let direct = kit::direct(&memory, &capacities);
-        let (split, report, first) = kit::split(&memory, &capacities);
-        assert!(report.raw_ok);
-        kit::assert_matches_direct(&split, &direct);
-        assert_eq!(
-            direct.province_buildings.outcome,
-            Outcome::Unavailable {
-                reason: "building status vtable mismatch"
-            }
-        );
-        assert!(!first.log.spans.iter().any(|span| {
-            span.addr == ASCII_FACTO as usize && span.addr != 0
-        }));
-    }
-
-    /// Crash-fix regression (iii): ignored-validity-flag shape.
-    ///
-    /// A field gather fails (blocked status-identity span) while the record's
-    /// building-vector bytes happen to hold an ASCII noncanonical pointer.
-    /// The old `for (record, _)` consumed the record anyway; the fixed copy
-    /// honors the flag, stops at the first failure like the typed walk, and
-    /// reports the identical Unavailable reason without recording the ASCII
-    /// span.
-    #[test]
-    fn buildings_copy_honors_gather_validity_before_consuming_vectors() {
-        use super::buildings_test_kit as kit;
-        use engine::{Memory, cbuilding_status, cstate, memory::SliceMemory};
-        const ASCII_FACTOR: u64 = 0x0072_6f74_6361_665f;
-        struct Fault<'a> {
-            memory: SliceMemory<'a>,
-            fault: std::ops::Range<usize>,
-        }
-        impl Memory for Fault<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                let Some(end) = address.checked_add(output.len()) else {
-                    return false;
-                };
-                if address < self.fault.end && end > self.fault.start {
-                    return false;
-                }
-                self.memory.copy(address, output)
-            }
-        }
-        let mut bytes = kit::fixture();
-        let status = kit::ST1 + cstate::BUILDING_STATUS;
-        let vector = status + cbuilding_status::BUILDINGS;
-        bytes[vector..vector + 8].copy_from_slice(&ASCII_FACTOR.to_le_bytes());
-        bytes[vector + 8..vector + 12].copy_from_slice(&1u32.to_le_bytes());
-        bytes[vector + 12..vector + 16].copy_from_slice(&1u32.to_le_bytes());
-        // Block the 12-byte status-identity span so the gather fails.
-        let blocked = kit::GAME_STATE + status + cbuilding_status::FLAGS;
-        let memory = Fault {
-            memory: SliceMemory {
-                base: kit::GAME_STATE,
-                bytes: &bytes,
-            },
-            fault: blocked..blocked + 1,
-        };
-        let capacities = split_capacities();
-        let direct = kit::direct(&memory, &capacities);
-        let (split, report, first) = kit::split(&memory, &capacities);
-        assert!(report.raw_ok);
-        kit::assert_matches_direct(&split, &direct);
-        assert!(matches!(
-            direct.state_buildings.outcome,
-            Outcome::Unavailable { .. }
-        ));
-        assert!(!first.log.spans.iter().any(|span| {
-            span.addr == ASCII_FACTOR as usize && span.addr != 0
-        }));
     }
 }

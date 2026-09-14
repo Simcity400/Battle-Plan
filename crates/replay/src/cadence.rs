@@ -37,6 +37,8 @@ pub const fn refresh_slot(table: TableId) -> Option<u32> {
         | TableId::ProjectBreakthroughs
         | TableId::StateBuildings
         | TableId::ProvinceBuildings
+        | TableId::ProvinceNames
+        | TableId::DivisionTemplates
         | TableId::LexicalTokens => Some(3),
         _ => None,
     }
@@ -143,7 +145,12 @@ mod tests {
         for table in [
             TableId::Clock,
             TableId::Provinces,
+            TableId::StateFlags,
             TableId::Divisions,
+            TableId::DivisionMovement,
+            TableId::DivisionStatus,
+            TableId::DivisionEta,
+            TableId::LandCombatProgress,
             TableId::AirBaseRegistrations,
             TableId::ActiveAbilities,
         ] {

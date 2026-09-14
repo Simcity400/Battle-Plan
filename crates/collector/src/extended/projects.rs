@@ -523,6 +523,7 @@ pub(crate) struct ProjectsJob {
     pub game_state: usize,
     census: Vec<CensusEntry>,
     pointers: Vec<usize>,
+    capacity_charge: crate::raw_memory::Charge,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -543,7 +544,7 @@ struct ProjectCensus<'a> {
 
 impl ProjectsJob {
     pub fn new() -> Self {
-        Self {
+        let mut job = Self {
             // Late-campaign worst case is about 21k projects with state
             // machines plus history rows; both pools start above that so
             // steady state never overflows.
@@ -551,7 +552,10 @@ impl ProjectsJob {
             game_state: 0,
             census: Vec::with_capacity(512),
             pointers: Vec::with_capacity(32768),
-        }
+            capacity_charge: crate::raw_memory::Charge::default(),
+        };
+        job.update_capacity_charge();
+        job
     }
 
     /// Reset lengths for reuse, keeping every capacity. No allocation.
@@ -573,6 +577,15 @@ impl ProjectsJob {
         self.log.grow();
 crate::raw::double_capacity(&mut self.census);
 crate::raw::double_capacity(&mut self.pointers);
+        self.update_capacity_charge();
+    }
+
+    fn update_capacity_charge(&mut self) {
+        use crate::raw_memory::{Capacity, vector_bytes};
+        self.capacity_charge.set(Capacity {
+            auxiliary_vectors: vector_bytes(&self.census) + vector_bytes(&self.pointers),
+            ..Default::default()
+        });
     }
 }
 
@@ -2205,6 +2218,30 @@ pub(crate) mod projects_test_kit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projects_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
+        use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
+        static LOCAL: Tracker = Tracker::new();
+        let mut job = ProjectsJob::default();
+        job.census.reserve_exact(3);
+        job.pointers.reserve_exact(3);
+        job.capacity_charge = Charge::empty_on(&LOCAL);
+        job.update_capacity_charge();
+        let expected =
+            |job: &ProjectsJob| vector_bytes(&job.census) + vector_bytes(&job.pointers);
+        let initial = LOCAL.snapshot().current.auxiliary_vectors;
+        assert_eq!(initial, expected(&job));
+        job.grow();
+        let grown = LOCAL.snapshot().current.auxiliary_vectors;
+        assert!(grown > initial);
+        assert_eq!(grown, expected(&job));
+        job.clear();
+        assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, grown);
+        drop(job);
+        assert_eq!(LOCAL.snapshot().current, Capacity::default());
+    }
+
     use crate::sampling::CONSISTENCY_TARGET;
     use replay::rows::TableSchema;
 
@@ -2829,7 +2866,9 @@ mod tests {
             game_state: 0,
             census: Vec::with_capacity(1),
             pointers: Vec::with_capacity(1),
+            capacity_charge: crate::raw_memory::Charge::default(),
         };
+        tiny.update_capacity_charge();
         let report = captured.copy_projects_refresh(&memory, ctx, &mut tiny, None);
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);

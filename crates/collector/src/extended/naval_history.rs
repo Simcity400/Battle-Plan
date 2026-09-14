@@ -4,14 +4,15 @@
 //! LandTheatreGroups, LandTheatreMembers, AirTheatres, AirTheatreGroups,
 //! AirTheatreMembers) and the order-of-battle block (OrdersGroups,
 //! OrdersGroupMembers, ArmyGroupMembers) move to the single FIFO decode
-//! worker as part of the map-pack coupled unit (one task). The four
+//! worker in their own source-fed payload. The four
 //! non-source-fed theatres move with the five source-fed tables because
 //! they share the `ctheatre::walk` and OOB walks; splitting would duplicate
 //! those walks with separate censuses. Each stages its own root refs from
 //! its own copies with no cross-family decoded roots; zero-engine-change
 //! replay of the existing walks against `Recorded` spans. Choice per table:
-//! zero-engine-change (Wars/Divisions precedent). The other eight naval
-//! tables stay game-side.
+//! zero-engine-change (Wars/Divisions precedent). Rail, convoys and battle
+//! results use their typed callback paths; supremacy and sunk ships retain
+//! independent raw payloads.
 
 use crate::{
     raw::RawLog,
@@ -22,8 +23,8 @@ use crate::{
 use engine::{
     Memory, cair_group, cair_theatre, cair_wing, cdominance_values, cgame_date, cgame_state,
     cnaval_combat_results, cnaval_region_dominance, corders_group, cpdx_array::Array, cprovince,
-    cprovince_railway_info, crailway_manager, csunk_convoy_info, csunk_ship_info,
-    cstrategic_region, csub_unit_definition, ctheater_group, ctheatre, msvc_string,
+    cprovince_railway_info, crailway_manager, cstrategic_region, csub_unit_definition,
+    csunk_convoy_info, csunk_ship_info, ctheater_group, ctheatre, msvc_string,
     naval_dominance_entry, rail_neighbor, walk::Outcome,
 };
 use replay::{
@@ -133,12 +134,6 @@ pub struct Captured {
     /// then skips the theatre/OOB walks and the decode worker replays them
     /// before the ready handoff.
     pub(crate) raw_mode: bool,
-    /// Raw-copy split gate for the shared hourly railway payload
-    /// (RailCooldowns, RailEdges). Set by the game thread every hour with a
-    /// valid raw payload; `capture` then skips the typed railway walk and
-    /// the decode worker fills both row sets before the ready handoff.
-    /// Preserved across resets, cleared by the worker after decode.
-    pub(crate) rail_raw_mode: bool,
     /// Raw-copy split gate for the hourly supremacy payload
     /// (NavalSupremacy). Set by the game thread every hour with a valid raw
     /// payload; `capture` then skips the typed walk and the decode worker
@@ -190,7 +185,6 @@ impl Captured {
             wings_finished: [false; 2],
             source_ticks: [0; 3],
             raw_mode: false,
-            rail_raw_mode: false,
             supremacy_raw_mode: false,
             sunk_raw_mode: false,
         }
@@ -406,12 +400,16 @@ impl Captured {
                 ]
             }
             Outcome::Unavailable { reason } => [Outcome::Unavailable { reason }; 3],
-            Outcome::Truncated { .. } => [Outcome::Unavailable {
-                reason: "orders registry census truncated",
-            }; 3],
-            _ => [Outcome::Unavailable {
-                reason: "orders registry census exceeds captured roots",
-            }; 3],
+            Outcome::Truncated { .. } => {
+                [Outcome::Unavailable {
+                    reason: "orders registry census truncated",
+                }; 3]
+            }
+            _ => {
+                [Outcome::Unavailable {
+                    reason: "orders registry census exceeds captured roots",
+                }; 3]
+            }
         };
         if second {
             self.oob_second = outcomes;
@@ -539,40 +537,28 @@ impl Captured {
         });
         ticks[1] = elapsed(begin);
 
-        // Hourly railway raw-copy split: on hours with a valid raw payload
-        // the game thread stages bytes via `copy_rail_refresh` (one shared
-        // walk for cooldowns and edges) and the decode worker fills both row
-        // sets before the ready handoff, so the typed walk is skipped here.
-        if self.rail_raw_mode {
-            // Refresh payload staged: leave the reset outcomes for the
-            // decode worker, which installs identical rows and outcomes.
-            matched[2] = false;
-            matched[3] = false;
-            ticks[2] = 0;
-        } else {
-            let begin = qpc();
-            let first = crailway_manager::walk(
+        let begin = qpc();
+        let first = crailway_manager::walk(
+            memory,
+            base,
+            game_state,
+            &mut self.cooldowns.rows,
+            &mut self.edges.rows,
+        );
+        self.cooldowns.outcome = bounded(first.provinces, self.cooldowns.rows.len());
+        self.edges.outcome = bounded(first.edges, self.edges.rows.len());
+        if needed[2] || needed[3] {
+            let second = crailway_manager::walk(
                 memory,
                 base,
                 game_state,
-                &mut self.cooldowns.rows,
-                &mut self.edges.rows,
+                &mut self.cooldowns.second,
+                &mut self.edges.second,
             );
-            self.cooldowns.outcome = bounded(first.provinces, self.cooldowns.rows.len());
-            self.edges.outcome = bounded(first.edges, self.edges.rows.len());
-            if needed[2] || needed[3] {
-                let second = crailway_manager::walk(
-                    memory,
-                    base,
-                    game_state,
-                    &mut self.cooldowns.second,
-                    &mut self.edges.second,
-                );
-                matched[2] = compare(&mut self.cooldowns, second.provinces, needed[2]);
-                matched[3] = compare(&mut self.edges, second.edges, needed[3]);
-            }
-            ticks[2] = elapsed(begin);
+            matched[2] = compare(&mut self.cooldowns, second.provinces, needed[2]);
+            matched[3] = compare(&mut self.edges, second.edges, needed[3]);
         }
+        ticks[2] = elapsed(begin);
 
         // Raw-copy split (hourly source-fed naval block): the game thread
         // staged raw bytes and the decode worker replays theatres/OOB before
@@ -1485,17 +1471,21 @@ pub(crate) struct NavalJob {
     wing_rows: Vec<cair_wing::Row>,
     wing_sources: Vec<ctheatre::WingMembership>,
     wing_outcome: Option<Outcome>,
+    capacity_charge: crate::raw_memory::Charge,
 }
 
 impl NavalJob {
     pub fn new() -> Self {
-        Self {
+        let mut job = Self {
             log: RawLog::new(1 << 17, 4 << 20),
             game_state: 0,
             wing_rows: vec![cair_wing::Row::default(); 4096],
             wing_sources: Vec::with_capacity(4096),
             wing_outcome: None,
-        }
+            capacity_charge: crate::raw_memory::Charge::default(),
+        };
+        job.update_capacity_charge();
+        job
     }
 
     pub fn clear(&mut self) {
@@ -1514,8 +1504,18 @@ impl NavalJob {
         if let Some(Outcome::Truncated { len, unread_rows }) = self.wing_outcome {
             let target = (len + unread_rows as usize).max(self.wing_rows.len() * 2);
             self.wing_rows.resize(target, cair_wing::Row::default());
-            self.wing_sources.reserve_exact(target.saturating_sub(self.wing_sources.len()));
+            self.wing_sources
+                .reserve_exact(target.saturating_sub(self.wing_sources.len()));
         }
+        self.update_capacity_charge();
+    }
+
+    fn update_capacity_charge(&mut self) {
+        use crate::raw_memory::{Capacity, vector_bytes};
+        self.capacity_charge.set(Capacity {
+            auxiliary_vectors: vector_bytes(&self.wing_rows) + vector_bytes(&self.wing_sources),
+            ..Default::default()
+        });
     }
 }
 
@@ -1578,11 +1578,23 @@ fn copy_naval_theatres(
 ) {
     use engine::{carmy_group, ccountry, ctheater_group};
     // Country census exactly like the fleet/wing censuses.
-    let countries = match nspan(log, memory, game_state.checked_add(engine::cgame_state::COUNTRIES), 16, THEATRE_MASK) {
+    let countries = match nspan(
+        log,
+        memory,
+        game_state.checked_add(engine::cgame_state::COUNTRIES),
+        16,
+        THEATRE_MASK,
+    ) {
         Some(start) => start,
         None => return,
     };
-    let links = match nspan(log, memory, game_state.checked_add(engine::cgame_state::COUNTRY_LINKS), 16, THEATRE_MASK) {
+    let links = match nspan(
+        log,
+        memory,
+        game_state.checked_add(engine::cgame_state::COUNTRY_LINKS),
+        16,
+        THEATRE_MASK,
+    ) {
         Some(start) => start,
         None => return,
     };
@@ -1605,9 +1617,12 @@ fn copy_naval_theatres(
         None => return,
     };
     for slot in 1..countries_array.count {
-        let pointer_addr = (slot as usize).checked_mul(8).and_then(|o| countries_array.data.checked_add(o));
+        let pointer_addr = (slot as usize)
+            .checked_mul(8)
+            .and_then(|o| countries_array.data.checked_add(o));
         let pointer = match nspan(log, memory, pointer_addr, 8, THEATRE_MASK)
-            .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)) {
+            .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0))
+        {
             Some(pointer) => pointer,
             None => continue,
         };
@@ -1618,7 +1633,13 @@ fn copy_naval_theatres(
         if npool_u64(log, vtable) != country_vtable {
             return;
         }
-        let id_start = match nspan(log, memory, pointer.checked_add(ccountry::ID), 4, THEATRE_MASK) {
+        let id_start = match nspan(
+            log,
+            memory,
+            pointer.checked_add(ccountry::ID),
+            4,
+            THEATRE_MASK,
+        ) {
             Some(start) => start,
             None => continue,
         };
@@ -1630,10 +1651,14 @@ fn copy_naval_theatres(
         if theatre_link(log, memory, &links_array, countries_array.count, slot) != Some(canonical) {
             return;
         }
-        if theatre_link(log, memory, &links_array, countries_array.count, canonical) != Some(canonical) {
+        if theatre_link(log, memory, &links_array, countries_array.count, canonical)
+            != Some(canonical)
+        {
             return;
         }
-        let canonical_addr = (canonical as usize).checked_mul(8).and_then(|o| countries_array.data.checked_add(o));
+        let canonical_addr = (canonical as usize)
+            .checked_mul(8)
+            .and_then(|o| countries_array.data.checked_add(o));
         let canonical_pointer = match nspan(log, memory, canonical_addr, 8, THEATRE_MASK) {
             Some(start) => start,
             None => return,
@@ -1643,7 +1668,13 @@ fn copy_naval_theatres(
         }
         // Land theatres array + per-theatre/group/member/name spans.
         for theatres_off in [ccountry::THEATRES, ccountry::AIR_THEATRES] {
-            let theatres_header = match nspan(log, memory, pointer.checked_add(theatres_off), 16, THEATRE_MASK) {
+            let theatres_header = match nspan(
+                log,
+                memory,
+                pointer.checked_add(theatres_off),
+                16,
+                THEATRE_MASK,
+            ) {
                 Some(start) => start,
                 None => continue,
             };
@@ -1654,25 +1685,52 @@ fn copy_naval_theatres(
                 None => continue,
             };
             for ordinal in 0..theatres.count {
-                let entry_addr = theatres.data.checked_add((ordinal as usize).saturating_mul(8));
+                let entry_addr = theatres
+                    .data
+                    .checked_add((ordinal as usize).saturating_mul(8));
                 let theatre = match nspan(log, memory, entry_addr, 8, THEATRE_MASK)
-                    .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)) {
+                    .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0))
+                {
                     Some(theatre) => theatre,
                     None => continue,
                 };
                 // Theatre identity (vtable + handle 16), owner, volunteers,
                 // owner link resolve, group vector.
                 let _ = nspan(log, memory, Some(theatre), 16, THEATRE_MASK);
-                let owner_start = nspan(log, memory, theatre.checked_add(ctheatre::OWNER), 4, THEATRE_MASK);
-                let _ = nspan(log, memory, theatre.checked_add(ctheatre::VOLUNTEERS_THEATRE), 4, THEATRE_MASK);
+                let owner_start = nspan(
+                    log,
+                    memory,
+                    theatre.checked_add(ctheatre::OWNER),
+                    4,
+                    THEATRE_MASK,
+                );
+                let _ = nspan(
+                    log,
+                    memory,
+                    theatre.checked_add(ctheatre::VOLUNTEERS_THEATRE),
+                    4,
+                    THEATRE_MASK,
+                );
                 if let Some(owner_start) = owner_start {
                     let owner = npool_u32(log, owner_start);
                     if owner != 0 && owner < links_array.count {
                         let offset = (owner as usize).checked_mul(4);
-                        let _ = nspan(log, memory, offset.and_then(|o| links_array.data.checked_add(o)), 4, THEATRE_MASK);
+                        let _ = nspan(
+                            log,
+                            memory,
+                            offset.and_then(|o| links_array.data.checked_add(o)),
+                            4,
+                            THEATRE_MASK,
+                        );
                     }
                 }
-                let groups_header = match nspan(log, memory, theatre.checked_add(ctheatre::THEATER_GROUP_DATA), 16, THEATRE_MASK) {
+                let groups_header = match nspan(
+                    log,
+                    memory,
+                    theatre.checked_add(ctheatre::THEATER_GROUP_DATA),
+                    16,
+                    THEATRE_MASK,
+                ) {
                     Some(start) => start,
                     None => continue,
                 };
@@ -1683,20 +1741,41 @@ fn copy_naval_theatres(
                     None => continue,
                 };
                 for group_ordinal in 0..groups.count {
-                    let group_addr = groups.data.checked_add((group_ordinal as usize).saturating_mul(8));
+                    let group_addr = groups
+                        .data
+                        .checked_add((group_ordinal as usize).saturating_mul(8));
                     let group = match nspan(log, memory, group_addr, 8, THEATRE_MASK)
-                        .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)) {
+                        .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0))
+                    {
                         Some(group) => group,
                         None => continue,
                     };
                     // Group identity (vtable + handle 16), theatre backlink,
                     // name string, priority.
                     let _ = nspan(log, memory, Some(group), 16, THEATRE_MASK);
-                    let _ = nspan(log, memory, group.checked_add(ctheater_group::THEATRE), 8, THEATRE_MASK);
+                    let _ = nspan(
+                        log,
+                        memory,
+                        group.checked_add(ctheater_group::THEATRE),
+                        8,
+                        THEATRE_MASK,
+                    );
                     // Name string header + payload + terminator (theatre arena).
                     copy_theatre_name(log, memory, group);
-                    let _ = nspan(log, memory, group.checked_add(ctheater_group::PRIORITY), 4, THEATRE_MASK);
-                    let members_header = match nspan(log, memory, group.checked_add(ctheater_group::ORDERS_GROUP_DATA), 16, THEATRE_MASK) {
+                    let _ = nspan(
+                        log,
+                        memory,
+                        group.checked_add(ctheater_group::PRIORITY),
+                        4,
+                        THEATRE_MASK,
+                    );
+                    let members_header = match nspan(
+                        log,
+                        memory,
+                        group.checked_add(ctheater_group::ORDERS_GROUP_DATA),
+                        16,
+                        THEATRE_MASK,
+                    ) {
                         Some(start) => start,
                         None => continue,
                     };
@@ -1707,9 +1786,13 @@ fn copy_naval_theatres(
                         None => continue,
                     };
                     for member_ordinal in 0..members.count {
-                        let member_addr = members.data.checked_add((member_ordinal as usize).saturating_mul(8));
+                        let member_addr = members
+                            .data
+                            .checked_add((member_ordinal as usize).saturating_mul(8));
                         let member = match nspan(log, memory, member_addr, 8, THEATRE_MASK)
-                            .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)) {
+                            .and_then(|s| {
+                                usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)
+                            }) {
                             Some(member) => member,
                             None => continue,
                         };
@@ -1719,8 +1802,20 @@ fn copy_naval_theatres(
                         // exact spans (exact-match serving, no sub-ranges).
                         let _ = nspan(log, memory, Some(member), 8, THEATRE_MASK);
                         let _ = nspan(log, memory, Some(member), 16, THEATRE_MASK);
-                        let _ = nspan(log, memory, member.checked_add(corders_group::THEATER_GROUP), 8, THEATRE_MASK);
-                        let _ = nspan(log, memory, member.checked_add(corders_group::THEATRE), 8, THEATRE_MASK);
+                        let _ = nspan(
+                            log,
+                            memory,
+                            member.checked_add(corders_group::THEATER_GROUP),
+                            8,
+                            THEATRE_MASK,
+                        );
+                        let _ = nspan(
+                            log,
+                            memory,
+                            member.checked_add(corders_group::THEATRE),
+                            8,
+                            THEATRE_MASK,
+                        );
                         if log.overflowed {
                             return;
                         }
@@ -1732,11 +1827,7 @@ fn copy_naval_theatres(
     let _ = carmy_group::VTABLE_RVA;
 }
 
-fn copy_theatre_name(
-    log: &mut RawLog<NAVAL_PACK_N>,
-    memory: &impl engine::Memory,
-    group: usize,
-) {
+fn copy_theatre_name(log: &mut RawLog<NAVAL_PACK_N>, memory: &impl engine::Memory, group: usize) {
     use engine::msvc_string;
     let header_addr = match group.checked_add(engine::ctheater_group::NAME) {
         Some(addr) => addr,
@@ -1778,27 +1869,32 @@ fn copy_theatre_name(
     }
 }
 
-fn copy_naval_oob(
-    job: &mut NavalJob,
-    memory: &impl engine::Memory,
-    base: usize,
-) {    use engine::{creference_registry as registry, reference_bucket as bucket};
+fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, base: usize) {
+    use engine::{creference_registry as registry, reference_bucket as bucket};
     let log = &mut job.log;
     let table = match nspan(
         log,
         memory,
-        base
-            .checked_add(registry::LOW_ROOTS_RVA)
+        base.checked_add(registry::LOW_ROOTS_RVA)
             .and_then(|p| p.checked_add(corders_group::REFERENCE_TYPE as usize * 8)),
         8,
         OOB_MASK,
     )
-    .and_then(|start| usize::try_from(npool_u64(log, start)).ok().filter(|&p| p != 0))
-    {
+    .and_then(|start| {
+        usize::try_from(npool_u64(log, start))
+            .ok()
+            .filter(|&p| p != 0)
+    }) {
         Some(table) => table,
         None => return,
     };
-    let header = match nspan(log, memory, table.checked_add(registry::ENTRIES), 17, OOB_MASK) {
+    let header = match nspan(
+        log,
+        memory,
+        table.checked_add(registry::ENTRIES),
+        17,
+        OOB_MASK,
+    ) {
         Some(start) => start,
         None => return,
     };
@@ -1841,7 +1937,8 @@ fn copy_naval_oob(
             Some(address) => address,
             None => break,
         };
-        let batch_start = match nspan(log, memory, Some(address), slots * bucket::STRIDE, OOB_MASK) {
+        let batch_start = match nspan(log, memory, Some(address), slots * bucket::STRIDE, OOB_MASK)
+        {
             Some(start) => start,
             None => break,
         };
@@ -1874,13 +1971,21 @@ fn copy_naval_oob(
                 Some(start) => start,
                 None => continue,
             };
-            if npool_u64(log, identity) != group_vtable && npool_u64(log, identity) != army_group_vtable {
+            if npool_u64(log, identity) != group_vtable
+                && npool_u64(log, identity) != army_group_vtable
+            {
                 continue;
             }
             if npool_u64(log, identity + 8) != handle {
                 continue;
             }
-            let country_start = match nspan(log, memory, pointer.checked_add(corders_group::COUNTRY), 4, OOB_MASK) {
+            let country_start = match nspan(
+                log,
+                memory,
+                pointer.checked_add(corders_group::COUNTRY),
+                4,
+                OOB_MASK,
+            ) {
                 Some(start) => start,
                 None => continue,
             };
@@ -1888,8 +1993,21 @@ fn copy_naval_oob(
             // OOB identity fields: army-group flag, motorization, country
             // (already above), theatre/theater-group/parent/leader/provider
             // references with target authentication for non-null pointers.
-            let _ = nspan(log, memory, pointer.checked_add(corders_group::IS_ARMY_GROUP), 1, OOB_MASK);
-            let _ = nspan(log, memory, pointer.checked_add(corders_group::MOTORIZATION_LEVEL), 1, OOB_MASK);
+            let is_army_group = nspan(
+                log,
+                memory,
+                pointer.checked_add(corders_group::IS_ARMY_GROUP),
+                1,
+                OOB_MASK,
+            )
+            .map(|start| log.bytes[start]);
+            let _ = nspan(
+                log,
+                memory,
+                pointer.checked_add(corders_group::MOTORIZATION_LEVEL),
+                1,
+                OOB_MASK,
+            );
             for offset in [
                 corders_group::THEATRE,
                 corders_group::THEATER_GROUP,
@@ -1900,27 +2018,48 @@ fn copy_naval_oob(
                 let target = nspan(log, memory, pointer.checked_add(offset), 8, OOB_MASK)
                     .and_then(|s| usize::try_from(npool_u64(log, s)).ok());
                 if let Some(target) = target.filter(|&p| p != 0) {
-                    // Target vtable + handle for reference authentication.
-                    // Parent targets additionally read IS_ARMY_GROUP; leader
-                    // and provider targets read their own rows (recorded as
-                    // superset spans here; the replay validates specifics).
-                    let _ = nspan(log, memory, Some(target), 16, OOB_MASK);
+                    // References use a vtable + handle identity, except the
+                    // HQ provider: it is an embedded member whose host is
+                    // authenticated below, not a referenced object itself.
+                    if offset != corders_group::HQ_PROVIDER {
+                        let _ = nspan(log, memory, Some(target), 16, OOB_MASK);
+                    }
                     if offset == corders_group::PARENT {
-                        let _ = nspan(log, memory, target.checked_add(corders_group::IS_ARMY_GROUP), 1, OOB_MASK);
+                        let _ = nspan(
+                            log,
+                            memory,
+                            target.checked_add(corders_group::IS_ARMY_GROUP),
+                            1,
+                            OOB_MASK,
+                        );
                     }
                     if offset == corders_group::HQ_PROVIDER {
                         // Provider is a member pointer: host identity span
                         // plus group backlink, like member_unit.
-                        if let Some(unit) = target.checked_sub(engine::corders_group_member::HOST_OFFSET) {
+                        if let Some(unit) =
+                            target.checked_sub(engine::corders_group_member::HOST_OFFSET)
+                        {
                             let _ = nspan(log, memory, Some(unit), 32, OOB_MASK);
                         }
-                        let _ = nspan(log, memory, target.checked_add(engine::corders_group_member::GROUP), 8, OOB_MASK);
+                        let _ = nspan(
+                            log,
+                            memory,
+                            target.checked_add(engine::corders_group_member::GROUP),
+                            8,
+                            OOB_MASK,
+                        );
                     }
                 }
             }
             // Member vector with per-member host identity (32-byte header)
             // and group backlink, exactly like `member_unit`.
-            let members_header = match nspan(log, memory, pointer.checked_add(corders_group::MEMBER_DATA), 16, OOB_MASK) {
+            let members_header = match nspan(
+                log,
+                memory,
+                pointer.checked_add(corders_group::MEMBER_DATA),
+                16,
+                OOB_MASK,
+            ) {
                 Some(start) => start,
                 None => continue,
             };
@@ -1933,7 +2072,8 @@ fn copy_naval_oob(
             for index in 0..members.count {
                 let entry_addr = members.data.checked_add((index as usize).saturating_mul(8));
                 let member = match nspan(log, memory, entry_addr, 8, OOB_MASK)
-                    .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)) {
+                    .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0))
+                {
                     Some(member) => member,
                     None => continue,
                 };
@@ -1944,36 +2084,62 @@ fn copy_naval_oob(
                     None => continue,
                 };
                 let _ = nspan(log, memory, Some(unit), 32, OOB_MASK);
-                let _ = nspan(log, memory, member.checked_add(engine::corders_group_member::GROUP), 8, OOB_MASK);
+                let _ = nspan(
+                    log,
+                    memory,
+                    member.checked_add(engine::corders_group_member::GROUP),
+                    8,
+                    OOB_MASK,
+                );
                 if log.overflowed {
                     return;
                 }
             }
-            // Child vector for army groups with per-child 16-byte identity.
-            let children_header = match nspan(log, memory, pointer.checked_add(engine::carmy_group::MEMBER_DATA), 16, OOB_MASK) {
-                Some(start) => start,
-                None => continue,
-            };
-            let mut children_raw = [0u8; 16];
-            children_raw.copy_from_slice(&log.bytes[children_header..children_header + 16]);
-            if let Some(children) = Array::from_header(children_raw, 8) {
-                for index in 0..children.count {
-                    let entry_addr = children.data.checked_add((index as usize).saturating_mul(8));
-                    let child = match nspan(log, memory, entry_addr, 8, OOB_MASK)
-                        .and_then(|s| usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)) {
-                        Some(child) => child,
-                        None => continue,
-                    };
-                    let _ = nspan(log, memory, Some(child), 16, OOB_MASK);
-                    if log.overflowed {
-                        return;
+            // The typed walk accepts any nonzero discriminator. The child
+            // header starts beyond an ordinary COrdersGroup's allocation,
+            // so neither it nor its entries may be read for a zero/failed flag.
+            if is_army_group.is_some_and(|flag| flag != 0) {
+                let children_header = match nspan(
+                    log,
+                    memory,
+                    pointer.checked_add(engine::carmy_group::MEMBER_DATA),
+                    16,
+                    OOB_MASK,
+                ) {
+                    Some(start) => start,
+                    None => continue,
+                };
+                let mut children_raw = [0u8; 16];
+                children_raw.copy_from_slice(&log.bytes[children_header..children_header + 16]);
+                if let Some(children) = Array::from_header(children_raw, 8) {
+                    for index in 0..children.count {
+                        let entry_addr = children
+                            .data
+                            .checked_add((index as usize).saturating_mul(8));
+                        let child =
+                            match nspan(log, memory, entry_addr, 8, OOB_MASK).and_then(|s| {
+                                usize::try_from(npool_u64(log, s)).ok().filter(|&p| p != 0)
+                            }) {
+                                Some(child) => child,
+                                None => continue,
+                            };
+                        let _ = nspan(log, memory, Some(child), 16, OOB_MASK);
+                        if log.overflowed {
+                            return;
+                        }
                     }
                 }
             }
             // Order-membership reverse census for this root: theatre-group
             // pointer plus target identity when non-zero.
-            let theater_group = nspan(log, memory, pointer.checked_add(corders_group::THEATER_GROUP), 8, OOB_MASK)
-                .and_then(|s| usize::try_from(npool_u64(log, s)).ok());
+            let theater_group = nspan(
+                log,
+                memory,
+                pointer.checked_add(corders_group::THEATER_GROUP),
+                8,
+                OOB_MASK,
+            )
+            .and_then(|s| usize::try_from(npool_u64(log, s)).ok());
             if let Some(theater_group) = theater_group.filter(|&p| p != 0) {
                 let _ = nspan(log, memory, Some(theater_group), 16, OOB_MASK);
             }
@@ -2022,13 +2188,18 @@ fn copy_naval_wings(
     game_state: usize,
 ) {
     let mut failure = None;
-    let outcome = cair_wing::walk_with(memory, base, game_state, &mut job.wing_rows,
-        |pointer, _, row| {
-            match ctheatre::read_wing_membership(memory, pointer, row) {
-                Ok(source) => job.wing_sources.push(source),
-                Err(reason) => { failure.get_or_insert(reason); }
+    let outcome = cair_wing::walk_with(
+        memory,
+        base,
+        game_state,
+        &mut job.wing_rows,
+        |pointer, _, row| match ctheatre::read_wing_membership(memory, pointer, row) {
+            Ok(source) => job.wing_sources.push(source),
+            Err(reason) => {
+                failure.get_or_insert(reason);
             }
-        });
+        },
+    );
     job.wing_outcome = Some(match outcome {
         Outcome::Rows { .. } => failure.map_or(outcome, |reason| Outcome::Unavailable { reason }),
         _ => outcome,
@@ -2046,7 +2217,13 @@ pub(crate) fn copy_naval_refresh(
     let mut matched = [true; NAVAL_PACK_N];
     if let Some(second_job) = second.as_deref_mut() {
         let mut second_ticks = [0u64; NAVAL_PACK_N];
-        copy_naval_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
+        copy_naval_pass(
+            second_job,
+            memory,
+            ctx.base,
+            ctx.game_state,
+            &mut second_ticks,
+        );
         for (total, extra) in ticks.iter_mut().zip(second_ticks) {
             *total += extra;
         }
@@ -2054,17 +2231,20 @@ pub(crate) fn copy_naval_refresh(
         // dependents, private spans only their own table.
         let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
         for (slot, matched) in matched.iter_mut().enumerate() {
-            let equal =
-                raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
             *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
         matched[5] &= matches!(first.wing_outcome, Some(Outcome::Rows { .. }))
             && first.wing_outcome == second_job.wing_outcome
             && first.wing_sources == second_job.wing_sources;
     }
-    let raw_ok = !first.log.overflowed
-        && second.is_none_or(|job| !job.log.overflowed);
-    NavalCopyReport { raw_ok, matched, copy_ticks: ticks, raw_bytes: first.log.raw_bytes }
+    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    NavalCopyReport {
+        raw_ok,
+        matched,
+        copy_ticks: ticks,
+        raw_bytes: first.log.raw_bytes,
+    }
 }
 
 pub(crate) fn decode_naval_payload(
@@ -2122,7 +2302,8 @@ pub(crate) fn decode_naval_payload(
     captured.wing_sources.rows[..copied].copy_from_slice(&job.wing_sources[..copied]);
     captured.wing_sources.outcome = match job.wing_outcome {
         Some(Outcome::Rows { .. }) if copied < source_len => Outcome::Truncated {
-            len: copied, unread_rows: (source_len - copied) as u32,
+            len: copied,
+            unread_rows: (source_len - copied) as u32,
         },
         Some(outcome) => outcome,
         None => source_unavailable(),
@@ -2130,598 +2311,6 @@ pub(crate) fn decode_naval_payload(
     captured.wings_finished[0] = true;
     decode_ticks[0] += qpc().saturating_sub(started).max(0) as u64;
     captured.raw_mode = false;
-}
-
-// ===========================================================================
-// Hourly shared railway split (RailCooldowns, RailEdges).
-//
-// The game thread copies raw bytes only: the rail manager with its
-// province-info table, the province roster, per-slot province
-// authentication with info identity and backlinks, per-slot cooldowns and
-// neighbor vectors. Shared spans (manager, tables, authentication) are taken
-// ONCE with the combined mask and serve both replays: Recorded spans are
-// address-keyed, so one railway walk feeds the cooldown and edge decodes
-// with no duplicated copy of the walk. No row is decoded on the game
-// thread. The single FIFO decode worker replays `crailway_manager::walk`
-// against the recorded spans, so rows, ordinals, skips, truncation counts
-// and failure reasons are identical by construction (see `crate::raw` for
-// the mirror rules).
-//
-// The neighbor pair blocks are cap-dependent (the typed walk reads a
-// capacity-truncated prefix in 64-entry chunks), so they are bulk spans:
-// the mirror takes each whole pair vector once and the replay serves any
-// enclosed chunk from it. Every other take is an exact span matching the
-// walk's decomposed reads. Takes follow walk order with per-table fault
-// scope: shared faults stop the whole pass (the typed walk fails both
-// tables), cooldown faults continue takes (the typed walk keeps edge rows),
-// edge faults set `edges_dead`, which skips later pair blocks while headers
-// and cooldown takes continue (the typed walk keeps cooldown rows).
-// Validation outcomes are replay-derived; the mirror never stops takes on
-// validation alone, only on take failures, overflow and undiscoverable
-// addresses.
-// ===========================================================================
-
-/// Shared hourly payload slots in calibration/report order: [cooldowns,
-/// edges]. The single railway walk fills both row sets at once.
-pub(crate) const RAIL_N: usize = 2;
-const COOLDOWNS_MASK: u32 = 0x01;
-const RAIL_EDGES_MASK: u32 = 0x02;
-/// Manager, tables and authentication spans gate both slots: a fault there
-/// fails the whole railway walk, exactly like the typed walk.
-const RAIL_SHARED_MASK: u32 = 0x03;
-
-/// Batch chunking for the province slot takes. Must match the engine walk's
-/// batching exactly; takes decompose per element in walk order.
-const RAIL_MIRROR_BATCH: usize = 64;
-
-/// One hour of raw shared railway payload. Flat pools recycle capacities
-/// and the steady state allocates on neither thread; growth happens on the
-/// decode side only (see `crate::decode::recycle_rail_job`).
-#[derive(Debug, Default)]
-pub(crate) struct RailJob {
-    pub log: RawLog<RAIL_N>,
-    pub game_state: usize,
-}
-
-impl RailJob {
-    pub fn new() -> Self {
-        Self {
-            // Late-campaign worst case is 3,401 cooldown rows with 7,248
-            // directed edges (appendix census); both pools start above that
-            // so steady state never overflows (see the worst-case caps test).
-            log: RawLog::new(1 << 17, 4 << 20),
-            game_state: 0,
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.log.clear();
-        self.game_state = 0;
-    }
-
-    pub fn grow_for_next(&self) -> bool {
-        self.log.grow_for_next()
-    }
-
-    pub fn grow(&mut self) {
-        self.log.grow();
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct RailCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed
-    /// walk (identical rows through the existing path) and enqueues no
-    /// payload.
-    pub raw_ok: bool,
-    /// Per-partition raw equality gated by live-fault conservatism, in
-    /// [cooldowns, edges] order. Shared spans gate both slots; cooldown and
-    /// edge spans gate only their own slot.
-    pub matched: [bool; RAIL_N],
-    pub copy_ticks: [u64; RAIL_N],
-    pub raw_bytes: [u64; RAIL_N],
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RailCopyContext {
-    pub base: usize,
-    pub game_state: usize,
-    pub needed: [bool; RAIL_N],
-}
-
-fn rail_pool_u64(log: &RawLog<RAIL_N>, start: usize) -> u64 {
-    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
-}
-
-fn rail_pool_u32(log: &RawLog<RAIL_N>, start: usize) -> u32 {
-    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
-}
-
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
-fn rspan(
-    log: &mut RawLog<RAIL_N>,
-    memory: &impl engine::Memory,
-    addr: Option<usize>,
-    len: usize,
-    mask: u32,
-) -> Option<usize> {
-    log.take(memory, addr?, len, mask)
-}
-
-/// Mirror of one live rail slot's authentication and field takes: province
-/// object with identity and definition, info identity with backlinks,
-/// cooldown and neighbor header. Shared takes carry the combined mask;
-/// cooldown takes the cooldowns mask; neighbor headers the edges mask.
-/// Returns false exactly when the typed walk fails the whole walk at this
-/// slot; sets `edges_dead` when only the edges table fails here.
-#[allow(clippy::too_many_arguments)]
-fn copy_rail_slot(
-    log: &mut RawLog<RAIL_N>,
-    memory: &impl engine::Memory,
-    base: usize,
-    provinces: &Array,
-    province_vtable: u64,
-    info_vtable: u64,
-    info: usize,
-    province: u32,
-    edges_dead: &mut bool,
-) -> bool {
-    // ProvinceBatch SLOT_FIELD + PROVINCE_FIELDS: object word twice (two
-    // gathers), then id and definition words.
-    let slot = match rspan(log, memory, provinces.element(province, 8), 8, RAIL_SHARED_MASK) {
-        Some(start) => start,
-        None => return false,
-    };
-    let object = match usize::try_from(rail_pool_u64(log, slot))
-        .ok()
-        .filter(|&pointer| pointer != 0)
-    {
-        Some(object) => object,
-        None => return false,
-    };
-    let identity = match rspan(log, memory, Some(object), 8, RAIL_SHARED_MASK) {
-        Some(start) => start,
-        None => return false,
-    };
-    let id_start = match rspan(
-        log,
-        memory,
-        object.checked_add(cprovince::ID),
-        4,
-        RAIL_SHARED_MASK,
-    ) {
-        Some(start) => start,
-        None => return false,
-    };
-    let definition_start = match rspan(
-        log,
-        memory,
-        object.checked_add(cprovince::DEFINITION),
-        8,
-        RAIL_SHARED_MASK,
-    ) {
-        Some(start) => start,
-        None => return false,
-    };
-    if province == 0
-        || rail_pool_u64(log, identity) != province_vtable
-        || rail_pool_u32(log, id_start) != province
-    {
-        return false;
-    }
-    let definition = match usize::try_from(rail_pool_u64(log, definition_start))
-        .ok()
-        .filter(|&pointer| pointer != 0)
-    {
-        Some(definition) => definition,
-        None => return false,
-    };
-    // DEFINITION_ID_FIELD: definition id word.
-    let definition_id = match rspan(
-        log,
-        memory,
-        definition.checked_add(engine::province_definition::ID),
-        4,
-        RAIL_SHARED_MASK,
-    ) {
-        Some(start) => rail_pool_u32(log, start),
-        None => return false,
-    };
-    if definition_id != province {
-        return false;
-    }
-    // INFO_FIELD: info identity and both backlinks.
-    let info_identity = match rspan(log, memory, Some(info), 24, RAIL_SHARED_MASK) {
-        Some(start) => start,
-        None => return false,
-    };
-    if rail_pool_u64(log, info_identity) != info_vtable {
-        return false;
-    }
-    let province_status = match object.checked_add(cprovince::BUILDING_STATUS) {
-        Some(status) => status,
-        None => return false,
-    };
-    if rail_pool_u64(log, info_identity + 8) != definition as u64
-        || rail_pool_u64(log, info_identity + 16) != province_status as u64
-    {
-        return false;
-    }
-    // COOLDOWN_FIELD: cooldowns-scoped take; a fault here fails only the
-    // cooldowns table while edge takes continue, mirroring the walk.
-    let _ = rspan(
-        log,
-        memory,
-        info.checked_add(cprovince_railway_info::COOLDOWN_TICKS),
-        4,
-        COOLDOWNS_MASK,
-    );
-    // PAIRS_FIELD: edges-scoped header take; always issued, mirroring the
-    // walk's unconditional gather.
-    let pairs_header = match rspan(
-        log,
-        memory,
-        info.checked_add(cprovince_railway_info::NEIGHBOR_PAIRS),
-        16,
-        RAIL_EDGES_MASK,
-    ) {
-        Some(start) => start,
-        None => {
-            *edges_dead = true;
-            return true;
-        }
-    };
-    if *edges_dead {
-        return true;
-    }
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[pairs_header..pairs_header + 16]);
-    let pairs = match Array::from_header(raw, rail_neighbor::STRIDE) {
-        Some(array) => array,
-        None => {
-            *edges_dead = true;
-            return true;
-        }
-    };
-    // Whole pair vectors are bulk spans: the typed walk reads a
-    // capacity-truncated prefix in 64-entry chunks, and the replay serves
-    // any enclosed chunk from the bulk span. `take_bulk` returns the pool
-    // offset for local parsing below.
-    if pairs.count != 0 {
-        let bulk_start = log.take_bulk(
-            memory,
-            pairs.data,
-            pairs.count as usize * rail_neighbor::STRIDE,
-            RAIL_EDGES_MASK,
-        );
-        let Some(bulk_start) = bulk_start else {
-            *edges_dead = true;
-            return true;
-        };
-        // Stage and authenticate the valid prefix exactly like `read_edges`:
-        // sorted, non-self neighbors whose province objects authenticate.
-        // An invalid pair stops edge takes (the typed walk fails the edges
-        // table there); later headers and cooldown takes continue.
-        if !copy_rail_neighbors(
-            log,
-            memory,
-            bulk_start,
-            pairs.count,
-            province,
-            province_vtable,
-            provinces,
-        ) {
-            *edges_dead = true;
-            return true;
-        }
-    }
-    let _ = base;
-    true
-}
-
-/// Mirror of `read_edges` staging and authentication over the staged bulk
-/// bytes: parses the valid prefix locally and takes each neighbor's
-/// identity spans. Returns false exactly when the typed walk fails the
-/// edges table here.
-fn copy_rail_neighbors(
-    log: &mut RawLog<RAIL_N>,
-    memory: &impl engine::Memory,
-    bulk_start: usize,
-    count: u32,
-    province: u32,
-    province_vtable: u64,
-    provinces: &Array,
-) -> bool {
-    let mut ordered = 0u32;
-    for index in 0..count {
-        let at = bulk_start + index as usize * rail_neighbor::STRIDE;
-        let bytes = match log.bytes.get(at..at + rail_neighbor::STRIDE) {
-            Some(bytes) => bytes,
-            None => return false,
-        };
-        let neighbor = i32::from_le_bytes(bytes[..4].try_into().unwrap());
-        if neighbor <= 0 || neighbor as u32 <= ordered || neighbor as u32 == province {
-            return false;
-        }
-        ordered = neighbor as u32;
-        // NEIGHBOR_FIELDS gather: object word twice (two gathers) plus id
-        // word, mirroring the walk's slot-then-record reads per neighbor.
-        let slot_addr = provinces.element(ordered, 8);
-        let object_start = match rspan(log, memory, slot_addr, 8, RAIL_EDGES_MASK) {
-            Some(start) => start,
-            None => return false,
-        };
-        let object = match usize::try_from(rail_pool_u64(log, object_start))
-            .ok()
-            .filter(|&pointer| pointer != 0)
-        {
-            Some(object) => object,
-            None => return false,
-        };
-        let vtable_start = match rspan(log, memory, Some(object), 8, RAIL_EDGES_MASK) {
-            Some(start) => start,
-            None => return false,
-        };
-        let id_start = match rspan(
-            log,
-            memory,
-            object.checked_add(cprovince::ID),
-            4,
-            RAIL_EDGES_MASK,
-        ) {
-            Some(start) => start,
-            None => return false,
-        };
-        // Authentication mirrors `batch.authenticate`: reserved zero,
-        // vtable match and id agreement with the slot.
-        if rail_pool_u64(log, vtable_start) != province_vtable
-            || rail_pool_u32(log, id_start) != ordered
-        {
-            return false;
-        }
-        if log.overflowed {
-            return false;
-        }
-    }
-    true
-}
-
-/// One structural copy pass: manager, tables, per-slot authentication with
-/// cooldowns and bulk neighbor vectors. The job is cleared on entry so
-/// pooled refreshes never accumulate spans across hours.
-fn copy_rail_pass(
-    job: &mut RailJob,
-    memory: &impl engine::Memory,
-    base: usize,
-    game_state: usize,
-    ticks: &mut [u64; RAIL_N],
-) {
-    job.clear();
-    job.game_state = game_state;
-    // Pair vectors are bulk spans (see above); the flag is set up front so
-    // both passes serve enclosed chunks identically.
-    job.log.has_bulk = true;
-    let started = qpc();
-    copy_rail_tables(job, memory, base, game_state);
-    // The single railway walk is anchor-charged to the cooldowns slot,
-    // matching the read-group convention.
-    ticks[0] += elapsed(started);
-}
-
-fn copy_rail_tables(
-    job: &mut RailJob,
-    memory: &impl engine::Memory,
-    base: usize,
-    game_state: usize,
-) {
-    let log = &mut job.log;
-    let manager = match rspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::RAIL_MANAGER),
-        8,
-        RAIL_SHARED_MASK,
-    )
-    .and_then(|start| {
-        usize::try_from(rail_pool_u64(log, start))
-            .ok()
-            .filter(|&pointer| pointer != 0)
-    }) {
-        Some(manager) => manager,
-        None => return,
-    };
-    let vtable_start = match rspan(log, memory, Some(manager), 8, RAIL_SHARED_MASK) {
-        Some(start) => start,
-        None => return,
-    };
-    let expected_manager = match base.checked_add(crailway_manager::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return,
-    };
-    if rail_pool_u64(log, vtable_start) != expected_manager {
-        return;
-    }
-    let rail_header = match rspan(
-        log,
-        memory,
-        manager.checked_add(crailway_manager::PROVINCE_INFO_TABLE),
-        16,
-        RAIL_SHARED_MASK,
-    ) {
-        Some(start) => start,
-        None => return,
-    };
-    let provinces_header = match rspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::PROVINCES),
-        16,
-        RAIL_SHARED_MASK,
-    ) {
-        Some(start) => start,
-        None => return,
-    };
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[rail_header..rail_header + 16]);
-    let rail = match Array::from_header(raw, crailway_manager::PROVINCE_INFO_STRIDE) {
-        Some(array) => array,
-        None => return,
-    };
-    raw.copy_from_slice(&log.bytes[provinces_header..provinces_header + 16]);
-    let provinces = match Array::from_header(raw, 8) {
-        Some(array) => array,
-        None => return,
-    };
-    if provinces.count < 2 || rail.count != provinces.count {
-        return;
-    }
-    let info_vtable = match base.checked_add(cprovince_railway_info::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return,
-    };
-    let province_vtable = match base.checked_add(cprovince::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return,
-    };
-    let mut edges_dead = false;
-    // Fixed-size stack staging for live slots: no allocation.
-    let mut infos = [0usize; RAIL_MIRROR_BATCH];
-    let mut ids = [0u32; RAIL_MIRROR_BATCH];
-    for first in (0..rail.count).step_by(RAIL_MIRROR_BATCH) {
-        let count = (rail.count - first).min(RAIL_MIRROR_BATCH as u32);
-        let address = rail.element(first, crailway_manager::PROVINCE_INFO_STRIDE);
-        let block_start = match rspan(
-            log,
-            memory,
-            address,
-            count as usize * crailway_manager::PROVINCE_INFO_STRIDE,
-            RAIL_SHARED_MASK,
-        ) {
-            Some(start) => start,
-            None => return,
-        };
-        // Live-compact the staged block exactly like the walk, copying the
-        // staged words out first so later takes can borrow the log.
-        let mut staged = [0u64; RAIL_MIRROR_BATCH];
-        for (offset, bytes) in log.bytes[block_start..block_start + count as usize * 8]
-            .chunks_exact(8)
-            .enumerate()
-        {
-            staged[offset] = u64::from_le_bytes(bytes.try_into().unwrap());
-        }
-        let mut live = 0usize;
-        for (offset, word) in staged.iter().enumerate().take(count as usize) {
-            // Borrow discipline: parse from the staged copy.
-            let pointer = match usize::try_from(*word).ok() {
-                Some(pointer) => pointer,
-                None => return,
-            };
-            if pointer == 0 {
-                continue;
-            }
-            if live == RAIL_MIRROR_BATCH {
-                log.overflowed = true;
-                return;
-            }
-            infos[live] = pointer;
-            ids[live] = first + offset as u32;
-            live += 1;
-        }
-        for entry in 0..live {
-            if !copy_rail_slot(
-                log,
-                memory,
-                base,
-                &provinces,
-                province_vtable,
-                info_vtable,
-                infos[entry],
-                ids[entry],
-                &mut edges_dead,
-            ) {
-                return;
-            }
-            if log.overflowed {
-                return;
-            }
-        }
-        if log.overflowed {
-            return;
-        }
-    }
-}
-
-impl Captured {
-    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
-    /// `second` while any rail table still needs double-read checks,
-    /// compares the raw logs, and records copy-only costs plus the existing
-    /// checked/mismatches bookkeeping. Returns whether the payload is
-    /// complete (`raw_ok`); on staging overflow the caller falls back to the
-    /// typed walk and enqueues nothing.
-    pub(crate) fn copy_rail_refresh(
-        &mut self,
-        memory: &impl Memory,
-        ctx: RailCopyContext,
-        first: &mut RailJob,
-        mut second: Option<&mut RailJob>,
-    ) -> RailCopyReport {
-        let mut ticks = [0u64; RAIL_N];
-        copy_rail_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
-        let mut matched = [true; RAIL_N];
-        if let Some(second_job) = second.as_deref_mut() {
-            let mut second_ticks = [0u64; RAIL_N];
-            copy_rail_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
-            for (total, extra) in ticks.iter_mut().zip(second_ticks) {
-                *total += extra;
-            }
-            // Per-table partitions: shared spans gate both slots, private
-            // spans only their own table.
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-            }
-        }
-        // Conservative checked bookkeeping mirroring the typed paths.
-        self.cooldowns.checked = ctx.needed[0];
-        self.cooldowns.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        self.edges.checked = ctx.needed[1];
-        self.edges.mismatches = usize::from(ctx.needed[1] && !matched[1]);
-        let raw_ok = !first.log.overflowed
-            && second.is_none_or(|job| !job.log.overflowed);
-        RailCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
-        }
-    }
-
-    /// Decode-worker interpretation of a raw shared railway payload: replays
-    /// the railway walk against the recorded spans into the pooled buffers,
-    /// with the identical bounded/capacity handling the game thread applies.
-    /// Installs identical rows, truncation counts and failure reasons.
-    pub(crate) fn decode_rail_payload(
-        &mut self,
-        base: usize,
-        job: &RailJob,
-        decode_ticks: &mut [u64; RAIL_N],
-    ) {
-        let recorded = crate::raw::Recorded::build(&job.log);
-        let started = qpc();
-        let walked = crailway_manager::walk(
-            &recorded,
-            base,
-            job.game_state,
-            &mut self.cooldowns.rows,
-            &mut self.edges.rows,
-        );
-        self.cooldowns.outcome = bounded(walked.provinces, self.cooldowns.rows.len());
-        self.edges.outcome = bounded(walked.edges, self.edges.rows.len());
-        decode_ticks[0] += elapsed(started);
-        self.rail_raw_mode = false;
-    }
 }
 
 // ===========================================================================
@@ -2983,7 +2572,8 @@ fn copy_supremacy_tables(
                     None => return,
                 };
                 let country = u32::from_le_bytes(
-                    bytes[naval_dominance_entry::COUNTRY_KEY..naval_dominance_entry::COUNTRY_KEY + 4]
+                    bytes[naval_dominance_entry::COUNTRY_KEY
+                        ..naval_dominance_entry::COUNTRY_KEY + 4]
                         .try_into()
                         .unwrap(),
                 );
@@ -3030,7 +2620,13 @@ impl Captured {
         let mut matched = [true; SUPREMACY_N];
         if let Some(second_job) = second.as_deref_mut() {
             let mut second_ticks = [0u64; SUPREMACY_N];
-            copy_supremacy_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
+            copy_supremacy_pass(
+                second_job,
+                memory,
+                ctx.base,
+                ctx.game_state,
+                &mut second_ticks,
+            );
             for (total, extra) in ticks.iter_mut().zip(second_ticks) {
                 *total += extra;
             }
@@ -3043,8 +2639,7 @@ impl Captured {
         // Conservative checked bookkeeping mirroring the typed path.
         self.supremacy.checked = ctx.needed[0];
         self.supremacy.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        let raw_ok = !first.log.overflowed
-            && second.is_none_or(|job| !job.log.overflowed);
+        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
         SupremacyCopyReport {
             raw_ok,
             matched,
@@ -3065,8 +2660,12 @@ impl Captured {
     ) {
         let recorded = crate::raw::Recorded::build(&job.log);
         let started = qpc();
-        let walked =
-            cnaval_region_dominance::walk(&recorded, base, job.game_state, &mut self.supremacy.rows);
+        let walked = cnaval_region_dominance::walk(
+            &recorded,
+            base,
+            job.game_state,
+            &mut self.supremacy.rows,
+        );
         self.supremacy.outcome = bounded(walked, self.supremacy.rows.len());
         decode_ticks[0] += elapsed(started);
         self.supremacy_raw_mode = false;
@@ -3175,7 +2774,10 @@ fn copy_sunk_class(
     base: usize,
     pointer: u64,
 ) -> bool {
-    let address = match usize::try_from(pointer).ok().filter(|&pointer| pointer != 0) {
+    let address = match usize::try_from(pointer)
+        .ok()
+        .filter(|&pointer| pointer != 0)
+    {
         Some(address) => address,
         None => return false,
     };
@@ -3221,9 +2823,16 @@ fn copy_sunk_string(
     // Copy the staged header out first so later takes can borrow the log.
     let mut header = [0u8; msvc_string::STRIDE];
     header.copy_from_slice(&log.bytes[head..head + msvc_string::STRIDE]);
-    let len = u64::from_le_bytes(header[msvc_string::LENGTH..msvc_string::LENGTH + 8].try_into().unwrap());
-    let capacity =
-        u64::from_le_bytes(header[msvc_string::CAPACITY..msvc_string::CAPACITY + 8].try_into().unwrap());
+    let len = u64::from_le_bytes(
+        header[msvc_string::LENGTH..msvc_string::LENGTH + 8]
+            .try_into()
+            .unwrap(),
+    );
+    let capacity = u64::from_le_bytes(
+        header[msvc_string::CAPACITY..msvc_string::CAPACITY + 8]
+            .try_into()
+            .unwrap(),
+    );
     if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
         return false;
     }
@@ -3235,7 +2844,9 @@ fn copy_sunk_string(
         address
     } else {
         match usize::try_from(u64::from_le_bytes(
-            header[msvc_string::DATA..msvc_string::DATA + 8].try_into().unwrap(),
+            header[msvc_string::DATA..msvc_string::DATA + 8]
+                .try_into()
+                .unwrap(),
         ))
         .ok()
         .filter(|&source| source != 0)
@@ -3278,12 +2889,8 @@ fn copy_sunk_record(
     // Copy the staged record out first so later takes can borrow the log.
     let mut staged = [0u8; csunk_ship_info::SIZE];
     staged.copy_from_slice(&log.bytes[record..record + csunk_ship_info::SIZE]);
-    let u64_at = |offset: usize| {
-        u64::from_le_bytes(staged[offset..offset + 8].try_into().unwrap())
-    };
-    let u32_at = |offset: usize| {
-        u32::from_le_bytes(staged[offset..offset + 4].try_into().unwrap())
-    };
+    let u64_at = |offset: usize| u64::from_le_bytes(staged[offset..offset + 8].try_into().unwrap());
+    let u32_at = |offset: usize| u32::from_le_bytes(staged[offset..offset + 4].try_into().unwrap());
     let expected = match base.checked_add(csunk_ship_info::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
@@ -3308,9 +2915,7 @@ fn copy_sunk_record(
     if sink_hour <= 0 || sink_hour > current_hour {
         return false;
     }
-    if staged[csunk_ship_info::CAUSE_RECORD] > 1
-        || staged[csunk_ship_info::ASSISTED_KILL] > 1
-    {
+    if staged[csunk_ship_info::CAUSE_RECORD] > 1 || staged[csunk_ship_info::ASSISTED_KILL] > 1 {
         return false;
     }
     if !copy_sunk_class(log, memory, base, u64_at(csunk_ship_info::SHIP_CLASS)) {
@@ -3449,7 +3054,14 @@ impl Captured {
         mut second: Option<&mut SunkJob>,
     ) -> SunkCopyReport {
         let mut ticks = [0u64; SUNK_N];
-        copy_sunk_pass(first, memory, ctx.base, ctx.game_state, ctx.hour, &mut ticks);
+        copy_sunk_pass(
+            first,
+            memory,
+            ctx.base,
+            ctx.game_state,
+            ctx.hour,
+            &mut ticks,
+        );
         let mut matched = [true; SUNK_N];
         if let Some(second_job) = second.as_deref_mut() {
             let mut second_ticks = [0u64; SUNK_N];
@@ -3473,8 +3085,7 @@ impl Captured {
         // Conservative checked bookkeeping mirroring the typed path.
         self.sunk.checked = ctx.needed[0];
         self.sunk.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        let raw_ok = !first.log.overflowed
-            && second.is_none_or(|job| !job.log.overflowed);
+        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
         SunkCopyReport {
             raw_ok,
             matched,
@@ -3523,6 +3134,34 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn naval_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
+        use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
+        static LOCAL: Tracker = Tracker::new();
+        let mut job = NavalJob::default();
+        job.wing_rows.reserve_exact(3);
+        job.wing_sources.reserve_exact(3);
+        job.capacity_charge = Charge::empty_on(&LOCAL);
+        job.update_capacity_charge();
+        let expected =
+            |job: &NavalJob| vector_bytes(&job.wing_rows) + vector_bytes(&job.wing_sources);
+        let initial = LOCAL.snapshot().current.auxiliary_vectors;
+        assert_eq!(initial, expected(&job));
+        job.wing_outcome = Some(Outcome::Truncated {
+            len: 3,
+            unread_rows: 5,
+        });
+        job.grow();
+        let grown = LOCAL.snapshot().current.auxiliary_vectors;
+        assert!(grown > initial);
+        assert_eq!(grown, expected(&job));
+        job.clear();
+        assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, grown);
+        drop(job);
+        assert_eq!(LOCAL.snapshot().current, Capacity::default());
+    }
+
     use engine::memory::SliceMemory;
 
     fn small() -> Captured {
@@ -3791,7 +3430,10 @@ mod tests {
         ] {
             assert!(!replay::cadence::is_staggered(table), "{table:?}");
             for hour in [0, 1, 2, 3, 60_820_531] {
-                assert!(replay::cadence::is_refresh(table, hour), "{table:?} at {hour}");
+                assert!(
+                    replay::cadence::is_refresh(table, hour),
+                    "{table:?} at {hour}"
+                );
             }
         }
     }
@@ -3833,14 +3475,23 @@ mod tests {
         }
         let bytes = kit::fixture();
         let inner = kit::memory(&bytes);
-        let memory = Recorder { inner, sizes: std::cell::RefCell::new(BTreeSet::new()) };
-        let ctx = NavalCopyContext { base: kit::BASE, game_state: kit::GAME_STATE };
+        let memory = Recorder {
+            inner,
+            sizes: std::cell::RefCell::new(BTreeSet::new()),
+        };
+        let ctx = NavalCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+        };
         let mut first = NavalJob::new();
         let report = super::copy_naval_refresh(&memory, ctx, &mut first, None);
         assert!(report.raw_ok);
         let sizes = memory.sizes.borrow().clone();
         for required in [4, 8, 16] {
-            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+            assert!(
+                sizes.contains(&required),
+                "missing size {required} in {sizes:?}"
+            );
         }
     }
 
@@ -3854,12 +3505,18 @@ mod tests {
         // cap 0 the zero/massive arm, cap 2 the members exact-fit arm.
         // u32 unread saturation is not reachable and is covered by the
         // walk's own saturating arithmetic.
-        use super::naval_test_kit as kit;
         use super::Capacities;
+        use super::naval_test_kit as kit;
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
         for rows in [[0; 17], [1; 17], [2; 17], [64; 17]] {
-            let capacity = Capacities { rows, theatre_names: 1024, sunk_names: 1024, orders_sources: 64, wing_sources: 64 };
+            let capacity = Capacities {
+                rows,
+                theatre_names: 1024,
+                sunk_names: 1024,
+                orders_sources: 64,
+                wing_sources: 64,
+            };
             let direct = kit::direct_with(&memory, &capacity);
             let (split, report, _) = kit::split_with(&memory, &capacity);
             assert!(report.raw_ok, "rows={rows:?}");
@@ -3867,7 +3524,13 @@ mod tests {
             kit::assert_matches_direct(&split, &direct);
         }
         // Exact-fit arm pins Rows on land/groups with both members present.
-        let capacity = Capacities { rows: [2; 17], theatre_names: 1024, sunk_names: 1024, orders_sources: 64, wing_sources: 64 };
+        let capacity = Capacities {
+            rows: [2; 17],
+            theatre_names: 1024,
+            sunk_names: 1024,
+            orders_sources: 64,
+            wing_sources: 64,
+        };
         let (split, _, _) = kit::split_with(&memory, &capacity);
         assert_eq!(split.land_outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.members_outcome, Outcome::Rows { len: 2 });
@@ -3905,13 +3568,25 @@ mod tests {
             }
         }
         for (fault, matched) in [
-            (kit::GAME_STATE + engine::cgame_state::COUNTRIES, [false, false, false, false, false, false, true, true, true]),
-            (kit::THEATRE, [false, false, false, false, false, false, true, true, true]),
-            (kit::GROUP, [false, false, false, false, false, false, true, true, true]),
+            (
+                kit::GAME_STATE + engine::cgame_state::COUNTRIES,
+                [false, false, false, false, false, false, true, true, true],
+            ),
+            (
+                kit::THEATRE,
+                [false, false, false, false, false, false, true, true, true],
+            ),
+            (
+                kit::GROUP,
+                [false, false, false, false, false, false, true, true, true],
+            ),
         ] {
             let bytes = kit::fixture();
             let memory = Fault {
-                memory: SliceMemory { base: 0, bytes: &bytes },
+                memory: SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
                 fault: fault..fault + 1,
             };
             let direct = kit::direct(&memory);
@@ -3928,7 +3603,10 @@ mod tests {
         use super::{NavalCopyContext, NavalJob};
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
-        let ctx = NavalCopyContext { base: kit::BASE, game_state: kit::GAME_STATE };
+        let ctx = NavalCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+        };
         let mut first = NavalJob::new();
         let mut second = NavalJob::new();
         let report = super::copy_naval_refresh(&memory, ctx, &mut first, Some(&mut second));
@@ -3944,7 +3622,10 @@ mod tests {
         use super::{NavalCopyContext, NavalJob};
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
-        let ctx = NavalCopyContext { base: kit::BASE, game_state: kit::GAME_STATE };
+        let ctx = NavalCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+        };
         let mut tiny = NavalJob {
             log: crate::raw::RawLog::new(1, 1),
             game_state: 0,
@@ -3960,253 +3641,11 @@ mod tests {
         for table in [TableId::RailCooldowns, TableId::RailEdges] {
             assert!(!replay::cadence::is_staggered(table), "{table:?}");
             for hour in [0, 1, 2, 3, 60_820_531] {
-                assert!(replay::cadence::is_refresh(table, hour), "{table:?} at {hour}");
+                assert!(
+                    replay::cadence::is_refresh(table, hour),
+                    "{table:?} at {hour}"
+                );
             }
-        }
-    }
-
-    #[test]
-    fn rail_split_copy_matches_direct_walk() {
-        use super::rail_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let direct = kit::direct(&memory);
-        let (split, report, _) = kit::split(&memory);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 2]);
-        kit::assert_matches_direct(&split, &direct);
-        // Two cooldown rows (one null slot absent) plus three directed edges.
-        assert_eq!(split.cooldowns_outcome, Outcome::Rows { len: 2 });
-        assert_eq!(split.edges_outcome, Outcome::Rows { len: 3 });
-        assert_eq!(
-            (split.cooldowns[0].province, split.cooldowns[0].cooldown_ticks),
-            (1, 5)
-        );
-        assert_eq!(
-            (split.cooldowns[1].province, split.cooldowns[1].cooldown_ticks),
-            (3, -1)
-        );
-        assert_eq!(
-            (split.edges[0].from_province, split.edges[0].to_province, split.edges[0].level),
-            (1, 2, 7)
-        );
-    }
-
-    #[test]
-    fn rail_truncation_matrix_matches_direct_with_same_caps() {
-        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-        // copy→decode against the SAME memory with the SAME pooled caps,
-        // asserting identical outcome (incl. len/unread) and identical rows.
-        use super::rail_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        for (cooldowns, edges) in [(0, 0), (1, 1), (1, 2), (2, 3), (64, 64)] {
-            let direct = kit::direct_with(&memory, cooldowns, edges);
-            let (split, report, _) = kit::split_with(&memory, cooldowns, edges);
-            assert!(report.raw_ok, "cooldowns={cooldowns} edges={edges}");
-            assert_eq!(report.matched, [true; 2], "cooldowns={cooldowns} edges={edges}");
-            kit::assert_matches_direct(&split, &direct);
-        }
-        let direct = kit::direct_with(&memory, 2, 3);
-        assert_eq!(direct.cooldowns_outcome, Outcome::Rows { len: 2 });
-        assert_eq!(direct.edges_outcome, Outcome::Rows { len: 3 });
-    }
-
-    #[test]
-    fn rail_split_copy_matches_direct_walk_on_fault_matrix() {
-        // Every fault arm asserts byte-identical decode plus per-slot
-        // attribution: shared faults block both slots, cooldown faults block
-        // cooldowns while edges still decode, edge faults block edges while
-        // cooldowns still decode (the typed walk keeps the other table).
-        use super::rail_test_kit as kit;
-        use engine::memory::SliceMemory;
-        struct Fault<'a> {
-            memory: SliceMemory<'a>,
-            fault: std::ops::Range<usize>,
-        }
-        impl engine::Memory for Fault<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                let Some(end) = address.checked_add(output.len()) else {
-                    return false;
-                };
-                if address < self.fault.end && end > self.fault.start {
-                    return false;
-                }
-                self.memory.copy(address, output)
-            }
-        }
-        for (fault, matched) in [
-            (kit::GAME_STATE + engine::cgame_state::RAIL_MANAGER, [false, false]),
-            (kit::MANAGER, [false, false]),
-            (kit::ITAB, [false, false]),
-            (kit::P1, [false, false]),
-            (kit::INFO1, [false, false]),
-            // Cooldown-scoped fault: edges still decode identical rows.
-            (
-                kit::INFO1 + engine::cprovince_railway_info::COOLDOWN_TICKS,
-                [false, true],
-            ),
-            // Edge-scoped faults: cooldowns still decode identical rows.
-            (
-                kit::INFO1 + engine::cprovince_railway_info::NEIGHBOR_PAIRS,
-                [true, false],
-            ),
-            (kit::PAIRS1, [true, false]),
-            (kit::P2, [true, false]),
-        ] {
-            let bytes = kit::fixture();
-            let memory = Fault {
-                memory: SliceMemory { base: 0, bytes: &bytes },
-                fault: fault..fault + 1,
-            };
-            let direct = kit::direct(&memory);
-            let (split, report, _) = kit::split(&memory);
-            assert!(report.raw_ok, "fault={fault:x}");
-            kit::assert_matches_direct(&split, &direct);
-            assert_eq!(report.matched, matched, "fault={fault:x}");
-        }
-    }
-
-    #[test]
-    fn rail_double_copy_compare_blocks_checks_on_tearing() {
-        // Targeted tearing: a changed cooldown flips only the cooldowns
-        // partition, a changed edge level only the edges partition, a
-        // changed province id both.
-        use super::rail_test_kit as kit;
-        use super::{RailCopyContext, RailJob};
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let ctx = RailCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed: [true; 2],
-        };
-        let capacities = super::Capacities::default();
-        let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let mut first = RailJob::new();
-        let report = captured.copy_rail_refresh(&memory, ctx, &mut first, None);
-        assert!(report.raw_ok);
-        let mut torn = bytes.clone();
-        torn[kit::INFO1 + engine::cprovince_railway_info::COOLDOWN_TICKS] ^= 0xff;
-        let torn_memory = kit::memory(&torn);
-        let mut second = RailJob::new();
-        let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let torn_report = captured2.copy_rail_refresh(&torn_memory, ctx, &mut second, None);
-        assert!(torn_report.raw_ok);
-        assert!(!first.log.partition_equal(&second.log, 0));
-        assert!(first.log.partition_equal(&second.log, 1));
-        let mut torn = bytes.clone();
-        torn[kit::PAIRS1] ^= 0xff;
-        let torn_memory = kit::memory(&torn);
-        let mut third = RailJob::new();
-        let mut captured3 = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let torn_report = captured3.copy_rail_refresh(&torn_memory, ctx, &mut third, None);
-        assert!(torn_report.raw_ok);
-        assert!(first.log.partition_equal(&third.log, 0));
-        assert!(!first.log.partition_equal(&third.log, 1));
-        assert!(!first.log.logs_equal(&second.log));
-    }
-
-    #[test]
-    fn rail_shared_census_taken_once_for_both_tables() {
-        // Shared-copy proof: the manager and province-table headers are
-        // taken exactly once per pass while both tables decode from them.
-        use super::rail_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let (_split, report, first) = kit::split(&memory);
-        assert!(report.raw_ok);
-        for (addr, len) in [
-            (kit::GAME_STATE + engine::cgame_state::RAIL_MANAGER, 8),
-            (kit::MANAGER, 8),
-            (kit::GAME_STATE + engine::cgame_state::PROVINCES, 16),
-        ] {
-            let takes = first
-                .log
-                .spans
-                .iter()
-                .filter(|span| span.addr == addr && span.len == len as u32)
-                .count();
-            assert_eq!(takes, 1, "shared takes at {addr:x}/{len}");
-        }
-    }
-
-    #[test]
-    fn rail_staging_overflow_falls_back_to_typed_walk() {
-        use super::rail_test_kit as kit;
-        use super::{RailCopyContext, RailJob};
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let ctx = RailCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed: [true; 2],
-        };
-        let mut tiny = RailJob {
-            log: crate::raw::RawLog::new(1, 1),
-            game_state: 0,
-        };
-        let capacities = super::Capacities::default();
-        let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let report = captured.copy_rail_refresh(&memory, ctx, &mut tiny, None);
-        assert!(!report.raw_ok);
-    }
-
-    #[test]
-    fn rail_pools_cover_appendix_worst_case() {
-        // Worst-case caps proof: the steady-state pools exceed a
-        // conservative span/byte estimate built from the appendix census
-        // (3,401 cooldown rows, 7,248 directed edges, 13,413 provinces), so
-        // live refreshes never take the overflow fallback in steady state.
-        use super::RailJob;
-        let job = RailJob::new();
-        // Manager and tables: a handful of headers. Slots: 13,413 x 8-byte
-        // takes. Live slots (~3,401): authentication (~7 spans), cooldown
-        // and pairs headers, bulk pair vectors, neighbor identities (~3
-        // spans each for ~7,248 edges).
-        let spans = 4 + 13_413 + 3_401 * 9 + 3_401 + 7_248 * 3;
-        assert!(
-            job.log.spans.capacity() >= spans,
-            "span cap {} < worst case {spans}",
-            job.log.spans.capacity()
-        );
-        let bytes = 13_413 * 8 + 3_401 * 128 + 7_248 * 24;
-        assert!(
-            job.log.bytes.capacity() >= bytes,
-            "byte cap {} < worst case {bytes}",
-            job.log.bytes.capacity()
-        );
-    }
-
-    #[test]
-    fn rail_copy_sizes_cover_documented_read_set() {
-        // S3: every Memory::copy size the shared copy pass issues, recorded
-        // through the real pass. Manager/table words (8/16), slot words (8),
-        // province identity (8/4), definition id (4), info identity (24),
-        // cooldown (4), pair headers (16) and bulk pair blocks (chunked 8s).
-        use super::rail_test_kit as kit;
-        use engine::Memory;
-        use std::collections::BTreeSet;
-        struct Recorder<'a> {
-            inner: engine::memory::SliceMemory<'a>,
-            sizes: std::cell::RefCell<BTreeSet<usize>>,
-        }
-        impl Memory for Recorder<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.sizes.borrow_mut().insert(output.len());
-                self.inner.copy(address, output)
-            }
-        }
-        let bytes = kit::fixture();
-        let memory = Recorder {
-            inner: kit::memory(&bytes),
-            sizes: std::cell::RefCell::new(BTreeSet::new()),
-        };
-        let (_split, report, _) = kit::split(&memory);
-        assert!(report.raw_ok);
-        let sizes = memory.sizes.borrow().clone();
-        for required in [4, 8, 16, 24] {
-            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
         }
     }
 
@@ -4282,7 +3721,10 @@ mod tests {
         ] {
             let bytes = kit::fixture();
             let memory = Fault {
-                memory: SliceMemory { base: 0, bytes: &bytes },
+                memory: SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
                 fault: fault..fault + 1,
             };
             let direct = kit::direct(&memory);
@@ -4391,7 +3833,10 @@ mod tests {
         assert!(report.raw_ok);
         let sizes = memory.sizes.borrow().clone();
         for required in [8, 12, 16] {
-            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+            assert!(
+                sizes.contains(&required),
+                "missing size {required} in {sizes:?}"
+            );
         }
     }
 
@@ -4472,7 +3917,10 @@ mod tests {
         ] {
             let bytes = kit::fixture();
             let memory = Fault {
-                memory: SliceMemory { base: 0, bytes: &bytes },
+                memory: SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
                 fault: fault..fault + 1,
             };
             let direct = kit::direct(&memory);
@@ -4584,7 +4032,10 @@ mod tests {
         assert!(report.raw_ok);
         let sizes = memory.sizes.borrow().clone();
         for required in [1, 4, 8, 16, 0xa8] {
-            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+            assert!(
+                sizes.contains(&required),
+                "missing size {required} in {sizes:?}"
+            );
         }
     }
 }
@@ -4597,7 +4048,7 @@ mod tests {
 #[cfg(test)]
 pub(crate) mod naval_test_kit {
     use super::{Capacities, Captured, NavalCopyContext, NavalCopyReport, NavalJob};
-    use engine::{memory::SliceMemory, walk::Outcome, Memory};
+    use engine::{Memory, memory::SliceMemory, walk::Outcome};
 
     pub(crate) const BASE: usize = 0;
     pub(crate) const GAME_STATE: usize = 0x10000;
@@ -4632,56 +4083,118 @@ pub(crate) mod naval_test_kit {
     }
 
     pub(crate) fn fixture() -> Vec<u8> {
-        use engine::{carmy, ccountry, corder_instance, corders_group, corders_group_member, ctheater_group, ctheatre, cunit, creference_registry as registry, reference_bucket as bucket};
+        use engine::{
+            carmy, ccountry, corder_instance, corders_group, corders_group_member,
+            creference_registry as registry, ctheater_group, ctheatre, cunit,
+            reference_bucket as bucket,
+        };
         let mut bytes = vec![0; 0x3500000];
-        header(&mut bytes, GAME_STATE + engine::cgame_state::COUNTRIES, CTAB, 3);
+        header(
+            &mut bytes,
+            GAME_STATE + engine::cgame_state::COUNTRIES,
+            CTAB,
+            3,
+        );
         p64(&mut bytes, CTAB, 0);
         p64(&mut bytes, CTAB + 8, C0 as u64);
         p64(&mut bytes, CTAB + 16, C0 as u64);
-        header(&mut bytes, GAME_STATE + engine::cgame_state::COUNTRY_LINKS, LTAB, 3);
+        header(
+            &mut bytes,
+            GAME_STATE + engine::cgame_state::COUNTRY_LINKS,
+            LTAB,
+            3,
+        );
         p32(&mut bytes, LTAB, 0);
         p32(&mut bytes, LTAB + 4, 1);
         p32(&mut bytes, LTAB + 8, 1);
         p64(&mut bytes, C0, ccountry::VTABLE_RVA as u64);
         p32(&mut bytes, C0 + ccountry::ID, 1);
         // A valid empty wing census is different from a missing manager.
-        p64(&mut bytes, GAME_STATE + engine::cgame_state::STRATEGIC_AIR_MANAGER, 0x40000);
-        p64(&mut bytes, 0x40000, engine::cstrategic_air_manager::VTABLE_RVA as u64);
-        header(&mut bytes, 0x40000 + engine::cstrategic_air_manager::COUNTRY_AIR, 0x41000, 3);
+        p64(
+            &mut bytes,
+            GAME_STATE + engine::cgame_state::STRATEGIC_AIR_MANAGER,
+            0x40000,
+        );
+        p64(
+            &mut bytes,
+            0x40000,
+            engine::cstrategic_air_manager::VTABLE_RVA as u64,
+        );
+        header(
+            &mut bytes,
+            0x40000 + engine::cstrategic_air_manager::COUNTRY_AIR,
+            0x41000,
+            3,
+        );
         // Land theatres: one theatre, one group named "AB", two members.
         header(&mut bytes, C0 + ccountry::THEATRES, 0x36000, 1);
         p64(&mut bytes, 0x36000, THEATRE as u64);
         header(&mut bytes, C0 + ccountry::AIR_THEATRES, 0x36100, 0);
         p64(&mut bytes, THEATRE, ctheatre::VTABLE_RVA as u64);
-        p64(&mut bytes, THEATRE + ctheatre::HANDLE, (1u64 << 32) | ctheatre::REFERENCE_TYPE as u64);
+        p64(
+            &mut bytes,
+            THEATRE + ctheatre::HANDLE,
+            (1u64 << 32) | ctheatre::REFERENCE_TYPE as u64,
+        );
         p32(&mut bytes, THEATRE + ctheatre::OWNER, 1);
         p32(&mut bytes, THEATRE + ctheatre::VOLUNTEERS_THEATRE, 0);
-        header(&mut bytes, THEATRE + ctheatre::THEATER_GROUP_DATA, 0x36200, 1);
+        header(
+            &mut bytes,
+            THEATRE + ctheatre::THEATER_GROUP_DATA,
+            0x36200,
+            1,
+        );
         p64(&mut bytes, 0x36200, GROUP as u64);
         p64(&mut bytes, GROUP, ctheater_group::VTABLE_RVA as u64);
-        p64(&mut bytes, GROUP + ctheater_group::HANDLE, (1u64 << 32) | ctheater_group::REFERENCE_TYPE as u64);
+        p64(
+            &mut bytes,
+            GROUP + ctheater_group::HANDLE,
+            (1u64 << 32) | ctheater_group::REFERENCE_TYPE as u64,
+        );
         p64(&mut bytes, GROUP + ctheater_group::THEATRE, THEATRE as u64);
         // Inline name "AB" (len 2, capacity 15, terminator).
-        bytes[GROUP + ctheater_group::NAME..GROUP + ctheater_group::NAME + 2].copy_from_slice(b"AB");
+        bytes[GROUP + ctheater_group::NAME..GROUP + ctheater_group::NAME + 2]
+            .copy_from_slice(b"AB");
         p64(&mut bytes, GROUP + ctheater_group::NAME + 16, 2);
         p64(&mut bytes, GROUP + ctheater_group::NAME + 24, 15);
         bytes[GROUP + ctheater_group::NAME + 2] = 0;
         p32(&mut bytes, GROUP + ctheater_group::PRIORITY, 5);
-        header(&mut bytes, GROUP + ctheater_group::ORDERS_GROUP_DATA, MEMBERS, 2);
+        header(
+            &mut bytes,
+            GROUP + ctheater_group::ORDERS_GROUP_DATA,
+            MEMBERS,
+            2,
+        );
         p64(&mut bytes, MEMBERS, MEMBER1 as u64);
         p64(&mut bytes, MEMBERS + 8, MEMBER2 as u64);
         for (member, id) in [(MEMBER1, 1u64), (MEMBER2, 2u64)] {
             p64(&mut bytes, member, corders_group::VTABLE_RVA as u64);
-            p64(&mut bytes, member + corders_group::HANDLE, (id << 32) | corders_group::REFERENCE_TYPE as u64);
-            p64(&mut bytes, member + corders_group::THEATER_GROUP, GROUP as u64);
+            p64(
+                &mut bytes,
+                member + corders_group::HANDLE,
+                (id << 32) | corders_group::REFERENCE_TYPE as u64,
+            );
+            p64(
+                &mut bytes,
+                member + corders_group::THEATER_GROUP,
+                GROUP as u64,
+            );
             p64(&mut bytes, member + corders_group::THEATRE, THEATRE as u64);
         }
         // OOB registry with one group (same MEMBER1 group for simplicity,
         // plus dedicated OOB group with member + child).
         const HANDLE: u64 = (u32::MAX as u64) << 32 | corders_group::REFERENCE_TYPE as u64;
-        p64(&mut bytes, BASE + registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8, OOB_TABLE as u64);
+        p64(
+            &mut bytes,
+            BASE + registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8,
+            OOB_TABLE as u64,
+        );
         bytes[OOB_TABLE..OOB_TABLE + 32].fill(0);
-        p64(&mut bytes, OOB_TABLE + registry::ENTRIES, OOB_BUCKETS as u64);
+        p64(
+            &mut bytes,
+            OOB_TABLE + registry::ENTRIES,
+            OOB_BUCKETS as u64,
+        );
         p32(&mut bytes, OOB_TABLE + registry::COUNT, 1);
         p32(&mut bytes, OOB_TABLE + registry::MASK, 7);
         bytes[OOB_TABLE + registry::OVERFLOW_DISTANCE] = 5;
@@ -4691,23 +4204,45 @@ pub(crate) mod naval_test_kit {
         p64(&mut bytes, OOB_BUCKETS + bucket::OBJECT, OOB_GROUP as u64);
         bytes[OOB_BUCKETS + 13 * bucket::STRIDE + bucket::DISTANCE] = bucket::TERMINAL_DISTANCE;
         bytes[OOB_GROUP..OOB_GROUP + 0x240].fill(0);
-        p64(&mut bytes, OOB_GROUP, (BASE + corders_group::VTABLE_RVA) as u64);
+        p64(
+            &mut bytes,
+            OOB_GROUP,
+            (BASE + corders_group::VTABLE_RVA) as u64,
+        );
         p64(&mut bytes, OOB_GROUP + corders_group::HANDLE, HANDLE);
         p32(&mut bytes, OOB_GROUP + corders_group::COUNTRY, 1);
         bytes[OOB_GROUP + corders_group::IS_ARMY_GROUP] = 0;
         bytes[OOB_GROUP + corders_group::MOTORIZATION_LEVEL] = 0;
         p64(&mut bytes, OOB_GROUP + corders_group::THEATRE, 0);
-        header(&mut bytes, OOB_GROUP + corders_group::MEMBER_DATA, OOB_MEMBERS, 1);
+        header(
+            &mut bytes,
+            OOB_GROUP + corders_group::MEMBER_DATA,
+            OOB_MEMBERS,
+            1,
+        );
         p64(&mut bytes, OOB_MEMBERS, OOB_MEMBER as u64);
         // Member host (division) with backlink.
         p64(&mut bytes, OOB_UNIT, carmy::VTABLE_RVA as u64);
-        p64(&mut bytes, OOB_UNIT + carmy::SECONDARY_BASE, carmy::SECONDARY_VTABLE_RVA as u64);
+        p64(
+            &mut bytes,
+            OOB_UNIT + carmy::SECONDARY_BASE,
+            carmy::SECONDARY_VTABLE_RVA as u64,
+        );
         p64(&mut bytes, OOB_UNIT + cunit::HANDLE, 0x4500_0001u64);
         let member_host = OOB_MEMBER;
         let unit_base = member_host - corders_group_member::HOST_OFFSET;
         assert_eq!(unit_base, OOB_UNIT);
-        p64(&mut bytes, member_host + corders_group_member::GROUP, OOB_GROUP as u64);
-        header(&mut bytes, OOB_GROUP + engine::carmy_group::MEMBER_DATA, 0x66000, 0);
+        p64(
+            &mut bytes,
+            member_host + corders_group_member::GROUP,
+            OOB_GROUP as u64,
+        );
+        header(
+            &mut bytes,
+            OOB_GROUP + engine::carmy_group::MEMBER_DATA,
+            0x66000,
+            0,
+        );
         let _ = (NAMES, corder_instance::VTABLE_RVA);
         bytes
     }
@@ -4727,6 +4262,8 @@ pub(crate) mod naval_test_kit {
         pub oob_groups: Vec<engine::corders_group::GroupRow>,
         pub oob_members_outcome: Outcome,
         pub oob_members: Vec<engine::corders_group::MemberRow>,
+        pub oob_children_outcome: Outcome,
+        pub oob_children: Vec<engine::corders_group::ChildRow>,
     }
 
     fn collect(memory: &impl Memory, capacity: &Capacities) -> Split {
@@ -4780,6 +4317,8 @@ pub(crate) mod naval_test_kit {
             oob_groups: captured.groups.rows.clone(),
             oob_members_outcome: captured.group_members.outcome,
             oob_members: captured.group_members.rows.clone(),
+            oob_children_outcome: captured.group_children.outcome,
+            oob_children: captured.group_children.rows.clone(),
         }
     }
 
@@ -4788,7 +4327,10 @@ pub(crate) mod naval_test_kit {
     }
 
     pub(crate) fn split(memory: &impl Memory) -> (Split, NavalCopyReport, NavalJob) {
-        let ctx = NavalCopyContext { base: BASE, game_state: GAME_STATE };
+        let ctx = NavalCopyContext {
+            base: BASE,
+            game_state: GAME_STATE,
+        };
         let mut first = NavalJob::new();
         let mut second = NavalJob::new();
         let report = super::copy_naval_refresh(memory, ctx, &mut first, Some(&mut second));
@@ -4808,6 +4350,8 @@ pub(crate) mod naval_test_kit {
                 oob_groups: captured.groups.rows.clone(),
                 oob_members_outcome: captured.group_members.outcome,
                 oob_members: captured.group_members.rows.clone(),
+                oob_children_outcome: captured.group_children.outcome,
+                oob_children: captured.group_children.rows.clone(),
             },
             report,
             first,
@@ -4818,8 +4362,14 @@ pub(crate) mod naval_test_kit {
         collect(memory, capacity)
     }
 
-    pub(crate) fn split_with(memory: &impl Memory, capacity: &Capacities) -> (Split, NavalCopyReport, NavalJob) {
-        let ctx = NavalCopyContext { base: BASE, game_state: GAME_STATE };
+    pub(crate) fn split_with(
+        memory: &impl Memory,
+        capacity: &Capacities,
+    ) -> (Split, NavalCopyReport, NavalJob) {
+        let ctx = NavalCopyContext {
+            base: BASE,
+            game_state: GAME_STATE,
+        };
         let mut first = NavalJob::new();
         let mut second = NavalJob::new();
         let report = super::copy_naval_refresh(memory, ctx, &mut first, Some(&mut second));
@@ -4839,6 +4389,8 @@ pub(crate) mod naval_test_kit {
                 oob_groups: captured.groups.rows.clone(),
                 oob_members_outcome: captured.group_members.outcome,
                 oob_members: captured.group_members.rows.clone(),
+                oob_children_outcome: captured.group_children.outcome,
+                oob_children: captured.group_children.rows.clone(),
             },
             report,
             first,
@@ -4846,17 +4398,32 @@ pub(crate) mod naval_test_kit {
     }
 
     pub(crate) fn direct_truncated(memory: &impl Memory) -> Split {
-        let capacity = Capacities { rows: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], theatre_names: 8, sunk_names: 8, orders_sources: 1, wing_sources: 1 };
+        let capacity = Capacities {
+            rows: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            theatre_names: 8,
+            sunk_names: 8,
+            orders_sources: 1,
+            wing_sources: 1,
+        };
         collect(memory, &capacity)
     }
 
     pub(crate) fn split_truncated(memory: &impl Memory) -> (Split, NavalCopyReport, NavalJob) {
-        let ctx = NavalCopyContext { base: BASE, game_state: GAME_STATE };
+        let ctx = NavalCopyContext {
+            base: BASE,
+            game_state: GAME_STATE,
+        };
         let mut first = NavalJob::new();
         let mut second = NavalJob::new();
         let report = super::copy_naval_refresh(memory, ctx, &mut first, Some(&mut second));
         assert!(report.raw_ok);
-        let capacity = Capacities { rows: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], theatre_names: 8, sunk_names: 8, orders_sources: 1, wing_sources: 1 };
+        let capacity = Capacities {
+            rows: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            theatre_names: 8,
+            sunk_names: 8,
+            orders_sources: 1,
+            wing_sources: 1,
+        };
         let mut captured = Captured::with_capacities(&capacity, &[0; 17]);
         let mut ticks = [0u64; 9];
         super::decode_naval_payload(&mut captured, BASE, &first, &mut ticks);
@@ -4872,6 +4439,8 @@ pub(crate) mod naval_test_kit {
                 oob_groups: captured.groups.rows.clone(),
                 oob_members_outcome: captured.group_members.outcome,
                 oob_members: captured.group_members.rows.clone(),
+                oob_children_outcome: captured.group_children.outcome,
+                oob_children: captured.group_children.rows.clone(),
             },
             report,
             first,
@@ -4881,14 +4450,31 @@ pub(crate) mod naval_test_kit {
     pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
         assert_eq!(split.land_outcome, direct.land_outcome, "land outcome");
         assert_eq!(split.land, direct.land, "land rows");
-        assert_eq!(split.groups_outcome, direct.groups_outcome, "groups outcome");
+        assert_eq!(
+            split.groups_outcome, direct.groups_outcome,
+            "groups outcome"
+        );
         assert_eq!(split.groups, direct.groups, "groups rows");
-        assert_eq!(split.members_outcome, direct.members_outcome, "members outcome");
+        assert_eq!(
+            split.members_outcome, direct.members_outcome,
+            "members outcome"
+        );
         assert_eq!(split.members, direct.members, "members rows");
-        assert_eq!(split.oob_groups_outcome, direct.oob_groups_outcome, "oob groups outcome");
+        assert_eq!(
+            split.oob_groups_outcome, direct.oob_groups_outcome,
+            "oob groups outcome"
+        );
         assert_eq!(split.oob_groups, direct.oob_groups, "oob groups rows");
-        assert_eq!(split.oob_members_outcome, direct.oob_members_outcome, "oob members outcome");
+        assert_eq!(
+            split.oob_members_outcome, direct.oob_members_outcome,
+            "oob members outcome"
+        );
         assert_eq!(split.oob_members, direct.oob_members, "oob members rows");
+        assert_eq!(
+            split.oob_children_outcome, direct.oob_children_outcome,
+            "oob children outcome"
+        );
+        assert_eq!(split.oob_children, direct.oob_children, "oob children rows");
     }
 
     /// Decode-worker assertion against pooled buffers (same module, so
@@ -4896,196 +4482,250 @@ pub(crate) mod naval_test_kit {
     pub(crate) fn assert_captured_matches_direct(captured: &super::Captured, direct: &Split) {
         assert_eq!(captured.land.outcome, direct.land_outcome, "land outcome");
         assert_eq!(&captured.land.rows, &direct.land, "land rows");
-        assert_eq!(captured.groups.outcome, direct.oob_groups_outcome, "oob groups outcome");
-        assert_eq!(&captured.groups.rows, &direct.oob_groups, "oob groups rows");
-        assert_eq!(captured.group_members.outcome, direct.oob_members_outcome, "oob members outcome");
-        assert_eq!(&captured.group_members.rows, &direct.oob_members, "oob members rows");
-    }
-}
-
-/// Shared synthetic address space for the railway copy/decode harness: a
-/// rail manager with four province slots (two live, two absent), cooldowns
-/// and directed edges on the live slots. Mirrors the engine railway fixture
-/// shapes.
-#[cfg(test)]
-pub(crate) mod rail_test_kit {
-    use super::{Capacities, Captured, RailCopyContext, RailCopyReport, RailJob};
-    use engine::{memory::SliceMemory, walk::Outcome, Memory};
-
-    pub(crate) const BASE: usize = 0;
-    pub(crate) const GAME_STATE: usize = 0x1000;
-    pub(crate) const MANAGER: usize = 0x1400;
-    pub(crate) const ITAB: usize = 0x1500;
-    const PTAB: usize = 0x1540;
-    pub(crate) const P1: usize = 0x1600;
-    pub(crate) const P2: usize = 0x1900;
-    const P3: usize = 0x1c00;
-    const DEF1: usize = 0x2000;
-    const DEF2: usize = 0x2100;
-    const DEF3: usize = 0x2200;
-    pub(crate) const INFO1: usize = 0x3000;
-    const INFO3: usize = 0x3080;
-    pub(crate) const PAIRS1: usize = 0x3200;
-    const PAIRS3: usize = 0x3300;
-
-    fn put32(bytes: &mut [u8], at: usize, value: u32) {
-        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
-    }
-
-    fn put64(bytes: &mut [u8], at: usize, value: u64) {
-        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
-    }
-
-    fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
-        put64(bytes, at, data as u64);
-        put32(bytes, at + 8, count);
-        put32(bytes, at + 12, count);
-    }
-
-    pub(crate) fn fixture() -> Vec<u8> {
-        use engine::{
-            cgame_state, cprovince, cprovince_railway_info, crailway_manager, province_definition,
-            rail_neighbor,
-        };
-        let mut bytes = vec![0; 0x4000];
-        put64(&mut bytes, GAME_STATE + cgame_state::RAIL_MANAGER, MANAGER as u64);
-        put64(&mut bytes, MANAGER, crailway_manager::VTABLE_RVA as u64);
-        header(&mut bytes, MANAGER + crailway_manager::PROVINCE_INFO_TABLE, ITAB, 4);
-        header(&mut bytes, GAME_STATE + cgame_state::PROVINCES, PTAB, 4);
-        put64(&mut bytes, ITAB, 0);
-        put64(&mut bytes, ITAB + 8, INFO1 as u64);
-        put64(&mut bytes, ITAB + 16, 0);
-        put64(&mut bytes, ITAB + 24, INFO3 as u64);
-        put64(&mut bytes, PTAB, 0);
-        put64(&mut bytes, PTAB + 8, P1 as u64);
-        put64(&mut bytes, PTAB + 16, P2 as u64);
-        put64(&mut bytes, PTAB + 24, P3 as u64);
-        for (id, province, definition) in [(1u32, P1, DEF1), (2, P2, DEF2), (3, P3, DEF3)] {
-            put64(&mut bytes, province, cprovince::VTABLE_RVA as u64);
-            put32(&mut bytes, province + cprovince::ID, id);
-            put64(&mut bytes, province + cprovince::DEFINITION, definition as u64);
-            put32(&mut bytes, definition + province_definition::ID, id);
-        }
-        for (info, definition, province, ticks, pairs, pairs_count) in [
-            (INFO1, DEF1, P1, 5i32, PAIRS1, 2u32),
-            (INFO3, DEF3, P3, -1i32, PAIRS3, 1u32),
-        ] {
-            put64(&mut bytes, info, cprovince_railway_info::VTABLE_RVA as u64);
-            put64(
-                &mut bytes,
-                info + cprovince_railway_info::PROVINCE_RECORD,
-                definition as u64,
-            );
-            put64(
-                &mut bytes,
-                info + cprovince_railway_info::BUILDING_STATUS,
-                (province + cprovince::BUILDING_STATUS) as u64,
-            );
-            put32(
-                &mut bytes,
-                info + cprovince_railway_info::COOLDOWN_TICKS,
-                ticks as u32,
-            );
-            header(&mut bytes, info + cprovince_railway_info::NEIGHBOR_PAIRS, pairs, pairs_count);
-        }
-        for (offset, neighbor, level) in [(PAIRS1, 2i32, 7i32), (PAIRS1 + 8, 3, 9), (PAIRS3, 1, 4)] {
-            put32(&mut bytes, offset, neighbor as u32);
-            put32(&mut bytes, offset + rail_neighbor::LEVEL, level as u32);
-        }
-        bytes
-    }
-
-    pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
-        SliceMemory { base: 0, bytes }
-    }
-
-    pub(crate) struct Split {
-        pub cooldowns_outcome: Outcome,
-        pub cooldowns: Vec<engine::cprovince_railway_info::Row>,
-        pub edges_outcome: Outcome,
-        pub edges: Vec<engine::rail_neighbor::Row>,
-    }
-
-    fn collect_typed(memory: &impl Memory, cooldowns_cap: usize, edges_cap: usize) -> Split {
-        use engine::crailway_manager;
-        let mut capacities = Capacities::default();
-        capacities.rows[2] = cooldowns_cap;
-        capacities.rows[3] = edges_cap;
-        let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
-        let walked = crailway_manager::walk(
-            memory,
-            BASE,
-            GAME_STATE,
-            &mut captured.cooldowns.rows,
-            &mut captured.edges.rows,
+        assert_eq!(
+            captured.groups.outcome, direct.oob_groups_outcome,
+            "oob groups outcome"
         );
-        captured.cooldowns.outcome = super::bounded(walked.provinces, captured.cooldowns.rows.len());
-        captured.edges.outcome = super::bounded(walked.edges, captured.edges.rows.len());
-        Split {
-            cooldowns_outcome: captured.cooldowns.outcome,
-            cooldowns: captured.cooldowns.rows.clone(),
-            edges_outcome: captured.edges.outcome,
-            edges: captured.edges.rows.clone(),
+        assert_eq!(&captured.groups.rows, &direct.oob_groups, "oob groups rows");
+        assert_eq!(
+            captured.group_members.outcome, direct.oob_members_outcome,
+            "oob members outcome"
+        );
+        assert_eq!(
+            &captured.group_members.rows, &direct.oob_members,
+            "oob members rows"
+        );
+        assert_eq!(
+            captured.group_children.outcome, direct.oob_children_outcome,
+            "oob children outcome"
+        );
+        assert_eq!(
+            &captured.group_children.rows, &direct.oob_children,
+            "oob children rows"
+        );
+    }
+
+    #[test]
+    fn naval_oob_copy_reads_only_typed_child_and_provider_dependencies() {
+        use engine::{carmy_group, corders_group, corders_group_member};
+        use std::cell::RefCell;
+
+        struct Fault<'a> {
+            memory: SliceMemory<'a>,
+            address: Option<usize>,
+            reads: RefCell<Vec<(usize, usize)>>,
         }
-    }
+        impl Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.reads.borrow_mut().push((address, output.len()));
+                let Some(end) = address.checked_add(output.len()) else {
+                    return false;
+                };
+                if self
+                    .address
+                    .is_some_and(|fault| address <= fault && fault < end)
+                {
+                    return false;
+                }
+                self.memory.copy(address, output)
+            }
+        }
 
-    fn collect_split(
-        memory: &impl Memory,
-        cooldowns_cap: usize,
-        edges_cap: usize,
-    ) -> (Split, RailCopyReport, RailJob) {
-        let ctx = RailCopyContext {
-            base: BASE,
-            game_state: GAME_STATE,
-            needed: [true; 2],
-        };
-        let mut capacities = Capacities::default();
-        capacities.rows[2] = cooldowns_cap;
-        capacities.rows[3] = edges_cap;
-        let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
-        let mut first = RailJob::new();
-        let mut second = RailJob::new();
-        let report = captured.copy_rail_refresh(memory, ctx, &mut first, Some(&mut second));
-        assert!(report.raw_ok);
-        let mut ticks = [0u64; 2];
-        captured.decode_rail_payload(BASE, &first, &mut ticks);
-        (
-            Split {
-                cooldowns_outcome: captured.cooldowns.outcome,
-                cooldowns: captured.cooldowns.rows.clone(),
-                edges_outcome: captured.edges.outcome,
-                edges: captured.edges.rows.clone(),
-            },
-            report,
-            first,
-        )
-    }
-
-    pub(crate) fn direct(memory: &impl Memory) -> Split {
-        collect_typed(memory, 16_384, 32_768)
-    }
-
-    pub(crate) fn split(memory: &impl Memory) -> (Split, RailCopyReport, RailJob) {
-        collect_split(memory, 16_384, 32_768)
-    }
-
-    pub(crate) fn direct_with(memory: &impl Memory, cooldowns: usize, edges: usize) -> Split {
-        collect_typed(memory, cooldowns, edges)
-    }
-
-    pub(crate) fn split_with(
-        memory: &impl Memory,
-        cooldowns: usize,
-        edges: usize,
-    ) -> (Split, RailCopyReport, RailJob) {
-        collect_split(memory, cooldowns, edges)
-    }
-
-    pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
-        assert_eq!(split.cooldowns_outcome, direct.cooldowns_outcome, "cooldowns outcome");
-        assert_eq!(split.cooldowns, direct.cooldowns, "cooldowns rows");
-        assert_eq!(split.edges_outcome, direct.edges_outcome, "edges outcome");
-        assert_eq!(split.edges, direct.edges, "edges rows");
+        const CHILDREN: usize = 0x66000;
+        const CHILD: usize = 0x67000;
+        let child_header = OOB_GROUP + carmy_group::MEMBER_DATA;
+        let flag_address = OOB_GROUP + corders_group::IS_ARMY_GROUP;
+        let backlink = OOB_MEMBER + corders_group_member::GROUP;
+        assert_eq!(carmy_group::MEMBER_DATA, corders_group::SIZE);
+        let mut bytes = fixture();
+        for (name, flag, fault, poison, provider, required_fault) in [
+            (
+                "ordinary header outside allocation",
+                0,
+                Some(child_header),
+                false,
+                false,
+                false,
+            ),
+            (
+                "ordinary poisoned child header",
+                0,
+                None,
+                true,
+                false,
+                false,
+            ),
+            ("army child", 1, None, false, false, false),
+            (
+                "army child header fault",
+                1,
+                Some(child_header),
+                false,
+                false,
+                true,
+            ),
+            (
+                "army child entry fault",
+                1,
+                Some(CHILDREN),
+                false,
+                false,
+                true,
+            ),
+            (
+                "army child identity fault",
+                1,
+                Some(CHILD),
+                false,
+                false,
+                true,
+            ),
+            ("nonzero flag two", 2, None, false, false, false),
+            (
+                "nonzero flag two header fault",
+                2,
+                Some(child_header),
+                false,
+                false,
+                true,
+            ),
+            ("nonzero flag maximum", u8::MAX, None, false, false, false),
+            (
+                "nonzero flag maximum header fault",
+                u8::MAX,
+                Some(child_header),
+                false,
+                false,
+                true,
+            ),
+            (
+                "unreadable discriminator",
+                1,
+                Some(flag_address),
+                false,
+                false,
+                true,
+            ),
+            (
+                "provider unused embedded vtable fault",
+                0,
+                Some(OOB_MEMBER),
+                false,
+                true,
+                false,
+            ),
+            (
+                "provider host identity fault",
+                0,
+                Some(OOB_UNIT),
+                false,
+                true,
+                true,
+            ),
+            (
+                "provider backlink fault",
+                0,
+                Some(backlink),
+                false,
+                true,
+                true,
+            ),
+        ] {
+            let vtable = if flag == 0 {
+                corders_group::VTABLE_RVA
+            } else {
+                carmy_group::VTABLE_RVA
+            };
+            p64(&mut bytes, OOB_GROUP, (BASE + vtable) as u64);
+            bytes[flag_address] = flag;
+            header(
+                &mut bytes,
+                child_header,
+                if poison { 0x7fff0000 } else { CHILDREN },
+                1,
+            );
+            p64(&mut bytes, CHILDREN, CHILD as u64);
+            p64(&mut bytes, CHILD, (BASE + corders_group::VTABLE_RVA) as u64);
+            p64(
+                &mut bytes,
+                CHILD + corders_group::HANDLE,
+                (7u64 << 32) | corders_group::REFERENCE_TYPE as u64,
+            );
+            p64(
+                &mut bytes,
+                OOB_GROUP + corders_group::HQ_PROVIDER,
+                if provider { OOB_MEMBER as u64 } else { 0 },
+            );
+            let memory = Fault {
+                memory: memory(&bytes),
+                address: fault,
+                reads: RefCell::new(Vec::new()),
+            };
+            let direct = direct(&memory);
+            memory.reads.borrow_mut().clear();
+            let (replayed, report, _) = split(&memory);
+            assert_matches_direct(&replayed, &direct);
+            assert!(report.raw_ok, "{name}");
+            let mut matched = [true; 9];
+            if required_fault {
+                matched[6..].fill(false);
+            }
+            assert_eq!(report.matched, matched, "{name}");
+            let reads = memory.reads.borrow();
+            let visits_children = flag != 0 && fault != Some(flag_address);
+            assert_eq!(
+                reads.contains(&(child_header, 16)),
+                visits_children,
+                "{name}"
+            );
+            if !visits_children {
+                assert!(!reads.contains(&(CHILDREN, 8)), "{name}");
+                assert!(!reads.contains(&(CHILD, 16)), "{name}");
+                assert!(!reads.contains(&(0x7fff0000, 8)), "{name}");
+                // Skipping the subclass walk must not skip the later reverse census.
+                assert_eq!(
+                    reads
+                        .iter()
+                        .filter(|&&(address, len)| address
+                            == OOB_GROUP + corders_group::THEATER_GROUP
+                            && len == 8)
+                        .count(),
+                    4,
+                    "{name}"
+                );
+            }
+            assert!(!reads.contains(&(OOB_MEMBER, 16)), "{name}");
+            if provider {
+                assert!(
+                    reads.windows(3).any(|window| window
+                        == [
+                            (OOB_GROUP + corders_group::HQ_PROVIDER, 8),
+                            (OOB_UNIT, 32),
+                            (backlink, 8),
+                        ]),
+                    "{name}"
+                );
+            }
+            if !required_fault {
+                assert_eq!(
+                    replayed.oob_groups_outcome,
+                    Outcome::Rows { len: 1 },
+                    "{name}"
+                );
+                assert_eq!(
+                    replayed.oob_members_outcome,
+                    Outcome::Rows { len: 1 },
+                    "{name}"
+                );
+                assert_eq!(
+                    replayed.oob_children_outcome,
+                    Outcome::Rows {
+                        len: usize::from(flag != 0)
+                    },
+                    "{name}"
+                );
+            }
+        }
     }
 }
 
@@ -5095,7 +4735,7 @@ pub(crate) mod rail_test_kit {
 #[cfg(test)]
 pub(crate) mod supremacy_test_kit {
     use super::{Capacities, Captured, SupremacyCopyContext, SupremacyCopyReport, SupremacyJob};
-    use engine::{memory::SliceMemory, walk::Outcome, Memory};
+    use engine::{Memory, memory::SliceMemory, walk::Outcome};
 
     pub(crate) const BASE: usize = 0;
     pub(crate) const GAME_STATE: usize = 0x1000;
@@ -5124,34 +4764,76 @@ pub(crate) mod supremacy_test_kit {
             naval_dominance_entry,
         };
         let mut bytes = vec![0; 0x4000];
-        header(&mut bytes, GAME_STATE + cgame_state::STRATEGIC_REGIONS, REGIONS, 3);
+        header(
+            &mut bytes,
+            GAME_STATE + cgame_state::STRATEGIC_REGIONS,
+            REGIONS,
+            3,
+        );
         put64(&mut bytes, REGIONS, 0);
         put64(&mut bytes, REGIONS + 8, REGION_OBJECT as u64);
         put64(&mut bytes, REGIONS + 16, 0);
-        put64(&mut bytes, REGION_OBJECT, cstrategic_region::VTABLE_RVA as u64);
+        put64(
+            &mut bytes,
+            REGION_OBJECT,
+            cstrategic_region::VTABLE_RVA as u64,
+        );
         put64(
             &mut bytes,
             REGION_OBJECT + cstrategic_region::SECONDARY,
             cstrategic_region::SECONDARY_VTABLE_RVA as u64,
         );
-        put32(&mut bytes, REGION_OBJECT + cstrategic_region::ID, 0x8765_4321);
-        put32(&mut bytes, REGION_OBJECT + cstrategic_region::RUNTIME_SLOT, 1);
+        put32(
+            &mut bytes,
+            REGION_OBJECT + cstrategic_region::ID,
+            0x8765_4321,
+        );
+        put32(
+            &mut bytes,
+            REGION_OBJECT + cstrategic_region::RUNTIME_SLOT,
+            1,
+        );
         put64(
             &mut bytes,
             REGION_OBJECT + cstrategic_region::NAVAL_DOMINANCE,
             DOMINANCE as u64,
         );
-        put64(&mut bytes, DOMINANCE, cnaval_region_dominance::VTABLE_RVA as u64);
-        put64(&mut bytes, DOMINANCE + cnaval_region_dominance::REGION, REGION_OBJECT as u64);
-        header(&mut bytes, DOMINANCE + cnaval_region_dominance::ENTRIES, ROWS, 2);
+        put64(
+            &mut bytes,
+            DOMINANCE,
+            cnaval_region_dominance::VTABLE_RVA as u64,
+        );
+        put64(
+            &mut bytes,
+            DOMINANCE + cnaval_region_dominance::REGION,
+            REGION_OBJECT as u64,
+        );
+        header(
+            &mut bytes,
+            DOMINANCE + cnaval_region_dominance::ENTRIES,
+            ROWS,
+            2,
+        );
         for (index, country) in [u32::MAX, 1].into_iter().enumerate() {
             let outer = ROWS + index * naval_dominance_entry::STRIDE;
             let object = outer + naval_dominance_entry::VALUES;
-            put32(&mut bytes, outer + naval_dominance_entry::COUNTRY_KEY, country);
+            put32(
+                &mut bytes,
+                outer + naval_dominance_entry::COUNTRY_KEY,
+                country,
+            );
             put64(&mut bytes, object, cdominance_values::VTABLE_RVA as u64);
             put32(&mut bytes, object + cdominance_values::COUNTRY, country);
-            put64(&mut bytes, object + cdominance_values::REGION, REGION_OBJECT as u64);
-            put64(&mut bytes, object + cdominance_values::CURRENT, (1000 + index) as u64);
+            put64(
+                &mut bytes,
+                object + cdominance_values::REGION,
+                REGION_OBJECT as u64,
+            );
+            put64(
+                &mut bytes,
+                object + cdominance_values::CURRENT,
+                (1000 + index) as u64,
+            );
             put64(
                 &mut bytes,
                 object + cdominance_values::BASE_TARGET,
@@ -5159,7 +4841,11 @@ pub(crate) mod supremacy_test_kit {
             );
         }
         // Spare vector capacity holds poison and must not become live rows.
-        put64(&mut bytes, ROWS + 2 * naval_dominance_entry::STRIDE, u64::MAX);
+        put64(
+            &mut bytes,
+            ROWS + 2 * naval_dominance_entry::STRIDE,
+            u64::MAX,
+        );
         bytes
     }
 
@@ -5177,7 +4863,8 @@ pub(crate) mod supremacy_test_kit {
         let mut capacities = Capacities::default();
         capacities.rows[0] = cap;
         let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
-        let walked = cnaval_region_dominance::walk(memory, BASE, GAME_STATE, &mut captured.supremacy.rows);
+        let walked =
+            cnaval_region_dominance::walk(memory, BASE, GAME_STATE, &mut captured.supremacy.rows);
         captured.supremacy.outcome = super::bounded(walked, captured.supremacy.rows.len());
         Split {
             outcome: captured.supremacy.outcome,
@@ -5185,7 +4872,10 @@ pub(crate) mod supremacy_test_kit {
         }
     }
 
-    fn collect_split(memory: &impl Memory, cap: usize) -> (Split, SupremacyCopyReport, SupremacyJob) {
+    fn collect_split(
+        memory: &impl Memory,
+        cap: usize,
+    ) -> (Split, SupremacyCopyReport, SupremacyJob) {
         let ctx = SupremacyCopyContext {
             base: BASE,
             game_state: GAME_STATE,
@@ -5222,7 +4912,10 @@ pub(crate) mod supremacy_test_kit {
         collect_typed(memory, cap)
     }
 
-    pub(crate) fn split_with(memory: &impl Memory, cap: usize) -> (Split, SupremacyCopyReport, SupremacyJob) {
+    pub(crate) fn split_with(
+        memory: &impl Memory,
+        cap: usize,
+    ) -> (Split, SupremacyCopyReport, SupremacyJob) {
         collect_split(memory, cap)
     }
 
@@ -5239,7 +4932,7 @@ pub(crate) mod supremacy_test_kit {
 #[cfg(test)]
 pub(crate) mod sunk_test_kit {
     use super::{Capacities, Captured, SunkCopyContext, SunkCopyReport, SunkJob};
-    use engine::{memory::SliceMemory, walk::Outcome, Memory};
+    use engine::{Memory, memory::SliceMemory, walk::Outcome};
 
     pub(crate) const BASE: usize = 0;
     pub(crate) const GAME_STATE: usize = 0x100;
@@ -5258,41 +4951,85 @@ pub(crate) mod sunk_test_kit {
 
     fn short(bytes: &mut [u8], at: usize, value: &[u8]) {
         put(bytes, at, value);
-        put(bytes, at + msvc_string::LENGTH, &(value.len() as u64).to_le_bytes());
+        put(
+            bytes,
+            at + msvc_string::LENGTH,
+            &(value.len() as u64).to_le_bytes(),
+        );
         put(bytes, at + msvc_string::CAPACITY, &15_u64.to_le_bytes());
     }
 
     use engine::msvc_string;
 
     pub(crate) fn fixture() -> Vec<u8> {
-        use engine::{cgame_date, cgame_state, cprovince, csunk_ship_info, csub_unit_definition};
+        use engine::{cgame_date, cgame_state, cprovince, csub_unit_definition, csunk_ship_info};
         let mut bytes = vec![0_u8; 0x2000];
-        put(&mut bytes, GAME_STATE + cgame_state::SUNK_SHIP_HISTORY, &(VECTOR as u64).to_le_bytes());
-        put(&mut bytes, GAME_STATE + cgame_state::SUNK_SHIP_HISTORY_CAPACITY, &2_u32.to_le_bytes());
-        put(&mut bytes, GAME_STATE + cgame_state::SUNK_SHIP_HISTORY_COUNT, &2_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            GAME_STATE + cgame_state::SUNK_SHIP_HISTORY,
+            &(VECTOR as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            GAME_STATE + cgame_state::SUNK_SHIP_HISTORY_CAPACITY,
+            &2_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            GAME_STATE + cgame_state::SUNK_SHIP_HISTORY_COUNT,
+            &2_u32.to_le_bytes(),
+        );
         put(&mut bytes, VECTOR, &(FIRST as u64).to_le_bytes());
         put(&mut bytes, VECTOR + 8, &(SECOND as u64).to_le_bytes());
         for (record, hour, class, attribution, province, victim, attacker) in [
             (FIRST, 90u32, CLASS, NULL_CLASS, MAP_PROVINCE, 3u32, 4u32),
             (SECOND, 100u32, CLASS, 0usize, 0usize, 5u32, 6u32),
         ] {
-            put(&mut bytes, record, &(csunk_ship_info::VTABLE_RVA as u64).to_le_bytes());
-            put(&mut bytes, record + csunk_ship_info::SINK_DATE, &(cgame_date::VTABLE_RVA as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                record,
+                &(csunk_ship_info::VTABLE_RVA as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                record + csunk_ship_info::SINK_DATE,
+                &(cgame_date::VTABLE_RVA as u64).to_le_bytes(),
+            );
             put(
                 &mut bytes,
                 record + csunk_ship_info::SINK_DATE_PERSISTENT,
                 &(cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
             );
-            put(&mut bytes, record + csunk_ship_info::SINK_HOUR, &hour.to_le_bytes());
-            put(&mut bytes, record + csunk_ship_info::SHIP_CLASS, &(class as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                record + csunk_ship_info::SINK_HOUR,
+                &hour.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                record + csunk_ship_info::SHIP_CLASS,
+                &(class as u64).to_le_bytes(),
+            );
             put(
                 &mut bytes,
                 record + csunk_ship_info::ATTRIBUTION_CLASS,
                 &(attribution as u64).to_le_bytes(),
             );
-            put(&mut bytes, record + csunk_ship_info::VICTIM_COUNTRY, &victim.to_le_bytes());
-            put(&mut bytes, record + csunk_ship_info::ATTACKER_COUNTRY, &attacker.to_le_bytes());
-            put(&mut bytes, record + csunk_ship_info::MODEL_LEVEL, &2_i32.to_le_bytes());
+            put(
+                &mut bytes,
+                record + csunk_ship_info::VICTIM_COUNTRY,
+                &victim.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                record + csunk_ship_info::ATTACKER_COUNTRY,
+                &attacker.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                record + csunk_ship_info::MODEL_LEVEL,
+                &2_i32.to_le_bytes(),
+            );
             put(
                 &mut bytes,
                 record + csunk_ship_info::VICTIM_EQUIPMENT_VARIANT,
@@ -5308,14 +5045,26 @@ pub(crate) mod sunk_test_kit {
                 record + csunk_ship_info::PROVINCE,
                 &(province as u64).to_le_bytes(),
             );
-            put(&mut bytes, record + csunk_ship_info::BATTLE, &0x5555_6666_7777_8888u64.to_le_bytes());
+            put(
+                &mut bytes,
+                record + csunk_ship_info::BATTLE,
+                &0x5555_6666_7777_8888u64.to_le_bytes(),
+            );
             bytes[record + csunk_ship_info::CAUSE_RECORD] = 1;
             bytes[record + csunk_ship_info::ASSISTED_KILL] = 0;
         }
         // Inline ship/attribution names on both records.
         short(&mut bytes, FIRST + csunk_ship_info::SHIP_NAME, b"Ship");
-        short(&mut bytes, FIRST + csunk_ship_info::ATTRIBUTION_SOURCE_NAME, b"Src");
-        short(&mut bytes, SECOND + csunk_ship_info::SHIP_NAME, b"SecondShip");
+        short(
+            &mut bytes,
+            FIRST + csunk_ship_info::ATTRIBUTION_SOURCE_NAME,
+            b"Src",
+        );
+        short(
+            &mut bytes,
+            SECOND + csunk_ship_info::SHIP_NAME,
+            b"SecondShip",
+        );
         // Heap attribution name on the second record.
         put(
             &mut bytes,
@@ -5340,11 +5089,23 @@ pub(crate) mod sunk_test_kit {
             (NULL_CLASS, 0u32, csub_unit_definition::NULL_VTABLE_RVA),
         ] {
             put(&mut bytes, class, &(vtable as u64).to_le_bytes());
-            put(&mut bytes, class + csub_unit_definition::TOKEN, &token.to_le_bytes());
+            put(
+                &mut bytes,
+                class + csub_unit_definition::TOKEN,
+                &token.to_le_bytes(),
+            );
             short(&mut bytes, class + csub_unit_definition::NAME, b"Cls");
         }
-        put(&mut bytes, MAP_PROVINCE, &(cprovince::VTABLE_RVA as u64).to_le_bytes());
-        put(&mut bytes, MAP_PROVINCE + cprovince::ID, &77_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            MAP_PROVINCE,
+            &(cprovince::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            MAP_PROVINCE + cprovince::ID,
+            &77_u32.to_le_bytes(),
+        );
         bytes
     }
 

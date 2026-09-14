@@ -30,7 +30,7 @@ On first run the viewer asks for the game and Paradox user folders and stores th
 Recording:
 
 - The recorder is passive. It never pauses, saves, sends input or drives the game.
-- The collector reads game state through exactly one detour, at the proven hourly boundary, on the game thread. Diffing, encoding and disk writes happen off the game thread. The detour is restored and verified on detach.
+- The collector reads game state through exactly one detour at the proven hourly boundary. The parallel-acquisition prototype may use acquisition workers while the game thread waits; all live reads finish before the game resumes. Polling intervals and recorded fields are unchanged. Diffing, encoding and disk writes happen off the game thread. The detour is restored and verified on detach, and all collector workers are joined before unloading.
 - Two simultaneous game processes are unsupported and refused. An unsupported executable records nothing.
 - A failed read or dropped hour costs only the affected table or hours and is named in the file.
 

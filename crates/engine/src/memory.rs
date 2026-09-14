@@ -60,9 +60,106 @@ fn is_canonical_range(addr: usize, len: usize) -> bool {
     matches!(high, 0 | 0x1FFFF) && end >> 47 == high
 }
 
+/// A conservative envelope of nonempty fields, useful only when it replaces
+/// at least two per-field source checks. Overflow disables the fast path;
+/// empty fields never contribute their otherwise irrelevant source offsets.
+#[inline(always)]
+fn record_source_envelope(fields: &[RecordField]) -> Option<(usize, usize)> {
+    if fields.len() < 2 {
+        return None;
+    }
+    let mut first = usize::MAX;
+    let mut end = 0;
+    let mut nonempty = 0;
+    for field in fields {
+        if field.len != 0 {
+            first = first.min(field.source_offset);
+            end = end.max(field.source_offset.checked_add(field.len)?);
+            nonempty += 1;
+        }
+    }
+    (nonempty > 1).then_some((first, end))
+}
+
+/// Return the row-major prefix whose nonempty source spans have valid address
+/// arithmetic and are canonical. `record_count` must validate the complete
+/// count first. This reads immutable metadata only, never any source bytes.
+#[inline(always)]
+fn record_source_prefix(pointers: &[usize], fields: &[RecordField]) -> usize {
+    let envelope = record_source_envelope(fields);
+    let mut completed = 0;
+    for &pointer in pointers {
+        if pointer != 0
+            && envelope.is_some_and(|(first, end)| {
+                pointer.checked_add(end).is_some()
+                    && is_canonical_range(pointer + first, end - first)
+            })
+        {
+            // Every nonempty field is inside this canonical, nonoverflowing
+            // range. Holes are not read; readability is still decided by SEH
+            // in field order. A failed envelope proves nothing about a prefix.
+            completed += fields.len();
+            continue;
+        }
+        for field in fields {
+            if field.len != 0 {
+                let Some(address) = pointer
+                    .checked_add(field.source_offset)
+                    .filter(|_| pointer != 0)
+                    .filter(|&address| address.checked_add(field.len).is_some())
+                else {
+                    return completed;
+                };
+                if !is_canonical_range(address, field.len) {
+                    return completed;
+                }
+            }
+            completed += 1;
+        }
+    }
+    completed
+}
+
 /// Implementations fill the destination or return false; a failed copy may be partial.
 pub trait Memory {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool;
+
+    /// Optional immutable, already-owned bytes for this exact address range.
+    /// Every contained nonempty read must equal `copy` without consuming any
+    /// observation cursor. Implementations must exclude overriding failures,
+    /// repeated observations and competing bulk ranges, not merely find a
+    /// readable enclosing allocation. The borrow never exposes live memory.
+    /// Observation-recording wrappers must not forward this capability.
+    fn immutable_view(&self, _address: usize, _len: usize) -> Option<SliceMemory<'_>> {
+        None
+    }
+
+    /// Optional authentication derived from this callback's complete country
+    /// census. The view must belong to the exact module/game-state pair and
+    /// remain covered by the source's final direct authentication verification.
+    /// Observation-recording wrappers must not forward this capability: their
+    /// readers still need every original byte request in order.
+    fn authenticated_countries(
+        &self,
+        _base: usize,
+        _game_state: usize,
+    ) -> Option<crate::ccountry::AuthenticatedRoster<'_>> {
+        None
+    }
+
+    /// Optional raw lookup from a complete, sorted accumulator snapshot owned
+    /// by this acquisition pass. Every header and entry byte must undergo final
+    /// direct verification before publication, including after a failed walk.
+    /// Absence of this capability preserves the ordinary live reader. This
+    /// hook must not evaluate modifier metadata or escape its pass lifetime;
+    /// observation-recording wrappers must not forward it.
+    fn modifier_accumulator_value(
+        &self,
+        _address: usize,
+        _key: u32,
+    ) -> Option<Result<crate::modifier_accumulator::Value, &'static str>> {
+        None
+    }
 
     /// Copies fields in order and returns the number fully copied before the first
     /// failure. The failed field may be partial; later destinations are untouched.
@@ -164,6 +261,7 @@ pub fn read<T: Raw>(memory: &impl Memory, address: usize) -> Option<T> {
 }
 
 /// The caller owns the buffer. No allocation occurs, including on a read failure.
+#[inline(always)]
 pub fn read_slice(memory: &impl Memory, address: usize, destination: &mut [u8]) -> bool {
     if destination.is_empty() {
         return true;
@@ -173,7 +271,7 @@ pub fn read_slice(memory: &impl Memory, address: usize, destination: &mut [u8]) 
         && memory.copy(address, destination)
 }
 
-/// An immutable, synthetic address space for pure walker tests.
+/// An immutable address space backed by borrowed, already-owned bytes.
 pub struct SliceMemory<'a> {
     pub base: usize,
     pub bytes: &'a [u8],
@@ -212,7 +310,7 @@ impl LiveMemory {
 
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 impl Memory for LiveMemory {
-    #[inline]
+    #[inline(always)]
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         unsafe extern "C" {
             fn seh_guarded_copy(dst: *mut u8, src: *const u8, len: usize) -> i32;
@@ -240,6 +338,7 @@ impl Memory for LiveMemory {
         }
     }
 
+    #[inline(always)]
     fn copy_scattered<const N: usize>(
         &self,
         addresses: [usize; N],
@@ -303,7 +402,7 @@ impl Memory for LiveMemory {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn copy_records(
         &self,
         pointers: &[usize],
@@ -314,7 +413,7 @@ impl Memory for LiveMemory {
         unsafe extern "C" {
             fn seh_guarded_copy_records(
                 pointers: *const usize,
-                row_count: usize,
+                validated_field_count: usize,
                 fields: *const RecordField,
                 field_count: usize,
                 row_stride: usize,
@@ -327,81 +426,23 @@ impl Memory for LiveMemory {
         if count == 0 || fields.iter().all(|field| field.len == 0) {
             return count;
         }
-        // Contain noncanonical x86-64 sources before the guarded instruction.
-        // Scan in field order for the first null/overflow/noncanonical span:
-        // null/overflow are safe for C (it returns the prefix without touching
-        // memory), so only a first-blocker that is noncanonical needs Rust
-        // handling. In that case copy the canonical prefix field-by-field with
-        // the same completed-field semantics (empty counts, unreadable stops
-        // with partial allowed) and return without touching the noncanonical
-        // span. The common all-canonical path keeps the fast batched C call.
-        enum Blocker {
-            NullOverflow,
-            Noncanonical { row: usize, col: usize },
-        }
-        let mut first_blocker: Option<(usize, Blocker)> = None;
-        {
-            let mut completed = 0;
-            'scan: for (row, &pointer) in pointers.iter().enumerate() {
-                for (col, field) in fields.iter().enumerate() {
-                    if field.len != 0 {
-                        let Some(address) = pointer
-                            .checked_add(field.source_offset)
-                            .filter(|_| pointer != 0)
-                            .filter(|&address| address.checked_add(field.len).is_some())
-                        else {
-                            first_blocker = Some((completed, Blocker::NullOverflow));
-                            break 'scan;
-                        };
-                        if !is_canonical_range(address, field.len) {
-                            first_blocker = Some((completed, Blocker::Noncanonical { row, col }));
-                            break 'scan;
-                        }
-                    }
-                    completed += 1;
-                }
-            }
-        }
-        if let Some((fail_index, Blocker::Noncanonical { row, col })) = first_blocker {
-            let _ = fail_index;
-            // Copy the canonical prefix before (row, col) with identical
-            // prefix semantics; unreadable canonical spans stop gracefully.
-            let mut completed = 0;
-            for (r, &pointer) in pointers.iter().enumerate() {
-                for (c, field) in fields.iter().enumerate() {
-                    if r == row && c == col {
-                        return completed;
-                    }
-                    if field.len == 0 {
-                        completed += 1;
-                        continue;
-                    }
-                    // Safe: record_count validated every destination bound, and
-                    // the scan guarantees this address is canonical with no
-                    // overflow (null/overflow would have blocked first).
-                    let address = pointer.checked_add(field.source_offset).unwrap();
-                    let start = r * row_stride + field.destination_offset;
-                    let end = start + field.len;
-                    if !self.copy(address, &mut destination[start..end]) {
-                        return completed;
-                    }
-                    completed += 1;
-                }
-            }
-            return completed;
+        let validated_field_count = record_source_prefix(pointers, fields);
+        if validated_field_count == 0 {
+            return 0;
         }
         // SAFETY: the two immutable metadata slices and initialized writable
         // destination outlive the call. RecordField has the C layout, and the
         // checked row count/stride and field bounds cover every destination.
-        // C validates each nonempty source range and contains only faults in
-        // the currently copied field, preserving its completed-field witness.
-        // The scan above guarantees no noncanonical source reaches C before a
-        // null/overflow stop; remaining noncanonical spans past such a stop
-        // are never touched.
+        // Every nonempty source within validated_field_count has passed the
+        // Rust null/overflow/canonical checks. C only evaluates that prefix,
+        // including a possible partial final row; invalid and later sources
+        // never reach a guarded instruction. SEH still decides readability in
+        // order, so an earlier unreadable field wins over a later invalid one.
+        // C preserves its completed-field witness and exact fault-range filter.
         unsafe {
             seh_guarded_copy_records(
                 pointers.as_ptr(),
-                pointers.len(),
+                validated_field_count,
                 fields.as_ptr(),
                 fields.len(),
                 row_stride,
@@ -431,6 +472,109 @@ mod tests {
             } else {
                 destination.fill(address as u8);
                 true
+            }
+        }
+    }
+
+    #[test]
+    fn record_source_envelope_never_rejects_fields_across_a_canonical_gap() {
+        let fields = [
+            RecordField {
+                source_offset: 0,
+                destination_offset: 0,
+                len: 4,
+            },
+            RecordField {
+                source_offset: 0xffff_8000_0000_0000 - 1,
+                destination_offset: 4,
+                len: 4,
+            },
+            RecordField {
+                source_offset: usize::MAX,
+                destination_offset: 8,
+                len: 0,
+            },
+        ];
+        let (first, end) = record_source_envelope(&fields).unwrap();
+        assert!(!is_canonical_range(1 + first, end - first));
+        // No reads occur here. Both nonempty fields are canonical even though
+        // the conservative envelope crosses the noncanonical gap between them.
+        assert_eq!(record_source_prefix(&[1], &fields), 3);
+        assert_eq!(
+            record_source_prefix(&[1], &[fields[1], fields[0], fields[2]]),
+            3
+        );
+        assert_eq!(record_source_envelope(&fields[..1]), None);
+        assert_eq!(record_source_envelope(&[fields[0], fields[2]]), None);
+        assert_eq!(record_source_prefix(&[0, usize::MAX], &fields[2..]), 2);
+        assert_eq!(record_source_prefix(&[], &fields), 0);
+    }
+
+    #[test]
+    fn record_source_prefix_matches_ordered_scan_at_address_boundaries() {
+        fn ordered(pointers: &[usize], fields: &[RecordField]) -> usize {
+            let mut completed = 0;
+            for &pointer in pointers {
+                for field in fields {
+                    if field.len != 0 {
+                        let valid = pointer != 0
+                            && pointer
+                                .checked_add(field.source_offset)
+                                .is_some_and(|address| {
+                                    address.checked_add(field.len).is_some()
+                                        && is_canonical_range(address, field.len)
+                                });
+                        if !valid {
+                            return completed;
+                        }
+                    }
+                    completed += 1;
+                }
+            }
+            completed
+        }
+        let addresses = [
+            0,
+            1,
+            0x1000,
+            0x0000_7fff_ffff_fff0,
+            0x0000_8000_0000_0000,
+            0xffff_7fff_ffff_ffff,
+            0xffff_8000_0000_0000,
+            usize::MAX - 3,
+            usize::MAX,
+        ];
+        for first_offset in [0, 7, 0x0000_8000_0000_0000, usize::MAX - 1] {
+            for second_offset in [0, 31, 0xffff_8000_0000_0000, usize::MAX] {
+                for first_len in [0, 1, 8, 32] {
+                    for second_len in [0, 1, 8, 32] {
+                        let fields = [
+                            RecordField {
+                                source_offset: first_offset,
+                                destination_offset: 0,
+                                len: first_len,
+                            },
+                            RecordField {
+                                source_offset: usize::MAX,
+                                destination_offset: 32,
+                                len: 0,
+                            },
+                            RecordField {
+                                source_offset: second_offset,
+                                destination_offset: 32,
+                                len: second_len,
+                            },
+                        ];
+                        for pointer in addresses {
+                            let pointers = [0x1000, pointer, 0x1000];
+                            assert_eq!(
+                                record_source_prefix(&pointers, &fields),
+                                ordered(&pointers, &fields),
+                                "pointers={pointers:?}, fields={fields:?}"
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -519,6 +663,18 @@ mod tests {
                 0
             );
             assert_eq!(bytes, [0xa5; 16]);
+            #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+            {
+                let source = [0x6d; 16];
+                // SAFETY: sources are immutable owned bytes; invalid
+                // destination geometry must be rejected before native entry.
+                let live = unsafe { LiveMemory::new() };
+                assert_eq!(
+                    live.copy_records(&[source.as_ptr() as usize; 2], &[field], stride, &mut bytes),
+                    0
+                );
+                assert_eq!(bytes, [0xa5; 16]);
+            }
         }
         assert!(memory.calls.borrow().is_empty());
         let fields = [
@@ -634,6 +790,106 @@ mod tests {
             memory.copy_records(&[0, usize::MAX], &fields[..1], 0, &mut []),
             2
         );
+    }
+
+    #[test]
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    fn native_records_copy_only_the_proven_prefix_including_partial_rows() {
+        unsafe extern "C" {
+            fn seh_guarded_copy_records(
+                pointers: *const usize,
+                validated_field_count: usize,
+                fields: *const RecordField,
+                field_count: usize,
+                row_stride: usize,
+                destination: *mut u8,
+            ) -> usize;
+        }
+        let source: [u8; 16] = std::array::from_fn(|index| index as u8);
+        let pointers = [source.as_ptr() as usize; 2];
+        let fields = [
+            RecordField {
+                source_offset: usize::MAX,
+                destination_offset: 0,
+                len: 0,
+            },
+            RecordField {
+                source_offset: 1,
+                destination_offset: 1,
+                len: 2,
+            },
+            RecordField {
+                source_offset: 4,
+                destination_offset: 4,
+                len: 4,
+            },
+        ];
+        for prefix in 0..=6 {
+            let mut bytes = [0xa5; 16];
+            // SAFETY: every nonempty field in this explicit prefix points to
+            // immutable owned bytes; all metadata/destination bounds are valid.
+            // A readable suffix intentionally remains outside the C contract.
+            assert_eq!(
+                unsafe {
+                    seh_guarded_copy_records(
+                        pointers.as_ptr(),
+                        prefix,
+                        fields.as_ptr(),
+                        fields.len(),
+                        8,
+                        bytes.as_mut_ptr(),
+                    )
+                },
+                prefix
+            );
+            let mut expected = [0xa5; 16];
+            for index in 0..prefix {
+                let field = fields[index % fields.len()];
+                if field.len != 0 {
+                    let target = index / fields.len() * 8 + field.destination_offset;
+                    expected[target..target + field.len].copy_from_slice(
+                        &source[field.source_offset..field.source_offset + field.len],
+                    );
+                }
+            }
+            assert_eq!(bytes, expected, "prefix={prefix}");
+        }
+    }
+
+    #[test]
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    fn native_records_unreadable_prefix_wins_over_later_preflight_failures() {
+        // SAFETY: inaccessible null-page sources are only used by guarded C;
+        // Rust preflight checks their arithmetic without dereferencing them.
+        let memory = unsafe { LiveMemory::new() };
+        for bad_offset in [usize::MAX, 0x0000_8000_0000_0000 - 1] {
+            let fields = [
+                RecordField {
+                    source_offset: usize::MAX,
+                    destination_offset: 0,
+                    len: 0,
+                },
+                RecordField {
+                    source_offset: 0,
+                    destination_offset: 0,
+                    len: 8,
+                },
+                RecordField {
+                    source_offset: bad_offset,
+                    destination_offset: 8,
+                    len: 8,
+                },
+                RecordField {
+                    source_offset: 0,
+                    destination_offset: 16,
+                    len: 8,
+                },
+            ];
+            assert_eq!(record_source_prefix(&[1], &fields), 2);
+            let mut bytes = [0xa5; 24];
+            assert_eq!(memory.copy_records(&[1], &fields, 24, &mut bytes), 1);
+            assert_eq!(bytes, [0xa5; 24]);
+        }
     }
 
     #[test]
@@ -779,16 +1035,16 @@ mod tests {
     #[test]
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
     fn native_scattered_fault_preserves_completed_fields_and_leaves_later_fields_alone() {
-        let source: [u8; 33] = std::array::from_fn(|index| index as u8);
+        let source: [u8; 65] = std::array::from_fn(|index| index as u8);
         let source = &source[1..];
         // SAFETY: valid sources are immutable owned bytes. The intentionally
         // inaccessible Windows null-page address faults inside the C SEH shim;
         // it is never dereferenced by Rust or returned as a Rust reference.
         let memory = unsafe { LiveMemory::new() };
-        for width in [1, 2, 4, 8, 16, 24, 32] {
-            let mut first = [0xa5; 32];
+        for width in [1, 2, 4, 8, 12, 16, 24, 32, 48, 64] {
+            let mut first = [0xa5; 64];
             let mut empty = [];
-            let mut failed = [0xa5; 32];
+            let mut failed = [0xa5; 64];
             let mut later = [0xa5; 8];
             assert_eq!(
                 memory.copy_scattered(
@@ -803,8 +1059,93 @@ mod tests {
                 2
             );
             assert_eq!(first[..width], source[..width]);
-            assert_eq!(first[width..], [0xa5; 32][width..]);
+            assert_eq!(first[width..], [0xa5; 64][width..]);
             assert_eq!(later, [0xa5; 8]);
+        }
+    }
+
+    #[test]
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    fn native_copy_widths_stop_at_exact_page_boundaries_and_keep_field_prefixes() {
+        use std::ffi::c_void;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn VirtualAlloc(
+                address: *mut c_void,
+                size: usize,
+                kind: u32,
+                protect: u32,
+            ) -> *mut c_void;
+            fn VirtualProtect(
+                address: *mut c_void,
+                size: usize,
+                protect: u32,
+                old: *mut u32,
+            ) -> i32;
+            fn VirtualFree(address: *mut c_void, size: usize, kind: u32) -> i32;
+        }
+        struct Pages(*mut c_void);
+        impl Drop for Pages {
+            fn drop(&mut self) {
+                // SAFETY: this test owns the complete allocation until here.
+                unsafe { VirtualFree(self.0, 0, 0x8000) };
+            }
+        }
+        // Two owned Windows pages: readable bytes followed by an inaccessible
+        // page. No game process or external address space is involved.
+        // SAFETY: allocation has no requested address and no executable pages.
+        let pages = Pages(unsafe { VirtualAlloc(std::ptr::null_mut(), 8192, 0x3000, 4) });
+        assert!(!pages.0.is_null());
+        let boundary = pages.0 as usize + 4096;
+        let mut old = 0;
+        // SAFETY: both pages belong to this allocation; only page two is protected.
+        assert_ne!(
+            unsafe { VirtualProtect(boundary as *mut c_void, 4096, 1, &mut old) },
+            0
+        );
+        // SAFETY: the first page remains owned and writable.
+        unsafe { std::ptr::write_bytes(pages.0.cast::<u8>(), 0x6d, 4096) };
+        // SAFETY: all inputs below are owned storage or the test's inaccessible
+        // page, whose faults are contained by the same native guarded copies.
+        let memory = unsafe { LiveMemory::new() };
+        for width in [1, 2, 4, 5, 8, 12, 13, 16, 24, 32, 48, 64] {
+            let valid = boundary - width;
+            let crossing = valid + 1;
+            let mut exact = [0xa5; 66];
+            assert!(memory.copy(valid, &mut exact[1..1 + width]));
+            assert_eq!(exact[1..1 + width], [0x6d; 64][..width]);
+            assert_eq!(exact[0], 0xa5);
+            assert!(exact[1 + width..].iter().all(|&byte| byte == 0xa5));
+            assert!(!memory.copy(crossing, &mut exact[1..1 + width]));
+
+            let mut first = [0xa5; 64];
+            let mut failed = [0xa5; 64];
+            let mut later = [0xa5; 64];
+            assert_eq!(
+                memory.copy_scattered(
+                    [valid, crossing, valid],
+                    &mut [
+                        &mut first[..width],
+                        &mut failed[..width],
+                        &mut later[..width]
+                    ],
+                ),
+                1
+            );
+            assert_eq!(first[..width], [0x6d; 64][..width]);
+            assert_eq!(later, [0xa5; 64]);
+            let field = [RecordField {
+                source_offset: 0,
+                destination_offset: 0,
+                len: width,
+            }];
+            let mut records = [0xa5; 192];
+            assert_eq!(
+                memory.copy_records(&[valid, crossing, valid], &field, width, &mut records),
+                1
+            );
+            assert_eq!(records[..width], [0x6d; 64][..width]);
+            assert!(records[width * 2..].iter().all(|&byte| byte == 0xa5));
         }
     }
 
@@ -918,9 +1259,8 @@ mod tests {
         assert_eq!(first, source);
         assert_eq!(failed, [0xa5; 8]);
         assert_eq!(later, [0xa5; 8]);
-        // Records prefix stops at the noncanonical field with the same
-        // completed-field count the C validator returns for null/overflow,
-        // with the leading row's bytes preserved.
+        // Records prefix stops at the noncanonical field just as it does for
+        // null/overflow, with the leading row's bytes preserved.
         let fields = [RecordField {
             source_offset: 0,
             destination_offset: 0,
@@ -959,5 +1299,913 @@ mod tests {
             unsafe { seh_guarded_copy(dst.as_mut_ptr(), 0x0072_6f74_6361_665f as *const u8, 8) };
         assert_eq!(result, 0);
         assert_eq!(dst, [0xa5; 8]);
+    }
+
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    mod native_record_lookahead {
+        use super::*;
+        use std::ffi::c_void;
+
+        const PAGE: usize = 4096;
+        const READWRITE: u32 = 4;
+        const NOACCESS: u32 = 1;
+        const GUARD: u32 = 0x100;
+
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn VirtualAlloc(
+                address: *mut c_void,
+                size: usize,
+                kind: u32,
+                protect: u32,
+            ) -> *mut c_void;
+            fn VirtualProtect(
+                address: *mut c_void,
+                size: usize,
+                protect: u32,
+                old: *mut u32,
+            ) -> i32;
+            fn VirtualFree(address: *mut c_void, size: usize, kind: u32) -> i32;
+        }
+
+        unsafe extern "C" {
+            fn seh_guarded_copy_records(
+                pointers: *const usize,
+                validated_field_count: usize,
+                fields: *const RecordField,
+                field_count: usize,
+                row_stride: usize,
+                destination: *mut u8,
+            ) -> usize;
+        }
+
+        struct Pages {
+            address: *mut c_void,
+            count: usize,
+        }
+
+        impl Pages {
+            fn new(count: usize) -> Self {
+                // SAFETY: owned, writable, non-executable synthetic storage.
+                let address =
+                    unsafe { VirtualAlloc(std::ptr::null_mut(), count * PAGE, 0x3000, READWRITE) };
+                assert!(!address.is_null());
+                let pages = Self { address, count };
+                for page in 0..count {
+                    // SAFETY: every allocated page is still writable here.
+                    unsafe {
+                        std::ptr::write_bytes(pages.at(page) as *mut u8, 0x20 + page as u8, PAGE)
+                    };
+                }
+                pages
+            }
+
+            fn at(&self, page: usize) -> usize {
+                assert!(page < self.count);
+                self.address as usize + page * PAGE
+            }
+
+            fn protect(&self, page: usize, protection: u32) -> u32 {
+                let mut previous = 0;
+                // SAFETY: changes only one page of this test's own allocation.
+                assert_ne!(
+                    unsafe {
+                        VirtualProtect(
+                            self.at(page) as *mut c_void,
+                            PAGE,
+                            protection,
+                            &mut previous,
+                        )
+                    },
+                    0
+                );
+                previous
+            }
+        }
+
+        impl Drop for Pages {
+            fn drop(&mut self) {
+                // SAFETY: the entire allocation belongs to this fixture.
+                unsafe { VirtualFree(self.address, 0, 0x8000) };
+            }
+        }
+
+        fn gather(
+            pointers: &[usize],
+            fields: &[RecordField],
+            prefix: usize,
+            stride: usize,
+            destination: &mut [u8],
+        ) -> usize {
+            assert!(prefix <= record_count(pointers, fields, stride, destination.len()).unwrap());
+            assert!(prefix <= record_source_prefix(pointers, fields));
+            // SAFETY: the checks above establish the production native metadata
+            // contract. Sources are owned readable or deliberately protected
+            // test pages, which only the native guard may actually read.
+            unsafe {
+                seh_guarded_copy_records(
+                    pointers.as_ptr(),
+                    prefix,
+                    fields.as_ptr(),
+                    fields.len(),
+                    stride,
+                    destination.as_mut_ptr(),
+                )
+            }
+        }
+
+        #[test]
+        fn every_owned_page_fault_keeps_every_flattened_prefix_exact() {
+            const ROWS: usize = 9;
+            const STRIDE: usize = 64;
+            let pages = Pages::new(ROWS * 3);
+            let pointers: [usize; ROWS] = std::array::from_fn(|row| pages.at(row * 3));
+            let fields = [
+                RecordField {
+                    source_offset: usize::MAX,
+                    destination_offset: 0,
+                    len: 0,
+                },
+                RecordField {
+                    source_offset: 61,
+                    destination_offset: 1,
+                    len: 8,
+                },
+                RecordField {
+                    source_offset: PAGE + 61,
+                    destination_offset: 12,
+                    len: 12,
+                },
+                RecordField {
+                    source_offset: 3 * PAGE - 24,
+                    destination_offset: 28,
+                    len: 24,
+                },
+            ];
+            for failed_row in 0..ROWS {
+                for failed_field in 1..fields.len() {
+                    let failed_index = failed_row * fields.len() + failed_field;
+                    let failed_page = failed_row * 3 + failed_field - 1;
+                    for protection in [NOACCESS, READWRITE | GUARD] {
+                        for prefix in 0..=ROWS * fields.len() {
+                            pages.protect(failed_page, protection);
+                            let mut output = [0xa5; ROWS * STRIDE];
+                            let expected_prefix = prefix.min(failed_index);
+                            assert_eq!(
+                                gather(&pointers, &fields, prefix, STRIDE, &mut output),
+                                expected_prefix,
+                                "row={failed_row} field={failed_field} prefix={prefix}"
+                            );
+                            let mut expected = [0xa5; ROWS * STRIDE];
+                            for index in 0..expected_prefix {
+                                let row = index / fields.len();
+                                let field = fields[index % fields.len()];
+                                if field.len != 0 {
+                                    let value = 0x20 + (row * 3 + field.source_offset / PAGE) as u8;
+                                    let start = row * STRIDE + field.destination_offset;
+                                    expected[start..start + field.len].fill(value);
+                                }
+                            }
+                            assert_eq!(
+                                output, expected,
+                                "row={failed_row} field={failed_field} prefix={prefix}"
+                            );
+                            // VirtualProtect returns the old protection without
+                            // touching source bytes. A future hinted guard page
+                            // must remain armed until its actual guarded read.
+                            let observed = pages.protect(failed_page, READWRITE);
+                            let expected_protection =
+                                if protection & GUARD != 0 && prefix > failed_index {
+                                    READWRITE
+                                } else {
+                                    protection
+                                };
+                            assert_eq!(observed, expected_protection);
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn future_guard_pages_survive_an_earlier_noaccess_failure() {
+            let pages = Pages::new(9);
+            let pointers: [usize; 9] = std::array::from_fn(|row| pages.at(row));
+            let fields = [RecordField {
+                source_offset: 61,
+                destination_offset: 0,
+                len: 8,
+            }];
+            // Includes initial-window hints and a future row reached only by
+            // the rolling four-row lookahead after earlier rows were copied.
+            for (failed_row, guarded_row) in [(0, 1), (0, 4), (1, 5), (4, 8)] {
+                pages.protect(failed_row, NOACCESS);
+                pages.protect(guarded_row, READWRITE | GUARD);
+                let mut output = [0xa5; 9 * 8];
+                assert_eq!(gather(&pointers, &fields, 9, 8, &mut output), failed_row);
+                for row in 0..failed_row {
+                    assert_eq!(&output[row * 8..row * 8 + 8], &[0x20 + row as u8; 8]);
+                }
+                assert!(output[failed_row * 8..].iter().all(|&byte| byte == 0xa5));
+                assert_eq!(pages.protect(failed_row, READWRITE), NOACCESS);
+                assert_eq!(
+                    pages.protect(guarded_row, READWRITE),
+                    READWRITE | GUARD,
+                    "a hint must not consume the future guard"
+                );
+                // Confirm that this is a real guard: an actual guarded copy
+                // fails once and consumes it, rather than accepting cached data.
+                pages.protect(guarded_row, READWRITE | GUARD);
+                // SAFETY: only the native guard reads this owned protected page.
+                let memory = unsafe { LiveMemory::new() };
+                let mut actual = [0xa5; 8];
+                assert!(!memory.copy(pointers[guarded_row] + 61, &mut actual));
+                assert_eq!(actual, [0xa5; 8]);
+                assert_eq!(pages.protect(guarded_row, READWRITE), READWRITE);
+            }
+        }
+
+        const POINTER_FIELDS: [RecordField; 1] = [RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: 8,
+        }];
+
+        #[test]
+        fn pointer_layout_keeps_owned_faults_and_every_prefix_exact() {
+            const ROWS: usize = 9;
+            let pages = Pages::new(ROWS * 2);
+            // All layouts match the native dispatcher. Moving the owned base
+            // pointer covers aligned, cache-line and page-crossing reads while
+            // keeping source_offset zero and each observation exactly 8 bytes.
+            for offset in [0, 61, PAGE - 4] {
+                let pointers: [usize; ROWS] = std::array::from_fn(|row| pages.at(row * 2) + offset);
+                for failed_row in 0..ROWS {
+                    let failed_page = failed_row * 2 + usize::from(offset + 8 > PAGE);
+                    for protection in [NOACCESS, READWRITE | GUARD] {
+                        for prefix in 0..=ROWS {
+                            pages.protect(failed_page, protection);
+                            let mut output = [0xa5; ROWS * 8];
+                            let expected_prefix = prefix.min(failed_row);
+                            assert_eq!(
+                                gather(&pointers, &POINTER_FIELDS, prefix, 8, &mut output),
+                                expected_prefix,
+                                "offset={offset} failed_row={failed_row} prefix={prefix}"
+                            );
+                            let mut expected = [0xa5; ROWS * 8];
+                            for row in 0..expected_prefix {
+                                for byte in 0..8 {
+                                    expected[row * 8 + byte] =
+                                        0x20 + (row * 2 + (offset + byte) / PAGE) as u8;
+                                }
+                            }
+                            assert_eq!(output, expected);
+                            let expected_protection =
+                                if protection & GUARD != 0 && prefix > failed_row {
+                                    READWRITE
+                                } else {
+                                    protection
+                                };
+                            assert_eq!(
+                                pages.protect(failed_page, READWRITE),
+                                expected_protection,
+                                "a hint must not consume the failing row's guard"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn pointer_layout_future_hints_preserve_guards_after_an_earlier_fault() {
+            let pages = Pages::new(9);
+            let pointers: [usize; 9] = std::array::from_fn(|row| pages.at(row) + 61);
+            for (failed_row, guarded_row) in [(0, 1), (0, 4), (1, 5), (4, 8)] {
+                pages.protect(failed_row, NOACCESS);
+                pages.protect(guarded_row, READWRITE | GUARD);
+                let mut output = [0xa5; 9 * 8];
+                assert_eq!(
+                    gather(&pointers, &POINTER_FIELDS, 9, 8, &mut output),
+                    failed_row
+                );
+                for row in 0..failed_row {
+                    assert_eq!(&output[row * 8..row * 8 + 8], &[0x20 + row as u8; 8]);
+                }
+                assert!(output[failed_row * 8..].iter().all(|&byte| byte == 0xa5));
+                assert_eq!(pages.protect(failed_row, READWRITE), NOACCESS);
+                assert_eq!(pages.protect(guarded_row, READWRITE), READWRITE | GUARD);
+                // Establish that the preserved protection is a real armed
+                // guard, consumed only by a later actual 8-byte guarded read.
+                pages.protect(guarded_row, READWRITE | GUARD);
+                // SAFETY: only the native guard reads the owned protected page.
+                let memory = unsafe { LiveMemory::new() };
+                let mut actual = [0xa5; 8];
+                assert!(!memory.copy(pointers[guarded_row], &mut actual));
+                assert_eq!(actual, [0xa5; 8]);
+                assert_eq!(pages.protect(guarded_row, READWRITE), READWRITE);
+            }
+        }
+
+        #[test]
+        fn pointer_layout_duplicates_and_empty_prefix_never_read_metadata_suffixes() {
+            const ROWS: usize = 9;
+            let metadata = Pages::new(2);
+            metadata.protect(1, NOACCESS);
+            let layout_metadata = Pages::new(2);
+            layout_metadata.protect(1, NOACCESS);
+            let field_start = layout_metadata.at(1) - size_of::<RecordField>();
+            // SAFETY: this aligned complete field is inside the writable first
+            // page. The immediately following field would enter NOACCESS.
+            unsafe { (field_start as *mut RecordField).write(POINTER_FIELDS[0]) };
+            // SAFETY: the initialized immutable field remains owned and alive.
+            let fields =
+                unsafe { std::slice::from_raw_parts(field_start as *const RecordField, 1) };
+            let source: [u8; 160] = std::array::from_fn(|index| index as u8);
+            let offsets = [61, 4, 61, 127, 4, 61, 0, 63, 61];
+            for prefix in 0..=ROWS {
+                let pointer_start = metadata.at(1) - prefix * size_of::<usize>();
+                for (row, offset) in offsets[..prefix].iter().enumerate() {
+                    // SAFETY: every initialized metadata word precedes the
+                    // inaccessible page; duplicate values remain separate rows.
+                    unsafe {
+                        (pointer_start as *mut usize)
+                            .add(row)
+                            .write(source.as_ptr() as usize + offset)
+                    };
+                }
+                // SAFETY: exactly prefix aligned initialized pointer words are
+                // readable. The zero-length slice never accesses its address.
+                let pointers =
+                    unsafe { std::slice::from_raw_parts(pointer_start as *const usize, prefix) };
+                let mut output = [0xa5; ROWS * 8 + 2];
+                assert_eq!(
+                    gather(pointers, fields, prefix, 8, &mut output[1..1 + ROWS * 8]),
+                    prefix
+                );
+                let mut expected = [0xa5; ROWS * 8 + 2];
+                for (row, &offset) in offsets[..prefix].iter().enumerate() {
+                    expected[1 + row * 8..1 + row * 8 + 8]
+                        .copy_from_slice(&source[offset..offset + 8]);
+                }
+                assert_eq!(output, expected, "prefix={prefix}");
+            }
+            // SAFETY: an empty native prefix accesses no metadata or output,
+            // including when field_count would otherwise select this layout.
+            // These owned inaccessible addresses deliberately prove that rule.
+            assert_eq!(
+                unsafe {
+                    seh_guarded_copy_records(
+                        metadata.at(1) as *const usize,
+                        0,
+                        layout_metadata.at(1) as *const RecordField,
+                        1,
+                        8,
+                        metadata.at(1) as *mut u8,
+                    )
+                },
+                0
+            );
+        }
+
+        #[test]
+        fn pointer_layout_nonmatching_fields_keep_generic_destinations_exact() {
+            let first = POINTER_FIELDS[0];
+            let second = RecordField {
+                source_offset: 8,
+                destination_offset: 0,
+                len: 8,
+            };
+            let layouts = [
+                (
+                    [
+                        RecordField {
+                            source_offset: 1,
+                            ..first
+                        },
+                        second,
+                    ],
+                    1,
+                    8,
+                ),
+                (
+                    [
+                        RecordField {
+                            destination_offset: 1,
+                            ..first
+                        },
+                        second,
+                    ],
+                    1,
+                    9,
+                ),
+                ([RecordField { len: 7, ..first }, second], 1, 8),
+                ([first, second], 1, 9),
+                // The second field overwrites the first within each row; it
+                // must not be skipped merely because fields[0] matches.
+                ([first, second], 2, 8),
+            ];
+            let source: [u8; 64] = std::array::from_fn(|index| index as u8);
+            let pointers = [source.as_ptr() as usize, source.as_ptr() as usize + 32];
+            // SAFETY: every source span belongs to the live owned source array.
+            let memory = unsafe { LiveMemory::new() };
+            for (layout, field_count, stride) in layouts {
+                let fields = &layout[..field_count];
+                let mut output = [0xa5; 32];
+                assert_eq!(
+                    memory.copy_records(&pointers, fields, stride, &mut output),
+                    2 * field_count
+                );
+                let mut expected = [0xa5; 32];
+                for row in 0..2 {
+                    for field in fields {
+                        let start = row * stride + field.destination_offset;
+                        let source_start = row * 32 + field.source_offset;
+                        expected[start..start + field.len]
+                            .copy_from_slice(&source[source_start..source_start + field.len]);
+                    }
+                }
+                assert_eq!(output, expected);
+            }
+        }
+
+        fn packed_five_fields(offsets: [usize; 5]) -> [RecordField; 5] {
+            let widths = [12, 16, 8, 8, 8];
+            let destinations = [0, 12, 28, 36, 44];
+            std::array::from_fn(|index| RecordField {
+                source_offset: offsets[index],
+                destination_offset: destinations[index],
+                len: widths[index],
+            })
+        }
+
+        #[test]
+        fn packed_five_dynamic_offsets_duplicates_and_every_metadata_prefix() {
+            const ROWS: usize = 9;
+            let metadata = Pages::new(2);
+            metadata.protect(1, NOACCESS);
+            let layouts = Pages::new(2);
+            layouts.protect(1, NOACCESS);
+            let layout_start = layouts.at(1) - 5 * size_of::<RecordField>();
+            for epoch in 0..2 {
+                let source: [u8; 1024] =
+                    std::array::from_fn(|index| (index * 37 + epoch * 73) as u8);
+                for offsets in [[0, 0x158, 0x170, 0x198, 0x1c0], [7, 74, 11, 259, 31]] {
+                    let layout = packed_five_fields(offsets);
+                    for (index, field) in layout.iter().enumerate() {
+                        // SAFETY: five aligned initialized fields fit before the
+                        // owned inaccessible page; a sixth field does not.
+                        unsafe { (layout_start as *mut RecordField).add(index).write(*field) };
+                    }
+                    // SAFETY: only the five initialized readable fields are borrowed.
+                    let fields = unsafe {
+                        std::slice::from_raw_parts(layout_start as *const RecordField, 5)
+                    };
+                    let offsets = [61, 4, 61, 127, 4, 61, 0, 63, 61];
+                    for prefix in 0..=ROWS * 5 {
+                        let rows = prefix.div_ceil(5);
+                        let pointer_start = metadata.at(1) - rows * size_of::<usize>();
+                        for (row, offset) in offsets[..rows].iter().enumerate() {
+                            // SAFETY: exactly the needed initialized pointer words
+                            // precede the inaccessible page, including partial rows.
+                            unsafe {
+                                (pointer_start as *mut usize)
+                                    .add(row)
+                                    .write(source.as_ptr() as usize + offset);
+                            }
+                        }
+                        // SAFETY: only initialized metadata is borrowed; the empty
+                        // slice is aligned/non-null but its address is never read.
+                        let pointers = unsafe {
+                            std::slice::from_raw_parts(pointer_start as *const usize, rows)
+                        };
+                        let mut output = [0xa5; ROWS * 52 + 2];
+                        assert_eq!(
+                            gather(pointers, fields, prefix, 52, &mut output[1..1 + ROWS * 52]),
+                            prefix
+                        );
+                        let mut expected = [0xa5; ROWS * 52 + 2];
+                        for index in 0..prefix {
+                            let row = index / 5;
+                            let field = fields[index % 5];
+                            let source_start = offsets[row] + field.source_offset;
+                            let start = 1 + row * 52 + field.destination_offset;
+                            expected[start..start + field.len]
+                                .copy_from_slice(&source[source_start..source_start + field.len]);
+                        }
+                        assert_eq!(output, expected, "epoch={epoch} prefix={prefix}");
+                    }
+                }
+            }
+            // SAFETY: an empty native prefix must inspect no metadata or output.
+            // All three raw addresses deliberately point into owned NOACCESS pages.
+            assert_eq!(
+                unsafe {
+                    seh_guarded_copy_records(
+                        metadata.at(1) as *const usize,
+                        0,
+                        layouts.at(1) as *const RecordField,
+                        5,
+                        52,
+                        metadata.at(1) as *mut u8,
+                    )
+                },
+                0
+            );
+        }
+
+        #[test]
+        fn packed_five_every_owned_source_fault_preserves_the_exact_prefix() {
+            const ROWS: usize = 9;
+            let pages = Pages::new(ROWS * 10);
+            let pointers: [usize; ROWS] = std::array::from_fn(|row| pages.at(row * 10));
+            for last_byte in [false, true] {
+                let widths = [12, 16, 8, 8, 8];
+                let fields = packed_five_fields(std::array::from_fn(|field| {
+                    field * 2 * PAGE
+                        + if last_byte {
+                            PAGE - widths[field] + 1
+                        } else {
+                            61
+                        }
+                }));
+                for failed in 0..ROWS * 5 {
+                    let failed_page = failed / 5 * 10 + failed % 5 * 2 + usize::from(last_byte);
+                    for protection in [NOACCESS, READWRITE | GUARD] {
+                        for prefix in 0..=ROWS * 5 {
+                            pages.protect(failed_page, protection);
+                            let mut output = [0xa5; ROWS * 52 + 2];
+                            let complete = prefix.min(failed);
+                            assert_eq!(
+                                gather(
+                                    &pointers,
+                                    &fields,
+                                    prefix,
+                                    52,
+                                    &mut output[1..1 + ROWS * 52]
+                                ),
+                                complete,
+                                "last_byte={last_byte} failed={failed} prefix={prefix}"
+                            );
+                            let old = pages.protect(failed_page, READWRITE);
+                            assert_eq!(
+                                old,
+                                if protection & GUARD != 0 && prefix > failed {
+                                    READWRITE
+                                } else {
+                                    protection
+                                },
+                                "hints must not consume an unreached guard"
+                            );
+                            let mut expected = [0xa5; ROWS * 52 + 2];
+                            for index in 0..complete {
+                                let row = index / 5;
+                                let field = fields[index % 5];
+                                for byte in 0..field.len {
+                                    expected[1 + row * 52 + field.destination_offset + byte] = 0x20
+                                        + (row * 10 + (field.source_offset + byte) / PAGE) as u8;
+                                }
+                            }
+                            if prefix > failed {
+                                // The failing field may be partially written. Only
+                                // that exact field is unspecified by Memory; all
+                                // later fields and both exterior canaries must match.
+                                let field = fields[failed % 5];
+                                let start = 1 + failed / 5 * 52 + field.destination_offset;
+                                output[start..start + field.len].fill(0xa5);
+                            }
+                            assert_eq!(output, expected);
+                        }
+                    }
+                }
+            }
+
+            // Positive exact-range boundary: every intended field is readable,
+            // but its immediately following byte/page is not. Any widened
+            // 12->16, 16->32 or 8->16 load across that exact end must fail.
+            let widths = [12, 16, 8, 8, 8];
+            let fields = packed_five_fields(std::array::from_fn(|field| {
+                field * 2 * PAGE + PAGE - widths[field]
+            }));
+            for pair in 0..ROWS * 5 {
+                pages.protect(pair * 2 + 1, NOACCESS);
+            }
+            let mut output = [0xa5; ROWS * 52 + 2];
+            assert_eq!(
+                gather(
+                    &pointers,
+                    &fields,
+                    ROWS * 5,
+                    52,
+                    &mut output[1..1 + ROWS * 52]
+                ),
+                ROWS * 5
+            );
+            let mut expected = [0xa5; ROWS * 52 + 2];
+            for row in 0..ROWS {
+                for (index, field) in fields.iter().enumerate() {
+                    let start = 1 + row * 52 + field.destination_offset;
+                    expected[start..start + field.len].fill(0x20 + (row * 10 + index * 2) as u8);
+                }
+            }
+            assert_eq!(output, expected);
+            for pair in 0..ROWS * 5 {
+                assert_eq!(pages.protect(pair * 2 + 1, READWRITE), NOACCESS);
+            }
+        }
+
+        #[test]
+        fn packed_five_future_endpoint_hints_do_not_consume_guards() {
+            const ROWS: usize = 9;
+            let pages = Pages::new(ROWS * 5);
+            let pointers: [usize; ROWS] = std::array::from_fn(|row| pages.at(row * 5));
+            let fields = packed_five_fields(std::array::from_fn(|field| field * PAGE + 61));
+            for (failed_row, future_row) in [(0, 4), (1, 5), (4, 8)] {
+                for failed_field in 0..5 {
+                    for future_field in 0..5 {
+                        let failed_page = failed_row * 5 + failed_field;
+                        let future_page = future_row * 5 + future_field;
+                        pages.protect(failed_page, NOACCESS);
+                        pages.protect(future_page, READWRITE | GUARD);
+                        let mut output = [0xa5; ROWS * 52];
+                        assert_eq!(
+                            gather(&pointers, &fields, ROWS * 5, 52, &mut output),
+                            failed_row * 5 + failed_field
+                        );
+                        assert_eq!(pages.protect(failed_page, READWRITE), NOACCESS);
+                        assert_eq!(pages.protect(future_page, READWRITE), READWRITE | GUARD);
+                        pages.protect(future_page, READWRITE | GUARD);
+                        // SAFETY: the actual native read, not the hint, must consume
+                        // this real owned guard. No protected page is Rust-borrowed.
+                        let memory = unsafe { LiveMemory::new() };
+                        let mut bytes = [0xa5; 16];
+                        assert!(!memory.copy(
+                            pointers[future_row] + fields[future_field].source_offset,
+                            &mut bytes[..fields[future_field].len]
+                        ));
+                        assert_eq!(bytes, [0xa5; 16]);
+                        assert_eq!(pages.protect(future_page, READWRITE), READWRITE);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn packed_five_layout_mismatches_keep_generic_order_and_padding() {
+            let source: [u8; 1024] = std::array::from_fn(|index| (index * 37) as u8);
+            let pointers = [
+                source.as_ptr() as usize + 13,
+                source.as_ptr() as usize + 513,
+            ];
+            let base = packed_five_fields([31, 3, 127, 61, 1]);
+            let mut layouts = vec![(base.to_vec(), 52), (base.to_vec(), 53)];
+            for index in 0..5 {
+                let mut fields = base;
+                fields[index].len -= 1;
+                layouts.push((fields.to_vec(), 52));
+                let mut fields = base;
+                fields[index].destination_offset = if index == 0 {
+                    1
+                } else {
+                    fields[index].destination_offset - 1
+                };
+                layouts.push((fields.to_vec(), 52));
+            }
+            layouts.push((base[..4].to_vec(), 52));
+            let mut fields = base.to_vec();
+            fields.push(RecordField {
+                source_offset: usize::MAX,
+                destination_offset: 52,
+                len: 0,
+            });
+            layouts.push((fields, 52));
+            // SAFETY: every nonempty source belongs to the owned source array.
+            let memory = unsafe { LiveMemory::new() };
+            for (fields, stride) in layouts {
+                let mut output = [0xa5; 110];
+                assert_eq!(
+                    memory.copy_records(&pointers, &fields, stride, &mut output[1..109]),
+                    2 * fields.len()
+                );
+                let mut expected = [0xa5; 110];
+                for row in 0..2 {
+                    for field in &fields {
+                        if field.len != 0 {
+                            let source_start = [13, 513][row] + field.source_offset;
+                            let start = 1 + row * stride + field.destination_offset;
+                            expected[start..start + field.len]
+                                .copy_from_slice(&source[source_start..source_start + field.len]);
+                        }
+                    }
+                }
+                assert_eq!(output, expected);
+            }
+        }
+
+        #[test]
+        fn packed_five_canonical_preflight_and_native_minus_one_containment() {
+            const NONCANONICAL: usize = 0x0000_8000_0000_0000;
+            let source: [u8; 128] = std::array::from_fn(|index| (index * 37) as u8);
+            let fields = packed_five_fields([0, 16, 32, 40, 48]);
+            let valid = source.as_ptr() as usize;
+            // SAFETY: only owned readable bytes, or deliberately invalid addresses
+            // rejected by Rust/contained by the native guard, are provided below.
+            let memory = unsafe { LiveMemory::new() };
+            for invalid in [0, NONCANONICAL, usize::MAX] {
+                let pointers = [valid, invalid, valid];
+                let mut output = [0xa5; 3 * 52];
+                assert_eq!(record_source_prefix(&pointers, &fields), 5);
+                assert_eq!(memory.copy_records(&pointers, &fields, 52, &mut output), 5);
+                let mut expected = [0xa5; 3 * 52];
+                for field in fields {
+                    expected[field.destination_offset..field.destination_offset + field.len]
+                        .copy_from_slice(
+                            &source[field.source_offset..field.source_offset + field.len],
+                        );
+                }
+                assert_eq!(output, expected);
+            }
+            for invalid_field in 0..5 {
+                let mut layout = fields;
+                layout[invalid_field].source_offset = usize::MAX;
+                let mut output = [0xa5; 52];
+                assert_eq!(record_source_prefix(&[valid], &layout), invalid_field);
+                assert_eq!(
+                    memory.copy_records(&[valid], &layout, 52, &mut output),
+                    invalid_field
+                );
+                let mut expected = [0xa5; 52];
+                for field in &fields[..invalid_field] {
+                    expected[field.destination_offset..field.destination_offset + field.len]
+                        .copy_from_slice(
+                            &source[field.source_offset..field.source_offset + field.len],
+                        );
+                }
+                assert_eq!(output, expected);
+            }
+            let pages = Pages::new(1);
+            pages.protect(0, NOACCESS);
+            let mut layout = fields;
+            layout[4].source_offset = NONCANONICAL.checked_sub(pages.at(0)).unwrap();
+            let mut output = [0xa5; 52];
+            assert_eq!(record_source_prefix(&[pages.at(0)], &layout), 4);
+            assert_eq!(
+                memory.copy_records(&[pages.at(0)], &layout, 52, &mut output),
+                0,
+                "earlier owned unreadable field beats a later noncanonical field"
+            );
+            assert_eq!(output, [0xa5; 52]);
+            assert_eq!(pages.protect(0, READWRITE), NOACCESS);
+            let bad = [0x0072_6f74_6361_665fusize];
+            // SAFETY: this direct containment test intentionally bypasses only
+            // Rust's canonical gate, as the existing scalar -1 fixture does.
+            // Metadata/output are valid; only C touches the invalid source.
+            assert_eq!(
+                unsafe {
+                    seh_guarded_copy_records(
+                        bad.as_ptr(),
+                        5,
+                        fields.as_ptr(),
+                        5,
+                        52,
+                        output.as_mut_ptr(),
+                    )
+                },
+                0
+            );
+            assert_eq!(output, [0xa5; 52]);
+        }
+
+        #[test]
+        fn packed_five_owned_destination_faults_keep_previous_fields_and_canaries() {
+            let source: [u8; 128] = std::array::from_fn(|index| (index * 37) as u8);
+            let fields = packed_five_fields([0, 16, 32, 40, 48]);
+            let pointers = [source.as_ptr() as usize];
+            let pages = Pages::new(3);
+            for failed_field in 0..5 {
+                for last_byte in [false, true] {
+                    let field = fields[failed_field];
+                    let fault_offset =
+                        field.destination_offset + if last_byte { field.len - 1 } else { 0 };
+                    let destination = (pages.at(1) - fault_offset) as *mut u8;
+                    for protection in [NOACCESS, READWRITE | GUARD] {
+                        // SAFETY: this full destination and both canaries are
+                        // within writable owned pages before protection changes.
+                        unsafe { std::ptr::write_bytes(destination.sub(1), 0xa5, 54) };
+                        pages.protect(1, protection);
+                        // SAFETY: metadata/source are valid; destination faults
+                        // are deliberately tested through C raw pointers only.
+                        // No Rust reference covers inaccessible destination bytes.
+                        let completed = unsafe {
+                            seh_guarded_copy_records(
+                                pointers.as_ptr(),
+                                5,
+                                fields.as_ptr(),
+                                5,
+                                52,
+                                destination,
+                            )
+                        };
+                        let old = pages.protect(1, READWRITE);
+                        assert_eq!(completed, failed_field);
+                        assert_eq!(
+                            old,
+                            if protection & GUARD != 0 {
+                                READWRITE
+                            } else {
+                                protection
+                            }
+                        );
+                        // SAFETY: protection is restored before borrowing bytes;
+                        // that borrow ends before the next reset/protection change.
+                        let mut actual: [u8; 54] = unsafe {
+                            std::slice::from_raw_parts(destination.sub(1), 54)
+                                .try_into()
+                                .unwrap()
+                        };
+                        let mut expected = [0xa5; 54];
+                        for earlier in &fields[..failed_field] {
+                            let start = 1 + earlier.destination_offset;
+                            expected[start..start + earlier.len].copy_from_slice(
+                                &source[earlier.source_offset..earlier.source_offset + earlier.len],
+                            );
+                        }
+                        let start = 1 + field.destination_offset;
+                        actual[start..start + field.len].fill(0xa5);
+                        assert_eq!(actual, expected, "field={failed_field} last={last_byte}");
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn partial_final_rows_and_duplicate_fields_never_read_a_pointer_suffix() {
+            const ROWS: usize = 9;
+            const STRIDE: usize = 40;
+            let metadata = Pages::new(2);
+            metadata.protect(1, NOACCESS);
+            let source: [u8; 160] = std::array::from_fn(|index| index as u8);
+            let fields = [
+                RecordField {
+                    source_offset: usize::MAX,
+                    destination_offset: 0,
+                    len: 0,
+                },
+                RecordField {
+                    source_offset: 61,
+                    destination_offset: 1,
+                    len: 12,
+                },
+                RecordField {
+                    source_offset: 4,
+                    destination_offset: 16,
+                    len: 8,
+                },
+                RecordField {
+                    source_offset: 61,
+                    destination_offset: 25,
+                    len: 12,
+                },
+                RecordField {
+                    source_offset: usize::MAX,
+                    destination_offset: STRIDE,
+                    len: 0,
+                },
+            ];
+            for prefix in 0..=ROWS * fields.len() {
+                let rows = prefix.div_ceil(fields.len());
+                let pointer_start = metadata.at(1) - rows * size_of::<usize>();
+                for row in 0..rows {
+                    // SAFETY: the pointer metadata lies in the owned writable
+                    // first page; the immediately following page is NOACCESS.
+                    unsafe {
+                        (pointer_start as *mut usize)
+                            .add(row)
+                            .write(source.as_ptr() as usize)
+                    };
+                }
+                // SAFETY: these initialized aligned pointer words are readable
+                // until this call ends. For zero rows the aligned nonnull
+                // address is never accessed. No slice includes the next page.
+                let pointers =
+                    unsafe { std::slice::from_raw_parts(pointer_start as *const usize, rows) };
+                let mut output = [0xa5; ROWS * STRIDE];
+                assert_eq!(
+                    gather(pointers, &fields, prefix, STRIDE, &mut output),
+                    prefix
+                );
+                let mut expected = [0xa5; ROWS * STRIDE];
+                for index in 0..prefix {
+                    let field = fields[index % fields.len()];
+                    if field.len != 0 {
+                        let start = index / fields.len() * STRIDE + field.destination_offset;
+                        expected[start..start + field.len].copy_from_slice(
+                            &source[field.source_offset..field.source_offset + field.len],
+                        );
+                    }
+                }
+                assert_eq!(output, expected, "prefix={prefix}");
+            }
+        }
     }
 }

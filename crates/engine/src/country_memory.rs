@@ -15,6 +15,8 @@ use crate::{Memory, ccountry};
 const MAX_BYTES: usize = 32;
 const MAX_PROBES: usize = 16;
 const VERIFY_BATCH: usize = 64;
+const FILTER_WORDS: usize = 256;
+const FILTER_BITS: usize = FILTER_WORDS * u64::BITS as usize;
 
 #[derive(Clone, Copy)]
 struct Entry {
@@ -57,9 +59,19 @@ pub enum Verification {
 /// Reusable storage owned by one callback worker, never by a queued row buffer.
 pub struct Cache {
     entries: Box<[Entry]>,
+    // A negative filter only: passing still requires the exact entry lookup.
+    // It is rebuilt from successfully inserted keys during each preparation.
+    filter: [u64; FILTER_WORDS],
+    lengths: u64,
     len: usize,
     observed_reads: usize,
     status: SeedStatus,
+    // Derived results only: no additional source bytes or callback lifetime.
+    // A nonzero length publishes the complete census after seed validation.
+    roster: Box<[Option<ccountry::Country>]>,
+    roster_len: usize,
+    roster_base: usize,
+    roster_game_state: usize,
 }
 
 impl Cache {
@@ -73,9 +85,15 @@ impl Cache {
         };
         Self {
             entries: vec![Entry::EMPTY; cells].into_boxed_slice(),
+            filter: [0; FILTER_WORDS],
+            lengths: 0,
             len: 0,
             observed_reads: 0,
             status: SeedStatus::Capacity { required_cells: 1 },
+            roster: vec![None; cells].into_boxed_slice(),
+            roster_len: 0,
+            roster_base: 0,
+            roster_game_state: 0,
         }
     }
 
@@ -83,8 +101,16 @@ impl Cache {
         self.entries.len()
     }
 
+    /// Owned entry/filter storage plus all derived roster storage and context.
     pub fn allocated_bytes(&self) -> usize {
         std::mem::size_of_val(self.entries.as_ref())
+            + std::mem::size_of_val(&self.filter)
+            + std::mem::size_of_val(&self.lengths)
+            + std::mem::size_of_val(self.roster.as_ref())
+            + std::mem::size_of_val(&self.roster)
+            + std::mem::size_of_val(&self.roster_len)
+            + std::mem::size_of_val(&self.roster_base)
+            + std::mem::size_of_val(&self.roster_game_state)
     }
 
     /// Forget every previous observation and perform one direct country census.
@@ -98,9 +124,14 @@ impl Cache {
         game_state: usize,
     ) -> CountryMemory<'a, M> {
         self.entries.fill(Entry::EMPTY);
+        self.filter.fill(0);
+        self.lengths = 0;
         self.len = 0;
         self.observed_reads = 0;
         self.status = SeedStatus::Ready;
+        self.roster_len = 0;
+        self.roster_base = base;
+        self.roster_game_state = game_state;
         let result = {
             let recording = RecordingMemory {
                 source,
@@ -109,9 +140,15 @@ impl Cache {
             (|| {
                 let countries = ccountry::Reader::new(&recording, base, game_state)?;
                 for slot in 1..countries.count() {
-                    countries.at(slot)?;
+                    // read_at is the same census before at's pure alias
+                    // filter. Retain aliases for resolve's canonical check.
+                    let country = countries.read_at(slot)?;
+                    if let Some(entry) = recording.cache.borrow_mut().roster.get_mut(slot as usize)
+                    {
+                        *entry = country;
+                    }
                 }
-                Ok::<(), &'static str>(())
+                Ok::<usize, &'static str>(countries.count() as usize)
             })()
         };
         if let Err(reason) = result {
@@ -129,13 +166,19 @@ impl Cache {
                 required_cells: required.checked_next_power_of_two().unwrap_or(usize::MAX),
             };
         }
+        if self.status == SeedStatus::Ready
+            && let Ok(count) = result
+            && count <= self.roster.len()
+        {
+            self.roster_len = count;
+        }
         CountryMemory {
             source,
             cache: self,
         }
     }
 
-    fn start(&self, address: usize, len: usize) -> usize {
+    fn hash(address: usize, len: usize) -> usize {
         // Mix the complete address: native object alignment must not turn the
         // many country vtables or identity words into one collision chain.
         let mut key = (address as u64) ^ (len as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
@@ -143,18 +186,35 @@ impl Cache {
         key = key.wrapping_mul(0xbf58_476d_1ce4_e5b9);
         key ^= key >> 27;
         key = key.wrapping_mul(0x94d0_49bb_1331_11eb);
-        (key ^ (key >> 31)) as usize & (self.entries.len() - 1)
+        (key ^ (key >> 31)) as usize
+    }
+
+    #[inline]
+    fn filter_bit(hash: usize) -> (usize, u64) {
+        let bit = hash & (FILTER_BITS - 1);
+        (
+            bit / u64::BITS as usize,
+            1_u64 << (bit % u64::BITS as usize),
+        )
     }
 
     fn find(&self, address: usize, len: usize) -> Option<&Entry> {
         if self.status != SeedStatus::Ready
             || len == 0
             || len > MAX_BYTES
+            || self.lengths & (1_u64 << len) == 0
             || self.entries.is_empty()
         {
             return None;
         }
-        let first = self.start(address, len);
+        // Reuse the existing mixed hash for both structures. Unseeded keys
+        // usually avoid the larger Entry array without computing another hash.
+        let hash = Self::hash(address, len);
+        let (word, bit) = Self::filter_bit(hash);
+        if self.filter[word] & bit == 0 {
+            return None;
+        }
+        let first = hash & (self.entries.len() - 1);
         for probe in 0..MAX_PROBES.min(self.entries.len()) {
             let entry = &self.entries[(first + probe) & (self.entries.len() - 1)];
             if entry.len == 0 {
@@ -182,7 +242,8 @@ impl Cache {
             return;
         }
         if !self.entries.is_empty() {
-            let first = self.start(address, bytes.len());
+            let hash = Self::hash(address, bytes.len());
+            let first = hash & (self.entries.len() - 1);
             let mask = self.entries.len() - 1;
             for probe in 0..MAX_PROBES.min(self.entries.len()) {
                 let entry = &mut self.entries[(first + probe) & mask];
@@ -190,6 +251,9 @@ impl Cache {
                     entry.address = address;
                     entry.len = bytes.len();
                     entry.bytes[..bytes.len()].copy_from_slice(bytes);
+                    let (word, bit) = Self::filter_bit(hash);
+                    self.filter[word] |= bit;
+                    self.lengths |= 1_u64 << bytes.len();
                     self.len += 1;
                     return;
                 }
@@ -305,7 +369,21 @@ impl<M: Memory> CountryMemory<'_, M> {
 }
 
 impl<M: Memory> Memory for CountryMemory<'_, M> {
-    #[inline]
+    fn authenticated_countries(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<ccountry::AuthenticatedRoster<'_>> {
+        (self.cache.status == SeedStatus::Ready
+            && self.cache.roster_len != 0
+            && base == self.cache.roster_base
+            && game_state == self.cache.roster_game_state)
+            .then(|| {
+                ccountry::AuthenticatedRoster::new(&self.cache.roster[..self.cache.roster_len])
+            })
+    }
+
+    #[inline(always)]
     fn copy_records(
         &self,
         pointers: &[usize],
@@ -389,6 +467,7 @@ mod tests {
         guards: Cell<usize>,
         id_reads: Cell<usize>,
         change_id_during_seed: Cell<bool>,
+        observations: RefCell<Vec<(usize, usize)>>,
     }
 
     impl Synthetic {
@@ -399,6 +478,7 @@ mod tests {
                 guards: Cell::new(0),
                 id_reads: Cell::new(0),
                 change_id_during_seed: Cell::new(false),
+                observations: RefCell::new(Vec::new()),
             };
             for (offset, pointer, count) in [
                 (cgame_state::COUNTRIES, 0x1500_u64, 4_u32),
@@ -427,6 +507,9 @@ mod tests {
         }
 
         fn copy_source(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.observations
+                .borrow_mut()
+                .push((address, destination.len()));
             if self
                 .fault
                 .get()
@@ -492,6 +575,126 @@ mod tests {
     }
 
     #[test]
+    fn negative_filter_collisions_and_saturation_still_require_exact_keys() {
+        // Pigeonhole-bounded search: page-aligned addresses exercise the same
+        // existing full-address hash; two keys must share one filter bit.
+        let mut seen = vec![None; FILTER_BITS];
+        let (first, second) = (0..=FILTER_BITS)
+            .find_map(|index| {
+                let address = 0x1000 + index * 0x1000;
+                let bit = Cache::hash(address, 8) & (FILTER_BITS - 1);
+                seen[bit]
+                    .replace(address)
+                    .map(|previous| (previous, address))
+            })
+            .expect("more distinct keys than filter bits must collide");
+        let mut cache = Cache::with_capacity(64);
+        cache.status = SeedStatus::Ready;
+        cache.observe(first, &[0x41; 8]);
+        assert_eq!(
+            Cache::filter_bit(Cache::hash(first, 8)),
+            Cache::filter_bit(Cache::hash(second, 8))
+        );
+        assert!(cache.find(second, 8).is_none());
+        cache.observe(second, &[0x72; 8]);
+        cache.observe(first, &[0x41; 8]);
+        assert_eq!(cache.len, 2);
+        assert_eq!(cache.lengths, 1 << 8);
+        assert_eq!(&cache.find(first, 8).unwrap().bytes[..8], &[0x41; 8]);
+        assert_eq!(&cache.find(second, 8).unwrap().bytes[..8], &[0x72; 8]);
+
+        // Even a saturated filter may only increase exact-lookup work. It
+        // cannot serve an overlapping key, a different width, or an empty span.
+        cache.filter.fill(u64::MAX);
+        cache.lengths = u64::MAX;
+        for length in [0, 1, 4, 7, 8, 16, 32, 33, 64, usize::MAX] {
+            assert_eq!(cache.find(first, length).is_some(), length == 8);
+            assert!(cache.find(first + 4, length).is_none());
+        }
+        cache.status = SeedStatus::Capacity {
+            required_cells: 128,
+        };
+        assert!(cache.find(first, 8).is_none());
+        cache.status = SeedStatus::Unavailable { reason: "fixture" };
+        assert!(cache.find(first, 8).is_none());
+    }
+
+    #[test]
+    fn negative_filter_learns_every_supported_width_and_reports_owned_storage() {
+        let mut cache = Cache::with_capacity(256);
+        cache.status = SeedStatus::Ready;
+        for length in 1..=MAX_BYTES {
+            cache.observe(0x1000 + length * 64, &[0x5a; MAX_BYTES][..length]);
+        }
+        assert_eq!(cache.status, SeedStatus::Ready);
+        assert_eq!(cache.lengths, (1_u64 << (MAX_BYTES + 1)) - 2);
+        for length in 1..=MAX_BYTES {
+            let entry = cache.find(0x1000 + length * 64, length).unwrap();
+            assert_eq!(&entry.bytes[..length], &[0x5a; MAX_BYTES][..length]);
+        }
+        assert_eq!(
+            cache.allocated_bytes(),
+            256 * (std::mem::size_of::<Entry>() + std::mem::size_of::<Option<ccountry::Country>>())
+                + std::mem::size_of::<[u64; FILTER_WORDS]>()
+                + std::mem::size_of::<u64>()
+                + std::mem::size_of::<Box<[Option<ccountry::Country>]>>()
+                + 3 * std::mem::size_of::<usize>()
+        );
+        assert_eq!(
+            Cache::with_capacity(0).allocated_bytes(),
+            std::mem::size_of::<[u64; FILTER_WORDS]>()
+                + std::mem::size_of::<u64>()
+                + std::mem::size_of::<Box<[Option<ccountry::Country>]>>()
+                + 3 * std::mem::size_of::<usize>()
+        );
+    }
+
+    #[test]
+    fn preparations_replace_all_negative_filter_bits_and_old_keys() {
+        let source = Synthetic::countries();
+        let mut cache = Cache::with_capacity(64);
+        let memory = cache.prepare(&source, 0, 0x1000);
+        assert_eq!(memory.seed_status(), SeedStatus::Ready);
+        assert!(memory.verify().is_ok());
+        cache.filter.fill(u64::MAX);
+        cache.lengths = u64::MAX;
+        for slot in [1, 2] {
+            source.put(0x1500 + slot * 8, &0x2800_u64.to_le_bytes());
+        }
+        source.put(0x2800, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        source.put(0x2808, &7_u32.to_le_bytes());
+        source.put(0x2008, &99_u32.to_le_bytes());
+        let memory = cache.prepare(&source, 0, 0x1000);
+        assert_eq!(memory.seed_status(), SeedStatus::Ready);
+        assert_eq!(memory.cache.lengths, (1 << 4) | (1 << 8) | (1 << 16));
+        let mut expected = [0; FILTER_WORDS];
+        for entry in memory.cache.entries.iter().filter(|entry| entry.len != 0) {
+            let (word, bit) = Cache::filter_bit(Cache::hash(entry.address, entry.len));
+            expected[word] |= bit;
+            assert!(memory.cache.find(entry.address, entry.len).is_some());
+        }
+        assert_eq!(memory.cache.filter, expected);
+        assert!(memory.cache.find(0x2008, 4).is_none());
+        let before = source.guards.get();
+        assert_eq!(read::<u32>(&memory, 0x2008), Some(99));
+        assert_eq!(source.guards.get(), before + 1);
+        assert_eq!(read::<u32>(&memory, 0x2808), Some(7));
+        assert_eq!(source.guards.get(), before + 1);
+        assert!(memory.verify().is_ok());
+
+        // An immediate failed census cannot retain bits from the previous one.
+        source.fault.set(Some(0x1000 + cgame_state::COUNTRIES));
+        let memory = cache.prepare(&source, 0, 0x1000);
+        assert!(matches!(
+            memory.seed_status(),
+            SeedStatus::Unavailable { .. }
+        ));
+        assert_eq!(memory.cache.filter, [0; FILTER_WORDS]);
+        assert_eq!(memory.cache.lengths, 0);
+        assert_eq!(memory.verify(), Ok(Verification::NotCached));
+    }
+
+    #[test]
     fn repeated_walkers_share_authentication_but_scalars_and_unseeded_links_stay_live() {
         let source = Synthetic::countries();
         let expected = shared_walks(&source);
@@ -534,11 +737,20 @@ mod tests {
             let mut failed = [0xa5; 8];
             let mut later = [0xa5; 8];
             let before = source.guards.get();
+            source.observations.borrow_mut().clear();
             assert_eq!(
                 memory.copy_scattered(addresses, &mut [&mut first, &mut failed, &mut later]),
                 1
             );
             assert_eq!(source.guards.get(), before + 1);
+            assert_eq!(
+                *source.observations.borrow(),
+                if addresses[0] == 0x2008 {
+                    vec![(scalar, 8)]
+                } else {
+                    vec![(0x1800, 4), (scalar, 8)]
+                }
+            );
             assert_eq!(
                 first,
                 if addresses[0] == 0x2008 {
@@ -552,20 +764,24 @@ mod tests {
         }
         let mut failed = [0xa5; 8];
         let mut later_hit = [0xa5; 4];
+        source.observations.borrow_mut().clear();
         assert_eq!(
             memory.copy_scattered([scalar, 0x2008], &mut [&mut failed, &mut later_hit]),
             0
         );
         assert_eq!(later_hit, [0xa5; 4]);
+        assert_eq!(*source.observations.borrow(), vec![(scalar, 8)]);
         source.fault.set(None);
         let mut empty = [];
         let mut id = [0; 4];
         let before = source.guards.get();
+        source.observations.borrow_mut().clear();
         assert_eq!(
             memory.copy_scattered([0, 0x2008], &mut [&mut empty, &mut id]),
             2
         );
         assert_eq!(source.guards.get(), before);
+        assert!(source.observations.borrow().is_empty());
         assert_eq!(id, [7, 0, 0, 0]);
         assert!(memory.verify().is_ok());
     }
@@ -583,6 +799,15 @@ mod tests {
             let mut cache = Cache::with_capacity(64);
             let memory = cache.prepare(&source, 0, 0x1000);
             source.bytes.borrow_mut()[address - 0x1000] ^= 1;
+            assert!(memory.authenticated_countries(0, 0x1000).is_some());
+            assert_eq!(
+                ccountry::Reader::new(&memory, 0, 0x1000).unwrap().at(1),
+                Ok(Some(ccountry::Country {
+                    pointer: 0x2000,
+                    canonical_slot: 1,
+                    id: 7
+                })),
+            );
             assert_eq!(
                 memory.verify(),
                 Err("country authentication changed during table walks")
@@ -590,6 +815,15 @@ mod tests {
             let source = Synthetic::countries();
             let memory = cache.prepare(&source, 0, 0x1000);
             source.fault.set(Some(address));
+            assert!(memory.authenticated_countries(0, 0x1000).is_some());
+            assert_eq!(
+                ccountry::Reader::new(&memory, 0, 0x1000).unwrap().at(1),
+                Ok(Some(ccountry::Country {
+                    pointer: 0x2000,
+                    canonical_slot: 1,
+                    id: 7
+                })),
+            );
             assert_eq!(
                 memory.verify(),
                 Err("country authentication became unreadable during table walks")
@@ -609,6 +843,11 @@ mod tests {
             assert_eq!(memory.cached_entries(), 0);
             source.put(0x2008, &2_u32.to_le_bytes());
             assert_eq!(read::<u32>(&memory, 0x2008), Some(2));
+            source.fault.set(Some(0x2008));
+            let mut failed = [0xa5; 4];
+            assert!(!memory.copy(0x2008, &mut failed));
+            assert_eq!(failed, [0x7e, 0xa5, 0xa5, 0xa5]);
+            source.fault.set(None);
             assert_eq!(memory.verify(), Ok(Verification::NotCached));
             assert_eq!(cache.capacity(), capacity);
         }
@@ -623,6 +862,9 @@ mod tests {
             }
         );
         assert_eq!(memory.cached_entries(), 0);
+        let mut failed = [0xa5; 4];
+        assert!(!memory.copy(0x2008, &mut failed));
+        assert_eq!(failed, [0x7e, 0xa5, 0xa5, 0xa5]);
         source.fault.set(None);
         source.put(0x2008, &2_u32.to_le_bytes());
         assert_eq!(read::<u32>(&memory, 0x2008), Some(2));
@@ -663,7 +905,377 @@ mod tests {
                 reason: "country authentication changed during census"
             }
         );
+        assert!(memory.authenticated_countries(0, 0x1000).is_none());
         assert_eq!(read::<u32>(&memory, 0x2008), Some(2));
         assert_eq!(memory.verify(), Ok(Verification::NotCached));
+    }
+
+    /// The byte-cache-only reference deliberately does not forward the new
+    /// capability. It otherwise keeps the original source and batch semantics.
+    struct ByteOnly<'a, M>(&'a M);
+
+    impl<M: Memory> Memory for ByteOnly<'_, M> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.0.copy(address, destination)
+        }
+
+        fn copy_scattered<const N: usize>(
+            &self,
+            addresses: [usize; N],
+            destinations: &mut [&mut [u8]; N],
+        ) -> usize {
+            self.0.copy_scattered(addresses, destinations)
+        }
+
+        fn copy_records(
+            &self,
+            pointers: &[usize],
+            fields: &[crate::memory::RecordField],
+            row_stride: usize,
+            destination: &mut [u8],
+        ) -> usize {
+            self.0
+                .copy_records(pointers, fields, row_stride, destination)
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct CountryResults {
+        slots: Vec<Result<Option<ccountry::Country>, &'static str>>,
+        resolved: Vec<Result<ccountry::Country, &'static str>>,
+        links: Vec<Result<Option<u32>, &'static str>>,
+    }
+
+    fn country_results(
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+    ) -> Result<CountryResults, &'static str> {
+        let reader = ccountry::Reader::new(memory, base, game_state)?;
+        let queries = (0..=8).chain(std::iter::once(u32::MAX));
+        Ok(CountryResults {
+            slots: queries.clone().map(|slot| reader.at(slot)).collect(),
+            resolved: queries.clone().map(|raw| reader.resolve(raw)).collect(),
+            links: queries.map(|raw| reader.link(raw)).collect(),
+        })
+    }
+
+    #[test]
+    fn authenticated_roster_seed_keeps_original_alias_and_fault_read_order() {
+        let spans = [
+            (0x1000 + cgame_state::COUNTRIES, 16),
+            (0x1000 + cgame_state::COUNTRY_LINKS, 16),
+            (0x1508, 8),
+            (0x1510, 8),
+            (0x1518, 8),
+            (0x2000, 8),
+            (0x2008, 4),
+            (0x1704, 4),
+            (0x1708, 4),
+            (0x171c, 4),
+        ];
+        for fault in std::iter::once(None).chain(
+            spans
+                .into_iter()
+                .flat_map(|(address, len)| [Some(address), Some(address + len - 1)]),
+        ) {
+            let original = Synthetic::countries();
+            let actual = Synthetic::countries();
+            original.fault.set(fault);
+            actual.fault.set(fault);
+            let old_census = (|| {
+                let reader = ccountry::Reader::new(&original, 0, 0x1000)?;
+                for slot in 1..reader.count() {
+                    reader.at(slot)?;
+                }
+                Ok::<(), &'static str>(())
+            })();
+            let mut cache = Cache::with_capacity(64);
+            let memory = cache.prepare(&actual, 0, 0x1000);
+            assert_eq!(
+                *actual.observations.borrow(),
+                *original.observations.borrow(),
+                "{fault:?}"
+            );
+            match old_census {
+                Ok(()) => assert!(memory.authenticated_countries(0, 0x1000).is_some()),
+                Err(reason) => {
+                    assert_eq!(memory.seed_status(), SeedStatus::Unavailable { reason });
+                    assert!(memory.authenticated_countries(0, 0x1000).is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn authenticated_roster_matches_byte_cache_faults_and_verification() {
+        let faults = [
+            None,
+            Some(0x1000 + cgame_state::COUNTRIES),
+            Some(0x1000 + cgame_state::COUNTRY_LINKS + 15),
+            Some(0x1508),
+            Some(0x1517),
+            Some(0x1518),
+            Some(0x2000),
+            Some(0x200b),
+            Some(0x1704),
+            Some(0x1708),
+            Some(0x171f),
+            Some(0x1710),
+            Some(0x2000 + ccountry::COMMAND_POWER),
+        ];
+        for capacity in [0, 1, 64] {
+            for before_seed in [false, true] {
+                for fault in faults {
+                    let actual = Synthetic::countries();
+                    let original = Synthetic::countries();
+                    if before_seed {
+                        actual.fault.set(fault);
+                        original.fault.set(fault);
+                    }
+                    let mut actual_cache = Cache::with_capacity(capacity);
+                    let mut original_cache = Cache::with_capacity(capacity);
+                    let actual_memory = actual_cache.prepare(&actual, 0, 0x1000);
+                    let original_memory = original_cache.prepare(&original, 0, 0x1000);
+                    assert_eq!(actual_memory.seed_status(), original_memory.seed_status());
+                    assert_eq!(
+                        actual_memory.cached_entries(),
+                        original_memory.cached_entries()
+                    );
+                    if !before_seed {
+                        actual.fault.set(fault);
+                        original.fault.set(fault);
+                    }
+                    assert_eq!(
+                        country_results(&actual_memory, 0, 0x1000),
+                        country_results(&ByteOnly(&original_memory), 0, 0x1000),
+                        "capacity={capacity} before_seed={before_seed} fault={fault:?}",
+                    );
+                    assert_eq!(
+                        read::<i64>(&actual_memory, 0x2000 + ccountry::COMMAND_POWER),
+                        read::<i64>(
+                            &ByteOnly(&original_memory),
+                            0x2000 + ccountry::COMMAND_POWER
+                        ),
+                    );
+                    assert_eq!(
+                        *actual.observations.borrow(),
+                        *original.observations.borrow()
+                    );
+                    assert_eq!(actual_memory.verify(), original_memory.verify());
+                    assert_eq!(
+                        *actual.observations.borrow(),
+                        *original.observations.borrow()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn authenticated_roster_keeps_arbitrary_link_reads_and_context_identity() {
+        let source = Synthetic::countries();
+        let mut cache = Cache::with_capacity(64);
+        let memory = cache.prepare(&source, 0, 0x1000);
+        assert!(memory.authenticated_countries(0, 0x1000).is_some());
+        assert!(memory.authenticated_countries(1, 0x1000).is_none());
+        assert!(memory.authenticated_countries(0, 0x1100).is_none());
+        for (base, state) in [(1, 0x1000), (0, 0x1100), (usize::MAX, 0x1000)] {
+            assert_eq!(
+                country_results(&memory, base, state),
+                country_results(&ByteOnly(&memory), base, state)
+            );
+        }
+        let reader = ccountry::Reader::new(&memory, 0, 0x1000).unwrap();
+        let country = ccountry::Country {
+            pointer: 0x2000,
+            canonical_slot: 1,
+            id: 7,
+        };
+        assert_eq!(reader.at(1), Ok(Some(country)));
+        assert_eq!(reader.at(2), Ok(None));
+        assert_eq!(reader.at(3), Ok(None));
+        assert_eq!(reader.at(0), Err("country id is zero"));
+        for (slot, expected) in [
+            (1_u32, Ok(country)),
+            (
+                2,
+                Err("country link does not resolve to its canonical object"),
+            ),
+            (3, Err("country link resolves to null country")),
+            (0, Err("country link unreadable or outside country table")),
+            (4, Err("country link unreadable or outside country table")),
+            (1, Ok(country)),
+        ] {
+            // Raw id 4 was never seeded; each requested observation stays live.
+            source.put(0x1710, &slot.to_le_bytes());
+            source.observations.borrow_mut().clear();
+            assert_eq!(reader.resolve(4), expected);
+            assert_eq!(&*source.observations.borrow(), &[(0x1710, 4)]);
+        }
+        source.fault.set(Some(0x1710));
+        source.observations.borrow_mut().clear();
+        assert_eq!(
+            reader.resolve(4),
+            Err("country link unreadable or outside country table")
+        );
+        assert_eq!(&*source.observations.borrow(), &[(0x1710, 4)]);
+        source.fault.set(None);
+        // An uncached link is not silently added to final verification.
+        assert_eq!(memory.verify(), Ok(Verification::Matched { entries: 10 }));
+    }
+
+    #[test]
+    fn authenticated_roster_reprepare_replaces_aliases_nulls_and_short_storage() {
+        let source = Synthetic::countries();
+        let mut cache = Cache::with_capacity(64);
+        let allocated = cache.allocated_bytes();
+        let memory = cache.prepare(&source, 0, 0x1000);
+        assert!(memory.authenticated_countries(0, 0x1000).is_some());
+        assert!(memory.verify().is_ok());
+
+        // A new object/id with one now-null alias cannot retain the old object.
+        source.put(0x1508, &0x2800_u64.to_le_bytes());
+        source.put(0x1510, &0_u64.to_le_bytes());
+        source.put(0x2800, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        source.put(0x2808, &1_u32.to_le_bytes());
+        let memory = cache.prepare(&source, 0, 0x1000);
+        let reader = ccountry::Reader::new(&memory, 0, 0x1000).unwrap();
+        assert_eq!(
+            reader.at(1),
+            Ok(Some(ccountry::Country {
+                pointer: 0x2800,
+                canonical_slot: 1,
+                id: 1
+            }))
+        );
+        assert_eq!(reader.at(2), Ok(None));
+        assert_eq!(reader.resolve(2), reader.resolve(1));
+        assert!(memory.verify().is_ok());
+
+        source.put(0x1000 + cgame_state::COUNTRIES + 12, &2_u32.to_le_bytes());
+        let memory = cache.prepare(&source, 0, 0x1000);
+        assert!(memory.authenticated_countries(0, 0x1000).is_some());
+        let reader = ccountry::Reader::new(&memory, 0, 0x1000).unwrap();
+        assert_eq!(reader.count(), 2);
+        assert_eq!(
+            reader.at(2),
+            Err("country pointer unreadable or outside country table")
+        );
+        assert!(memory.verify().is_ok());
+        assert_eq!(cache.allocated_bytes(), allocated);
+
+        source.fault.set(Some(0x2808));
+        let memory = cache.prepare(&source, 0, 0x1000);
+        assert!(memory.authenticated_countries(0, 0x1000).is_none());
+        assert!(matches!(
+            memory.seed_status(),
+            SeedStatus::Unavailable { .. }
+        ));
+        assert_eq!(memory.verify(), Ok(Verification::NotCached));
+        source.fault.set(None);
+
+        // Metadata pressure disables only this optional capability, leaving
+        // the byte cache, its status and full direct verification unchanged.
+        cache.roster = vec![None; 1].into_boxed_slice();
+        let memory = cache.prepare(&source, 0, 0x1000);
+        assert_eq!(memory.seed_status(), SeedStatus::Ready);
+        assert!(memory.authenticated_countries(0, 0x1000).is_none());
+        assert_eq!(
+            country_results(&memory, 0, 0x1000),
+            country_results(&ByteOnly(&memory), 0, 0x1000)
+        );
+        assert!(memory.verify().is_ok());
+    }
+
+    #[test]
+    fn authenticated_roster_never_elides_recording_wrapper_observations() {
+        struct Recorder<'a, M> {
+            source: &'a M,
+            reads: RefCell<Vec<(usize, usize)>>,
+        }
+        impl<M: Memory> Memory for Recorder<'_, M> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                self.reads.borrow_mut().push((address, destination.len()));
+                self.source.copy(address, destination)
+            }
+        }
+        let source = Synthetic::countries();
+        let mut cache = Cache::with_capacity(64);
+        let memory = cache.prepare(&source, 0, 0x1000);
+        let recorder = Recorder {
+            source: &memory,
+            reads: RefCell::new(Vec::new()),
+        };
+        assert!(recorder.authenticated_countries(0, 0x1000).is_none());
+        let reader = ccountry::Reader::new(&recorder, 0, 0x1000).unwrap();
+        assert!(reader.at(1).unwrap().is_some());
+        assert!(reader.at(2).unwrap().is_none());
+        assert_eq!(
+            &*recorder.reads.borrow(),
+            &[
+                (0x1000 + cgame_state::COUNTRIES, 16),
+                (0x1000 + cgame_state::COUNTRY_LINKS, 16),
+                (0x1508, 8),
+                (0x2000, 8),
+                (0x2008, 4),
+                (0x171c, 4),
+                (0x1704, 4),
+                (0x1704, 4),
+                (0x1508, 8),
+                (0x1510, 8),
+                (0x2000, 8),
+                (0x2008, 4),
+                (0x171c, 4),
+                (0x1708, 4),
+                (0x1704, 4),
+                (0x1508, 8),
+            ],
+        );
+        assert!(memory.verify().is_ok());
+    }
+
+    #[test]
+    fn authenticated_roster_keeps_typed_rows_and_capacity_outcomes() {
+        for capacity in [0, 1, 2, 3] {
+            let source = Synthetic::countries();
+            for (offset, data) in [
+                (ccountry::VOLUNTEER_HOSTS, 0x3000_u64),
+                (ccountry::VOLUNTEER_TALLIES, 0x3100),
+            ] {
+                source.put(0x2000 + offset, &data.to_le_bytes());
+                source.put(0x2000 + offset + 8, &2_u32.to_le_bytes());
+                source.put(0x2000 + offset + 12, &2_u32.to_le_bytes());
+            }
+            source.put(0x3000, &7_u32.to_le_bytes());
+            source.put(0x3004, &2_u32.to_le_bytes());
+            source.put(0x3100, &31_i32.to_le_bytes());
+            source.put(0x3104, &(-9_i32).to_le_bytes());
+            let mut cache = Cache::with_capacity(64);
+            let memory = cache.prepare(&source, 0, 0x1000);
+            let mut actual = vec![ccountry::VolunteerHostRow::default(); capacity];
+            let mut expected = actual.clone();
+            source.observations.borrow_mut().clear();
+            let actual_outcome = ccountry::walk_volunteer_hosts(&memory, 0, 0x1000, &mut actual);
+            let actual_reads = source.observations.borrow().clone();
+            source.observations.borrow_mut().clear();
+            let expected_outcome =
+                ccountry::walk_volunteer_hosts(&ByteOnly(&memory), 0, 0x1000, &mut expected);
+            assert_eq!(actual_outcome, expected_outcome);
+            assert_eq!(actual, expected);
+            assert_eq!(&*source.observations.borrow(), &actual_reads);
+            assert_eq!(
+                actual_outcome,
+                if capacity < 2 {
+                    Outcome::Truncated {
+                        len: capacity,
+                        unread_rows: (2 - capacity) as u32,
+                    }
+                } else {
+                    Outcome::Rows { len: 2 }
+                }
+            );
+            assert!(memory.verify().is_ok());
+        }
     }
 }

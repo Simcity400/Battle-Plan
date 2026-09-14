@@ -7,6 +7,7 @@
 #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
 compile_error!("collector requires Windows x64 MSVC");
 
+mod acquisition;
 mod decode;
 mod extended;
 mod history;
@@ -14,6 +15,7 @@ mod hook;
 mod map_capture;
 mod map_spool;
 mod raw;
+mod raw_memory;
 mod roster;
 mod runtime;
 mod sampling;

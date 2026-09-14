@@ -5,7 +5,14 @@ use crate::{
     codec::{Decoder, invalid, put_string},
     rows::{self, DeltaRow, TableId, TableRows, TableSchema},
 };
-use std::{collections::BTreeSet, io};
+use std::{
+    collections::BTreeSet,
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 pub const TABLE_COUNT: usize = TableId::ALL.len();
 
@@ -41,6 +48,56 @@ pub struct DecodedFrame {
     pub hour: Hour,
     pub tables: [TableView; TABLE_COUNT],
     pub metrics: Metrics,
+}
+
+/// Encoder-only input. Compared rows were freshly sampled and compared exactly
+/// with this encoder's complete baseline; this is not a skipped acquisition.
+/// Decoders and the wire format continue to use only `TableView`/`TableUpdate`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TableInput {
+    Sampled(TableView),
+    /// Complete owned replay rows shared with the producer's recovery cache.
+    /// Exact identity with this encoder's immutable committed allocation reuses
+    /// its row-validation/equality result; enclosing-hour checks still run.
+    SharedComplete(Arc<TableRows>),
+    ComparedEqual(BaselineToken),
+}
+
+impl From<TableView> for TableInput {
+    fn from(view: TableView) -> Self {
+        Self::Sampled(view)
+    }
+}
+
+/// Identifies the exact baseline and destination for a producer's comparison.
+/// The encoder checks these fields again before committing any table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BaselineToken {
+    encoder: u64,
+    revision: u64,
+    table: TableId,
+    branch: BranchId,
+    hour: Hour,
+    baseline: Hour,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameInput {
+    pub branch: BranchId,
+    pub hour: Hour,
+    pub tables: [TableInput; TABLE_COUNT],
+    pub metrics: Metrics,
+}
+
+impl From<DecodedFrame> for FrameInput {
+    fn from(source: DecodedFrame) -> Self {
+        Self {
+            branch: source.branch,
+            hour: source.hour,
+            tables: source.tables.map(TableInput::Sampled),
+            metrics: source.metrics,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -355,10 +412,24 @@ fn validate_delta(table: TableId, changed: &[DeltaRow], deleted: &[u128]) -> io:
     Ok(())
 }
 
+enum BaselineRows {
+    Owned(TableRows),
+    Shared(Arc<TableRows>),
+}
+
+impl AsRef<TableRows> for BaselineRows {
+    fn as_ref(&self) -> &TableRows {
+        match self {
+            Self::Owned(rows) => rows,
+            Self::Shared(rows) => rows,
+        }
+    }
+}
+
 struct Baselines {
     branch: Option<BranchId>,
     last_hour: Option<Hour>,
-    tables: [Option<(Hour, TableRows)>; TABLE_COUNT],
+    tables: [Option<(Hour, BaselineRows)>; TABLE_COUNT],
 }
 
 impl Default for Baselines {
@@ -370,10 +441,25 @@ impl Default for Baselines {
         }
     }
 }
-#[derive(Default)]
 pub struct FrameEncoder {
     state: Baselines,
     keyframe_hour: Option<Hour>,
+    identity: u64,
+    revision: u64,
+}
+
+impl Default for FrameEncoder {
+    fn default() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self {
+            state: Baselines::default(),
+            keyframe_hour: None,
+            revision: 0,
+            identity: NEXT_ID
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .expect("encoder identity space exhausted"),
+        }
+    }
 }
 
 impl FrameEncoder {
@@ -398,79 +484,180 @@ impl FrameEncoder {
             && self.state.tables[table.index()].is_some()
     }
 
+    /// Borrow a complete baseline for comparison with a new native sample.
+    /// Callers must check all current acquisition/arena/uniqueness verdicts and
+    /// exact row payloads before submitting `ComparedEqual`. The borrow is used
+    /// only during conversion; no native capture or replay-row lease is retained.
+    pub fn comparison_baseline<T: TableSchema>(
+        &self,
+        branch: BranchId,
+        hour: Hour,
+        force: bool,
+    ) -> Option<(BaselineToken, &[T::Row])> {
+        // This bounded producer-comparison pilot is intentionally unavailable to
+        // every other table (especially enclosing-hour-dependent Clock rows).
+        if T::ID != TableId::ScriptVariables
+            || self.needs_keyframe(branch, hour, force)
+            || self
+                .state
+                .last_hour
+                .and_then(|previous| previous.checked_add(1))
+                != Some(hour)
+        {
+            return None;
+        }
+        let (baseline, values) = self.state.tables[T::ID.index()].as_ref()?;
+        Some((
+            BaselineToken {
+                encoder: self.identity,
+                revision: self.revision,
+                table: T::ID,
+                branch,
+                hour,
+                baseline: *baseline,
+            },
+            values.as_ref().rows::<T>()?,
+        ))
+    }
+
+    fn complete_update(
+        &self,
+        table: TableId,
+        values: &TableRows,
+        hour: Hour,
+        keyframe: bool,
+    ) -> io::Result<TableUpdate> {
+        validate_complete(table, values, hour)?;
+        Ok(
+            match self.state.tables[table.index()]
+                .as_ref()
+                .filter(|_| !keyframe)
+            {
+                None => TableUpdate::Snapshot(values.clone()),
+                Some((baseline, previous)) if values == previous.as_ref() => {
+                    // Both typed slices have passed complete validation. Avoid a
+                    // keyed merge for an idle table, regardless of row ownership.
+                    TableUpdate::Unchanged {
+                        baseline: *baseline,
+                    }
+                }
+                Some((baseline, previous)) => {
+                    let (changed, deleted) = values.diff(previous.as_ref())?;
+                    if changed.is_empty() && deleted.is_empty() {
+                        TableUpdate::Unchanged {
+                            baseline: *baseline,
+                        }
+                    } else {
+                        TableUpdate::Delta {
+                            baseline: *baseline,
+                            changed,
+                            deleted,
+                        }
+                    }
+                }
+            },
+        )
+    }
+
     /// Segment recovery must call with force_keyframe; it may never reuse a failed write's delta.
     pub fn encode(&mut self, source: DecodedFrame, force_keyframe: bool) -> io::Result<Frame> {
+        self.encode_input(source.into(), force_keyframe)
+    }
+
+    pub fn encode_input(&mut self, source: FrameInput, force_keyframe: bool) -> io::Result<Frame> {
         let new_branch = self.state.branch != Some(source.branch);
         if !new_branch && self.state.last_hour.is_some_and(|hour| hour >= source.hour) {
             return Err(invalid("frame hour did not advance on its branch"));
         }
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| invalid("encoder revision space exhausted"))?;
         let keyframe = self.needs_keyframe(source.branch, source.hour, force_keyframe);
         let mut tables = Vec::with_capacity(TABLE_COUNT);
         for (table, view) in TableId::ALL.into_iter().zip(&source.tables) {
             let update = match view {
-                TableView::Complete(values) => {
-                    validate_complete(table, values, source.hour)?;
-                    match self.state.tables[table.index()]
-                        .as_ref()
-                        .filter(|_| !keyframe)
+                TableInput::SharedComplete(values) => {
+                    if !keyframe
+                        && !new_branch
+                        && let Some((baseline, BaselineRows::Shared(previous))) =
+                            self.state.tables[table.index()].as_ref()
+                        && Arc::ptr_eq(values, previous)
                     {
-                        None => TableUpdate::Snapshot(values.clone()),
-                        Some((baseline, previous)) if values == previous => {
-                            // The current rows have passed complete validation, and
-                            // baselines are immutable validated commits. Comparing
-                            // typed slices avoids a keyed merge for an idle table.
-                            TableUpdate::Unchanged {
-                                baseline: *baseline,
-                            }
-                        }
-                        Some((baseline, previous)) => {
-                            let (changed, deleted) = values.diff(previous)?;
-                            if changed.is_empty() && deleted.is_empty() {
-                                TableUpdate::Unchanged {
-                                    baseline: *baseline,
-                                }
-                            } else {
-                                TableUpdate::Delta {
-                                    baseline: *baseline,
-                                    changed,
-                                    deleted,
-                                }
-                            }
-                        }
-                    }
-                }
-                TableView::Truncated { rows, missing } => {
-                    validate_rows(table, rows)?;
-                    if *missing == 0 {
-                        return Err(invalid("truncated table has no missing rows"));
-                    }
-                    if keyframe {
-                        TableUpdate::Unavailable {
-                            reason: format!("truncated at keyframe: {missing} rows not read"),
-                        }
-                    } else {
-                        TableUpdate::Truncated {
-                            rows: TableRows::empty(table),
-                            missing: *missing,
-                        }
-                    }
-                }
-                TableView::Unavailable { reason } => {
-                    if reason.is_empty() {
-                        return Err(invalid("unavailable table needs a reason"));
-                    }
-                    if reason == crate::cadence::SKIPPED_REASON
-                        && self.can_carry(table, source.branch, source.hour, force_keyframe)
-                    {
+                        // This exact allocation already passed complete validation.
+                        // It stays immutable while the private baseline owns an Arc;
+                        // only its relation to the new enclosing hour can change.
+                        validate_singleton(table, values, source.hour)?;
                         TableUpdate::Unchanged {
-                            baseline: self.state.tables[table.index()].as_ref().unwrap().0,
+                            baseline: *baseline,
                         }
                     } else {
-                        TableUpdate::Unavailable {
-                            reason: reason.clone(),
-                        }
+                        self.complete_update(table, values, source.hour, keyframe)?
                     }
                 }
+                TableInput::ComparedEqual(token) => {
+                    if keyframe
+                        || token.encoder != self.identity
+                        || token.revision != self.revision
+                        || table != TableId::ScriptVariables
+                        || token.table != table
+                        || token.branch != source.branch
+                        || token.hour != source.hour
+                        || self
+                            .state
+                            .last_hour
+                            .and_then(|previous| previous.checked_add(1))
+                            != Some(source.hour)
+                        || self.state.tables[table.index()]
+                            .as_ref()
+                            .map(|entry| entry.0)
+                            != Some(token.baseline)
+                    {
+                        return Err(invalid(
+                            "compared table does not name the current complete baseline",
+                        ));
+                    }
+                    TableUpdate::Unchanged {
+                        baseline: token.baseline,
+                    }
+                }
+                TableInput::Sampled(view) => match view {
+                    TableView::Complete(values) => {
+                        self.complete_update(table, values, source.hour, keyframe)?
+                    }
+                    TableView::Truncated { rows, missing } => {
+                        validate_rows(table, rows)?;
+                        if *missing == 0 {
+                            return Err(invalid("truncated table has no missing rows"));
+                        }
+                        if keyframe {
+                            TableUpdate::Unavailable {
+                                reason: format!("truncated at keyframe: {missing} rows not read"),
+                            }
+                        } else {
+                            TableUpdate::Truncated {
+                                rows: TableRows::empty(table),
+                                missing: *missing,
+                            }
+                        }
+                    }
+                    TableView::Unavailable { reason } => {
+                        if reason.is_empty() {
+                            return Err(invalid("unavailable table needs a reason"));
+                        }
+                        if reason == crate::cadence::SKIPPED_REASON
+                            && self.can_carry(table, source.branch, source.hour, force_keyframe)
+                        {
+                            TableUpdate::Unchanged {
+                                baseline: self.state.tables[table.index()].as_ref().unwrap().0,
+                            }
+                        } else {
+                            TableUpdate::Unavailable {
+                                reason: reason.clone(),
+                            }
+                        }
+                    }
+                },
             };
             tables.push(update);
         }
@@ -489,19 +676,28 @@ impl FrameEncoder {
         {
             match update {
                 TableUpdate::Unchanged { .. } => {
-                    self.state.tables[index]
+                    let baseline = self.state.tables[index]
                         .as_mut()
-                        .expect("unchanged table has a validated baseline")
-                        .0 = source.hour;
+                        .expect("unchanged table has a validated baseline");
+                    baseline.0 = source.hour;
+                    if let TableInput::SharedComplete(rows) = view {
+                        // Adopt the latest equal refresh allocation so the
+                        // producer cache and baseline cannot retain two copies.
+                        // The emitted update still names the previous hour.
+                        baseline.1 = BaselineRows::Shared(rows);
+                    }
                 }
                 TableUpdate::Snapshot(_) | TableUpdate::Delta { .. } => {
-                    let TableView::Complete(rows) = view else {
-                        unreachable!()
+                    let rows = match view {
+                        TableInput::Sampled(TableView::Complete(rows)) => BaselineRows::Owned(rows),
+                        TableInput::SharedComplete(rows) => BaselineRows::Shared(rows),
+                        _ => unreachable!(),
                     };
                     self.state.tables[index] = Some((source.hour, rows));
                 }
                 TableUpdate::Truncated { rows, .. } => {
-                    let TableView::Truncated { rows: source, .. } = view else {
+                    let TableInput::Sampled(TableView::Truncated { rows: source, .. }) = view
+                    else {
                         unreachable!()
                     };
                     *rows = source;
@@ -512,6 +708,7 @@ impl FrameEncoder {
         }
         self.state.branch = Some(source.branch);
         self.state.last_hour = Some(source.hour);
+        self.revision = revision;
         if keyframe {
             self.keyframe_hour = Some(source.hour);
         }
@@ -657,6 +854,498 @@ mod tests {
     };
 
     const FACTION_ID: u64 = 0xfedc_ba98_0000_004d;
+
+    fn shared_input(source: DecodedFrame) -> FrameInput {
+        let mut input: FrameInput = source.into();
+        input.tables = input.tables.map(|input| match input {
+            TableInput::Sampled(TableView::Complete(rows)) => {
+                TableInput::SharedComplete(Arc::new(rows))
+            }
+            other => other,
+        });
+        input
+    }
+
+    // Exercise both newly converted allocations and the exact allocation held
+    // by the encoder. Fixture equality stands in for producer conversion proof.
+    fn reuse_committed_rows(input: &mut FrameInput, encoder: &FrameEncoder) {
+        for (index, input) in input.tables.iter_mut().enumerate() {
+            if let TableInput::SharedComplete(current) = input
+                && let Some((_, BaselineRows::Shared(previous))) = &encoder.state.tables[index]
+                && current.as_ref() == previous.as_ref()
+            {
+                *current = Arc::clone(previous);
+            }
+        }
+    }
+
+    #[test]
+    fn shared_complete_rows_match_owned_wire_and_adopt_each_validated_refresh() {
+        for reuse_allocation in [false, true] {
+            let mut shared = FrameEncoder::new();
+            let mut owned = FrameEncoder::new();
+            let mut decoder = FrameDecoder::new();
+            let mut previous_rows = None;
+            // Includes equal/changed refreshes, a gap, scheduled and forced
+            // keyframes, and a branch round trip with reused hour values.
+            for (branch, hour, value, force) in [
+                (1, 100, 1, false),
+                (1, 101, 1, false),
+                (1, 107, 2, false),
+                (1, 108, 2, false),
+                (1, 820, 2, false),
+                (1, 821, 2, true),
+                (2, 100, 3, false),
+                (1, 100, 4, false),
+            ] {
+                let mut source = source(branch, hour);
+                change_country(&mut source, value);
+                let mut input = shared_input(source.clone());
+                if reuse_allocation {
+                    reuse_committed_rows(&mut input, &shared);
+                }
+                let allocations: [_; TABLE_COUNT] = std::array::from_fn(|index| {
+                    let TableInput::SharedComplete(rows) = &input.tables[index] else {
+                        panic!("fixture has complete rows")
+                    };
+                    Arc::clone(rows)
+                });
+                let expected = owned.encode(source.clone(), force).unwrap();
+                let actual = shared.encode_input(input, force).unwrap();
+                assert_eq!(wire(&actual), wire(&expected));
+                assert_eq!(decoder.apply(&actual).unwrap(), source);
+                for (index, allocation) in allocations.iter().enumerate() {
+                    let (baseline_hour, BaselineRows::Shared(baseline)) =
+                        shared.state.tables[index].as_ref().unwrap()
+                    else {
+                        panic!("complete shared rows must stay shared")
+                    };
+                    assert_eq!(*baseline_hour, hour);
+                    assert!(Arc::ptr_eq(baseline, allocation));
+                    assert_eq!(Arc::strong_count(allocation), 2);
+                }
+                if let Some(previous) = previous_rows.take() {
+                    if std::sync::Weak::ptr_eq(
+                        &previous,
+                        &Arc::downgrade(&allocations[TableId::Countries.index()]),
+                    ) {
+                        assert!(reuse_allocation);
+                        assert!(std::sync::Weak::upgrade(&previous).is_some());
+                    } else {
+                        assert!(std::sync::Weak::upgrade(&previous).is_none());
+                    }
+                }
+                previous_rows = Some(Arc::downgrade(&allocations[TableId::Countries.index()]));
+            }
+        }
+    }
+
+    #[test]
+    fn shared_baselines_survive_cadence_and_owned_equal_inputs_without_reallocation() {
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        let first = shared_input(source(1, 0));
+        let TableInput::SharedComplete(rows) = &first.tables[TableId::Characters.index()] else {
+            panic!()
+        };
+        let allocation = Arc::clone(rows);
+        decoder
+            .apply(&encoder.encode_input(first, false).unwrap())
+            .unwrap();
+        for hour in 1..4 {
+            let expected = source(1, hour);
+            let mut input: FrameInput = expected.clone().into();
+            if hour != 2 {
+                input.tables[TableId::Characters.index()] =
+                    TableInput::Sampled(TableView::Unavailable {
+                        reason: crate::cadence::SKIPPED_REASON.into(),
+                    });
+            }
+            let frame = encoder.encode_input(input, false).unwrap();
+            assert_eq!(
+                frame.tables[TableId::Characters.index()],
+                TableUpdate::Unchanged { baseline: hour - 1 }
+            );
+            assert_eq!(decoder.apply(&frame).unwrap(), expected);
+            let (_, BaselineRows::Shared(baseline)) = encoder.state.tables
+                [TableId::Characters.index()]
+            .as_ref()
+            .unwrap() else {
+                panic!()
+            };
+            assert!(Arc::ptr_eq(baseline, &allocation));
+        }
+    }
+
+    #[test]
+    fn shared_partial_and_unavailable_clear_baselines_until_a_complete_snapshot() {
+        let table = TableId::Characters;
+        for partial in [false, true] {
+            let mut encoder = FrameEncoder::new();
+            let initial = shared_input(source(1, 0));
+            let TableInput::SharedComplete(rows) = &initial.tables[table.index()] else {
+                panic!()
+            };
+            let allocation = Arc::clone(rows);
+            encoder.encode_input(initial, false).unwrap();
+            let mut failed = shared_input(source(1, 1));
+            failed.tables[table.index()] = TableInput::Sampled(if partial {
+                TableView::Truncated {
+                    rows: TableRows::empty(table),
+                    missing: 1,
+                }
+            } else {
+                TableView::Unavailable {
+                    reason: "fresh read failed".into(),
+                }
+            });
+            encoder.encode_input(failed, false).unwrap();
+            assert!(encoder.state.tables[table.index()].is_none());
+            assert_eq!(Arc::strong_count(&allocation), 1);
+            let mut restored = shared_input(source(1, 2));
+            restored.tables[table.index()] = TableInput::SharedComplete(Arc::clone(&allocation));
+            let restored = encoder.encode_input(restored, false).unwrap();
+            assert!(matches!(
+                restored.tables[table.index()],
+                TableUpdate::Snapshot(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn shared_validation_is_atomic_and_preserves_existing_comparison_tokens() {
+        let mut encoder = FrameEncoder::new();
+        encoder
+            .encode_input(shared_input(variable_source(1, 0, 1)), false)
+            .unwrap();
+        let token = encoder
+            .comparison_baseline::<tables::ScriptVariables>(1, 1, false)
+            .unwrap()
+            .0;
+        let (_, BaselineRows::Shared(rows)) = encoder.state.tables
+            [TableId::ScriptVariables.index()]
+        .as_ref()
+        .unwrap() else {
+            panic!()
+        };
+        let allocation = Arc::clone(rows);
+        let duplicate = TableRows::Countries(vec![
+            variable_source(1, 1, 1)
+                .complete::<tables::Countries>()
+                .unwrap()[0]
+                .clone();
+            2
+        ]);
+        for (table, rows) in [
+            (TableId::Countries, duplicate),
+            (TableId::CountryIntel, TableRows::Clock(Vec::new())),
+            (
+                TableId::Clock,
+                TableRows::Clock(vec![ClockRow {
+                    hour: 99,
+                    ..Default::default()
+                }]),
+            ),
+        ] {
+            let mut invalid = shared_input(variable_source(1, 1, 2));
+            invalid.tables[table.index()] = TableInput::SharedComplete(Arc::new(rows));
+            reuse_committed_rows(&mut invalid, &encoder);
+            assert!(encoder.encode_input(invalid, false).is_err());
+            assert_eq!(
+                encoder
+                    .comparison_baseline::<tables::ScriptVariables>(1, 1, false)
+                    .unwrap()
+                    .0,
+                token
+            );
+            let (_, BaselineRows::Shared(rows)) = encoder.state.tables
+                [TableId::ScriptVariables.index()]
+            .as_ref()
+            .unwrap() else {
+                panic!()
+            };
+            assert!(Arc::ptr_eq(rows, &allocation));
+            assert_eq!(encoder.state.last_hour, Some(0));
+            assert!(
+                encoder
+                    .state
+                    .tables
+                    .iter()
+                    .flatten()
+                    .all(|(hour, _)| *hour == 0)
+            );
+        }
+        let mut compared = shared_input(variable_source(1, 1, 1));
+        compared.tables[TableId::ScriptVariables.index()] = TableInput::ComparedEqual(token);
+        let frame = encoder.encode_input(compared, false).unwrap();
+        assert_eq!(
+            frame.tables[TableId::ScriptVariables.index()],
+            TableUpdate::Unchanged { baseline: 0 }
+        );
+        let (_, BaselineRows::Shared(rows)) = encoder.state.tables
+            [TableId::ScriptVariables.index()]
+        .as_ref()
+        .unwrap() else {
+            panic!()
+        };
+        assert!(Arc::ptr_eq(rows, &allocation));
+    }
+
+    #[test]
+    fn shared_committed_identity_checks_clock_mutation_table_and_encoder_reset() {
+        let mut encoder = FrameEncoder::new();
+        let first = shared_input(source(1, 0));
+        let TableInput::SharedComplete(clock) = &first.tables[TableId::Clock.index()] else {
+            panic!()
+        };
+        let clock = Arc::clone(clock);
+        let TableInput::SharedComplete(countries) = &first.tables[TableId::Countries.index()]
+        else {
+            panic!()
+        };
+        let countries = Arc::clone(countries);
+        encoder.encode_input(first, false).unwrap();
+        let revision = encoder.revision;
+        let mut mutated = Arc::clone(&countries);
+        let rows = Arc::make_mut(&mut mutated)
+            .rows_mut::<tables::Countries>()
+            .unwrap();
+        rows.push(rows[0].clone());
+        assert!(!Arc::ptr_eq(&mutated, &countries));
+        for (table, rows, reason) in [
+            (
+                TableId::Clock,
+                clock,
+                "clock row hour differs from frame hour",
+            ),
+            (
+                TableId::Countries,
+                mutated,
+                "table rows must have matching types and unique ascending keys",
+            ),
+            (
+                TableId::CountryIntel,
+                Arc::clone(&countries),
+                "table rows must have matching types and unique ascending keys",
+            ),
+        ] {
+            let mut invalid = shared_input(source(1, 1));
+            reuse_committed_rows(&mut invalid, &encoder);
+            invalid.tables[table.index()] = TableInput::SharedComplete(rows);
+            assert_eq!(
+                encoder
+                    .encode_input(invalid, false)
+                    .unwrap_err()
+                    .to_string(),
+                reason
+            );
+            assert_eq!(encoder.revision, revision);
+            assert_eq!(encoder.state.last_hour, Some(0));
+            let (_, BaselineRows::Shared(previous)) = encoder.state.tables
+                [TableId::Countries.index()]
+            .as_ref()
+            .unwrap() else {
+                panic!()
+            };
+            assert!(Arc::ptr_eq(previous, &countries));
+        }
+        // A producer may retain this allocation through a failed spool write,
+        // but a replacement encoder has no proof and must emit a full snapshot.
+        encoder = FrameEncoder::new();
+        let mut recovered = shared_input(source(1, 1));
+        recovered.tables[TableId::Countries.index()] =
+            TableInput::SharedComplete(Arc::clone(&countries));
+        let recovered = encoder.encode_input(recovered, false).unwrap();
+        assert!(recovered.keyframe);
+        assert_eq!(
+            recovered.tables[TableId::Countries.index()],
+            TableUpdate::Snapshot((*countries).clone())
+        );
+    }
+
+    fn variable_source(branch: BranchId, hour: Hour, value: i64) -> DecodedFrame {
+        let mut frame = source(branch, hour);
+        frame.tables[TableId::ScriptVariables.index()] =
+            TableView::Complete(TableRows::ScriptVariables(vec![rows::ScriptVariablesRow {
+                scope_kind: 1,
+                scope_id: 7,
+                entries: vec![rows::ScriptVariableEntry {
+                    name: vec![0, 0xff],
+                    value_raw: value,
+                }],
+            }]));
+        frame
+    }
+
+    #[test]
+    fn compared_variables_encode_identically_without_replacing_owned_baseline_rows() {
+        let mut ordinary = FrameEncoder::new();
+        let mut compared = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        let mut previous_name = None;
+        for hour in 0..4 {
+            let value = if hour < 2 { i64::MIN } else { i64::MAX };
+            let source = variable_source(1, hour, value);
+            let mut input: FrameInput = source.clone().into();
+            if hour == 1 || hour == 3 {
+                let (token, previous) = compared
+                    .comparison_baseline::<tables::ScriptVariables>(1, hour, false)
+                    .unwrap();
+                assert_eq!(
+                    previous,
+                    source.complete::<tables::ScriptVariables>().unwrap()
+                );
+                previous_name = Some(previous[0].entries[0].name.as_ptr());
+                input.tables[TableId::ScriptVariables.index()] = TableInput::ComparedEqual(token);
+            }
+            let expected = ordinary.encode(source.clone(), false).unwrap();
+            let actual = compared.encode_input(input, false).unwrap();
+            assert_eq!(wire(&actual), wire(&expected));
+            assert_eq!(decoder.apply(&actual).unwrap(), source);
+            if let Some(pointer) = previous_name.take() {
+                let (_, baseline) = compared
+                    .comparison_baseline::<tables::ScriptVariables>(1, hour + 1, false)
+                    .unwrap();
+                assert_eq!(baseline[0].entries[0].name.as_ptr(), pointer);
+            }
+        }
+    }
+
+    #[test]
+    fn compared_variables_require_this_encoder_current_branch_hour_and_non_keyframe() {
+        let mut encoder = FrameEncoder::new();
+        assert!(
+            encoder
+                .comparison_baseline::<tables::ScriptVariables>(1, 0, false)
+                .is_none()
+        );
+        encoder.encode(variable_source(1, 0, 1), false).unwrap();
+        assert!(
+            encoder
+                .comparison_baseline::<tables::Clock>(1, 1, false)
+                .is_none()
+        );
+        for (branch, hour, force) in [
+            (2, 1, false),
+            (1, 0, false),
+            (1, 2, false),
+            (1, 1, true),
+            (1, 720, false),
+        ] {
+            assert!(
+                encoder
+                    .comparison_baseline::<tables::ScriptVariables>(branch, hour, force)
+                    .is_none()
+            );
+        }
+        let token = encoder
+            .comparison_baseline::<tables::ScriptVariables>(1, 1, false)
+            .unwrap()
+            .0;
+        let input = |branch, hour| {
+            let mut input: FrameInput = variable_source(branch, hour, 1).into();
+            input.tables[TableId::ScriptVariables.index()] = TableInput::ComparedEqual(token);
+            input
+        };
+        assert!(encoder.encode_input(input(1, 1), true).is_err());
+        assert!(encoder.encode_input(input(2, 1), false).is_err());
+        assert!(encoder.encode_input(input(1, 2), false).is_err());
+        let mut wrong_table = input(1, 1);
+        wrong_table.tables[TableId::Clock.index()] = TableInput::ComparedEqual(token);
+        assert!(encoder.encode_input(wrong_table, false).is_err());
+        let mut other = FrameEncoder::new();
+        other.encode(variable_source(1, 0, 99), false).unwrap();
+        assert!(
+            other.encode_input(input(1, 1), false).is_err(),
+            "another encoder has the same hours but different rows"
+        );
+        assert!(
+            FrameEncoder::new()
+                .encode_input(input(1, 1), false)
+                .is_err()
+        );
+        assert!(encoder.encode_input(input(1, 1), false).is_ok());
+    }
+
+    #[test]
+    fn compared_variables_noncomplete_baselines_clear_and_resume_with_snapshot() {
+        for partial in [false, true] {
+            let mut encoder = FrameEncoder::new();
+            encoder.encode(variable_source(1, 0, 1), false).unwrap();
+            let mut source = variable_source(1, 1, 1);
+            source.tables[TableId::ScriptVariables.index()] = if partial {
+                TableView::Truncated {
+                    rows: TableRows::ScriptVariables(Vec::new()),
+                    missing: 1,
+                }
+            } else {
+                TableView::Unavailable {
+                    reason: "current read failed".into(),
+                }
+            };
+            encoder.encode(source, false).unwrap();
+            assert!(
+                encoder
+                    .comparison_baseline::<tables::ScriptVariables>(1, 2, false)
+                    .is_none()
+            );
+            let restored = encoder.encode(variable_source(1, 2, 1), false).unwrap();
+            assert!(matches!(
+                restored.tables[TableId::ScriptVariables.index()],
+                TableUpdate::Snapshot(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn compared_variables_token_does_not_survive_branch_round_trip_with_identical_hours() {
+        let mut encoder = FrameEncoder::new();
+        encoder.encode(variable_source(1, 0, 1), false).unwrap();
+        let token = encoder
+            .comparison_baseline::<tables::ScriptVariables>(1, 1, false)
+            .unwrap()
+            .0;
+        encoder.encode(variable_source(2, 0, 2), false).unwrap();
+        encoder.encode(variable_source(1, 0, 3), false).unwrap();
+        let mut stale: FrameInput = variable_source(1, 1, 1).into();
+        stale.tables[TableId::ScriptVariables.index()] = TableInput::ComparedEqual(token);
+        assert!(encoder.encode_input(stale, false).is_err());
+        let fresh = encoder
+            .comparison_baseline::<tables::ScriptVariables>(1, 1, false)
+            .unwrap()
+            .0;
+        assert_ne!(fresh, token);
+        let mut current: FrameInput = variable_source(1, 1, 3).into();
+        current.tables[TableId::ScriptVariables.index()] = TableInput::ComparedEqual(fresh);
+        assert!(encoder.encode_input(current, false).is_ok());
+    }
+
+    #[test]
+    fn compared_variables_do_not_commit_before_later_table_validation_succeeds() {
+        let mut encoder = FrameEncoder::new();
+        encoder.encode(variable_source(1, 0, 1), false).unwrap();
+        let token = encoder
+            .comparison_baseline::<tables::ScriptVariables>(1, 1, false)
+            .unwrap()
+            .0;
+        let mut input: FrameInput = variable_source(1, 1, 1).into();
+        input.tables[TableId::ScriptVariables.index()] = TableInput::ComparedEqual(token);
+        let mut invalid = input.clone();
+        invalid.tables[TableId::CountryIntel.index()] =
+            TableInput::Sampled(TableView::Complete(TableRows::Clock(Vec::new())));
+        assert!(encoder.encode_input(invalid, false).is_err());
+        assert_eq!(
+            encoder
+                .comparison_baseline::<tables::ScriptVariables>(1, 1, false)
+                .unwrap()
+                .0,
+            token
+        );
+        assert_eq!(
+            encoder.encode_input(input, false).unwrap().tables[TableId::ScriptVariables.index()],
+            TableUpdate::Unchanged { baseline: 0 }
+        );
+    }
 
     #[test]
     fn cadence_marker_carries_identical_validated_rows_without_input_clones() {
@@ -1046,7 +1735,12 @@ mod tests {
             .as_ref()
             .unwrap();
         assert_eq!(
-            baseline.1.rows::<tables::Countries>().unwrap().as_ptr(),
+            baseline
+                .1
+                .as_ref()
+                .rows::<tables::Countries>()
+                .unwrap()
+                .as_ptr(),
             input_rows
         );
 
@@ -1066,7 +1760,12 @@ mod tests {
             .as_ref()
             .unwrap();
         assert_eq!(
-            baseline.1.rows::<tables::Countries>().unwrap().as_ptr(),
+            baseline
+                .1
+                .as_ref()
+                .rows::<tables::Countries>()
+                .unwrap()
+                .as_ptr(),
             input_rows
         );
         let country = &decoder
@@ -1089,7 +1788,12 @@ mod tests {
             .as_ref()
             .unwrap();
         assert_eq!(
-            baseline.1.rows::<tables::Countries>().unwrap().as_ptr(),
+            baseline
+                .1
+                .as_ref()
+                .rows::<tables::Countries>()
+                .unwrap()
+                .as_ptr(),
             input_rows
         );
     }

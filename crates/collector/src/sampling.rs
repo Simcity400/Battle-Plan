@@ -1,7 +1,7 @@
 //! The sole game-thread callback. Buffers are allocated before publication to its free queue.
 
 use crate::{
-    decode, extended,
+    acquisition, decode, extended,
     map_capture::{MapCapacities, MapCaptured},
     raw::{RawLog, Recorded},
     roster::Roster,
@@ -9,13 +9,13 @@ use crate::{
 };
 use crossbeam_queue::ArrayQueue;
 use engine::{
-    army_upgrade_request_row, carmy, carmy_upgrades_requests, ccountry, cdiplomacy_status,
-    cequipment_variant_pool, cfaction, cfaction_system,
+    army_upgrade_request_row, carmy, carmy_upgrades_requests, ccountry, cequipment_variant_pool,
+    cfaction, cfaction_system,
     cgame_state::{self, Clock},
     country_memory::{Cache, SeedStatus},
     cpdx_array::Array,
-    cprovince, creferenced_division_template, crelation, crelation_status, cstate, cunit,
-    cupgrade_delivery, cwar_relation, equipment_entry,
+    cprovince, creferenced_division_template, cstate, cunit, cupgrade_delivery, cwar_relation,
+    equipment_entry,
     memory::LiveMemory,
     msvc_string::Text,
     save_allocation_counters::{self, AllocationCounters},
@@ -26,7 +26,10 @@ use std::{
     cell::UnsafeCell,
     mem::size_of,
     ptr,
-    sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
+    },
 };
 use windows_sys::Win32::System::Performance::QueryPerformanceCounter;
 
@@ -221,7 +224,70 @@ impl LossBatch {
     }
 }
 
+/// Owned diagnostic bytes, separate from replay rows and availability.
+pub struct OrderCounterCapture {
+    pub forced: bool,
+    pub rows: Vec<ccountry::OrderInstanceCounter>,
+    pub read: Option<ccountry::OrderInstanceCounterRead>,
+    pub qpc_begin: i64,
+    pub qpc_end: i64,
+    pub elapsed_ns: u64,
+}
+
+impl OrderCounterCapture {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            forced: false,
+            rows: vec![ccountry::OrderInstanceCounter::default(); capacity],
+            read: None,
+            qpc_begin: 0,
+            qpc_end: 0,
+            elapsed_ns: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.forced = false;
+        self.read = None;
+        self.qpc_begin = 0;
+        self.qpc_end = 0;
+        self.elapsed_ns = 0;
+    }
+
+    fn capture(
+        &mut self,
+        force_full: bool,
+        memory: &impl engine::Memory,
+        roster: Option<ccountry::AuthenticatedRoster<'_>>,
+    ) {
+        self.reset();
+        if force_full {
+            self.forced = true;
+            self.read = ccountry::read_order_instance_counters(memory, roster, &mut self.rows);
+        }
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        self.rows.capacity() * size_of::<ccountry::OrderInstanceCounter>()
+    }
+
+    // Off-thread only, on buffers the existing pool has actually allocated.
+    fn grow(&mut self, country_capacity: usize) {
+        let required = self
+            .read
+            .map_or(0, |read| read.required)
+            .max(country_capacity);
+        if self.rows.len() < required {
+            self.rows
+                .resize(required, ccountry::OrderInstanceCounter::default());
+        }
+    }
+}
+
 pub struct Captured {
+    /// The same sequence carried by this frame's sole DecodeJob (zero is valid).
+    pub capture_seq: u64,
+    pub order_counters: OrderCounterCapture,
     pub map: MapCaptured,
     pub extended: extended::Captured,
     pub extended_checked: [bool; TABLE_COUNT],
@@ -245,6 +311,8 @@ pub struct Captured {
     pub divisions: Vec<carmy::Row>,
     divisions_second: Vec<carmy::Row>,
     pub wars: Vec<cwar_relation::Row>,
+    pub(crate) wars_snapshot: cwar_relation::OwnedSnapshotScratch,
+    pub(crate) wars_snapshot_sampled: bool,
     wars_second: Vec<cwar_relation::Row>,
     pub wars_matrix: Vec<cwar_relation::Row>,
     pub factions: Vec<cfaction::Row>,
@@ -306,6 +374,8 @@ impl Captured {
             reason: "clock unavailable",
         };
         Self {
+            capture_seq: 0,
+            order_counters: OrderCounterCapture::with_capacity(capacities[0]),
             map: MapCaptured::with_capacities(
                 map_capacities,
                 &successful[6..PROVINCE_CHECK],
@@ -334,7 +404,16 @@ impl Captured {
             provinces: vec![cprovince::Row::default(); capacities[1]],
             provinces_second: comparison_rows(capacities[1], successful[PROVINCE_CHECK]),
             states: vec![cstate::Row::default(); capacities[3]],
-            states_second: comparison_rows(capacities[3], successful[1]),
+            states_second: comparison_rows(
+                capacities[3],
+                if extended::Captured::needs_state_check(
+                    &extended_successful.map(|n| n < CONSISTENCY_TARGET),
+                ) {
+                    0
+                } else {
+                    successful[1]
+                },
+            ),
             divisions: vec![carmy::Row::default(); capacities[4]],
             divisions_second: comparison_rows(
                 capacities[4],
@@ -347,6 +426,8 @@ impl Captured {
                 },
             ),
             wars: vec![cwar_relation::Row::default(); capacities[5]],
+            wars_snapshot: cwar_relation::OwnedSnapshotScratch::with_capacity(capacities[0]),
+            wars_snapshot_sampled: false,
             wars_second: comparison_rows(capacities[5], successful[3]),
             wars_matrix: vec![cwar_relation::Row::default(); capacities[5]],
             factions: vec![cfaction::Row::default(); capacities[6]],
@@ -389,8 +470,10 @@ impl Captured {
 
     pub fn allocated_bytes(&self) -> usize {
         size_of::<Self>()
+            + self.order_counters.allocated_bytes()
             + self.map.allocated_bytes()
             + self.extended.allocated_bytes()
+            + self.wars_snapshot.allocated_bytes()
             + self.countries.capacity() * size_of::<ccountry::Row>()
             + (self.provinces.capacity() + self.provinces_second.capacity())
                 * size_of::<cprovince::Row>()
@@ -438,6 +521,8 @@ impl Captured {
             &mut capacities[1],
         );
         resize(&mut self.links, self.links_result, &mut capacities[2]);
+        self.order_counters.grow(capacities[0]);
+        self.wars_snapshot.grow(capacities[0]);
         comparison(
             &mut self.provinces_second,
             self.consistency_successful[PROVINCE_CHECK],
@@ -467,7 +552,13 @@ impl Captured {
         );
         comparison(
             &mut self.states_second,
-            self.consistency_successful[1],
+            if extended::Captured::needs_state_check(
+                &self.extended_successful.map(|n| n < CONSISTENCY_TARGET),
+            ) {
+                0
+            } else {
+                self.consistency_successful[1]
+            },
             capacities[3],
         );
         comparison(
@@ -508,6 +599,10 @@ impl Captured {
 }
 
 pub struct Shared {
+    /// Initialized before hook publication; workers own raw jobs, never frames.
+    pub acquisition: OnceLock<acquisition::Pool>,
+    pub acquisition_dispatch_ns: AtomicU64,
+    pub acquisition_wait_ns: AtomicU64,
     pub base: usize,
     pub trampoline: usize,
     pub frequency: u64,
@@ -552,6 +647,9 @@ impl Shared {
         let country_cache = Cache::with_capacity(8192);
         let pool_bytes = roster.allocated_bytes() + country_cache.allocated_bytes();
         let shared = Self {
+            acquisition: OnceLock::new(),
+            acquisition_dispatch_ns: AtomicU64::new(0),
+            acquisition_wait_ns: AtomicU64::new(0),
             base,
             trampoline,
             frequency,
@@ -749,6 +847,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             frame.divisions_mismatches = 0;
             frame.wars_result = unavailable;
             frame.wars_mismatches = 0;
+            frame.wars_snapshot_sampled = false;
             frame.war_matrix_result = None;
             frame.war_matrix_ns = 0;
             frame.factions_result = unavailable;
@@ -771,14 +870,11 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             frame.country_cache_entries = 0;
             frame.country_cache_error = None;
             frame.country_cache_ns = 0;
+            frame.order_counters.reset();
             let needed = unsafe { (&*shared.consistency.get()).needed() };
             let extended_needed = unsafe { (&*shared.extended_consistency.get()).needed() };
             let mut matched = [false; CONSISTENCY_TABLES.len()];
             let mut extended_matched = [false; TABLE_COUNT];
-            // Research pilot handoff state: produced inside the clock block
-            // below, consumed by the decode enqueue after it.
-            let mut pilot_payload: Option<extended::governance::ResearchJob> = None;
-            let mut pilot_report = extended::governance::CopyReport::default();
             // Relations handoff state: same FIFO, same ordering guarantees.
             let mut relations_payload: Option<extended::intel::RelationsJob> = None;
             let mut relations_report = extended::intel::RelationsCopyReport::default();
@@ -791,23 +887,12 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             // Lexical handoff state: same FIFO, same ordering guarantees.
             let mut lexical_payload: Option<extended::lexical::LexicalJob> = None;
             let mut lexical_report = extended::lexical::LexicalCopyReport::default();
-            // Variants handoff state: jobs thread through the extended
-            // capture (census-coupled); the report comes back with it.
-            let mut variants_payload: Option<extended::production::VariantsJob> = None;
-            let mut variants_report = extended::production::VariantsCopyReport::default();
-            // Buildings handoff state: same FIFO, same ordering guarantees.
-            let mut buildings_payload: Option<extended::construction::BuildingsJob> = None;
-            let mut buildings_report = extended::construction::BuildingsCopyReport::default();
             // Divisions handoff state: same FIFO, same ordering guarantees.
             // The hourly payload carries the divisions walk plus the
             // equipment/upgrade detail walks sharing its census.
             let mut divisions_payload: Option<DivisionsJob> = None;
             let mut divisions_report = DivisionsCopyReport::default();
-            // Wars handoff state: same FIFO, same ordering guarantees. The
-            // hourly payload carries the owned walk plus the matrix census
-            // while its independent counter still needs checks.
-            let mut wars_payload: Option<WarsJob> = None;
-            let mut wars_report = WarsCopyReport::default();
+            // Typed Wars keep their independent matrix consistency window.
             let mut wars_matrix_check = false;
             // Focus handoff state: same FIFO, same ordering guarantees. The
             // hourly payload carries the summary walk plus the completed
@@ -815,14 +900,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             // governance capture with no payload enqueued.
             let mut focus_payload: Option<extended::governance::FocusJob> = None;
             let mut focus_report = extended::governance::FocusCopyReport::default();
-            // Map-pack coupled unit handoff state: same FIFO, same ordering
-            // guarantees. The hourly payloads carry the eight map tables,
-            // the wing-fed air pair and the source-fed naval block, each
-            // with its own root refs from its own copies and no
-            // cross-family decoded roots. Staging overflow falls back to the
-            // typed walks with no payloads enqueued.
-            let mut map_payload: Option<crate::map_capture::MapJob> = None;
-            let mut map_report = crate::map_capture::MapCopyReport::default();
             let mut air_wing_payload: Option<extended::air::AirWingJob> = None;
             let mut air_wing_report = extended::air::AirWingCopyReport::default();
             let mut air_stats_payload: Option<extended::air::AirStatsJob> = None;
@@ -882,13 +959,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             // payload enqueued.
             let mut air_history_payload: Option<extended::air::AirHistoryJob> = None;
             let mut air_history_report = extended::air::AirHistoryCopyReport::default();
-            // Shared hourly railway handoff state: same FIFO, same ordering
-            // guarantees. The hourly payload carries the railway walk once
-            // with cooldown and edge detail; both decodes read the shared
-            // spans. Staging overflow falls back to the typed walk with no
-            // payload enqueued.
-            let mut rail_payload: Option<extended::naval_history::RailJob> = None;
-            let mut rail_report = extended::naval_history::RailCopyReport::default();
             // Hourly supremacy handoff state: same FIFO, same ordering
             // guarantees. Staging overflow falls back to the typed walk with
             // no payload enqueued.
@@ -930,6 +1000,70 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             if let Some(clock) = frame.clock_before {
                 let force_full = unsafe { (&mut *shared.cadence.get()).force_full(&clock) };
                 let state = clock.game_state as usize;
+                // Owned whole-family jobs may run concurrently with these main
+                // reads. No frame, cache or live-reader reference crosses threads.
+                // Every submitted job is recovered below before typed fallback,
+                // trailing verification, publication or return to game code.
+                let acquisition = shared.acquisition.get().expect("initialized before hook");
+                let dispatch_begin = qpc();
+                let mut relations_request = None;
+                if decode::relations_refresh_hour(clock.hour, force_full) {
+                    let needed_any = decode::RELATIONS
+                        .iter()
+                        .any(|table| extended_needed[table.index()]);
+                    let mut first = decode::acquire_relations_job();
+                    let second = needed_any.then(decode::acquire_relations_job);
+                    if second
+                        .as_ref()
+                        .is_some_and(|job| job.countries.capacity() == 0)
+                    {
+                        decode::recycle_relations_job(first);
+                        first = Default::default();
+                    }
+                    let relations = frame.extended.relations_pilot();
+                    relations_request = Some(acquisition::RelationsRequest {
+                        context: extended::intel::RelationsCopyContext {
+                            base: shared.base,
+                            game_state: state,
+                            opinion_cap: relations.opinion_rows_cap(),
+                            tuple_cap: relations.tuple_rows_cap(),
+                        },
+                        first,
+                        second,
+                    });
+                }
+                let mut characters_request = None;
+                if decode::characters_refresh_hour(clock.hour, force_full) {
+                    let needed_any = decode::CHARACTERS
+                        .iter()
+                        .any(|table| extended_needed[table.index()]);
+                    let mut first = decode::acquire_characters_job();
+                    let second = needed_any.then(decode::acquire_characters_job);
+                    if second
+                        .as_ref()
+                        .is_some_and(|job| job.log.spans.capacity() == 0)
+                    {
+                        decode::recycle_characters_job(first);
+                        first = Default::default();
+                    }
+                    characters_request = Some(acquisition::CharactersRequest {
+                        context: extended::characters::CharactersCopyContext {
+                            base: shared.base,
+                            game_state: state,
+                        },
+                        first,
+                        second,
+                    });
+                }
+                // Safety: the proven sole hourly callback retains the game
+                // boundary until both finish calls below end every live lease.
+                let relations_dispatched = relations_request.is_some()
+                    && unsafe { acquisition.begin_relations(&mut relations_request) };
+                let characters_dispatched = characters_request.is_some()
+                    && unsafe { acquisition.begin_characters(&mut characters_request) };
+                shared
+                    .acquisition_dispatch_ns
+                    .fetch_add(shared.ns(qpc() - dispatch_begin), Ordering::Relaxed);
                 let cache_begin = qpc();
                 let cached = unsafe { &mut *shared.country_cache.get() }.prepare(
                     &memory,
@@ -977,18 +1111,31 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 }
                 frame.table_ns[4] = shared.ns(qpc() - begin);
                 let begin = qpc();
-                frame.states_result = cstate::walk(&memory, shared.base, state, &mut frame.states);
-                if needed[1] {
-                    frame.consistency_checked[1] = true;
-                    let second =
-                        cstate::walk(&memory, shared.base, state, &mut frame.states_second);
-                    frame.states_mismatches = mismatches(
-                        frame.states_result,
-                        &frame.states,
-                        second,
-                        &frame.states_second,
+                frame.states_result =
+                    cstate::walk_with(&memory, shared.base, state, &mut frame.states, |source| {
+                        frame.extended.visit_state(source, false)
+                    });
+                frame.extended.finish_states(frame.states_result, false);
+                if needed[1] || extended::Captured::needs_state_check(&extended_needed) {
+                    let second = cstate::walk_with(
+                        &memory,
+                        shared.base,
+                        state,
+                        &mut frame.states_second,
+                        |source| frame.extended.visit_state(source, true),
                     );
-                    matched[1] = full_match(frame.states_result, second, frame.states_mismatches);
+                    frame.extended.finish_states(second, true);
+                    if needed[1] {
+                        frame.consistency_checked[1] = true;
+                        frame.states_mismatches = mismatches(
+                            frame.states_result,
+                            &frame.states,
+                            second,
+                            &frame.states_second,
+                        );
+                        matched[1] =
+                            full_match(frame.states_result, second, frame.states_mismatches);
+                    }
                 }
                 frame.table_ns[5] = shared.ns(qpc() - begin);
                 // Divisions group (copy/decode split): raw copies only on
@@ -1025,6 +1172,20 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     .extended
                     .set_divisions_raw_mode(divisions_report.raw_ok);
                 if divisions_report.raw_ok {
+                    let source_started = qpc();
+                    divisions_first.supply_sources(
+                        &mut frame.extended,
+                        frame.divisions.len(),
+                        false,
+                    );
+                    if let Some(second) = divisions_second.as_ref() {
+                        second.supply_sources(
+                            &mut frame.extended,
+                            frame.divisions_second.len(),
+                            true,
+                        );
+                    }
+                    divisions_report.copy_ticks[0] += elapsed(source_started);
                     divisions_payload = Some(divisions_first);
                     matched[2] = divisions_report.matched[0];
                     if needed[2] {
@@ -1087,88 +1248,68 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 if let Some(second) = divisions_second {
                     decode::recycle_divisions_job(second);
                 }
-                // Wars family (copy/decode split): raw copies only on the
-                // game thread. Every hour stages the payload and hands the
-                // frame to the decode FIFO; the worker replays the owned
-                // walk (and the matrix census while its independent counter
-                // still needs checks) before the spool ready handoff.
-                // Staging overflow falls back to the typed walk below with
-                // no payload enqueued.
+                // ETA owns copies of both authenticated source prefixes and
+                // its own output/cache buffers. The frame remains game-thread
+                // owned; the worker must return before final verification.
+                let eta_dispatch_begin = qpc();
+                let mut eta_request = Some(frame.extended.take_eta_request(
+                    shared.base,
+                    state,
+                    extended_needed[replay::rows::TableId::DivisionEta.index()],
+                ));
+                // SAFETY: this callback unconditionally finishes accepted ETA
+                // work below before its clock check or decode publication.
+                let eta_dispatched = unsafe { acquisition.begin_eta(&mut eta_request) };
+                if !eta_dispatched {
+                    frame.extended.restore_eta_request(
+                        eta_request.take().expect("rejected ETA request retained"),
+                        None,
+                    );
+                }
+                shared
+                    .acquisition_dispatch_ns
+                    .fetch_add(shared.ns(qpc() - eta_dispatch_begin), Ordering::Relaxed);
+                // The optimized typed walk already batches relation roots and
+                // reuses callback-local country authentication. No raw Wars
+                // payload, duplicate mirror walk or decode index is constructed.
                 let matrix_needed = shared.war_matrix_remaining.load(Ordering::Relaxed) != 0;
-                let mut first = decode::acquire_wars_job();
-                let mut second = (needed[3] || matrix_needed).then(decode::acquire_wars_job);
-                // A consistency pass needs both owned buffers; otherwise use
-                // the allocation-free typed double read.
-                if second
-                    .as_ref()
-                    .is_some_and(|job| job.log.spans.capacity() == 0)
-                {
-                    decode::recycle_wars_job(first);
-                    first = Default::default();
+                let begin = qpc();
+                frame.wars_snapshot_sampled = true;
+                let war_read = cwar_relation::walk_verified(
+                    &cached,
+                    &memory,
+                    shared.base,
+                    state,
+                    &mut frame.wars,
+                    &mut frame.wars_snapshot,
+                );
+                frame.wars_result = war_read.outcome;
+                if needed[3] {
+                    frame.consistency_checked[3] = true;
+                    let second =
+                        cwar_relation::walk(&cached, shared.base, state, &mut frame.wars_second);
+                    frame.wars_mismatches =
+                        mismatches(frame.wars_result, &frame.wars, second, &frame.wars_second);
+                    frame.wars_mismatches += usize::from(war_read.verification_failed);
+                    matched[3] = !war_read.verification_failed
+                        && full_match(frame.wars_result, second, frame.wars_mismatches);
                 }
-                let wars_ctx = WarsCopyContext {
-                    base: shared.base,
-                    game_state: state,
-                    needed_matrix: matrix_needed,
-                };
-                wars_report = copy_wars_refresh(&memory, wars_ctx, &mut first, second.as_mut());
-                if wars_report.raw_ok {
-                    wars_payload = Some(first);
-                    matched[3] = wars_report.matched[0];
-                    if needed[3] {
-                        frame.consistency_checked[3] = true;
-                        // Binary per refresh: tearing detected (0/1), not a
-                        // row count. Spool gates test `==0`/`!=0` only.
-                        frame.wars_mismatches = usize::from(!wars_report.matched[0]);
-                    }
-                    let wars_ns = shared.ns(wars_report.copy_ticks[0] as i64);
-                    frame.table_ns[7] = wars_ns;
-                    frame.war_matrix_ns = shared.ns(wars_report.copy_ticks[1] as i64);
-                    decode::add_wars_copy_ns(0, wars_ns);
-                    decode::add_wars_copy_ns(1, frame.war_matrix_ns);
-                    decode::add_wars_raw_bytes(0, wars_report.raw_bytes[0]);
-                    decode::add_wars_raw_bytes(1, wars_report.raw_bytes[1]);
-                    // The independent matrix census advances on raw-copy
-                    // success (both copies equal, no live faults), following
-                    // the pilot's conservative rule; the spool-side
-                    // cross-check of decoded rows is unchanged.
-                    wars_matrix_check = matrix_needed && wars_report.matched[1];
-                } else {
-                    let begin = qpc();
-                    decode::recycle_wars_job(first);
-                    frame.wars_result =
-                        cwar_relation::walk(&cached, shared.base, state, &mut frame.wars);
-                    if needed[3] {
-                        frame.consistency_checked[3] = true;
-                        let second = cwar_relation::walk(
-                            &cached,
-                            shared.base,
-                            state,
-                            &mut frame.wars_second,
-                        );
-                        frame.wars_mismatches =
-                            mismatches(frame.wars_result, &frame.wars, second, &frame.wars_second);
-                        matched[3] = full_match(frame.wars_result, second, frame.wars_mismatches);
-                    }
-                    if matrix_needed {
-                        let matrix_begin = qpc();
-                        let matrix = cwar_relation::walk_matrix(
-                            &cached,
-                            shared.base,
-                            state,
-                            &mut frame.wars_matrix,
-                        );
-                        frame.war_matrix_ns = shared.ns(qpc() - matrix_begin);
-                        frame.war_matrix_result = Some(matrix);
-                        wars_matrix_check = matches!(
-                            (frame.wars_result, matrix),
-                            (Outcome::Rows { .. }, Outcome::Rows { .. })
-                        ) && frame.wars_mismatches == 0;
-                    }
-                    frame.table_ns[7] = shared.ns(qpc() - begin);
-                }
-                if let Some(second) = second {
-                    decode::recycle_wars_job(second);
+                // Retain distinct owned/table and independent-matrix costs.
+                frame.table_ns[7] = shared.ns(qpc() - begin);
+                if matrix_needed {
+                    let matrix_begin = qpc();
+                    let matrix = cwar_relation::walk_matrix(
+                        &cached,
+                        shared.base,
+                        state,
+                        &mut frame.wars_matrix,
+                    );
+                    frame.war_matrix_ns = shared.ns(qpc() - matrix_begin);
+                    frame.war_matrix_result = Some(matrix);
+                    wars_matrix_check = matches!(
+                        (frame.wars_result, matrix),
+                        (Outcome::Rows { .. }, Outcome::Rows { .. })
+                    ) && frame.wars_mismatches == 0;
                 }
                 let begin = qpc();
                 let names = cfaction::walk(
@@ -1269,43 +1410,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 }
                 if let Some(second) = players_second {
                     decode::recycle_players_job(second);
-                }
-                // Map-pack coupled unit (copy/decode split): raw copies only
-                // on the game thread. Every hour stages the three payloads
-                // and hands the frame to the decode FIFO; the worker replays
-                // map, wing and naval walks before the spool ready handoff.
-                // Staging overflow falls back to the typed walks below with
-                // no payloads enqueued.
-                let map_second_needed = needed[8..PROVINCE_CHECK].iter().any(|&n| n);
-                let mut map_first = decode::acquire_map_job();
-                let mut map_second = map_second_needed.then(decode::acquire_map_job);
-                // A consistency pass needs both owned buffers; otherwise use
-                // the allocation-free typed double read.
-                if map_second
-                    .as_ref()
-                    .is_some_and(|job| job.log.spans.capacity() == 0)
-                {
-                    decode::recycle_map_job(map_first);
-                    map_first = Default::default();
-                }
-                let map_ctx = crate::map_capture::MapCopyContext {
-                    base: shared.base,
-                    game_state: state,
-                };
-                map_report = crate::map_capture::copy_map_refresh(
-                    &memory,
-                    map_ctx,
-                    &mut map_first,
-                    map_second.as_mut(),
-                );
-                frame.map.raw_mode = map_report.raw_ok;
-                if map_report.raw_ok {
-                    map_payload = Some(map_first);
-                } else {
-                    decode::recycle_map_job(map_first);
-                }
-                if let Some(second) = map_second {
-                    decode::recycle_map_job(second);
                 }
                 let air_second_needed = decode::AIR_WING
                     .iter()
@@ -1503,48 +1607,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 }
                 if let Some(second) = air_history_second {
                     decode::recycle_air_history_job(second);
-                }
-                // Shared hourly railway (copy/decode split): raw copies only
-                // on the game thread, same FIFO and ordering guarantees. The
-                // railway walk is staged once with cooldown and edge detail;
-                // both decodes read the shared spans. Staging overflow falls
-                // back to the typed walk with no payload enqueued.
-                let rail_second_needed = decode::RAIL
-                    .iter()
-                    .any(|table| extended_needed[table.index()]);
-                let mut rail_first = decode::acquire_rail_job();
-                let mut rail_second = rail_second_needed.then(decode::acquire_rail_job);
-                // A consistency pass needs both owned buffers; otherwise use
-                // the allocation-free typed double read.
-                if rail_second
-                    .as_ref()
-                    .is_some_and(|job| job.log.spans.capacity() == 0)
-                {
-                    decode::recycle_rail_job(rail_first);
-                    rail_first = Default::default();
-                }
-                let rail_ctx = extended::naval_history::RailCopyContext {
-                    base: shared.base,
-                    game_state: state,
-                    needed: [
-                        extended_needed[decode::RAIL[0].index()],
-                        extended_needed[decode::RAIL[1].index()],
-                    ],
-                };
-                rail_report = frame.extended.rail_pilot().copy_rail_refresh(
-                    &memory,
-                    rail_ctx,
-                    &mut rail_first,
-                    rail_second.as_mut(),
-                );
-                frame.extended.rail_pilot().rail_raw_mode = rail_report.raw_ok;
-                if rail_report.raw_ok {
-                    rail_payload = Some(rail_first);
-                } else {
-                    decode::recycle_rail_job(rail_first);
-                }
-                if let Some(second) = rail_second {
-                    decode::recycle_rail_job(second);
                 }
                 // Hourly supremacy (copy/decode split): raw copies only on
                 // the game thread, same FIFO and ordering guarantees. Staging
@@ -1795,9 +1857,13 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     shared.base,
                     state,
                     &needed[6..PROVINCE_CHECK],
-                    &mut frame
-                        .extended
-                        .sources(&cached, shared.base, &extended_needed),
+                    &mut frame.extended.sources(
+                        &cached,
+                        shared.base,
+                        &extended_needed,
+                        air_wing_report.raw_ok,
+                        naval_report.raw_ok,
+                    ),
                 );
                 matched[6..PROVINCE_CHECK].copy_from_slice(&map_matched);
                 frame.consistency_checked[6..PROVINCE_CHECK]
@@ -1805,133 +1871,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 for (total, ticks) in frame.table_ns[10..].iter_mut().zip(map_ticks) {
                     *total = shared.ns(ticks as i64);
                 }
-                // Research pilot (copy/decode split): raw copies only on the
-                // game thread. Refresh hours stage the payload and hand the
-                // frame to the decode FIFO; the worker decodes before the
-                // spool ready handoff. Staging overflow falls back to the
-                // typed walk below with no payload enqueued.
-                let pilot_refresh = decode::pilot_refresh_hour(clock.hour, force_full);
                 decode_hour = clock.hour;
                 decode_force_full = force_full;
-                if pilot_refresh {
-                    let needed_any = decode::PILOT
-                        .iter()
-                        .any(|table| extended_needed[table.index()]);
-                    let mut first = decode::acquire_job();
-                    let mut second = needed_any.then(decode::acquire_job);
-                    // A consistency pass needs both owned buffers; otherwise use
-                    // the allocation-free typed double read.
-                    if second.as_ref().is_some_and(|job| job.metas.capacity() == 0) {
-                        decode::recycle_job(first);
-                        first = Default::default();
-                    }
-                    let pilot = frame.extended.research_pilot();
-                    let ctx = extended::governance::CopyContext {
-                        base: shared.base,
-                        game_state: state,
-                        tech_cap: pilot.tech_rows_cap(),
-                        slot_cap: pilot.slot_rows_cap(),
-                        needed: extended_needed,
-                    };
-                    pilot_report =
-                        pilot.copy_research_refresh(&memory, ctx, &mut first, second.as_mut());
-                    frame.extended.research_pilot().raw_mode = pilot_report.raw_ok;
-                    if pilot_report.raw_ok {
-                        pilot_payload = Some(first);
-                    } else {
-                        decode::recycle_job(first);
-                    }
-                    if let Some(second) = second {
-                        decode::recycle_job(second);
-                    }
-                }
-                // Relations family (copy/decode split): raw copies only on the
-                // game thread. Refresh hours stage the payload and hand the
-                // frame to the decode FIFO; the worker decodes before the
-                // spool ready handoff. Staging overflow falls back to the
-                // typed walk below with no payload enqueued.
-                let relations_refresh = decode::relations_refresh_hour(clock.hour, force_full);
-                if relations_refresh {
-                    let needed_any = decode::RELATIONS
-                        .iter()
-                        .any(|table| extended_needed[table.index()]);
-                    let mut first = decode::acquire_relations_job();
-                    let mut second = needed_any.then(decode::acquire_relations_job);
-                    // A consistency pass needs both owned buffers; otherwise use
-                    // the allocation-free typed double read.
-                    if second
-                        .as_ref()
-                        .is_some_and(|job| job.countries.capacity() == 0)
-                    {
-                        decode::recycle_relations_job(first);
-                        first = Default::default();
-                    }
-                    let relations = frame.extended.relations_pilot();
-                    let ctx = extended::intel::RelationsCopyContext {
-                        base: shared.base,
-                        game_state: state,
-                        opinion_cap: relations.opinion_rows_cap(),
-                        tuple_cap: relations.tuple_rows_cap(),
-                        needed: [
-                            extended_needed[decode::RELATIONS[0].index()],
-                            extended_needed[decode::RELATIONS[1].index()],
-                        ],
-                    };
-                    relations_report =
-                        relations.copy_relations_refresh(&memory, ctx, &mut first, second.as_mut());
-                    frame.extended.relations_pilot().relations_raw_mode = relations_report.raw_ok;
-                    if relations_report.raw_ok {
-                        relations_payload = Some(first);
-                    } else {
-                        decode::recycle_relations_job(first);
-                    }
-                    if let Some(second) = second {
-                        decode::recycle_relations_job(second);
-                    }
-                }
-                // Characters family (copy/decode split): raw copies only on
-                // the game thread. Refresh hours stage the payload and hand
-                // the frame to the decode FIFO; the worker decodes before the
-                // spool ready handoff. Staging overflow falls back to the
-                // typed walk below with no payload enqueued.
-                let characters_refresh = decode::characters_refresh_hour(clock.hour, force_full);
-                if characters_refresh {
-                    let needed_any = decode::CHARACTERS
-                        .iter()
-                        .any(|table| extended_needed[table.index()]);
-                    let mut first = decode::acquire_characters_job();
-                    let mut second = needed_any.then(decode::acquire_characters_job);
-                    // A consistency pass needs both owned buffers; otherwise use
-                    // the allocation-free typed double read.
-                    if second
-                        .as_ref()
-                        .is_some_and(|job| job.log.spans.capacity() == 0)
-                    {
-                        decode::recycle_characters_job(first);
-                        first = Default::default();
-                    }
-                    let characters = frame.extended.characters_pilot();
-                    let ctx = extended::characters::CharactersCopyContext {
-                        base: shared.base,
-                        game_state: state,
-                        needed: extended_needed,
-                    };
-                    characters_report = characters.copy_characters_refresh(
-                        &memory,
-                        ctx,
-                        &mut first,
-                        second.as_mut(),
-                    );
-                    frame.extended.characters_pilot().raw_mode = characters_report.raw_ok;
-                    if characters_report.raw_ok {
-                        characters_payload = Some(first);
-                    } else {
-                        decode::recycle_characters_job(first);
-                    }
-                    if let Some(second) = second {
-                        decode::recycle_characters_job(second);
-                    }
-                }
                 // Projects family (copy/decode split): raw copies only on the
                 // game thread. Refresh hours stage the payload and hand the
                 // frame to the decode FIFO; the worker decodes before the
@@ -1985,10 +1926,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     let mut second = needed_any.then(decode::acquire_lexical_job);
                     // A consistency pass needs both owned buffers; otherwise use
                     // the allocation-free typed double read.
-                    if second
-                        .as_ref()
-                        .is_some_and(|job| job.log.spans.capacity() == 0)
-                    {
+                    if second.as_ref().is_some_and(|job| !job.initialized()) {
                         decode::recycle_lexical_job(first);
                         first = Default::default();
                     }
@@ -2007,48 +1945,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     }
                     if let Some(second) = second {
                         decode::recycle_lexical_job(second);
-                    }
-                }
-                // Buildings family (copy/decode split): raw copies only on
-                // the game thread. Refresh hours stage the payload and hand
-                // the frame to the decode FIFO; the worker decodes before the
-                // spool ready handoff. Staging overflow falls back to the
-                // typed walk below with no payload enqueued.
-                let buildings_refresh = decode::buildings_refresh_hour(clock.hour, force_full);
-                if buildings_refresh {
-                    let needed_any = decode::BUILDINGS
-                        .iter()
-                        .any(|table| extended_needed[table.index()]);
-                    let mut first = decode::acquire_buildings_job();
-                    let mut second = needed_any.then(decode::acquire_buildings_job);
-                    // A consistency pass needs both owned buffers; otherwise use
-                    // the allocation-free typed double read.
-                    if second
-                        .as_ref()
-                        .is_some_and(|job| job.log.spans.capacity() == 0)
-                    {
-                        decode::recycle_buildings_job(first);
-                        first = Default::default();
-                    }
-                    let buildings = frame.extended.buildings_pilot();
-                    let ctx = extended::construction::BuildingsCopyContext {
-                        base: shared.base,
-                        game_state: state,
-                        needed: [
-                            extended_needed[decode::BUILDINGS[0].index()],
-                            extended_needed[decode::BUILDINGS[1].index()],
-                        ],
-                    };
-                    buildings_report =
-                        buildings.copy_buildings_refresh(&memory, ctx, &mut first, second.as_mut());
-                    frame.extended.buildings_pilot().raw_mode = buildings_report.raw_ok;
-                    if buildings_report.raw_ok {
-                        buildings_payload = Some(first);
-                    } else {
-                        decode::recycle_buildings_job(first);
-                    }
-                    if let Some(second) = second {
-                        decode::recycle_buildings_job(second);
                     }
                 }
                 // Session family (copy/decode split): raw copies only on the
@@ -2289,53 +2185,98 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 if let Some(second) = focus_second {
                     decode::recycle_focus_job(second);
                 }
-                // Variants family (copy/decode split): the registry census
-                // runs game-side inside the capture below (production
-                // consumes it there); the detail copy stages right after the
-                // census through the threaded jobs. Staging overflow falls
-                // back to the typed walk inside the same capture.
-                let variants_refresh = decode::variants_refresh_hour(clock.hour, force_full);
-                let mut variants_first = variants_refresh.then(decode::acquire_variants_job);
-                let variants_second_needed = variants_refresh
-                    && decode::VARIANTS
-                        .iter()
-                        .any(|table| extended_needed[table.index()]);
-                let mut variants_second = variants_second_needed.then(decode::acquire_variants_job);
-                if variants_second
-                    .as_ref()
-                    .is_some_and(|job| job.log.spans.capacity() == 0)
-                {
-                    if let Some(first) = variants_first.take() {
-                        decode::recycle_variants_job(first);
-                    }
-                    variants_first = Some(Default::default());
+                // Complete all accepted work before any family typed fallback.
+                // A worker failure returns its owned storage and grants no raw
+                // consistency credit; only then may the existing typed path run.
+                let join_begin = qpc();
+                let relations_completed = relations_dispatched.then(|| {
+                    acquisition
+                        .finish_relations()
+                        .expect("submitted relations job")
+                });
+                let characters_completed = characters_dispatched.then(|| {
+                    acquisition
+                        .finish_characters()
+                        .expect("submitted characters job")
+                });
+                let eta_completed =
+                    eta_dispatched.then(|| acquisition.finish_eta().expect("submitted ETA job"));
+                shared
+                    .acquisition_wait_ns
+                    .fetch_add(shared.ns(qpc() - join_begin), Ordering::Relaxed);
+                let relations_returned = if let Some(completed) = relations_completed {
+                    Some((completed.request, completed.report.unwrap_or_default()))
+                } else {
+                    relations_request.take().map(|mut request| {
+                        let report = extended::intel::copy_relations_refresh(
+                            &memory,
+                            request.context,
+                            &mut request.first,
+                            request.second.as_mut(),
+                        );
+                        (request, report)
+                    })
+                };
+                if let Some(completed) = eta_completed {
+                    frame
+                        .extended
+                        .restore_eta_request(completed.request, Some(completed.report));
                 }
-                let (checks, ticks, variants_report_opt) = frame.extended.capture(
+                if let Some((request, report)) = relations_returned {
+                    relations_report = report;
+                    let relations = frame.extended.relations_pilot();
+                    relations.apply_relations_report(
+                        [
+                            extended_needed[decode::RELATIONS[0].index()],
+                            extended_needed[decode::RELATIONS[1].index()],
+                        ],
+                        &relations_report,
+                    );
+                    relations.relations_raw_mode = relations_report.raw_ok;
+                    if relations_report.raw_ok {
+                        relations_payload = Some(request.first);
+                    } else {
+                        decode::recycle_relations_job(request.first);
+                    }
+                    if let Some(second) = request.second {
+                        decode::recycle_relations_job(second);
+                    }
+                }
+                let characters_returned = if let Some(completed) = characters_completed {
+                    Some((completed.request, completed.report.unwrap_or_default()))
+                } else {
+                    characters_request.take().map(|mut request| {
+                        let report = extended::characters::copy_characters_refresh(
+                            &memory,
+                            request.context,
+                            &mut request.first,
+                            request.second.as_mut(),
+                        );
+                        (request, report)
+                    })
+                };
+                if let Some((request, report)) = characters_returned {
+                    characters_report = report;
+                    let characters = frame.extended.characters_pilot();
+                    characters.apply_characters_report(&extended_needed, &characters_report);
+                    characters.raw_mode = characters_report.raw_ok;
+                    if characters_report.raw_ok {
+                        characters_payload = Some(request.first);
+                    } else {
+                        decode::recycle_characters_job(request.first);
+                    }
+                    if let Some(second) = request.second {
+                        decode::recycle_characters_job(second);
+                    }
+                }
+                let (checks, ticks) = frame.extended.capture(
                     &cached,
                     shared.base,
                     state,
                     clock.hour,
                     &extended_needed,
                     force_full,
-                    variants_first
-                        .as_mut()
-                        .map(|first| (first, variants_second.as_mut())),
                 );
-                if let Some(report) = variants_report_opt {
-                    variants_report = report;
-                }
-                if variants_refresh {
-                    let first = variants_first.take().expect("staged variants job");
-                    let raw_ok = variants_report.raw_ok;
-                    if raw_ok {
-                        variants_payload = Some(first);
-                    } else {
-                        decode::recycle_variants_job(first);
-                    }
-                    if let Some(second) = variants_second.take() {
-                        decode::recycle_variants_job(second);
-                    }
-                }
                 extended_matched = checks;
                 for table in extended::TABLES {
                     let index = table.index();
@@ -2347,22 +2288,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     } else {
                         0
                     };
-                }
-                // Pilot tables measured copy-only above; install the raw-copy
-                // costs and raw-compare verdicts, and publish the additive
-                // calibration counters for status. Runs after the loop above
-                // so copy-only nanoseconds survive for the pilot tables.
-                if pilot_report.raw_ok {
-                    for (slot, table) in decode::PILOT.iter().enumerate() {
-                        let index = table.index();
-                        extended_matched[index] = pilot_report.matched[slot];
-                        frame.extended_raw_mismatches[index] =
-                            extended_needed[index] && !pilot_report.matched[slot];
-                        let ns = shared.ns(pilot_report.copy_ticks[slot] as i64);
-                        frame.table_ns[index] = ns;
-                        decode::add_copy_ns(slot, ns);
-                        decode::add_raw_bytes(slot, pilot_report.raw_bytes[slot]);
-                    }
                 }
                 // Relations tables measured copy-only above; same install.
                 if relations_report.raw_ok {
@@ -2416,32 +2341,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::add_lexical_raw_bytes(slot, lexical_report.raw_bytes[slot]);
                     }
                 }
-                // Variants tables measured copy-only inside the capture above;
-                // same install for the calibration counters.
-                if variants_report.raw_ok {
-                    for (slot, table) in decode::VARIANTS.iter().enumerate() {
-                        let index = table.index();
-                        frame.extended_raw_mismatches[index] =
-                            extended_needed[index] && !variants_report.matched[slot];
-                        let ns = shared.ns(variants_report.copy_ticks[slot] as i64);
-                        frame.table_ns[index] = ns;
-                        decode::add_variants_copy_ns(slot, ns);
-                        decode::add_variants_raw_bytes(slot, variants_report.raw_bytes[slot]);
-                    }
-                }
-                // Buildings tables measured copy-only above; same install.
-                if buildings_report.raw_ok {
-                    for (slot, table) in decode::BUILDINGS.iter().enumerate() {
-                        let index = table.index();
-                        extended_matched[index] = buildings_report.matched[slot];
-                        frame.extended_raw_mismatches[index] =
-                            extended_needed[index] && !buildings_report.matched[slot];
-                        let ns = shared.ns(buildings_report.copy_ticks[slot] as i64);
-                        frame.table_ns[index] = ns;
-                        decode::add_buildings_copy_ns(slot, ns);
-                        decode::add_buildings_raw_bytes(slot, buildings_report.raw_bytes[slot]);
-                    }
-                }
                 // Divisions-group production tables measured copy-only above;
                 // same install for the calibration counters. The upgrades
                 // phase cost is anchor-charged to the groups slot.
@@ -2471,26 +2370,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         frame.table_ns[index] = ns;
                         decode::add_focus_copy_ns(slot, ns);
                         decode::add_focus_raw_bytes(slot, focus_report.raw_bytes[slot]);
-                    }
-                }
-                // Map-pack coupled unit measured copy-only above; same install
-                // for the calibration counters. Map tables use core
-                // consistency slots (matched[8..16]); wing/naval tables use
-                // extended slots. Shared walks are anchor-charged per the
-                // read-group convention (see decode::MAP_PACK docs).
-                if map_report.raw_ok {
-                    for (slot, table) in decode::MAP_PACK.iter().enumerate() {
-                        // Map tables live in the core consistency window by
-                        // CONSISTENCY_TABLES position (land=8 .. orders=15).
-                        let core = 8 + slot;
-                        matched[core] = map_report.matched[slot];
-                        if needed[core] {
-                            frame.consistency_checked[core] = true;
-                        }
-                        let ns = shared.ns(map_report.copy_ticks[slot] as i64);
-                        frame.table_ns[table.index()] = ns;
-                        decode::add_map_copy_ns(slot, ns);
-                        decode::add_map_raw_bytes(slot, map_report.raw_bytes[slot]);
                     }
                 }
                 if air_wing_report.raw_ok {
@@ -2658,22 +2537,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::add_air_history_raw_bytes(slot, air_history_report.raw_bytes[slot]);
                     }
                 }
-                // Shared hourly railway measured copy-only above; same
-                // install for the calibration counters. The single railway
-                // walk is anchor-charged to the cooldowns slot, matching the
-                // read-group convention.
-                if rail_report.raw_ok {
-                    for (slot, table) in decode::RAIL.iter().enumerate() {
-                        let index = table.index();
-                        extended_matched[index] = rail_report.matched[slot];
-                        frame.extended_raw_mismatches[index] =
-                            extended_needed[index] && !rail_report.matched[slot];
-                        let ns = shared.ns(rail_report.copy_ticks[slot] as i64);
-                        frame.table_ns[index] = ns;
-                        decode::add_rail_copy_ns(slot, ns);
-                        decode::add_rail_raw_bytes(slot, rail_report.raw_bytes[slot]);
-                    }
-                }
                 // Hourly supremacy measured copy-only above; same install
                 // for the calibration counters.
                 if supremacy_report.raw_ok {
@@ -2763,6 +2626,20 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         );
                     }
                 }
+                // Trailing diagnostic: no table acquisition follows this read.
+                // It does not alter any table verdict or force another refresh.
+                if force_full {
+                    let begin = qpc();
+                    frame.order_counters.capture(
+                        true,
+                        &memory,
+                        engine::Memory::authenticated_countries(&cached, shared.base, state),
+                    );
+                    frame.order_counters.qpc_begin = begin;
+                    frame.order_counters.qpc_end = qpc();
+                    frame.order_counters.elapsed_ns =
+                        shared.ns(frame.order_counters.qpc_end - begin);
+                }
                 let cache_verify_begin = qpc();
                 frame.country_cache_error = cached.verify().err();
                 frame.country_cache_ns =
@@ -2802,21 +2679,17 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             // refresh payload. With 256 buffers and 256 queue slots, an owned
             // buffer guarantees space, exactly as the ready push did before.
             let game_elapsed = (qpc() - entered - (original_end - original_begin)).max(1);
+            frame.capture_seq = decode::next_seq();
             let decode_job = decode::DecodeJob {
                 index,
-                seq: decode::next_seq(),
+                seq: frame.capture_seq,
                 hour: decode_hour,
-                pilot_refresh: pilot_report.raw_ok,
                 relations_refresh: relations_report.raw_ok,
                 characters_refresh: characters_report.raw_ok,
                 projects_refresh: projects_report.raw_ok,
                 lexical_refresh: lexical_report.raw_ok,
-                variants_refresh: variants_report.raw_ok,
-                buildings_refresh: buildings_report.raw_ok,
-                wars_refresh: wars_report.raw_ok,
                 divisions_refresh: divisions_report.raw_ok,
                 focus_refresh: focus_report.raw_ok,
-                map_refresh: map_report.raw_ok,
                 air_wing_refresh: air_wing_report.raw_ok,
                 air_stats_refresh: air_stats_report.raw_ok,
                 naval_refresh: naval_report.raw_ok,
@@ -2827,7 +2700,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 economy_rest_refresh: economy_rest_report.raw_ok,
                 air_bases_refresh: air_bases_report.raw_ok,
                 air_history_refresh: air_history_report.raw_ok,
-                rail_refresh: rail_report.raw_ok,
                 supremacy_refresh: supremacy_report.raw_ok,
                 sunk_refresh: sunk_report.raw_ok,
                 radar_refresh: radar_report.raw_ok,
@@ -2836,17 +2708,12 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 capitulation_refresh: capitulation_report.raw_ok,
                 force_full: decode_force_full,
                 game_elapsed,
-                payload: pilot_payload,
                 relations_payload,
                 characters_payload,
                 projects_payload,
                 lexical_payload,
-                variants_payload,
-                buildings_payload,
-                wars_payload,
                 divisions_payload,
                 focus_payload,
-                map_payload,
                 air_wing_payload,
                 air_stats_payload,
                 naval_payload,
@@ -2857,7 +2724,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 economy_rest_payload,
                 air_bases_payload,
                 air_history_payload,
-                rail_payload,
                 supremacy_payload,
                 sunk_payload,
                 radar_payload,
@@ -2881,9 +2747,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     shared.callback_tail[index].store(tail.max(1), Ordering::Release);
                 }
                 Some(returned) => {
-                    if let Some(payload) = returned.payload {
-                        decode::recycle_job(payload);
-                    }
                     if let Some(payload) = returned.relations_payload {
                         decode::recycle_relations_job(payload);
                     }
@@ -2896,24 +2759,14 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     if let Some(payload) = returned.lexical_payload {
                         decode::recycle_lexical_job(payload);
                     }
-                    if let Some(payload) = returned.variants_payload {
-                        decode::recycle_variants_job(payload);
-                    }
-                    if let Some(payload) = returned.buildings_payload {
-                        decode::recycle_buildings_job(payload);
-                    }
-                    if let Some(payload) = returned.wars_payload {
-                        decode::recycle_wars_job(payload);
-                    }
+
                     if let Some(payload) = returned.divisions_payload {
                         decode::recycle_divisions_job(payload);
                     }
                     if let Some(payload) = returned.focus_payload {
                         decode::recycle_focus_job(payload);
                     }
-                    if let Some(payload) = returned.map_payload {
-                        decode::recycle_map_job(payload);
-                    }
+
                     if let Some(payload) = returned.air_wing_payload {
                         decode::recycle_air_wing_job(payload);
                     }
@@ -2944,9 +2797,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     if let Some(payload) = returned.air_history_payload {
                         decode::recycle_air_history_job(payload);
                     }
-                    if let Some(payload) = returned.rail_payload {
-                        decode::recycle_rail_job(payload);
-                    }
+
                     if let Some(payload) = returned.supremacy_payload {
                         decode::recycle_supremacy_job(payload);
                     }
@@ -2982,858 +2833,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
 
-// ===========================================================================
-// Tier-H war relations raw-copy split (WarRelations plus the independent
-// matrix census, which keeps its own 200-check counter).
-//
-// The game thread copies raw bytes only: one shared country census, per
-// diplomacy status, relation arrays and entries, endpoint authentication,
-// cross-link vectors and row fields. Resolve/diplomacy caches are NOT
-// simulated (a superset is recorded); the replay runs the real cached walks
-// unchanged. No row is decoded on the game thread. The single FIFO decode
-// worker replays the existing `cwar_relation::walk` and `walk_matrix`
-// against the recorded spans (`crate::raw::Recorded`), so rows, ordinals,
-// skips, truncation and failure reasons are identical by construction (see
-// `crate::raw` for the mirror rules).
-//
-// The mirror traverses structurally and records every discoverable span,
-// never aborting except on overflow: validation, precedence and error scope
-// are local parses, so the replay derives every outcome from the same
-// recorded spans and later extras are harmless.
-// ===========================================================================
-
-/// Fault-attribution bits: wars table, matrix census, shared census.
-const WARS_MASK: u32 = 0x01;
-const MATRIX_MASK: u32 = 0x02;
-const WARS_CENSUS_MASK: u32 = 0x03;
-
-#[derive(Debug, Default, Clone, Copy)]
-struct WarCountry {
-    pointer: usize,
-    slot: u32,
-}
-
-/// One hour of raw war payload: the owned-relations walk plus, while the
-/// independent matrix counter still needs checks, the matrix census. Flat
-/// pools recycle capacities and the steady state allocates on neither
-/// thread; growth happens on the decode side only (see
-/// `crate::decode::recycle_wars_job`).
-#[derive(Debug, Default)]
-pub(crate) struct WarsJob {
-    pub log: RawLog<2>,
-    pub game_state: usize,
-    /// The worker replays the matrix census while set. Set whenever the
-    /// matrix outcome is required (its counter still needs checks), even
-    /// when the shared census fails: the replay then derives the identical
-    /// census failure instead of leaving a `None`.
-    pub matrix_copied: bool,
-    census: Vec<WarCountry>,
-}
-
-impl WarsJob {
-    pub fn new() -> Self {
-        Self {
-            // Steady state is about 535 relations with deep cross-links;
-            // both pools start above that so steady state never overflows.
-            log: RawLog::new(1 << 17, 8 << 20),
-            game_state: 0,
-            matrix_copied: false,
-            census: Vec::with_capacity(512),
-        }
-    }
-
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
-    pub fn clear(&mut self) {
-        self.log.clear();
-        self.game_state = 0;
-        self.matrix_copied = false;
-        self.census.clear();
-    }
-
-    pub fn grow_for_next(&self) -> bool {
-        self.log.grow_for_next()
-    }
-
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed refreshes fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
-    pub fn grow(&mut self) {
-        self.log.grow();
-        crate::raw::double_capacity(&mut self.census);
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct WarsCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
-    pub raw_ok: bool,
-    /// Per-partition raw equality gated by live-fault conservatism, in
-    /// [wars, matrix] order. The owned-walk partition (slot 0) covers the
-    /// shared census plus owned relations; the matrix partition (slot 1)
-    /// covers the shared census plus matrix relations, so tearing one
-    /// walk's private bytes flips only that slot. The matrix slot reports
-    /// copy success (no live faults); its 200-check counter advances on
-    /// stable success.
-    pub matched: [bool; 2],
-    pub copy_ticks: [u64; 2],
-    pub raw_bytes: [u64; 2],
-}
-
-/// Game-thread copy parameters, bundled to keep the tick entry small.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct WarsCopyContext {
-    pub base: usize,
-    pub game_state: usize,
-    pub needed_matrix: bool,
-}
-
-fn war_pool_u64(log: &RawLog<2>, start: usize) -> u64 {
-    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
-}
-
 fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
-}
-
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
-fn wspan(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    addr: Option<usize>,
-    len: usize,
-    mask: u32,
-) -> Option<usize> {
-    log.take(memory, addr?, len, mask)
-}
-
-/// Authenticated census shared by both war walks. Records the exact read set
-/// of `ccountry::Reader::new` plus one full `read_at` per slot. Returns
-/// `false` when the typed census fails, in which case both walks fail
-/// identically from the same recorded spans.
-fn copy_war_census(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    base: usize,
-    game_state: usize,
-    census: &mut Vec<WarCountry>,
-) -> Option<(Array, u32)> {
-    let countries_start = wspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRIES),
-        16,
-        WARS_CENSUS_MASK,
-    )?;
-    let links_start = wspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRY_LINKS),
-        16,
-        WARS_CENSUS_MASK,
-    )?;
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
-    let countries = Array::from_header(raw, 8)?;
-    raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
-    let links = Array::from_header(raw, 4)?;
-    if countries.count < 2 || links.count == 0 {
-        return None;
-    }
-    let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
-    for slot in 1..countries.count {
-        let pointer_addr = (slot as usize)
-            .checked_mul(8)
-            .and_then(|offset| countries.data.checked_add(offset));
-        let pointer_start = wspan(log, memory, pointer_addr, 8, WARS_CENSUS_MASK)?;
-        let pointer = match usize::try_from(war_pool_u64(log, pointer_start))
-            .ok()
-            .filter(|&pointer| pointer != 0)
-        {
-            Some(pointer) => pointer,
-            None => continue,
-        };
-        let vtable_start = wspan(log, memory, Some(pointer), 8, WARS_CENSUS_MASK)?;
-        let id_start = wspan(
-            log,
-            memory,
-            pointer.checked_add(ccountry::ID),
-            4,
-            WARS_CENSUS_MASK,
-        )?;
-        if war_pool_u64(log, vtable_start) != vtable {
-            return None;
-        }
-        let id = u32::from_le_bytes(log.bytes[id_start..id_start + 4].try_into().unwrap());
-        let canonical = match war_link(log, memory, &links, countries.count, id) {
-            Some(Some(canonical)) => canonical,
-            _ => return None,
-        };
-        let canonical_slot = match war_link(log, memory, &links, countries.count, slot) {
-            Some(Some(canonical_slot)) => canonical_slot,
-            _ => return None,
-        };
-        if canonical_slot != canonical {
-            return None;
-        }
-        let check = match war_link(log, memory, &links, countries.count, canonical) {
-            Some(Some(check)) => check,
-            _ => return None,
-        };
-        if check != canonical {
-            return None;
-        }
-        let canonical_addr = (canonical as usize)
-            .checked_mul(8)
-            .and_then(|offset| countries.data.checked_add(offset));
-        let canonical_pointer = wspan(log, memory, canonical_addr, 8, WARS_CENSUS_MASK)?;
-        if war_pool_u64(log, canonical_pointer) != pointer as u64 {
-            return None;
-        }
-        if census.len() == census.capacity() {
-            log.overflowed = true;
-            return None;
-        }
-        census.push(WarCountry { pointer, slot });
-    }
-    Some((links, countries.count))
-}
-
-/// Mirror of a link-table read with local bounds checks. Outer `None`
-/// aborts the walk; inner `None` is a readable absence the typed callers
-/// also turn into a walk error.
-fn war_link(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    links: &Array,
-    countries: u32,
-    raw: u32,
-) -> Option<Option<u32>> {
-    if raw == 0 || raw >= links.count {
-        return None;
-    }
-    let offset = (raw as usize).checked_mul(4)?;
-    let start = wspan(
-        log,
-        memory,
-        links.data.checked_add(offset),
-        4,
-        WARS_CENSUS_MASK,
-    )?;
-    let slot = u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap());
-    if slot == 0 {
-        return Some(None);
-    }
-    if slot >= countries {
-        return None;
-    }
-    Some(Some(slot))
-}
-
-/// Mirror of a resolve without re-reading authentication: the link span is
-/// recorded here with the caller's mask and the `read_at` spans come from
-/// the shared census, which covered every slot.
-fn war_resolve(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    links: &Array,
-    countries: u32,
-    census: &[WarCountry],
-    raw: u32,
-    mask: u32,
-) -> Option<usize> {
-    if raw == 0 || raw >= links.count {
-        return None;
-    }
-    let offset = (raw as usize).checked_mul(4)?;
-    let start = wspan(log, memory, links.data.checked_add(offset), 4, mask)?;
-    let slot = u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap());
-    if slot == 0 || slot >= countries {
-        return None;
-    }
-    // The census authenticated every slot; the replay re-derives the same
-    // entry from the same recorded spans.
-    census
-        .iter()
-        .find(|entry| entry.slot == slot)
-        .map(|entry| entry.pointer)
-}
-
-/// Mirror of the diplomacy-status read set for one country: pointer, vtable
-/// and backlink. Caches are not simulated (a superset is recorded).
-fn copy_diplomacy(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    base: usize,
-    country: &WarCountry,
-    mask: u32,
-) -> Option<usize> {
-    let pointer_start = wspan(
-        log,
-        memory,
-        country.pointer.checked_add(ccountry::DIPLOMACY_STATUS),
-        8,
-        mask,
-    )?;
-    let pointer = usize::try_from(war_pool_u64(log, pointer_start))
-        .ok()
-        .filter(|&pointer| pointer != 0)?;
-    let vtable_start = wspan(log, memory, Some(pointer), 8, mask)?;
-    let backlink_start = wspan(
-        log,
-        memory,
-        pointer.checked_add(cdiplomacy_status::COUNTRY),
-        8,
-        mask,
-    )?;
-    let expected = base.checked_add(cdiplomacy_status::VTABLE_RVA)? as u64;
-    if war_pool_u64(log, vtable_start) != expected {
-        return None;
-    }
-    if war_pool_u64(log, backlink_start) != country.pointer as u64 {
-        return None;
-    }
-    Some(pointer)
-}
-
-/// Parsed census arrays shared by the war walk mirrors.
-#[derive(Clone, Copy)]
-struct WarArrays<'a> {
-    links: &'a Array,
-    countries: u32,
-    census: &'a [WarCountry],
-}
-
-/// Mirror of one relation's deep read set: active check, endpoints,
-/// endpoint resolves and diplomacies, pair statuses with matrix reads,
-/// ownership cross-links and row fields. Takes are unconditional over
-/// discoverable addresses (a superset); the replay derives every outcome.
-/// Ownership cross-links are owned-walk only: the matrix census never reads
-/// them, so recording them there would only misattribute unrelated faults
-/// to the matrix slot.
-fn copy_war_relation(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    base: usize,
-    arrays: WarArrays<'_>,
-    pointer: usize,
-    owner_slot: u32,
-    matrix_census: bool,
-) {
-    let mask = if matrix_census {
-        MATRIX_MASK
-    } else {
-        WARS_MASK
-    };
-    let (links, countries, census) = (arrays.links, arrays.countries, arrays.census);
-    let _ = base;
-    let _ = owner_slot;
-    // Active check: vtable, type, retired byte.
-    let _ = wspan(log, memory, Some(pointer), 8, mask);
-    let _ = wspan(
-        log,
-        memory,
-        pointer.checked_add(crelation::TYPE_ID),
-        4,
-        mask,
-    );
-    let _ = wspan(
-        log,
-        memory,
-        pointer.checked_add(crelation::RETIRED),
-        1,
-        mask,
-    );
-    // Endpoints and their resolves.
-    let first = wspan(
-        log,
-        memory,
-        pointer.checked_add(crelation::FIRST_COUNTRY),
-        4,
-        mask,
-    );
-    let second = wspan(
-        log,
-        memory,
-        pointer.checked_add(crelation::SECOND_COUNTRY),
-        4,
-        mask,
-    );
-    let (Some(first), Some(second)) = (first, second) else {
-        return;
-    };
-    let first_raw = u32::from_le_bytes(log.bytes[first..first + 4].try_into().unwrap());
-    let second_raw = u32::from_le_bytes(log.bytes[second..second + 4].try_into().unwrap());
-    let _ = war_resolve(log, memory, links, countries, census, first_raw, mask);
-    let _ = war_resolve(log, memory, links, countries, census, second_raw, mask);
-    // Both endpoint diplomacies (same read set as the root diplomacy).
-    let mut diplomacies = [0usize; 2];
-    for (slot, raw) in [first_raw, second_raw].iter().enumerate() {
-        if let Some(canonical) = resolve_slot(log, memory, links, countries, census, *raw, mask)
-            && let Some(country) = census.iter().find(|entry| entry.slot == canonical)
-        {
-            diplomacies[slot] = copy_diplomacy(log, memory, base, country, mask).unwrap_or(0);
-        }
-    }
-    // Pair statuses in both directions, then ownership cross-links.
-    let mut statuses = [0usize; 2];
-    for (slot, _raw) in [first_raw, second_raw].iter().enumerate() {
-        // Pair (diplomacy of endpoint, other endpoint's slot).
-        let other = 1 - slot;
-        if let Some(target) = resolve_slot(
-            log,
-            memory,
-            links,
-            countries,
-            census,
-            [first_raw, second_raw][other],
-            mask,
-        ) {
-            statuses[slot] = copy_pair_status(
-                log,
-                memory,
-                arrays,
-                diplomacies[slot],
-                target,
-                pointer,
-                mask,
-            )
-            .unwrap_or(0);
-        }
-    }
-    for diplomacy in diplomacies {
-        if diplomacy != 0 && !matrix_census {
-            copy_occurrence(
-                log,
-                memory,
-                diplomacy,
-                cdiplomacy_status::OWNED_RELATIONS,
-                mask,
-            );
-        }
-    }
-    for status in statuses {
-        if status != 0 && !matrix_census {
-            copy_occurrence(log, memory, status, crelation_status::SUBRELATIONS, mask);
-            copy_occurrence(
-                log,
-                memory,
-                status,
-                crelation_status::SERIALIZABLE_RELATIONS,
-                mask,
-            );
-        }
-    }
-    // Row fields.
-    let _ = wspan(
-        log,
-        memory,
-        pointer.checked_add(crelation::START_HOUR),
-        4,
-        mask,
-    );
-    let _ = wspan(
-        log,
-        memory,
-        pointer.checked_add(crelation::END_HOUR),
-        4,
-        mask,
-    );
-    let _ = wspan(log, memory, pointer.checked_add(crelation::CANCEL), 1, mask);
-    let _ = wspan(
-        log,
-        memory,
-        pointer.checked_add(cwar_relation::FIRST_CASUALTIES),
-        8,
-        mask,
-    );
-    let _ = wspan(
-        log,
-        memory,
-        pointer.checked_add(cwar_relation::SECOND_CASUALTIES),
-        8,
-        mask,
-    );
-    let _ = wspan(
-        log,
-        memory,
-        pointer.checked_add(cwar_relation::FIRST_UNKNOWN_CASUALTIES),
-        8,
-        mask,
-    );
-    let _ = wspan(
-        log,
-        memory,
-        pointer.checked_add(cwar_relation::SECOND_UNKNOWN_CASUALTIES),
-        8,
-        mask,
-    );
-    let _ = wspan(
-        log,
-        memory,
-        pointer.checked_add(cwar_relation::FIRST_WAS_INSTIGATOR),
-        1,
-        mask,
-    );
-}
-
-/// Resolve to a canonical slot for mirror-side branching. Returns `None`
-/// exactly when the typed resolve fails; the replay derives its own reason.
-fn resolve_slot(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    links: &Array,
-    countries: u32,
-    census: &[WarCountry],
-    raw: u32,
-    mask: u32,
-) -> Option<u32> {
-    if raw == 0 || raw >= links.count {
-        return None;
-    }
-    let offset = (raw as usize).checked_mul(4)?;
-    let start = wspan(log, memory, links.data.checked_add(offset), 4, mask)?;
-    let slot = u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap());
-    if slot == 0 || slot >= countries {
-        return None;
-    }
-    census.iter().find(|entry| entry.slot == slot).map(|_| slot)
-}
-
-/// Mirror of one `pair_status` read set: matrix array, element, status
-/// fields and target resolve. Returns the status address for the
-/// ownership cross-link takes.
-fn copy_pair_status(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    arrays: WarArrays<'_>,
-    diplomacy: usize,
-    target_slot: u32,
-    war: usize,
-    mask: u32,
-) -> Option<usize> {
-    let (links, countries, census) = (arrays.links, arrays.countries, arrays.census);
-    if diplomacy == 0 {
-        return None;
-    }
-    let matrix = wspan(
-        log,
-        memory,
-        diplomacy.checked_add(cdiplomacy_status::RELATIONS),
-        16,
-        mask,
-    )?;
-    let mut raw_header = [0u8; 16];
-    raw_header.copy_from_slice(&log.bytes[matrix..matrix + 16]);
-    let array = Array::from_header(raw_header, 8)?;
-    let element_addr = array
-        .data
-        .checked_add((target_slot as usize).checked_mul(8)?)?;
-    let element = wspan(log, memory, Some(element_addr), 8, mask)?;
-    let status = usize::try_from(war_pool_u64(log, element))
-        .ok()
-        .filter(|&s| s != 0)?;
-    // Status takes run unconditionally; the replay validates vtable,
-    // diplomacy match, target resolve and war-link equality itself.
-    wspan(log, memory, Some(status), 8, mask)?;
-    wspan(
-        log,
-        memory,
-        status.checked_add(crelation_status::DIPLOMACY_STATUS),
-        8,
-        mask,
-    )?;
-    let target = wspan(
-        log,
-        memory,
-        status.checked_add(crelation_status::TARGET_COUNTRY),
-        4,
-        mask,
-    )?;
-    wspan(
-        log,
-        memory,
-        status.checked_add(crelation_status::WAR_RELATION),
-        8,
-        mask,
-    )?;
-    // Target resolve takes run unconditionally; the replay validates the
-    // slot match and war-link equality from the same recorded spans.
-    let target_raw = u32::from_le_bytes(log.bytes[target..target + 4].try_into().unwrap());
-    let _ = war_resolve(log, memory, links, countries, census, target_raw, mask);
-    let _ = war;
-    Some(status)
-}
-
-/// Mirror of one `occurrence` read set: ownership vector header plus entry
-/// pointers (bulk for long vectors, matching the chunked walk's set).
-fn copy_occurrence(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    root: usize,
-    offset: usize,
-    mask: u32,
-) {
-    let header = wspan(log, memory, root.checked_add(offset), 16, mask);
-    let Some(header) = header else {
-        return;
-    };
-    let mut raw_header = [0u8; 16];
-    raw_header.copy_from_slice(&log.bytes[header..header + 16]);
-    let array = match Array::from_header(raw_header, 8) {
-        Some(array) => array,
-        None => return,
-    };
-    for index in 0..array.count {
-        let addr = array.data.checked_add((index as usize).saturating_mul(8));
-        let _ = wspan(log, memory, addr, 8, mask);
-        if log.overflowed {
-            return;
-        }
-    }
-}
-
-/// Mirror of one walk's read set (owned or matrix): per-country diplomacy,
-/// relation array, batched entries and deep relation takes. Takes are
-/// unconditional over discoverable addresses.
-fn copy_war_walk(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    base: usize,
-    links: &Array,
-    countries: u32,
-    census: &[WarCountry],
-    matrix_census: bool,
-) {
-    let mask = if matrix_census {
-        MATRIX_MASK
-    } else {
-        WARS_MASK
-    };
-    for country in census.iter() {
-        let diplomacy = match copy_diplomacy(log, memory, base, country, mask) {
-            Some(diplomacy) => diplomacy,
-            None => continue,
-        };
-        let array_offset = if matrix_census {
-            cdiplomacy_status::RELATIONS
-        } else {
-            cdiplomacy_status::OWNED_RELATIONS
-        };
-        let array_start = match wspan(log, memory, diplomacy.checked_add(array_offset), 16, mask) {
-            Some(start) => start,
-            None => continue,
-        };
-        let mut raw_header = [0u8; 16];
-        raw_header.copy_from_slice(&log.bytes[array_start..array_start + 16]);
-        let array = match Array::from_header(raw_header, 8) {
-            Some(array) => array,
-            None => continue,
-        };
-        for index in 0..array.count {
-            let entry_addr = array.data.checked_add((index as usize).saturating_mul(8));
-            let entry = match wspan(log, memory, entry_addr, 8, mask).and_then(|start| {
-                usize::try_from(war_pool_u64(log, start))
-                    .ok()
-                    .filter(|&p| p != 0)
-            }) {
-                Some(entry) => entry,
-                None => continue,
-            };
-            if matrix_census {
-                // Matrix triple: vtable, owner link, war pointer.
-                let vtable = wspan(log, memory, Some(entry), 8, mask);
-                let owner = wspan(
-                    log,
-                    memory,
-                    entry.checked_add(crelation_status::DIPLOMACY_STATUS),
-                    8,
-                    mask,
-                );
-                let war = wspan(
-                    log,
-                    memory,
-                    entry.checked_add(crelation_status::WAR_RELATION),
-                    8,
-                    mask,
-                );
-                let (Some(_), Some(_), Some(war)) = (vtable, owner, war) else {
-                    continue;
-                };
-                let pointer = usize::try_from(war_pool_u64(log, war))
-                    .ok()
-                    .filter(|&pointer| pointer != 0);
-                let Some(pointer) = pointer else {
-                    continue;
-                };
-                copy_war_relation(
-                    log,
-                    memory,
-                    base,
-                    WarArrays {
-                        links,
-                        countries,
-                        census,
-                    },
-                    pointer,
-                    country.slot,
-                    true,
-                );
-            } else {
-                // Non-war entries are skipped by the typed walk right after
-                // the batched type gather; only wars pay the deep dive below.
-                // The type take itself is still recorded for the batch read.
-                let relation_type =
-                    wspan(log, memory, entry.checked_add(crelation::TYPE_ID), 4, mask);
-                let is_war = relation_type.is_some_and(|start| {
-                    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
-                        == cwar_relation::TYPE
-                });
-                if !is_war {
-                    if log.overflowed {
-                        return;
-                    }
-                    continue;
-                }
-                copy_war_relation(
-                    log,
-                    memory,
-                    base,
-                    WarArrays {
-                        links,
-                        countries,
-                        census,
-                    },
-                    entry,
-                    country.slot,
-                    false,
-                );
-            }
-            if log.overflowed {
-                return;
-            }
-        }
-    }
-}
-
-/// One structural copy pass: shared census, owned-relations walk, and the
-/// matrix census while its counter still needs checks. Copy ticks split
-/// into [owned, matrix] for the calibration install. The job is cleared on
-/// entry so pooled refreshes never accumulate spans across hours.
-fn copy_wars_pass(
-    job: &mut WarsJob,
-    memory: &impl engine::Memory,
-    base: usize,
-    game_state: usize,
-    needed_matrix: bool,
-    ticks: &mut [u64; 2],
-) {
-    job.clear();
-    job.game_state = game_state;
-    job.matrix_copied = needed_matrix;
-    let started = qpc();
-    let census = copy_war_census(&mut job.log, memory, base, game_state, &mut job.census);
-    if let Some((links, countries)) = census {
-        copy_war_walk(
-            &mut job.log,
-            memory,
-            base,
-            &links,
-            countries,
-            &job.census,
-            false,
-        );
-        ticks[0] += elapsed(started);
-        if needed_matrix && !job.log.overflowed {
-            let matrix_started = qpc();
-            copy_war_walk(
-                &mut job.log,
-                memory,
-                base,
-                &links,
-                countries,
-                &job.census,
-                true,
-            );
-            ticks[1] += elapsed(matrix_started);
-        }
-    } else {
-        ticks[0] += elapsed(started);
-    }
-}
-
-/// Game-thread raw copy for one hour: shared census, owned-relations walk,
-/// and the matrix census while its counter still needs checks. Compares raw
-/// logs while the wars window needs checks.
-pub(crate) fn copy_wars_refresh(
-    memory: &impl engine::Memory,
-    ctx: WarsCopyContext,
-    first: &mut WarsJob,
-    mut second: Option<&mut WarsJob>,
-) -> WarsCopyReport {
-    let mut ticks = [0u64; 2];
-    copy_wars_pass(
-        first,
-        memory,
-        ctx.base,
-        ctx.game_state,
-        ctx.needed_matrix,
-        &mut ticks,
-    );
-    let mut matched = [true; 2];
-    if let Some(second_job) = second.as_deref_mut() {
-        let mut second_ticks = [0u64; 2];
-        copy_wars_pass(
-            second_job,
-            memory,
-            ctx.base,
-            ctx.game_state,
-            ctx.needed_matrix,
-            &mut second_ticks,
-        );
-        ticks[0] += second_ticks[0];
-        ticks[1] += second_ticks[1];
-        // Per-partition equality: owned-walk bytes gate only wars, matrix
-        // bytes only the matrix, shared census bytes gate both. Each slot
-        // keeps the conservative live-fault gate.
-        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-        for (slot, matched) in matched.iter_mut().enumerate() {
-            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-        }
-    }
-    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
-    WarsCopyReport {
-        raw_ok,
-        matched,
-        copy_ticks: ticks,
-        raw_bytes: first.log.raw_bytes,
-    }
-}
-
-/// Decode-worker interpretation of a raw wars payload. Replays the existing
-/// owned walk (and the matrix census while it was copied) against the
-/// recorded spans, installing identical rows, truncation counts and failure
-/// reasons into the frame's pooled buffers. The census spans serve the
-/// walk's own country authentication, so no live memory is touched.
-pub(crate) fn decode_wars_payload(
-    frame: &mut Captured,
-    base: usize,
-    job: &WarsJob,
-    decode_ticks: &mut [u64; 2],
-) {
-    let recorded = Recorded::build(&job.log);
-    let started = qpc();
-    frame.wars_result = cwar_relation::walk(&recorded, base, job.game_state, &mut frame.wars);
-    decode_ticks[0] += elapsed(started);
-    if job.matrix_copied {
-        let matrix_started = qpc();
-        let matrix =
-            cwar_relation::walk_matrix(&recorded, base, job.game_state, &mut frame.wars_matrix);
-        frame.war_matrix_result = Some(matrix);
-        decode_ticks[1] += elapsed(matrix_started);
-    }
 }
 
 // ===========================================================================
@@ -3885,18 +2886,26 @@ pub(crate) struct DivisionsJob {
     pub log: RawLog<6>,
     pub game_state: usize,
     census: Vec<DivisionEntry>,
+    sources: Vec<cequipment_variant_pool::DivisionSource>,
+    census_complete: bool,
+    capacity_charge: crate::raw_memory::Charge,
 }
 
 impl DivisionsJob {
     pub fn new() -> Self {
-        Self {
+        let mut job = Self {
             // Steady state is about 2.9k divisions with ~17k equipment rows
             // plus a few thousand upgrade rows; both pools start above that
             // so steady state never overflows.
             log: RawLog::new(1 << 18, 8 << 20),
             game_state: 0,
             census: Vec::with_capacity(4096),
-        }
+            sources: Vec::with_capacity(4096),
+            census_complete: false,
+            capacity_charge: crate::raw_memory::Charge::default(),
+        };
+        job.update_capacity_charge();
+        job
     }
 
     /// Reset lengths for reuse, keeping every capacity. No allocation.
@@ -3904,6 +2913,8 @@ impl DivisionsJob {
         self.log.clear();
         self.game_state = 0;
         self.census.clear();
+        self.sources.clear();
+        self.census_complete = false;
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -3916,6 +2927,52 @@ impl DivisionsJob {
     pub fn grow(&mut self) {
         self.log.grow();
         crate::raw::double_capacity(&mut self.census);
+        crate::raw::double_capacity(&mut self.sources);
+        self.update_capacity_charge();
+    }
+
+    fn update_capacity_charge(&mut self) {
+        use crate::raw_memory::{Capacity, vector_bytes};
+        self.capacity_charge.set(Capacity {
+            auxiliary_vectors: vector_bytes(&self.census) + vector_bytes(&self.sources),
+            ..Default::default()
+        });
+    }
+
+    /// Supplies only copied/authenticated source rows while the callback still
+    /// owns live memory. No native reads or allocation. A row failure beyond
+    /// the consumer's capacity does not invalidate its earlier truncated prefix;
+    /// a failed census or a failure inside that prefix remains unavailable.
+    fn source_outcome(&self, capacity: usize) -> Outcome {
+        if self.log.overflowed || !self.census_complete {
+            return Outcome::Unavailable {
+                reason: "division copied source census incomplete",
+            };
+        }
+        let len = self.census.len().min(capacity);
+        if self.sources.len() < len {
+            return Outcome::Unavailable {
+                reason: "division copied source row invalid",
+            };
+        }
+        if len < self.census.len() {
+            match u32::try_from(self.census.len() - len) {
+                Ok(unread_rows) => Outcome::Truncated { len, unread_rows },
+                Err(_) => Outcome::Unavailable {
+                    reason: "division copied source count overflow",
+                },
+            }
+        } else {
+            Outcome::Rows { len }
+        }
+    }
+
+    fn supply_sources(&self, captured: &mut extended::Captured, capacity: usize, second: bool) {
+        let outcome = self.source_outcome(capacity);
+        for &source in &self.sources[..outcome.len()] {
+            captured.visit_division_source(source, second);
+        }
+        captured.finish_divisions(outcome, second);
     }
 }
 
@@ -4003,6 +3060,7 @@ fn copy_divisions_census(
         return None;
     }
     let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
+    let mut found_country = false;
     for slot in 1..countries.count {
         let pointer_addr = (slot as usize)
             .checked_mul(8)
@@ -4040,6 +3098,7 @@ fn copy_divisions_census(
         if slot != canonical {
             continue;
         }
+        found_country = true;
         let roster_start = dspan(
             log,
             memory,
@@ -4073,7 +3132,7 @@ fn copy_divisions_census(
             }
         }
     }
-    Some((links, provinces, countries.count))
+    found_country.then_some((links, provinces, countries.count))
 }
 
 /// Mirror of one link-table read with local bounds checks. Returns `None`
@@ -4125,7 +3184,7 @@ fn copy_division_row(
     arrays: DivisionArrays<'_>,
     pointer: usize,
     canonical: u32,
-) -> Option<()> {
+) -> Option<cequipment_variant_pool::DivisionSource> {
     let (links, countries, provinces) = (arrays.links, arrays.countries, arrays.provinces);
     let vtable = base.checked_add(carmy::VTABLE_RVA)? as u64;
     let secondary = base.checked_add(carmy::SECONDARY_VTABLE_RVA)? as u64;
@@ -4150,7 +3209,8 @@ fn copy_division_row(
         8,
         DIVISIONS_CENSUS_MASK,
     )?;
-    if divisions_pool_u64(log, handle_start) == 0 {
+    let division = divisions_pool_u64(log, handle_start);
+    if division == 0 {
         return None;
     }
     let owner_start = dspan(
@@ -4198,9 +3258,11 @@ fn copy_division_row(
         DIVISIONS_CENSUS_MASK,
     )?;
     let template = usize::try_from(divisions_pool_u64(log, template_start)).ok()?;
-    if template != 0 {
-        copy_division_template(log, memory, base, template)?;
-    }
+    let template = if template == 0 {
+        0
+    } else {
+        copy_division_template(log, memory, base, template)?
+    };
     dspan(
         log,
         memory,
@@ -4224,9 +3286,25 @@ fn copy_division_row(
     )?;
     let group = usize::try_from(divisions_pool_u64(log, group_start)).ok()?;
     if group != 0 {
-        dspan(log, memory, Some(group), 16, DIVISIONS_CENSUS_MASK)?;
+        let start = dspan(log, memory, Some(group), 16, DIVISIONS_CENSUS_MASK)?;
+        let vtable = divisions_pool_u64(log, start);
+        if ![
+            engine::corders_group::VTABLE_RVA,
+            engine::carmy_group::VTABLE_RVA,
+        ]
+        .iter()
+        .any(|&rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
+            || divisions_pool_u64(log, start + 8) as u32 != engine::corders_group::REFERENCE_TYPE
+        {
+            return None;
+        }
     }
-    Some(())
+    Some(cequipment_variant_pool::DivisionSource {
+        pointer,
+        division,
+        template,
+        country: roster_owner,
+    })
 }
 
 /// Mirror of one province authentication: vtable, identity word and the
@@ -4252,7 +3330,7 @@ fn copy_division_province(
         DIVISIONS_CENSUS_MASK,
     )?;
     let id = u32::from_le_bytes(log.bytes[id_start..id_start + 4].try_into().unwrap());
-    if id == 0 {
+    if id == 0 || id >= provinces.count {
         return None;
     }
     let slot_addr = provinces.data.checked_add((id as usize).checked_mul(8)?);
@@ -4270,7 +3348,7 @@ fn copy_division_template(
     memory: &impl engine::Memory,
     base: usize,
     pointer: usize,
-) -> Option<()> {
+) -> Option<u64> {
     let expected = base.checked_add(creferenced_division_template::VTABLE_RVA)? as u64;
     let vtable_start = dspan(log, memory, Some(pointer), 8, DIVISIONS_CENSUS_MASK)?;
     if divisions_pool_u64(log, vtable_start) != expected {
@@ -4283,10 +3361,11 @@ fn copy_division_template(
         8,
         DIVISIONS_CENSUS_MASK,
     )?;
-    if divisions_pool_u64(log, handle_start) == 0 {
+    let handle = divisions_pool_u64(log, handle_start);
+    if handle == 0 {
         return None;
     }
-    Some(())
+    Some(handle)
 }
 
 /// Mirror of one division's equipment bank: pool vtable, item array and per
@@ -4642,8 +3721,9 @@ fn copy_divisions_pass(
         ticks[0] += elapsed(started);
         return;
     };
-    for entry in job.census.clone() {
-        if copy_division_row(
+    job.census_complete = true;
+    for &entry in &job.census {
+        let Some(source) = copy_division_row(
             &mut job.log,
             memory,
             base,
@@ -4654,11 +3734,14 @@ fn copy_divisions_pass(
             },
             entry.pointer,
             entry.canonical,
-        )
-        .is_none()
-        {
+        ) else {
             ticks[0] += elapsed(started);
             return;
+        };
+        if job.sources.len() == job.sources.capacity() {
+            job.log.overflowed = true;
+        } else {
+            job.sources.push(source);
         }
         if job.log.overflowed {
             ticks[0] += elapsed(started);
@@ -4670,7 +3753,7 @@ fn copy_divisions_pass(
         return;
     }
     let equipment_started = qpc();
-    for entry in job.census.clone() {
+    for &entry in &job.census {
         if !copy_division_equipment(&mut job.log, memory, base, entry.pointer) {
             break;
         }
@@ -4680,7 +3763,7 @@ fn copy_divisions_pass(
         return;
     }
     let upgrades_started = qpc();
-    for entry in job.census.clone() {
+    for &entry in &job.census {
         if !copy_division_upgrades(&mut job.log, memory, entry.pointer) {
             break;
         }
@@ -4743,6 +3826,10 @@ pub(crate) fn decode_divisions_payload(
 ) {
     let recorded = Recorded::build(&job.log);
     let started = qpc();
+    // Live presentation already consumed these shared sources in the callback.
+    // Replace only the source scratch for worker-owned interpretation; preserve
+    // the acquired presentation tables, their costs and consistency results.
+    frame.extended.reset_division_sources();
     let outcome = carmy::walk_with(
         &recorded,
         base,
@@ -4755,18 +3842,20 @@ pub(crate) fn decode_divisions_payload(
     frame.extended.finish_divisions(outcome, false);
     frame.divisions_result = outcome;
     decode_ticks[0] += elapsed(started);
+    // The detail walk needs fresh observation cursors, not a second live
+    // index. Return this index before its independent reader is constructed.
+    drop(recorded);
     frame
         .extended
         .decode_divisions_payload(base, &job.log, decode_ticks);
 }
 
-/// Shared synthetic address space for the wars copy/decode split harness:
+/// Shared synthetic address space for the typed Wars capture and FIFO tests:
 /// three countries plus one alias slot, two wars with signed-extreme rows,
 /// one foreign-type relation, one retired war, and matrix slots with an
 /// alias raw target. Mirrors the engine `cwar_relation` fixture shape.
 #[cfg(test)]
 pub(crate) mod wars_test_kit {
-    use super::{Captured, WarsCopyContext, WarsCopyReport, WarsJob, copy_wars_refresh};
     use engine::{
         Memory, ccountry, cdiplomacy_status, cgame_state, crelation, crelation_status,
         cwar_relation, memory::SliceMemory, walk::Outcome,
@@ -5000,7 +4089,7 @@ pub(crate) mod wars_test_kit {
         SliceMemory { base: 0, bytes }
     }
 
-    pub(crate) struct Split {
+    pub(crate) struct Censuses {
         pub owned_outcome: Outcome,
         pub owned: Vec<cwar_relation::Row>,
         pub matrix_outcome: Outcome,
@@ -5008,58 +4097,17 @@ pub(crate) mod wars_test_kit {
     }
 
     /// Reference typed walks with identical pooled buffers.
-    pub(crate) fn direct(memory: &impl Memory, len: usize) -> Split {
+    pub(crate) fn direct(memory: &impl Memory, len: usize) -> Censuses {
         let mut owned = vec![cwar_relation::Row::default(); len];
         let owned_outcome = cwar_relation::walk(memory, BASE, GAME_STATE, &mut owned);
         let mut matrix = vec![cwar_relation::Row::default(); len];
         let matrix_outcome = cwar_relation::walk_matrix(memory, BASE, GAME_STATE, &mut matrix);
-        Split {
+        Censuses {
             owned_outcome,
             owned,
             matrix_outcome,
             matrix,
         }
-    }
-
-    /// Raw-copy split: two raw passes compared, then the first payload
-    /// decoded into fresh pooled buffers of the same length.
-    pub(crate) fn split(memory: &impl Memory, len: usize) -> (Split, WarsCopyReport, WarsJob) {
-        let ctx = WarsCopyContext {
-            base: BASE,
-            game_state: GAME_STATE,
-            needed_matrix: true,
-        };
-        let mut first = WarsJob::new();
-        let mut second = WarsJob::new();
-        let report = copy_wars_refresh(memory, ctx, &mut first, Some(&mut second));
-        assert!(report.raw_ok);
-        let mut frame = Captured::new();
-        frame.wars = vec![cwar_relation::Row::default(); len];
-        frame.wars_matrix = vec![cwar_relation::Row::default(); len];
-        let mut ticks = [0u64; 2];
-        super::decode_wars_payload(&mut frame, BASE, &first, &mut ticks);
-        (
-            Split {
-                owned_outcome: frame.wars_result,
-                owned: std::mem::take(&mut frame.wars),
-                matrix_outcome: frame.war_matrix_result.unwrap_or(Outcome::Unavailable {
-                    reason: "matrix census not copied",
-                }),
-                matrix: std::mem::take(&mut frame.wars_matrix),
-            },
-            report,
-            first,
-        )
-    }
-
-    pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
-        assert_eq!(split.owned_outcome, direct.owned_outcome, "owned outcome");
-        assert_eq!(
-            split.matrix_outcome, direct.matrix_outcome,
-            "matrix outcome"
-        );
-        assert_eq!(split.owned, direct.owned, "owned rows");
-        assert_eq!(split.matrix, direct.matrix, "matrix rows");
     }
 }
 
@@ -5478,6 +4526,118 @@ mod tests {
     use super::*;
 
     #[test]
+    fn order_counter_capture_gates_and_clears_recycled_metadata_without_allocation() {
+        let mut bytes = vec![0_u8; 0x4000];
+        let mut put = |address: usize, value: &[u8]| {
+            bytes[address - 0x1000..address - 0x1000 + value.len()].copy_from_slice(value);
+        };
+        for (offset, data, count) in [
+            (cgame_state::COUNTRIES, 0x1500_u64, 2_u32),
+            (cgame_state::COUNTRY_LINKS, 0x1600, 2),
+        ] {
+            put(0x1000 + offset, &data.to_le_bytes());
+            put(0x1000 + offset + 8, &count.to_le_bytes());
+            put(0x1000 + offset + 12, &count.to_le_bytes());
+        }
+        put(0x1508, &0x2000_u64.to_le_bytes());
+        put(0x1604, &1_u32.to_le_bytes());
+        put(0x2000, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        put(0x2008, &1_u32.to_le_bytes());
+        put(
+            0x2000 + ccountry::ORDER_INSTANCE_COUNTER,
+            &3812_u32.to_le_bytes(),
+        );
+        let memory = engine::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut cache = Cache::with_capacity(32);
+        let cached = cache.prepare(&memory, 0, 0x1000);
+        assert_eq!(cached.seed_status(), SeedStatus::Ready);
+        let mut sample = OrderCounterCapture::with_capacity(2);
+        let pointer = sample.rows.as_ptr();
+        let capacity = sample.rows.capacity();
+        sample.capture(
+            true,
+            &memory,
+            engine::Memory::authenticated_countries(&cached, 0, 0x1000),
+        );
+        assert!(sample.forced);
+        assert!(sample.read.unwrap().complete());
+        assert_eq!(sample.read.unwrap().len, 1);
+        assert_eq!(sample.rows[0].value, Some(3812));
+        sample.qpc_begin = 10;
+        sample.qpc_end = 12;
+        sample.elapsed_ns = 20;
+        sample.capture(
+            false,
+            &memory,
+            engine::Memory::authenticated_countries(&cached, 0, 0x1000),
+        );
+        assert!(!sample.forced);
+        assert_eq!(sample.read, None);
+        assert_eq!(
+            (sample.qpc_begin, sample.qpc_end, sample.elapsed_ns),
+            (0, 0, 0)
+        );
+        sample.capture(true, &memory, None);
+        assert!(sample.forced);
+        assert_eq!(sample.read, None);
+        assert_eq!(sample.rows.as_ptr(), pointer);
+        assert_eq!(sample.rows.capacity(), capacity);
+        assert!(cached.verify().is_ok());
+    }
+
+    #[test]
+    fn order_counter_capture_accounts_actual_capacity_and_grows_only_its_storage() {
+        let mut sample = OrderCounterCapture::with_capacity(2);
+        assert_eq!(
+            sample.allocated_bytes(),
+            sample.rows.capacity() * size_of::<ccountry::OrderInstanceCounter>()
+        );
+        sample.read = Some(ccountry::OrderInstanceCounterRead {
+            len: 2,
+            required: 5,
+            unreadable: 0,
+        });
+        let original = sample.allocated_bytes();
+        sample.grow(3);
+        assert_eq!(sample.rows.len(), 5);
+        assert!(sample.allocated_bytes() > original);
+        assert_eq!(
+            sample.allocated_bytes(),
+            sample.rows.capacity() * size_of::<ccountry::OrderInstanceCounter>()
+        );
+        let grown = sample.allocated_bytes();
+        sample.reset();
+        sample.grow(1);
+        assert_eq!(sample.allocated_bytes(), grown);
+        assert_eq!(sample.rows.len(), 5);
+    }
+
+    #[test]
+    fn divisions_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
+        use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
+        static LOCAL: Tracker = Tracker::new();
+        let mut job = DivisionsJob::default();
+        job.census.reserve_exact(3);
+        job.sources.reserve_exact(3);
+        job.capacity_charge = Charge::empty_on(&LOCAL);
+        job.update_capacity_charge();
+        let expected = |job: &DivisionsJob| vector_bytes(&job.census) + vector_bytes(&job.sources);
+        let initial = LOCAL.snapshot().current.auxiliary_vectors;
+        assert_eq!(initial, expected(&job));
+        job.grow();
+        let grown = LOCAL.snapshot().current.auxiliary_vectors;
+        assert!(grown > initial);
+        assert_eq!(grown, expected(&job));
+        job.clear();
+        assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, grown);
+        drop(job);
+        assert_eq!(LOCAL.snapshot().current, Capacity::default());
+    }
+
+    #[test]
     fn callback_time_waits_for_decode_and_includes_the_game_thread_tail() {
         let base = AtomicI64::new(0);
         let tail = AtomicI64::new(0);
@@ -5531,17 +4691,12 @@ mod tests {
                     index,
                     seq: seq as u64,
                     hour: 0,
-                    pilot_refresh: false,
                     relations_refresh: false,
                     characters_refresh: false,
                     projects_refresh: false,
                     lexical_refresh: false,
-                    variants_refresh: false,
-                    buildings_refresh: false,
-                    wars_refresh: false,
                     divisions_refresh: false,
                     focus_refresh: false,
-                    map_refresh: false,
                     air_wing_refresh: false,
                     air_stats_refresh: false,
                     naval_refresh: false,
@@ -5552,7 +4707,6 @@ mod tests {
                     economy_rest_refresh: false,
                     air_bases_refresh: false,
                     air_history_refresh: false,
-                    rail_refresh: false,
                     supremacy_refresh: false,
                     sunk_refresh: false,
                     radar_refresh: false,
@@ -5561,17 +4715,12 @@ mod tests {
                     capitulation_refresh: false,
                     force_full: false,
                     game_elapsed: 1,
-                    payload: None,
                     relations_payload: None,
                     characters_payload: None,
                     projects_payload: None,
                     lexical_payload: None,
-                    variants_payload: None,
-                    buildings_payload: None,
-                    wars_payload: None,
                     divisions_payload: None,
                     focus_payload: None,
-                    map_payload: None,
                     air_wing_payload: None,
                     air_stats_payload: None,
                     naval_payload: None,
@@ -5582,7 +4731,6 @@ mod tests {
                     economy_rest_payload: None,
                     air_bases_payload: None,
                     air_history_payload: None,
-                    rail_payload: None,
                     supremacy_payload: None,
                     sunk_payload: None,
                     radar_payload: None,
@@ -5599,17 +4747,12 @@ mod tests {
             index,
             seq: u64::MAX,
             hour: 0,
-            pilot_refresh: false,
             relations_refresh: false,
             characters_refresh: false,
             projects_refresh: false,
             lexical_refresh: false,
-            variants_refresh: false,
-            buildings_refresh: false,
-            wars_refresh: false,
             divisions_refresh: false,
             focus_refresh: false,
-            map_refresh: false,
             air_wing_refresh: false,
             air_stats_refresh: false,
             naval_refresh: false,
@@ -5620,7 +4763,6 @@ mod tests {
             economy_rest_refresh: false,
             air_bases_refresh: false,
             air_history_refresh: false,
-            rail_refresh: false,
             supremacy_refresh: false,
             sunk_refresh: false,
             radar_refresh: false,
@@ -5629,17 +4771,12 @@ mod tests {
             capitulation_refresh: false,
             force_full: false,
             game_elapsed: 1,
-            payload: None,
             relations_payload: None,
             characters_payload: None,
             projects_payload: None,
             lexical_payload: None,
-            variants_payload: None,
-            buildings_payload: None,
-            wars_payload: None,
             divisions_payload: None,
             focus_payload: None,
-            map_payload: None,
             air_wing_payload: None,
             air_stats_payload: None,
             naval_payload: None,
@@ -5650,7 +4787,6 @@ mod tests {
             economy_rest_payload: None,
             air_bases_payload: None,
             air_history_payload: None,
-            rail_payload: None,
             supremacy_payload: None,
             sunk_payload: None,
             radar_payload: None,
@@ -5968,6 +5104,30 @@ mod tests {
     }
 
     #[test]
+    fn state_comparison_storage_survives_until_both_state_windows_finish() {
+        let mut extended_successful = [CONSISTENCY_TARGET; TABLE_COUNT];
+        extended_successful[replay::rows::TableId::StateFlags.index()] = CONSISTENCY_TARGET - 1;
+        let mut capacities = INITIAL_CAPACITIES;
+        let mut frame = Captured::with_capacities(
+            &capacities,
+            &MapCapacities::default(),
+            [CONSISTENCY_TARGET; CONSISTENCY_TABLES.len()],
+            &extended::Capacities::default(),
+            extended_successful,
+        );
+        assert_eq!(frame.states_second.len(), capacities[3]);
+        frame.grow(&mut capacities);
+        assert_eq!(frame.states_second.len(), capacities[3]);
+        frame.extended_successful[replay::rows::TableId::StateFlags.index()] = CONSISTENCY_TARGET;
+        frame.grow(&mut capacities);
+        assert!(frame.states_second.is_empty());
+
+        frame.consistency_successful[1] = CONSISTENCY_TARGET - 1;
+        frame.grow(&mut capacities);
+        assert_eq!(frame.states_second.len(), capacities[3]);
+    }
+
+    #[test]
     fn each_completed_window_releases_only_its_comparison_buffers() {
         let mut frame = Captured::new();
         frame.extended_successful.fill(CONSISTENCY_TARGET);
@@ -6138,25 +5298,20 @@ mod tests {
     #[test]
     fn wars_table_is_hourly_tier_h_with_no_refresh_gate() {
         // WarRelations keeps its hourly cadence: no stagger slot, every hour
-        // walks. This pins the no-cadence-change rule for the split.
+        // walks. This pins the unchanged cadence for typed capture.
         use replay::rows::TableId;
         assert!(!replay::cadence::is_staggered(TableId::WarRelations));
         for hour in [0, 1, 2, 3, 60_820_531] {
             assert!(replay::cadence::is_refresh(TableId::WarRelations, hour));
         }
-        assert_eq!(crate::decode::WARS, [TableId::WarRelations]);
     }
 
     #[test]
-    fn wars_split_copy_matches_direct_walk() {
+    fn wars_typed_walk_preserves_native_rows_and_independent_matrix() {
         use super::wars_test_kit as kit;
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
-        let direct = kit::direct(&memory, 64);
-        let (split, report, _) = kit::split(&memory, 64);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 2]);
-        kit::assert_matches_direct(&split, &direct);
+        let split = kit::direct(&memory, 64);
         // Spot-checks: the owned walk emits each war once from its first
         // endpoint; the matrix census covers both in slot order.
         assert_eq!(split.owned_outcome, Outcome::Rows { len: 2 });
@@ -6173,15 +5328,11 @@ mod tests {
     }
 
     #[test]
-    fn wars_split_copy_matches_direct_walk_under_truncation() {
+    fn wars_typed_walk_preserves_truncated_censuses() {
         use super::wars_test_kit as kit;
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
-        let direct = kit::direct(&memory, 1);
-        let (split, report, _) = kit::split(&memory, 1);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 2]);
-        kit::assert_matches_direct(&split, &direct);
+        let split = kit::direct(&memory, 1);
         assert_eq!(
             split.owned_outcome,
             Outcome::Truncated {
@@ -6199,32 +5350,27 @@ mod tests {
     }
 
     #[test]
-    fn wars_truncation_matrix_matches_direct_with_same_caps() {
-        // B3: zero-cap (len 0, all unread) / one-row / exact-fit (2) /
-        // ample (64) run the typed walk AND the copy→decode replay against
-        // the SAME memory with the SAME pooled caps, asserting identical
-        // outcome (incl. len/unread) and identical rows. The 2-war fixture
-        // makes cap 1 the overflow-by-one arm (total 2 == cap+1) and cap 0
-        // the massive arm; u32 unread saturation is not reachable with two
-        // rows and is covered by the walk's own saturating arithmetic.
+    fn wars_typed_capacity_matrix_keeps_full_validation_and_exact_unread_counts() {
         use super::wars_test_kit as kit;
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
         for cap in [0usize, 1, 2, 64] {
             let direct = kit::direct(&memory, cap);
-            let (split, report, _) = kit::split(&memory, cap);
-            assert!(report.raw_ok, "cap={cap}");
-            assert_eq!(report.matched, [true; 2], "cap={cap}");
-            kit::assert_matches_direct(&split, &direct);
+            let expected = if cap >= 2 {
+                Outcome::Rows { len: 2 }
+            } else {
+                Outcome::Truncated {
+                    len: cap,
+                    unread_rows: (2 - cap) as u32,
+                }
+            };
+            assert_eq!(direct.owned_outcome, expected);
+            assert_eq!(direct.matrix_outcome, expected);
         }
-        // Exact-fit arm pins Rows (not Truncated) with both rows present.
-        let (exact, _, _) = kit::split(&memory, 2);
-        assert_eq!(exact.owned_outcome, Outcome::Rows { len: 2 });
-        assert_eq!(exact.matrix_outcome, Outcome::Rows { len: 2 });
     }
 
     #[test]
-    fn wars_split_copy_matches_direct_walk_on_fault_matrix() {
+    fn wars_typed_owned_and_matrix_fault_scopes_remain_independent() {
         use super::wars_test_kit as kit;
         use engine::{ccountry, cdiplomacy_status, cgame_state, crelation, memory::SliceMemory};
         struct Fault<'a> {
@@ -6242,10 +5388,8 @@ mod tests {
                 self.memory.copy(address, output)
             }
         }
-        // (fault address, expected raw-compare verdicts in [owned, matrix]
-        // order). Outcomes including reason strings must match the typed
-        // walks exactly; verdicts follow the fault-attribution masks, with
-        // the shared census blocking both slots.
+        // A failure in an owned-only root must not invalidate the independent
+        // matrix census, and matrix-only failures must not invalidate owned rows.
         for (fault, matched) in [
             (kit::GAME_STATE + cgame_state::COUNTRIES, [false, false]),
             (kit::GAME_STATE + cgame_state::COUNTRY_LINKS, [false, false]),
@@ -6274,139 +5418,37 @@ mod tests {
                 fault: fault..fault + 1,
             };
             let direct = kit::direct(&memory, 64);
-            let (split, report, _) = kit::split(&memory, 64);
-            assert!(report.raw_ok, "fault={fault:x}");
-            kit::assert_matches_direct(&split, &direct);
-            assert_eq!(report.matched, matched, "fault={fault:x}");
+            assert_eq!(
+                [
+                    matches!(direct.owned_outcome, Outcome::Rows { .. }),
+                    matches!(direct.matrix_outcome, Outcome::Rows { .. })
+                ],
+                matched,
+                "fault={fault:x}",
+            );
         }
     }
 
     #[test]
-    fn a_short_second_wars_payload_requests_typed_fallback() {
+    fn wars_typed_comparison_blocks_checks_on_changed_native_rows() {
         use super::wars_test_kit as kit;
         let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let ctx = WarsCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed_matrix: false,
-        };
-        let mut first = WarsJob::new();
-        let mut second = WarsJob::default();
-        let report = copy_wars_refresh(&memory, ctx, &mut first, Some(&mut second));
-        assert!(!first.log.overflowed);
-        assert!(second.log.overflowed);
-        assert!(
-            !report.raw_ok,
-            "an incomplete second copy is not a data mismatch"
-        );
-    }
-
-    #[test]
-    fn wars_double_copy_compare_blocks_checks_on_tearing() {
-        use super::wars_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let ctx = WarsCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed_matrix: true,
-        };
-        let mut first = WarsJob::new();
-        let mut second = WarsJob::new();
-        let report = copy_wars_refresh(&memory, ctx, &mut first, Some(&mut second));
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 2]);
-        // Same-hour tearing between the passes changes the log.
+        let first = kit::direct(&kit::memory(&bytes), 64);
         let mut torn = bytes.clone();
         torn[kit::WAR1 + engine::crelation::START_HOUR] ^= 0xff;
-        let torn_memory = kit::memory(&torn);
-        let mut after = WarsJob::new();
-        let mut after_torn = WarsJob::new();
-        let no_second: Option<&mut WarsJob> = None;
-        let ctx_single = WarsCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed_matrix: false,
-        };
-        let clean_report = copy_wars_refresh(&memory, ctx_single, &mut after, no_second);
-        assert!(clean_report.raw_ok);
-        let torn_report = copy_wars_refresh(&torn_memory, ctx_single, &mut after_torn, None);
-        assert!(torn_report.raw_ok);
-        assert!(!after.log.logs_equal(&after_torn.log));
-    }
-
-    #[test]
-    fn wars_partition_equal_isolates_owned_vs_matrix_private_bytes() {
-        use super::wars_test_kit as kit;
-        // Two equal copies, then tear exactly one walk's private bytes in
-        // the second log. Only that walk's partition flips; the shared
-        // census still agrees. Keeps the conservative per-slot live-fault
-        // gate (no faults here, so verdicts follow partitions).
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let ctx = WarsCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed_matrix: true,
-        };
-        let mut first = WarsJob::new();
-        let mut second = WarsJob::new();
-        let report = copy_wars_refresh(&memory, ctx, &mut first, Some(&mut second));
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 2]);
-        // Owned-private span: mask exactly WARS (0x01), e.g. the owned
-        // relations header the matrix walk never reads.
-        let owned_idx = second
-            .log
-            .spans
-            .iter()
-            .position(|span| span.ok && span.mask == 0x01)
-            .expect("owned-private span");
-        let start = second.log.spans[owned_idx].start as usize;
-        second.log.bytes[start] ^= 0xff;
-        assert!(!first.log.partition_equal(&second.log, 0));
-        assert!(first.log.partition_equal(&second.log, 1));
-        // Matrix-private span on a fresh equal pair flips only the matrix.
-        let mut first_b = WarsJob::new();
-        let mut second_b = WarsJob::new();
-        let report_b = copy_wars_refresh(&memory, ctx, &mut first_b, Some(&mut second_b));
-        assert_eq!(report_b.matched, [true; 2]);
-        let matrix_idx = second_b
-            .log
-            .spans
-            .iter()
-            .position(|span| span.ok && span.mask == 0x02)
-            .expect("matrix-private span");
-        let start_b = second_b.log.spans[matrix_idx].start as usize;
-        second_b.log.bytes[start_b] ^= 0xff;
-        assert!(first_b.log.partition_equal(&second_b.log, 0));
-        assert!(!first_b.log.partition_equal(&second_b.log, 1));
-    }
-
-    #[test]
-    fn wars_staging_overflow_falls_back_to_typed_walk() {
-        use super::wars_test_kit as kit;
-        use crate::raw::RawLog;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let ctx = WarsCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed_matrix: true,
-        };
-        let mut first = WarsJob::new();
-        first.log = RawLog::new(4, 32);
-        let mut second = WarsJob::new();
-        second.log = RawLog::new(4, 32);
-        let report = copy_wars_refresh(&memory, ctx, &mut first, Some(&mut second));
-        assert!(!report.raw_ok);
-        assert!(first.log.grow_for_next());
-        // The typed walk still produces the identical rows through the
-        // existing path, so the fallback keeps every row.
-        let direct = kit::direct(&memory, 64);
-        assert_eq!(direct.owned_outcome, Outcome::Rows { len: 2 });
-        assert_eq!(direct.matrix_outcome, Outcome::Rows { len: 2 });
+        let second = kit::direct(&kit::memory(&torn), 64);
+        let mismatch = mismatches(
+            first.owned_outcome,
+            &first.owned,
+            second.owned_outcome,
+            &second.owned,
+        );
+        assert_eq!(mismatch, 1);
+        assert!(!full_match(
+            first.owned_outcome,
+            second.owned_outcome,
+            mismatch
+        ));
     }
 
     #[test]
@@ -6418,6 +5460,38 @@ mod tests {
             for hour in [0, 1, 2, 3, 60_820_531] {
                 assert!(replay::cadence::is_refresh(table, hour));
             }
+        }
+    }
+
+    #[test]
+    fn divisions_sequential_readers_reset_recycled_duplicate_cursors() {
+        use engine::{Memory, memory::SliceMemory};
+
+        let mut log = RawLog::<6>::new(3, 16);
+        let address = 0x1000;
+        for (value, readable) in [(11, 8), (0, 0), (29, 8)] {
+            let bytes = [value; 8];
+            let memory = SliceMemory {
+                base: address,
+                bytes: &bytes[..readable],
+            };
+            assert_eq!(log.take(&memory, address, 8, 1).is_some(), readable != 0);
+        }
+        // The census and detail stages each start at the first observation,
+        // even when the prior reader consumed a fault and the terminal repeat.
+        // Dropping each reader makes its index available to the next stage.
+        for stage in ["census", "detail"] {
+            let recorded = Recorded::build(&log);
+            let mut output = [0; 8];
+            assert!(recorded.copy(address, &mut output), "{stage}");
+            assert_eq!(output, [11; 8], "{stage}");
+            assert!(!recorded.copy(address, &mut output), "{stage}");
+            assert_eq!(output, [11; 8], "failed read leaves output unchanged");
+            assert!(recorded.copy(address, &mut output), "{stage}");
+            assert_eq!(output, [29; 8], "{stage}");
+            assert!(recorded.copy(address, &mut output), "{stage}");
+            assert_eq!(output, [29; 8], "terminal repeat");
+            drop(recorded);
         }
     }
 
@@ -6626,6 +5700,226 @@ mod tests {
         assert!(!after.log.logs_equal(&after_torn.log));
     }
 
+    fn divisions_presentation_memory() -> impl engine::Memory {
+        use super::divisions_test_kit as kit;
+        use engine::csub_unit_definition as stats;
+        struct Memory(Vec<u8>);
+        impl engine::Memory for Memory {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address == carmy::COUNTER_ATTRITION_THRESHOLD_RVA && output.len() == 8 {
+                    output.copy_from_slice(&500_i64.to_le_bytes());
+                    return true;
+                }
+                kit::memory(&self.0).copy(address, output)
+            }
+        }
+        let mut bytes = kit::fixture();
+        // Null map entities and disabled training need no render/global reads.
+        // Per-division effective stats are the only extra heap input.
+        let stats = 0x65000_usize;
+        bytes[stats..stats + 8].copy_from_slice(&(stats::VTABLE_RVA as u64).to_le_bytes());
+        bytes[stats + stats::MAXIMUM_STRENGTH..stats + stats::MAXIMUM_STRENGTH + 8]
+            .copy_from_slice(&500_000_i64.to_le_bytes());
+        bytes[stats + stats::MAXIMUM_ORGANISATION..stats + stats::MAXIMUM_ORGANISATION + 8]
+            .copy_from_slice(&700_000_i64.to_le_bytes());
+        for army in [kit::A1, kit::A2, kit::A3] {
+            bytes[army + cunit::STAT_BLOCK..army + cunit::STAT_BLOCK + 8]
+                .copy_from_slice(&(stats as u64).to_le_bytes());
+        }
+        Memory(bytes)
+    }
+
+    #[test]
+    fn divisions_raw_success_supplies_both_live_companions_before_decode_without_erasing_them() {
+        use super::divisions_test_kit as kit;
+        use replay::frame::TableView;
+        use replay::rows::{TableId, TableRows};
+        let memory = divisions_presentation_memory();
+        let ctx = DivisionsCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+        };
+        let mut first = DivisionsJob::new();
+        let mut second = DivisionsJob::new();
+        let report = copy_divisions_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(first.source_outcome(64), Outcome::Rows { len: 3 });
+        assert_eq!(first.sources, second.sources);
+        assert_eq!(first.sources[0].division, 101);
+        assert_eq!(first.sources[0].template, 0x3455_0000_0034);
+        assert_eq!(first.sources[0].country, 1);
+        let mut frame = Captured::new();
+        first.supply_sources(&mut frame.extended, frame.divisions.len(), false);
+        second.supply_sources(&mut frame.extended, frame.divisions_second.len(), true);
+        frame.extended.set_divisions_raw_mode(true);
+        let mut needed = [false; TABLE_COUNT];
+        needed[TableId::DivisionMovement.index()] = true;
+        needed[TableId::DivisionStatus.index()] = true;
+        let (matched, ticks) =
+            frame
+                .extended
+                .capture(&memory, 0, kit::GAME_STATE, 0, &needed, false);
+        for table in [TableId::DivisionMovement, TableId::DivisionStatus] {
+            assert!(
+                matched[table.index()],
+                "{table:?}: {:?}",
+                frame.extended.outcomes()[table.index()]
+            );
+            assert!(ticks[table.index()] > 0);
+            assert_eq!(
+                frame.extended.outcomes()[table.index()],
+                Outcome::Rows { len: 3 }
+            );
+        }
+        let before = frame.extended.test_division_presentation_tables();
+        let [
+            TableView::Complete(TableRows::DivisionMovement(movement)),
+            TableView::Complete(TableRows::DivisionStatus(status)),
+        ] = &before
+        else {
+            panic!("complete presentation tables");
+        };
+        assert_eq!(
+            movement.iter().map(|r| r.division).collect::<Vec<_>>(),
+            [101, 102, 103]
+        );
+        assert!(
+            status
+                .iter()
+                .all(|r| r.maximum_hit_points == 500_000 && r.maximum_organisation == 700_000)
+        );
+        // This is the actual worker path. Sources must reset before the worker
+        // visitor, but these previously acquired live tables must survive.
+        frame.extended.set_divisions_raw_mode(true);
+        decode_divisions_payload(&mut frame, 0, &first, &mut [0; 6]);
+        assert_eq!(frame.divisions_result, Outcome::Rows { len: 3 });
+        assert_eq!(
+            frame
+                .extended
+                .test_division_detail()
+                .division_equipment
+                .outcome,
+            Outcome::Rows { len: 3 }
+        );
+        assert_eq!(frame.extended.test_division_presentation_tables(), before);
+    }
+
+    #[test]
+    fn divisions_copied_sources_distinguish_semantic_faults_capacity_and_empty_census() {
+        use super::divisions_test_kit as kit;
+        let ctx = DivisionsCopyContext {
+            base: 0,
+            game_state: kit::GAME_STATE,
+        };
+        for fault in [
+            kit::A2,
+            kit::A2 + carmy::STANDARD_TEMPLATE,
+            0x41000,
+            0x41008,
+        ] {
+            let mut bytes = kit::fixture();
+            bytes[fault..fault + 8].fill(0xff);
+            let mut first = DivisionsJob::new();
+            let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first, None);
+            assert!(report.raw_ok); // No overflow is not a successful census.
+            assert!(matches!(
+                first.source_outcome(64),
+                Outcome::Unavailable { .. }
+            ));
+            if fault == kit::A2 || fault == kit::A2 + carmy::STANDARD_TEMPLATE {
+                assert_eq!(
+                    first.source_outcome(1),
+                    Outcome::Truncated {
+                        len: 1,
+                        unread_rows: 2
+                    }
+                );
+            }
+        }
+        let mut bytes = kit::fixture();
+        for address in [kit::CTAB + 8, kit::CTAB + 16, kit::CTAB + 24] {
+            bytes[address..address + 8].fill(0);
+        }
+        let mut first = DivisionsJob::new();
+        let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first, None);
+        assert!(report.raw_ok);
+        assert!(matches!(
+            first.source_outcome(0),
+            Outcome::Unavailable { .. }
+        ));
+        assert!(!first.census_complete);
+        let mut bytes = kit::fixture();
+        for country in [kit::C0, kit::C1] {
+            bytes[country + ccountry::DIVISIONS..country + ccountry::DIVISIONS + 16].fill(0);
+        }
+        copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first, None);
+        assert_eq!(first.source_outcome(0), Outcome::Rows { len: 0 });
+        assert!(first.sources.is_empty()); // Recycled rows were cleared.
+        first.sources = Vec::new();
+        let bytes = kit::fixture();
+        let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first, None);
+        assert!(!report.raw_ok && first.log.overflowed);
+        assert!(matches!(
+            first.source_outcome(64),
+            Outcome::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn divisions_live_companion_checks_do_not_accept_missing_or_failed_second_sources() {
+        use super::divisions_test_kit as kit;
+        use replay::rows::TableId;
+        let memory = divisions_presentation_memory();
+        let ctx = DivisionsCopyContext {
+            base: 0,
+            game_state: kit::GAME_STATE,
+        };
+        let mut first = DivisionsJob::new();
+        copy_divisions_refresh(&memory, ctx, &mut first, None);
+        let mut needed = [false; TABLE_COUNT];
+        needed[TableId::DivisionMovement.index()] = true;
+        needed[TableId::DivisionStatus.index()] = true;
+        for failed in [false, true] {
+            let mut frame = Captured::new();
+            first.supply_sources(&mut frame.extended, frame.divisions.len(), false);
+            if failed {
+                DivisionsJob::default().supply_sources(
+                    &mut frame.extended,
+                    frame.divisions_second.len(),
+                    true,
+                );
+            }
+            let (matched, _) =
+                frame
+                    .extended
+                    .capture(&memory, 0, kit::GAME_STATE, 0, &needed, false);
+            for table in [TableId::DivisionMovement, TableId::DivisionStatus] {
+                assert!(!matched[table.index()]);
+                assert!(matches!(
+                    frame.extended.outcomes()[table.index()],
+                    Outcome::Unavailable { .. }
+                ));
+            }
+        }
+        // A retired parent window still has a second raw job when only a new
+        // companion needs its independent check; no core check is fabricated.
+        for table in [TableId::DivisionMovement, TableId::DivisionStatus] {
+            let mut child_only = [false; TABLE_COUNT];
+            child_only[table.index()] = true;
+            assert!(extended::Captured::needs_division_check(&child_only));
+            let mut second = DivisionsJob::new();
+            copy_divisions_refresh(&memory, ctx, &mut first, Some(&mut second));
+            let mut frame = Captured::new();
+            first.supply_sources(&mut frame.extended, frame.divisions.len(), false);
+            second.supply_sources(&mut frame.extended, frame.divisions_second.len(), true);
+            let (matched, _) =
+                frame
+                    .extended
+                    .capture(&memory, 0, kit::GAME_STATE, 0, &child_only, false);
+            assert!(matched[table.index()]);
+        }
+    }
+
     #[test]
     fn divisions_partition_equal_isolates_equipment_private_bytes() {
         use super::divisions_test_kit as kit;
@@ -6691,60 +5985,26 @@ mod tests {
     }
 
     #[test]
-    fn wars_and_divisions_copy_decode_counters_advance_with_copy_only_table_ns() {
-        // S4: two families through the same copy/decode path. Both families'
-        // copy ticks (game thread) and decode ticks (worker) advance, and
-        // `table_ns` stays copy-only: decode writes `decode_ticks`, never
-        // `table_ns`. `process_job` dispatches to these same
-        // `decode_*_payload` functions, so this covers the worker path.
-        use super::divisions_test_kit as dkit;
-        use super::wars_test_kit as wkit;
-        // Wars copy + decode.
-        let wbytes = wkit::fixture();
-        let wmemory = wkit::memory(&wbytes);
-        let wctx = WarsCopyContext {
-            base: wkit::BASE,
-            game_state: wkit::GAME_STATE,
-            needed_matrix: true,
+    fn divisions_copy_decode_counters_keep_game_thread_cost_separate() {
+        use super::divisions_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let ctx = DivisionsCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
         };
-        let mut wfirst = WarsJob::new();
-        let mut wsecond = WarsJob::new();
-        let wreport = copy_wars_refresh(&wmemory, wctx, &mut wfirst, Some(&mut wsecond));
-        assert!(wreport.raw_ok);
-        assert_eq!(wreport.matched, [true; 2]);
-        // Divisions copy + decode.
-        let dbytes = dkit::fixture();
-        let dmemory = dkit::memory(&dbytes);
-        let dctx = DivisionsCopyContext {
-            base: dkit::BASE,
-            game_state: dkit::GAME_STATE,
-        };
-        let mut dfirst = DivisionsJob::new();
-        let mut dsecond = DivisionsJob::new();
-        let dreport = copy_divisions_refresh(&dmemory, dctx, &mut dfirst, Some(&mut dsecond));
-        assert!(dreport.raw_ok);
-        assert_eq!(dreport.matched, [true; 6]);
-        // Copy ticks advance for both families (game-thread copy-only).
-        assert!(wreport.copy_ticks.iter().any(|ticks| *ticks > 0));
-        // Divisions copy ticks: slot 0 (divisions walk) always advances;
-        // equipment/upgrades may be zero on tiny fixtures, so check slot 0.
-        assert!(dreport.copy_ticks[0] > 0);
-        // Install copy ns into a synthetic table_ns (as the tick does), then
-        // decode and prove table_ns is untouched (decode goes to decode_ticks).
-        let mut table_ns = [0u64; 16];
-        table_ns[0] = wreport.copy_ticks[0];
-        table_ns[1] = dreport.copy_ticks[0];
-        let before = table_ns;
+        let mut first = DivisionsJob::new();
+        let report = copy_divisions_refresh(&memory, ctx, &mut first, None);
+        assert!(report.raw_ok);
+        assert!(report.copy_ticks[0] > 0);
         let mut frame = Captured::new();
-        frame.wars = vec![engine::cwar_relation::Row::default(); 64];
-        frame.wars_matrix = vec![engine::cwar_relation::Row::default(); 64];
-        let mut wdecode = [0u64; 2];
-        super::decode_wars_payload(&mut frame, wkit::BASE, &wfirst, &mut wdecode);
-        assert_eq!(table_ns, before, "decode must not touch table_ns");
-        // War-matrix dual-homing: owned ticks and matrix ticks are recorded
-        // separately (sampling copy_ticks[0]/[1] feed table_ns vs
-        // war_matrix_ns; spooling mirrors both in wars_copy_ns).
-        assert!(wreport.raw_bytes.iter().any(|bytes| *bytes > 0));
+        frame.table_ns[6] = report.copy_ticks[0];
+        let before = frame.table_ns;
+        let mut ticks = [0; 6];
+        super::decode_divisions_payload(&mut frame, kit::BASE, &first, &mut ticks);
+        assert_eq!(frame.table_ns, before);
+        assert!(ticks[0] > 0);
+        assert_eq!(frame.divisions_result, Outcome::Rows { len: 3 });
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Loader worker, spool thread, and restore/drain/self-unload lifecycle.
 
 use crate::{
-    decode,
+    acquisition, decode,
     history::PreparedCampaigns,
     hook::{Hook, Threads},
     sampling::{self, ACTIVE, SHARED, Shared},
@@ -364,6 +364,14 @@ fn run(module: HMODULE) -> Result<(), String> {
     let mut hook =
         unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }?;
     let shared = Arc::new(Shared::new(base, hook.trampoline(), frequency as u64));
+    let acquisition = acquisition::Pool::start()?;
+    shared
+        .pool_bytes
+        .fetch_add(acquisition.allocated_bytes() as u64, Ordering::Relaxed);
+    shared
+        .acquisition
+        .set(acquisition)
+        .map_err(|_| "acquisition pool already initialized".to_string())?;
     let _payload_pools = decode::prepare_payload_pools();
     let spool_id = Arc::new(AtomicU32::new(0));
     if config.cancel_file.exists() || detach.signaled() {
@@ -423,15 +431,22 @@ fn run(module: HMODULE) -> Result<(), String> {
     while spool_id.load(Ordering::Acquire) == 0 {
         std::thread::yield_now();
     }
-    wait_quiet(
-        &ranges,
-        image_size,
+    let acquisition = shared.acquisition.get().expect("initialized before hook");
+    let [characters_id, relations_id, eta_id] = acquisition.thread_ids();
+    let owned_workers = [
         spool_id.load(Ordering::Acquire),
-        &dll_path,
-    );
+        decode::worker_id(),
+        characters_id,
+        relations_id,
+        eta_id,
+    ];
+    wait_quiet(&ranges, image_size, &owned_workers, &dll_path);
     // Keep sampling until even callbacks already in the relay have returned.
     // A delayed restore therefore never silently stops recording hours.
     shared.recording.store(false, Ordering::Release);
+    // ACTIVE and relay quiescence prove every acquisition lease is complete.
+    // Join the precreated readers before releasing any shared/frame storage.
+    let acquisition_outcome = acquisition.shutdown();
     // Decode drain first: pending refreshes decode in FIFO hour order into
     // their pooled frames and hand off to the spool ready queue; the existing
     // spool drain below then consumes them in order. Undrainable items use the
@@ -445,7 +460,10 @@ fn run(module: HMODULE) -> Result<(), String> {
         .and_then(|result| result);
     let spool_warning = spool_outcome.as_ref().ok().cloned().flatten();
     let mut spool_result = spool_outcome.map(|_| ());
-    wait_quiet(&ranges, image_size, 0, &dll_path);
+    if let Err(error) = acquisition_outcome {
+        add_terminal_error(&mut spool_result, error);
+    }
+    wait_quiet(&ranges, image_size, &[], &dll_path);
     SHARED.store(ptr::null_mut(), Ordering::Release);
     drop(hook);
     drop(shared);
@@ -556,24 +574,35 @@ fn set_drain_status(status: &mut Value, result: &Result<(), String>) {
 
 /// Additive decode-worker calibration for status. Existing keys survive; the
 /// counters are monotonic since attach (see `crate::decode`). `table_ns`
-/// for moved families is game-thread copy-only; `decode_ns` lives here, so
+/// for raw families is acquisition-only (workers may overlap); `decode_ns` lives here, so
 /// the two are not comparable across threads (PLAN-appendix
 /// apples-to-oranges).
 fn add_decode_status(status: &mut Value) {
     if !status.is_object() {
         *status = json!({});
     }
-    // Canonical key is `decode_calibration`; `research_decode` stays as a
-    // backward-compatible alias (same object) for existing consumers.
-    let calibration = decode::calibration_json();
-    status["decode_calibration"] = calibration.clone();
-    status["research_decode"] = calibration;
+    status["decode_work"] = decode::calibration_json();
+    let shared_ptr = SHARED.load(Ordering::Acquire);
+    if !shared_ptr.is_null() {
+        // Status is produced while runtime retains Shared and joins its spool.
+        let shared = unsafe { &*shared_ptr };
+        if let Some(acquisition) = shared.acquisition.get() {
+            status["acquisition_work"] = json!({
+                "workers": acquisition.calibration(),
+                "dispatch_ns": shared.acquisition_dispatch_ns.load(Ordering::Relaxed),
+                "join_wait_ns": shared.acquisition_wait_ns.load(Ordering::Relaxed),
+                "table_costs_overlap": true,
+                "eta_country_cache_bytes": acquisition.allocated_bytes(),
+                "eta_cost_scope": "worker acquisition, own country preparation/verification and source-copy overhead; overlaps callback work; failed worker cost is unavailable",
+            });
+        }
+    }
 }
 
 fn wait_quiet(
     ranges: &[std::ops::Range<usize>],
     image_size: usize,
-    excluded_thread: u32,
+    excluded_threads: &[u32],
     dll_path: &Path,
 ) {
     let mut report = Instant::now();
@@ -583,7 +612,7 @@ fn wait_quiet(
         } else if ACTIVE.load(Ordering::SeqCst) != 0 {
             Ok(false)
         } else {
-            Threads::open_excluding(excluded_thread).and_then(|mut threads| {
+            Threads::open_excluding(excluded_threads).and_then(|mut threads| {
                 let quiet = threads.suspend().and_then(|()| {
                     if ACTIVE.load(Ordering::SeqCst) != 0 {
                         Ok(false)
@@ -1006,17 +1035,14 @@ mod tests {
         add_decode_status(&mut status);
         assert_eq!(status["state"], "recording");
         assert_eq!(status["hours"], 3);
-        assert!(status["research_decode"].is_object());
         assert_eq!(
-            status["research_decode"]["tables"][0],
-            "ResearchTechnologies"
+            status["decode_work"]["relations_tables"][0],
+            "RelationOpinions"
         );
         assert_eq!(
-            status["research_decode"]["tables"][2],
-            "TechnologyDefinitions"
+            status["decode_work"]["relations_tables"][1],
+            "RelationTuples"
         );
-        // Canonical key plus backward-compatible alias carry the same object.
-        assert!(status["decode_calibration"].is_object());
-        assert_eq!(status["decode_calibration"], status["research_decode"]);
+        assert!(status.get("research_decode").is_none());
     }
 }

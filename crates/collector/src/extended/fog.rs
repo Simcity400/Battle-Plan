@@ -508,6 +508,130 @@ impl Captured {
     }
 }
 
+/// Native registrations owned by the decode worker's single AirBases memo.
+/// It never owns a pooled frame or observes game memory.
+#[derive(Debug, Default)]
+pub(crate) struct RegistrationsMemo {
+    rows: Vec<cair_base::RegistrationRow>,
+    wings: Vec<u64>,
+    required_wings: usize,
+}
+
+impl RegistrationsMemo {
+    pub(crate) fn capacity_bytes(&self) -> u64 {
+        crate::raw_memory::vector_bytes(&self.rows) + crate::raw_memory::vector_bytes(&self.wings)
+    }
+}
+
+impl Captured {
+    pub(crate) fn registrations_memo_context(&self) -> Option<[usize; 2]> {
+        (self.registrations_raw_mode
+            && !self.registrations.checked
+            && self.registrations.mismatches == 0)
+            .then_some([self.registrations.rows.len(), self.wings.first.len()])
+    }
+
+    pub(crate) fn registrations_memo_complete(&self) -> bool {
+        matches!(self.registrations.outcome, Outcome::Rows { .. })
+            && valid_arena(
+                self.registrations.outcome,
+                &self.registrations.rows,
+                &self.wings,
+            )
+    }
+
+    pub(crate) fn save_registrations_memo(&self, memo: &mut RegistrationsMemo) {
+        debug_assert!(self.registrations_memo_complete());
+        memo.rows.clear();
+        memo.rows
+            .extend_from_slice(&self.registrations.rows[..self.registrations.outcome.len()]);
+        memo.wings.clear();
+        memo.wings
+            .extend_from_slice(&self.wings.first[..self.wings.len]);
+        memo.required_wings = self.wings.required;
+    }
+
+    pub(crate) fn restore_registrations_memo(&mut self, memo: &RegistrationsMemo) {
+        // The caller has compared the complete invocation capacity fingerprint
+        // before restoring either half. No partial family restore is possible.
+        self.registrations.rows[..memo.rows.len()].copy_from_slice(&memo.rows);
+        self.registrations.outcome = Outcome::Rows {
+            len: memo.rows.len(),
+        };
+        self.wings.first[..memo.wings.len()].copy_from_slice(&memo.wings);
+        self.wings.len = memo.wings.len();
+        self.wings.required = memo.required_wings;
+        self.registrations_raw_mode = false;
+        // Keep this frame's checked/mismatches and comparison storage unchanged.
+    }
+}
+
+#[cfg(test)]
+mod registrations_memo_tests {
+    use super::*;
+
+    fn captured() -> Captured {
+        Captured::with_capacities(
+            &Capacities {
+                rows: [0, 0, 0, 0, 0, 4],
+                radar_provinces: 0,
+                area_provinces: 0,
+                wings: 8,
+            },
+            &[200; N],
+        )
+    }
+
+    #[test]
+    fn registrations_memo_validates_ranges_and_preserves_required_and_check_storage() {
+        let mut source = captured();
+        source.registrations_raw_mode = true;
+        source.registrations.outcome = Outcome::Rows { len: 1 };
+        source.registrations.rows[0] = cair_base::RegistrationRow {
+            base: 12,
+            slot: 3,
+            country: 7,
+            wings_start: 0,
+            wings_len: 2,
+        };
+        source.wings.first[..2].copy_from_slice(&[100, 200]);
+        source.wings.len = 2;
+        source.wings.required = 5;
+        assert!(source.registrations_memo_complete());
+        let mut memo = RegistrationsMemo::default();
+        source.save_registrations_memo(&mut memo);
+        let mut target = captured();
+        target.registrations_raw_mode = true;
+        target
+            .registrations
+            .second
+            .push(cair_base::RegistrationRow {
+                base: 99,
+                ..Default::default()
+            });
+        target.wings.second.extend_from_slice(&[999]);
+        assert_eq!(target.registrations_memo_context(), Some([4, 8]));
+        target.restore_registrations_memo(&memo);
+        assert_eq!(target.registrations.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(target.registrations.rows[0], source.registrations.rows[0]);
+        assert_eq!(target.wings.len, 2);
+        assert_eq!(target.wings.required, 5);
+        assert_eq!(&target.wings.first[..2], &[100, 200]);
+        assert_eq!(target.registrations.second[0].base, 99);
+        assert_eq!(target.wings.second, [999]);
+        assert!(!target.registrations_raw_mode && !target.registrations.checked);
+        assert_eq!(target.registrations.mismatches, 0);
+        source.registrations.rows[0].wings_start = usize::MAX;
+        assert!(!source.registrations_memo_complete());
+        source.registrations.rows[0].wings_start = 0;
+        source.wings.required = 1;
+        assert!(!source.registrations_memo_complete());
+        source.wings.required = 5;
+        source.wings.len = 9;
+        assert!(!source.registrations_memo_complete());
+    }
+}
+
 #[cfg(test)]
 pub(crate) struct RegistrationsSnapshot {
     pub outcome: Outcome,

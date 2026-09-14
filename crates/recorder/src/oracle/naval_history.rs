@@ -1450,6 +1450,7 @@ mod tests {
                         hit_points: Decimal::parse(b"0").unwrap(),
                         organisation: Decimal::parse(b"0").unwrap(),
                         country_intel: Vec::new(),
+                        presentation: Default::default(),
                     },
                 )
             })

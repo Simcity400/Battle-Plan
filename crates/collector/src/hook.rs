@@ -212,12 +212,13 @@ pub struct Threads {
 
 impl Threads {
     pub fn open() -> Result<Self, String> {
-        Self::open_excluding(0)
+        Self::open_excluding(&[])
     }
 
-    /// During callback quiescence the independently joined spool thread is allowed
-    /// to remain inside the DLL. It is joined before the final full-image check.
-    pub fn open_excluding(excluded_thread: u32) -> Result<Self, String> {
+    /// During callback quiescence registered collector workers may remain inside
+    /// the DLL. Every excluded worker is joined before the final full-image check.
+    /// Hook patching always uses `open`, with no worker exclusions.
+    pub fn open_excluding(excluded_threads: &[u32]) -> Result<Self, String> {
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
         if snapshot == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error().to_string());
@@ -232,7 +233,7 @@ impl Threads {
             while found != 0 {
                 if entry.th32OwnerProcessID == unsafe { GetCurrentProcessId() }
                     && entry.th32ThreadID != unsafe { GetCurrentThreadId() }
-                    && entry.th32ThreadID != excluded_thread
+                    && !excluded_threads.contains(&entry.th32ThreadID)
                 {
                     let handle = unsafe {
                         OpenThread(

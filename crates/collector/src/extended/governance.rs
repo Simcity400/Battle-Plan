@@ -9,19 +9,145 @@ use crate::{
 use engine::{
     Memory, ccombat_tactic, ccontinuous_national_focus, ccountry, cdecision_status,
     cdynamic_modifier_container, cgame_state, cnational_focus, cnational_focus_progress,
-    cnational_focus_tree, cpolitical_party, cpolitical_status, cresearch_slot, ctechnology,
-    ctechnology_sharing_group, ctechnology_status, ctechnology_template, cpdx_array::Array,
-    msvc_string, power_balance_gfx_override, power_balance_manager, power_balance_range,
-    power_balance_record, read, read_slice,
+    cnational_focus_tree, cpdx_array::Array, cpolitical_party, cpolitical_status, cresearch_slot,
+    ctechnology, ctechnology_sharing_group, ctechnology_status, ctechnology_template, msvc_string,
+    power_balance_gfx_override, power_balance_manager, power_balance_range, power_balance_record,
     walk::Outcome,
 };
+#[cfg(test)]
+use replay::frame::TABLE_COUNT;
 use replay::{
-    frame::{TABLE_COUNT, TableView},
-    rows::{self, TableId, TableSchema, tables},
+    BranchId,
+    frame::{TableInput, TableView},
+    rows::{self, TableId, TableRows, TableSchema, tables},
 };
-use std::{collections::HashMap, mem::size_of};
+use std::{
+    mem::size_of,
+    sync::{Arc, Weak},
+};
 
 pub const N: usize = 19;
+
+#[derive(Default)]
+struct NativeShadow<R> {
+    rows: Vec<R>,
+    output: Weak<TableRows>,
+    hits: u64,
+    misses: u64,
+}
+
+impl<R: Clone + PartialEq> NativeShadow<R> {
+    fn clear(&mut self) {
+        self.rows.clear();
+        self.output = Weak::new();
+    }
+
+    fn equal(
+        &mut self,
+        table: TableId,
+        current: &[R],
+        cached: Option<&Arc<TableRows>>,
+    ) -> Option<Arc<TableRows>> {
+        let cached = cached?;
+        let previous = self.output.upgrade()?;
+        // Typed PartialEq examines fields, never uninitialized struct padding.
+        // Native order is deliberately significant: reordered equal rows miss.
+        if cached.table() != table || !Arc::ptr_eq(cached, &previous) || self.rows != current {
+            return None;
+        }
+        self.hits = self.hits.saturating_add(1);
+        Some(Arc::clone(cached))
+    }
+
+    fn record_miss(&mut self, outcome: Outcome) {
+        if !matches!(
+            outcome,
+            Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON
+            }
+        ) {
+            self.misses = self.misses.saturating_add(1);
+        }
+    }
+
+    fn install(&mut self, source: &[R], output: &Arc<TableRows>) {
+        self.rows.clear();
+        self.rows.extend_from_slice(source);
+        self.output = Arc::downgrade(output);
+    }
+}
+
+/// Spool-owned conversion memo only. No native pointer, Captured lease, read
+/// outcome, or consistency counter is retained or substituted for a new read.
+#[derive(Default)]
+pub(crate) struct ResearchShadow {
+    branch: Option<BranchId>,
+    technologies: NativeShadow<ctechnology::Row>,
+    definitions: NativeShadow<ctechnology_template::Row>,
+    definition_text: Vec<u8>,
+    definition_required: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ResearchShadowStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub row_capacity_bytes: usize,
+    pub arena_capacity_bytes: usize,
+}
+
+impl ResearchShadow {
+    /// Current retained Vec capacity, not used length or allocator overhead.
+    /// Counters survive branch invalidation and measure conversion decisions,
+    /// including inputs later rejected or failed at encoding/writing.
+    pub(crate) fn statistics(&self) -> [ResearchShadowStats; 2] {
+        [
+            ResearchShadowStats {
+                hits: self.technologies.hits,
+                misses: self.technologies.misses,
+                row_capacity_bytes: self.technologies.rows.capacity()
+                    * size_of::<ctechnology::Row>(),
+                arena_capacity_bytes: 0,
+            },
+            ResearchShadowStats {
+                hits: self.definitions.hits,
+                misses: self.definitions.misses,
+                row_capacity_bytes: self.definitions.rows.capacity()
+                    * size_of::<ctechnology_template::Row>(),
+                arena_capacity_bytes: self.definition_text.capacity(),
+            },
+        ]
+    }
+
+    fn clear_definitions(&mut self) {
+        self.definitions.clear();
+        self.definition_text.clear();
+        self.definition_required = 0;
+    }
+}
+
+/// The producer supplies only the current branch's complete staggered cache.
+/// Weak identities bind each native shadow to that exact replay allocation.
+pub(crate) struct ResearchConversion<'a> {
+    shadow: &'a mut ResearchShadow,
+    cached: [Option<&'a Arc<TableRows>>; 2],
+}
+
+impl<'a> ResearchConversion<'a> {
+    pub(crate) fn new(
+        branch: BranchId,
+        shadow: &'a mut ResearchShadow,
+        cached: [Option<&'a Arc<TableRows>>; 2],
+    ) -> Self {
+        if shadow.branch != Some(branch) {
+            shadow.technologies.clear();
+            shadow.clear_definitions();
+            shadow.branch = Some(branch);
+        }
+        Self { shadow, cached }
+    }
+}
+
 pub const TABLES: [TableId; N] = [
     TableId::Focus,
     TableId::CompletedFocuses,
@@ -145,12 +271,6 @@ pub struct Captured {
     dictionary: Vec<ctechnology_template::Entry>,
     dictionary_second: Vec<ctechnology_template::Entry>,
     dictionary_required: usize,
-    /// Raw-copy split gate for the research pilot family. Set by the game
-    /// thread on refresh hours with a valid raw payload; `capture` then skips
-    /// the typed pilot walks and the decode worker fills these rows before the
-    /// ready handoff. Preserved across `reset` (set per refresh, cleared by
-    /// the worker after decode).
-    pub(crate) raw_mode: bool,
     /// Raw-copy split gate for the hourly focus pair (Focus,
     /// CompletedFocuses). Set by the game thread every hour with a valid raw
     /// payload; `capture` then skips the typed focus walks and the decode
@@ -201,7 +321,6 @@ impl Captured {
                 Vec::new()
             },
             dictionary_required: 0,
-            raw_mode: false,
             focus_raw_mode: false,
         }
     }
@@ -427,19 +546,8 @@ impl Captured {
         force_full: bool,
     ) -> ([bool; N], [u64; N]) {
         self.reset();
-        let mut walk: [bool; N] = std::array::from_fn(|i| {
-            replay::cadence::should_walk(TABLES[i], hour, force_full)
-        });
-        // Raw-copy split (research pilot): on refresh hours the game thread
-        // stages raw bytes via `copy_research_refresh` and the decode worker
-        // fills the typed rows before the ready handoff, so both typed passes
-        // skip the pilot tables here. Matched flags and costs for the pilot
-        // come from the raw compare, applied by the caller after this returns.
-        if self.raw_mode {
-            walk[2] = false;
-            walk[3] = false;
-            walk[4] = false;
-        }
+        let mut walk: [bool; N] =
+            std::array::from_fn(|i| replay::cadence::should_walk(TABLES[i], hour, force_full));
         // Raw-copy split (hourly focus pair): every hour the game thread
         // stages raw bytes via `copy_focus_refresh` and the decode worker
         // fills the typed rows before the ready handoff, so both typed passes
@@ -499,13 +607,13 @@ impl Captured {
         let skipped = Outcome::Unavailable {
             reason: replay::cadence::SKIPPED_REASON,
         };
-        if !walk[2] && !self.raw_mode {
+        if !walk[2] {
             self.technologies.outcome = skipped;
         }
-        if !walk[3] && !self.raw_mode {
+        if !walk[3] {
             self.slots.outcome = skipped;
         }
-        if !walk[4] && !self.raw_mode {
+        if !walk[4] {
             self.definitions.outcome = skipped;
         }
         let mut check = [false; N];
@@ -515,13 +623,6 @@ impl Captured {
                     check[i] = walk[i];
                 }
             }
-        }
-        // Raw mode compares raw bytes on the game thread instead of typed
-        // second walks; the caller applies those results after this returns.
-        if self.raw_mode {
-            check[2] = false;
-            check[3] = false;
-            check[4] = false;
         }
         if self.focus_raw_mode {
             check[0] = false;
@@ -1218,1570 +1319,9 @@ fn required_rows(outcome: Outcome) -> usize {
     }
 }
 
-// Test-only re-export so the decode worker tests can reuse the same harness.
-#[cfg(test)]
-pub(crate) use tests::research_test_kit;
-
 // Test-only re-export so the decode worker tests can reuse the focus harness.
 #[cfg(test)]
 pub(crate) use tests::focus_test_kit;
-
-// ===========================================================================
-// Research copy/decode split (pilot family: technologies, slots, definitions).
-//
-// Game thread (`Captured::copy_research_refresh`): raw copies only. It uses
-// the factored engine `copy_*` helpers (`copy_status`, `copy_one`,
-// `copy_header`, `copy_raw`) plus plain roster-structure reads (array
-// headers, pointer pages, id bytes) to discover what to copy. No vtable,
-// backlink, handle, ordering or string validation happens here; discovery
-// interprets only already-copied bytes to find the next spans. Every span is
-// recorded with its success flag, so decode reproduces identical faults with
-// no live access. Template headers repeat per occurrence (no game-thread
-// dedup); the decode side deduplicates by pointer exactly like `Dictionary`.
-// Instance blobs carry their own validation bytes, so decode needs no roster
-// walks at all.
-//
-// Decode worker (`Captured::decode_research_payload`): replays the same
-// validations as `acquire` through the factored `decode_*` helpers
-// (`decode_status`, `decode_one`, `decode_header`, `decode_raw`,
-// `Array::from_header`) into the identical typed rows, outcomes, arena bytes
-// and dictionary accounting. Unavailable outcomes discard rows exactly like
-// the typed walk, so any recorded fault short-circuits to the same reason.
-//
-// Double reads: the game thread takes two raw copies and compares them
-// partition by partition (technologies, slots, definitions). Equal decodes
-// once; mismatch takes the existing mismatch path (checked/mismatches on the
-// same `CaptureRows`, matched stays false). The 200-check windows still count
-// refreshes only: skip hours never reach the compare and matched stays false.
-// Conservative rule: any live failure inside a partition blocks that
-// partition's check even when both copies agree, so same-hour tearing never
-// advances the windows. A readable-but-invalid refresh (deterministic fault,
-// both copies equal) still counts its check while emitting the identical
-// Unavailable outcome; such faults do not occur with the pinned build and
-// live calibration will confirm.
-// ===========================================================================
-
-/// Pilot local indices in calibration/report order: technologies, slots,
-/// definitions.
-pub(crate) const RESEARCH_LOCAL: [usize; 3] = [2, 3, 4];
-
-/// One template occurrence in instance-walk order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TemplateOcc {
-    pub pointer: usize,
-    pub handle: u32,
-    pub header: [u8; ctechnology_template::HEADER_BYTES],
-    pub header_result: Result<usize, &'static str>,
-    pub id_start: usize,
-    pub id_len: usize,
-    pub id_ok: bool,
-    pub term_ok: bool,
-    pub term_overflow: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SlotOcc {
-    pub ptr: u64,
-    pub ptr_ok: bool,
-    pub raw: cresearch_slot::Raw,
-    pub raw_result: Result<usize, &'static str>,
-    pub linked: [u8; ctechnology::INSTANCE_BYTES],
-    pub linked_completed: usize,
-    pub has_linked: bool,
-}
-
-/// Fixed-size per-country copy metadata. Blobs live in the job-level pools
-/// addressed by the start/len ranges below.
-#[derive(Debug)]
-pub(crate) struct CountryMeta {
-    pub country_id: u32,
-    pub country_pointer: usize,
-    pub status_pointer: usize,
-    pub status_vtable: [u8; 8],
-    pub status_backlink: [u8; 8],
-    pub status_scattered: usize,
-    pub status_result: Result<(), &'static str>,
-    pub tech_header: [u8; 16],
-    pub tech_header_ok: bool,
-    pub tech_start: usize,
-    pub tech_len: usize,
-    pub tech_unread: u32,
-    pub tech_err: Option<&'static str>,
-    pub researched_header: [u8; 16],
-    pub researched_header_ok: bool,
-    pub researched_start: usize,
-    pub researched_len: usize,
-    pub researched_err: Option<&'static str>,
-    pub tmpl_start: usize,
-    pub tmpl_len: usize,
-    pub slot_header: [u8; 16],
-    pub slot_header_ok: bool,
-    pub slot_start: usize,
-    pub slot_len: usize,
-    pub slot_unread: u32,
-    pub slot_err: Option<&'static str>,
-}
-
-impl Default for CountryMeta {
-    fn default() -> Self {
-        Self {
-            country_id: 0,
-            country_pointer: 0,
-            status_pointer: 0,
-            status_vtable: [0; 8],
-            status_backlink: [0; 8],
-            status_scattered: 0,
-            status_result: Ok(()),
-            tech_header: [0; 16],
-            tech_header_ok: false,
-            tech_start: 0,
-            tech_len: 0,
-            tech_unread: 0,
-            tech_err: None,
-            researched_header: [0; 16],
-            researched_header_ok: false,
-            researched_start: 0,
-            researched_len: 0,
-            researched_err: None,
-            tmpl_start: 0,
-            tmpl_len: 0,
-            slot_header: [0; 16],
-            slot_header_ok: false,
-            slot_start: 0,
-            slot_len: 0,
-            slot_unread: 0,
-            slot_err: None,
-        }
-    }
-}
-
-/// One refresh of raw research payload. Flat pools keep every per-item struct
-/// fixed-size so `clear` recycles capacities and the steady state allocates
-/// on neither thread; growth happens on the decode side only (see
-/// `crate::decode::recycle_job`).
-#[derive(Debug, Default)]
-pub(crate) struct ResearchJob {
-    pub metas: Vec<CountryMeta>,
-    pub tech_pool: Vec<u8>,
-    pub researched_pool: Vec<u8>,
-    pub templates: Vec<TemplateOcc>,
-    /// First admitted occurrence per native handle, reset for every pass.
-    /// Handles beyond this acceleration table use the same uncached path.
-    template_index: Vec<usize>,
-    template_seen_country: Vec<usize>,
-    pub id_pool: Vec<u8>,
-    pub slots: Vec<SlotOcc>,
-    pub reader_err: Option<&'static str>,
-    pub country_err: Option<&'static str>,
-    pub second_max_handle_plus_one: usize,
-    pub second_id_bytes: usize,
-    pub overflowed: bool,
-}
-
-impl ResearchJob {
-    pub fn new() -> Self {
-        Self {
-            metas: Vec::with_capacity(512),
-            tech_pool: Vec::with_capacity(16 << 20),
-            researched_pool: Vec::with_capacity(8 << 20),
-            templates: Vec::with_capacity(1 << 18),
-            template_index: vec![usize::MAX; 1 << 16],
-            template_seen_country: vec![0; 1 << 16],
-            id_pool: Vec::with_capacity(8 << 20),
-            slots: Vec::with_capacity(4096),
-            reader_err: None,
-            country_err: None,
-            second_max_handle_plus_one: 0,
-            second_id_bytes: 0,
-            overflowed: false,
-        }
-    }
-
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
-    pub fn clear(&mut self) {
-        self.metas.clear();
-        self.tech_pool.clear();
-        self.researched_pool.clear();
-        self.templates.clear();
-        self.template_index.fill(usize::MAX);
-        self.template_seen_country.fill(0);
-        self.id_pool.clear();
-        self.slots.clear();
-        self.reader_err = None;
-        self.country_err = None;
-        self.second_max_handle_plus_one = 0;
-        self.second_id_bytes = 0;
-        self.overflowed = false;
-    }
-
-    pub fn grow_for_next(&self) -> bool {
-        self.overflowed
-    }
-
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed refreshes fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
-    pub fn grow(&mut self) {
-        fn double<T>(rows: &mut Vec<T>) {
-crate::raw::double_capacity(rows);
-        }
-        double(&mut self.metas);
-        double(&mut self.tech_pool);
-        double(&mut self.researched_pool);
-        double(&mut self.templates);
-        double(&mut self.id_pool);
-        double(&mut self.slots);
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct CopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
-    pub raw_ok: bool,
-    /// Per-partition raw equality gated by live-fault conservatism, in
-    /// [technologies, slots, definitions] order.
-    pub matched: [bool; 3],
-    pub copy_ticks: [u64; 3],
-    pub raw_bytes: [u64; 3],
-}
-
-/// Game-thread copy parameters, bundled to keep the refresh entry small.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct CopyContext {
-    pub base: usize,
-    pub game_state: usize,
-    pub tech_cap: usize,
-    pub slot_cap: usize,
-    pub needed: [bool; TABLE_COUNT],
-}
-
-#[derive(Debug, Default)]
-struct PassTallies {
-    ticks: [u64; 3],
-    bytes: [u64; 3],
-    live_fault: [bool; 3],
-    max_handle_plus_one: usize,
-    id_bytes_attempted: usize,
-}
-
-fn fit_len(used: usize, capacity: usize, need: usize) -> bool {
-    need <= capacity.saturating_sub(used)
-}
-
-/// Technology handle u32 inside a copied instance blob. Layout pinned by
-/// `ctechnology::FIELDS[0]` (12 bytes at destination 0: vtable then handle).
-fn blob_handle(blob: &[u8]) -> u32 {
-    u32::from_le_bytes(blob[8..12].try_into().unwrap())
-}
-
-/// Template pointer u64 inside a copied instance blob. Layout pinned by
-/// `ctechnology::FIELDS[1]` (16 bytes at destination 12: status then template).
-fn blob_template(blob: &[u8]) -> u64 {
-    u64::from_le_bytes(blob[20..28].try_into().unwrap())
-}
-
-/// Best-effort id discovery mirroring `decode_header`'s string section, used
-/// only to find the id spans. Any inconsistency means decode will fail from
-/// the header bytes first, so no id spans are needed.
-fn template_id_source(pointer: usize, header: &[u8; 56]) -> Option<(usize, usize)> {
-    let string = &header[..32];
-    let id_len = usize::try_from(u64::from_le_bytes(string[16..24].try_into().unwrap())).ok()?;
-    let capacity = u64::from_le_bytes(string[24..32].try_into().unwrap());
-    if id_len == 0
-        || id_len as u64 > capacity
-        || capacity < engine::msvc_string::INLINE_CAPACITY
-    {
-        return None;
-    }
-    let source = if capacity == engine::msvc_string::INLINE_CAPACITY {
-        pointer.checked_add(ctechnology_template::ID)?
-    } else {
-        usize::try_from(u64::from_le_bytes(string[..8].try_into().unwrap()))
-            .ok()
-            .filter(|&pointer| pointer != 0)?
-    };
-    Some((source, id_len))
-}
-
-fn record_template_occ(
-    memory: &impl Memory,
-    pointer: usize,
-    handle: u32,
-    job: &mut ResearchJob,
-    tallies: &mut PassTallies,
-) -> bool {
-    if job.templates.len() == job.templates.capacity() {
-        return true;
-    }
-    if let Some(&index) = job.template_index.get(handle as usize)
-        && let Some(cached) = job.templates.get(index)
-    {
-        // Dictionary::read_definition reads a handle once, including failed
-        // definitions; a different pointer is rejected by the decoder.
-        let mut occ = cached.clone();
-        occ.pointer = pointer;
-        job.templates.push(occ);
-        return false;
-    }
-    let mut header = [0; ctechnology_template::HEADER_BYTES];
-    let header_result = ctechnology_template::copy_header(memory, pointer, &mut header);
-    let mut occ = TemplateOcc {
-        pointer,
-        handle,
-        header,
-        header_result,
-        id_start: job.id_pool.len(),
-        id_len: 0,
-        id_ok: true,
-        term_ok: true,
-        term_overflow: false,
-    };
-    if header_result == Ok(3)
-        && let Some((source, id_len)) = template_id_source(pointer, &header)
-    {
-        tallies.id_bytes_attempted = tallies.id_bytes_attempted.saturating_add(id_len);
-        if !fit_len(job.id_pool.len(), job.id_pool.capacity(), id_len) {
-            return true;
-        }
-        occ.id_start = job.id_pool.len();
-        occ.id_len = id_len;
-        let base = job.id_pool.len();
-        job.id_pool.resize(base + id_len, 0);
-        occ.id_ok = read_slice(memory, source, &mut job.id_pool[base..base + id_len]);
-        if !occ.id_ok {
-            tallies.live_fault[2] = true;
-        }
-        match source.checked_add(id_len) {
-            Some(terminator) => match read::<u8>(memory, terminator) {
-                Some(0) => {}
-                Some(_) => occ.term_ok = false,
-                None => {
-                    occ.term_ok = false;
-                    tallies.live_fault[2] = true;
-                }
-            },
-            None => occ.term_overflow = true,
-        }
-    }
-    tallies.bytes[2] += (ctechnology_template::HEADER_BYTES + occ.id_len) as u64;
-    if let Some(index) = job.template_index.get_mut(handle as usize) {
-        *index = job.templates.len();
-    }
-    job.templates.push(occ);
-    false
-}
-
-fn copy_country_tech(
-    memory: &impl Memory,
-    base: usize,
-    country: ccountry::Country,
-    tech_cap: usize,
-    job: &mut ResearchJob,
-    meta: &mut CountryMeta,
-    tallies: &mut PassTallies,
-) -> bool {
-    meta.country_id = country.id;
-    meta.country_pointer = country.pointer;
-    match ctechnology_status::copy_status(memory, country.pointer) {
-        Err(reason) => {
-            meta.status_result = Err(reason);
-            tallies.live_fault[0] = true;
-            tallies.bytes[0] += 8;
-            return false;
-        }
-        Ok(raw) => {
-            meta.status_pointer = raw.pointer;
-            meta.status_vtable = raw.vtable;
-            meta.status_backlink = raw.backlink;
-            meta.status_scattered = raw.scattered;
-            meta.status_result = Ok(());
-            tallies.bytes[0] += 24;
-            if raw.scattered != 2 {
-                tallies.live_fault[0] = true;
-            }
-        }
-    }
-    let status = meta.status_pointer;
-    let tech_addr = match status.checked_add(ctechnology_status::TECHNOLOGIES_DATA) {
-        Some(address) => address,
-        None => {
-            meta.tech_err = Some("technology roster address overflow");
-            return false;
-        }
-    };
-    match read::<[u8; 16]>(memory, tech_addr) {
-        Some(header) => {
-            meta.tech_header = header;
-            meta.tech_header_ok = true;
-            tallies.bytes[0] += 16;
-        }
-        None => {
-            meta.tech_header_ok = false;
-            meta.tech_err = Some("technology roster header invalid");
-            tallies.live_fault[0] = true;
-            return false;
-        }
-    }
-    let array = match Array::from_header(meta.tech_header, ctechnology_status::POINTER_STRIDE) {
-        Some(array) => array,
-        None => {
-            meta.tech_err = Some("technology roster header invalid");
-            return false;
-        }
-    };
-    meta.tech_start = job.tech_pool.len();
-    meta.tmpl_start = job.templates.len();
-    let mut page = [0u8; ctechnology::BATCH * 8];
-    let mut pointers = [0usize; ctechnology::BATCH];
-    let mut blobs = [0u8; ctechnology::BATCH * ctechnology::INSTANCE_BYTES];
-    let status_raw = ctechnology_status::StatusRaw {
-        pointer: meta.status_pointer,
-        vtable: meta.status_vtable,
-        backlink: meta.status_backlink,
-        scattered: meta.status_scattered,
-    };
-    // Only the authenticated, successfully decoded prefix can admit a
-    // definition. This matches the native dictionary's once-per-pass reads;
-    // an invalid earlier instance must not seed its cache.
-    let mut admits = ctechnology_status::decode_status(base, country.pointer, &status_raw).is_ok();
-    let mut first = 0u32;
-    let mut copied = 0usize;
-    while first < array.count {
-        let count = (array.count - first).min(ctechnology::BATCH as u32);
-        let Some(page_addr) = array.element(first, ctechnology_status::POINTER_STRIDE) else {
-            meta.tech_err = Some("technology roster address overflow");
-            return false;
-        };
-        if !read_slice(memory, page_addr, &mut page[..count as usize * 8]) {
-            meta.tech_err = Some("technology roster pointers unreadable");
-            tallies.live_fault[0] = true;
-            return false;
-        }
-        let mut selected = 0;
-        for chunk in page[..count as usize * 8].chunks_exact(8) {
-            let Ok(pointer) = usize::try_from(u64::from_le_bytes(chunk.try_into().unwrap())) else {
-                meta.tech_err = Some("technology pointer overflow");
-                return false;
-            };
-            if pointer == 0 {
-                continue;
-            }
-            if copied + selected == tech_cap {
-                meta.tech_unread += 1;
-                continue;
-            }
-            ctechnology::hint(pointer);
-            pointers[selected] = pointer;
-            selected += 1;
-        }
-        if !fit_len(job.tech_pool.len(), job.tech_pool.capacity(),
-            selected * ctechnology::INSTANCE_BYTES)
-            || !fit_len(job.templates.len(), job.templates.capacity(), selected)
-        {
-            return true;
-        }
-        // The typed walker rejects the entire current gather on a field
-        // fault; do not retain definitions from a partial batch.
-        if ctechnology::copy_batch(memory, &pointers[..selected], &mut blobs)
-            != selected * ctechnology::FIELDS.len()
-        {
-            meta.tech_err = Some("technology fields unreadable");
-            tallies.live_fault[0] = true;
-            return false;
-        }
-        let started = qpc();
-        for blob in blobs[..selected * ctechnology::INSTANCE_BYTES]
-            .chunks_exact(ctechnology::INSTANCE_BYTES)
-        {
-            job.tech_pool.extend_from_slice(blob);
-            let template = usize::try_from(blob_template(blob)).unwrap_or(0);
-            let handle = blob_handle(blob);
-            tallies.max_handle_plus_one = tallies.max_handle_plus_one.max(handle as usize + 1);
-            tallies.bytes[0] += ctechnology::INSTANCE_BYTES as u64;
-            admits &= ctechnology::decode_one(base, status, country.id, blob.try_into().unwrap()).is_ok();
-            if admits {
-                let repeated = if let Some(previous) = job.template_seen_country.get_mut(handle as usize) {
-                    let repeated = *previous == country.pointer;
-                    *previous = country.pointer;
-                    repeated
-                } else {
-                    job.tech_pool[meta.tech_start..job.tech_pool.len() - ctechnology::INSTANCE_BYTES]
-                        .chunks_exact(ctechnology::INSTANCE_BYTES)
-                        .any(|previous| blob_handle(previous) == handle)
-                };
-                admits = !repeated;
-            }
-            if admits {
-                if record_template_occ(memory, template, handle, job, tallies) {
-                    tallies.ticks[2] += elapsed(started);
-                    return true;
-                }
-            } else {
-                job.templates.push(TemplateOcc {
-                    pointer: template, handle, header: [0; ctechnology_template::HEADER_BYTES],
-                    header_result: Err("technology template fields unreadable"),
-                    id_start: job.id_pool.len(), id_len: 0, id_ok: false,
-                    term_ok: false, term_overflow: false,
-                });
-            }
-            copied += 1;
-            meta.tech_len = job.tech_pool.len() - meta.tech_start;
-            meta.tmpl_len = job.templates.len() - meta.tmpl_start;
-        }
-        tallies.ticks[2] += elapsed(started);
-        first += count;
-    }
-    meta.tech_len = job.tech_pool.len() - meta.tech_start;
-    meta.tmpl_len = job.templates.len() - meta.tmpl_start;
-    // Researched census: rereads full rows for the independent inventory.
-    let researched_addr = match status.checked_add(ctechnology_status::RESEARCHED_DATA) {
-        Some(address) => address,
-        None => {
-            meta.researched_err = Some("researched roster address overflow");
-            return false;
-        }
-    };
-    match read::<[u8; 16]>(memory, researched_addr) {
-        Some(header) => {
-            meta.researched_header = header;
-            meta.researched_header_ok = true;
-            tallies.bytes[0] += 16;
-        }
-        None => {
-            meta.researched_header_ok = false;
-            meta.researched_err = Some("researched roster header invalid");
-            tallies.live_fault[0] = true;
-            return false;
-        }
-    }
-    let researched = match Array::from_header(
-        meta.researched_header,
-        ctechnology_status::POINTER_STRIDE,
-    ) {
-        Some(array) => array,
-        None => {
-            meta.researched_err = Some("researched roster header invalid");
-            return false;
-        }
-    };
-    if researched.count > array.count {
-        // Decoded identically below; no blobs are needed for the verdict, but
-        // recording them is harmless and keeps the pass uniform. Skip the
-        // reads to keep staging small: decode errors before consulting blobs.
-        meta.researched_start = job.researched_pool.len();
-        meta.researched_len = 0;
-        return false;
-    }
-    meta.researched_start = job.researched_pool.len();
-    let mut first = 0u32;
-    while first < researched.count {
-        let count = (researched.count - first).min(ctechnology::BATCH as u32);
-        let page_addr = match researched.element(first, ctechnology_status::POINTER_STRIDE) {
-            Some(address) => address,
-            None => {
-                meta.researched_err = Some("researched roster address overflow");
-                return false;
-            }
-        };
-        if !read_slice(
-            memory,
-            page_addr,
-            &mut page[..count as usize * ctechnology_status::POINTER_STRIDE],
-        ) {
-            meta.researched_err = Some("researched technology pointers unreadable");
-            tallies.live_fault[0] = true;
-            return false;
-        }
-        for (pointer, chunk) in pointers[..count as usize].iter_mut()
-            .zip(page[..count as usize * ctechnology_status::POINTER_STRIDE].chunks_exact(8))
-        {
-            let Some(source) = usize::try_from(u64::from_le_bytes(chunk.try_into().unwrap()))
-                .ok().filter(|source| *source != 0)
-            else {
-                meta.researched_err = Some("researched technology pointer unreadable or null");
-                tallies.live_fault[0] = true;
-                return false;
-            };
-            *pointer = source;
-            ctechnology::hint(source);
-        }
-        let byte_count = count as usize * ctechnology::INSTANCE_BYTES;
-        if !fit_len(job.researched_pool.len(), job.researched_pool.capacity(), byte_count) {
-            return true;
-        }
-        if ctechnology::copy_batch(memory, &pointers[..count as usize], &mut blobs)
-            != count as usize * ctechnology::FIELDS.len()
-        {
-            meta.researched_err = Some("technology fields unreadable");
-            tallies.live_fault[0] = true;
-            return false;
-        }
-        job.researched_pool.extend_from_slice(&blobs[..byte_count]);
-        tallies.bytes[0] += byte_count as u64;
-        first += count;
-    }
-    meta.researched_len = job.researched_pool.len() - meta.researched_start;
-    false
-}
-
-fn copy_country_slots(
-    memory: &impl Memory,
-    status: usize,
-    slot_cap: usize,
-    job: &mut ResearchJob,
-    meta: &mut CountryMeta,
-    tallies: &mut PassTallies,
-) -> bool {
-    let header_addr = match status.checked_add(ctechnology_status::RESEARCH_SLOTS_DATA) {
-        Some(address) => address,
-        None => {
-            meta.slot_err = Some("research slots address overflow");
-            return false;
-        }
-    };
-    match read::<[u8; 16]>(memory, header_addr) {
-        Some(header) => {
-            meta.slot_header = header;
-            meta.slot_header_ok = true;
-            tallies.bytes[1] += 16;
-        }
-        None => {
-            meta.slot_header_ok = false;
-            meta.slot_err = Some("research slots header invalid");
-            tallies.live_fault[1] = true;
-            return false;
-        }
-    }
-    let array = match Array::from_header(meta.slot_header, ctechnology_status::POINTER_STRIDE) {
-        Some(array) => array,
-        None => {
-            meta.slot_err = Some("research slots header invalid");
-            return false;
-        }
-    };
-    let len = (slot_cap).min(array.count as usize);
-    meta.slot_start = job.slots.len();
-    for index in 0..len {
-        let element = match array.element(index as u32, ctechnology_status::POINTER_STRIDE) {
-            Some(address) => address,
-            None => {
-                meta.slot_err = Some("research slots address overflow");
-                return false;
-            }
-        };
-        let ptr = read::<u64>(memory, element);
-        tallies.bytes[1] += 8;
-        let mut occ = SlotOcc {
-            ptr: ptr.unwrap_or(0),
-            ptr_ok: ptr.is_some(),
-            raw: cresearch_slot::Raw::default(),
-            raw_result: Ok(4),
-            linked: [0; ctechnology::INSTANCE_BYTES],
-            linked_completed: 0,
-            has_linked: false,
-        };
-        if !occ.ptr_ok {
-            meta.slot_err = Some("research slot pointer unreadable or null");
-            tallies.live_fault[1] = true;
-            return false;
-        }
-        let pointer = match usize::try_from(occ.ptr).ok().filter(|&pointer| pointer != 0) {
-            Some(pointer) => pointer,
-            None => {
-                meta.slot_err = Some("research slot pointer unreadable or null");
-                return false;
-            }
-        };
-        occ.raw_result = cresearch_slot::copy_raw(memory, pointer, &mut occ.raw);
-        tallies.bytes[1] += 56;
-        match occ.raw_result {
-            Err(reason) => {
-                meta.slot_err = Some(reason);
-                return false;
-            }
-            Ok(4) => {}
-            Ok(_) => {
-                meta.slot_err = Some("research slot fields unreadable");
-                tallies.live_fault[1] = true;
-                return false;
-            }
-        }
-        let technology_u64 = u64::from_le_bytes(occ.raw.owner[8..].try_into().unwrap());
-        if technology_u64 != 0 {
-            occ.has_linked = true;
-            let linked = usize::try_from(technology_u64).unwrap_or(0);
-            occ.linked_completed = ctechnology::copy_one(memory, linked, &mut occ.linked);
-            tallies.bytes[1] += ctechnology::INSTANCE_BYTES as u64;
-            if occ.linked_completed != ctechnology::FIELDS.len() {
-                meta.slot_err = Some("technology fields unreadable");
-                tallies.live_fault[1] = true;
-                return false;
-            }
-        }
-        if job.slots.len() == job.slots.capacity() {
-            return true;
-        }
-        // Range validation runs per slot in walk order, mirroring `walk_slots`
-        // (which checks the decoded row before reading the next slot).
-        let index = u32::from_le_bytes(occ.raw.speed_index[8..].try_into().unwrap());
-        if index >= array.count {
-            meta.slot_err = Some("research slot index outside roster");
-            return false;
-        }
-        job.slots.push(occ);
-    }
-    meta.slot_len = job.slots.len() - meta.slot_start;
-    // Duplicate validation runs after every slot decoded, mirroring
-    // `walk_slots`; discovery reads only already-copied bytes, with no
-    // allocation (pairwise scan; slot rosters are small).
-    let occs = &job.slots[meta.slot_start..meta.slot_start + meta.slot_len];
-    for (later, occ) in occs.iter().enumerate() {
-        let index = u32::from_le_bytes(occ.raw.speed_index[8..].try_into().unwrap());
-        if occs[..later]
-            .iter()
-            .any(|other| u32::from_le_bytes(other.raw.speed_index[8..].try_into().unwrap()) == index)
-        {
-            meta.slot_err = Some("duplicate research slot index");
-            return false;
-        }
-    }
-    meta.slot_unread = array.count - len as u32;
-    false
-}
-
-fn copy_research_pass(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    tech_cap: usize,
-    slot_cap: usize,
-    job: &mut ResearchJob,
-) -> PassTallies {
-    job.clear();
-    let mut tallies = PassTallies::default();
-    let mut tech_recorded = 0usize;
-    let mut slot_recorded = 0usize;
-    let countries = match ccountry::Reader::new(memory, base, game_state) {
-        Err(reason) => {
-            job.reader_err = Some(reason);
-            return tallies;
-        }
-        Ok(countries) => countries,
-    };
-    for slot in 1..countries.count() {
-        let started = qpc();
-        let country = match countries.at(slot) {
-            Ok(Some(country)) => country,
-            Ok(None) => continue,
-            Err(reason) => {
-                job.country_err = Some(reason);
-                tallies.ticks[0] += elapsed(started);
-                break;
-            }
-        };
-        tallies.ticks[0] += elapsed(started);
-        if job.metas.len() == job.metas.capacity() {
-            job.overflowed = true;
-            return tallies;
-        }
-        // Remaining typed capacities mirror the remaining output slices the
-        // typed walks receive, so truncation counts match exactly.
-        let tech_remaining = tech_cap.saturating_sub(tech_recorded);
-        let slot_remaining = slot_cap.saturating_sub(slot_recorded);
-        let mut meta = CountryMeta::default();
-        let started = qpc();
-        let definitions_before = tallies.ticks[2];
-        let overflowed =
-            copy_country_tech(memory, base, country, tech_remaining, job, &mut meta, &mut tallies);
-        tallies.ticks[0] += elapsed(started).saturating_sub(tallies.ticks[2] - definitions_before);
-        if overflowed {
-            job.overflowed = true;
-            return tallies;
-        }
-        tech_recorded += meta.tech_len / ctechnology::INSTANCE_BYTES;
-        // Slots run even when the technology section faulted: the typed walks
-        // are independent and each reports its own outcome.
-        let status = meta.status_pointer;
-        let status_ok = meta.status_result.is_ok();
-        let started = qpc();
-        let overflowed = if status_ok {
-            copy_country_slots(
-                memory,
-                status,
-                slot_remaining,
-                job,
-                &mut meta,
-                &mut tallies,
-            )
-        } else {
-            false
-        };
-        tallies.ticks[1] += elapsed(started);
-        if overflowed {
-            job.overflowed = true;
-            return tallies;
-        }
-        slot_recorded += meta.slot_len;
-        job.metas.push(meta);
-    }
-    tallies
-}
-
-fn tech_partition_equal(first: &ResearchJob, second: &ResearchJob) -> bool {
-    if first.reader_err != second.reader_err
-        || first.country_err != second.country_err
-        || first.metas.len() != second.metas.len()
-    {
-        return false;
-    }
-    for (x, y) in first.metas.iter().zip(second.metas.iter()) {
-        if x.country_id != y.country_id
-            || x.country_pointer != y.country_pointer
-            || x.status_result != y.status_result
-            || x.status_pointer != y.status_pointer
-            || x.status_vtable != y.status_vtable
-            || x.status_backlink != y.status_backlink
-            || x.status_scattered != y.status_scattered
-            || x.tech_header != y.tech_header
-            || x.tech_header_ok != y.tech_header_ok
-            || x.tech_unread != y.tech_unread
-            || x.tech_err != y.tech_err
-            || x.researched_header != y.researched_header
-            || x.researched_header_ok != y.researched_header_ok
-            || x.researched_err != y.researched_err
-        {
-            return false;
-        }
-        if first.tech_pool.get(x.tech_start..x.tech_start + x.tech_len)
-            != second.tech_pool.get(y.tech_start..y.tech_start + y.tech_len)
-        {
-            return false;
-        }
-        if first
-            .researched_pool
-            .get(x.researched_start..x.researched_start + x.researched_len)
-            != second
-                .researched_pool
-                .get(y.researched_start..y.researched_start + y.researched_len)
-        {
-            return false;
-        }
-    }
-    true
-}
-
-fn definitions_partition_equal(first: &ResearchJob, second: &ResearchJob) -> bool {
-    if first.metas.len() != second.metas.len() {
-        return false;
-    }
-    for (x, y) in first.metas.iter().zip(second.metas.iter()) {
-        if x.tmpl_len != y.tmpl_len {
-            return false;
-        }
-        if first.templates.get(x.tmpl_start..x.tmpl_start + x.tmpl_len)
-            != second.templates.get(y.tmpl_start..y.tmpl_start + y.tmpl_len)
-        {
-            return false;
-        }
-        // Id bytes travel in the shared pool; compare each occurrence range.
-        for (a, b) in first.templates[x.tmpl_start..x.tmpl_start + x.tmpl_len]
-            .iter()
-            .zip(&second.templates[y.tmpl_start..y.tmpl_start + y.tmpl_len])
-        {
-            if first.id_pool.get(a.id_start..a.id_start + a.id_len)
-                != second.id_pool.get(b.id_start..b.id_start + b.id_len)
-            {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn slots_partition_equal(first: &ResearchJob, second: &ResearchJob) -> bool {
-    if first.metas.len() != second.metas.len() {
-        return false;
-    }
-    for (x, y) in first.metas.iter().zip(second.metas.iter()) {
-        if x.slot_header != y.slot_header
-            || x.slot_header_ok != y.slot_header_ok
-            || x.slot_unread != y.slot_unread
-            || x.slot_err != y.slot_err
-        {
-            return false;
-        }
-        if first.slots.get(x.slot_start..x.slot_start + x.slot_len)
-            != second.slots.get(y.slot_start..y.slot_start + y.slot_len)
-        {
-            return false;
-        }
-    }
-    true
-}
-
-/// Decode-side dictionary replicating `ctechnology_template::Dictionary`
-/// over already-copied bytes. Field-for-field semantics (admit-once sticky
-/// errors, per-roster generations, capacity and byte accounting) so outcomes
-/// match the typed walk exactly.
-#[derive(Default)]
-struct DictEntryRepl {
-    template_pointer: usize,
-    row: ctechnology_template::Row,
-    copied: bool,
-    generation: u32,
-    instance_row: u32,
-}
-
-struct DictRepl {
-    map: HashMap<u32, DictEntryRepl>,
-    cap: usize,
-    names_cap: usize,
-    bytes_len: usize,
-    required_bytes: usize,
-    required_capacity: usize,
-    copied: usize,
-    omitted: u32,
-    error: Option<&'static str>,
-    generation: u32,
-}
-
-impl DictRepl {
-    fn new(cap: usize, names_cap: usize) -> Self {
-        Self {
-            map: HashMap::new(),
-            cap,
-            names_cap,
-            bytes_len: 0,
-            required_bytes: 0,
-            required_capacity: 0,
-            copied: 0,
-            omitted: 0,
-            error: None,
-            generation: 0,
-        }
-    }
-
-    fn outcome(&self) -> Outcome {
-        if let Some(reason) = self.error {
-            Outcome::Unavailable { reason }
-        } else if self.omitted != 0 {
-            Outcome::Truncated {
-                len: self.copied,
-                unread_rows: self.omitted,
-            }
-        } else {
-            Outcome::Rows { len: self.copied }
-        }
-    }
-
-    fn begin_roster(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
-        if self.generation == 0 {
-            for entry in self.map.values_mut() {
-                entry.generation = 0;
-            }
-            self.generation = 1;
-        }
-    }
-
-    fn instance_row(&self, handle: u32, rows: &[ctechnology::Row]) -> Option<usize> {
-        if let Some(entry) = self.map.get(&handle) {
-            (entry.generation == self.generation).then_some(entry.instance_row as usize)
-        } else {
-            rows.iter().position(|row| row.technology_handle == handle)
-        }
-    }
-
-    fn admit_instance(
-        &mut self,
-        pointer: usize,
-        handle: u32,
-        occ: &TemplateOcc,
-        id_bytes: &[u8],
-        names: &mut [u8],
-        previous: &[ctechnology::Row],
-    ) -> Result<(), &'static str> {
-        if let Some(entry) = self.map.get_mut(&handle) {
-            if entry.generation == self.generation {
-                return Err("duplicate technology handle in country roster");
-            }
-            entry.generation = self.generation;
-            entry.instance_row = previous.len() as u32;
-            if entry.template_pointer == pointer {
-                return Ok(());
-            }
-            // Entries are only created below with their pointer already set,
-            // so a surviving entry that points elsewhere is the same sticky
-            // inconsistency the typed walk reports.
-            self.error
-                .get_or_insert("technology handle has inconsistent template pointers");
-            return Ok(());
-        }
-        if previous.iter().any(|row| row.technology_handle == handle) {
-            return Err("duplicate technology handle in country roster");
-        }
-        self.required_capacity = self.required_capacity.max(handle as usize + 1);
-        if handle as usize >= self.cap {
-            self.error
-                .get_or_insert("technology definition dictionary capacity exceeded");
-            return Ok(());
-        }
-        // Fresh handles record generation and row exactly like the typed
-        // walk: the researched census resolves in-cap handles only through
-        // this generation mark, never through a row scan.
-        let entry = self.map.entry(handle).or_default();
-        entry.generation = self.generation;
-        entry.instance_row = previous.len() as u32;
-        entry.template_pointer = pointer;
-        match occ.header_result {
-            Err(reason) => {
-                self.error.get_or_insert(reason);
-                return Ok(());
-            }
-            Ok(3) => {}
-            Ok(_) => {
-                self.error
-                    .get_or_insert("technology template fields unreadable");
-                return Ok(());
-            }
-        }
-        let decoded = match ctechnology_template::decode_header(pointer, &occ.header, handle) {
-            Ok(decoded) => decoded,
-            Err(reason) => {
-                self.error.get_or_insert(reason);
-                return Ok(());
-            }
-        };
-        if occ.term_overflow {
-            self.error.get_or_insert("technology id address overflow");
-            return Ok(());
-        }
-        if !occ.term_ok {
-            self.error
-                .get_or_insert("technology id terminator invalid");
-            return Ok(());
-        }
-        self.required_bytes = match self.required_bytes.checked_add(decoded.id_len) {
-            Some(required) => required,
-            None => {
-                self.error.get_or_insert("technology id byte count overflow");
-                return Ok(());
-            }
-        };
-        entry.row = ctechnology_template::Row {
-            technology_handle: handle,
-            database_index: decoded.database_index,
-            year: decoded.year,
-            max_level: decoded.max_level,
-            research_cost_raw: decoded.research_cost_raw,
-            id_start: self.bytes_len,
-            id_len: decoded.id_len,
-        };
-        if decoded.id_len > self.names_cap.saturating_sub(self.bytes_len) {
-            self.omitted = match self.omitted.checked_add(1) {
-                Some(omitted) => omitted,
-                None => {
-                    self.error
-                        .get_or_insert("technology definition count overflow");
-                    return Ok(());
-                }
-            };
-            return Ok(());
-        }
-        if !occ.id_ok || id_bytes.len() != decoded.id_len {
-            self.error.get_or_insert("technology id bytes unreadable");
-            return Ok(());
-        }
-        names[self.bytes_len..self.bytes_len + decoded.id_len].copy_from_slice(id_bytes);
-        self.bytes_len += decoded.id_len;
-        self.copied += 1;
-        entry.copied = true;
-        Ok(())
-    }
-}
-
-fn decode_country_tech(
-    base: usize,
-    meta: &CountryMeta,
-    job: &ResearchJob,
-    dict: &mut DictRepl,
-    names: &mut [u8],
-    rows: &mut [ctechnology::Row],
-) -> Outcome {
-    if let Err(reason) = meta.status_result {
-        return Outcome::Unavailable { reason };
-    }
-    let status_raw = ctechnology_status::StatusRaw {
-        pointer: meta.status_pointer,
-        vtable: meta.status_vtable,
-        backlink: meta.status_backlink,
-        scattered: meta.status_scattered,
-    };
-    let status = match ctechnology_status::decode_status(base, meta.country_pointer, &status_raw)
-    {
-        Ok(status) => status,
-        Err(reason) => return Outcome::Unavailable { reason },
-    };
-    if !meta.tech_header_ok {
-        return Outcome::Unavailable {
-            reason: "technology roster header invalid",
-        };
-    }
-    let array = match Array::from_header(meta.tech_header, ctechnology_status::POINTER_STRIDE) {
-        Some(array) => array,
-        None => {
-            return Outcome::Unavailable {
-                reason: "technology roster header invalid",
-            };
-        }
-    };
-    let blobs = match job
-        .tech_pool
-        .get(meta.tech_start..meta.tech_start + meta.tech_len)
-    {
-        Some(blobs) => blobs,
-        None => {
-            return Outcome::Unavailable {
-                reason: "technology fields unreadable",
-            };
-        }
-    };
-    let occs = match job
-        .templates
-        .get(meta.tmpl_start..meta.tmpl_start + meta.tmpl_len)
-    {
-        Some(occs) => occs,
-        None => {
-            return Outcome::Unavailable {
-                reason: "technology fields unreadable",
-            };
-        }
-    };
-    if blobs.len() != occs.len() * ctechnology::INSTANCE_BYTES {
-        return Outcome::Unavailable {
-            reason: "technology fields unreadable",
-        };
-    }
-    let mut len = 0;
-    for (blob, occ) in blobs.chunks_exact(ctechnology::INSTANCE_BYTES).zip(occs) {
-        let blob: &[u8; ctechnology::INSTANCE_BYTES] = match blob.try_into() {
-            Ok(blob) => blob,
-            Err(_) => {
-                return Outcome::Unavailable {
-                    reason: "technology fields unreadable",
-                };
-            }
-        };
-        let instance = match ctechnology::decode_one(base, status, meta.country_id, blob) {
-            Ok(instance) => instance,
-            Err(reason) => return Outcome::Unavailable { reason },
-        };
-        let id_bytes = job
-            .id_pool
-            .get(occ.id_start..occ.id_start + occ.id_len)
-            .unwrap_or(&[]);
-        if let Err(reason) = dict.admit_instance(
-            instance.template,
-            instance.row.technology_handle,
-            occ,
-            id_bytes,
-            names,
-            &rows[..len],
-        ) {
-            return Outcome::Unavailable { reason };
-        }
-        if len >= rows.len() {
-            // Defensive and unreachable: the copy enforced the same remaining
-            // capacity, so every recorded blob has a typed row waiting.
-            return Outcome::Unavailable {
-                reason: "technology fields unreadable",
-            };
-        }
-        rows[len] = instance.row;
-        len += 1;
-    }
-    if let Some(reason) = meta.tech_err {
-        return Outcome::Unavailable { reason };
-    }
-    if !meta.researched_header_ok {
-        return Outcome::Unavailable {
-            reason: "researched roster header invalid",
-        };
-    }
-    let researched = match Array::from_header(
-        meta.researched_header,
-        ctechnology_status::POINTER_STRIDE,
-    ) {
-        Some(array) => array,
-        None => {
-            return Outcome::Unavailable {
-                reason: "researched roster header invalid",
-            };
-        }
-    };
-    if researched.count > array.count {
-        return Outcome::Unavailable {
-            reason: "researched roster exceeds all-technology roster",
-        };
-    }
-    if let Some(reason) = meta.researched_err {
-        return Outcome::Unavailable { reason };
-    }
-    let researched_blobs = match job
-        .researched_pool
-        .get(meta.researched_start..meta.researched_start + meta.researched_len)
-    {
-        Some(blobs) => blobs,
-        None => {
-            return Outcome::Unavailable {
-                reason: "technology fields unreadable",
-            };
-        }
-    };
-    if researched_blobs.len() != researched.count as usize * ctechnology::INSTANCE_BYTES {
-        return Outcome::Unavailable {
-            reason: "technology fields unreadable",
-        };
-    }
-    let mut previous = None;
-    for blob in researched_blobs.chunks_exact(ctechnology::INSTANCE_BYTES) {
-        let blob: &[u8; ctechnology::INSTANCE_BYTES] = match blob.try_into() {
-            Ok(blob) => blob,
-            Err(_) => {
-                return Outcome::Unavailable {
-                    reason: "technology fields unreadable",
-                };
-            }
-        };
-        let instance = match ctechnology::decode_one(base, status, meta.country_id, blob) {
-            Ok(instance) => instance,
-            Err(reason) => return Outcome::Unavailable { reason },
-        };
-        let handle = instance.row.technology_handle;
-        if previous.is_some_and(|previous: u32| previous as i32 >= handle as i32) {
-            return Outcome::Unavailable {
-                reason: "researched technology roster is not strictly ordered",
-            };
-        }
-        previous = Some(handle);
-        match dict.instance_row(handle, &rows[..len]) {
-            Some(index) => {
-                if rows[index] != instance.row {
-                    return Outcome::Unavailable {
-                        reason: "researched technology disagrees with country roster",
-                    };
-                }
-                rows[index].researched = 1;
-            }
-            None if meta.tech_unread != 0 => {}
-            None => {
-                return Outcome::Unavailable {
-                    reason: "researched technology missing from country roster",
-                };
-            }
-        }
-    }
-    if meta.tech_unread == 0 {
-        Outcome::Rows { len }
-    } else {
-        Outcome::Truncated {
-            len,
-            unread_rows: meta.tech_unread,
-        }
-    }
-}
-
-fn decode_country_slots(
-    base: usize,
-    meta: &CountryMeta,
-    job: &ResearchJob,
-    status: usize,
-    rows: &mut [cresearch_slot::Row],
-) -> Outcome {
-    if !meta.slot_header_ok {
-        return Outcome::Unavailable {
-            reason: "research slots header invalid",
-        };
-    }
-    let array = match Array::from_header(meta.slot_header, ctechnology_status::POINTER_STRIDE) {
-        Some(array) => array,
-        None => {
-            return Outcome::Unavailable {
-                reason: "research slots header invalid",
-            };
-        }
-    };
-    let occs = match job
-        .slots
-        .get(meta.slot_start..meta.slot_start + meta.slot_len)
-    {
-        Some(occs) => occs,
-        None => {
-            return Outcome::Unavailable {
-                reason: "research slot pointer unreadable or null",
-            };
-        }
-    };
-    if let Some(reason) = meta.slot_err {
-        return Outcome::Unavailable { reason };
-    }
-    let mut len = 0;
-    for occ in occs {
-        if !occ.ptr_ok || occ.ptr == 0 {
-            return Outcome::Unavailable {
-                reason: "research slot pointer unreadable or null",
-            };
-        }
-        match occ.raw_result {
-            Err(reason) => return Outcome::Unavailable { reason },
-            Ok(4) => {}
-            Ok(_) => {
-                return Outcome::Unavailable {
-                    reason: "research slot fields unreadable",
-                };
-            }
-        }
-        let linked = if occ.has_linked {
-            if occ.linked_completed != ctechnology::FIELDS.len() {
-                return Outcome::Unavailable {
-                    reason: "technology fields unreadable",
-                };
-            }
-            Some(&occ.linked)
-        } else {
-            None
-        };
-        let row = match cresearch_slot::decode_raw(base, status, meta.country_id, &occ.raw, linked)
-        {
-            Ok(row) => row,
-            Err(reason) => return Outcome::Unavailable { reason },
-        };
-        if row.index >= array.count {
-            return Outcome::Unavailable {
-                reason: "research slot index outside roster",
-            };
-        }
-        if len >= rows.len() {
-            // Defensive and unreachable: the copy enforced the same remaining
-            // capacity, so every recorded slot has a typed row waiting.
-            return Outcome::Unavailable {
-                reason: "research slot pointer unreadable or null",
-            };
-        }
-        rows[len] = row;
-        len += 1;
-    }
-    rows[..len].sort_unstable_by_key(|row| row.index);
-    if rows[..len]
-        .windows(2)
-        .any(|pair| pair[0].index == pair[1].index)
-    {
-        return Outcome::Unavailable {
-            reason: "duplicate research slot index",
-        };
-    }
-    let unread_rows = array.count - len as u32;
-    if unread_rows == 0 {
-        Outcome::Rows { len }
-    } else {
-        Outcome::Truncated { len, unread_rows }
-    }
-}
-
-impl Captured {
-    pub(crate) fn tech_rows_cap(&self) -> usize {
-        self.technologies.rows.len()
-    }
-
-    pub(crate) fn slot_rows_cap(&self) -> usize {
-        self.slots.rows.len()
-    }
-
-    /// Game-thread raw copy for a pilot refresh hour. Copies `first` always
-    /// and `second` while any pilot table still needs double-read checks,
-    /// compares the raw partitions, and records copy-only costs plus the
-    /// existing checked/mismatches bookkeeping. Returns whether the payload
-    /// is complete (`raw_ok`); on staging overflow the caller falls back to
-    /// the typed walk and enqueues nothing.
-    pub(crate) fn copy_research_refresh(
-        &mut self,
-        memory: &impl Memory,
-        ctx: CopyContext,
-        first: &mut ResearchJob,
-        mut second: Option<&mut ResearchJob>,
-    ) -> CopyReport {
-        let needed = [
-            ctx.needed[TABLES[RESEARCH_LOCAL[0]].index()],
-            ctx.needed[TABLES[RESEARCH_LOCAL[1]].index()],
-            ctx.needed[TABLES[RESEARCH_LOCAL[2]].index()],
-        ];
-        let first_tallies = copy_research_pass(
-            memory,
-            ctx.base,
-            ctx.game_state,
-            ctx.tech_cap,
-            ctx.slot_cap,
-            first,
-        );
-        let mut matched = [true; 3];
-        let mut ticks = first_tallies.ticks;
-        let mut live_fault = first_tallies.live_fault;
-        if let Some(second_job) = second.as_deref_mut() {
-            let second_tallies = copy_research_pass(
-                memory,
-                ctx.base,
-                ctx.game_state,
-                ctx.tech_cap,
-                ctx.slot_cap,
-                second_job,
-            );
-            first.second_max_handle_plus_one = second_tallies.max_handle_plus_one;
-            first.second_id_bytes = second_tallies.id_bytes_attempted;
-            for (total, other) in ticks.iter_mut().zip(second_tallies.ticks) {
-                *total = total.saturating_add(other);
-            }
-            for (total, other) in live_fault.iter_mut().zip(second_tallies.live_fault) {
-                *total |= other;
-            }
-            let equal = [
-                tech_partition_equal(first, second_job),
-                slots_partition_equal(first, second_job),
-                definitions_partition_equal(first, second_job),
-            ];
-            for index in 0..3 {
-                matched[index] = equal[index] && !live_fault[index];
-            }
-        }
-        // Binary per refresh per table: tearing detected (0/1), not a row
-        // count. Spool gates test `==0`/`!=0` only.
-        self.technologies.checked = needed[0];
-        self.technologies.mismatches = usize::from(needed[0] && !matched[0]);
-        self.slots.checked = needed[1];
-        self.slots.mismatches = usize::from(needed[1] && !matched[1]);
-        self.definitions.checked = needed[2];
-        self.definitions.mismatches = usize::from(needed[2] && !matched[2]);
-        let raw_ok = !first.overflowed
-            && second.is_none_or(|job| !job.overflowed);
-        CopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: [
-                first_tallies.bytes[0],
-                first_tallies.bytes[1],
-                first_tallies.bytes[2],
-            ],
-        }
-    }
-
-    /// Decode-worker interpretation of a raw refresh payload into the pooled
-    /// typed rows. Outcomes, arena bytes and dictionary accounting match the
-    /// typed walk exactly; checked/mismatches set by the raw compare survive.
-    /// Clears `raw_mode` so the next capture starts clean.
-    pub(crate) fn decode_research_payload(
-        &mut self,
-        base: usize,
-        job: &ResearchJob,
-        decode_ticks: &mut [u64; 3],
-    ) {
-        let started = qpc();
-        let mut dict = DictRepl::new(self.dictionary.len(), self.definition_text.first.len());
-        let mut tech_total = Outcome::Rows { len: 0 };
-        let mut tech_len = 0;
-        if job.reader_err.is_none() {
-            for meta in &job.metas {
-                dict.begin_roster();
-                let outcome = decode_country_tech(
-                    base,
-                    meta,
-                    job,
-                    &mut dict,
-                    &mut self.definition_text.first,
-                    &mut self.technologies.rows[tech_len..],
-                );
-                append(&mut tech_total, outcome);
-                tech_len = tech_total.len();
-            }
-        }
-        decode_ticks[0] += elapsed(started);
-        let started = qpc();
-        let mut slot_total = Outcome::Rows { len: 0 };
-        let mut slot_len = 0;
-        if job.reader_err.is_none() {
-            for meta in &job.metas {
-                // Status was validated by the technology decode above; slots
-                // reuse the same pointer through an identical validation.
-                let status = decode_country_status_for_slots(base, meta);
-                let outcome = match status {
-                    Ok(status) => decode_country_slots(
-                        base,
-                        meta,
-                        job,
-                        status,
-                        &mut self.slots.rows[slot_len..],
-                    ),
-                    Err(reason) => Outcome::Unavailable { reason },
-                };
-                append(&mut slot_total, outcome);
-                slot_len = slot_total.len();
-            }
-        }
-        decode_ticks[1] += elapsed(started);
-        if let Some(reason) = job.reader_err {
-            tech_total = Outcome::Unavailable { reason };
-            slot_total = Outcome::Unavailable { reason };
-        }
-        if let Some(reason) = job.country_err {
-            tech_total = Outcome::Unavailable { reason };
-            slot_total = Outcome::Unavailable { reason };
-        }
-        self.technologies.outcome = tech_total;
-        self.slots.outcome = slot_total;
-        let started = qpc();
-        self.definition_text.len = dict.bytes_len;
-        self.definition_text.required = dict.required_bytes.max(job.second_id_bytes);
-        self.dictionary_required = dict
-            .required_capacity
-            .max(job.second_max_handle_plus_one);
-        let mut copied = Outcome::Rows { len: 0 };
-        let mut order: Vec<u32> = dict
-            .map
-            .iter()
-            .filter(|(_, entry)| entry.copied)
-            .map(|(handle, _)| *handle)
-            .collect();
-        // Row order in the buffer is irrelevant: the spool sorts by key
-        // off-thread. Sorted iteration keeps growth deterministic.
-        order.sort_unstable();
-        for handle in order {
-            let row = dict.map[&handle].row;
-            let first = copied.len();
-            append(&mut copied, one(&mut self.definitions.rows[first..], row));
-        }
-        // Mirror the `capture` assembly match exactly, including the census
-        // arm for partial dictionaries after a country-level fault.
-        self.definitions.outcome = match (tech_total, dict.outcome(), copied) {
-            (Outcome::Rows { .. }, Outcome::Rows { .. }, output) => output,
-            (Outcome::Rows { .. }, Outcome::Truncated { unread_rows, .. }, mut output) => {
-                append(
-                    &mut output,
-                    Outcome::Truncated {
-                        len: 0,
-                        unread_rows,
-                    },
-                );
-                output
-            }
-            (_, Outcome::Unavailable { reason }, _) => Outcome::Unavailable { reason },
-            _ => Outcome::Unavailable {
-                reason: "technology definition source census incomplete",
-            },
-        };
-        decode_ticks[2] += elapsed(started);
-        self.raw_mode = false;
-    }
-}
 
 // ===========================================================================
 // Hourly Tier-H raw-copy split (Focus, CompletedFocuses).
@@ -2826,18 +1366,22 @@ pub(crate) struct FocusJob {
     pub log: RawLog<2>,
     pub game_state: usize,
     census: Vec<FocusCountry>,
+    capacity_charge: crate::raw_memory::Charge,
 }
 
 impl FocusJob {
     pub fn new() -> Self {
-        Self {
+        let mut job = Self {
             // Steady state is 439 countries with about 3.9k completed rows
             // plus token bytes; both pools start above that so steady state
             // never overflows.
             log: RawLog::new(1 << 16, 4 << 20),
             game_state: 0,
             census: Vec::with_capacity(512),
-        }
+            capacity_charge: crate::raw_memory::Charge::default(),
+        };
+        job.update_capacity_charge();
+        job
     }
 
     /// Reset lengths for reuse, keeping every capacity. No allocation.
@@ -2856,7 +1400,16 @@ impl FocusJob {
     /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
         self.log.grow();
-crate::raw::double_capacity(&mut self.census);
+        crate::raw::double_capacity(&mut self.census);
+        self.update_capacity_charge();
+    }
+
+    fn update_capacity_charge(&mut self) {
+        use crate::raw_memory::{Capacity, vector_bytes};
+        self.capacity_charge.set(Capacity {
+            auxiliary_vectors: vector_bytes(&self.census),
+            ..Default::default()
+        });
     }
 }
 
@@ -3091,11 +1644,7 @@ fn copy_focus_token(
 /// pointer, scattered summary fields, three token takes, and the completed
 /// roster with per-entry pointers and tokens. Takes are unconditional over
 /// discoverable addresses (a superset); the replay derives every outcome.
-fn copy_focus_country(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    country: &FocusCountry,
-) {
+fn copy_focus_country(log: &mut RawLog<2>, memory: &impl engine::Memory, country: &FocusCountry) {
     let root = match fspan(
         log,
         memory,
@@ -3257,12 +1806,17 @@ impl Captured {
         let mut matched = [true; 2];
         if let Some(second_job) = second.as_deref_mut() {
             let mut second_ticks = [0u64; 2];
-            copy_focus_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
+            copy_focus_pass(
+                second_job,
+                memory,
+                ctx.base,
+                ctx.game_state,
+                &mut second_ticks,
+            );
             ticks[0] += second_ticks[0];
             let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
             for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal =
-                    raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
                 *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
             }
         }
@@ -3272,8 +1826,7 @@ impl Captured {
         self.focus.mismatches = usize::from(needed[0] && !matched[0]);
         self.completed.checked = needed[1];
         self.completed.mismatches = usize::from(needed[1] && !matched[1]);
-        let raw_ok = !first.log.overflowed
-            && second.is_none_or(|job| !job.log.overflowed);
+        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
         FocusCopyReport {
             raw_ok,
             matched,
@@ -3357,18 +1910,6 @@ impl Captured {
     }
 }
 
-fn decode_country_status_for_slots(base: usize, meta: &CountryMeta) -> Result<usize, &'static str> {
-    meta.status_result?;
-    let status_raw = ctechnology_status::StatusRaw {
-        pointer: meta.status_pointer,
-        vtable: meta.status_vtable,
-        backlink: meta.status_backlink,
-        scattered: meta.status_scattered,
-    };
-    ctechnology_status::decode_status(base, meta.country_pointer, &status_raw)
-}
-
-
 fn valid<T>(arena: &[T], start: usize, len: usize) -> bool {
     start.checked_add(len).is_some_and(|end| end <= arena.len())
 }
@@ -3411,8 +1952,154 @@ fn country_view<S: TableSchema, R>(
 impl Captured {
     /// Spool thread only: all variable-length copies and portable conversion.
     pub fn tables(&self) -> [TableView; N] {
+        self.convert_tables(
+            |view| view,
+            self.technologies_table(),
+            self.definitions_table(),
+        )
+    }
+
+    pub(crate) fn table_inputs(
+        &self,
+        reuse: Option<&mut ResearchConversion<'_>>,
+    ) -> [TableInput; N] {
+        let Some(reuse) = reuse else {
+            return self.tables().map(TableInput::Sampled);
+        };
+        let technologies = self.technologies_input(reuse);
+        let definitions = self.definitions_input(reuse);
+        self.convert_tables(TableInput::Sampled, technologies, definitions)
+    }
+
+    fn technologies_table(&self) -> TableView {
+        view::<tables::ResearchTechnologies, _>(
+            &self.technologies,
+            |_| true,
+            |r| rows::ResearchTechnologyRow {
+                country: r.country,
+                technology_handle: r.technology_handle,
+                classifier: r.classifier,
+                level: r.level,
+                researched: r.researched,
+                progress_raw: r.progress_raw,
+                ahead_reduction_years_raw: r.ahead_reduction_years_raw,
+            },
+        )
+    }
+
+    fn definitions_table(&self) -> TableView {
+        let Some(definitions) = self.definition_text.first.get(..self.definition_text.len) else {
+            return crate::spooling::unavailable("governance arena length exceeds capacity");
+        };
+        view::<tables::TechnologyDefinitions, _>(
+            &self.definitions,
+            |r| valid(definitions, r.id_start, r.id_len),
+            |r| rows::TechnologyDefinitionRow {
+                technology_handle: r.technology_handle,
+                database_index: r.database_index,
+                year: r.year,
+                max_level: r.max_level,
+                research_cost_raw: r.research_cost_raw,
+                id: copy_span(definitions, r.id_start, r.id_len),
+            },
+        )
+    }
+
+    fn technologies_input(&self, reuse: &mut ResearchConversion<'_>) -> TableInput {
+        let source = match self.technologies.outcome {
+            Outcome::Rows { len } if self.technologies.mismatches == 0 => {
+                self.technologies.rows.get(..len)
+            }
+            _ => None,
+        };
+        if let Some(source) = source
+            && let Some(rows) = reuse.shadow.technologies.equal(
+                TableId::ResearchTechnologies,
+                source,
+                reuse.cached[0],
+            )
+        {
+            return TableInput::SharedComplete(rows);
+        }
+        reuse
+            .shadow
+            .technologies
+            .record_miss(self.technologies.outcome);
+        match (source, self.technologies_table()) {
+            (Some(source), TableView::Complete(rows)) => {
+                let rows = Arc::new(rows);
+                reuse.shadow.technologies.install(source, &rows);
+                TableInput::SharedComplete(rows)
+            }
+            (_, view) => {
+                if !matches!(
+                    self.technologies.outcome,
+                    Outcome::Unavailable {
+                        reason: replay::cadence::SKIPPED_REASON
+                    }
+                ) {
+                    reuse.shadow.technologies.clear();
+                }
+                TableInput::Sampled(view)
+            }
+        }
+    }
+
+    fn definitions_input(&self, reuse: &mut ResearchConversion<'_>) -> TableInput {
+        let source = match self.definitions.outcome {
+            Outcome::Rows { len } if self.definitions.mismatches == 0 => {
+                self.definitions.rows.get(..len)
+            }
+            _ => None,
+        };
+        let source = source
+            .zip(self.definition_text.first.get(..self.definition_text.len))
+            .filter(|(rows, text)| rows.iter().all(|row| valid(text, row.id_start, row.id_len)));
+        if let Some((source, text)) = source
+            && reuse.shadow.definition_required == self.definition_text.required
+            && reuse.shadow.definition_text == text
+            && let Some(rows) = reuse.shadow.definitions.equal(
+                TableId::TechnologyDefinitions,
+                source,
+                reuse.cached[1],
+            )
+        {
+            return TableInput::SharedComplete(rows);
+        }
+        reuse
+            .shadow
+            .definitions
+            .record_miss(self.definitions.outcome);
+        match (source, self.definitions_table()) {
+            (Some((source, text)), TableView::Complete(rows)) => {
+                let rows = Arc::new(rows);
+                reuse.shadow.definitions.install(source, &rows);
+                reuse.shadow.definition_text.clear();
+                reuse.shadow.definition_text.extend_from_slice(text);
+                reuse.shadow.definition_required = self.definition_text.required;
+                TableInput::SharedComplete(rows)
+            }
+            (_, view) => {
+                if !matches!(
+                    self.definitions.outcome,
+                    Outcome::Unavailable {
+                        reason: replay::cadence::SKIPPED_REASON
+                    }
+                ) {
+                    reuse.shadow.clear_definitions();
+                }
+                TableInput::Sampled(view)
+            }
+        }
+    }
+
+    fn convert_tables<T>(
+        &self,
+        wrap: impl Fn(TableView) -> T,
+        technologies: T,
+        definitions: T,
+    ) -> [T; N] {
         let focus = &self.focus_text.first[..self.focus_text.len];
-        let definitions = &self.definition_text.first[..self.definition_text.len];
         let parties = &self.party_text.first[..self.party_text.len];
         let ideas = &self.idea_text.first[..self.idea_text.len];
         let decisions = &self.decision_text.first[..self.decision_text.len];
@@ -3432,7 +2119,7 @@ impl Captured {
             copy_span(balances, span.start, span.len)
         };
         [
-            view::<tables::Focus, _>(
+            wrap(view::<tables::Focus, _>(
                 &self.focus,
                 |r| focus_valid(r.tree) && focus_valid(r.current) && focus_valid(r.continuous),
                 |r| rows::FocusRow {
@@ -3444,8 +2131,8 @@ impl Captured {
                     paused: r.paused,
                     completed_count: r.completed_count,
                 },
-            ),
-            view::<tables::CompletedFocuses, _>(
+            )),
+            wrap(view::<tables::CompletedFocuses, _>(
                 &self.completed,
                 |r| valid(focus, r.token.start, r.token.len),
                 |r| rows::CompletedFocusRow {
@@ -3453,21 +2140,9 @@ impl Captured {
                     ordinal: r.ordinal,
                     token: copy_span(focus, r.token.start, r.token.len),
                 },
-            ),
-            view::<tables::ResearchTechnologies, _>(
-                &self.technologies,
-                |_| true,
-                |r| rows::ResearchTechnologyRow {
-                    country: r.country,
-                    technology_handle: r.technology_handle,
-                    classifier: r.classifier,
-                    level: r.level,
-                    researched: r.researched,
-                    progress_raw: r.progress_raw,
-                    ahead_reduction_years_raw: r.ahead_reduction_years_raw,
-                },
-            ),
-            view::<tables::ResearchSlots, _>(
+            )),
+            technologies,
+            wrap(view::<tables::ResearchSlots, _>(
                 &self.slots,
                 |_| true,
                 |r| rows::ResearchSlotRow {
@@ -3479,20 +2154,9 @@ impl Captured {
                     banked_days_raw: r.banked_days_raw,
                     applied_days_raw: r.applied_days_raw,
                 },
-            ),
-            view::<tables::TechnologyDefinitions, _>(
-                &self.definitions,
-                |r| valid(definitions, r.id_start, r.id_len),
-                |r| rows::TechnologyDefinitionRow {
-                    technology_handle: r.technology_handle,
-                    database_index: r.database_index,
-                    year: r.year,
-                    max_level: r.max_level,
-                    research_cost_raw: r.research_cost_raw,
-                    id: copy_span(definitions, r.id_start, r.id_len),
-                },
-            ),
-            view::<tables::Politics, _>(
+            )),
+            definitions,
+            wrap(view::<tables::Politics, _>(
                 &self.politics,
                 |_| true,
                 |r| rows::PoliticsRow {
@@ -3503,8 +2167,8 @@ impl Captured {
                     capital: r.row.capital,
                     ruling_party: r.row.ruling_party,
                 },
-            ),
-            country_view::<tables::PoliticalParties, _>(
+            )),
+            wrap(country_view::<tables::PoliticalParties, _>(
                 &self.parties,
                 &self.party_countries.first[..self.party_countries.len],
                 |r| valid(parties, r.token_start, r.token_len),
@@ -3515,8 +2179,8 @@ impl Captured {
                     is_ruling: r.is_ruling,
                     token: copy_span(parties, r.token_start, r.token_len),
                 },
-            ),
-            country_view::<tables::ActiveIdeas, _>(
+            )),
+            wrap(country_view::<tables::ActiveIdeas, _>(
                 &self.ideas,
                 &self.idea_countries.first[..self.idea_countries.len],
                 |r| valid(ideas, r.token_start, r.token_len),
@@ -3525,8 +2189,8 @@ impl Captured {
                     ordinal: r.ordinal,
                     token: copy_span(ideas, r.token_start, r.token_len),
                 },
-            ),
-            view::<tables::DecisionCounts, _>(
+            )),
+            wrap(view::<tables::DecisionCounts, _>(
                 &self.counts,
                 |_| true,
                 |r| rows::DecisionCountsRow {
@@ -3538,8 +2202,8 @@ impl Captured {
                     targeted_timed: r.row.targeted_timed,
                     targeted: r.row.targeted,
                 },
-            ),
-            country_view::<tables::Decisions, _>(
+            )),
+            wrap(country_view::<tables::Decisions, _>(
                 &self.decisions,
                 &self.decision_countries.first[..self.decision_countries.len],
                 |r| valid(decisions, r.token_start, r.token_len),
@@ -3555,8 +2219,8 @@ impl Captured {
                     numeric_target: r.numeric_target,
                     ignore: r.ignore,
                 },
-            ),
-            view::<tables::DynamicModifiers, _>(
+            )),
+            wrap(view::<tables::DynamicModifiers, _>(
                 &self.modifiers,
                 |r| {
                     valid(modifiers, r.token_start, r.token_len)
@@ -3572,8 +2236,8 @@ impl Captured {
                     token: copy_span(modifiers, r.token_start, r.token_len),
                     values: copy_span(values, r.value_start, r.value_len),
                 },
-            ),
-            view::<tables::PreferredTactics, _>(
+            )),
+            wrap(view::<tables::PreferredTactics, _>(
                 &self.tactics,
                 |r| valid(tactics, r.token_start, r.row.token_len),
                 |r| rows::PreferredTacticRow {
@@ -3581,8 +2245,8 @@ impl Captured {
                     tactic_id: r.row.tactic_id,
                     token: copy_span(tactics, r.token_start, r.row.token_len),
                 },
-            ),
-            view::<tables::PreferredTacticOperands, _>(
+            )),
+            wrap(view::<tables::PreferredTacticOperands, _>(
                 &self.operands,
                 |_| true,
                 |r| rows::PreferredTacticOperandsRow {
@@ -3595,8 +2259,8 @@ impl Captured {
                     accumulator_raw: r.accumulator_raw,
                     accumulator_entry_present: r.accumulator_entry_present,
                 },
-            ),
-            view::<tables::TechSharingGroups, _>(
+            )),
+            wrap(view::<tables::TechSharingGroups, _>(
                 &self.sharing,
                 |_| true,
                 |r| rows::TechSharingGroupRow {
@@ -3604,8 +2268,8 @@ impl Captured {
                     base_bonus: r.base_bonus,
                     member_count: r.member_count,
                 },
-            ),
-            view::<tables::TechSharingMembers, _>(
+            )),
+            wrap(view::<tables::TechSharingMembers, _>(
                 &self.sharing_members,
                 |_| true,
                 |r| rows::TechSharingMemberRow {
@@ -3614,8 +2278,8 @@ impl Captured {
                     country: r.country,
                     bonus: r.bonus,
                 },
-            ),
-            view::<tables::PowerBalances, _>(
+            )),
+            wrap(view::<tables::PowerBalances, _>(
                 &self.balances,
                 |r| {
                     [r.balance, r.left, r.right, r.trending, r.active_range]
@@ -3631,8 +2295,8 @@ impl Captured {
                     trending: balance_copy(r.trending),
                     active_range: balance_copy(r.active_range),
                 },
-            ),
-            view::<tables::PowerBalanceMembers, _>(
+            )),
+            wrap(view::<tables::PowerBalanceMembers, _>(
                 &self.balance_members,
                 |_| true,
                 |r| rows::PowerBalanceMemberRow {
@@ -3646,8 +2310,8 @@ impl Captured {
                     daily_flags: r.daily_flags,
                     weekly_flags: r.weekly_flags,
                 },
-            ),
-            view::<tables::PowerBalanceRanges, _>(
+            )),
+            wrap(view::<tables::PowerBalanceRanges, _>(
                 &self.ranges,
                 |r| balance_valid(r.identity),
                 |r| rows::PowerBalanceRangeRow {
@@ -3655,8 +2319,8 @@ impl Captured {
                     ordinal: r.ordinal,
                     identity: balance_copy(r.identity),
                 },
-            ),
-            view::<tables::PowerBalanceOverrides, _>(
+            )),
+            wrap(view::<tables::PowerBalanceOverrides, _>(
                 &self.overrides,
                 |r| balance_valid(r.side) && balance_valid(r.gfx),
                 |r| rows::PowerBalanceOverrideRow {
@@ -3665,14 +2329,385 @@ impl Captured {
                     side: balance_copy(r.side),
                     gfx: balance_copy(r.gfx),
                 },
-            ),
+            )),
         ]
     }
 }
 
 #[cfg(test)]
+pub(crate) fn research_shadow_fixture(progress: i64) -> Captured {
+    let mut captured = Captured::with_capacities(
+        &Capacities {
+            rows: [0; N],
+            ..Default::default()
+        },
+        &[CONSISTENCY_TARGET; N],
+    );
+    captured.technologies.rows = vec![
+        ctechnology::Row {
+            country: 2,
+            technology_handle: 7,
+            classifier: 5,
+            level: -1,
+            researched: 0xfe,
+            progress_raw: progress,
+            ahead_reduction_years_raw: i64::MIN,
+        },
+        ctechnology::Row {
+            country: 1,
+            technology_handle: 8,
+            ..Default::default()
+        },
+    ];
+    captured.technologies.outcome = Outcome::Rows { len: 2 };
+    captured.definitions.rows = vec![
+        ctechnology_template::Row {
+            technology_handle: 8,
+            database_index: 4,
+            year: 1936,
+            max_level: 3,
+            research_cost_raw: i64::MAX,
+            id_start: 0,
+            id_len: 3,
+        },
+        ctechnology_template::Row {
+            technology_handle: 7,
+            database_index: 5,
+            year: 1938,
+            max_level: 2,
+            research_cost_raw: 1000,
+            id_start: 3,
+            id_len: 3,
+        },
+    ];
+    captured.definitions.outcome = Outcome::Rows { len: 2 };
+    captured.definition_text.first[..6].copy_from_slice(&[0xff, 0, 1, b'a', 0, b'z']);
+    captured.definition_text.len = 6;
+    captured.definition_text.required = 6;
+    captured
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shadow_inputs(
+        captured: &Captured,
+        shadow: &mut ResearchShadow,
+        cached: Option<&[Arc<TableRows>; 2]>,
+        branch: BranchId,
+    ) -> [TableInput; N] {
+        let previous = cached.map_or([None, None], |rows| [Some(&rows[0]), Some(&rows[1])]);
+        captured.table_inputs(Some(&mut ResearchConversion::new(branch, shadow, previous)))
+    }
+
+    fn shared_research(inputs: &[TableInput; N]) -> [Arc<TableRows>; 2] {
+        [2, 4].map(|index| match &inputs[index] {
+            TableInput::SharedComplete(rows) => Arc::clone(rows),
+            _ => panic!("fixture expected shared complete Research rows"),
+        })
+    }
+
+    fn assert_views(captured: &Captured, inputs: &[TableInput; N]) {
+        for (actual, expected) in inputs.iter().zip(captured.tables()) {
+            match actual {
+                TableInput::SharedComplete(rows) => {
+                    assert_eq!(TableView::Complete((**rows).clone()), expected)
+                }
+                TableInput::Sampled(view) => assert_eq!(*view, expected),
+                TableInput::ComparedEqual(_) => panic!("Research does not use comparison tokens"),
+            }
+        }
+    }
+
+    #[test]
+    fn research_shadow_statistics_count_decisions_and_retained_capacity_across_invalidation() {
+        let first = research_shadow_fixture(10);
+        let mut shadow = ResearchShadow::default();
+        assert_eq!(shadow.statistics(), [ResearchShadowStats::default(); 2]);
+        let cached = shared_research(&shadow_inputs(&first, &mut shadow, None, 1));
+        shadow.technologies.rows.reserve(32);
+        shadow.definitions.rows.reserve(16);
+        shadow.definition_text.reserve(31);
+        let capacity = shadow.statistics();
+        assert_eq!(
+            capacity[0].row_capacity_bytes,
+            shadow.technologies.rows.capacity() * size_of::<ctechnology::Row>()
+        );
+        assert_eq!(
+            capacity[1].row_capacity_bytes,
+            shadow.definitions.rows.capacity() * size_of::<ctechnology_template::Row>()
+        );
+        assert_eq!(
+            capacity[1].arena_capacity_bytes,
+            shadow.definition_text.capacity()
+        );
+        assert!(
+            capacity[0].row_capacity_bytes
+                > first.technologies.rows.len() * size_of::<ctechnology::Row>()
+        );
+        assert!(
+            capacity
+                .iter()
+                .all(|table| table.hits == 0 && table.misses == 1)
+        );
+
+        let _hit = shadow_inputs(&first, &mut shadow, Some(&cached), 1);
+        let after_hit = shadow.statistics();
+        assert!(
+            after_hit
+                .iter()
+                .all(|table| table.hits == 1 && table.misses == 1)
+        );
+        let mut skipped = research_shadow_fixture(10);
+        skipped.technologies.outcome = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
+        };
+        skipped.definitions.outcome = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
+        };
+        let _skipped = shadow_inputs(&skipped, &mut shadow, Some(&cached), 1);
+        assert_eq!(shadow.statistics(), after_hit);
+
+        let mut failed = research_shadow_fixture(10);
+        failed.technologies.outcome = Outcome::Truncated {
+            len: 1,
+            unread_rows: 1,
+        };
+        failed.definitions.outcome = Outcome::Unavailable {
+            reason: "read failed",
+        };
+        let _failed = shadow_inputs(&failed, &mut shadow, Some(&cached), 1);
+        assert!(shadow.technologies.rows.is_empty());
+        assert!(shadow.definitions.rows.is_empty());
+        assert!(shadow.definition_text.is_empty());
+        assert!(
+            shadow
+                .statistics()
+                .iter()
+                .all(|table| table.hits == 1 && table.misses == 2)
+        );
+
+        let _branch = shadow_inputs(&first, &mut shadow, Some(&cached), 2);
+        for (current, capacity) in shadow.statistics().into_iter().zip(capacity) {
+            assert_eq!((current.hits, current.misses), (1, 3));
+            assert_eq!(current.row_capacity_bytes, capacity.row_capacity_bytes);
+            assert_eq!(current.arena_capacity_bytes, capacity.arena_capacity_bytes);
+        }
+    }
+
+    #[test]
+    fn research_shadow_hits_reuse_exact_arcs_and_do_not_copy_unused_capacity() {
+        let first = research_shadow_fixture(10);
+        let mut shadow = ResearchShadow::default();
+        let inputs = shadow_inputs(&first, &mut shadow, None, 1);
+        assert_views(&first, &inputs);
+        let cached = shared_research(&inputs);
+        assert_eq!(shadow.technologies.rows, first.technologies.rows);
+        assert_eq!(shadow.definition_text, [0xff, 0, 1, b'a', 0, b'z']);
+        let pointers = (
+            shadow.technologies.rows.as_ptr(),
+            shadow.definition_text.as_ptr(),
+        );
+        let mut current = research_shadow_fixture(10);
+        current.technologies.rows.push(ctechnology::Row::default());
+        current.definition_text.first[7] = 0x42;
+        let reused = shadow_inputs(&current, &mut shadow, Some(&cached), 1);
+        assert_views(&current, &reused);
+        for (previous, current) in cached.iter().zip(shared_research(&reused)) {
+            assert!(Arc::ptr_eq(previous, &current));
+        }
+        assert_eq!(
+            pointers,
+            (
+                shadow.technologies.rows.as_ptr(),
+                shadow.definition_text.as_ptr()
+            )
+        );
+    }
+
+    #[test]
+    fn research_shadow_every_technology_field_order_and_length_change_misses_exactly() {
+        for field in 0..10 {
+            let first = research_shadow_fixture(10);
+            let mut shadow = ResearchShadow::default();
+            let cached = shared_research(&shadow_inputs(&first, &mut shadow, None, 1));
+            let mut current = research_shadow_fixture(10);
+            let row = &mut current.technologies.rows[0];
+            match field {
+                0 => row.country = 3,
+                1 => row.technology_handle = 9,
+                2 => row.classifier ^= 1,
+                3 => row.level += 1,
+                4 => row.researched ^= 1,
+                5 => row.progress_raw += 1,
+                6 => row.ahead_reduction_years_raw += 1,
+                7 => current.technologies.rows.swap(0, 1),
+                8 => current.technologies.outcome = Outcome::Rows { len: 1 },
+                9 => current.technologies.outcome = Outcome::Rows { len: 0 },
+                _ => unreachable!(),
+            }
+            let inputs = shadow_inputs(&current, &mut shadow, Some(&cached), 1);
+            assert_views(&current, &inputs);
+            let next = shared_research(&inputs);
+            assert!(!Arc::ptr_eq(&cached[0], &next[0]), "field {field}");
+            assert!(Arc::ptr_eq(&cached[1], &next[1]));
+            let hit = shared_research(&shadow_inputs(&current, &mut shadow, Some(&next), 1));
+            assert!(Arc::ptr_eq(&next[0], &hit[0]));
+        }
+    }
+
+    #[test]
+    fn research_shadow_definition_fields_exact_text_and_arena_metadata_gate_reuse() {
+        for field in 0..13 {
+            let first = research_shadow_fixture(10);
+            let mut shadow = ResearchShadow::default();
+            let cached = shared_research(&shadow_inputs(&first, &mut shadow, None, 1));
+            let mut current = research_shadow_fixture(10);
+            let row = &mut current.definitions.rows[0];
+            match field {
+                0 => row.technology_handle = 9,
+                1 => row.database_index += 1,
+                2 => row.year += 1,
+                3 => row.max_level += 1,
+                4 => row.research_cost_raw -= 1,
+                5 => row.id_start += 1,
+                6 => row.id_len -= 1,
+                7 => current.definition_text.first[1] = 0xfe,
+                8 => current.definition_text.len += 1,
+                9 => current.definition_text.required += 1,
+                10 => current.definitions.rows.swap(0, 1),
+                11 => current.definitions.outcome = Outcome::Rows { len: 0 },
+                12 => {
+                    current.definition_text.len = 0;
+                    current.definition_text.required = 0;
+                    current.definitions.outcome = Outcome::Rows { len: 0 };
+                }
+                _ => unreachable!(),
+            }
+            let inputs = shadow_inputs(&current, &mut shadow, Some(&cached), 1);
+            assert_views(&current, &inputs);
+            let next = shared_research(&inputs);
+            assert!(Arc::ptr_eq(&cached[0], &next[0]));
+            assert!(!Arc::ptr_eq(&cached[1], &next[1]), "field {field}");
+        }
+    }
+
+    #[test]
+    fn research_shadow_failures_never_reuse_complete_rows_and_recover_through_conversion() {
+        for fault in 0..14 {
+            let first = research_shadow_fixture(10);
+            let mut shadow = ResearchShadow::default();
+            let cached = shared_research(&shadow_inputs(&first, &mut shadow, None, 1));
+            let mut current = research_shadow_fixture(10);
+            match fault {
+                0 => current.technologies.outcome = Outcome::Rows { len: 3 },
+                1 => {
+                    current.technologies.outcome = Outcome::Truncated {
+                        len: 1,
+                        unread_rows: 5,
+                    }
+                }
+                2 => {
+                    current.technologies.outcome = Outcome::Truncated {
+                        len: 1,
+                        unread_rows: 0,
+                    }
+                }
+                3 => {
+                    current.technologies.outcome = Outcome::Unavailable {
+                        reason: "native read failed",
+                    }
+                }
+                4 => current.technologies.rows[1] = current.technologies.rows[0],
+                5 => {
+                    current.technologies.checked = true;
+                    current.technologies.mismatches = 1;
+                }
+                6 => current.definitions.rows[0].id_start = usize::MAX,
+                7 => current.definition_text.len = current.definition_text.first.len() + 1,
+                8 => current.definitions.outcome = Outcome::Rows { len: 3 },
+                9 => {
+                    current.definitions.outcome = Outcome::Truncated {
+                        len: 1,
+                        unread_rows: 5,
+                    }
+                }
+                10 => {
+                    current.definitions.outcome = Outcome::Truncated {
+                        len: 1,
+                        unread_rows: 0,
+                    }
+                }
+                11 => {
+                    current.definitions.outcome = Outcome::Unavailable {
+                        reason: "native read failed",
+                    }
+                }
+                12 => current.definitions.rows[1] = current.definitions.rows[0],
+                13 => {
+                    current.definitions.checked = true;
+                    current.definitions.mismatches = 1;
+                }
+                _ => unreachable!(),
+            }
+            let inputs = shadow_inputs(&current, &mut shadow, Some(&cached), 1);
+            assert_views(&current, &inputs);
+            let failed = if fault < 6 { 0 } else { 1 };
+            assert!(matches!(inputs[[2, 4][failed]], TableInput::Sampled(_)));
+            let restored = shared_research(&shadow_inputs(&first, &mut shadow, Some(&cached), 1));
+            assert!(!Arc::ptr_eq(&cached[failed], &restored[failed]));
+        }
+    }
+
+    #[test]
+    fn research_shadow_rejects_wrong_cache_identity_and_new_branches_but_keeps_off_hours() {
+        let first = research_shadow_fixture(10);
+        let mut shadow = ResearchShadow::default();
+        let cached = shared_research(&shadow_inputs(&first, &mut shadow, None, 1));
+        let mut skipped = research_shadow_fixture(99);
+        skipped.technologies.outcome = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
+        };
+        skipped.definitions.outcome = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
+        };
+        assert_views(
+            &skipped,
+            &shadow_inputs(&skipped, &mut shadow, Some(&cached), 1),
+        );
+        let hit = shared_research(&shadow_inputs(&first, &mut shadow, Some(&cached), 1));
+        assert!(Arc::ptr_eq(&cached[0], &hit[0]));
+        let replacement = cached.each_ref().map(|rows| Arc::new((**rows).clone()));
+        let miss = shared_research(&shadow_inputs(&first, &mut shadow, Some(&replacement), 1));
+        assert!(!Arc::ptr_eq(&replacement[0], &miss[0]));
+        let branch = shared_research(&shadow_inputs(&first, &mut shadow, Some(&miss), 2));
+        assert!(!Arc::ptr_eq(&miss[0], &branch[0]));
+        let missing = shared_research(&shadow_inputs(&first, &mut shadow, None, 2));
+        assert!(!Arc::ptr_eq(&branch[0], &missing[0]));
+    }
+
+    #[test]
+    fn focus_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
+        use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
+        static LOCAL: Tracker = Tracker::new();
+        let mut job = FocusJob::default();
+        job.census.reserve_exact(3);
+        job.capacity_charge = Charge::empty_on(&LOCAL);
+        job.update_capacity_charge();
+        let expected = |job: &FocusJob| vector_bytes(&job.census);
+        let initial = LOCAL.snapshot().current.auxiliary_vectors;
+        assert_eq!(initial, expected(&job));
+        job.grow();
+        let grown = LOCAL.snapshot().current.auxiliary_vectors;
+        assert!(grown > initial);
+        assert_eq!(grown, expected(&job));
+        job.clear();
+        assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, grown);
+        drop(job);
+        assert_eq!(LOCAL.snapshot().current, Capacity::default());
+    }
+
     #[test]
     fn large_census_growth_leaves_quarter_capacity_free_without_power_of_two_inflation() {
         let mut rows = CaptureRows::<ctechnology::Row>::new(4, CONSISTENCY_TARGET);
@@ -3753,931 +2788,6 @@ mod tests {
     /// Two countries share one template object; rosters hold native holes and
     /// unsorted acquisition order; ids cover heap and inline storage.
     #[cfg(test)]
-    pub(crate) mod research_test_kit {
-        use super::super::*;
-        use engine::{ccountry, cgame_state};
-
-        pub(crate) const BASE: usize = 0x140000000;
-        pub(crate) const GAME_STATE: usize = 0x2000;
-        pub(crate) const C1: usize = 0x1000;
-        const C2: usize = 0x1100;
-        pub(crate) const S1: usize = 0x3000;
-        const S2: usize = 0x3100;
-        pub(crate) const TECH_A: usize = 0x4000;
-        pub(crate) const TECH_B: usize = 0x5000;
-        const TECH_A2: usize = 0x4100;
-        pub(crate) const TMPL_A: usize = 0x6000;
-        pub(crate) const TMPL_B: usize = 0x7000;
-        pub(crate) const SLOT_A: usize = 0x8000;
-        pub(crate) const SLOT_B: usize = 0x8100;
-        const SLOT_C: usize = 0x8200;
-        pub(crate) const ALL1: usize = 0x9000;
-        pub(crate) const DONE1: usize = 0x9100;
-        pub(crate) const SLOTS1: usize = 0x9200;
-        const ALL2: usize = 0x9300;
-        const DONE2: usize = 0x9400;
-        const SLOTS2: usize = 0x9500;
-        pub(crate) const HEAP_ID: usize = 0xa000;
-        const CTAB: usize = 0x2100;
-        const LTAB: usize = 0x2200;
-
-        pub(crate) fn memory(bytes: &[u8]) -> engine::memory::SliceMemory<'_> {
-            engine::memory::SliceMemory { base: C1, bytes }
-        }
-
-        pub(crate) struct Layout {
-            pub base: usize,
-            pub game_state: usize,
-        }
-
-        fn put<const N: usize>(bytes: &mut [u8], at: usize, value: [u8; N]) {
-            bytes[at - C1..at - C1 + N].copy_from_slice(&value);
-        }
-
-        fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
-            put(bytes, at, (data as u64).to_le_bytes());
-            put(bytes, at + 8, count.to_le_bytes());
-            put(bytes, at + 12, count.to_le_bytes());
-        }
-
-        pub(crate) fn fixture() -> (Vec<u8>, Layout) {
-            let mut bytes = vec![0; HEAP_ID + 16 - C1];
-            array(&mut bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 4);
-            array(&mut bytes, GAME_STATE + cgame_state::COUNTRY_LINKS, LTAB, 8);
-            put(&mut bytes, CTAB + 16, (C1 as u64).to_le_bytes());
-            put(&mut bytes, CTAB + 24, (C2 as u64).to_le_bytes());
-            put(&mut bytes, LTAB + 8, 2_u32.to_le_bytes());
-            put(&mut bytes, LTAB + 12, 3_u32.to_le_bytes());
-            put(&mut bytes, LTAB + 20, 3_u32.to_le_bytes());
-            for (country, id, status) in [(C1, 2_u32, S1), (C2, 5, S2)] {
-                put(
-                    &mut bytes,
-                    country,
-                    ((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
-                );
-                put(&mut bytes, country + ccountry::ID, id.to_le_bytes());
-                put(
-                    &mut bytes,
-                    country + ccountry::TECHNOLOGY_STATUS,
-                    (status as u64).to_le_bytes(),
-                );
-            }
-            for (status, country) in [(S1, C1), (S2, C2)] {
-                put(
-                    &mut bytes,
-                    status,
-                    ((BASE + ctechnology_status::VTABLE_RVA) as u64).to_le_bytes(),
-                );
-                put(
-                    &mut bytes,
-                    status + ctechnology_status::COUNTRY,
-                    (country as u64).to_le_bytes(),
-                );
-            }
-            array(&mut bytes, S1 + ctechnology_status::TECHNOLOGIES_DATA, ALL1, 3);
-            array(&mut bytes, S1 + ctechnology_status::RESEARCHED_DATA, DONE1, 1);
-            array(
-                &mut bytes,
-                S1 + ctechnology_status::RESEARCH_SLOTS_DATA,
-                SLOTS1,
-                2,
-            );
-            array(&mut bytes, S2 + ctechnology_status::TECHNOLOGIES_DATA, ALL2, 1);
-            array(&mut bytes, S2 + ctechnology_status::RESEARCHED_DATA, DONE2, 0);
-            array(
-                &mut bytes,
-                S2 + ctechnology_status::RESEARCH_SLOTS_DATA,
-                SLOTS2,
-                1,
-            );
-            put(&mut bytes, ALL1, (TECH_B as u64).to_le_bytes());
-            put(&mut bytes, ALL1 + 16, (TECH_A as u64).to_le_bytes());
-            put(&mut bytes, DONE1, (TECH_B as u64).to_le_bytes());
-            put(&mut bytes, SLOTS1, (SLOT_B as u64).to_le_bytes());
-            put(&mut bytes, SLOTS1 + 8, (SLOT_A as u64).to_le_bytes());
-            put(&mut bytes, ALL2, (TECH_A2 as u64).to_le_bytes());
-            put(&mut bytes, SLOTS2, (SLOT_C as u64).to_le_bytes());
-            for (pointer, template, status, handle, classifier, level, progress) in [
-                (TECH_A, TMPL_A, S1, 3_u32, 4_u32, -2_i32, i64::MIN + 9),
-                (TECH_B, TMPL_B, S1, 17, 0x100, 9, i64::MAX - 8),
-                (TECH_A2, TMPL_A, S2, 3, 4, 1, 42),
-            ] {
-                put(
-                    &mut bytes,
-                    pointer,
-                    ((BASE + ctechnology::VTABLE_RVA) as u64).to_le_bytes(),
-                );
-                put(
-                    &mut bytes,
-                    pointer + ctechnology::DEFINITION_INDEX,
-                    handle.to_le_bytes(),
-                );
-                put(
-                    &mut bytes,
-                    pointer + ctechnology::STATUS,
-                    (status as u64).to_le_bytes(),
-                );
-                put(
-                    &mut bytes,
-                    pointer + ctechnology::TEMPLATE,
-                    (template as u64).to_le_bytes(),
-                );
-                put(
-                    &mut bytes,
-                    pointer + ctechnology::CLASSIFIER,
-                    classifier.to_le_bytes(),
-                );
-                put(&mut bytes, pointer + ctechnology::LEVEL, level.to_le_bytes());
-                put(
-                    &mut bytes,
-                    pointer + ctechnology::LIVE_PROGRESS,
-                    progress.to_le_bytes(),
-                );
-                put(
-                    &mut bytes,
-                    pointer + ctechnology::AHEAD_REDUCTION_YEARS,
-                    (-8_123_456_789_i64).to_le_bytes(),
-                );
-            }
-            put(&mut bytes, HEAP_ID, *b"tech_alpha");
-            put(&mut bytes, HEAP_ID + 10, 0_u8.to_le_bytes());
-            put(
-                &mut bytes,
-                TMPL_A + ctechnology_template::ID,
-                (HEAP_ID as u64).to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                TMPL_A + ctechnology_template::ID + 16,
-                10_u64.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                TMPL_A + ctechnology_template::ID + 24,
-                32_u64.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                TMPL_A + ctechnology_template::DATABASE_INDEX,
-                23_i32.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                TMPL_A + ctechnology_template::TECHNOLOGY_HANDLE,
-                3_u32.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                TMPL_A + ctechnology_template::YEAR,
-                1940_i32.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                TMPL_A + ctechnology_template::MAX_LEVEL,
-                12_i32.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                TMPL_A + ctechnology_template::RESEARCH_COST,
-                7_654_321_234_i64.to_le_bytes(),
-            );
-            put(&mut bytes, TMPL_B + ctechnology_template::ID, *b"tb12");
-            put(
-                &mut bytes,
-                TMPL_B + ctechnology_template::ID + 16,
-                4_u64.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                TMPL_B + ctechnology_template::ID + 24,
-                15_u64.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                TMPL_B + ctechnology_template::DATABASE_INDEX,
-                37_i32.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                TMPL_B + ctechnology_template::TECHNOLOGY_HANDLE,
-                17_u32.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                TMPL_B + ctechnology_template::YEAR,
-                1936_i32.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                TMPL_B + ctechnology_template::MAX_LEVEL,
-                5_i32.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                TMPL_B + ctechnology_template::RESEARCH_COST,
-                100_000_i64.to_le_bytes(),
-            );
-            for (pointer, technology, status, handle, index) in [
-                (SLOT_A, TECH_A, S1, 3_u32, 0_u32),
-                (SLOT_B, 0, S1, cresearch_slot::IDLE_HANDLE, 1),
-                (SLOT_C, 0, S2, cresearch_slot::IDLE_HANDLE, 0),
-            ] {
-                put(
-                    &mut bytes,
-                    pointer,
-                    ((BASE + cresearch_slot::VTABLE_RVA) as u64).to_le_bytes(),
-                );
-                put(
-                    &mut bytes,
-                    pointer + cresearch_slot::STATUS,
-                    (status as u64).to_le_bytes(),
-                );
-                put(
-                    &mut bytes,
-                    pointer + cresearch_slot::TECHNOLOGY_HANDLE,
-                    handle.to_le_bytes(),
-                );
-                put(
-                    &mut bytes,
-                    pointer + cresearch_slot::TECHNOLOGY,
-                    (technology as u64).to_le_bytes(),
-                );
-                put(
-                    &mut bytes,
-                    pointer + cresearch_slot::INDEX,
-                    index.to_le_bytes(),
-                );
-                put(
-                    &mut bytes,
-                    pointer + cresearch_slot::RESEARCH_SPEED,
-                    5_123_456_789_i64.to_le_bytes(),
-                );
-                put(
-                    &mut bytes,
-                    pointer + cresearch_slot::BANKED_DAYS,
-                    (-5_234_567_890_i64).to_le_bytes(),
-                );
-                put(
-                    &mut bytes,
-                    pointer + cresearch_slot::APPLIED_DAYS,
-                    6_345_678_901_i64.to_le_bytes(),
-                );
-            }
-            (bytes, Layout { base: BASE, game_state: GAME_STATE })
-        }
-
-        pub(crate) struct Direct {
-            pub tech_rows: Vec<ctechnology::Row>,
-            pub tech_outcome: Outcome,
-            pub slot_rows: Vec<cresearch_slot::Row>,
-            pub slot_outcome: Outcome,
-            pub def_rows: Vec<ctechnology_template::Row>,
-            pub def_outcome: Outcome,
-            pub names: Vec<u8>,
-            pub dict_required: usize,
-        }
-
-        /// Typed reference path: the existing `acquire` with pilot tables only.
-        pub(crate) fn direct(
-            memory: &impl Memory,
-            layout: &Layout,
-            tech_cap: usize,
-            slot_cap: usize,
-            def_cap: usize,
-            dict_cap: usize,
-            names_cap: usize,
-        ) -> Direct {
-            let mut tech = vec![ctechnology::Row::default(); tech_cap];
-            let mut slots = vec![cresearch_slot::Row::default(); slot_cap];
-            let mut defs = vec![ctechnology_template::Row::default(); def_cap];
-            let mut names = vec![0; names_cap];
-            let mut entries = vec![ctechnology_template::Entry::default(); dict_cap];
-            let buffers = Buffers {
-                focus: &mut [],
-                completed: &mut [],
-                technologies: &mut tech,
-                slots: &mut slots,
-                definitions: &mut defs,
-                politics: &mut [],
-                parties: &mut [],
-                ideas: &mut [],
-                counts: &mut [],
-                decisions: &mut [],
-                modifiers: &mut [],
-                tactics: &mut [],
-                operands: &mut [],
-                sharing: &mut [],
-                sharing_members: &mut [],
-                balances: &mut [],
-                balance_members: &mut [],
-                ranges: &mut [],
-                overrides: &mut [],
-                focus_text: &mut [],
-                definition_text: &mut names,
-                party_text: &mut [],
-                idea_text: &mut [],
-                decision_text: &mut [],
-                modifier_text: &mut [],
-                modifier_values: &mut [],
-                tactic_text: &mut [],
-                balance_text: &mut [],
-                party_countries: &mut [],
-                idea_countries: &mut [],
-                decision_countries: &mut [],
-                dictionary: &mut entries,
-            };
-            let mut enabled = [false; N];
-            enabled[2] = true;
-            enabled[3] = true;
-            let observation =
-                acquire(memory, layout.base, layout.game_state, buffers, &enabled);
-            Direct {
-                tech_rows: tech[..observation.outcomes[2].len()].to_vec(),
-                tech_outcome: observation.outcomes[2],
-                slot_rows: slots[..observation.outcomes[3].len()].to_vec(),
-                slot_outcome: observation.outcomes[3],
-                def_rows: defs[..observation.outcomes[4].len()].to_vec(),
-                def_outcome: observation.outcomes[4],
-                names: names[..observation.lens[1]].to_vec(),
-                dict_required: observation.dictionary_required,
-            }
-        }
-
-        /// Split path under test: raw copy on `memory`, decode into `pilot`.
-        pub(crate) fn split(
-            memory: &impl Memory,
-            layout: &Layout,
-            pilot: &mut Captured,
-            with_second: bool,
-        ) -> (CopyReport, ResearchJob) {
-            let mut needed = [false; TABLE_COUNT];
-            needed[TABLES[2].index()] = true;
-            needed[TABLES[3].index()] = true;
-            needed[TABLES[4].index()] = true;
-            let mut first = ResearchJob::new();
-            let mut second = with_second.then(|| Box::new(ResearchJob::new()));
-            let ctx = CopyContext {
-                base: layout.base,
-                game_state: layout.game_state,
-                tech_cap: pilot.tech_rows_cap(),
-                slot_cap: pilot.slot_rows_cap(),
-                needed,
-            };
-            let report = pilot.copy_research_refresh(
-                memory,
-                ctx,
-                &mut first,
-                second.as_mut().map(|job| job.as_mut()),
-            );
-            assert!(report.raw_ok);
-            let mut ticks = [0; 3];
-            pilot.decode_research_payload(layout.base, &first, &mut ticks);
-            (report, first)
-        }
-
-        pub(crate) fn assert_matches_direct(pilot: &Captured, direct: &Direct) {
-            assert_eq!(pilot.technologies.outcome, direct.tech_outcome);
-            assert_eq!(
-                &pilot.technologies.rows[..direct.tech_outcome.len()],
-                direct.tech_rows.as_slice()
-            );
-            assert_eq!(pilot.slots.outcome, direct.slot_outcome);
-            assert_eq!(
-                &pilot.slots.rows[..direct.slot_outcome.len()],
-                direct.slot_rows.as_slice()
-            );
-            assert_eq!(pilot.definitions.outcome, direct.def_outcome);
-            assert_eq!(
-                &pilot.definitions.rows[..direct.def_outcome.len()],
-                direct.def_rows.as_slice()
-            );
-            assert_eq!(
-                &pilot.definition_text.first[..pilot.definition_text.len],
-                direct.names.as_slice()
-            );
-            assert_eq!(pilot.dictionary_required, direct.dict_required);
-        }
-
-        pub(crate) fn pilot_captured() -> Captured {
-            Captured::with_capacities(
-                &Capacities::default(),
-                &[CONSISTENCY_TARGET; TABLE_COUNT],
-            )
-        }
-    }
-
-    use research_test_kit as kit;
-
-    fn kit_memory(bytes: &[u8]) -> engine::memory::SliceMemory<'_> {
-        kit::memory(bytes)
-    }
-
-    #[test]
-    fn copy_decode_matches_typed_rows_including_holes_order_and_shared_templates() {
-        let (bytes, layout) = kit::fixture();
-        let memory = kit_memory(&bytes);
-        let direct = kit::direct(&memory, &layout, 8, 4, 8, 32, 64);
-        assert_eq!(direct.tech_outcome, Outcome::Rows { len: 3 });
-        // Native roster order is retained; the researched flag rides the
-        // independent census, not the classifier.
-        assert_eq!(
-            direct
-                .tech_rows
-                .iter()
-                .map(|row| (row.country, row.technology_handle, row.researched))
-                .collect::<Vec<_>>(),
-            [(2, 17, 1), (2, 3, 0), (5, 3, 0)]
-        );
-        assert_eq!(direct.slot_outcome, Outcome::Rows { len: 3 });
-        assert_eq!(direct.def_outcome, Outcome::Rows { len: 2 });
-        let mut pilot = kit::pilot_captured();
-        let (report, _) = kit::split(&memory, &layout, &mut pilot, true);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 3]);
-        assert!(report.raw_bytes.iter().all(|&bytes| bytes > 0));
-        kit::assert_matches_direct(&pilot, &direct);
-        // Checked bookkeeping mirrors the typed double read on a match.
-        assert!(pilot.technologies.checked);
-        assert_eq!(pilot.technologies.mismatches, 0);
-        assert!(pilot.slots.checked);
-        assert!(pilot.definitions.checked);
-    }
-
-    #[test]
-    fn research_batches_instances_and_reads_shared_definitions_once_per_pass() {
-        use engine::Memory;
-        use std::cell::Cell;
-        struct Counts<'a> {
-            inner: engine::memory::SliceMemory<'a>,
-            headers: Cell<usize>,
-            batch: Cell<usize>,
-        }
-        impl Memory for Counts<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == kit::TMPL_A + ctechnology_template::ID && output.len() == 32 {
-                    self.headers.set(self.headers.get() + 1);
-                }
-                self.inner.copy(address, output)
-            }
-            fn copy_records(&self, pointers: &[usize], fields: &[engine::memory::RecordField],
-                stride: usize, output: &mut [u8]) -> usize {
-                if stride == ctechnology::INSTANCE_BYTES {
-                    self.batch.set(self.batch.get().max(pointers.len()));
-                }
-                // Preserve field-order failures while keeping reads visible
-                // to the definition-header counter above.
-                let mut completed = 0;
-                for (index, pointer) in pointers.iter().enumerate() {
-                    for field in fields {
-                        let Some(address) = pointer.checked_add(field.source_offset) else { return completed; };
-                        let start = index * stride + field.destination_offset;
-                        if !self.copy(address, &mut output[start..start + field.len]) { return completed; }
-                        completed += 1;
-                    }
-                }
-                completed
-            }
-        }
-        let (bytes, layout) = kit::fixture();
-        let memory = Counts { inner: kit_memory(&bytes), headers: Cell::new(0), batch: Cell::new(0) };
-        let direct = kit::direct(&kit_memory(&bytes), &layout, 8, 4, 8, 32, 64);
-        let mut pilot = kit::pilot_captured();
-        let (report, _) = kit::split(&memory, &layout, &mut pilot, true);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 3]);
-        kit::assert_matches_direct(&pilot, &direct);
-        assert_eq!(memory.headers.get(), 2, "one shared header in each independent pass");
-        assert_eq!(memory.batch.get(), 2, "both non-null first-country instances share a gather");
-    }
-
-    #[test]
-    fn research_copy_sizes_cover_documented_read_set() {
-        // S3: every Memory::copy size the research copy pass issues,
-        // recorded through the real pass. Array headers (16), words (4/8),
-        // msvc_string headers (32) with heap payloads and terminators (1),
-        // token handles and template dictionary entries. Alignment follows
-        // the engine layout (headers 8-aligned, strings byte-packed).
-        use engine::Memory;
-        use std::collections::BTreeSet;
-        struct Recorder<'a> {
-            inner: engine::memory::SliceMemory<'a>,
-            sizes: std::cell::RefCell<BTreeSet<usize>>,
-        }
-        impl Memory for Recorder<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.sizes.borrow_mut().insert(output.len());
-                self.inner.copy(address, output)
-            }
-        }
-        let (bytes, layout) = kit::fixture();
-        let inner = kit::memory(&bytes);
-        let memory = Recorder { inner, sizes: std::cell::RefCell::new(BTreeSet::new()) };
-        let mut pilot = kit::pilot_captured();
-        let mut needed = [false; TABLE_COUNT];
-        needed[TABLES[2].index()] = true;
-        needed[TABLES[3].index()] = true;
-        needed[TABLES[4].index()] = true;
-        let ctx = CopyContext {
-            base: layout.base,
-            game_state: layout.game_state,
-            tech_cap: pilot.tech_rows_cap(),
-            slot_cap: pilot.slot_rows_cap(),
-            needed,
-        };
-        let mut first = ResearchJob::new();
-        let report = pilot.copy_research_refresh(&memory, ctx, &mut first, None);
-        assert!(report.raw_ok);
-        let sizes = memory.sizes.borrow().clone();
-        for required in [1, 4, 8, 16, 32] {
-            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
-        }
-    }
-
-    #[test]
-    fn research_truncation_matrix_matches_direct_with_same_caps() {
-        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-        // copy→decode against the SAME memory with the SAME pooled caps,
-        // asserting identical outcome (incl. len/unread) and identical rows.
-        // Fixture holds 3 technologies, 3 slots, 2 deduplicated definitions
-        // (TECH_A and TECH_A2 share TMPL_A); tech cap 2 is the
-        // overflow-by-one arm (total 3 == cap+1), def cap 1 the overflow arm
-        // (total 2 == cap+1), cap 0 the zero/massive arm. u32 unread
-        // saturation is not reachable and is covered by the walk's own
-        // saturating arithmetic. Dedup arms vary the template dictionary
-        // capacity with rows ample, proving shared-template accounting
-        // agrees on both paths.
-        let (bytes, layout) = kit::fixture();
-        let memory = kit_memory(&bytes);
-        for (tech, slot, def) in [(0, 0, 0), (1, 1, 1), (2, 2, 1), (3, 3, 2), (4, 4, 3), (8, 4, 8)] {
-            let direct = kit::direct(&memory, &layout, tech, slot, def, 32, 64);
-            let mut pilot = kit::pilot_captured();
-            pilot.technologies.rows.truncate(tech);
-            pilot.slots.rows.truncate(slot);
-            pilot.definitions.rows.truncate(def);
-            let (report, _) = kit::split(&memory, &layout, &mut pilot, true);
-            assert!(report.raw_ok, "tech={tech} slot={slot} def={def}");
-            kit::assert_matches_direct(&pilot, &direct);
-        }
-        // Exact-fit arm pins Rows with all instances present.
-        let direct = kit::direct(&memory, &layout, 3, 3, 2, 32, 64);
-        assert_eq!(direct.tech_outcome, Outcome::Rows { len: 3 });
-        assert_eq!(direct.slot_outcome, Outcome::Rows { len: 3 });
-        assert_eq!(direct.def_outcome, Outcome::Rows { len: 2 });
-        // Dedup arms: dictionary capacity pressure fails definitions
-        // identically without losing instances.
-        for dict in [0, 1, 2, 32] {
-            let direct = kit::direct(&memory, &layout, 8, 4, 8, dict, 64);
-            let mut pilot = kit::pilot_captured();
-            pilot.dictionary.truncate(dict);
-            pilot.dictionary_second.truncate(dict);
-            let (report, _) = kit::split(&memory, &layout, &mut pilot, true);
-            assert!(report.raw_ok, "dict={dict}");
-            kit::assert_matches_direct(&pilot, &direct);
-        }
-    }
-
-    #[test]
-    fn copy_decode_matches_truncation_and_exact_required_counts() {
-        let (bytes, layout) = kit::fixture();
-        let memory = kit_memory(&bytes);
-        let direct = kit::direct(&memory, &layout, 1, 1, 1, 32, 64);
-        // Each country truncates against its remaining slice; the second
-        // country's empty remainder still counts its omitted row.
-        assert_eq!(
-            direct.tech_outcome,
-            Outcome::Truncated { len: 1, unread_rows: 2 }
-        );
-        assert_eq!(
-            direct.slot_outcome,
-            Outcome::Truncated { len: 1, unread_rows: 2 }
-        );
-        assert_eq!(
-            direct.def_outcome,
-            Outcome::Unavailable {
-                reason: "technology definition source census incomplete"
-            }
-        );
-        let mut pilot = kit::pilot_captured();
-        pilot.technologies.rows.truncate(1);
-        pilot.slots.rows.truncate(1);
-        pilot.definitions.rows.truncate(1);
-        let (report, _) = kit::split(&memory, &layout, &mut pilot, true);
-        assert!(report.raw_ok);
-        kit::assert_matches_direct(&pilot, &direct);
-    }
-
-    #[test]
-    fn copy_decode_matches_faults_with_identical_reasons() {
-        // Each mutation faults one partition; both paths must agree on the
-        // outcome reason while the other partitions stay readable.
-        let cases: &[(&str, usize, u64)] = &[
-            ("status vtable", kit::S1, 0),
-            ("tech header", kit::ALL1 + 8, 0),
-            ("instance vtable", kit::TECH_A, 0),
-            ("researched count", kit::DONE1 + 12, 99),
-            ("slot header", kit::SLOTS1 + 8, 0),
-            ("slot vtable", kit::SLOT_A, 0),
-            ("template handle", kit::TMPL_A + 60, 99),
-        ];
-        for (name, address, value) in cases {
-            let (mut bytes, layout) = kit::fixture();
-            let offset = address - kit::C1;
-            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
-            let memory = kit_memory(&bytes);
-            let direct = kit::direct(&memory, &layout, 8, 4, 8, 32, 64);
-            let mut pilot = kit::pilot_captured();
-            let (report, _) = kit::split(&memory, &layout, &mut pilot, true);
-            assert!(report.raw_ok, "{name}");
-            assert_eq!(pilot.technologies.outcome, direct.tech_outcome, "{name}");
-            assert_eq!(pilot.slots.outcome, direct.slot_outcome, "{name}");
-            assert_eq!(pilot.definitions.outcome, direct.def_outcome, "{name}");
-            if matches!(direct.tech_outcome, Outcome::Rows { .. }) {
-                assert_eq!(
-                    &pilot.technologies.rows[..direct.tech_outcome.len()],
-                    direct.tech_rows.as_slice(),
-                    "{name}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn researched_second_census_faults_match() {
-        // Null researched pointer invalidates the whole technology table.
-        let (mut bytes, layout) = kit::fixture();
-        for offset in 0..8 {
-            bytes[kit::DONE1 - kit::C1 + offset] = 0;
-        }
-        let memory = kit_memory(&bytes);
-        let direct = kit::direct(&memory, &layout, 8, 4, 8, 32, 64);
-        assert_eq!(
-            direct.tech_outcome,
-            Outcome::Unavailable {
-                reason: "researched technology pointer unreadable or null"
-            }
-        );
-        let mut pilot = kit::pilot_captured();
-        let (_, _) = kit::split(&memory, &layout, &mut pilot, true);
-        assert_eq!(pilot.technologies.outcome, direct.tech_outcome);
-        // Progress torn between the roster and the census disagrees: point the
-        // researched roster at a clone of B with different progress, as a
-        // same-hour mutation would.
-        let (mut bytes, layout) = kit::fixture();
-        const CLONE_B: usize = 0x4400;
-        let from = kit::TECH_B - kit::C1;
-        let to = CLONE_B - kit::C1;
-        bytes.copy_within(from..from + 0x200, to);
-        bytes[to + ctechnology::LIVE_PROGRESS] ^= 0xff;
-        bytes[kit::DONE1 - kit::C1..kit::DONE1 - kit::C1 + 8]
-            .copy_from_slice(&(CLONE_B as u64).to_le_bytes());
-        let memory = kit_memory(&bytes);
-        let direct = kit::direct(&memory, &layout, 8, 4, 8, 32, 64);
-        assert_eq!(
-            direct.tech_outcome,
-            Outcome::Unavailable {
-                reason: "researched technology disagrees with country roster"
-            }
-        );
-        let mut pilot = kit::pilot_captured();
-        let (_, _) = kit::split(&memory, &layout, &mut pilot, true);
-        assert_eq!(pilot.technologies.outcome, direct.tech_outcome);
-    }
-
-    #[test]
-    fn slot_identity_faults_match() {
-        // Idle slot with a non-idle handle, duplicate ordinals, and a bad
-        // ordinal each invalidate the slots table identically on both paths.
-        let idle = kit::SLOT_B - kit::C1 + cresearch_slot::TECHNOLOGY_HANDLE;
-        let index_a = kit::SLOT_A - kit::C1 + cresearch_slot::INDEX;
-        let cases: &[(&str, usize, u32)] = &[
-            ("idle handle", idle, 7),
-            ("duplicate ordinal", index_a, 1),
-            ("bad ordinal", index_a, 99),
-        ];
-        for (name, offset, value) in cases {
-            let (mut bytes, layout) = kit::fixture();
-            bytes[*offset..*offset + 4].copy_from_slice(&value.to_le_bytes());
-            let memory = kit_memory(&bytes);
-            let direct = kit::direct(&memory, &layout, 8, 4, 8, 32, 64);
-            assert!(
-                matches!(direct.slot_outcome, Outcome::Unavailable { .. }),
-                "{name}"
-            );
-            let mut pilot = kit::pilot_captured();
-            let (_, _) = kit::split(&memory, &layout, &mut pilot, true);
-            assert_eq!(pilot.slots.outcome, direct.slot_outcome, "{name}");
-            assert_eq!(pilot.technologies.outcome, direct.tech_outcome, "{name}");
-        }
-    }
-
-    #[test]
-    fn dictionary_pressure_matches() {
-        // Tiny dictionary capacity fails definitions without losing instances.
-        let (bytes, layout) = kit::fixture();
-        let memory = kit_memory(&bytes);
-        let direct = kit::direct(&memory, &layout, 8, 4, 8, 4, 64);
-        assert!(matches!(
-            direct.def_outcome,
-            Outcome::Unavailable { .. }
-        ));
-        assert_eq!(direct.tech_outcome, Outcome::Rows { len: 3 });
-        let mut pilot = kit::pilot_captured();
-        pilot.dictionary.truncate(4);
-        pilot.dictionary_second.truncate(4);
-        let (_, _) = kit::split(&memory, &layout, &mut pilot, true);
-        assert_eq!(pilot.definitions.outcome, direct.def_outcome);
-        assert_eq!(pilot.technologies.outcome, direct.tech_outcome);
-        // Small name arenas truncate definitions with exact required bytes.
-        let direct = kit::direct(&memory, &layout, 8, 4, 8, 32, 10);
-        assert_eq!(
-            direct.def_outcome,
-            Outcome::Truncated { len: 1, unread_rows: 1 }
-        );
-        assert_eq!(direct.names, b"tb12");
-        let mut pilot = kit::pilot_captured();
-        pilot.definition_text.first.truncate(10);
-        let (_, _) = kit::split(&memory, &layout, &mut pilot, true);
-        kit::assert_matches_direct(&pilot, &direct);
-        // Growth accounting stays safe: the split may retain redundant
-        // per-occurrence id bytes from its second pass, so required only
-        // needs to cover the typed walk's exact need, never less.
-        assert!(pilot.definition_text.required >= 14);
-    }
-
-    #[test]
-    fn raw_compare_matches_per_partition_and_counts_mismatch_once() {
-        let (bytes, layout) = kit::fixture();
-        let memory = kit_memory(&bytes);
-        let mut pilot = kit::pilot_captured();
-        let (report, _) = kit::split(&memory, &layout, &mut pilot, true);
-        assert_eq!(report.matched, [true; 3]);
-        // One flipped TECH_B byte faults only the technology partition: TECH_B
-        // is never slot-linked and its template spans are untouched. The two
-        // passes read different frozen memories, as live tearing would show
-        // them at different times.
-        let (mut mutated, layout) = kit::fixture();
-        mutated[kit::TECH_B - kit::C1 + ctechnology::LIVE_PROGRESS] ^= 0x01;
-        let (clean, _) = kit::fixture();
-        let first_memory = kit_memory(&mutated);
-        let second_memory = kit_memory(&clean);
-        let pilot = kit::pilot_captured();
-        let tech_cap = pilot.tech_rows_cap();
-        let slot_cap = pilot.slot_rows_cap();
-        let mut first = ResearchJob::new();
-        let mut second = ResearchJob::new();
-        copy_research_pass(
-            &first_memory,
-            layout.base,
-            layout.game_state,
-            tech_cap,
-            slot_cap,
-            &mut first,
-        );
-        copy_research_pass(
-            &second_memory,
-            layout.base,
-            layout.game_state,
-            tech_cap,
-            slot_cap,
-            &mut second,
-        );
-        assert!(!tech_partition_equal(&first, &second));
-        assert!(slots_partition_equal(&first, &second));
-        assert!(definitions_partition_equal(&first, &second));
-        // The full method wires the same verdict into the existing mismatch
-        // bookkeeping: technologies checked once, slots and definitions clean.
-        // TECH_B progress is read twice per pass (roster plus researched
-        // census) and never appears in slot or template spans, so flipping
-        // its third read replays a same-hour live mutation confined to the
-        // technology partition.
-        struct Tearing<'a> {
-            clean: engine::memory::SliceMemory<'a>,
-            mutated: engine::memory::SliceMemory<'a>,
-            progress_reads: std::cell::Cell<usize>,
-        }
-        impl engine::Memory for Tearing<'_> {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                let progress = kit::TECH_B + ctechnology::LIVE_PROGRESS;
-                if address <= progress && progress < address + destination.len() {
-                    let reads = self.progress_reads.get();
-                    self.progress_reads.set(reads + 1);
-                    let memory = if reads < 2 { &self.clean } else { &self.mutated };
-                    return memory.copy(address, destination);
-                }
-                self.clean.copy(address, destination)
-            }
-        }
-        let tearing = Tearing {
-            clean: kit_memory(&clean),
-            mutated: kit_memory(&mutated),
-            progress_reads: std::cell::Cell::new(0),
-        };
-        let mut pilot = kit::pilot_captured();
-        let mut first = ResearchJob::new();
-        let mut second = ResearchJob::new();
-        let mut needed = [false; TABLE_COUNT];
-        needed[TABLES[2].index()] = true;
-        needed[TABLES[3].index()] = true;
-        needed[TABLES[4].index()] = true;
-        let tech_cap = pilot.tech_rows_cap();
-        let slot_cap = pilot.slot_rows_cap();
-        let ctx = CopyContext {
-            base: layout.base,
-            game_state: layout.game_state,
-            tech_cap,
-            slot_cap,
-            needed,
-        };
-        let report = pilot.copy_research_refresh(
-            &tearing,
-            ctx,
-            &mut first,
-            Some(&mut second),
-        );
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [false, true, true]);
-        assert_eq!(pilot.technologies.mismatches, 1);
-        assert_eq!(pilot.slots.mismatches, 0);
-        assert_eq!(pilot.definitions.mismatches, 0);
-        // Without a second copy no check is recorded, mirroring completed
-        // windows: nothing checked, nothing mismatched.
-        let mut pilot = kit::pilot_captured();
-        let mut first = ResearchJob::new();
-        let needed = [false; TABLE_COUNT];
-        let tech_cap = pilot.tech_rows_cap();
-        let slot_cap = pilot.slot_rows_cap();
-        let ctx = CopyContext {
-            base: layout.base,
-            game_state: layout.game_state,
-            tech_cap,
-            slot_cap,
-            needed,
-        };
-        let report = pilot.copy_research_refresh(&second_memory, ctx, &mut first, None);
-        assert!(report.raw_ok);
-        assert!(!pilot.technologies.checked);
-        assert_eq!(pilot.technologies.mismatches, 0);
-    }
-
-    #[test]
-    fn stable_but_invalid_bytes_count_the_check_with_unavailable_rows() {
-        // Readable-but-wrong vtable faults decode deterministically on both
-        // copies: outcomes agree as Unavailable while the check still counts
-        // the refresh (documented window nuance, pinned by this test).
-        let (mut bytes, layout) = kit::fixture();
-        bytes[kit::S1 - kit::C1] ^= 0xff;
-        let memory = kit_memory(&bytes);
-        let direct = kit::direct(&memory, &layout, 8, 4, 8, 32, 64);
-        assert!(matches!(
-            direct.tech_outcome,
-            Outcome::Unavailable { .. }
-        ));
-        let mut pilot = kit::pilot_captured();
-        let (report, _) = kit::split(&memory, &layout, &mut pilot, true);
-        assert!(report.matched[0]);
-        assert_eq!(pilot.technologies.outcome, direct.tech_outcome);
-    }
-
-    #[test]
-    fn staging_overflow_reports_fallback_without_blocking() {
-        let (bytes, layout) = kit::fixture();
-        let memory = kit_memory(&bytes);
-        let mut pilot = kit::pilot_captured();
-        // Zero-capacity staging cannot hold any copy: the report declines the
-        // payload so the caller falls back to the typed walk.
-        let mut tiny = ResearchJob {
-            metas: Vec::new(),
-            tech_pool: Vec::new(),
-            researched_pool: Vec::new(),
-            templates: Vec::new(),
-            template_index: Vec::new(),
-            template_seen_country: Vec::new(),
-            id_pool: Vec::new(),
-            slots: Vec::new(),
-            reader_err: None,
-            country_err: None,
-            second_max_handle_plus_one: 0,
-            second_id_bytes: 0,
-            overflowed: false,
-        };
-        let mut needed = [false; TABLE_COUNT];
-        needed[TABLES[2].index()] = true;
-        let tech_cap = pilot.tech_rows_cap();
-        let slot_cap = pilot.slot_rows_cap();
-        let ctx = CopyContext {
-            base: layout.base,
-            game_state: layout.game_state,
-            tech_cap,
-            slot_cap,
-            needed,
-        };
-        let report = pilot.copy_research_refresh(&memory, ctx, &mut tiny, None);
-        assert!(!report.raw_ok);
-        // The typed path still reads the same fixture cleanly.
-        let direct = kit::direct(&memory, &layout, 8, 4, 8, 32, 64);
-        assert_eq!(direct.tech_outcome, Outcome::Rows { len: 3 });
-    }
-
     /// Shared synthetic address space for the hourly focus copy/decode split
     /// harness: two authenticated countries with inline, absent and heap focus
     /// tokens plus one- and two-entry completed rosters.
@@ -4685,7 +2795,7 @@ mod tests {
         use super::{Capacities, Captured, FocusCopyContext, FocusJob};
         use engine::memory::SliceMemory;
         use engine::{
-            ccountry, ccontinuous_national_focus, cgame_state, cnational_focus,
+            ccontinuous_national_focus, ccountry, cgame_state, cnational_focus,
             cnational_focus_progress, cnational_focus_tree,
         };
         use replay::frame::TABLE_COUNT;
@@ -4773,8 +2883,14 @@ mod tests {
                 );
                 self.w64(root + cnational_focus_progress::PROGRESS, progress as u64);
                 self.bytes[root - MEM + cnational_focus_progress::PAUSED] = paused;
-                self.w32(root + cnational_focus_progress::COMPLETED_COUNT, count as u32);
-                self.w64(root + cnational_focus_progress::COMPLETED_DATA, roster as u64);
+                self.w32(
+                    root + cnational_focus_progress::COMPLETED_COUNT,
+                    count as u32,
+                );
+                self.w64(
+                    root + cnational_focus_progress::COMPLETED_DATA,
+                    roster as u64,
+                );
                 self.w32(
                     root + cnational_focus_progress::COMPLETED_DATA + 8,
                     roster_count,
@@ -4921,11 +3037,9 @@ mod tests {
         small.rows[0] = 1;
         small.rows[1] = 1;
         small.focus_text = 20;
-        let mut typed_small =
-            Captured::with_capacities(&small, &[0u16; TABLE_COUNT]);
+        let mut typed_small = Captured::with_capacities(&small, &[0u16; TABLE_COUNT]);
         typed_small.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
-        let mut replayed_small =
-            Captured::with_capacities(&small, &[0u16; TABLE_COUNT]);
+        let mut replayed_small = Captured::with_capacities(&small, &[0u16; TABLE_COUNT]);
         replayed_small.focus_raw_mode = true;
         let (_, small_first) = Fixture::copy_first(&mut replayed_small, &memory, None);
         replayed_small.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
@@ -4978,7 +3092,10 @@ mod tests {
             let mut replayed = Captured::with_capacities(&caps, &[0u16; TABLE_COUNT]);
             replayed.focus_raw_mode = true;
             let (report, first) = Fixture::copy_first(&mut replayed, &memory, None);
-            assert!(report.raw_ok, "focus={focus_rows} completed={completed_rows}");
+            assert!(
+                report.raw_ok,
+                "focus={focus_rows} completed={completed_rows}"
+            );
             replayed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
             let mut ticks = [0; 2];
             replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
@@ -5005,10 +3122,7 @@ mod tests {
         let memory = broken.memory();
         let mut typed = Fixture::captured();
         typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
-        assert!(matches!(
-            typed.focus.outcome,
-            Outcome::Unavailable { .. }
-        ));
+        assert!(matches!(typed.focus.outcome, Outcome::Unavailable { .. }));
         let mut replayed = Fixture::captured();
         replayed.focus_raw_mode = true;
         let (report, first) = Fixture::copy_first(&mut replayed, &memory, None);
@@ -5046,10 +3160,7 @@ mod tests {
         let memory = broken.memory();
         let mut typed = Fixture::captured();
         typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
-        assert!(matches!(
-            typed.focus.outcome,
-            Outcome::Unavailable { .. }
-        ));
+        assert!(matches!(typed.focus.outcome, Outcome::Unavailable { .. }));
         let mut replayed = Fixture::captured();
         replayed.focus_raw_mode = true;
         let (_, first) = Fixture::copy_first(&mut replayed, &memory, None);
@@ -5167,11 +3278,25 @@ mod tests {
         let needed = [true; TABLE_COUNT];
         let mut replayed = Fixture::captured();
         replayed.focus_raw_mode = true;
-        replayed.capture(&invalid_memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        replayed.capture(
+            &invalid_memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            &needed,
+            0,
+            true,
+        );
         let mut ticks = [0; 2];
         replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
         let mut typed = Fixture::captured();
-        typed.capture(&invalid_memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
+        typed.capture(
+            &invalid_memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            &needed,
+            0,
+            true,
+        );
         assert_eq!(replayed.focus.outcome, typed.focus.outcome);
     }
 
@@ -5187,6 +3312,7 @@ mod tests {
             log: RawLog::new(0, 0),
             game_state: 0,
             census: Vec::new(),
+            capacity_charge: crate::raw_memory::Charge::default(),
         };
         let ctx = FocusCopyContext {
             base: focus_test_kit::BASE,

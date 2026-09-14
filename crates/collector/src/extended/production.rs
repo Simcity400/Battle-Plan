@@ -9,17 +9,15 @@ use crate::{
 };
 use engine::{
     Memory, army_upgrade_request_row, carmy_manpower_values, carmy_upgrades_requests,
-    carmy_upgrades_status, ccountry, cdeployment_status, cequipment_module,
-    cequipment_production_license, cequipment_production_line, cequipment_type, cequipment_upgrade,
-    cequipment_upgrades_instance, cequipment_variant, cequipment_variant_pool, cgame_state,
-    cmilitary_deployment, cmilitary_deployment_conveyor, cmilitary_deployment_line,
-    cname_group_member, cpdx_array::Array, cproduction_line, cproduction_status, cupgrade_delivery,
-    equipment_entry, equipment_module_container,
-    equipment_module_entry, equipment_upgrade_entry, manpower_value_entry, msvc_string,
-    walk::Outcome,
+    carmy_upgrades_status, ccountry, cdeployment_status, cequipment_production_license,
+    cequipment_production_line, cequipment_upgrades_instance, cequipment_variant,
+    cequipment_variant_pool, cgame_state, cmilitary_deployment, cmilitary_deployment_conveyor,
+    cmilitary_deployment_line, cname_group_member, cpdx_array::Array, cproduction_line,
+    cproduction_status, cupgrade_delivery, equipment_entry, equipment_module_container,
+    manpower_value_entry, msvc_string, walk::Outcome,
 };
 use replay::{
-    frame::{TableView},
+    frame::TableView,
     rows::{self, TableId, tables},
 };
 
@@ -126,13 +124,6 @@ pub struct Captured {
     pub line_custom_name_bytes: Arena<u8>,
     pub license_records: CaptureRows<cproduction_status::LicenseRecordRow>,
     pub license_handles: Arena<u64>,
-    /// Raw-copy split gate for the Tier-4 slot-3 variant tables (3..7).
-    /// Set by the game thread on refresh hours with a valid raw payload;
-    /// `finish_variants` then skips the typed detail walks and the decode
-    /// worker fills these rows before the ready handoff. Preserved across
-    /// `reset` (set per refresh, cleared by the worker after decode). The
-    /// registry census itself always runs game-side and is never gated.
-    pub(crate) raw_mode: bool,
     /// Raw-copy split gate for the hourly divisions group (equipment table
     /// 2 plus the upgrade graph 7..11). Set by the game thread every hour
     /// with a valid raw payload; `acquire` then skips those typed detail
@@ -178,7 +169,6 @@ impl Captured {
             line_custom_name_bytes: Arena::new(capacities.line_custom_name_bytes, deployment),
             license_records: CaptureRows::new(capacities.rows[16], successful[16]),
             license_handles: Arena::new(capacities.license_handles, successful[16]),
-            raw_mode: false,
             divisions_raw_mode: false,
             rest_raw_mode: false,
         }
@@ -301,16 +291,16 @@ impl Captured {
         // skip here. Matched flags and costs come from the raw compare,
         // applied by the caller after this returns.
         if !self.rest_raw_mode {
-        let begin = qpc();
-        matched[0] = capture_rows(&mut self.lines, needed[0], |rows| {
-            cproduction_status::walk_lines(memory, base, game_state, rows)
-        });
-        ticks[0] = elapsed(begin);
-        let begin = qpc();
-        matched[1] = capture_rows(&mut self.stockpiles, needed[1], |rows| {
-            cequipment_variant_pool::walk_stockpiles(memory, base, game_state, rows)
-        });
-        ticks[1] = elapsed(begin);
+            let begin = qpc();
+            matched[0] = capture_rows(&mut self.lines, needed[0], |rows| {
+                cproduction_status::walk_lines(memory, base, game_state, rows)
+            });
+            ticks[0] = elapsed(begin);
+            let begin = qpc();
+            matched[1] = capture_rows(&mut self.stockpiles, needed[1], |rows| {
+                cequipment_variant_pool::walk_stockpiles(memory, base, game_state, rows)
+            });
+            ticks[1] = elapsed(begin);
         }
         // Divisions group (copy/decode split): on hours with a staged raw
         // payload the decode worker fills equipment and upgrade rows before
@@ -320,176 +310,175 @@ impl Captured {
         // returns. Lines, stockpiles, licences and deployment below always
         // run game-side (independent walks).
         if !self.divisions_raw_mode {
-        let begin = qpc();
-        let first_sources = complete_source(divisions.first, divisions.first_outcome);
-        let second_sources = complete_source(divisions.second, divisions.second_outcome);
-        self.division_equipment.checked = needed[2];
-        self.division_equipment.outcome = match first_sources {
-            Ok(source) => cequipment_variant_pool::walk_divisions(
-                memory,
-                base,
-                source,
-                &mut self.division_equipment.rows,
-            ),
-            Err(reason) => Outcome::Unavailable { reason },
-        };
-        if needed[2] {
-            let second = match second_sources {
+            let begin = qpc();
+            let first_sources = complete_source(divisions.first, divisions.first_outcome);
+            let second_sources = complete_source(divisions.second, divisions.second_outcome);
+            self.division_equipment.checked = needed[2];
+            self.division_equipment.outcome = match first_sources {
                 Ok(source) => cequipment_variant_pool::walk_divisions(
                     memory,
                     base,
                     source,
-                    &mut self.division_equipment.second,
+                    &mut self.division_equipment.rows,
                 ),
                 Err(reason) => Outcome::Unavailable { reason },
             };
-            matched[2] = self.division_equipment.compare(second);
-            if sources_changed(first_sources, second_sources) {
-                self.division_equipment.mismatches += 1;
-                matched[2] = false;
+            if needed[2] {
+                let second = match second_sources {
+                    Ok(source) => cequipment_variant_pool::walk_divisions(
+                        memory,
+                        base,
+                        source,
+                        &mut self.division_equipment.second,
+                    ),
+                    Err(reason) => Outcome::Unavailable { reason },
+                };
+                matched[2] = self.division_equipment.compare(second);
+                if sources_changed(first_sources, second_sources) {
+                    self.division_equipment.mismatches += 1;
+                    matched[2] = false;
+                }
             }
-        }
-        ticks[2] = elapsed(begin);
-        let begin = qpc();
-        let result = match first_sources {
-            Ok(sources) => carmy_upgrades_status::walk(
-                memory,
-                base,
-                sources,
-                &mut self.groups.rows,
-                &mut self.requests.rows,
-                &mut self.deliveries.rows,
-                &mut self.produced.rows,
-            ),
-            Err(reason) => carmy_upgrades_status::Outcomes::unavailable(reason),
-        };
-        self.groups.outcome = result.groups;
-        self.requests.outcome = result.requests;
-        self.deliveries.outcome = result.deliveries;
-        self.produced.outcome = result.produced;
-        self.groups.checked = needed[7];
-        self.requests.checked = needed[8];
-        self.deliveries.checked = needed[9];
-        self.produced.checked = needed[10];
-        if needed[7..11].iter().any(|&needed| needed) {
-            let result = match second_sources {
+            ticks[2] = elapsed(begin);
+            let begin = qpc();
+            let result = match first_sources {
                 Ok(sources) => carmy_upgrades_status::walk(
                     memory,
                     base,
                     sources,
-                    &mut self.groups.second,
-                    &mut self.requests.second,
-                    &mut self.deliveries.second,
-                    &mut self.produced.second,
+                    &mut self.groups.rows,
+                    &mut self.requests.rows,
+                    &mut self.deliveries.rows,
+                    &mut self.produced.rows,
                 ),
                 Err(reason) => carmy_upgrades_status::Outcomes::unavailable(reason),
             };
-            if needed[7] {
-                matched[7] = self.groups.compare(result.groups);
-            }
-            if needed[8] {
-                matched[8] = self.requests.compare(result.requests);
-            }
-            if needed[9] {
-                matched[9] = self.deliveries.compare(result.deliveries);
-            }
-            if needed[10] {
-                matched[10] = self.produced.compare(result.produced);
-            }
-            if sources_changed(first_sources, second_sources) {
-                for (index, mismatches) in [
-                    (7, &mut self.groups.mismatches),
-                    (8, &mut self.requests.mismatches),
-                    (9, &mut self.deliveries.mismatches),
-                    (10, &mut self.produced.mismatches),
-                ] {
-                    if needed[index] {
-                        *mismatches += 1;
-                        matched[index] = false;
+            self.groups.outcome = result.groups;
+            self.requests.outcome = result.requests;
+            self.deliveries.outcome = result.deliveries;
+            self.produced.outcome = result.produced;
+            self.groups.checked = needed[7];
+            self.requests.checked = needed[8];
+            self.deliveries.checked = needed[9];
+            self.produced.checked = needed[10];
+            if needed[7..11].iter().any(|&needed| needed) {
+                let result = match second_sources {
+                    Ok(sources) => carmy_upgrades_status::walk(
+                        memory,
+                        base,
+                        sources,
+                        &mut self.groups.second,
+                        &mut self.requests.second,
+                        &mut self.deliveries.second,
+                        &mut self.produced.second,
+                    ),
+                    Err(reason) => carmy_upgrades_status::Outcomes::unavailable(reason),
+                };
+                if needed[7] {
+                    matched[7] = self.groups.compare(result.groups);
+                }
+                if needed[8] {
+                    matched[8] = self.requests.compare(result.requests);
+                }
+                if needed[9] {
+                    matched[9] = self.deliveries.compare(result.deliveries);
+                }
+                if needed[10] {
+                    matched[10] = self.produced.compare(result.produced);
+                }
+                if sources_changed(first_sources, second_sources) {
+                    for (index, mismatches) in [
+                        (7, &mut self.groups.mismatches),
+                        (8, &mut self.requests.mismatches),
+                        (9, &mut self.deliveries.mismatches),
+                        (10, &mut self.produced.mismatches),
+                    ] {
+                        if needed[index] {
+                            *mismatches += 1;
+                            matched[index] = false;
+                        }
                     }
                 }
             }
-        }
-        ticks[7] = elapsed(begin);
+            ticks[7] = elapsed(begin);
         }
 
         if !self.rest_raw_mode {
-        let begin = qpc();
-        matched[11] = capture_rows(&mut self.licenses, needed[11], |rows| {
-            cproduction_status::walk_licenses(memory, base, game_state, rows)
-        });
-        let first = cproduction_status::walk_license_records(
-            memory,
-            base,
-            game_state,
-            &mut self.license_records.rows,
-            &mut self.license_handles.first,
-        );
-        self.license_records.outcome = first.outcome;
-        self.license_handles.len = first.handles_len;
-        self.license_handles.required = first.required_handles;
-        self.license_records.checked = needed[16];
-        if needed[16] {
-            let second = cproduction_status::walk_license_records(
+            let begin = qpc();
+            matched[11] = capture_rows(&mut self.licenses, needed[11], |rows| {
+                cproduction_status::walk_licenses(memory, base, game_state, rows)
+            });
+            let first = cproduction_status::walk_license_records(
                 memory,
                 base,
                 game_state,
-                &mut self.license_records.second,
-                &mut self.license_handles.second,
+                &mut self.license_records.rows,
+                &mut self.license_handles.first,
             );
-            // A changed produced-handle arena is a mismatch even when every
-            // fixed field of every record is equal.
-            let handles_matched = self
-                .license_handles
-                .compare(second.handles_len, second.required_handles);
-            let rows_matched = self.license_records.compare(second.outcome);
-            if !handles_matched {
-                self.license_records.mismatches += 1;
-            }
-            matched[16] = rows_matched && handles_matched;
-        }
-        ticks[11] = elapsed(begin);
-
-        let begin = qpc();
-        let deployment_needed = needed[12..16].iter().any(|needed| *needed);
-        let first = self.deployment(memory, base, game_state, false);
-        self.conveyors.outcome = first.conveyors;
-        self.deployment_lines.outcome = first.lines;
-        self.deployment_manpower.outcome = first.manpower;
-        self.deployment_equipment.outcome = first.equipment;
-        self.conveyor_name_bytes.len = first.name_bytes;
-        self.conveyor_name_bytes.required = first.required_name_bytes;
-        self.line_custom_name_bytes.len = first.custom_name_bytes;
-        self.line_custom_name_bytes.required = first.required_custom_name_bytes;
-        self.conveyors.checked = needed[12];
-        self.deployment_lines.checked = needed[13];
-        self.deployment_manpower.checked = needed[14];
-        self.deployment_equipment.checked = needed[15];
-        if deployment_needed {
-            let second = self.deployment(memory, base, game_state, true);
-            // A changed name arena is a mismatch for every deployment table,
-            // including ones whose rows happen to be equal.
-            let names_matched = self
-                .conveyor_name_bytes
-                .compare(second.name_bytes, second.required_name_bytes);
-            let custom_matched = self.line_custom_name_bytes.compare(
-                second.custom_name_bytes,
-                second.required_custom_name_bytes,
-            );
-            let arenas_matched = names_matched && custom_matched;
-            let check = |index: usize, rows: &mut dyn DeploymentRows, outcome| {
-                let matched_rows = rows.compare(outcome);
-                if !arenas_matched {
-                    rows.add_mismatch();
+            self.license_records.outcome = first.outcome;
+            self.license_handles.len = first.handles_len;
+            self.license_handles.required = first.required_handles;
+            self.license_records.checked = needed[16];
+            if needed[16] {
+                let second = cproduction_status::walk_license_records(
+                    memory,
+                    base,
+                    game_state,
+                    &mut self.license_records.second,
+                    &mut self.license_handles.second,
+                );
+                // A changed produced-handle arena is a mismatch even when every
+                // fixed field of every record is equal.
+                let handles_matched = self
+                    .license_handles
+                    .compare(second.handles_len, second.required_handles);
+                let rows_matched = self.license_records.compare(second.outcome);
+                if !handles_matched {
+                    self.license_records.mismatches += 1;
                 }
-                needed[index] && matched_rows && arenas_matched
-            };
-            matched[12] = check(12, &mut self.conveyors, second.conveyors);
-            matched[13] = check(13, &mut self.deployment_lines, second.lines);
-            matched[14] = check(14, &mut self.deployment_manpower, second.manpower);
-            matched[15] = check(15, &mut self.deployment_equipment, second.equipment);
-        }
-        ticks[12] = elapsed(begin);
+                matched[16] = rows_matched && handles_matched;
+            }
+            ticks[11] = elapsed(begin);
+
+            let begin = qpc();
+            let deployment_needed = needed[12..16].iter().any(|needed| *needed);
+            let first = self.deployment(memory, base, game_state, false);
+            self.conveyors.outcome = first.conveyors;
+            self.deployment_lines.outcome = first.lines;
+            self.deployment_manpower.outcome = first.manpower;
+            self.deployment_equipment.outcome = first.equipment;
+            self.conveyor_name_bytes.len = first.name_bytes;
+            self.conveyor_name_bytes.required = first.required_name_bytes;
+            self.line_custom_name_bytes.len = first.custom_name_bytes;
+            self.line_custom_name_bytes.required = first.required_custom_name_bytes;
+            self.conveyors.checked = needed[12];
+            self.deployment_lines.checked = needed[13];
+            self.deployment_manpower.checked = needed[14];
+            self.deployment_equipment.checked = needed[15];
+            if deployment_needed {
+                let second = self.deployment(memory, base, game_state, true);
+                // A changed name arena is a mismatch for every deployment table,
+                // including ones whose rows happen to be equal.
+                let names_matched = self
+                    .conveyor_name_bytes
+                    .compare(second.name_bytes, second.required_name_bytes);
+                let custom_matched = self
+                    .line_custom_name_bytes
+                    .compare(second.custom_name_bytes, second.required_custom_name_bytes);
+                let arenas_matched = names_matched && custom_matched;
+                let check = |index: usize, rows: &mut dyn DeploymentRows, outcome| {
+                    let matched_rows = rows.compare(outcome);
+                    if !arenas_matched {
+                        rows.add_mismatch();
+                    }
+                    needed[index] && matched_rows && arenas_matched
+                };
+                matched[12] = check(12, &mut self.conveyors, second.conveyors);
+                matched[13] = check(13, &mut self.deployment_lines, second.lines);
+                matched[14] = check(14, &mut self.deployment_manpower, second.manpower);
+                matched[15] = check(15, &mut self.deployment_equipment, second.equipment);
+            }
+            ticks[12] = elapsed(begin);
         }
         (matched, ticks)
     }
@@ -691,6 +680,7 @@ pub(crate) struct ProductionRestJob {
     pub log: RawLog<8>,
     pub game_state: usize,
     census: Vec<ProductionRestCountry>,
+    capacity_charge: crate::raw_memory::Charge,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -700,14 +690,17 @@ struct ProductionRestCountry {
 
 impl ProductionRestJob {
     pub fn new() -> Self {
-        Self {
+        let mut job = Self {
             // Late-campaign worst case is about 768 lines, 1.6k stockpiles,
             // licences plus deployment queues with names; both pools start
             // above that so steady state never overflows.
             log: RawLog::new(1 << 17, 8 << 20),
             game_state: 0,
             census: Vec::with_capacity(512),
-        }
+            capacity_charge: crate::raw_memory::Charge::default(),
+        };
+        job.update_capacity_charge();
+        job
     }
 
     /// Reset lengths for reuse, keeping every capacity. No allocation.
@@ -726,7 +719,16 @@ impl ProductionRestJob {
     /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
         self.log.grow();
-crate::raw::double_capacity(&mut self.census);
+        crate::raw::double_capacity(&mut self.census);
+        self.update_capacity_charge();
+    }
+
+    fn update_capacity_charge(&mut self) {
+        use crate::raw_memory::{Capacity, vector_bytes};
+        self.capacity_charge.set(Capacity {
+            auxiliary_vectors: vector_bytes(&self.census),
+            ..Default::default()
+        });
     }
 }
 
@@ -774,20 +776,27 @@ fn pspan(
 /// Mirror of one MSVC string's reads: 32-byte header plus heap payload and
 /// terminator. Inline strings ride in the header span; the replay requests
 /// exact ranges, so record the payload exactly like a heap one.
-fn copy_production_string(
-    log: &mut RawLog<8>,
-    memory: &impl Memory,
-    string: usize,
-    mask: u32,
-) {
+fn copy_production_string(log: &mut RawLog<8>, memory: &impl Memory, string: usize, mask: u32) {
     let Some(header_start) = pspan(log, memory, Some(string), 32, mask) else {
         return;
     };
     // The walk reads length/capacity/pointer as separate 8-byte spans, not
     // just the 32-byte header above; record those exact spans too so
     // exact-match service hits. Extras are harmless.
-    let _ = pspan(log, memory, string.checked_add(msvc_string::LENGTH), 8, mask);
-    let _ = pspan(log, memory, string.checked_add(msvc_string::CAPACITY), 8, mask);
+    let _ = pspan(
+        log,
+        memory,
+        string.checked_add(msvc_string::LENGTH),
+        8,
+        mask,
+    );
+    let _ = pspan(
+        log,
+        memory,
+        string.checked_add(msvc_string::CAPACITY),
+        8,
+        mask,
+    );
     let _ = pspan(log, memory, Some(string), 8, mask);
     let mut header = [0u8; 32];
     header.copy_from_slice(&log.bytes[header_start..header_start + 32]);
@@ -885,8 +894,13 @@ fn copy_production_census(
         let Some(vtable_start) = pspan(log, memory, Some(pointer), 8, M_P_CENSUS) else {
             return false;
         };
-        let Some(id_start) = pspan(log, memory, pointer.checked_add(ccountry::ID), 4, M_P_CENSUS)
-        else {
+        let Some(id_start) = pspan(
+            log,
+            memory,
+            pointer.checked_add(ccountry::ID),
+            4,
+            M_P_CENSUS,
+        ) else {
             return false;
         };
         if p_pool_u64(log, vtable_start) != vtable {
@@ -897,11 +911,11 @@ fn copy_production_census(
             Some(Some(canonical)) => canonical,
             _ => return false,
         };
-        let canonical_slot =
-            match copy_production_link(log, memory, &links, countries.count, slot) {
-                Some(Some(canonical_slot)) => canonical_slot,
-                _ => return false,
-            };
+        let canonical_slot = match copy_production_link(log, memory, &links, countries.count, slot)
+        {
+            Some(Some(canonical_slot)) => canonical_slot,
+            _ => return false,
+        };
         if canonical_slot != canonical {
             return false;
         }
@@ -967,7 +981,9 @@ fn copy_production_manager(
         8,
         M_P_PROD_MGR,
     )?;
-    let pointer = usize::try_from(p_pool_u64(log, ptr_start)).ok().filter(|&p| p != 0)?;
+    let pointer = usize::try_from(p_pool_u64(log, ptr_start))
+        .ok()
+        .filter(|&p| p != 0)?;
     let expected = base.checked_add(cproduction_status::VTABLE_RVA)? as u64;
     let vtable_start = pspan(log, memory, Some(pointer), 8, M_P_PROD_MGR)?;
     let owner_start = pspan(
@@ -1000,7 +1016,9 @@ fn copy_deployment_manager(
         8,
         M_P_DEPLOY,
     )?;
-    let pointer = usize::try_from(p_pool_u64(log, ptr_start)).ok().filter(|&p| p != 0)?;
+    let pointer = usize::try_from(p_pool_u64(log, ptr_start))
+        .ok()
+        .filter(|&p| p != 0)?;
     let expected = base.checked_add(cdeployment_status::VTABLE_RVA)? as u64;
     let vtable_start = pspan(log, memory, Some(pointer), 8, M_P_DEPLOY)?;
     let owner_start = pspan(
@@ -1025,11 +1043,7 @@ fn copy_variant_identity(log: &mut RawLog<8>, memory: &impl Memory, pointer: usi
 
 /// Mirror of `walk_lines`' read set: array header, per-line pointers, the
 /// seven scattered field spans per line plus variant identities.
-fn copy_production_lines(
-    log: &mut RawLog<8>,
-    memory: &impl Memory,
-    manager: usize,
-) {
+fn copy_production_lines(log: &mut RawLog<8>, memory: &impl Memory, manager: usize) {
     let Some(header_start) = pspan(
         log,
         memory,
@@ -1060,19 +1074,48 @@ fn copy_production_lines(
         // Seven scattered spans exactly like `read_row`'s `copy_scattered`.
         let takes = [
             (pointer, 16),
-            (pointer.checked_add(cproduction_line::ACTIVE_FACTORIES).unwrap_or(0), 4),
-            (pointer.checked_add(cproduction_line::PRODUCTION_STATUS).unwrap_or(0), 8),
+            (
+                pointer
+                    .checked_add(cproduction_line::ACTIVE_FACTORIES)
+                    .unwrap_or(0),
+                4,
+            ),
+            (
+                pointer
+                    .checked_add(cproduction_line::PRODUCTION_STATUS)
+                    .unwrap_or(0),
+                8,
+            ),
             (pointer.checked_add(cproduction_line::COST).unwrap_or(0), 24),
-            (pointer.checked_add(cproduction_line::PRIORITY).unwrap_or(0), 8),
-            (pointer.checked_add(cequipment_production_line::EQUIPMENT_VARIANT).unwrap_or(0), 16),
-            (pointer.checked_add(cequipment_production_line::REQUESTED_FACTORIES).unwrap_or(0), 4),
+            (
+                pointer.checked_add(cproduction_line::PRIORITY).unwrap_or(0),
+                8,
+            ),
+            (
+                pointer
+                    .checked_add(cequipment_production_line::EQUIPMENT_VARIANT)
+                    .unwrap_or(0),
+                16,
+            ),
+            (
+                pointer
+                    .checked_add(cequipment_production_line::REQUESTED_FACTORIES)
+                    .unwrap_or(0),
+                4,
+            ),
         ];
         let mut variant = None;
         for (addr, len) in takes {
             if let Some(start) = pspan(log, memory, Some(addr), len, M_P_LINES)
-                && addr == pointer.checked_add(cequipment_production_line::EQUIPMENT_VARIANT).unwrap_or(0) {
-                    variant = usize::try_from(p_pool_u64(log, start)).ok().filter(|&p| p != 0);
-                }
+                && addr
+                    == pointer
+                        .checked_add(cequipment_production_line::EQUIPMENT_VARIANT)
+                        .unwrap_or(0)
+            {
+                variant = usize::try_from(p_pool_u64(log, start))
+                    .ok()
+                    .filter(|&p| p != 0);
+            }
         }
         if let Some(v) = variant {
             copy_variant_identity(log, memory, v, M_P_LINES);
@@ -1085,11 +1128,7 @@ fn copy_production_lines(
 
 /// Mirror of `walk_stockpiles`' read set: pool vtable, array header,
 /// per-entry words plus variant identities.
-fn copy_production_stockpiles(
-    log: &mut RawLog<8>,
-    memory: &impl Memory,
-    manager: usize,
-) {
+fn copy_production_stockpiles(log: &mut RawLog<8>, memory: &impl Memory, manager: usize) {
     let pool = match manager.checked_add(cproduction_status::STOCKPILE_POOL) {
         Some(p) => p,
         None => return,
@@ -1115,7 +1154,9 @@ fn copy_production_stockpiles(
         let Some(entry_start) = pspan(log, memory, addr, equipment_entry::STRIDE, M_P_STOCK) else {
             continue;
         };
-        let variant = usize::try_from(p_pool_u64(log, entry_start)).ok().filter(|&p| p != 0);
+        let variant = usize::try_from(p_pool_u64(log, entry_start))
+            .ok()
+            .filter(|&p| p != 0);
         if let Some(v) = variant {
             copy_variant_identity(log, memory, v, M_P_STOCK);
         }
@@ -1127,11 +1168,7 @@ fn copy_production_stockpiles(
 
 /// Mirror of `walk_licenses`' read set: array header, per-licence pointers
 /// plus variant identities.
-fn copy_production_licenses(
-    log: &mut RawLog<8>,
-    memory: &impl Memory,
-    manager: usize,
-) {
+fn copy_production_licenses(log: &mut RawLog<8>, memory: &impl Memory, manager: usize) {
     let Some(header_start) = pspan(
         log,
         memory,
@@ -1152,7 +1189,9 @@ fn copy_production_licenses(
         let Some(ptr_start) = pspan(log, memory, addr, 8, M_P_LIC) else {
             continue;
         };
-        let variant = usize::try_from(p_pool_u64(log, ptr_start)).ok().filter(|&p| p != 0);
+        let variant = usize::try_from(p_pool_u64(log, ptr_start))
+            .ok()
+            .filter(|&p| p != 0);
         // Licence entries hold variant pointers directly; authenticate via identity.
         if let Some(v) = variant {
             copy_variant_identity(log, memory, v, M_P_LIC);
@@ -1166,11 +1205,7 @@ fn copy_production_licenses(
 /// Mirror of `walk_license_records`' read set: array header, per-record
 /// 0x58 heads, parent identities, equipment headers plus per-handle pointers
 /// and identities.
-fn copy_production_records(
-    log: &mut RawLog<8>,
-    memory: &impl Memory,
-    manager: usize,
-) {
+fn copy_production_records(log: &mut RawLog<8>, memory: &impl Memory, manager: usize) {
     let Some(header_start) = pspan(
         log,
         memory,
@@ -1203,23 +1238,34 @@ fn copy_production_records(
         };
         let mut head = [0u8; 0x58];
         head.copy_from_slice(&log.bytes[head_start..head_start + 0x58]);
-        let parent = usize::try_from(u64::from_le_bytes(head[cequipment_production_license::PARENT..cequipment_production_license::PARENT + 8].try_into().unwrap()))
-            .ok()
-            .filter(|&p| p != 0);
+        let parent = usize::try_from(u64::from_le_bytes(
+            head[cequipment_production_license::PARENT..cequipment_production_license::PARENT + 8]
+                .try_into()
+                .unwrap(),
+        ))
+        .ok()
+        .filter(|&p| p != 0);
         if let Some(p) = parent {
             copy_variant_identity(log, memory, p, M_P_REC);
         }
         let equipment = Array::from_header(
-            head[cequipment_production_license::EQUIPMENT..cequipment_production_license::EQUIPMENT + 16].try_into().unwrap(),
+            head[cequipment_production_license::EQUIPMENT
+                ..cequipment_production_license::EQUIPMENT + 16]
+                .try_into()
+                .unwrap(),
             8,
         );
         if let Some(equipment) = equipment {
             for index in 0..equipment.count {
-                let addr = equipment.data.checked_add((index as usize).saturating_mul(8));
+                let addr = equipment
+                    .data
+                    .checked_add((index as usize).saturating_mul(8));
                 let Some(h_start) = pspan(log, memory, addr, 8, M_P_REC) else {
                     continue;
                 };
-                let variant = usize::try_from(p_pool_u64(log, h_start)).ok().filter(|&p| p != 0);
+                let variant = usize::try_from(p_pool_u64(log, h_start))
+                    .ok()
+                    .filter(|&p| p != 0);
                 if let Some(v) = variant {
                     copy_variant_identity(log, memory, v, M_P_REC);
                 }
@@ -1236,12 +1282,7 @@ fn copy_production_records(
 /// name objects, custom strings, deployment objects with pools and manpower,
 /// plus per-entry words and variant identities. All spans carry the combined
 /// deployment mask, matching the walk's shared failure domain.
-fn copy_deployment_queue(
-    log: &mut RawLog<8>,
-    memory: &impl Memory,
-    base: usize,
-    manager: usize,
-) {
+fn copy_deployment_queue(log: &mut RawLog<8>, memory: &impl Memory, base: usize, manager: usize) {
     let Some(header_start) = pspan(
         log,
         memory,
@@ -1274,9 +1315,14 @@ fn copy_deployment_queue(
         };
         let mut head = [0u8; 0x9c];
         head.copy_from_slice(&log.bytes[head_start..head_start + 0x9c]);
-        let template = usize::try_from(u64::from_le_bytes(head[cmilitary_deployment_conveyor::TEMPLATE..cmilitary_deployment_conveyor::TEMPLATE + 8].try_into().unwrap()))
-            .ok()
-            .filter(|&p| p != 0);
+        let template = usize::try_from(u64::from_le_bytes(
+            head[cmilitary_deployment_conveyor::TEMPLATE
+                ..cmilitary_deployment_conveyor::TEMPLATE + 8]
+                .try_into()
+                .unwrap(),
+        ))
+        .ok()
+        .filter(|&p| p != 0);
         if let Some(t) = template {
             // Template vtable plus reference words.
             let _ = pspan(log, memory, Some(t), 16, M_P_DEPLOY);
@@ -1296,7 +1342,9 @@ fn copy_deployment_queue(
             M_P_DEPLOY,
         );
         let lines = Array::from_header(
-            head[cmilitary_deployment_conveyor::LINES..cmilitary_deployment_conveyor::LINES + 16].try_into().unwrap(),
+            head[cmilitary_deployment_conveyor::LINES..cmilitary_deployment_conveyor::LINES + 16]
+                .try_into()
+                .unwrap(),
             8,
         );
         let Some(lines) = lines else {
@@ -1338,18 +1386,32 @@ fn copy_deployment_line(
     };
     let mut head = [0u8; 0x40];
     head.copy_from_slice(&log.bytes[head_start..head_start + 0x40]);
-    let name = usize::try_from(u64::from_le_bytes(head[cmilitary_deployment_line::NAME..cmilitary_deployment_line::NAME + 8].try_into().unwrap()))
-        .ok()
-        .filter(|&p| p != 0);
-    let deployment = usize::try_from(u64::from_le_bytes(head[cmilitary_deployment_line::DEPLOYMENT..cmilitary_deployment_line::DEPLOYMENT + 8].try_into().unwrap()))
-        .ok()
-        .filter(|&p| p != 0);
+    let name = usize::try_from(u64::from_le_bytes(
+        head[cmilitary_deployment_line::NAME..cmilitary_deployment_line::NAME + 8]
+            .try_into()
+            .unwrap(),
+    ))
+    .ok()
+    .filter(|&p| p != 0);
+    let deployment = usize::try_from(u64::from_le_bytes(
+        head[cmilitary_deployment_line::DEPLOYMENT..cmilitary_deployment_line::DEPLOYMENT + 8]
+            .try_into()
+            .unwrap(),
+    ))
+    .ok()
+    .filter(|&p| p != 0);
     let (Some(name), Some(deployment)) = (name, deployment) else {
         return;
     };
     // Name object: vtable, order, override header, flags; then custom bytes.
     let _ = pspan(log, memory, Some(name), 8, M_P_DEPLOY);
-    let _ = pspan(log, memory, name.checked_add(cname_group_member::ORDER), 4, M_P_DEPLOY);
+    let _ = pspan(
+        log,
+        memory,
+        name.checked_add(cname_group_member::ORDER),
+        4,
+        M_P_DEPLOY,
+    );
     let string = match name.checked_add(cname_group_member::OVERRIDE_NAME) {
         Some(s) => s,
         None => return,
@@ -1357,12 +1419,28 @@ fn copy_deployment_line(
     let Some(chead_start) = pspan(log, memory, Some(string), 32, M_P_DEPLOY) else {
         return;
     };
-    let _ = pspan(log, memory, string.checked_add(msvc_string::LENGTH), 8, M_P_DEPLOY);
-    let _ = pspan(log, memory, string.checked_add(msvc_string::CAPACITY), 8, M_P_DEPLOY);
+    let _ = pspan(
+        log,
+        memory,
+        string.checked_add(msvc_string::LENGTH),
+        8,
+        M_P_DEPLOY,
+    );
+    let _ = pspan(
+        log,
+        memory,
+        string.checked_add(msvc_string::CAPACITY),
+        8,
+        M_P_DEPLOY,
+    );
     let _ = pspan(log, memory, Some(string), 8, M_P_DEPLOY);
     let mut chead = [0u8; 32];
     chead.copy_from_slice(&log.bytes[chead_start..chead_start + 32]);
-    let len = match usize::try_from(u64::from_le_bytes(chead[msvc_string::LENGTH..msvc_string::CAPACITY].try_into().unwrap())) {
+    let len = match usize::try_from(u64::from_le_bytes(
+        chead[msvc_string::LENGTH..msvc_string::CAPACITY]
+            .try_into()
+            .unwrap(),
+    )) {
         Ok(l) => l,
         Err(_) => return,
     };
@@ -1371,7 +1449,10 @@ fn copy_deployment_line(
         let source = if capacity == msvc_string::INLINE_CAPACITY {
             string
         } else {
-            match usize::try_from(u64::from_le_bytes(chead[..8].try_into().unwrap())).ok().filter(|&s| s != 0) {
+            match usize::try_from(u64::from_le_bytes(chead[..8].try_into().unwrap()))
+                .ok()
+                .filter(|&s| s != 0)
+            {
                 Some(s) => s,
                 None => string,
             }
@@ -1383,8 +1464,20 @@ fn copy_deployment_line(
             let _ = pspan(log, memory, source.checked_add(len), 1, M_P_DEPLOY);
         }
     }
-    let _ = pspan(log, memory, name.checked_add(cname_group_member::FLAG_A), 1, M_P_DEPLOY);
-    let _ = pspan(log, memory, name.checked_add(cname_group_member::FLAG_B), 1, M_P_DEPLOY);
+    let _ = pspan(
+        log,
+        memory,
+        name.checked_add(cname_group_member::FLAG_A),
+        1,
+        M_P_DEPLOY,
+    );
+    let _ = pspan(
+        log,
+        memory,
+        name.checked_add(cname_group_member::FLAG_B),
+        1,
+        M_P_DEPLOY,
+    );
     // Parent backlink is inside the head span already; deployment object next.
     let _ = conveyor;
     copy_deployment_object(log, memory, base, deployment, line);
@@ -1400,22 +1493,43 @@ fn copy_deployment_object(
     let _ = base;
     let _ = line;
     let _ = pspan(log, memory, Some(deployment), 8, M_P_DEPLOY);
-    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::SECONDARY_VTABLE), 8, M_P_DEPLOY);
+    let _ = pspan(
+        log,
+        memory,
+        deployment.checked_add(cmilitary_deployment::SECONDARY_VTABLE),
+        8,
+        M_P_DEPLOY,
+    );
     let pool = match deployment.checked_add(cmilitary_deployment::EQUIPMENT_POOL) {
         Some(p) => p,
         None => return,
     };
     let _ = pspan(log, memory, Some(pool), 8, M_P_DEPLOY);
-    let _ = pspan(log, memory, pool.checked_add(cequipment_variant_pool::ALLOW_ZERO), 1, M_P_DEPLOY);
+    let _ = pspan(
+        log,
+        memory,
+        pool.checked_add(cequipment_variant_pool::ALLOW_ZERO),
+        1,
+        M_P_DEPLOY,
+    );
     // Equipment pool arrays.
-    if let Some(h) = pspan(log, memory, pool.checked_add(cequipment_variant_pool::ITEMS), 16, M_P_DEPLOY) {
+    if let Some(h) = pspan(
+        log,
+        memory,
+        pool.checked_add(cequipment_variant_pool::ITEMS),
+        16,
+        M_P_DEPLOY,
+    ) {
         let mut raw = [0u8; 16];
         raw.copy_from_slice(&log.bytes[h..h + 16]);
         if let Some(array) = Array::from_header(raw, equipment_entry::STRIDE) {
             for ordinal in 0..array.count {
                 let addr = array.element(ordinal, equipment_entry::STRIDE);
-                if let Some(e_start) = pspan(log, memory, addr, equipment_entry::STRIDE, M_P_DEPLOY) {
-                    let variant = usize::try_from(p_pool_u64(log, e_start)).ok().filter(|&p| p != 0);
+                if let Some(e_start) = pspan(log, memory, addr, equipment_entry::STRIDE, M_P_DEPLOY)
+                {
+                    let variant = usize::try_from(p_pool_u64(log, e_start))
+                        .ok()
+                        .filter(|&p| p != 0);
                     if let Some(v) = variant {
                         copy_variant_identity(log, memory, v, M_P_DEPLOY);
                     }
@@ -1423,7 +1537,13 @@ fn copy_deployment_object(
             }
         }
     }
-    if let Some(h) = pspan(log, memory, pool.checked_add(cequipment_variant_pool::ALLOCATIONS), 16, M_P_DEPLOY) {
+    if let Some(h) = pspan(
+        log,
+        memory,
+        pool.checked_add(cequipment_variant_pool::ALLOCATIONS),
+        16,
+        M_P_DEPLOY,
+    ) {
         let mut raw = [0u8; 16];
         raw.copy_from_slice(&log.bytes[h..h + 16]);
         if let Some(array) = Array::from_header(raw, 24) {
@@ -1436,21 +1556,72 @@ fn copy_deployment_object(
         }
     }
     // Scalars.
-    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::TRAINING), 8, M_P_DEPLOY);
-    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::MAX_TRAINING), 8, M_P_DEPLOY);
-    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::MAX_MANPOWER), 4, M_P_DEPLOY);
-    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::OWNING_LINE), 8, M_P_DEPLOY);
-    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::DISTRIBUTABLE_PRIORITY), 4, M_P_DEPLOY);
-    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::HALTING_REASON), 4, M_P_DEPLOY);
-    let _ = pspan(log, memory, deployment.checked_add(cmilitary_deployment::HALTING_REASON_PRESENT), 1, M_P_DEPLOY);
+    let _ = pspan(
+        log,
+        memory,
+        deployment.checked_add(cmilitary_deployment::TRAINING),
+        8,
+        M_P_DEPLOY,
+    );
+    let _ = pspan(
+        log,
+        memory,
+        deployment.checked_add(cmilitary_deployment::MAX_TRAINING),
+        8,
+        M_P_DEPLOY,
+    );
+    let _ = pspan(
+        log,
+        memory,
+        deployment.checked_add(cmilitary_deployment::MAX_MANPOWER),
+        4,
+        M_P_DEPLOY,
+    );
+    let _ = pspan(
+        log,
+        memory,
+        deployment.checked_add(cmilitary_deployment::OWNING_LINE),
+        8,
+        M_P_DEPLOY,
+    );
+    let _ = pspan(
+        log,
+        memory,
+        deployment.checked_add(cmilitary_deployment::DISTRIBUTABLE_PRIORITY),
+        4,
+        M_P_DEPLOY,
+    );
+    let _ = pspan(
+        log,
+        memory,
+        deployment.checked_add(cmilitary_deployment::HALTING_REASON),
+        4,
+        M_P_DEPLOY,
+    );
+    let _ = pspan(
+        log,
+        memory,
+        deployment.checked_add(cmilitary_deployment::HALTING_REASON_PRESENT),
+        1,
+        M_P_DEPLOY,
+    );
     // Manpower containers.
-    for offset in [cmilitary_deployment::MANPOWER_HAVE, cmilitary_deployment::MANPOWER_NEED] {
+    for offset in [
+        cmilitary_deployment::MANPOWER_HAVE,
+        cmilitary_deployment::MANPOWER_NEED,
+    ] {
         let container = match deployment.checked_add(offset) {
             Some(c) => c,
             None => continue,
         };
         let _ = pspan(log, memory, Some(container), 8, M_P_DEPLOY);
-        let Some(data_start) = pspan(log, memory, container.checked_add(carmy_manpower_values::DATA), 16, M_P_DEPLOY) else {
+        let Some(data_start) = pspan(
+            log,
+            memory,
+            container.checked_add(carmy_manpower_values::DATA),
+            16,
+            M_P_DEPLOY,
+        ) else {
             continue;
         };
         let mut raw = [0u8; 16];
@@ -1495,8 +1666,7 @@ impl Captured {
             // private spans only their own table.
             let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
             for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal =
-                    raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
                 *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
             }
         }
@@ -1518,8 +1688,7 @@ impl Captured {
         self.deployment_equipment.mismatches = usize::from(ctx.needed[6] && !matched[6]);
         self.license_records.checked = ctx.needed[7];
         self.license_records.mismatches = usize::from(ctx.needed[7] && !matched[7]);
-        let raw_ok = !first.log.overflowed
-            && second.is_none_or(|job| !job.log.overflowed);
+        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
         ProductionRestCopyReport {
             raw_ok,
             matched,
@@ -1570,8 +1739,6 @@ fn copy_production_rest_pass(
     }
 }
 
-
-
 impl Captured {
     /// Read variant fields from complete, independently acquired registry
     /// snapshots. No consumer-table union or discovery pass is needed.
@@ -1588,22 +1755,12 @@ impl Captured {
         let mut matched = [false; N];
         let mut ticks = [0; N];
         // Tier-4 variants share slot3; off-hours skip the whole walk.
-        // Raw-copy split: on refresh hours the registry census still runs
-        // game-side (production consumes it here), but the per-variant
-        // detail walks move to the decode worker via `copy_variants_refresh`.
-        // Matched flags and costs come from the raw compare, applied by the
-        // caller after this returns.
         let walk = replay::cadence::should_walk(
             replay::rows::TableId::VariantDefinitions,
             hour,
             force_full,
-        ) && !self.raw_mode;
-        if self.raw_mode {
-            // Refresh payload staged: leave the reset outcomes for the decode
-            // worker, which installs identical rows, outcomes and arenas.
-            // The registry census above already ran game-side as always.
-            return (matched, ticks);
-        }
+        );
+
         if !walk {
             let skipped = Outcome::Unavailable {
                 reason: replay::cadence::SKIPPED_REASON,
@@ -1826,10 +1983,7 @@ impl Captured {
                 },
             ),
             conveyors(&self.conveyors, &self.conveyor_name_bytes),
-            deployment_lines(
-                &self.deployment_lines,
-                &self.line_custom_name_bytes,
-            ),
+            deployment_lines(&self.deployment_lines, &self.line_custom_name_bytes),
             table::<tables::DeploymentManpower, _>(
                 outcome(&self.deployment_manpower),
                 &self.deployment_manpower.rows,
@@ -1917,10 +2071,7 @@ impl<R: Default + Clone + PartialEq> DeploymentRows for CaptureRows<R> {
 
 /// Conveyor names live in a shared arena; a span outside it fails the table
 /// rather than publishing a truncated or borrowed-from-elsewhere name.
-fn conveyors(
-    rows: &CaptureRows<cdeployment_status::ConveyorRow>,
-    arena: &Arena<u8>,
-) -> TableView {
+fn conveyors(rows: &CaptureRows<cdeployment_status::ConveyorRow>, arena: &Arena<u8>) -> TableView {
     let result = outcome(rows);
     if let Outcome::Unavailable { reason } = result {
         return unavailable(reason);
@@ -2005,517 +2156,8 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
-// ===========================================================================
-// Tier-4 slot-3 raw-copy split (VariantDefinitions, VariantModules,
-// VariantStats, VariantUpgrades; all other production tables stay typed).
-//
-// The registry census always runs game-side (production consumes it here,
-// per the coordinator ruling — no duplicated census). On refresh hours the
-// game thread additionally copies per-variant detail bytes — definition
-// fields, equipment identity, module/upgrade entries and strings — into the
-// job, keyed by the census's own pointers. The single FIFO decode worker
-// replays the existing detail walks against the recorded spans
-// (`crate::raw::Recorded`) with the frame's pooled registry rows as the
-// source, so rows, ordinals, skips, truncation and failure reasons are
-// identical by construction (see `crate::raw` for the mirror rules).
-//
-// The mirror traverses structurally and records every discoverable span,
-// never aborting except on overflow: the replay derives every outcome,
-// precedence and error scope from the same recorded spans, so later extras
-// are harmless.
-// ===========================================================================
-
-/// Fault-attribution bits, one per variant table in family order.
-const M_DEFINITIONS: u32 = 0x01;
-const M_MODULES: u32 = 0x02;
-const M_STATS: u32 = 0x04;
-const M_UPGRADES: u32 = 0x08;
-
-/// One refresh of raw variant detail payload. Flat pools recycle capacities
-/// and the steady state allocates on neither thread; growth happens on the
-/// decode side only (see `crate::decode::recycle_variants_job`).
-#[derive(Debug, Default)]
-pub(crate) struct VariantsJob {
-    pub log: RawLog<4>,
-}
-
-impl VariantsJob {
-    pub fn new() -> Self {
-        Self {
-            // Late-campaign worst case is about 6.4k variants with modules,
-            // stats and upgrades; both pools start above that so steady
-            // state never overflows.
-            log: RawLog::new(1 << 20, 32 << 20),
-        }
-    }
-
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
-    pub fn clear(&mut self) {
-        self.log.clear();
-    }
-
-    pub fn grow_for_next(&self) -> bool {
-        self.log.grow_for_next()
-    }
-
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed refreshes fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
-    pub fn grow(&mut self) {
-        self.log.grow();
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct VariantsCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
-    pub raw_ok: bool,
-    /// Whole-log raw equality gated by live-fault conservatism, in
-    /// [definitions, modules, stats, upgrades] order.
-    pub matched: [bool; 4],
-    pub copy_ticks: [u64; 4],
-    pub raw_bytes: [u64; 4],
-}
-
-/// Game-thread copy parameters, bundled to keep the refresh entry small.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct VariantsCopyContext {
-    pub needed: [bool; 4],
-}
-
-fn pool_u64(log: &RawLog<4>, start: usize) -> u64 {
-    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
-}
-
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
-fn vspan(
-    log: &mut RawLog<4>,
-    memory: &impl Memory,
-    addr: Option<usize>,
-    len: usize,
-    mask: u32,
-) -> Option<usize> {
-    log.take(memory, addr?, len, mask)
-}
-
-/// Parsed equipment string header: payload length, source and inline flag.
-/// Mirrors the engine literal rules; `None` means the typed walk fails the
-/// enclosing row from the same header bytes.
-struct VLit {
-    len: usize,
-    source: usize,
-    inline: bool,
-}
-
-fn parse_variant_literal(header: &[u8; 32], header_addr: usize) -> Option<VLit> {
-    let len = u64::from_le_bytes(header[16..24].try_into().unwrap());
-    let capacity = u64::from_le_bytes(header[24..32].try_into().unwrap());
-    if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
-        return None;
-    }
-    let len = usize::try_from(len).ok()?;
-    let inline = capacity == msvc_string::INLINE_CAPACITY;
-    if inline {
-        if header[len] != 0 {
-            return None;
-        }
-        Some(VLit {
-            len,
-            source: header_addr,
-            inline: true,
-        })
-    } else {
-        let source = usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
-            .ok()
-            .filter(|&source| source != 0)?;
-        source.checked_add(len)?;
-        Some(VLit {
-            len,
-            source,
-            inline: false,
-        })
-    }
-}
-
-/// Heap payload and terminator takes for one parsed literal. Inline strings
-/// ride in the already-copied header span.
-fn copy_variant_literal(
-    log: &mut RawLog<4>,
-    memory: &impl Memory,
-    literal: &VLit,
-    mask: u32,
-) {
-    if literal.inline {
-        return;
-    }
-    if literal.len != 0 {
-        let _ = vspan(log, memory, Some(literal.source), literal.len, mask);
-    }
-    let _ = vspan(log, memory, literal.source.checked_add(literal.len), 1, mask);
-}
-
-/// Mirror of `walk_definitions`' read set for the registry census: fixed
-/// field gathers, equipment identity and the three string literals per
-/// variant. Takes are unconditional (a superset); the replay derives the
-/// batch precedence and every outcome from the same recorded spans.
-fn copy_variant_definitions(
-    log: &mut RawLog<4>,
-    memory: &impl Memory,
-    variants: &[cequipment_variant::RegistryRow],
-) {
-    for variant in variants {
-        let pointer = variant.pointer();
-        let token = vspan(log, memory, pointer.checked_add(cequipment_variant::EQUIPMENT_TOKEN), 13, M_DEFINITIONS);
-        let definition = vspan(log, memory, pointer.checked_add(cequipment_variant::DEFINITION), 8, M_DEFINITIONS);
-        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::OBSOLETE), 1, M_DEFINITIONS);
-        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::CLASSIFIER_FLAGS), 12, M_DEFINITIONS);
-        let display = vspan(log, memory, pointer.checked_add(cequipment_variant::DISPLAY_NAME), 64, M_DEFINITIONS);
-        let (Some(_), Some(definition), Some(display)) = (token, definition, display) else {
-            continue;
-        };
-        let mut headers = [0u8; 64];
-        headers.copy_from_slice(&log.bytes[display..display + 64]);
-        let equipment = usize::try_from(pool_u64(log, definition)).ok().filter(|&e| e != 0);
-        let Some(equipment) = equipment else {
-            continue;
-        };
-        let identity = vspan(log, memory, Some(equipment), 12, M_DEFINITIONS);
-        let name = vspan(log, memory, equipment.checked_add(cequipment_type::NAME), 32, M_DEFINITIONS);
-        let (Some(_), Some(name)) = (identity, name) else {
-            continue;
-        };
-        let mut name_header = [0u8; 32];
-        name_header.copy_from_slice(&log.bytes[name..name + 32]);
-        let display_a: &[u8; 32] = headers[..32].try_into().unwrap();
-        let display_b: &[u8; 32] = headers[32..].try_into().unwrap();
-        for header in [display_a, display_b] {
-            if let Some(literal) = parse_variant_literal(header, 0) {
-                copy_variant_literal(log, memory, &literal, M_DEFINITIONS);
-            }
-        }
-        if let Some(literal) = parse_variant_literal(&name_header, 0) {
-            copy_variant_literal(log, memory, &literal, M_DEFINITIONS);
-        }
-        if log.overflowed {
-            return;
-        }
-    }
-}
-
-/// Mirror of `equipment_module_container::walk`'s read set: array header,
-/// contiguous entry block, definition fields and the name literal per entry.
-fn copy_variant_modules(
-    log: &mut RawLog<4>,
-    memory: &impl Memory,
-    variants: &[cequipment_variant::RegistryRow],
-) {
-    for variant in variants {
-        let pointer = variant.pointer();
-        let header = vspan(
-            log,
-            memory,
-            pointer.checked_add(cequipment_variant::MODULES + equipment_module_container::ENTRIES_CANDIDATE),
-            16,
-            M_MODULES,
-        );
-        let Some(header) = header else {
-            continue;
-        };
-        let mut raw = [0u8; 16];
-        raw.copy_from_slice(&log.bytes[header..header + 16]);
-        let array = match Array::from_header(raw, equipment_module_entry::STRIDE) {
-            Some(array) => array,
-            None => continue,
-        };
-        let block = (array.count as usize).checked_mul(equipment_module_entry::STRIDE);
-        let entries = block.and_then(|len| {
-            if len == 0 {
-                Some(0)
-            } else {
-                vspan(log, memory, Some(array.data), len, M_MODULES)
-            }
-        });
-        let Some(entries) = entries else {
-            continue;
-        };
-        for index in 0..array.count as usize {
-            let entry = entries + index * equipment_module_entry::STRIDE;
-            let definition = usize::try_from(pool_u64(log, entry + 8)).ok().filter(|&d| d != 0);
-            let Some(definition) = definition else {
-                continue;
-            };
-            let identity = vspan(log, memory, Some(definition), 12, M_MODULES);
-            let _ = vspan(log, memory, definition.checked_add(cequipment_module::ACTIVE), 1, M_MODULES);
-            let name = vspan(log, memory, definition.checked_add(cequipment_module::NAME), 32, M_MODULES);
-            let (Some(_), Some(name)) = (identity, name) else {
-                continue;
-            };
-            let mut name_header = [0u8; 32];
-            name_header.copy_from_slice(&log.bytes[name..name + 32]);
-            if let Some(literal) = parse_variant_literal(&name_header, 0) {
-                copy_variant_literal(log, memory, &literal, M_MODULES);
-            }
-        }
-        if log.overflowed {
-            return;
-        }
-    }
-}
-
-/// Mirror of `walk_stats`' read set: the five fixed stat-cache gathers per
-/// variant. No discovery beyond the census pointers.
-fn copy_variant_stats(
-    log: &mut RawLog<4>,
-    memory: &impl Memory,
-    variants: &[cequipment_variant::RegistryRow],
-) {
-    for variant in variants {
-        let pointer = variant.pointer();
-        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::SPEED_CACHE_CANDIDATE), 32, M_STATS);
-        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::MAXIMUM_SPEED_CACHE_CANDIDATE), 8, M_STATS);
-        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::RELIABILITY_CACHE_CANDIDATE), 8, M_STATS);
-        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::AIR_DEFENSE_CACHE_CANDIDATE), 24, M_STATS);
-        let _ = vspan(log, memory, pointer.checked_add(cequipment_variant::BUILD_COST_CACHE_CANDIDATE), 8, M_STATS);
-        if log.overflowed {
-            return;
-        }
-    }
-}
-
-/// Mirror of `cequipment_upgrades_instance::walk`'s read set: instance
-/// header, entry records, definition fields and the name literal.
-fn copy_variant_upgrades(
-    log: &mut RawLog<4>,
-    memory: &impl Memory,
-    variants: &[cequipment_variant::RegistryRow],
-) {
-    for variant in variants {
-        let pointer = variant.pointer();
-        let header = vspan(log, memory, pointer.checked_add(cequipment_variant::UPGRADES), 24, M_UPGRADES);
-        let Some(header) = header else {
-            continue;
-        };
-        let mut raw = [0u8; 16];
-        raw.copy_from_slice(&log.bytes[header + 8..header + 24]);
-        let array = match Array::from_header(raw, equipment_upgrade_entry::STRIDE) {
-            Some(array) => array,
-            None => continue,
-        };
-        for index in 0..array.count as usize {
-            let entry_addr = (index.checked_mul(equipment_upgrade_entry::STRIDE))
-                .and_then(|offset| array.data.checked_add(offset));
-            let entry = vspan(log, memory, entry_addr, 9, M_UPGRADES);
-            let Some(entry) = entry else {
-                continue;
-            };
-            let definition = usize::try_from(pool_u64(log, entry)).ok().filter(|&d| d != 0);
-            let Some(definition) = definition else {
-                continue;
-            };
-            let identity = vspan(log, memory, Some(definition), 12, M_UPGRADES);
-            let name = vspan(log, memory, definition.checked_add(cequipment_upgrade::NAME), 32, M_UPGRADES);
-            let (Some(_), Some(name)) = (identity, name) else {
-                continue;
-            };
-            let mut name_header = [0u8; 32];
-            name_header.copy_from_slice(&log.bytes[name..name + 32]);
-            if let Some(literal) = parse_variant_literal(&name_header, 0) {
-                copy_variant_literal(log, memory, &literal, M_UPGRADES);
-            }
-        }
-        if log.overflowed {
-            return;
-        }
-    }
-}
-
-impl Captured {
-    /// Game-thread raw copy for a slot-3 refresh hour. The registry census
-    /// already ran game-side and feeds both production (as always) and this
-    /// copy. Copies `first` always and `second` while any variant table still
-    /// needs double-read checks, compares the raw logs, and records
-    /// copy-only costs plus the existing checked/mismatches bookkeeping.
-    /// Returns whether the payload is complete (`raw_ok`); on staging
-    /// overflow the caller falls back to the typed walk and enqueues nothing.
-    pub(crate) fn copy_variants_refresh(
-        &mut self,
-        memory: &impl Memory,
-        ctx: VariantsCopyContext,
-        variants: &Sources<'_, cequipment_variant::RegistryRow>,
-        first: &mut VariantsJob,
-        mut second: Option<&mut VariantsJob>,
-    ) -> VariantsCopyReport {
-        let started = qpc();
-        // A failed or incomplete census blocks every detail check exactly
-        // like the typed walk: without a comparable source there is no
-        // evidence of stability, even when both detail logs agree empty.
-        let first_ok = complete_source(variants.first, variants.first_outcome).is_ok();
-        if let Ok(source) = complete_source(variants.first, variants.first_outcome) {
-            copy_variant_definitions(&mut first.log, memory, source);
-            if !first.log.overflowed {
-                copy_variant_modules(&mut first.log, memory, source);
-            }
-            if !first.log.overflowed {
-                copy_variant_stats(&mut first.log, memory, source);
-            }
-            if !first.log.overflowed {
-                copy_variant_upgrades(&mut first.log, memory, source);
-            }
-        }
-        let mut ticks = [0u64; 4];
-        ticks[0] = elapsed(started);
-        let mut matched = [true; 4];
-        if let Some(second_job) = second.as_deref_mut() {
-            let second_started = qpc();
-            if let Ok(source) = complete_source(variants.second, variants.second_outcome) {
-                copy_variant_definitions(&mut second_job.log, memory, source);
-                if !second_job.log.overflowed {
-                    copy_variant_modules(&mut second_job.log, memory, source);
-                }
-                if !second_job.log.overflowed {
-                    copy_variant_stats(&mut second_job.log, memory, source);
-                }
-                if !second_job.log.overflowed {
-                    copy_variant_upgrades(&mut second_job.log, memory, source);
-                }
-            }
-            ticks[0] += elapsed(second_started);
-            // Per-table partitions: shared registry spans gate every detail
-            // slot, per-variant detail spans only their own table.
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal =
-                    raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched =
-                    first_ok && equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-            }
-        }
-        self.definitions.checked = ctx.needed[0];
-        self.definitions.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        self.modules.checked = ctx.needed[1];
-        self.modules.mismatches = usize::from(ctx.needed[1] && !matched[1]);
-        self.stats.checked = ctx.needed[2];
-        self.stats.mismatches = usize::from(ctx.needed[2] && !matched[2]);
-        self.upgrades.checked = ctx.needed[3];
-        self.upgrades.mismatches = usize::from(ctx.needed[3] && !matched[3]);
-        if sources_changed(
-            complete_source(variants.first, variants.first_outcome),
-            complete_source(variants.second, variants.second_outcome),
-        ) {
-            // A changed parent census is a mismatch even when both child
-            // tables are empty, exactly like the typed walk.
-            for (slot, mismatches) in [
-                (0, &mut self.definitions.mismatches),
-                (1, &mut self.modules.mismatches),
-                (2, &mut self.stats.mismatches),
-                (3, &mut self.upgrades.mismatches),
-            ] {
-                if ctx.needed[slot] {
-                    *mismatches += 1;
-                    matched[slot] = false;
-                }
-            }
-        }
-        let raw_ok = !first.log.overflowed
-            && second.is_none_or(|job| !job.log.overflowed);
-        VariantsCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
-        }
-    }
-
-    /// Decode-worker interpretation of a raw refresh payload into the pooled
-    /// typed rows. Outcomes and arena bytes match the typed walks exactly
-    /// because the identical walks run against the recorded spans with the
-    /// frame's pooled registry rows as the source; checked/mismatches set by
-    /// the raw compare survive. Clears `raw_mode` so the next capture starts
-    /// clean.
-    pub(crate) fn decode_variants_payload(
-        &mut self,
-        base: usize,
-        source_rows: &[cequipment_variant::RegistryRow],
-        source_outcome: Outcome,
-        job: &VariantsJob,
-        decode_ticks: &mut [u64; 4],
-    ) {
-        use cequipment_variant::TextOutcome;
-        let started = qpc();
-        let recorded = crate::raw::Recorded::build(&job.log);
-        let source: Result<&[cequipment_variant::RegistryRow], &'static str> =
-            match source_outcome {
-                Outcome::Rows { len } => source_rows
-                    .get(..len)
-                    .ok_or("source row count exceeds acquired buffer"),
-                Outcome::Unavailable { reason } => Err(reason),
-                Outcome::Truncated { .. } => Err("source census incomplete"),
-            };
-        let result = match source {
-            Ok(source) => cequipment_variant::walk_definitions(
-                &recorded,
-                base,
-                source,
-                &mut self.definitions.rows,
-                &mut self.definition_bytes.first,
-            ),
-            Err(reason) => TextOutcome {
-                outcome: Outcome::Unavailable { reason },
-                bytes_len: 0,
-                required_bytes: 0,
-            },
-        };
-        self.definitions.outcome = result.outcome;
-        self.definition_bytes.len = result.bytes_len;
-        self.definition_bytes.required = result.required_bytes;
-        let result = match source {
-            Ok(source) => equipment_module_container::walk(
-                &recorded,
-                base,
-                source,
-                &mut self.modules.rows,
-                &mut self.module_bytes.first,
-            ),
-            Err(reason) => TextOutcome {
-                outcome: Outcome::Unavailable { reason },
-                bytes_len: 0,
-                required_bytes: 0,
-            },
-        };
-        self.modules.outcome = result.outcome;
-        self.module_bytes.len = result.bytes_len;
-        self.module_bytes.required = result.required_bytes;
-        self.stats.outcome = match source {
-            Ok(source) => {
-                cequipment_variant::walk_stats(&recorded, source, &mut self.stats.rows)
-            }
-            Err(reason) => Outcome::Unavailable { reason },
-        };
-        let result = match source {
-            Ok(source) => cequipment_upgrades_instance::walk(
-                &recorded,
-                base,
-                source,
-                &mut self.upgrades.rows,
-                &mut self.upgrade_bytes.first,
-            ),
-            Err(reason) => TextOutcome {
-                outcome: Outcome::Unavailable { reason },
-                bytes_len: 0,
-                required_bytes: 0,
-            },
-        };
-        self.upgrades.outcome = result.outcome;
-        self.upgrade_bytes.len = result.bytes_len;
-        self.upgrade_bytes.required = result.required_bytes;
-        decode_ticks[0] += elapsed(started);
-        self.raw_mode = false;
-    }
-}
-
-pub(crate) fn complete_source<T>(source: &[T], outcome: Outcome) -> Result<&[T], &'static str> {    match outcome {
+pub(crate) fn complete_source<T>(source: &[T], outcome: Outcome) -> Result<&[T], &'static str> {
+    match outcome {
         Outcome::Rows { len } => source
             .get(..len)
             .ok_or("source row count exceeds acquired buffer"),
@@ -2684,332 +2326,6 @@ fn upgrades(rows: &CaptureRows<cequipment_upgrades_instance::Row>, arena: &Arena
     })
 }
 
-/// Shared synthetic address space for the variants copy/decode split
-/// harness: two registry variants with definitions, modules, stats,
-/// upgrades and mixed inline/heap strings.
-#[cfg(test)]
-pub(crate) mod variants_test_kit {
-    use super::{
-        Capacities, Captured, Sources, VariantsCopyContext, VariantsCopyReport, VariantsJob, N,
-    };
-    use engine::{
-        cequipment_module, cequipment_type, cequipment_upgrade, cequipment_upgrades_instance,
-        cequipment_variant, cgame_state, equipment_module_container, msvc_string, walk::Outcome,
-    };
-
-    pub(crate) const BASE: usize = 0x140000000;
-    /// Game-state object lives at fixture offset GSTATE in the image.
-    pub(crate) const GAME_STATE: usize = 0x11000;
-    const ADDRESS: usize = 0x10000;
-
-    const GSTATE: usize = 0x1000;
-    const VARR: usize = 0x2000;
-    pub(crate) const V1: usize = 0x3000;
-    const V2: usize = 0x4000;
-    const EQ1: usize = 0x5000;
-    const MOD_ENTRY: usize = 0x6100;
-    const MOD_DEF: usize = 0x6200;
-    const UPG_ENTRY: usize = 0x6400;
-    const UPG_DEF: usize = 0x6500;
-    pub(crate) const HEAP: usize = 0x7000;
-
-    pub(crate) fn memory(bytes: &[u8]) -> KitMemory<'_> {
-        KitMemory {
-            inner: engine::memory::SliceMemory { base: ADDRESS, bytes },
-            fault: None,
-        }
-    }
-
-    /// Routes the image-base singleton read to the game-state value; every
-    /// other read lands in the small fixture image. An optional fault range
-    /// fails overlapping reads for double-read divergence tests.
-    pub(crate) struct KitMemory<'a> {
-        inner: engine::memory::SliceMemory<'a>,
-        pub(crate) fault: Option<(usize, usize)>,
-    }
-
-    impl engine::Memory for KitMemory<'_> {
-        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            if let Some((start, len)) = self.fault {
-                let end = address.checked_add(destination.len());
-                if end.is_some_and(|end| address < start + len && end > start) {
-                    return false;
-                }
-            }
-            if address == BASE + cgame_state::SINGLETON_RVA && destination.len() == 8 {
-                destination.copy_from_slice(&(GAME_STATE as u64).to_le_bytes());
-                return true;
-            }
-            self.inner.copy(address, destination)
-        }
-    }
-
-    fn put<const COUNT: usize>(bytes: &mut [u8], offset: usize, value: [u8; COUNT]) {
-        bytes[offset..offset + COUNT].copy_from_slice(&value);
-    }
-
-    fn pointer(bytes: &mut [u8], offset: usize, target: usize) {
-        put(bytes, offset, ((ADDRESS + target) as u64).to_le_bytes());
-    }
-
-    fn array(bytes: &mut [u8], offset: usize, data: usize, count: u32) {
-        pointer(bytes, offset, data);
-        put(bytes, offset + 8, count.to_le_bytes());
-        put(bytes, offset + 12, count.to_le_bytes());
-    }
-
-    fn heap_string(bytes: &mut [u8], header: usize, payload: usize, value: &[u8]) {
-        assert!(value.len() > msvc_string::INLINE_CAPACITY as usize);
-        put(bytes, header, ((ADDRESS + payload) as u64).to_le_bytes());
-        put(bytes, header + 16, (value.len() as u64).to_le_bytes());
-        put(bytes, header + 24, (value.len() as u64).to_le_bytes());
-        bytes[payload..payload + value.len()].copy_from_slice(value);
-        bytes[payload + value.len()] = 0;
-    }
-
-    fn inline_string(bytes: &mut [u8], header: usize, value: &[u8]) {
-        assert!(value.len() <= msvc_string::INLINE_CAPACITY as usize);
-        bytes[header..header + 32].fill(0);
-        bytes[header..header + value.len()].copy_from_slice(value);
-        put(bytes, header + 16, (value.len() as u64).to_le_bytes());
-        put(bytes, header + 24, 15_u64.to_le_bytes());
-    }
-
-    fn identity(bytes: &mut [u8], object: usize, id: u64) {
-        put(
-            bytes,
-            object,
-            ((BASE + cequipment_variant::VTABLE_RVA) as u64).to_le_bytes(),
-        );
-        put(bytes, object + 8, id.to_le_bytes());
-    }
-
-    pub(crate) fn fixture() -> Vec<u8> {
-        let mut bytes = vec![0; 0x8000];
-        array(&mut bytes, GSTATE + cgame_state::EQUIPMENT_VARIANTS, VARR, 2);
-        pointer(&mut bytes, VARR, V1);
-        pointer(&mut bytes, VARR + 8, V2);
-        for (variant, id) in [
-            (V1, 0x1100_0000_0046_u64),
-            (V2, 0x2200_0000_0046_u64),
-        ] {
-            // Low u32 equals the reference type for the census.
-            identity(&mut bytes, variant, id);
-            put(
-                &mut bytes,
-                variant + cequipment_variant::EQUIPMENT_TOKEN,
-                0x1234_5678_u32.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                variant + cequipment_variant::EQUIPMENT_TOKEN + 4,
-                0x1111_2222_u32.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                variant + cequipment_variant::EQUIPMENT_TOKEN + 8,
-                0x3333_4444_u32.to_le_bytes(),
-            );
-            bytes[variant + cequipment_variant::EQUIPMENT_TOKEN + 12] = 1;
-            // Both variants share the equipment definition; V2 exercises
-            // shared definitions with inline-only strings.
-            pointer(&mut bytes, variant + cequipment_variant::DEFINITION, EQ1);
-            bytes[variant + cequipment_variant::OBSOLETE] = 0;
-            put(
-                &mut bytes,
-                variant + cequipment_variant::CLASSIFIER_FLAGS,
-                0x0102030405060708_u64.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                variant + cequipment_variant::CLASSIFIER_FLAGS + 8,
-                0x99aa_bbcc_u32.to_le_bytes(),
-            );
-        }
-        inline_string(&mut bytes, V1 + cequipment_variant::DISPLAY_NAME, b"disp");
-        heap_string(
-            &mut bytes,
-            V1 + cequipment_variant::DISPLAY_NAME + 32,
-            HEAP,
-            b"variant-heap-string!",
-        );
-        inline_string(&mut bytes, V2 + cequipment_variant::DISPLAY_NAME, b"d2");
-        inline_string(&mut bytes, V2 + cequipment_variant::DISPLAY_NAME + 32, b"v2");
-        // Equipment type for V1 with a heap name.
-        put(
-            &mut bytes,
-            EQ1,
-            ((BASE + cequipment_type::VTABLE_RVA) as u64).to_le_bytes(),
-        );
-        put(&mut bytes, EQ1 + 8, 0x1234_5678_u32.to_le_bytes());
-        heap_string(&mut bytes, EQ1 + cequipment_type::NAME, HEAP + 64, b"equipment-heap-name!");
-        // One module on V1.
-        array(
-            &mut bytes,
-            V1 + cequipment_variant::MODULES + equipment_module_container::ENTRIES_CANDIDATE,
-            MOD_ENTRY,
-            1,
-        );
-        put(&mut bytes, MOD_ENTRY, 0xdead_beef_u32.to_le_bytes());
-        pointer(&mut bytes, MOD_ENTRY + 8, MOD_DEF);
-        put(
-            &mut bytes,
-            MOD_DEF,
-            ((BASE + cequipment_module::VTABLE_RVA) as u64).to_le_bytes(),
-        );
-        put(&mut bytes, MOD_DEF + 8, 0x5555_6666_u32.to_le_bytes());
-        bytes[MOD_DEF + cequipment_module::ACTIVE] = 1;
-        inline_string(&mut bytes, MOD_DEF + cequipment_module::NAME, b"mod");
-        // Empty module array on V2.
-        array(
-            &mut bytes,
-            V2 + cequipment_variant::MODULES + equipment_module_container::ENTRIES_CANDIDATE,
-            0,
-            0,
-        );
-        // Stat caches: distinct first qwords per variant.
-        for (variant, base_value) in [(V1, 100_i64), (V2, 200_i64)] {
-            let mut value = base_value;
-            for (offset, len) in [
-                (cequipment_variant::SPEED_CACHE_CANDIDATE, 32),
-                (cequipment_variant::MAXIMUM_SPEED_CACHE_CANDIDATE, 8),
-                (cequipment_variant::RELIABILITY_CACHE_CANDIDATE, 8),
-                (cequipment_variant::AIR_DEFENSE_CACHE_CANDIDATE, 24),
-                (cequipment_variant::BUILD_COST_CACHE_CANDIDATE, 8),
-            ] {
-                for chunk in (0..len).step_by(8) {
-                    put(
-                        &mut bytes,
-                        variant + offset + chunk,
-                        value.to_le_bytes(),
-                    );
-                    value += 1;
-                }
-            }
-        }
-        // One upgrade on V1, none on V2.
-        put(
-            &mut bytes,
-            V1 + cequipment_variant::UPGRADES,
-            ((BASE + cequipment_upgrades_instance::VTABLE_RVA) as u64).to_le_bytes(),
-        );
-        array(&mut bytes, V1 + cequipment_variant::UPGRADES + 8, UPG_ENTRY, 1);
-        pointer(&mut bytes, UPG_ENTRY, UPG_DEF);
-        put(
-            &mut bytes,
-            UPG_DEF,
-            ((BASE + cequipment_upgrade::VTABLE_RVA) as u64).to_le_bytes(),
-        );
-        put(&mut bytes, UPG_DEF + 8, (-5_i32).to_le_bytes());
-        inline_string(&mut bytes, UPG_DEF + cequipment_upgrade::NAME, b"upg");
-        put(
-            &mut bytes,
-            V2 + cequipment_variant::UPGRADES,
-            ((BASE + cequipment_upgrades_instance::VTABLE_RVA) as u64).to_le_bytes(),
-        );
-        array(&mut bytes, V2 + cequipment_variant::UPGRADES + 8, 0, 0);
-        bytes
-    }
-
-    pub(crate) fn registry(
-        memory: &impl engine::Memory,
-    ) -> (Vec<cequipment_variant::RegistryRow>, Outcome) {
-        let mut rows = vec![cequipment_variant::RegistryRow::default(); 8];
-        let outcome = cequipment_variant::walk_registry(memory, BASE, GAME_STATE, &mut rows);
-        (rows, outcome)
-    }
-
-    fn sources<'a>(
-        rows: &'a [cequipment_variant::RegistryRow],
-        outcome: Outcome,
-    ) -> Sources<'a, cequipment_variant::RegistryRow> {
-        Sources {
-            first: rows,
-            first_outcome: outcome,
-            second: rows,
-            second_outcome: outcome,
-        }
-    }
-
-    /// Reference typed detail walks with identical pooled buffers.
-    pub(crate) fn direct(
-        memory: &impl engine::Memory,
-        capacities: &Capacities,
-    ) -> Captured {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
-        let (rows, outcome) = registry(memory);
-        let sources = sources(&rows, outcome);
-        let needed = [true; N];
-        let _ = captured.finish_variants(memory, BASE, &needed, sources, 3, true);
-        captured
-    }
-
-    /// Raw-copy split: registry census feeds both production and the copy;
-    /// two detail passes compared, then the first payload decoded.
-    pub(crate) fn split(
-        memory: &impl engine::Memory,
-        capacities: &Capacities,
-    ) -> (Captured, VariantsCopyReport, VariantsJob) {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
-        let (rows, outcome) = registry(memory);
-        let sources = sources(&rows, outcome);
-        let ctx = VariantsCopyContext { needed: [true; 4] };
-        let mut first = VariantsJob::new();
-        let mut second = VariantsJob::new();
-        let report =
-            captured.copy_variants_refresh(memory, ctx, &sources, &mut first, Some(&mut second));
-        assert!(report.raw_ok);
-        let mut ticks = [0u64; 4];
-        captured.decode_variants_payload(BASE, &rows, outcome, &first, &mut ticks);
-        (captured, report, first)
-    }
-
-    pub(crate) fn assert_matches_direct(split: &Captured, direct: &Captured) {
-        assert_eq!(
-            split.definitions.outcome, direct.definitions.outcome,
-            "definitions outcome"
-        );
-        assert_eq!(split.modules.outcome, direct.modules.outcome, "modules outcome");
-        assert_eq!(split.stats.outcome, direct.stats.outcome, "stats outcome");
-        assert_eq!(split.upgrades.outcome, direct.upgrades.outcome, "upgrades outcome");
-        assert_eq!(
-            &split.definitions.rows[..split.definitions.outcome.len()],
-            &direct.definitions.rows[..direct.definitions.outcome.len()],
-            "definition rows"
-        );
-        assert_eq!(
-            &split.modules.rows[..split.modules.outcome.len()],
-            &direct.modules.rows[..direct.modules.outcome.len()],
-            "module rows"
-        );
-        assert_eq!(
-            &split.stats.rows[..split.stats.outcome.len()],
-            &direct.stats.rows[..direct.stats.outcome.len()],
-            "stat rows"
-        );
-        assert_eq!(
-            &split.upgrades.rows[..split.upgrades.outcome.len()],
-            &direct.upgrades.rows[..direct.upgrades.outcome.len()],
-            "upgrade rows"
-        );
-        assert_eq!(
-            &split.definition_bytes.first[..split.definition_bytes.len],
-            &direct.definition_bytes.first[..direct.definition_bytes.len],
-            "definition arena"
-        );
-        assert_eq!(
-            &split.module_bytes.first[..split.module_bytes.len],
-            &direct.module_bytes.first[..direct.module_bytes.len],
-            "module arena"
-        );
-        assert_eq!(
-            &split.upgrade_bytes.first[..split.upgrade_bytes.len],
-            &direct.upgrade_bytes.first[..direct.upgrade_bytes.len],
-            "upgrade arena"
-        );
-    }
-}
-
 /// Shared synthetic address space for the hourly production-rest
 /// copy/decode split: one country with one line, one stockpile entry,
 /// one licence, one licence record with one handle, and a one-conveyor
@@ -3017,8 +2333,8 @@ pub(crate) mod variants_test_kit {
 #[cfg(test)]
 pub(crate) mod production_rest_test_kit {
     use super::{
-        Capacities, Captured, ProductionRestCopyContext, ProductionRestCopyReport,
-        ProductionRestJob, Sources, N,
+        Capacities, Captured, N, ProductionRestCopyContext, ProductionRestCopyReport,
+        ProductionRestJob, Sources,
     };
     use engine::{
         carmy_manpower_values, ccountry, cdeployment_status, cequipment_production_license,
@@ -3067,10 +2383,18 @@ pub(crate) mod production_rest_test_kit {
         array(&mut bytes, BASE + cgame_state::COUNTRIES, 0x2000, 3);
         array(&mut bytes, BASE + cgame_state::COUNTRY_LINKS, 0x2100, 3);
         for slot in [1, 2] {
-            put(&mut bytes, 0x2000 + slot * 8, &(COUNTRY as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                0x2000 + slot * 8,
+                &(COUNTRY as u64).to_le_bytes(),
+            );
             put(&mut bytes, 0x2100 + slot * 4, &1_u32.to_le_bytes());
         }
-        put(&mut bytes, COUNTRY, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            COUNTRY,
+            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        );
         put(&mut bytes, COUNTRY + ccountry::ID, &2_u32.to_le_bytes());
         put(
             &mut bytes,
@@ -3083,13 +2407,26 @@ pub(crate) mod production_rest_test_kit {
             &(DEPLOY as u64).to_le_bytes(),
         );
         // Production manager.
-        put(&mut bytes, PROD, &(cproduction_status::VTABLE_RVA as u64).to_le_bytes());
-        put(&mut bytes, PROD + cproduction_status::COUNTRY, &(COUNTRY as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            PROD,
+            &(cproduction_status::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            PROD + cproduction_status::COUNTRY,
+            &(COUNTRY as u64).to_le_bytes(),
+        );
         array(&mut bytes, PROD + cproduction_status::LINES, PDATA, 1);
         put(&mut bytes, PDATA, &(PLINE as u64).to_le_bytes());
         array(&mut bytes, PROD + cproduction_status::LICENSES, LDATA, 1);
         put(&mut bytes, LDATA, &(VARIANT as u64).to_le_bytes());
-        array(&mut bytes, PROD + cproduction_status::LICENSE_RECORDS, RDATA, 1);
+        array(
+            &mut bytes,
+            PROD + cproduction_status::LICENSE_RECORDS,
+            RDATA,
+            1,
+        );
         put(&mut bytes, RDATA, &(RECORD as u64).to_le_bytes());
         put(
             &mut bytes,
@@ -3107,7 +2444,10 @@ pub(crate) mod production_rest_test_kit {
             (cproduction_line::COST, 100),
             (cproduction_line::SPEED, 200),
             (cproduction_line::PRODUCED, 300),
-            (cequipment_production_line::EQUIPMENT_VARIANT, VARIANT as u64),
+            (
+                cequipment_production_line::EQUIPMENT_VARIANT,
+                VARIANT as u64,
+            ),
             (
                 cequipment_production_line::INDUSTRIAL_ORGANISATION_CID,
                 0x1234_5678_0000_0095,
@@ -3124,7 +2464,11 @@ pub(crate) mod production_rest_test_kit {
             put(&mut bytes, PLINE + offset, &value.to_le_bytes());
         }
         // Variant identity.
-        put(&mut bytes, VARIANT, &(cequipment_variant::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            VARIANT,
+            &(cequipment_variant::VTABLE_RVA as u64).to_le_bytes(),
+        );
         put(
             &mut bytes,
             VARIANT + cequipment_variant::TYPE,
@@ -3136,7 +2480,11 @@ pub(crate) mod production_rest_test_kit {
             RECORD,
             &(cequipment_production_license::VTABLE_RVA as u64).to_le_bytes(),
         );
-        put(&mut bytes, RECORD + cequipment_production_license::OWNER, &2_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            RECORD + cequipment_production_license::OWNER,
+            &2_u32.to_le_bytes(),
+        );
         put(
             &mut bytes,
             RECORD + cequipment_production_license::UNSERIALIZED_OPERAND,
@@ -3155,11 +2503,24 @@ pub(crate) mod production_rest_test_kit {
             RECORD + cequipment_production_license::PARENT,
             &(VARIANT as u64).to_le_bytes(),
         );
-        array(&mut bytes, RECORD + cequipment_production_license::EQUIPMENT, RLIST, 1);
+        array(
+            &mut bytes,
+            RECORD + cequipment_production_license::EQUIPMENT,
+            RLIST,
+            1,
+        );
         put(&mut bytes, RLIST, &(VARIANT as u64).to_le_bytes());
         // Deployment manager + queue (mirrors the deployment walk fixture).
-        put(&mut bytes, DEPLOY, &(cdeployment_status::VTABLE_RVA as u64).to_le_bytes());
-        put(&mut bytes, DEPLOY + cdeployment_status::OWNER, &(COUNTRY as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            DEPLOY,
+            &(cdeployment_status::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            DEPLOY + cdeployment_status::OWNER,
+            &(COUNTRY as u64).to_le_bytes(),
+        );
         array(&mut bytes, DEPLOY + cdeployment_status::CONVEYORS, QUEUE, 1);
         put(&mut bytes, QUEUE, &(CONVEYOR as u64).to_le_bytes());
         put(
@@ -3314,7 +2675,9 @@ pub(crate) mod production_rest_test_kit {
         );
         array(
             &mut bytes,
-            DEPLOYMENT + cmilitary_deployment::EQUIPMENT_POOL + cequipment_variant_pool::ALLOCATIONS,
+            DEPLOYMENT
+                + cmilitary_deployment::EQUIPMENT_POOL
+                + cequipment_variant_pool::ALLOCATIONS,
             ALLOCATIONS,
             0,
         );
@@ -3388,10 +2751,7 @@ pub(crate) mod production_rest_test_kit {
         }
     }
 
-    pub(crate) fn direct(
-        memory: &impl engine::Memory,
-        capacities: &Capacities,
-    ) -> Captured {
+    pub(crate) fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> Captured {
         let mut captured = Captured::with_capacities(capacities, &[0; N]);
         let divisions = Sources {
             first: &[],
@@ -3433,29 +2793,42 @@ pub(crate) mod production_rest_test_kit {
         (captured, report, first)
     }
 
-        pub(crate) fn assert_matches_direct(split: &Captured, direct: &Captured) {
-            assert_eq!(split.lines.outcome, direct.lines.outcome, "lines outcome");
-            assert_eq!(split.stockpiles.outcome, direct.stockpiles.outcome, "stockpiles outcome");
-            assert_eq!(split.licenses.outcome, direct.licenses.outcome, "licences outcome");
-            assert_eq!(split.conveyors.outcome, direct.conveyors.outcome, "conveyors outcome");
-            assert_eq!(
-                split.deployment_lines.outcome, direct.deployment_lines.outcome,
-                "lines outcome"
-            );
-            assert_eq!(
-                split.deployment_manpower.outcome, direct.deployment_manpower.outcome,
-                "manpower outcome"
-            );
-            assert_eq!(
-                split.deployment_equipment.outcome, direct.deployment_equipment.outcome,
-                "equipment outcome"
-            );
-            assert_eq!(
-                split.license_records.outcome, direct.license_records.outcome,
-                "records outcome"
-            );
+    pub(crate) fn assert_matches_direct(split: &Captured, direct: &Captured) {
+        assert_eq!(split.lines.outcome, direct.lines.outcome, "lines outcome");
+        assert_eq!(
+            split.stockpiles.outcome, direct.stockpiles.outcome,
+            "stockpiles outcome"
+        );
+        assert_eq!(
+            split.licenses.outcome, direct.licenses.outcome,
+            "licences outcome"
+        );
+        assert_eq!(
+            split.conveyors.outcome, direct.conveyors.outcome,
+            "conveyors outcome"
+        );
+        assert_eq!(
+            split.deployment_lines.outcome, direct.deployment_lines.outcome,
+            "lines outcome"
+        );
+        assert_eq!(
+            split.deployment_manpower.outcome, direct.deployment_manpower.outcome,
+            "manpower outcome"
+        );
+        assert_eq!(
+            split.deployment_equipment.outcome, direct.deployment_equipment.outcome,
+            "equipment outcome"
+        );
+        assert_eq!(
+            split.license_records.outcome, direct.license_records.outcome,
+            "records outcome"
+        );
         let len = split.lines.outcome.len();
-        assert_eq!(&split.lines.rows[..len], &direct.lines.rows[..len], "line rows");
+        assert_eq!(
+            &split.lines.rows[..len],
+            &direct.lines.rows[..len],
+            "line rows"
+        );
         let len = split.stockpiles.outcome.len();
         assert_eq!(
             &split.stockpiles.rows[..len],
@@ -3487,10 +2860,31 @@ pub(crate) mod production_rest_test_kit {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_rest_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
+        use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
+        static LOCAL: Tracker = Tracker::new();
+        let mut job = ProductionRestJob::default();
+        job.census.reserve_exact(3);
+        job.capacity_charge = Charge::empty_on(&LOCAL);
+        job.update_capacity_charge();
+        let expected = |job: &ProductionRestJob| vector_bytes(&job.census);
+        let initial = LOCAL.snapshot().current.auxiliary_vectors;
+        assert_eq!(initial, expected(&job));
+        job.grow();
+        let grown = LOCAL.snapshot().current.auxiliary_vectors;
+        assert!(grown > initial);
+        assert_eq!(grown, expected(&job));
+        job.clear();
+        assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, grown);
+        drop(job);
+        assert_eq!(LOCAL.snapshot().current, Capacity::default());
+    }
+
     use cequipment_variant::{TextOutcome, TextSpan};
     use replay::rows::TableSchema;
 
@@ -3792,7 +3186,10 @@ mod tests {
                 (u128::from(line) << 33) | (1 << 32) | u128::from(u32::MAX)
             )
         );
-        assert_eq!((manpower[0].amount, manpower[1].amount), (i32::MIN, i32::MAX));
+        assert_eq!(
+            (manpower[0].amount, manpower[1].amount),
+            (i32::MIN, i32::MAX)
+        );
         captured.license_records.outcome = Outcome::Rows { len: 1 };
         captured.license_handles.first[..2].copy_from_slice(&[u64::MAX, 0]);
         captured.license_handles.len = 2;
@@ -3885,7 +3282,11 @@ mod tests {
         array(&mut bytes, BASE + cgame_state::COUNTRIES, 0x2000, 3);
         array(&mut bytes, BASE + cgame_state::COUNTRY_LINKS, 0x2100, 3);
         for slot in [1, 2] {
-            put(&mut bytes, 0x2000 + slot * 8, &(COUNTRY as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                0x2000 + slot * 8,
+                &(COUNTRY as u64).to_le_bytes(),
+            );
             put(&mut bytes, 0x2100 + slot * 4, &1_u32.to_le_bytes());
         }
         put(
@@ -3989,11 +3390,7 @@ mod tests {
             NAME_OBJECT + cname_group_member::OVERRIDE_NAME + msvc_string::CAPACITY,
             &msvc_string::INLINE_CAPACITY.to_le_bytes(),
         );
-        put(
-            &mut bytes,
-            NAME_OBJECT + cname_group_member::FLAG_A,
-            &[1],
-        );
+        put(&mut bytes, NAME_OBJECT + cname_group_member::FLAG_A, &[1]);
         put(
             &mut bytes,
             DEPLOYMENT,
@@ -4045,9 +3442,7 @@ mod tests {
                     let copies = self.copies.get();
                     self.copies.set(copies + 1);
                 }
-                if address == DEPLOYMENT + cmilitary_deployment::TRAINING
-                    && self.copies.get() > 1
-                {
+                if address == DEPLOYMENT + cmilitary_deployment::TRAINING && self.copies.get() > 1 {
                     output[0] ^= 1;
                 }
                 true
@@ -4113,7 +3508,11 @@ mod tests {
         // A conveyor array whose header is torn between the two passes fails
         // every dependent table rather than publishing a shorter queue.
         let mut broken = bytes.clone();
-        put(&mut broken, STATUS + deployment::CONVEYORS + 12, &2_u32.to_le_bytes());
+        put(
+            &mut broken,
+            STATUS + deployment::CONVEYORS + 12,
+            &2_u32.to_le_bytes(),
+        );
         let mut captured = Captured::with_capacities(&capacities(), &[0; N]);
         let (matched, _) = captured.acquire(
             &SliceMemory {
@@ -4489,237 +3888,14 @@ mod tests {
         assert!(captured.modules.second.is_empty());
     }
 
-    fn split_capacities() -> Capacities {
-        Capacities {
-            rows: [256; N],
-            definition_bytes: 8192,
-            module_bytes: 8192,
-            upgrade_bytes: 8192,
-            conveyor_name_bytes: 64,
-            line_custom_name_bytes: 64,
-            license_handles: 64,
-        }
-    }
-
-    #[test]
-    fn split_copy_matches_direct_walk() {
-        use super::variants_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let capacities = split_capacities();
-        let direct = kit::direct(&memory, &capacities);
-        let (split, report, _) = kit::split(&memory, &capacities);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 4]);
-        kit::assert_matches_direct(&split, &direct);
-        // Spot-checks: definition identity and heap strings, module and
-        // upgrade rows, and stat values.
-        assert_eq!(split.definitions.outcome, Outcome::Rows { len: 2 });
-        assert_eq!(split.definitions.rows[0].identity.equipment_token, 0x1234_5678);
-        assert_eq!(
-            &split.definition_bytes.first[split.definitions.rows[0].variant_name.start
-                ..split.definitions.rows[0].variant_name.start
-                    + split.definitions.rows[0].variant_name.len],
-            b"variant-heap-string!"
-        );
-        assert_eq!(split.modules.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(split.modules.rows[0].definition_token, 0x5555_6666);
-        assert_eq!(split.stats.outcome, Outcome::Rows { len: 2 });
-        assert_eq!(split.stats.rows[0].values[0], 100);
-        assert_eq!(split.stats.rows[1].values[0], 200);
-        assert_eq!(split.upgrades.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(split.upgrades.rows[0].definition_token, -5);
-    }
-
-    #[test]
-    fn variants_truncation_matrix_matches_direct_with_same_caps() {
-        // B3: zero/one/exact-fit(2)/overflow-by-one/massive run typed AND
-        // copy→decode against the SAME memory with the SAME pooled caps,
-        // asserting identical outcome (incl. len/unread) and identical rows.
-        // Fixture holds 2 variants (2 definitions/stats, 1 upgrade set);
-        // cap 1 is the overflow-by-one arm for definitions (total 2 ==
-        // cap+1), cap 0 the massive/zero arm. u32 unread saturation is not
-        // reachable synthetically and is covered by the walk's own
-        // saturating arithmetic.
-        use super::variants_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        for rows in [[0; N], [1; N], [2; N], [3; N], [64; N]] {
-            let capacities = Capacities {
-                rows,
-                definition_bytes: 512,
-                module_bytes: 512,
-                upgrade_bytes: 512,
-                conveyor_name_bytes: 0,
-                line_custom_name_bytes: 0,
-                license_handles: 0,
-            };
-            let direct = kit::direct(&memory, &capacities);
-            let (split, report, _) = kit::split(&memory, &capacities);
-            assert!(report.raw_ok, "rows={rows:?}");
-            assert_eq!(report.matched, [true; 4], "rows={rows:?}");
-            kit::assert_matches_direct(&split, &direct);
-        }
-        // Exact-fit arm pins Rows on definitions.
-        let capacities = Capacities {
-            rows: [2; N],
-            definition_bytes: 512,
-            module_bytes: 512,
-            upgrade_bytes: 512,
-            conveyor_name_bytes: 0,
-            line_custom_name_bytes: 0,
-            license_handles: 0,
-        };
-        let (split, _, _) = kit::split(&memory, &capacities);
-        assert_eq!(split.definitions.outcome, Outcome::Rows { len: 2 });
-    }
-
-    #[test]
-    fn split_copy_matches_direct_walk_under_truncation() {
-        use super::variants_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let capacities = Capacities {
-            rows: [1; N],
-            definition_bytes: 8,
-            module_bytes: 8,
-            upgrade_bytes: 8,
-            conveyor_name_bytes: 0,
-            line_custom_name_bytes: 0,
-            license_handles: 0,
-        };
-        let direct = kit::direct(&memory, &capacities);
-        let (split, report, _) = kit::split(&memory, &capacities);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 4]);
-        kit::assert_matches_direct(&split, &direct);
-    }
-
-    #[test]
-    fn split_copy_matches_direct_walk_on_fault_matrix() {
-        use super::variants_test_kit as kit;
-        // (fault offset from the image base, expected raw-compare verdicts in
-        // family order). Outcomes including reason strings must match the
-        // typed walk exactly; verdicts follow the fault-attribution masks.
-        for (offset, matched) in [
-            (0x1708, [false, false, false, false]),
-            (kit::V1, [false, false, false, false]),
-            (
-                kit::V1 + cequipment_variant::DEFINITION,
-                [false, true, true, true],
-            ),
-            (kit::HEAP, [false, true, true, true]),
-            (
-                kit::V1 + cequipment_variant::MODULES + 8,
-                [true, false, true, true],
-            ),
-            (
-                kit::V1 + cequipment_variant::SPEED_CACHE_CANDIDATE,
-                [true, true, false, true],
-            ),
-            (
-                kit::V1 + cequipment_variant::UPGRADES,
-                [true, true, true, false],
-            ),
-        ] {
-            let bytes = kit::fixture();
-            // Fixture offsets address the image base directly.
-            let fault = 0x10000 + offset;
-            let mut memory = kit::memory(&bytes);
-            memory.fault = Some((fault, 1));
-            let capacities = split_capacities();
-            let direct = kit::direct(&memory, &capacities);
-            let (split, report, _) = kit::split(&memory, &capacities);
-            assert!(report.raw_ok, "offset={offset:x}");
-            kit::assert_matches_direct(&split, &direct);
-            assert_eq!(report.matched, matched, "offset={offset:x}");
-        }
-    }
-
-    #[test]
-    fn double_copy_compare_blocks_checks_on_tearing() {
-        use super::variants_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let capacities = split_capacities();
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let (rows, outcome) = kit::registry(&memory);
-        let sources = Sources {
-            first: rows.as_slice(),
-            first_outcome: outcome,
-            second: rows.as_slice(),
-            second_outcome: outcome,
-        };
-        let ctx = VariantsCopyContext {
-            needed: [true; 4],
-        };
-        let mut first = VariantsJob::new();
-        let mut second = VariantsJob::new();
-        let report =
-            captured.copy_variants_refresh(&memory, ctx, &sources, &mut first, Some(&mut second));
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 4]);
-        // Same-hour tearing between the passes changes the log.
-        let mut torn = bytes.clone();
-        torn[kit::V1 + cequipment_variant::OBSOLETE] ^= 0xff;
-        let torn_memory = kit::memory(&torn);
-        let (torn_rows, torn_outcome) = kit::registry(&torn_memory);
-        let torn_sources = Sources {
-            first: torn_rows.as_slice(),
-            first_outcome: torn_outcome,
-            second: torn_rows.as_slice(),
-            second_outcome: torn_outcome,
-        };
-        let ctx = VariantsCopyContext {
-            needed: [false; 4],
-        };
-        let mut after = VariantsJob::new();
-        let after_report =
-            captured.copy_variants_refresh(&memory, ctx, &sources, &mut after, None);
-        assert!(after_report.raw_ok);
-        let mut after_torn = VariantsJob::new();
-        let torn_report =
-            captured.copy_variants_refresh(&torn_memory, ctx, &torn_sources, &mut after_torn, None);
-        assert!(torn_report.raw_ok);
-        assert!(!after.log.logs_equal(&after_torn.log));
-        let mut repeat = VariantsJob::new();
-        let repeat_report =
-            captured.copy_variants_refresh(&memory, ctx, &sources, &mut repeat, None);
-        assert!(repeat_report.raw_ok);
-        assert!(after.log.logs_equal(&repeat.log));
-    }
-
-    #[test]
-    fn staging_overflow_falls_back_to_typed_walk() {
-        use super::variants_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let capacities = split_capacities();
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let (rows, outcome) = kit::registry(&memory);
-        let sources = Sources {
-            first: rows.as_slice(),
-            first_outcome: outcome,
-            second: rows.as_slice(),
-            second_outcome: outcome,
-        };
-        let ctx = VariantsCopyContext {
-            needed: [true; 4],
-        };
-        let mut tiny = VariantsJob {
-            log: crate::raw::RawLog::new(8, 8),
-        };
-        let report = captured.copy_variants_refresh(&memory, ctx, &sources, &mut tiny, None);
-        assert!(!report.raw_ok);
-        assert!(tiny.log.overflowed);
-        assert!(tiny.grow_for_next());
-    }
-
     #[test]
     fn production_rest_split_copy_matches_direct_walk() {
         use super::production_rest_test_kit as kit;
         let bytes = kit::fixture();
-        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let memory = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
         let capacities = kit::capacities();
         let direct = kit::direct(&memory, &capacities);
         let (split, report, _) = kit::split(&memory, &capacities);
@@ -4746,7 +3922,10 @@ mod tests {
         // walk's own saturating arithmetic.
         use super::production_rest_test_kit as kit;
         let bytes = kit::fixture();
-        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let memory = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
         for rows in [[0; N], [1; N], [2; N], [64; N]] {
             let capacities = Capacities {
                 rows,
@@ -4759,10 +3938,15 @@ mod tests {
             };
             let direct = kit::direct(&memory, &capacities);
             let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-            let ctx = ProductionRestCopyContext { base: 0, game_state: kit::BASE, needed: [true; 8] };
+            let ctx = ProductionRestCopyContext {
+                base: 0,
+                game_state: kit::BASE,
+                needed: [true; 8],
+            };
             let mut first = ProductionRestJob::new();
             let mut second = ProductionRestJob::new();
-            let report = captured.copy_production_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
+            let report =
+                captured.copy_production_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
             assert!(report.raw_ok, "rows={rows:?}");
             assert_eq!(report.matched, [true; 8], "rows={rows:?}");
             captured.rest_raw_mode = true;
@@ -4783,7 +3967,10 @@ mod tests {
     fn production_rest_split_copy_matches_direct_walk_under_truncation() {
         use super::production_rest_test_kit as kit;
         let bytes = kit::fixture();
-        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let memory = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
         let capacities = Capacities {
             rows: [1; N],
             definition_bytes: 0,
@@ -4826,7 +4013,10 @@ mod tests {
     fn production_rest_double_copy_compare_blocks_checks_on_tearing() {
         use super::production_rest_test_kit as kit;
         let bytes = kit::fixture();
-        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let memory = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
         let capacities = kit::capacities();
         let mut captured = Captured::with_capacities(&capacities, &[0; N]);
         let ctx = ProductionRestCopyContext {
@@ -4843,7 +4033,10 @@ mod tests {
         // A torn conveyor amount between the passes changes the log.
         let mut torn = bytes.clone();
         torn[0x5000 + engine::cmilitary_deployment_conveyor::AMOUNT - kit::BASE] ^= 0xff;
-        let torn_memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &torn };
+        let torn_memory = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &torn,
+        };
         let mut after = ProductionRestJob::new();
         let mut after_torn = ProductionRestJob::new();
         {
@@ -4867,7 +4060,10 @@ mod tests {
     fn production_rest_staging_overflow_falls_back_to_typed_walk() {
         use super::production_rest_test_kit as kit;
         let bytes = kit::fixture();
-        let memory = engine::memory::SliceMemory { base: kit::BASE, bytes: &bytes };
+        let memory = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
         let capacities = kit::capacities();
         let mut captured = Captured::with_capacities(&capacities, &[0; N]);
         let ctx = ProductionRestCopyContext {
@@ -4879,6 +4075,7 @@ mod tests {
             log: crate::raw::RawLog::new(8, 8),
             game_state: 0,
             census: Vec::new(),
+            capacity_charge: crate::raw_memory::Charge::default(),
         };
         let report = captured.copy_production_rest_refresh(&memory, ctx, &mut tiny, None);
         assert!(!report.raw_ok);

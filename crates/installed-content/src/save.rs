@@ -227,11 +227,16 @@ pub struct State {
     /// The literal field only; absence is retained until its native save rule
     /// is applied by state_control, independently of province control.
     pub controller: Option<Vec<u8>>,
+    /// CState writer 1409D4040 emits this boolean unconditionally. Missing is
+    /// retained so the oracle can reject it, never silently assumed false.
+    pub demilitarized: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProvinceOverride {
     pub id: u32,
+    /// CProvince E6CA90 emits token 0x1b (`name`) iff its override is nonempty.
+    pub name: Option<Vec<u8>>,
     pub owner: Option<Vec<u8>>,
     pub controller: Option<Vec<u8>>,
     /// E6CA90 writes the signed CProvince+0x38 integer iff it is nonzero.
@@ -255,6 +260,30 @@ pub struct Division {
     pub organisation: Decimal,
     /// Ordered viewer entries; the writer omits the field for an empty array.
     pub country_intel: Vec<IntelEntry>,
+    pub presentation: DivisionPresentation,
+}
+
+/// Fields independently serialized by CUnit BF7010 and CArmy C80E00.
+/// Positive-only fields retain omission, rather than inventing a zero value.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DivisionPresentation {
+    pub path: Vec<u32>,
+    pub previous: Option<u32>,
+    pub movement_progress: Option<Decimal>,
+    pub dig_in: Option<Decimal>,
+    pub dig_in_cap: Option<Decimal>,
+    pub strategic_redeployment: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DivisionTemplate {
+    pub template: u64,
+    pub country: Vec<u8>,
+    pub name: Vec<u8>,
+    pub custom_icon: i32,
+    pub custom_icon_nato: bool,
+    /// Grid kind (regiments/support/regimental support), x, y -> literal unit name.
+    pub composition: BTreeMap<(u8, u32, u32), Vec<u8>>,
 }
 
 /// The engine's monotonic allocation counters as the save header serializes
@@ -461,6 +490,9 @@ pub struct Save {
     pub provinces: BTreeMap<u32, ProvinceOverride>,
     /// Full typed handles uniquely identify divisions across every country roster.
     pub divisions: BTreeMap<u64, Division>,
+    pub division_templates: BTreeMap<u64, DivisionTemplate>,
+    /// CCountry's explicit division_template_id roster, including unused ones.
+    pub division_template_owners: BTreeMap<u64, Vec<u8>>,
     /// One first-owned entry per ordered country pair, not a grouped war ID.
     pub war_relations: Vec<WarRelation>,
     /// Every saved `cached_sum`; a pair without one held an exact zero opinion.
@@ -706,6 +738,61 @@ fn convoy_equipment(country: &[Item]) -> io::Result<Option<Vec<EquipmentAmount>>
     Ok(Some(result))
 }
 
+fn parse_division_templates(items: &[Item]) -> io::Result<BTreeMap<u64, DivisionTemplate>> {
+    let mut result = BTreeMap::new();
+    let Some(value) = field(items, b"division_templates")? else {
+        return Ok(result);
+    };
+    for item in block(value)? {
+        if item.key.as_deref() != Some(b"division_template") {
+            return Err(invalid("unexpected division template registry entry"));
+        }
+        let fields = block(&item.value)?;
+        let template = typed_handle(
+            field(fields, b"id")?.ok_or_else(|| invalid("division template lacks id"))?,
+        )?;
+        let mut composition = BTreeMap::new();
+        for (kind, key) in [b"regiments".as_slice(), b"support", b"regimental_support"]
+            .into_iter()
+            .enumerate()
+        {
+            if let Some(value) = field(fields, key)? {
+                for unit in block(value)? {
+                    let name = unit
+                        .key
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| invalid("template subunit name absent"))?;
+                    let position = block(&unit.value)?;
+                    let x: u32 = integer(&required_bytes(position, b"x")?)?;
+                    let y: u32 = integer(&required_bytes(position, b"y")?)?;
+                    if composition
+                        .insert((kind as u8, x, y), name.to_vec())
+                        .is_some()
+                    {
+                        return Err(invalid("duplicate division template grid cell"));
+                    }
+                }
+            }
+        }
+        let row = DivisionTemplate {
+            template,
+            country: required_bytes(fields, b"country")?,
+            name: bytes(fields, b"name")?.unwrap_or_default(),
+            custom_icon: integer(&required_bytes(fields, b"template_counter")?)?,
+            custom_icon_nato: boolean(
+                field(fields, b"ingame_set_template_counter")?
+                    .ok_or_else(|| invalid("template lacks counter override flag"))?,
+            )?,
+            composition,
+        };
+        if result.insert(template, row).is_some() {
+            return Err(invalid("duplicate division template handle"));
+        }
+    }
+    Ok(result)
+}
+
 fn parse_country(tag: &[u8], items: &[Item]) -> io::Result<Country> {
     let politics = field(items, b"politics")?.map(block).transpose()?;
     Ok(Country {
@@ -774,6 +861,19 @@ fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<Division> {
         hit_points: Decimal::parse(&required_bytes(items, b"strength")?)?,
         organisation: Decimal::parse(&required_bytes(items, b"organisation")?)?,
         country_intel: country_intel(items)?,
+        presentation: DivisionPresentation {
+            path: integer_list(items, b"path")?,
+            previous: bytes(items, b"previous")?
+                .map(|b| integer(&b))
+                .transpose()?,
+            movement_progress: decimal(items, b"movement_progress")?,
+            dig_in: decimal(items, b"dig_in")?,
+            dig_in_cap: decimal(items, b"dig_in_cap")?,
+            strategic_redeployment: field(items, b"strategic_redeployment")?
+                .map(boolean)
+                .transpose()?
+                .unwrap_or(false),
+        },
     })
 }
 
@@ -1308,6 +1408,7 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
     let counters = parse_allocation_counters(items)?;
     let mut countries = BTreeMap::new();
     let mut divisions = BTreeMap::new();
+    let mut division_template_owners = BTreeMap::new();
     let mut fleets = BTreeMap::new();
     let mut task_forces = BTreeMap::new();
     let mut ships = BTreeMap::new();
@@ -1324,6 +1425,18 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
             .filter(|tag| !tag.is_empty())
             .ok_or_else(|| invalid("country has no tag"))?;
         let country_items = block(&item.value)?;
+        for item in country_items
+            .iter()
+            .filter(|item| item.key.as_deref() == Some(b"division_template_id"))
+        {
+            let template = typed_handle(&item.value)?;
+            if division_template_owners
+                .insert(template, tag.to_vec())
+                .is_some()
+            {
+                return Err(invalid("duplicate template handle across country rosters"));
+            }
+        }
         parse_orders(tag, country_items, &mut army_orders)?;
         let country = parse_country(tag, country_items).map_err(|error| {
             invalid(format!("country {}: {error}", String::from_utf8_lossy(tag)))
@@ -1516,6 +1629,7 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
                     id,
                     owner: bytes(state, b"owner")?,
                     controller: bytes(state, b"controller")?,
+                    demilitarized: field(state, b"demilitarized")?.map(boolean).transpose()?,
                 },
             )
             .is_some()
@@ -1536,6 +1650,7 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
                 id,
                 ProvinceOverride {
                     id,
+                    name: bytes(province, b"name")?,
                     owner: bytes(province, b"owner")?,
                     controller: bytes(province, b"controller")?,
                     victory_points: bytes(province, b"victory_points")?
@@ -1576,6 +1691,8 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
         states,
         provinces,
         divisions,
+        division_templates: parse_division_templates(items)?,
+        division_template_owners,
         war_relations,
         relation_opinions,
         relation_tuples,
@@ -2005,6 +2122,39 @@ states={ 1={owner="GER"} } provinces={ 2={controller="D01"} 3={buildings={}} }
     }
 
     #[test]
+    fn province_override_names_are_literal_optional_bytes_and_duplicates_fail() {
+        let text = |names: &str| {
+            format!(
+                "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={{}} states={{}} provinces={{{names}}}"
+            )
+        };
+        let saved = parse(text(r#"1={name="Gdansk"} 2={} 3={name=""}"#).as_bytes()).unwrap();
+        assert_eq!(
+            saved.provinces[&1].name.as_deref(),
+            Some(b"Gdansk".as_slice())
+        );
+        assert_eq!(saved.provinces[&2].name, None);
+        assert_eq!(saved.provinces[&3].name.as_deref(), Some(b"".as_slice()));
+        assert!(parse(text(r#"1={name="A" name="B"}"#).as_bytes()).is_err());
+    }
+
+    #[test]
+    fn division_template_parser_preserves_coordinates_and_rejects_duplicate_cells() {
+        let parse = |cells: &str| {
+            let document = parser::parse(format!("division_templates={{division_template={{id={{id=4294967295 type=52}} country=GER name=Infantry template_counter=-1 ingame_set_template_counter=yes regiments={{{cells}}}}}}}").as_bytes()).unwrap();
+            parse_division_templates(&document.items)
+        };
+        let rows = parse("infantry={x=0 y=1} artillery={x=1 y=0}").unwrap();
+        let row = &rows[&0xffff_ffff_0000_0034];
+        assert_eq!(row.name, b"Infantry");
+        assert_eq!(row.custom_icon, -1);
+        assert!(row.custom_icon_nato);
+        assert_eq!(row.composition[&(0, 0, 1)], b"infantry");
+        assert!(parse("infantry={x=0 y=1} artillery={x=0 y=1}").is_err());
+        assert!(parse("infantry={x=-1 y=1}").is_err());
+    }
+
+    #[test]
     fn binary_malformed_and_ambiguous_saves_are_refused() {
         assert!(
             parse(b"HOI4bin\0")
@@ -2078,6 +2228,24 @@ equipments={convoy_1={id={id=1 type=70}} convoy_1={id={id=2 type=70}}}
                 .to_string()
                 .contains("lacks state")
         );
+    }
+
+    #[test]
+    fn state_demilitarized_preserves_yes_no_and_missing_and_rejects_invalid_or_duplicate() {
+        let document = |states: &str| {
+            format!(
+                "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=13 countries={{}} provinces={{}} states={{{states}}}"
+            )
+        };
+        let saved =
+            parse(document("42={demilitarized=yes} 51={demilitarized=no} 978={}").as_bytes())
+                .unwrap();
+        assert_eq!(saved.states[&42].demilitarized, Some(true));
+        assert_eq!(saved.states[&51].demilitarized, Some(false));
+        assert_eq!(saved.states[&978].demilitarized, None);
+        for value in ["1", "true", "{}", "yes demilitarized=no"] {
+            assert!(parse(document(&format!("42={{demilitarized={value}}}")).as_bytes()).is_err());
+        }
     }
 
     #[test]
@@ -2161,6 +2329,7 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
                 id: 2,
                 owner: Some(b"GER".to_vec()),
                 controller: None,
+                demilitarized: None,
             },
         );
         assert!(
@@ -2319,6 +2488,38 @@ division={
             format!("{valid} {valid}"),
         ] {
             assert!(division_save(&fragment).is_err(), "{fragment}");
+        }
+    }
+
+    #[test]
+    fn division_presentation_parser_retains_route_order_precision_and_positive_omission() {
+        let source = "division={id={id=1 type=51} logical_country=SOV strength=1 organisation=2 previous=7 path={9 8 9} movement_progress=90071992547.40993 dig_in=0.00001 dig_in_cap=8.8 strategic_redeployment=yes}";
+        let saved = division_save(source).unwrap();
+        let p = &saved.divisions[&((1_u64 << 32) | 51)].presentation;
+        assert_eq!(p.path, [9, 8, 9]);
+        assert_eq!(p.previous, Some(7));
+        assert_eq!(
+            p.movement_progress.as_ref().unwrap().raw,
+            9_007_199_254_740_993
+        );
+        assert_eq!(p.dig_in.as_ref().unwrap().raw, 1);
+        assert_eq!(p.dig_in_cap.as_ref().unwrap().raw, 880_000);
+        assert!(p.strategic_redeployment);
+        let absent = division_save(
+            "division={id={id=1 type=51} logical_country=SOV strength=1 organisation=2}",
+        )
+        .unwrap();
+        assert_eq!(
+            absent.divisions[&((1_u64 << 32) | 51)].presentation,
+            DivisionPresentation::default()
+        );
+        for bad in [
+            source.replace("path={9 8 9}", "path={x=9}"),
+            source.replace("dig_in=0.00001", "dig_in=0.000001"),
+            source.replace("strategic_redeployment=yes", "strategic_redeployment=maybe"),
+            source.replace("previous=7", "previous=7 previous=7"),
+        ] {
+            assert!(division_save(&bad).is_err(), "{bad}");
         }
     }
 

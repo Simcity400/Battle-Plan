@@ -31,9 +31,30 @@
 
 use engine::Memory;
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hasher};
+use std::hash::Hasher;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Worker-side index preparation only. No timers or atomic updates are added
+// to memory lookups or to the game-thread copy path.
+static INDEX_REUSES: AtomicU64 = AtomicU64::new(0);
+static INDEX_REBUILDS: AtomicU64 = AtomicU64::new(0);
+static INDEX_REUSE_NS: AtomicU64 = AtomicU64::new(0);
+static INDEX_REBUILD_NS: AtomicU64 = AtomicU64::new(0);
+static INDEX_REUSED_SPANS: AtomicU64 = AtomicU64::new(0);
+static INDEX_REBUILT_SPANS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn index_diagnostics() -> serde_json::Value {
+    serde_json::json!({
+        "scope": "shared raw indexes since attach; preparation only, not row decoding",
+        "reuses": INDEX_REUSES.load(Ordering::Relaxed),
+        "rebuilds": INDEX_REBUILDS.load(Ordering::Relaxed),
+        "reuse_ns": INDEX_REUSE_NS.load(Ordering::Relaxed),
+        "rebuild_ns": INDEX_REBUILD_NS.load(Ordering::Relaxed),
+        "reused_spans": INDEX_REUSED_SPANS.load(Ordering::Relaxed),
+        "rebuilt_spans": INDEX_REBUILT_SPANS.load(Ordering::Relaxed),
+    })
+}
 
 static GROWTH_DIAGNOSTICS: Mutex<std::collections::BTreeMap<&'static str, serde_json::Value>> =
     Mutex::new(std::collections::BTreeMap::new());
@@ -56,6 +77,11 @@ pub(crate) fn note_growth<const N: usize>(family: &'static str, log: &RawLog<N>)
         "last_length": log.spans.last().map(|span| span.len),
         "last_mask": log.spans.last().map(|span| span.mask),
     });
+    publish_growth(family, value);
+}
+
+/// Publish an equivalent worker-owned packet capacity diagnostic.
+pub(crate) fn publish_growth(family: &'static str, value: serde_json::Value) {
     if let Ok(mut diagnostics) = GROWTH_DIAGNOSTICS.lock() {
         diagnostics.insert(family, value);
     }
@@ -87,7 +113,7 @@ pub(crate) fn double_capacity<T>(rows: &mut Vec<T>) {
 /// unreachable through `take_inner`/`LiveMemory`; the C fix remains as
 /// containment for direct FFI callers.
 #[inline]
-fn is_canonical_range(addr: usize, len: usize) -> bool {
+pub(crate) fn is_canonical_range(addr: usize, len: usize) -> bool {
     if len == 0 {
         return true;
     }
@@ -112,13 +138,109 @@ pub struct Span {
     pub bulk: bool,
 }
 
+/// Fully initialized reusable storage with a separately published byte prefix.
+/// Spare bytes may contain an earlier capture or a failed partial copy; only
+/// the successfully copied logical prefix is exposed through slice operations.
+/// Initialization and capacity growth happen off the game thread.
+pub struct RawBytes {
+    storage: Vec<u8>,
+    used: usize,
+}
+
+impl RawBytes {
+    fn with_capacity(capacity: usize) -> Self {
+        let mut storage = vec![0; capacity];
+        // Initialize the actual allocation, including any allocator headroom.
+        storage.resize(storage.capacity(), 0);
+        Self { storage, used: 0 }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.storage.capacity()
+    }
+
+    fn clear(&mut self) {
+        self.used = 0;
+    }
+
+    /// Worker-only growth. The logical prefix and existing bytes survive.
+    fn grow_to(&mut self, capacity: usize) {
+        if capacity > self.storage.capacity() {
+            self.storage.reserve_exact(capacity - self.storage.len());
+            self.storage.resize(self.storage.capacity(), 0);
+        }
+    }
+
+    /// Append already-owned bytes within a prepared arena. The lexical
+    /// exceptional decoder uses this after reserving the exact payload size.
+    /// This never allocates and never publishes an unfilled destination.
+    pub fn extend_from_slice(&mut self, bytes: &[u8]) {
+        let end = self
+            .used
+            .checked_add(bytes.len())
+            .expect("raw byte length overflow");
+        self.storage[self.used..end].copy_from_slice(bytes);
+        self.used = end;
+    }
+
+    #[cfg(test)]
+    fn resize(&mut self, len: usize, value: u8) {
+        self.grow_to(len);
+        if len > self.used {
+            self.storage[self.used..len].fill(value);
+        }
+        self.used = len;
+    }
+
+    #[cfg(test)]
+    fn truncate(&mut self, len: usize) {
+        self.used = self.used.min(len);
+    }
+}
+
+impl std::ops::Deref for RawBytes {
+    type Target = [u8];
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.storage[..self.used]
+    }
+}
+
+impl std::ops::DerefMut for RawBytes {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.storage[..self.used]
+    }
+}
+
+impl std::fmt::Debug for RawBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl AsRef<[u8]> for RawBytes {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl<T: AsRef<[u8]> + ?Sized> PartialEq<T> for RawBytes {
+    fn eq(&self, other: &T) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+
+impl Eq for RawBytes {}
+
 /// One refresh of raw payload for a family of at most 32 tables. Flat pools
 /// keep every span fixed-size so `clear` recycles capacities and the steady
 /// state allocates on neither thread; growth happens on the decode side only.
 #[derive(Debug)]
 pub struct RawLog<const N: usize> {
     pub spans: Vec<Span>,
-    pub bytes: Vec<u8>,
+    pub bytes: RawBytes,
     pub fault: [bool; N],
     pub raw_bytes: [u64; N],
     pub overflowed: bool,
@@ -131,6 +253,7 @@ pub struct RawLog<const N: usize> {
     // Address metadata only, never game bytes. Taken and returned by the
     // decode worker; clear() on the copy side leaves it untouched.
     index: RefCell<Option<RecordedIndex>>,
+    capacity_charge: crate::raw_memory::Charge,
 }
 
 impl<const N: usize> Default for RawLog<N> {
@@ -144,9 +267,9 @@ impl<const N: usize> RawLog<N> {
     /// decode-worker acquire/recycle pair, so this never runs per refresh.
     pub fn new(span_cap: usize, byte_cap: usize) -> Self {
         debug_assert!(N <= 32, "span masks cover at most 32 tables");
-        Self {
+        let mut log = Self {
             spans: Vec::with_capacity(span_cap),
-            bytes: Vec::with_capacity(byte_cap),
+            bytes: RawBytes::with_capacity(byte_cap),
             fault: [false; N],
             raw_bytes: [0; N],
             overflowed: false,
@@ -154,7 +277,18 @@ impl<const N: usize> RawLog<N> {
             required_bytes: 0,
             has_bulk: false,
             index: RefCell::new(None),
-        }
+            capacity_charge: crate::raw_memory::Charge::default(),
+        };
+        log.update_capacity_charge();
+        log
+    }
+
+    fn update_capacity_charge(&mut self) {
+        self.capacity_charge.set(crate::raw_memory::Capacity {
+            payload_vectors: crate::raw_memory::vector_bytes(&self.spans)
+                + self.bytes.capacity() as u64,
+            ..Default::default()
+        });
     }
 
     /// Reset lengths for reuse, keeping every capacity. No allocation.
@@ -187,8 +321,9 @@ impl<const N: usize> RawLog<N> {
             let target = self
                 .required_bytes
                 .max(self.bytes.capacity().saturating_mul(2));
-            self.bytes.reserve_exact(target - self.bytes.len());
+            self.bytes.grow_to(target);
         }
+        self.update_capacity_charge();
     }
 
     /// Guarded copy of one span into the pool. Returns the pool offset of the
@@ -196,6 +331,7 @@ impl<const N: usize> RawLog<N> {
     /// mask. Empty spans read nothing (matching `Memory`), null or
     /// overflowing addresses fail without touching memory. On pool overflow
     /// sets `overflowed` and returns `None`.
+    #[inline]
     pub fn take(
         &mut self,
         memory: &impl Memory,
@@ -209,6 +345,7 @@ impl<const N: usize> RawLog<N> {
     /// Bulk variant of [`take`]: the span additionally serves replay requests
     /// fully enclosed in it (contiguous table copies). Use only for spans no
     /// smaller exact span overlaps.
+    #[inline]
     pub fn take_bulk(
         &mut self,
         memory: &impl Memory,
@@ -219,6 +356,7 @@ impl<const N: usize> RawLog<N> {
         self.take_inner(memory, addr, len, mask, true)
     }
 
+    #[inline]
     fn take_inner(
         &mut self,
         memory: &impl Memory,
@@ -265,12 +403,13 @@ impl<const N: usize> RawLog<N> {
             return None;
         }
         let start = self.bytes.len();
-        self.bytes.resize(start + len, 0);
-        if !memory.copy(addr, &mut self.bytes[start..start + len]) {
-            self.bytes.truncate(start);
+        // The whole destination is already initialized. A failed partial
+        // copy stays outside the logical prefix and records only its fault.
+        if !memory.copy(addr, &mut self.bytes.storage[start..start + len]) {
             self.note_fail(addr, len32, mask);
             return None;
         }
+        self.bytes.used = start + len;
         self.spans.push(Span {
             addr,
             len: len32,
@@ -285,6 +424,7 @@ impl<const N: usize> RawLog<N> {
 
     /// Stage independent fields with one guarded call, retaining the exact
     /// successful prefix and first failure. Each field keeps its table mask.
+    #[inline(always)]
     pub fn take_scattered<const M: usize>(
         &mut self,
         memory: &impl Memory,
@@ -316,14 +456,14 @@ impl<const N: usize> RawLog<N> {
             self.overflowed = true;
             return None;
         }
-        self.bytes.resize(end, 0);
         let completed = {
-            let mut remaining = &mut self.bytes[start..end];
-            let mut destinations: [&mut [u8]; M] = std::array::from_fn(|index| {
-                let (field, rest) = std::mem::take(&mut remaining).split_at_mut(lengths[index]);
+            let mut remaining = &mut self.bytes.storage[start..end];
+            let mut destinations: [&mut [u8]; M] = std::array::from_fn(|_| &mut [][..]);
+            for (destination, len) in destinations.iter_mut().zip(lengths) {
+                let (field, rest) = remaining.split_at_mut(len);
+                *destination = field;
                 remaining = rest;
-                field
-            });
+            }
             let guarded = std::array::from_fn(|index| {
                 if is_canonical_range(addresses[index], lengths[index]) {
                     addresses[index]
@@ -334,6 +474,11 @@ impl<const N: usize> RawLog<N> {
             memory.copy_scattered(guarded, &mut destinations)
         };
         debug_assert!(completed <= M);
+        self.bytes.used = if completed == M {
+            end
+        } else {
+            starts[completed]
+        };
         for index in 0..completed {
             let len = lengths[index];
             if len != 0 {
@@ -349,7 +494,6 @@ impl<const N: usize> RawLog<N> {
             }
         }
         if completed != M {
-            self.bytes.truncate(starts[completed]);
             self.note_fail(
                 addresses[completed],
                 lengths[completed] as u32,
@@ -363,6 +507,7 @@ impl<const N: usize> RawLog<N> {
     /// the successful prefix as one bulk span and the first failed element
     /// separately; never retry a partial copy or read beyond that failure.
     /// The limit sizes stack scratch, not the source array: callers chunk it.
+    #[inline(always)]
     pub fn take_array_chunk(
         &mut self,
         memory: &impl Memory,
@@ -389,16 +534,17 @@ impl<const N: usize> RawLog<N> {
             self.overflowed = true;
             return None;
         }
-        let addresses: [usize; 64] =
-            std::array::from_fn(|index| address.checked_add(index * width).unwrap_or(0));
-        let guarded = addresses.map(|address| {
-            if is_canonical_range(address, width) {
-                address
+        // Only the requested prefix crosses the memory boundary. Keep one
+        // initialized address array; unused tail entries are never evaluated.
+        let mut guarded = [0; 64];
+        for (index, destination) in guarded[..count].iter_mut().enumerate() {
+            let source = address.checked_add(index * width).unwrap_or(0);
+            *destination = if is_canonical_range(source, width) {
+                source
             } else {
                 0
-            }
-        });
-        self.bytes.resize(end, 0);
+            };
+        }
         let fields = [engine::memory::RecordField {
             source_offset: 0,
             destination_offset: 0,
@@ -408,10 +554,10 @@ impl<const N: usize> RawLog<N> {
             &guarded[..count],
             &fields,
             width,
-            &mut self.bytes[start..end],
+            &mut self.bytes.storage[start..end],
         );
         debug_assert!(completed <= count);
-        self.bytes.truncate(start + completed * width);
+        self.bytes.used = start + completed * width;
         if completed != 0 {
             self.spans.push(Span {
                 addr: address,
@@ -425,75 +571,10 @@ impl<const N: usize> RawLog<N> {
             self.raw_bytes[lowest_table(mask)] += (completed * width) as u64;
         }
         if completed != count {
-            self.note_fail(addresses[completed], width as u32, mask);
-        }
-        Some((start, completed))
-    }
-
-    /// Stage an exact fixed-layout gather with one guarded call. The log
-    /// retains the same complete-field prefix and first failure as Memory;
-    /// padding and partially copied failed fields are never exposed.
-    pub fn take_records(
-        &mut self,
-        memory: &impl Memory,
-        pointers: &[usize],
-        fields: &[engine::memory::RecordField],
-        stride: usize,
-        mask: u32,
-    ) -> Option<(usize, usize)> {
-        if self.overflowed {
-            return None;
-        }
-        let bytes = pointers.len().checked_mul(stride)?;
-        let spans = pointers.len().checked_mul(fields.len())?;
-        if fields.iter().any(|field| {
-            field
-                .destination_offset
-                .checked_add(field.len)
-                .is_none_or(|end| end > stride)
-                || field.len > u32::MAX as usize
-        }) {
-            return None;
-        }
-        let start = self.bytes.len();
-        let end = start.checked_add(bytes)?;
-        if self.spans.capacity() - self.spans.len() < spans
-            || self.bytes.capacity() < end
-            || end > u32::MAX as usize
-        {
-            self.span_exhausted = self.spans.capacity() - self.spans.len() < spans;
-            self.required_bytes = end;
-            self.overflowed = true;
-            return None;
-        }
-        self.bytes.resize(end, 0);
-        // LiveMemory performs the canonical-address gate before entering its
-        // guard, preserving the exact prefix on null/overflow/bad sources.
-        let completed = memory.copy_records(pointers, fields, stride, &mut self.bytes[start..end]);
-        for (row, &pointer) in pointers.iter().enumerate() {
-            for (column, field) in fields.iter().enumerate() {
-                let ordinal = row * fields.len() + column;
-                if ordinal > completed {
-                    return Some((start, completed));
-                }
-                if field.len == 0 {
-                    continue;
-                }
-                let address = pointer.checked_add(field.source_offset).unwrap_or(0);
-                if ordinal == completed {
-                    self.note_fail(address, field.len as u32, mask);
-                    return Some((start, completed));
-                }
-                self.spans.push(Span {
-                    addr: address,
-                    len: field.len as u32,
-                    ok: true,
-                    mask,
-                    start: (start + row * stride + field.destination_offset) as u32,
-                    bulk: false,
-                });
-                self.raw_bytes[lowest_table(mask)] += field.len as u64;
-            }
+            // Fault metadata retains the original address, not its normalized
+            // null replacement passed to Memory. A failed read is not retried.
+            let failed_address = address.checked_add(completed * width).unwrap_or(0);
+            self.note_fail(failed_address, width as u32, mask);
         }
         Some((start, completed))
     }
@@ -597,14 +678,14 @@ impl<const N: usize> RawLog<N> {
 }
 
 /// Attribute shared spans to the anchor table; private spans carry a single
-/// bit already. Only `take` calls this, so byte accounting never allocates.
+/// bit already. A zero mask retains the existing table-zero attribution.
+#[inline]
 pub fn lowest_table(mask: u32) -> usize {
-    for slot in 0..32 {
-        if mask & (1 << slot) != 0 {
-            return slot as usize;
-        }
+    if mask == 0 {
+        0
+    } else {
+        mask.trailing_zeros() as usize
     }
-    0
 }
 
 /// Decode-side address space: serves exactly the recorded spans and fails
@@ -625,19 +706,33 @@ pub struct Recorded<'a> {
     recycle: &'a RefCell<Option<RecordedIndex>>,
     spans: &'a [Span],
     bytes: &'a [u8],
+    next_exact: std::cell::Cell<usize>,
+    last_bulk: std::cell::Cell<usize>,
 }
 
 #[derive(Debug, Default)]
 struct RecordedIndex {
     has_bulk: bool,
-    map: HashMap<(usize, u32), SpanCursor, BuildHasherDefault<ReadAddressHasher>>,
+    // Every exact key, including failed reads and whole bulk chunks. Widths
+    // 0..=254 have individual bits; larger widths share a conservative bucket.
+    exact_lengths: [u64; 4],
+    // Empty buckets use usize::MAX; occupied buckets hold an observation
+    // cursor. Advancing that cursor never changes its exact address/length key.
+    slots: Vec<std::cell::Cell<usize>>,
+    distinct: usize,
+    // Globally unique keys use usize::MAX. Repeated observations form a
+    // forward chain whose final entry points to itself, never to that sentinel.
     next: Vec<usize>,
-    repeated: Vec<(usize, u32)>,
+    // Only duplicate keys need a saved first observation for reader reset.
+    // Bucket, first observation. Bucket positions are resolved after the final
+    // build-time rehash, then remain stable throughout reuse and reading.
+    repeated: Vec<(usize, usize)>,
     // Exact structural comparison, not a hash witness. Payload bytes and
     // byte-pool offsets always come from the current refresh's spans.
     shape: Vec<(usize, u32, bool, bool)>,
     // Start, end, current-log span index, maximum end through this entry.
     bulk: Vec<(usize, usize, usize, usize)>,
+    capacity_charge: crate::raw_memory::Charge,
 }
 
 /// Process-local integer read keys, not untrusted strings or file identity.
@@ -673,15 +768,94 @@ impl Hasher for ReadAddressHasher {
     }
 }
 
-#[derive(Debug)]
-struct SpanCursor {
-    first: usize,
-    current: std::cell::Cell<usize>,
-    last: usize,
-}
-
 impl RecordedIndex {
-    fn prepare(&mut self, spans: &[Span], has_bulk: bool) {
+    #[inline]
+    fn mark_exact_length(&mut self, len: u32) {
+        let bit = len.min(255) as usize;
+        self.exact_lengths[bit / 64] |= 1u64 << (bit % 64);
+    }
+
+    #[inline]
+    fn may_have_exact_length(&self, len: u32) -> bool {
+        let bit = len.min(255) as usize;
+        self.exact_lengths[bit / 64] & (1u64 << (bit % 64)) != 0
+    }
+
+    #[inline]
+    fn hash(address: usize, len: u32) -> usize {
+        let mut hash = ReadAddressHasher::default();
+        hash.write_usize(address);
+        hash.write_u32(len);
+        hash.finish() as usize
+    }
+
+    /// Return the matching bucket or the first empty bucket. No deletions occur
+    /// within a build, so an empty bucket terminates a lookup. Bound the scan
+    /// even if an internal invariant were to leave a completely full table.
+    #[inline]
+    fn slot(&self, spans: &[Span], address: usize, len: u32) -> Option<usize> {
+        let mask = self.slots.len().checked_sub(1)?;
+        let mut slot = Self::hash(address, len) & mask;
+        for _ in 0..self.slots.len() {
+            let current = self.slots[slot].get();
+            if current == usize::MAX {
+                return Some(slot);
+            }
+            let span = &spans[current];
+            if span.addr == address && span.len == len {
+                return Some(slot);
+            }
+            slot = (slot + 1) & mask;
+        }
+        None
+    }
+
+    #[inline]
+    fn cursor(&self, spans: &[Span], address: usize, len: u32) -> Option<&std::cell::Cell<usize>> {
+        let cursor = &self.slots[self.slot(spans, address, len)?];
+        (cursor.get() != usize::MAX).then_some(cursor)
+    }
+
+    fn grow_slots(&mut self, spans: &[Span]) {
+        let size = if self.slots.is_empty() {
+            8
+        } else {
+            self.slots
+                .len()
+                .checked_mul(2)
+                .expect("raw index bucket count overflow")
+        };
+        // Allocations and the temporary old table live only on the worker.
+        // The retained-capacity diagnostic excludes transient realloc overlap.
+        let old = std::mem::replace(
+            &mut self.slots,
+            vec![std::cell::Cell::new(usize::MAX); size],
+        );
+        for cursor in old {
+            let current = cursor.get();
+            if current != usize::MAX {
+                let span = &spans[current];
+                let slot = self
+                    .slot(spans, span.addr, span.len)
+                    .expect("grown raw index must have an empty bucket");
+                self.slots[slot].set(current);
+            }
+        }
+    }
+
+    fn update_capacity_charge(&mut self) {
+        use crate::raw_memory::{Capacity, vector_bytes};
+        self.capacity_charge.set(Capacity {
+            index_vectors: vector_bytes(&self.slots)
+                + vector_bytes(&self.next)
+                + vector_bytes(&self.repeated)
+                + vector_bytes(&self.shape)
+                + vector_bytes(&self.bulk),
+            ..Default::default()
+        });
+    }
+
+    fn prepare(&mut self, spans: &[Span], has_bulk: bool) -> bool {
         if self.has_bulk == has_bulk
             && self.shape.len() == spans.len()
             && self
@@ -690,43 +864,70 @@ impl RecordedIndex {
                 .zip(spans)
                 .all(|(shape, span)| *shape == (span.addr, span.len, span.ok, span.bulk))
         {
-            for key in &self.repeated {
-                let cursor = &self.map[key];
-                cursor.current.set(cursor.first);
+            for &(slot, first) in &self.repeated {
+                self.slots[slot].set(first);
             }
-            return;
+            return true;
         }
-        self.map.clear();
+        self.slots.fill(std::cell::Cell::new(usize::MAX));
+        self.distinct = 0;
         self.has_bulk = has_bulk;
+        self.exact_lengths = [0; 4];
         // Grow for distinct read keys, not repeated observations. In the
         // calibration matrix those counts can differ by orders of magnitude.
         self.next.clear();
-        self.next.extend(0..spans.len());
+        self.next.resize(spans.len(), usize::MAX);
         self.repeated.clear();
         self.bulk.clear();
         self.shape.clear();
         for (index, span) in spans.iter().enumerate() {
             self.shape.push((span.addr, span.len, span.ok, span.bulk));
-            self.map
-                .entry((span.addr, span.len))
-                .and_modify(|cursor| {
-                    if cursor.first == cursor.last {
-                        self.repeated.push((span.addr, span.len));
-                    }
-                    self.next[cursor.last] = index;
-                    cursor.last = index;
-                })
-                .or_insert(SpanCursor {
-                    first: index,
-                    current: std::cell::Cell::new(index),
-                    last: index,
-                });
+            self.mark_exact_length(span.len);
+            if self.slots.is_empty() {
+                self.grow_slots(spans);
+            }
+            let mut slot = self
+                .slot(spans, span.addr, span.len)
+                .expect("raw index must have an empty bucket");
+            let previous = self.slots[slot].get();
+            if previous == usize::MAX {
+                // At most half full. Repeated observations must not trigger
+                // growth, even when their count dwarfs the distinct key count.
+                if self.distinct == self.slots.len() / 2 {
+                    self.grow_slots(spans);
+                    slot = self
+                        .slot(spans, span.addr, span.len)
+                        .expect("grown raw index must have an empty bucket");
+                }
+                self.slots[slot].set(index);
+                self.distinct += 1;
+            } else {
+                // During construction each cursor holds the last observation.
+                // Record the root once, but not its as-yet-unstable bucket.
+                if self.next[previous] == usize::MAX {
+                    self.repeated.push((usize::MAX, previous));
+                }
+                self.next[previous] = index;
+                self.next[index] = index;
+                self.slots[slot].set(index);
+            }
             // Only flagged bulk chunks serve sub-ranges: small exact
             // spans inside a chunk must never shadow it.
             if span.ok && self.has_bulk && span.bulk && span.len > 0 {
                 self.bulk
                     .push((span.addr, span.addr + span.len as usize, index, 0));
             }
+        }
+        // The same cell is the authoritative read cursor after preparation.
+        // Unique entries already name their sole span and need no reset.
+        for root in 0..self.repeated.len() {
+            let first = self.repeated[root].1;
+            let span = &spans[first];
+            let slot = self
+                .slot(spans, span.addr, span.len)
+                .expect("raw index must retain every repeated key");
+            self.repeated[root].0 = slot;
+            self.slots[slot].set(first);
         }
         if !self.bulk.is_empty() {
             self.bulk.sort_unstable();
@@ -736,30 +937,71 @@ impl RecordedIndex {
                 span.3 = maximum_end;
             }
         }
+        self.update_capacity_charge();
+        false
     }
 }
 
 impl<'a> Recorded<'a> {
     pub fn build<const N: usize>(log: &'a RawLog<N>) -> Self {
-        let mut index = log.index.borrow_mut().take().unwrap_or_default();
-        index.prepare(&log.spans, log.has_bulk);
+        let started = std::time::Instant::now();
+        let mut index = log
+            .index
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| RecordedIndex {
+                capacity_charge: crate::raw_memory::Charge::empty_on(log.capacity_charge.tracker()),
+                ..Default::default()
+            });
+        let reused = index.prepare(&log.spans, log.has_bulk);
+        let ns = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let (count, ticks, spans) = if reused {
+            (&INDEX_REUSES, &INDEX_REUSE_NS, &INDEX_REUSED_SPANS)
+        } else {
+            (&INDEX_REBUILDS, &INDEX_REBUILD_NS, &INDEX_REBUILT_SPANS)
+        };
+        ticks.fetch_add(ns, Ordering::Relaxed);
+        spans.fetch_add(log.spans.len() as u64, Ordering::Relaxed);
+        count.fetch_add(1, Ordering::Relaxed);
         Self {
             index,
             recycle: &log.index,
             spans: &log.spans,
             bytes: &log.bytes,
+            next_exact: std::cell::Cell::new(0),
+            last_bulk: std::cell::Cell::new(usize::MAX),
         }
     }
 
+    #[inline(always)]
     fn serve(&self, address: usize, destination: &mut [u8]) -> bool {
-        if let Some(cursor) = self.index.map.get(&(address, destination.len() as u32)) {
-            let index = if cursor.first == cursor.last {
-                cursor.first
-            } else {
-                let current = cursor.current.get();
-                cursor.current.set(self.index.next[current]);
+        let hint = self.next_exact.get();
+        let len = destination.len() as u32;
+        let exact = if self.spans.get(hint).is_some_and(|span| {
+            span.addr == address && span.len == len && self.index.next[hint] == usize::MAX
+        }) {
+            // A globally unique exact key has no observation cursor to
+            // advance. Repeated keys always use the authoritative hash cursor,
+            // even when a later occurrence happens to match this hint.
+            Some(hint)
+        } else if self.index.has_bulk && !self.index.may_have_exact_length(len) {
+            // No exact observation of this width can override a bulk range.
+            // A negative lookup must not advance either exact-reader cursor.
+            None
+        } else {
+            self.index.cursor(self.spans, address, len).map(|cursor| {
+                let current = cursor.get();
+                let next = self.index.next[current];
+                if next != usize::MAX {
+                    cursor.set(next);
+                }
                 current
-            };
+            })
+        };
+        if let Some(index) = exact {
+            // Resynchronize on ordinary exact lookups too. An exact failure
+            // retains its priority over bulk and still advances the hint.
+            self.next_exact.set(index + 1);
             let span = &self.spans[index];
             if !span.ok {
                 return false;
@@ -779,19 +1021,37 @@ impl<'a> Recorded<'a> {
             Some(end) => end,
             None => return false,
         };
-        // Prefer the nearest enclosing span. Nested inline arrays must not
-        // hide the surrounding object when a later field is outside that
-        // smaller array. Prefix maxima bound the backward search even when
-        // no span encloses the request.
-        let index = self.index.bulk.partition_point(|span| span.0 <= address);
-        let enclosing = self.index.bulk[..index]
-            .iter()
-            .rev()
-            .take_while(|span| span.3 >= end)
-            .find(|span| span.1 >= end);
-        let Some(&(start, _, source_index, _)) = enclosing else {
-            return false;
+        let cached = self.last_bulk.get();
+        let selected = if self.index.bulk.get(cached).is_some_and(|span| {
+            span.0 <= address
+                && end <= span.1
+                && self
+                    .index
+                    .bulk
+                    .get(cached + 1)
+                    .is_none_or(|next| next.0 > address)
+        }) {
+            // Reuse only while this is still the nearest starting span. A
+            // nested/overlapping span beginning at or before the new request
+            // forces the full search, even if this cached span encloses it.
+            cached
+        } else {
+            // Prefer the nearest enclosing span. A smaller nested array must
+            // not hide later parent fields or requests extending beyond it.
+            let index = self.index.bulk.partition_point(|span| span.0 <= address);
+            let enclosing = self.index.bulk[..index]
+                .iter()
+                .enumerate()
+                .rev()
+                .take_while(|(_, span)| span.3 >= end)
+                .find(|(_, span)| span.1 >= end);
+            let Some((selected, _)) = enclosing else {
+                return false;
+            };
+            self.last_bulk.set(selected);
+            selected
         };
+        let (start, _, source_index, _) = self.index.bulk[selected];
         let offset = self.spans[source_index].start as usize + (address - start);
         let Some(source) = self.bytes.get(offset..offset + destination.len()) else {
             return false;
@@ -813,6 +1073,55 @@ impl Drop for Recorded<'_> {
 }
 
 impl Memory for Recorded<'_> {
+    fn immutable_view(
+        &self,
+        address: usize,
+        len: usize,
+    ) -> Option<engine::memory::SliceMemory<'_>> {
+        if !self.index.has_bulk || address == 0 || len == 0 || !is_canonical_range(address, len) {
+            return None;
+        }
+        let end = address.checked_add(len)?;
+        let mut enclosing = None;
+        for span in self.spans {
+            if span.len == 0 {
+                continue;
+            }
+            let span_end = span.addr.checked_add(span.len as usize)?;
+            if span_end <= address || end <= span.addr {
+                continue;
+            }
+            // Exactly one observation may overlap the requested view. This
+            // rejects ordinary exact reads (including failures), duplicates,
+            // and nested/overlapping/tied bulk winners without cursor access.
+            if enclosing.is_some()
+                || !span.ok
+                || !span.bulk
+                || span.addr == 0
+                || !is_canonical_range(span.addr, span.len as usize)
+                || span.addr > address
+                || span_end < end
+                // A whole bulk is itself an exact key. Keep that observation
+                // on the ordinary path even when its current key is unique.
+                || (span.addr == address && span_end == end)
+            {
+                return None;
+            }
+            enclosing = Some(span);
+        }
+        let span = enclosing?;
+        let start = span.start as usize;
+        let source = self
+            .bytes
+            .get(start..start.checked_add(span.len as usize)?)?;
+        let offset = address - span.addr;
+        Some(engine::memory::SliceMemory {
+            base: address,
+            bytes: source.get(offset..offset.checked_add(len)?)?,
+        })
+    }
+
+    #[inline(always)]
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         if destination.is_empty() {
             return true;
@@ -838,6 +1147,908 @@ impl Memory for Recorded<'_> {
 mod tests {
     use super::*;
     use engine::memory::SliceMemory;
+
+    fn immutable_view_positions(reader: &Recorded<'_>) -> (Vec<usize>, usize, usize) {
+        (
+            reader
+                .index
+                .slots
+                .iter()
+                .map(std::cell::Cell::get)
+                .collect(),
+            reader.next_exact.get(),
+            reader.last_bulk.get(),
+        )
+    }
+
+    fn immutable_view_log() -> RawLog<1> {
+        let mut log = RawLog::new(16, 512);
+        log.has_bulk = true;
+        let bytes: Vec<u8> = (0..64).collect();
+        assert_eq!(
+            log.take_bulk(
+                &SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes
+                },
+                0x1000,
+                64,
+                1
+            ),
+            Some(0)
+        );
+        log
+    }
+
+    #[test]
+    fn immutable_view_borrows_current_bytes_without_changing_independent_cursors() {
+        let mut log = immutable_view_log();
+        for value in [71, 93] {
+            assert!(
+                log.take(
+                    &SliceMemory {
+                        base: 0x3000,
+                        bytes: &[value]
+                    },
+                    0x3000,
+                    1,
+                    1
+                )
+                .is_some()
+            );
+        }
+        // An empty observation cannot override a nonempty contained request.
+        log.spans.push(Span {
+            addr: 0x1010,
+            len: 0,
+            ok: false,
+            mask: 1,
+            start: 0,
+            bulk: false,
+        });
+        {
+            let first = Recorded::build(&log);
+            let second = Recorded::build(&log);
+            let mut outside = [0];
+            assert!(first.copy(0x3000, &mut outside));
+            assert_eq!(outside, [71]);
+            let before = immutable_view_positions(&first);
+            let view = first.immutable_view(0x1001, 62).unwrap();
+            assert_eq!(view.base, 0x1001);
+            assert!(std::ptr::eq(view.bytes.as_ptr(), log.bytes[1..].as_ptr()));
+            for (address, len) in [(0x1001, 1), (0x1007, 9), (0x103d, 2)] {
+                let mut direct = vec![0; len];
+                let mut replay = vec![0; len];
+                assert!(view.copy(address, &mut direct));
+                assert!(second.copy(address, &mut replay));
+                assert_eq!(direct, replay);
+            }
+            assert_eq!(immutable_view_positions(&first), before);
+            assert!(first.immutable_view(0x1000, 64).is_none());
+            assert_eq!(immutable_view_positions(&first), before);
+            assert!(first.copy(0x3000, &mut outside));
+            assert_eq!(outside, [93]);
+            assert!(second.copy(0x3000, &mut outside));
+            assert_eq!(outside, [71]);
+            assert!(second.copy(0x3000, &mut outside));
+            assert_eq!(outside, [93]);
+            assert!(first.copy(0x3000, &mut outside));
+            assert_eq!(outside, [93]);
+        }
+        // The cached shape excludes start and payload bytes. A new reader
+        // must use this job's current start/used arena, never a cached slice.
+        log.bytes.extend_from_slice(&[0xa7; 64]);
+        let current_start = log.bytes.len() - 64;
+        log.spans[0].start = current_start as u32;
+        log.spans[0].mask = 0;
+        let reader = Recorded::build(&log);
+        assert_eq!(
+            reader.immutable_view(0x1001, 62).unwrap().bytes,
+            &[0xa7; 62]
+        );
+    }
+
+    #[test]
+    fn immutable_view_rejects_every_competing_span_without_advancing_replay() {
+        for (address, len, ok, bulk) in [
+            (0x1008, 4, true, false),   // successful exact override
+            (0x1008, 4, false, false),  // failed exact override
+            (0x1000, 64, false, false), // failed whole-bulk exact key
+            (0x1000, 64, true, false),  // ordinary whole-bulk exact key
+            (0x1008, 16, true, true),   // nested
+            (0x0ff0, 96, true, true),   // parent
+            (0x1000, 32, true, true),   // tied start, smaller
+            (0x1000, 96, true, true),   // tied start, larger
+            (0x1000, 64, true, true),   // duplicate whole bulk
+            (0x0ff0, 24, true, true),   // left overlap
+            (0x1030, 32, true, true),   // right overlap
+        ] {
+            let mut log = immutable_view_log();
+            log.bytes.extend_from_slice(&[0xe1; 96]);
+            log.spans.push(Span {
+                addr: address,
+                len,
+                ok,
+                mask: 1,
+                start: 64,
+                bulk,
+            });
+            let reader = Recorded::build(&log);
+            let before = immutable_view_positions(&reader);
+            assert!(
+                reader.immutable_view(0x1004, 56).is_none(),
+                "{address:x}/{len}/{ok}/{bulk}"
+            );
+            assert_eq!(immutable_view_positions(&reader), before);
+        }
+        let mut log = immutable_view_log();
+        for value in [Some(11), None, Some(29)] {
+            match value {
+                Some(value) => {
+                    assert!(
+                        log.take(
+                            &SliceMemory {
+                                base: 0x1008,
+                                bytes: &[value; 4]
+                            },
+                            0x1008,
+                            4,
+                            1
+                        )
+                        .is_some()
+                    );
+                }
+                None => log.note_fail(0x1008, 4, 1),
+            }
+        }
+        let reader = Recorded::build(&log);
+        for value in [Some(11), None, Some(29), Some(29)] {
+            let before = immutable_view_positions(&reader);
+            assert!(reader.immutable_view(0x1004, 56).is_none());
+            assert_eq!(immutable_view_positions(&reader), before);
+            let mut bytes = [0xcc; 4];
+            assert_eq!(reader.copy(0x1008, &mut bytes), value.is_some());
+            assert_eq!(bytes, [value.unwrap_or(0xcc); 4]);
+        }
+        // An exact key outside the requested view does not poison admission.
+        assert!(reader.immutable_view(0x1020, 16).is_some());
+    }
+
+    #[test]
+    fn immutable_view_declines_empty_full_invalid_ranges_and_unpublished_storage() {
+        let log = immutable_view_log();
+        let reader = Recorded::build(&log);
+        for (address, len) in [
+            (0x1000, 0),
+            (0, 1),
+            (0x1000, 64),
+            (0x0fff, 2),
+            (0x103f, 2),
+            (usize::MAX - 1, 4),
+            (0x0000_8000_0000_0000, 1),
+            (0x0000_7fff_ffff_ffff, 2),
+            (0x1000, u32::MAX as usize + 1),
+        ] {
+            let before = immutable_view_positions(&reader);
+            assert!(
+                reader.immutable_view(address, len).is_none(),
+                "{address:x}/{len}"
+            );
+            assert_eq!(immutable_view_positions(&reader), before);
+        }
+        drop(reader);
+        for mode in 0..6 {
+            let mut log = immutable_view_log();
+            match mode {
+                0 => log.has_bulk = false,
+                1 => log.spans[0].ok = false,
+                2 => log.spans[0].bulk = false,
+                3 => log.spans[0].start = u32::MAX,
+                4 => {
+                    // Dirty initialized capacity is not published input.
+                    log.bytes.clear();
+                    log.bytes.extend_from_slice(&[0xb5; 63]);
+                }
+                5 => log.spans.push(Span {
+                    addr: usize::MAX,
+                    len: 2,
+                    ok: false,
+                    mask: 1,
+                    start: 0,
+                    bulk: false,
+                }),
+                _ => unreachable!(),
+            }
+            let reader = Recorded::build(&log);
+            assert!(reader.immutable_view(0x1001, 62).is_none(), "mode {mode}");
+        }
+    }
+
+    #[test]
+    fn capacity_accounting_follows_raw_growth_clear_and_independent_reader_lifetimes() {
+        use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
+        static LOCAL: Tracker = Tracker::new();
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &[7; 32],
+        };
+        let mut log = RawLog::<1>::new(4, 8);
+        log.capacity_charge = Charge::empty_on(&LOCAL);
+        log.update_capacity_charge();
+        assert_eq!(LOCAL.snapshot().allocated_index_owners, 0);
+        // A fresh empty reader has no index-vector allocation to count.
+        drop(Recorded::build(&log));
+        assert_eq!(LOCAL.snapshot().allocated_index_owners, 0);
+        let initial = LOCAL.snapshot().current;
+        assert_eq!(log.bytes.storage.len(), log.bytes.capacity());
+        assert!(log.bytes.is_empty());
+        assert!(log.bytes.storage.iter().all(|&byte| byte == 0));
+        assert_eq!(
+            initial.payload_vectors,
+            vector_bytes(&log.spans) + log.bytes.capacity() as u64
+        );
+        assert_eq!(log.take(&memory, 0x1000, 16, 1), None);
+        log.grow();
+        let grown = LOCAL.snapshot().current;
+        assert_eq!(log.bytes.storage.len(), log.bytes.capacity());
+        assert!(log.bytes.is_empty());
+        assert!(log.bytes.storage.iter().all(|&byte| byte == 0));
+        assert!(grown.payload_vectors > initial.payload_vectors);
+        assert_eq!(
+            grown.payload_vectors,
+            vector_bytes(&log.spans) + log.bytes.capacity() as u64
+        );
+        log.clear();
+        assert_eq!(LOCAL.snapshot().current, grown);
+        assert_eq!(log.take(&memory, 0x1000, 4, 1), Some(0));
+        assert_eq!(log.take(&memory, 0x1000, 4, 1), Some(4));
+        assert_eq!(log.take_bulk(&memory, 0x1008, 8, 1), Some(8));
+
+        let first = Recorded::build(&log);
+        let one_index = LOCAL.snapshot().current;
+        assert_eq!(LOCAL.snapshot().allocated_index_owners, 1);
+        assert_eq!(
+            one_index.index_vectors,
+            vector_bytes(&first.index.slots)
+                + vector_bytes(&first.index.next)
+                + vector_bytes(&first.index.repeated)
+                + vector_bytes(&first.index.shape)
+                + vector_bytes(&first.index.bulk)
+        );
+        assert_eq!(one_index.index_map_entries_lower_bound, 0);
+        assert_eq!(one_index.payload_vectors, grown.payload_vectors);
+        let second = Recorded::build(&log);
+        let two_indexes = LOCAL.snapshot().current;
+        assert_eq!(LOCAL.snapshot().allocated_index_owners, 2);
+        assert_eq!(two_indexes.index_vectors, one_index.index_vectors * 2);
+        assert_eq!(
+            two_indexes.index_map_entries_lower_bound,
+            one_index.index_map_entries_lower_bound * 2
+        );
+        drop(first); // Its index moves into the cache: still charged once.
+        assert_eq!(LOCAL.snapshot().allocated_index_owners, 2);
+        assert_eq!(LOCAL.snapshot().current, two_indexes);
+        drop(second); // Occupied cache causes this independent index to free.
+        assert_eq!(LOCAL.snapshot().allocated_index_owners, 1);
+        assert_eq!(LOCAL.snapshot().current, one_index);
+        let reused = Recorded::build(&log);
+        assert_eq!(LOCAL.snapshot().allocated_index_owners, 1);
+        assert_eq!(LOCAL.snapshot().current, one_index);
+        drop(reused);
+        log.clear();
+        assert_eq!(LOCAL.snapshot().allocated_index_owners, 1);
+        assert_eq!(LOCAL.snapshot().current, one_index);
+        // Preparing an empty shape retains the previous index allocations.
+        drop(Recorded::build(&log));
+        assert_eq!(LOCAL.snapshot().allocated_index_owners, 1);
+        assert_eq!(LOCAL.snapshot().current, one_index);
+        let peak = LOCAL.snapshot().peak_total_lower_bound;
+        let moved = Some(log);
+        assert_eq!(LOCAL.snapshot().allocated_index_owners, 1);
+        assert_eq!(LOCAL.snapshot().current, one_index);
+        drop(moved);
+        assert_eq!(LOCAL.snapshot().allocated_index_owners, 0);
+        assert_eq!(LOCAL.snapshot().current, Capacity::default());
+        assert_eq!(LOCAL.snapshot().peak_total_lower_bound, peak);
+    }
+
+    #[test]
+    fn initialized_arena_clear_growth_and_equality_expose_only_the_current_prefix() {
+        let mut log = RawLog::<1>::new(8, 16);
+        let mut other = RawLog::<1>::new(8, 32);
+        log.bytes.storage.fill(0xa7);
+        other.bytes.storage.fill(0x3e);
+        assert!(log.logs_equal(&other));
+        assert_eq!(format!("{:?}", log.bytes), "[]");
+        assert_eq!(log.bytes.first(), None);
+        let initial_pointer = log.bytes.as_ptr();
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &[9, 8, 7, 6],
+        };
+        assert_eq!(log.take(&memory, 0x1000, 4, 1), Some(0));
+        assert_eq!(other.take(&memory, 0x1000, 4, 1), Some(0));
+        assert!(log.logs_equal(&other));
+        assert!(log.partition_equal(&other, 0));
+        assert_eq!(format!("{:?}", log.bytes), "[9, 8, 7, 6]");
+        assert!(log.bytes.get(4).is_none());
+        log.clear();
+        assert_eq!(log.bytes.as_ptr(), initial_pointer);
+        assert!(log.bytes.is_empty());
+        assert_eq!(&log.bytes.storage[..4], &[9, 8, 7, 6]);
+        assert!(!Recorded::build(&log).copy(0x1000, &mut [0; 4]));
+
+        log.bytes.extend_from_slice(&[1, 2, 3]);
+        let capacity = log.bytes.capacity();
+        let old_storage = log.bytes.storage.clone();
+        log.required_bytes = capacity + 1;
+        log.overflowed = true;
+        log.grow();
+        assert!(log.bytes.capacity() > capacity);
+        assert_eq!(log.bytes.storage.len(), log.bytes.capacity());
+        assert_eq!(&log.bytes.storage[..capacity], old_storage);
+        assert!(log.bytes.storage[capacity..].iter().all(|&byte| byte == 0));
+        assert_eq!(log.bytes, [1, 2, 3]);
+        assert!(log.bytes.get(3).is_none());
+        log.clear();
+        assert!(log.bytes.is_empty());
+        assert!(log.bytes.storage.iter().any(|&byte| byte != 0));
+        assert_eq!(log.take_bulk(&memory, 0x1000, 4, 1), Some(0));
+        assert_eq!(log.bytes, [9, 8, 7, 6]);
+    }
+
+    #[test]
+    fn initialized_arena_gathers_hide_dirty_failed_fields_and_unread_suffixes() {
+        struct PartialSource {
+            fail: usize,
+            partial: usize,
+            calls: RefCell<Vec<(usize, usize)>>,
+        }
+        impl Memory for PartialSource {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                self.calls.borrow_mut().push((address, destination.len()));
+                let complete = address != self.fail;
+                let len = if complete {
+                    destination.len()
+                } else {
+                    self.partial.min(destination.len())
+                };
+                destination[..len].fill((address / 8) as u8);
+                complete
+            }
+        }
+        for completed in 0..=4 {
+            for partial in [0, 3, 7] {
+                let mut log = RawLog::<2>::new(8, 64);
+                log.bytes.storage.fill(0xda);
+                log.bytes.extend_from_slice(&[0xb3, 0x91, 0x7e]);
+                let source = PartialSource {
+                    fail: 0x1000 + completed * 8,
+                    partial,
+                    calls: RefCell::default(),
+                };
+                assert_eq!(
+                    log.take_array_chunk(&source, 0x1000, 8, 4, 2),
+                    Some((3, completed))
+                );
+                let mut expected = vec![0xb3, 0x91, 0x7e];
+                for index in 0..completed {
+                    expected.extend_from_slice(&[(0x1000 / 8 + index) as u8; 8]);
+                }
+                assert_eq!(log.bytes, expected);
+                assert!(log.bytes.get(expected.len()).is_none());
+                assert_eq!(source.calls.borrow().len(), (completed + 1).min(4));
+                assert_eq!(log.raw_bytes, [0, (completed * 8) as u64]);
+                assert_eq!(log.fault, [false, completed != 4]);
+                if completed != 4 {
+                    let reader = Recorded::build(&log);
+                    let mut failed = [0xe7; 8];
+                    assert!(!reader.copy(source.fail, &mut failed));
+                    assert_eq!(failed, [0xe7; 8]);
+                }
+                // Resume through a separate real observation at the exact
+                // failed-prefix end; old partial and unattempted bytes cannot
+                // become a successful span without this new full copy.
+                let current = SliceMemory {
+                    base: 0x2000,
+                    bytes: &[31; 4],
+                };
+                assert_eq!(log.take(&current, 0x2000, 4, 1), Some(expected.len()));
+                expected.extend_from_slice(&[31; 4]);
+                assert_eq!(log.bytes, expected);
+            }
+        }
+        for partial in [0, 2, 3] {
+            let mut log = RawLog::<2>::new(8, 32);
+            log.bytes.storage.fill(0xe3);
+            log.bytes.extend_from_slice(&[0xb3, 0x91, 0x7e]);
+            let source = PartialSource {
+                fail: 0x1008,
+                partial,
+                calls: RefCell::default(),
+            };
+            assert_eq!(
+                log.take_scattered(
+                    &source,
+                    [0x1000, usize::MAX, 0x1008, 0x1010],
+                    [8, 0, 4, 4],
+                    [1, 1, 2, 1],
+                ),
+                Some(([3, 11, 11, 15], 2))
+            );
+            assert_eq!(*source.calls.borrow(), vec![(0x1000, 8), (0x1008, 4)]);
+            assert_eq!(log.bytes, [0xb3, 0x91, 0x7e, 0, 0, 0, 0, 0, 0, 0, 0]);
+            assert!(log.bytes.get(11).is_none());
+            assert_eq!(log.raw_bytes, [8, 0]);
+            assert_eq!(log.fault, [false, true]);
+            let reader = Recorded::build(&log);
+            assert!(!reader.copy(0x1008, &mut [0; 4]));
+            assert!(!reader.copy(0x1010, &mut [0; 4]));
+        }
+    }
+
+    /// Frozen pre-specialization helpers keep the original full-array address
+    /// preparation and stateful scatter splitter as the differential reference.
+    fn raw_specialization_frozen_scattered<const M: usize>(
+        log: &mut RawLog<3>,
+        memory: &impl Memory,
+        addresses: [usize; M],
+        lengths: [usize; M],
+        masks: [u32; M],
+    ) -> Option<([usize; M], usize)> {
+        if log.overflowed {
+            return None;
+        }
+        let start = log.bytes.len();
+        let mut end = start;
+        let mut starts = [0; M];
+        for (index, len) in lengths.into_iter().enumerate() {
+            starts[index] = end;
+            let Some(next) = end.checked_add(len).filter(|_| len <= u32::MAX as usize) else {
+                log.overflowed = true;
+                return None;
+            };
+            end = next;
+        }
+        let spans = lengths.iter().filter(|&&len| len != 0).count();
+        if spans > log.spans.capacity() - log.spans.len()
+            || end > log.bytes.capacity()
+            || end > u32::MAX as usize
+        {
+            log.span_exhausted = spans > log.spans.capacity() - log.spans.len();
+            log.required_bytes = end;
+            log.overflowed = true;
+            return None;
+        }
+        let completed = {
+            let mut remaining = &mut log.bytes.storage[start..end];
+            let mut destinations: [&mut [u8]; M] = std::array::from_fn(|index| {
+                let (field, rest) = std::mem::take(&mut remaining).split_at_mut(lengths[index]);
+                remaining = rest;
+                field
+            });
+            let guarded = std::array::from_fn(|index| {
+                if is_canonical_range(addresses[index], lengths[index]) {
+                    addresses[index]
+                } else {
+                    0
+                }
+            });
+            memory.copy_scattered(guarded, &mut destinations)
+        };
+        debug_assert!(completed <= M);
+        log.bytes.used = if completed == M {
+            end
+        } else {
+            starts[completed]
+        };
+        for index in 0..completed {
+            let len = lengths[index];
+            if len != 0 {
+                log.spans.push(Span {
+                    addr: addresses[index],
+                    len: len as u32,
+                    ok: true,
+                    mask: masks[index],
+                    start: starts[index] as u32,
+                    bulk: false,
+                });
+                log.raw_bytes[lowest_table(masks[index])] += len as u64;
+            }
+        }
+        if completed != M {
+            log.note_fail(
+                addresses[completed],
+                lengths[completed] as u32,
+                masks[completed],
+            );
+        }
+        Some((starts, completed))
+    }
+
+    fn raw_specialization_frozen_array(
+        log: &mut RawLog<3>,
+        memory: &impl Memory,
+        address: usize,
+        width: usize,
+        count: usize,
+        mask: u32,
+    ) -> Option<(usize, usize)> {
+        if log.overflowed || count > 64 || width == 0 || width > u32::MAX as usize {
+            return None;
+        }
+        let start = log.bytes.len();
+        if count == 0 {
+            return Some((start, 0));
+        }
+        let size = count.checked_mul(width)?;
+        let end = start.checked_add(size)?;
+        if log.spans.capacity() - log.spans.len() < 2
+            || end > log.bytes.capacity()
+            || end > u32::MAX as usize
+        {
+            log.span_exhausted = log.spans.capacity() - log.spans.len() < 2;
+            log.required_bytes = end;
+            log.overflowed = true;
+            return None;
+        }
+        let addresses: [usize; 64] =
+            std::array::from_fn(|index| address.checked_add(index * width).unwrap_or(0));
+        let guarded = addresses.map(|address| {
+            if is_canonical_range(address, width) {
+                address
+            } else {
+                0
+            }
+        });
+        let fields = [engine::memory::RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: width,
+        }];
+        let completed = memory.copy_records(
+            &guarded[..count],
+            &fields,
+            width,
+            &mut log.bytes.storage[start..end],
+        );
+        debug_assert!(completed <= count);
+        log.bytes.used = start + completed * width;
+        if completed != 0 {
+            log.spans.push(Span {
+                addr: address,
+                len: (completed * width) as u32,
+                ok: true,
+                mask,
+                start: start as u32,
+                bulk: true,
+            });
+            log.has_bulk = true;
+            log.raw_bytes[lowest_table(mask)] += (completed * width) as u64;
+        }
+        if completed != count {
+            log.note_fail(addresses[completed], width as u32, mask);
+        }
+        Some((start, completed))
+    }
+
+    #[derive(Default)]
+    struct RawSpecializationSource {
+        fail_call: Option<usize>,
+        calls: RefCell<Vec<(usize, usize)>>,
+    }
+
+    impl Memory for RawSpecializationSource {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            let call = self.calls.borrow().len();
+            self.calls.borrow_mut().push((address, destination.len()));
+            let ok = self.fail_call != Some(call);
+            let copied = if ok {
+                destination.len()
+            } else {
+                destination.len() / 2
+            };
+            for (offset, byte) in destination[..copied].iter_mut().enumerate() {
+                *byte = (address as u8)
+                    .wrapping_add((call as u8).wrapping_mul(17))
+                    .wrapping_add(offset as u8);
+            }
+            ok
+        }
+    }
+
+    fn raw_specialization_log(span_capacity: usize, byte_capacity: usize) -> RawLog<3> {
+        let mut log = RawLog::new(span_capacity, byte_capacity);
+        log.bytes.storage.fill(0xd7);
+        if byte_capacity >= 3 {
+            log.bytes.extend_from_slice(&[0x91, 0x72, 0x53]);
+        }
+        log
+    }
+
+    fn assert_raw_specialization_equal(actual: &RawLog<3>, expected: &RawLog<3>) {
+        assert_eq!(actual.spans, expected.spans);
+        assert_eq!(actual.bytes, expected.bytes);
+        assert_eq!(actual.bytes.storage, expected.bytes.storage);
+        assert_eq!(actual.fault, expected.fault);
+        assert_eq!(actual.raw_bytes, expected.raw_bytes);
+        assert_eq!(actual.has_bulk, expected.has_bulk);
+        assert_eq!(actual.overflowed, expected.overflowed);
+        assert_eq!(actual.span_exhausted, expected.span_exhausted);
+        assert_eq!(actual.required_bytes, expected.required_bytes);
+        assert_eq!(actual.spans.capacity(), expected.spans.capacity());
+        assert_eq!(actual.bytes.capacity(), expected.bytes.capacity());
+        assert_eq!(actual.grow_for_next(), expected.grow_for_next());
+        for slot in 0..3 {
+            assert_eq!(actual.partition_equal(expected, slot), !actual.overflowed);
+        }
+    }
+
+    #[test]
+    fn raw_specialization_array_prefix_matches_frozen_reads_and_faults() {
+        for count in [0, 1, 63, 64] {
+            for address in [
+                0x1000,
+                0,
+                0x0000_7fff_ffff_fff0,
+                0x0000_8000_0000_0000,
+                usize::MAX - 15,
+                usize::MAX - 3,
+            ] {
+                for fail in 0..=count {
+                    let fail_call = (fail < count).then_some(fail);
+                    let actual_source = RawSpecializationSource {
+                        fail_call,
+                        ..Default::default()
+                    };
+                    let expected_source = RawSpecializationSource {
+                        fail_call,
+                        ..Default::default()
+                    };
+                    let mut actual = raw_specialization_log(8, 1024);
+                    let mut expected = raw_specialization_log(8, 1024);
+                    assert_eq!(
+                        actual.take_array_chunk(&actual_source, address, 8, count, 6),
+                        raw_specialization_frozen_array(
+                            &mut expected,
+                            &expected_source,
+                            address,
+                            8,
+                            count,
+                            6,
+                        ),
+                        "count={count}, address={address:#x}, fail={fail}"
+                    );
+                    assert_raw_specialization_equal(&actual, &expected);
+                    assert_eq!(
+                        *actual_source.calls.borrow(),
+                        *expected_source.calls.borrow()
+                    );
+                    assert!(actual_source.calls.borrow().len() <= count);
+                    if count == 0 {
+                        assert!(actual_source.calls.borrow().is_empty());
+                        assert!(actual.spans.is_empty());
+                    }
+                    // Later independent observations reuse only the published
+                    // prefix; a partially overwritten failed destination stays
+                    // hidden unless this fresh copy fills it successfully.
+                    let actual_resume = RawSpecializationSource::default();
+                    let expected_resume = RawSpecializationSource::default();
+                    assert_eq!(
+                        actual.take(&actual_resume, 0x4000, 4, 1),
+                        expected.take(&expected_resume, 0x4000, 4, 1)
+                    );
+                    assert_raw_specialization_equal(&actual, &expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn raw_specialization_array_admission_and_growth_match_frozen() {
+        for count in [0, 1, 63, 64, 65] {
+            for (span_capacity, byte_capacity) in [
+                (0, 0),
+                (1, 1024),
+                (2, 0),
+                (2, 3),
+                (2, 10),
+                (2, 11),
+                (2, 514),
+                (2, 515),
+            ] {
+                let mut actual = raw_specialization_log(span_capacity, byte_capacity);
+                let mut expected = raw_specialization_log(span_capacity, byte_capacity);
+                let actual_source = RawSpecializationSource::default();
+                let expected_source = RawSpecializationSource::default();
+                assert_eq!(
+                    actual.take_array_chunk(&actual_source, 0x1000, 8, count, 1),
+                    raw_specialization_frozen_array(
+                        &mut expected,
+                        &expected_source,
+                        0x1000,
+                        8,
+                        count,
+                        1,
+                    )
+                );
+                assert_raw_specialization_equal(&actual, &expected);
+                assert_eq!(
+                    *actual_source.calls.borrow(),
+                    *expected_source.calls.borrow()
+                );
+                if actual.grow_for_next() {
+                    actual.grow();
+                    expected.grow();
+                    assert_raw_specialization_equal(&actual, &expected);
+                    actual.clear();
+                    expected.clear();
+                    assert_raw_specialization_equal(&actual, &expected);
+                    let actual_retry = RawSpecializationSource::default();
+                    let expected_retry = RawSpecializationSource::default();
+                    assert_eq!(
+                        actual.take_array_chunk(&actual_retry, 0x1000, 8, count, 1),
+                        raw_specialization_frozen_array(
+                            &mut expected,
+                            &expected_retry,
+                            0x1000,
+                            8,
+                            count,
+                            1,
+                        )
+                    );
+                    assert_raw_specialization_equal(&actual, &expected);
+                    assert_eq!(*actual_retry.calls.borrow(), *expected_retry.calls.borrow());
+                }
+            }
+        }
+        for width in [0, u32::MAX as usize, u32::MAX as usize + 1] {
+            for count in [0, 1, 64] {
+                let mut actual = raw_specialization_log(2, 16);
+                let mut expected = raw_specialization_log(2, 16);
+                let actual_source = RawSpecializationSource::default();
+                let expected_source = RawSpecializationSource::default();
+                assert_eq!(
+                    actual.take_array_chunk(&actual_source, usize::MAX - 3, width, count, 1),
+                    raw_specialization_frozen_array(
+                        &mut expected,
+                        &expected_source,
+                        usize::MAX - 3,
+                        width,
+                        count,
+                        1,
+                    )
+                );
+                assert_raw_specialization_equal(&actual, &expected);
+                assert!(actual_source.calls.borrow().is_empty());
+                assert!(expected_source.calls.borrow().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn raw_specialization_scattered_split_matches_frozen_mixed_and_empty_fields() {
+        let lengths = [0, 1, 4, 0, 8, 1, 32, 4, 0];
+        let masks = [1, 1, 2, 4, 3, 1, 2, 4, 1];
+        let original = [
+            usize::MAX,
+            0x1000,
+            0x1004,
+            0,
+            0x1010,
+            0x1000,
+            0x1020,
+            0x1004,
+            usize::MAX,
+        ];
+        // Both repeated exact keys see distinct current bytes because the
+        // synthetic source changes its payload on each actual observation.
+        for replaced in 0..=lengths.len() {
+            for replacement in [0, 0x0000_8000_0000_0000, usize::MAX - 3] {
+                let mut addresses = original;
+                if replaced < addresses.len() {
+                    addresses[replaced] = replacement;
+                }
+                for fail in 0..=6 {
+                    let fail_call = (fail < 6).then_some(fail);
+                    let actual_source = RawSpecializationSource {
+                        fail_call,
+                        ..Default::default()
+                    };
+                    let expected_source = RawSpecializationSource {
+                        fail_call,
+                        ..Default::default()
+                    };
+                    let mut actual = raw_specialization_log(16, 128);
+                    let mut expected = raw_specialization_log(16, 128);
+                    assert_eq!(
+                        actual.take_scattered(&actual_source, addresses, lengths, masks),
+                        raw_specialization_frozen_scattered(
+                            &mut expected,
+                            &expected_source,
+                            addresses,
+                            lengths,
+                            masks,
+                        )
+                    );
+                    assert_raw_specialization_equal(&actual, &expected);
+                    assert_eq!(
+                        *actual_source.calls.borrow(),
+                        *expected_source.calls.borrow()
+                    );
+                }
+            }
+        }
+        for span_capacity in 0..=9 {
+            for byte_capacity in [0, 3, 4, 8, 16, 52, 53, 128] {
+                let mut actual = raw_specialization_log(span_capacity, byte_capacity);
+                let mut expected = raw_specialization_log(span_capacity, byte_capacity);
+                let actual_source = RawSpecializationSource::default();
+                let expected_source = RawSpecializationSource::default();
+                assert_eq!(
+                    actual.take_scattered(&actual_source, original, lengths, masks),
+                    raw_specialization_frozen_scattered(
+                        &mut expected,
+                        &expected_source,
+                        original,
+                        lengths,
+                        masks,
+                    )
+                );
+                assert_raw_specialization_equal(&actual, &expected);
+                assert_eq!(
+                    *actual_source.calls.borrow(),
+                    *expected_source.calls.borrow()
+                );
+            }
+        }
+        let mut actual = raw_specialization_log(0, 0);
+        let mut expected = raw_specialization_log(0, 0);
+        let actual_source = RawSpecializationSource::default();
+        let expected_source = RawSpecializationSource::default();
+        assert_eq!(
+            actual.take_scattered(&actual_source, [usize::MAX; 9], [0; 9], [1; 9]),
+            raw_specialization_frozen_scattered(
+                &mut expected,
+                &expected_source,
+                [usize::MAX; 9],
+                [0; 9],
+                [1; 9],
+            )
+        );
+        assert_raw_specialization_equal(&actual, &expected);
+        assert_eq!(
+            actual.take_scattered(&actual_source, [], [], []),
+            raw_specialization_frozen_scattered(&mut expected, &expected_source, [], [], [])
+        );
+        assert_raw_specialization_equal(&actual, &expected);
+        assert!(actual_source.calls.borrow().is_empty());
+        assert!(expected_source.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn lowest_table_preserves_zero_single_bits_and_mixed_mask_anchors() {
+        assert_eq!(lowest_table(0), 0);
+        for bit in 0..32 {
+            assert_eq!(lowest_table(1u32 << bit), bit as usize);
+            for other in 0..32 {
+                assert_eq!(
+                    lowest_table((1u32 << bit) | (1u32 << other)),
+                    bit.min(other) as usize
+                );
+            }
+        }
+        for (mask, expected) in [
+            (u32::MAX, 0),
+            (0x8000_003f, 0),
+            (0xffff_ff00, 8),
+            (0xaaaa_aaa0, 5),
+            (0x5555_5500, 8),
+            (0xf000_0000, 28),
+        ] {
+            assert_eq!(lowest_table(mask), expected);
+        }
+    }
 
     #[test]
     fn array_chunk_coalesces_exact_success_prefix_without_retry() {
@@ -1052,7 +2263,10 @@ mod tests {
         };
         log.take_bulk(&memory, 0x1000, 16, 1).unwrap();
         assert!(Recorded::build(&log).copy(0x1004, &mut [0; 8]));
-        log.bytes.splice(0..0, [71; 8]);
+        let original = log.bytes.to_vec();
+        log.bytes.clear();
+        log.bytes.extend_from_slice(&[71; 8]);
+        log.bytes.extend_from_slice(&original);
         log.spans[0].start += 8;
         let mut bytes = [0; 8];
         assert!(Recorded::build(&log).copy(0x1004, &mut bytes));
@@ -1091,85 +2305,873 @@ mod tests {
         assert_eq!(bytes, [19; 8]);
     }
 
+    fn set_index_fixture(log: &mut RawLog<1>, reads: &[(usize, u32, Option<u8>, bool)]) {
+        log.clear();
+        for &(addr, len, value, bulk) in reads {
+            let start = log.bytes.len() as u32;
+            if let Some(value) = value {
+                log.bytes.resize(log.bytes.len() + len as usize, value);
+            }
+            log.spans.push(Span {
+                addr,
+                len,
+                ok: value.is_some(),
+                mask: 1,
+                start,
+                bulk,
+            });
+            log.has_bulk |= bulk;
+        }
+    }
+
+    // Deliberately linear reference: no hash index, cached shape or bulk-
+    // search metadata is shared with the implementation.
+    fn assert_recorded_query(
+        log: &RawLog<1>,
+        recorded: &Recorded<'_>,
+        observations: &mut std::collections::BTreeMap<(usize, u32), usize>,
+        (address, len): (usize, u32),
+    ) {
+        let mut exact = log
+            .spans
+            .iter()
+            .filter(|span| span.addr == address && span.len == len);
+        let source = if let Some(first) = exact.next() {
+            let observation = observations.entry((address, len)).or_default();
+            let mut selected = first;
+            for span in exact.take(*observation) {
+                selected = span;
+            }
+            *observation += 1;
+            selected.ok.then_some((selected, 0))
+        } else {
+            log.spans
+                .iter()
+                .enumerate()
+                .filter(|(_, span)| {
+                    log.has_bulk
+                        && span.ok
+                        && span.bulk
+                        && span.addr <= address
+                        && address + len as usize <= span.addr + span.len as usize
+                })
+                .max_by_key(|(index, span)| (span.addr, span.addr + span.len as usize, *index))
+                .map(|(_, span)| (span, address - span.addr))
+        };
+        let mut bytes = vec![0xee; len as usize];
+        assert_eq!(recorded.copy(address, &mut bytes), source.is_some());
+        if let Some((span, offset)) = source {
+            let start = span.start as usize + offset;
+            assert_eq!(bytes, log.bytes[start..start + len as usize]);
+        } else {
+            assert!(bytes.iter().all(|byte| *byte == 0xee));
+        }
+    }
+
+    fn assert_index_fixture(log: &RawLog<1>) {
+        let recorded = Recorded::build(log);
+        let mut observations = std::collections::BTreeMap::<(usize, u32), usize>::new();
+        for _ in 0..3 {
+            for span in &log.spans {
+                for (address, len) in [
+                    (span.addr, span.len),
+                    (span.addr + 1, span.len.saturating_sub(1).max(1)),
+                    (span.addr, span.len.saturating_add(1)),
+                ] {
+                    assert_recorded_query(log, &recorded, &mut observations, (address, len));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exact_length_mask_absent_width_keeps_bulk_winners_and_unique_hint() {
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(
+            &mut log,
+            &[
+                (0x5000, 4, Some(3), false),
+                (0x1000, 128, Some(7), true),
+                (0x1020, 32, Some(11), true),
+                (0x1020, 32, Some(19), true),
+                (0x5004, 8, Some(23), false),
+            ],
+        );
+        let recorded = Recorded::build(&log);
+        assert!(!recorded.index.may_have_exact_length(12));
+        let mut observations = std::collections::BTreeMap::new();
+        assert_recorded_query(&log, &recorded, &mut observations, (0x5000, 4));
+        assert_eq!(recorded.next_exact.get(), 1);
+        for address in [0x1003, 0x1024, 0x1040, 0x1025, 0x1078, 0x1004] {
+            assert_recorded_query(&log, &recorded, &mut observations, (address, 12));
+            assert_eq!(recorded.next_exact.get(), 1);
+            assert_eq!(
+                recorded.index.cursor(&log.spans, 0x1020, 32).unwrap().get(),
+                2
+            );
+        }
+        // A bulk-only query did not consume the next unique exact key.
+        assert_recorded_query(&log, &recorded, &mut observations, (0x1000, 128));
+        assert_eq!(recorded.next_exact.get(), 2);
+        assert_recorded_query(&log, &recorded, &mut observations, (0x5004, 8));
+        assert_eq!(recorded.next_exact.get(), 5);
+    }
+
+    #[test]
+    fn exact_length_mask_includes_failures_and_preserves_exact_over_bulk() {
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(
+            &mut log,
+            &[
+                (0x1000, 128, Some(7), true),
+                (0x1008, 12, None, false),
+                (0x1008, 12, Some(19), false),
+                (0x1008, 12, None, false),
+                (0x2000, 13, None, true),
+            ],
+        );
+        let recorded = Recorded::build(&log);
+        // Failed exact and failed whole-bulk keys both populate the mask.
+        for len in [12, 13, 128] {
+            assert!(recorded.index.may_have_exact_length(len));
+        }
+        let mut observations = std::collections::BTreeMap::new();
+        for query in [
+            (0x1008, 12),
+            (0x1009, 12),
+            (0x1008, 12),
+            (0x1008, 12),
+            (0x1008, 12),
+            (0x2000, 13),
+            (0x1004, 13),
+        ] {
+            assert_recorded_query(&log, &recorded, &mut observations, query);
+        }
+        assert_eq!(
+            recorded.index.cursor(&log.spans, 0x1008, 12).unwrap().get(),
+            3
+        );
+    }
+
+    #[test]
+    fn exact_length_mask_large_width_bucket_is_conservative() {
+        let widths = [
+            0,
+            1,
+            12,
+            63,
+            64,
+            127,
+            128,
+            191,
+            192,
+            254,
+            255,
+            256,
+            u32::MAX,
+        ];
+        for marked in widths {
+            let mut index = RecordedIndex::default();
+            index.mark_exact_length(marked);
+            for queried in widths {
+                assert_eq!(
+                    index.may_have_exact_length(queried),
+                    marked.min(255) == queried.min(255),
+                    "marked {marked}, queried {queried}"
+                );
+            }
+        }
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(
+            &mut log,
+            &[
+                (0x1000, 1024, Some(7), true),
+                (0x1100, 255, Some(11), false),
+                (0x1200, 256, None, false),
+                (0x4000, u32::MAX, None, false),
+            ],
+        );
+        let recorded = Recorded::build(&log);
+        assert!(recorded.index.may_have_exact_length(300));
+        assert!(recorded.index.may_have_exact_length(u32::MAX));
+        let mut observations = std::collections::BTreeMap::new();
+        // Unrepresented large widths conservatively use the exact lookup,
+        // then still resolve the same bulk range after that lookup misses.
+        for query in [
+            (0x1001, 300),
+            (0x1100, 255),
+            (0x1200, 256),
+            (0x1201, 256),
+            (0x1002, 254),
+        ] {
+            assert_recorded_query(&log, &recorded, &mut observations, query);
+        }
+    }
+
+    #[test]
+    fn exact_length_mask_reuse_rebuild_empty_and_bulk_gate_follow_current_shape() {
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(
+            &mut log,
+            &[(0x1000, 64, Some(7), true), (0x2000, 12, Some(11), false)],
+        );
+        let mut index = RecordedIndex::default();
+        assert!(!index.prepare(&log.spans, log.has_bulk));
+        let mask = index.exact_lengths;
+        assert!(index.may_have_exact_length(12));
+        assert!(index.prepare(&log.spans, log.has_bulk));
+        assert_index_fixture(&log);
+
+        // Identical ordered shape retains the mask but serves current bytes
+        // and offsets, including absent-width requests within the bulk span.
+        log.bytes.clear();
+        log.bytes.resize(13, 0xa5);
+        for (position, span) in log.spans.iter_mut().enumerate() {
+            span.start = log.bytes.len() as u32;
+            log.bytes
+                .resize(log.bytes.len() + span.len as usize, 31 + position as u8);
+        }
+        assert!(index.prepare(&log.spans, log.has_bulk));
+        assert_eq!(index.exact_lengths, mask);
+        assert_index_fixture(&log);
+
+        // Removing a width clears its bit on rebuild; changes to bulk or
+        // failure flags alone must also invalidate the full-shape reuse.
+        set_index_fixture(&mut log, &[(0x1000, 64, Some(41), true)]);
+        assert!(!index.prepare(&log.spans, log.has_bulk));
+        assert!(!index.may_have_exact_length(12));
+        assert_index_fixture(&log);
+        log.spans[0].ok = false;
+        assert!(!index.prepare(&log.spans, log.has_bulk));
+        assert!(index.may_have_exact_length(64));
+        assert_index_fixture(&log);
+        log.spans[0].ok = true;
+        log.spans[0].bulk = false;
+        assert!(!index.prepare(&log.spans, log.has_bulk));
+        assert_index_fixture(&log);
+        log.has_bulk = false;
+        assert!(!index.prepare(&log.spans, log.has_bulk));
+        assert!(index.may_have_exact_length(64));
+        assert_index_fixture(&log);
+
+        log.clear();
+        assert!(!index.prepare(&log.spans, log.has_bulk));
+        assert_eq!(index.exact_lengths, [0; 4]);
+        assert!(index.prepare(&log.spans, log.has_bulk));
+        assert_index_fixture(&log);
+        assert_eq!(log.index.borrow().as_ref().unwrap().exact_lengths, [0; 4]);
+    }
+
+    #[test]
+    fn exact_length_mask_bulk_subranges_leave_repeated_cursors_independent() {
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(
+            &mut log,
+            &[
+                (0x1000, 64, Some(7), true),
+                (0x1000, 64, None, true),
+                (0x1000, 64, Some(23), true),
+                (0x3000, 4, Some(31), false),
+            ],
+        );
+        let first = Recorded::build(&log);
+        let second = Recorded::build(&log);
+        for recorded in [&first, &second] {
+            assert!(!recorded.index.may_have_exact_length(12));
+            assert_eq!(
+                recorded.index.cursor(&log.spans, 0x1000, 64).unwrap().get(),
+                0
+            );
+            let mut observations = std::collections::BTreeMap::new();
+            for expected_cursor in [1, 2, 2, 2] {
+                assert_recorded_query(&log, recorded, &mut observations, (0x1000, 64));
+                let next_exact = recorded.next_exact.get();
+                for address in [0x1001, 0x1010, 0x1038, 0x1002] {
+                    assert_recorded_query(&log, recorded, &mut observations, (address, 12));
+                    assert_eq!(recorded.next_exact.get(), next_exact);
+                    assert_eq!(
+                        recorded.index.cursor(&log.spans, 0x1000, 64).unwrap().get(),
+                        expected_cursor
+                    );
+                }
+            }
+        }
+        drop(first);
+        drop(second);
+        // Reusing the retained index still restarts the duplicate stream.
+        let rebuilt = Recorded::build(&log);
+        assert_eq!(
+            rebuilt.index.cursor(&log.spans, 0x1000, 64).unwrap().get(),
+            0
+        );
+        let mut observations = std::collections::BTreeMap::new();
+        assert_recorded_query(&log, &rebuilt, &mut observations, (0x1000, 64));
+    }
+
+    #[test]
+    fn compact_map_preserves_reset_roots_and_terminal_duplicate_faults() {
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(
+            &mut log,
+            &[
+                (0x1000, 4, Some(7), false),
+                (0x2000, 4, Some(11), false),
+                (0x3000, 8, None, false),
+                (0x2000, 4, None, false),
+                (0x4000, 4, Some(19), false),
+                (0x3000, 8, Some(23), false),
+                (0x2000, 4, None, false),
+                (0x3000, 8, Some(31), false),
+            ],
+        );
+        // Both fresh construction and exact-shape reuse reset to the first
+        // observation. Unique keys have no reset metadata or cursor writes.
+        for _ in 0..3 {
+            let recorded = Recorded::build(&log);
+            assert_eq!(
+                recorded.index.repeated,
+                [
+                    (recorded.index.slot(&log.spans, 0x2000, 4).unwrap(), 1),
+                    (recorded.index.slot(&log.spans, 0x3000, 8).unwrap(), 2),
+                ]
+            );
+            assert_eq!(
+                recorded.index.next,
+                [usize::MAX, 3, 5, 6, usize::MAX, 7, 6, 7]
+            );
+            assert_eq!(
+                recorded.index.cursor(&log.spans, 0x2000, 4).unwrap().get(),
+                1
+            );
+            assert_eq!(
+                recorded.index.cursor(&log.spans, 0x3000, 8).unwrap().get(),
+                2
+            );
+            let mut observations = std::collections::BTreeMap::new();
+            for query in [
+                (0x1000, 4),
+                (0x2000, 4),
+                (0x3000, 8),
+                (0x4000, 4),
+                (0x2000, 4),
+                (0x3000, 8),
+                (0x2000, 4),
+                (0x3000, 8),
+                (0x2000, 4),
+                (0x3000, 8),
+                (0x1000, 4),
+                (0x4000, 4),
+            ] {
+                assert_recorded_query(&log, &recorded, &mut observations, query);
+            }
+            assert_eq!(
+                recorded.index.cursor(&log.spans, 0x2000, 4).unwrap().get(),
+                6
+            );
+            assert_eq!(
+                recorded.index.cursor(&log.spans, 0x3000, 8).unwrap().get(),
+                7
+            );
+            assert_eq!(
+                recorded.index.cursor(&log.spans, 0x1000, 4).unwrap().get(),
+                0
+            );
+            assert_eq!(
+                recorded.index.cursor(&log.spans, 0x4000, 4).unwrap().get(),
+                4
+            );
+        }
+    }
+
+    #[test]
+    fn unique_exact_hint_matches_linear_reads_in_sequential_and_arbitrary_order() {
+        let reads: Vec<_> = (0..64)
+            .map(|index| {
+                (
+                    0x1000 + index * 32,
+                    4 + index as u32 % 3,
+                    (index % 7 != 0).then_some(index as u8),
+                    false,
+                )
+            })
+            .collect();
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(&mut log, &reads);
+        let recorded = Recorded::build(&log);
+        assert!(recorded.index.next.iter().all(|&next| next == usize::MAX));
+        let mut observations = std::collections::BTreeMap::new();
+        for (index, &(address, len, _, _)) in reads.iter().enumerate() {
+            assert_recorded_query(&log, &recorded, &mut observations, (address, len));
+            assert_eq!(recorded.next_exact.get(), index + 1);
+        }
+        for index in (0..reads.len())
+            .rev()
+            .chain((0..256).map(|index| index * 37 % 64))
+        {
+            let (address, len, _, _) = reads[index];
+            assert_recorded_query(&log, &recorded, &mut observations, (address, len));
+            assert_eq!(recorded.next_exact.get(), index + 1);
+            // Same address with another width must not use the exact hint.
+            assert_recorded_query(&log, &recorded, &mut observations, (address, len + 9));
+        }
+    }
+
+    #[test]
+    fn unique_exact_hint_never_skips_an_earlier_duplicate_observation() {
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(
+            &mut log,
+            &[
+                (0x1000, 4, Some(7), false),
+                (0x2000, 4, Some(11), false),
+                (0x1000, 4, None, false),
+                (0x3000, 4, Some(19), false),
+                (0x1000, 4, Some(23), false),
+                (0x4000, 8, Some(31), false),
+            ],
+        );
+        let recorded = Recorded::build(&log);
+        assert_eq!(
+            recorded.index.next,
+            [2, usize::MAX, 4, usize::MAX, 4, usize::MAX]
+        );
+        let mut observations = std::collections::BTreeMap::new();
+        // Resolving the unique entry before a later duplicate primes a
+        // misleading hint. The first request must still observe 7, not a fault.
+        for query in [
+            (0x2000, 4),
+            (0x1000, 4),
+            (0x3000, 4),
+            (0x1000, 4),
+            (0x3000, 4),
+            (0x1000, 4),
+            (0x2000, 4),
+            (0x1000, 4),
+            (0x4000, 8),
+            (0x1000, 4),
+        ] {
+            assert_recorded_query(&log, &recorded, &mut observations, query);
+        }
+    }
+
+    #[test]
+    fn unique_exact_hint_preserves_fault_priority_bulk_ties_and_independent_readers() {
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(
+            &mut log,
+            &[
+                (0x1000, 64, Some(7), true),
+                (0x1010, 16, Some(11), true),
+                (0x1010, 16, Some(19), true),
+                (0x1014, 4, None, false),
+                (0x2000, 8, Some(23), false),
+                (0x1014, 4, Some(31), false),
+                (0x1008, 4, None, false),
+            ],
+        );
+        let first = Recorded::build(&log);
+        let second = Recorded::build(&log);
+        let mut first_observations = std::collections::BTreeMap::new();
+        let mut second_observations = std::collections::BTreeMap::new();
+        let queries = [
+            (0x1000, 64),
+            (0x1011, 4),
+            (0x1010, 16),
+            (0x2000, 8),
+            (0x1014, 4),
+            (0x1014, 4),
+            (0x1011, 24),
+            (0x1010, 16),
+            (0x1010, 16),
+            (0x1008, 4),
+            (0x1008, 4),
+            (0x1040, 1),
+        ];
+        for (index, &query) in queries.iter().enumerate() {
+            assert_recorded_query(&log, &first, &mut first_observations, query);
+            assert_recorded_query(
+                &log,
+                &second,
+                &mut second_observations,
+                queries[queries.len() - index - 1],
+            );
+        }
+        drop(first);
+        let third = Recorded::build(&log);
+        assert_eq!(third.next_exact.get(), 0);
+        let mut third_observations = std::collections::BTreeMap::new();
+        for query in queries {
+            assert_recorded_query(&log, &third, &mut third_observations, query);
+        }
+        assert_recorded_query(&log, &second, &mut second_observations, (0x1014, 4));
+    }
+
+    #[test]
+    fn unique_exact_hint_uses_current_bytes_and_offsets_after_shape_reuse() {
+        let mut log = RawLog::<1>::default();
+        let reads = [
+            (0x1000, 4, Some(7), false),
+            (0x2000, 8, Some(11), false),
+            (0x3000, 4, None, false),
+            (0x4000, 4, Some(19), false),
+        ];
+        set_index_fixture(&mut log, &reads);
+        assert_index_fixture(&log);
+        let original_slots = log.index.borrow().as_ref().unwrap().slots.capacity();
+        // Keep exactly the same key/ok/bulk shape, but replace and relocate
+        // every successful byte span. No old offset or byte may be cached.
+        log.bytes.clear();
+        log.bytes.resize(13, 0xa5);
+        for (index, span) in log.spans.iter_mut().enumerate() {
+            if span.ok {
+                span.start = log.bytes.len() as u32;
+                log.bytes
+                    .resize(log.bytes.len() + span.len as usize, 41 + index as u8);
+            }
+        }
+        assert_index_fixture(&log);
+        assert_eq!(
+            log.index.borrow().as_ref().unwrap().slots.capacity(),
+            original_slots
+        );
+        // A formerly unique key becoming repeated must clear the sentinel
+        // at every occurrence; deleting that duplicate restores uniqueness.
+        for tail in [Some((0x1000, 4, Some(59), false)), None] {
+            let mut changed = reads.to_vec();
+            changed.extend(tail);
+            set_index_fixture(&mut log, &changed);
+            assert_index_fixture(&log);
+            let cached = log.index.borrow();
+            let next = &cached.as_ref().unwrap().next;
+            assert_eq!(next[0] == usize::MAX, tail.is_none());
+            if tail.is_some() {
+                assert_eq!(next[4], 4);
+            }
+        }
+    }
+
+    #[test]
+    fn index_refresh_handles_insertions_deletions_reorders_and_duplicate_faults() {
+        let a = (0x1000, 4, Some(7), false);
+        let b = (0x2000, 8, Some(11), false);
+        let c = (0x3000, 4, Some(19), false);
+        let d = (0x4000, 4, Some(31), false);
+        let failed_a = (0x1000, 4, None, false);
+        let later_a = (0x1000, 4, Some(47), false);
+        let mut log = RawLog::<1>::default();
+        for reads in [
+            vec![a, b, later_a, c],
+            vec![a, b, failed_a, later_a, c],
+            vec![d, a, b, failed_a, later_a, c],
+            vec![d, a, failed_a, later_a, c],
+            vec![d, a, failed_a, later_a, c, b],
+            vec![c, failed_a, d, later_a, a, b],
+            vec![c, (0x1000, 8, Some(59), false), d, a, b],
+            vec![],
+            vec![failed_a, later_a, a],
+        ] {
+            set_index_fixture(&mut log, &reads);
+            assert_index_fixture(&log);
+            let cached = log.index.borrow();
+            let index = cached.as_ref().unwrap();
+            let keys: std::collections::BTreeSet<_> =
+                reads.iter().map(|read| (read.0, read.1)).collect();
+            assert_eq!(index.distinct, keys.len());
+            assert_eq!(index.next.len(), reads.len());
+            assert_eq!(index.shape.len(), reads.len());
+            assert!(
+                keys.iter()
+                    .all(|key| index.cursor(&log.spans, key.0, key.1).is_some())
+            );
+        }
+    }
+
+    #[test]
+    fn index_refresh_handles_bulk_flags_faults_and_current_pool_offsets() {
+        let mut log = RawLog::<1>::default();
+        for (parent, child, exact, bulk_gate) in [
+            (Some(7), Some(11), Some(19), true),
+            (Some(23), Some(31), None, true),
+            (Some(37), None, Some(41), true),
+            (None, Some(43), Some(47), true),
+            (Some(53), Some(59), Some(61), false),
+            (Some(67), Some(71), Some(73), true),
+        ] {
+            set_index_fixture(
+                &mut log,
+                &[
+                    (0x1000, 32, parent, bulk_gate),
+                    (0x1008, 8, child, true),
+                    (0x1009, 4, exact, false),
+                ],
+            );
+            log.has_bulk = bulk_gate;
+            assert_index_fixture(&log);
+        }
+    }
+
+    #[test]
+    fn index_refresh_drops_inactive_keys_and_retains_only_peak_capacity() {
+        let mut log = RawLog::<1>::default();
+        let mut index = RecordedIndex::default();
+        let mut peak_count = 0;
+        let mut peak_capacity = 0;
+        for refresh in 0..64 {
+            let count = if refresh == 12 { 17 } else { 4 };
+            let reads: Vec<_> = (0..count)
+                .map(|row| (0x1000 + refresh * 0x1000 + row * 16, 4, Some(7), false))
+                .collect();
+            set_index_fixture(&mut log, &reads);
+            index.prepare(&log.spans, false);
+            assert_eq!(index.distinct, count);
+            if count > peak_count {
+                peak_count = count;
+                peak_capacity = index.slots.capacity();
+            }
+            assert_eq!(index.slots.capacity(), peak_capacity);
+            assert_eq!(index.next.len(), count);
+            assert_eq!(index.shape.len(), count);
+            assert!(index.repeated.is_empty());
+            assert!(
+                reads
+                    .iter()
+                    .all(|read| index.cursor(&log.spans, read.0, read.1).is_some())
+            );
+        }
+    }
+
+    #[test]
+    fn compact_index_hash_matches_the_previous_tuple_hasher() {
+        use std::hash::Hash;
+        for address in [
+            0,
+            1,
+            0x1000,
+            0x1_4000_0000,
+            0xffff_8000_0000_1000,
+            usize::MAX,
+        ] {
+            for len in [0, 1, 4, 8, 16, 32, 64, u32::MAX] {
+                let mut previous = ReadAddressHasher::default();
+                (address, len).hash(&mut previous);
+                assert_eq!(
+                    RecordedIndex::hash(address, len),
+                    previous.finish() as usize
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compact_index_collisions_wrap_and_keep_each_observation_stream() {
+        let addresses: Vec<_> = (1..=4096)
+            .map(|index| 0x1000 + index * 16)
+            .filter(|&address| RecordedIndex::hash(address, 4) & 7 == 7)
+            .take(5)
+            .collect();
+        assert_eq!(addresses.len(), 5);
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(
+            &mut log,
+            &[
+                (addresses[0], 4, Some(7), false),
+                (addresses[1], 4, Some(11), false),
+                (addresses[2], 4, None, false),
+                (addresses[3], 4, Some(19), false),
+                (addresses[0], 4, None, false),
+                (addresses[2], 4, Some(23), false),
+                (addresses[0], 4, Some(31), false),
+            ],
+        );
+        for _ in 0..3 {
+            let recorded = Recorded::build(&log);
+            assert_eq!(recorded.index.slots.len(), 8);
+            assert_eq!(recorded.index.distinct, 4);
+            for (index, &address) in addresses[..4].iter().enumerate() {
+                assert_eq!(
+                    recorded.index.slot(&log.spans, address, 4),
+                    Some((7 + index) & 7)
+                );
+            }
+            assert_eq!(recorded.index.slot(&log.spans, addresses[4], 4), Some(3));
+            assert!(recorded.index.cursor(&log.spans, addresses[4], 4).is_none());
+            let mut observations = std::collections::BTreeMap::new();
+            for _ in 0..4 {
+                for &address in addresses.iter().rev() {
+                    assert_recorded_query(&log, &recorded, &mut observations, (address, 4));
+                    assert_recorded_query(&log, &recorded, &mut observations, (address, 8));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compact_index_resolves_early_duplicate_roots_after_all_rehashes() {
+        let first = (1..=4096)
+            .map(|index| 0x1000 + index * 16)
+            .find(|&address| (32..64).contains(&(RecordedIndex::hash(address, 4) & 255)))
+            .unwrap();
+        let second = first + 16;
+        let mut reads = vec![
+            (first, 4, Some(7), false),
+            (second, 4, Some(11), false),
+            (first, 4, None, false),
+            (second, 4, Some(19), false),
+        ];
+        reads.extend((0..70).map(|index| (first + 0x1000 + index * 16, 4, Some(37), false)));
+        reads.extend([(first, 4, Some(23), false), (second, 4, None, false)]);
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(&mut log, &reads);
+        for _ in 0..3 {
+            assert_index_fixture(&log);
+            let recorded = Recorded::build(&log);
+            assert_eq!(recorded.index.slots.len(), 256);
+            assert_eq!(recorded.index.distinct, 72);
+            let first_slot = recorded.index.slot(&log.spans, first, 4).unwrap();
+            let second_slot = recorded.index.slot(&log.spans, second, 4).unwrap();
+            assert_ne!(first_slot, RecordedIndex::hash(first, 4) & 7);
+            assert_eq!(recorded.index.repeated, [(first_slot, 0), (second_slot, 1)]);
+            assert_eq!(recorded.index.slots[first_slot].get(), 0);
+            assert_eq!(recorded.index.slots[second_slot].get(), 1);
+        }
+    }
+
+    #[test]
+    fn compact_index_capacity_depends_on_distinct_keys_not_observations() {
+        let reads: Vec<_> = (0..2048)
+            .map(|index| {
+                (
+                    0x1000,
+                    if index % 2 == 0 { 4 } else { 8 },
+                    (index % 7 != 0).then_some((index % 251) as u8),
+                    false,
+                )
+            })
+            .collect();
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(&mut log, &reads);
+        for _ in 0..3 {
+            let recorded = Recorded::build(&log);
+            assert_eq!(recorded.index.distinct, 2);
+            assert_eq!(recorded.index.slots.len(), 8);
+            assert_eq!(recorded.index.slots.capacity(), 8);
+            assert_eq!(recorded.index.repeated.len(), 2);
+            for &(address, len, value, _) in &reads {
+                let mut bytes = [0xee; 8];
+                assert_eq!(
+                    recorded.copy(address, &mut bytes[..len as usize]),
+                    value.is_some()
+                );
+                let expected = [value.unwrap_or(0xee); 8];
+                assert_eq!(bytes[..len as usize], expected[..len as usize]);
+            }
+            for &(address, len, value, _) in &reads[reads.len() - 2..] {
+                let mut bytes = [0xee; 8];
+                assert_eq!(
+                    recorded.copy(address, &mut bytes[..len as usize]),
+                    value.is_some()
+                );
+                let expected = [value.unwrap_or(0xee); 8];
+                assert_eq!(bytes[..len as usize], expected[..len as usize]);
+            }
+        }
+    }
+
+    #[test]
+    fn compact_index_shrink_clears_exhausted_cursors_before_using_new_spans() {
+        let mut reads: Vec<_> = (0..70)
+            .map(|index| (0x1000 + index * 16, 4, Some(7), false))
+            .collect();
+        reads.extend((0..70).map(|index| (0x1000 + index * 16, 4, None, false)));
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(&mut log, &reads);
+        assert_index_fixture(&log);
+        let capacity = log.index.borrow().as_ref().unwrap().slots.capacity();
+        {
+            let cached = log.index.borrow();
+            let index = cached.as_ref().unwrap();
+            assert_eq!(index.cursor(&log.spans, 0x1000, 4).unwrap().get(), 70);
+        }
+        set_index_fixture(
+            &mut log,
+            &[(0x1000, 4, Some(201), false), (0x1000, 4, None, false)],
+        );
+        {
+            let recorded = Recorded::build(&log);
+            assert_eq!(recorded.index.slots.capacity(), capacity);
+            assert_eq!(recorded.index.distinct, 1);
+            let mut observations = std::collections::BTreeMap::new();
+            for query in [
+                (0x1000, 4),
+                (0x1000, 4),
+                (0x1000, 4),
+                (0x1010, 4),
+                (0x1450, 4),
+            ] {
+                assert_recorded_query(&log, &recorded, &mut observations, query);
+            }
+        }
+        set_index_fixture(&mut log, &[]);
+        {
+            let recorded = Recorded::build(&log);
+            assert_eq!(recorded.index.slots.capacity(), capacity);
+            assert_eq!(recorded.index.distinct, 0);
+            assert!(
+                recorded
+                    .index
+                    .slots
+                    .iter()
+                    .all(|slot| slot.get() == usize::MAX)
+            );
+            assert!(recorded.index.repeated.is_empty());
+            assert!(!recorded.copy(0x1000, &mut [0; 4]));
+        }
+        set_index_fixture(&mut log, &[(0x1000, 8, Some(211), true)]);
+        assert_index_fixture(&log);
+        let recorded = Recorded::build(&log);
+        assert_eq!(recorded.index.slots.capacity(), capacity);
+        let mut bytes = [0; 4];
+        assert!(recorded.copy(0x1002, &mut bytes));
+        assert_eq!(bytes, [211; 4]);
+    }
+
+    #[test]
+    fn edited_indexes_keep_simultaneous_recorded_views_independent() {
+        let mut log = RawLog::<1>::default();
+        set_index_fixture(&mut log, &[(0x1000, 4, Some(7), false)]);
+        assert_index_fixture(&log);
+        set_index_fixture(
+            &mut log,
+            &[
+                (0x2000, 4, Some(11), false),
+                (0x1000, 4, Some(19), false),
+                (0x1000, 4, None, false),
+                (0x1000, 4, Some(23), false),
+            ],
+        );
+        let first = Recorded::build(&log);
+        let second = Recorded::build(&log);
+        for view in [&first, &second] {
+            let mut bytes = [0; 4];
+            assert!(view.copy(0x1000, &mut bytes));
+            assert_eq!(bytes, [19; 4]);
+            assert!(!view.copy(0x1000, &mut bytes));
+        }
+        drop(first);
+        let third = Recorded::build(&log);
+        let mut bytes = [0; 4];
+        assert!(third.copy(0x1000, &mut bytes));
+        assert_eq!(bytes, [19; 4]);
+        assert!(second.copy(0x1000, &mut bytes));
+        assert_eq!(bytes, [23; 4]);
+    }
+
     struct FailAll;
 
     impl Memory for FailAll {
         fn copy(&self, _address: usize, _destination: &mut [u8]) -> bool {
             false
         }
-    }
-
-    #[test]
-    fn batched_records_preserve_exact_fields_failure_prefix_and_padding() {
-        use engine::memory::RecordField;
-        let fields = [
-            RecordField {
-                source_offset: 0,
-                destination_offset: 0,
-                len: 2,
-            },
-            RecordField {
-                source_offset: 4,
-                destination_offset: 4,
-                len: 2,
-            },
-        ];
-        let bytes = [7; 12];
-        let memory = SliceMemory {
-            base: 0x1000,
-            bytes: &bytes,
-        };
-        let pointers = [0x1000, 0x1008];
-        let mut log = RawLog::<2>::new(4, 16);
-        assert_eq!(
-            log.take_records(&memory, &pointers, &fields, 8, 2),
-            Some((0, 3))
-        );
-        assert_eq!(log.spans.len(), 4);
-        assert_eq!(log.raw_bytes, [0, 6]);
-        assert_eq!(log.fault, [false, true]);
-        let recorded = Recorded::build(&log);
-        let mut direct = [0xa5; 16];
-        let mut replayed = direct;
-        assert_eq!(memory.copy_records(&pointers, &fields, 8, &mut direct), 3);
-        assert_eq!(
-            recorded.copy_records(&pointers, &fields, 8, &mut replayed),
-            3
-        );
-        assert_eq!(direct, replayed);
-        assert!(
-            !recorded.copy(0x1002, &mut [0; 2]),
-            "padding is not a copied field"
-        );
-    }
-
-    #[test]
-    fn batched_records_decline_insufficient_staging_without_partial_success() {
-        use engine::memory::RecordField;
-        let memory = SliceMemory {
-            base: 0x1000,
-            bytes: &[7; 16],
-        };
-        let fields = [RecordField {
-            source_offset: 0,
-            destination_offset: 0,
-            len: 8,
-        }];
-        let mut log = RawLog::<1>::new(1, 8);
-        assert_eq!(
-            log.take_records(&memory, &[0x1000, 0x1008], &fields, 8, 1),
-            None
-        );
-        assert!(log.overflowed);
-        assert!(log.spans.is_empty());
-        assert!(log.bytes.is_empty());
-        log.grow();
-        log.clear();
-        assert_eq!(
-            log.take_records(&memory, &[0x1000, 0x1008], &fields, 8, 1),
-            Some((0, 2))
-        );
-        assert!(!log.fault[0]);
     }
 
     #[test]
@@ -1193,6 +3195,152 @@ mod tests {
         // Live failures record the mask and block only attributed tables.
         assert!(log.take(&FailAll, 0x1010, 4, 0x06).is_none());
         assert_eq!(log.fault, [false, true, true]);
+    }
+
+    #[test]
+    fn initialized_arena_keeps_exact_scalar_bulk_prefixes_after_partial_faults() {
+        struct Traced {
+            partial: usize,
+            calls: RefCell<Vec<(usize, usize)>>,
+            initial: RefCell<Vec<Vec<u8>>>,
+        }
+        impl Memory for Traced {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                // Reading the initialized destination is valid, but its old
+                // contents do not determine the source bytes or copy result.
+                self.initial.borrow_mut().push(destination.to_vec());
+                self.calls.borrow_mut().push((address, destination.len()));
+                let completed = if address == 0x2000 {
+                    self.partial.min(destination.len())
+                } else {
+                    destination.len()
+                };
+                for (index, byte) in destination[..completed].iter_mut().enumerate() {
+                    *byte = (address.wrapping_add(index * 29) as u8) ^ 0xa5;
+                }
+                address != 0x2000
+            }
+        }
+
+        for len in [0_usize, 1, 2, 3, 4, 7, 8, 15, 16, 24, 26, 31, 32, 33, 64] {
+            for partial in [0, len / 2, len.saturating_sub(1)] {
+                let scalar_memory = Traced {
+                    partial,
+                    calls: RefCell::default(),
+                    initial: RefCell::default(),
+                };
+                let generic_memory = Traced {
+                    partial,
+                    calls: RefCell::default(),
+                    initial: RefCell::default(),
+                };
+                let mut scalar = RawLog::<2>::new(8, 256);
+                let mut generic = RawLog::<2>::new(8, 256);
+                let prefix = [0xb3, 0, 0xff, 0x71];
+                for log in [&mut scalar, &mut generic] {
+                    // Every physical byte is initialized, but stale payloads
+                    // remain outside the four-byte currently published prefix.
+                    log.bytes.resize(log.bytes.capacity(), 0xcd);
+                    log.bytes.truncate(prefix.len());
+                    log.bytes.copy_from_slice(&prefix);
+                }
+                let mut expected = prefix.to_vec();
+                for (address, mask) in [
+                    (0x1000, 1),
+                    (0x2000, 2),
+                    (0x1100, 1),
+                    (0, 2),
+                    (0x0072_6f74_6361_665f, 2),
+                    (usize::MAX, 2),
+                ] {
+                    let scalar_result = scalar.take(&scalar_memory, address, len, mask);
+                    // Scalar and bulk retain distinct recorded span semantics.
+                    // Normalize only the marker for a complete log comparison.
+                    let generic_result = generic.take_bulk(&generic_memory, address, len, mask);
+                    if generic_result.is_some() && len != 0 {
+                        generic.spans.last_mut().unwrap().bulk = false;
+                    }
+                    assert_eq!(scalar_result, generic_result);
+                    assert!(scalar.logs_equal(&generic));
+                    assert_eq!(scalar.fault, generic.fault);
+                    assert_eq!(scalar.raw_bytes, generic.raw_bytes);
+                    assert_eq!(scalar.overflowed, generic.overflowed);
+                    assert_eq!(scalar.span_exhausted, generic.span_exhausted);
+                    assert_eq!(scalar.required_bytes, generic.required_bytes);
+                    assert_eq!(scalar_memory.calls, generic_memory.calls);
+                    assert_eq!(&scalar.bytes[..prefix.len()], &prefix);
+                    if len != 0 && matches!(address, 0x1000 | 0x1100) {
+                        expected.extend(
+                            (0..len).map(|index| (address.wrapping_add(index * 29) as u8) ^ 0xa5),
+                        );
+                    }
+                    assert_eq!(scalar.bytes, expected);
+                    assert!(
+                        scalar
+                            .bytes
+                            .get(expected.len()..expected.len() + 1)
+                            .is_none()
+                    );
+                }
+                let expected_calls = if len == 0 {
+                    Vec::new()
+                } else {
+                    vec![(0x1000, len), (0x2000, len), (0x1100, len)]
+                };
+                assert_eq!(*scalar_memory.calls.borrow(), expected_calls);
+                assert_eq!(scalar.raw_bytes, [(len * 2) as u64, 0]);
+                if len != 0 {
+                    assert_eq!(scalar_memory.initial.borrow()[0], vec![0xcd; len]);
+                    assert_eq!(scalar_memory.initial, generic_memory.initial);
+                    let reader = Recorded::build(&scalar);
+                    let mut rejected = vec![0xe7; len];
+                    assert!(!reader.copy(0x2000, &mut rejected));
+                    assert_eq!(rejected, vec![0xe7; len]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_fixed_width_append_preserves_short_pool_preflight() {
+        struct NoRead;
+        impl Memory for NoRead {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("pool preflight must reject before the source read")
+            }
+        }
+        for len in [1, 2, 3, 4, 8, 16, 32, 64] {
+            for span_full in [false, true] {
+                let mut scalar = RawLog::<1>::new(usize::from(!span_full), len + 4);
+                let mut generic = RawLog::<1>::new(usize::from(!span_full), len + 4);
+                for log in [&mut scalar, &mut generic] {
+                    let used = if span_full {
+                        4
+                    } else {
+                        log.bytes.capacity() - len + 1
+                    };
+                    log.bytes.resize(used, 0xa7);
+                }
+                let before = scalar.bytes.to_vec();
+                let capacities = (scalar.spans.capacity(), scalar.bytes.capacity());
+                assert_eq!(scalar.take(&NoRead, 0x1000, len, 1), None);
+                assert_eq!(generic.take_bulk(&NoRead, 0x1000, len, 1), None);
+                assert!(scalar.logs_equal(&generic));
+                assert_eq!(scalar.bytes, before);
+                assert_eq!(scalar.spans.capacity(), capacities.0);
+                assert_eq!(scalar.bytes.capacity(), capacities.1);
+                assert!(scalar.overflowed);
+                assert_eq!(scalar.span_exhausted, span_full);
+                assert_eq!(scalar.span_exhausted, generic.span_exhausted);
+                assert_eq!(scalar.required_bytes, before.len() + len);
+                assert_eq!(scalar.required_bytes, generic.required_bytes);
+                assert_eq!(scalar.fault, [false]);
+                assert_eq!(scalar.raw_bytes, [0]);
+                // An overflowed log still short-circuits later requests.
+                assert_eq!(scalar.take(&NoRead, 0x1100, 1, 1), None);
+                assert_eq!(scalar.bytes, before);
+            }
+        }
     }
 
     #[test]
@@ -1483,6 +3631,65 @@ mod tests {
         assert!(recorded.copy(0x1044, &mut out));
         assert_eq!(out, bytes[68..92]);
         assert!(!recorded.copy(0x1070, &mut out));
+    }
+
+    #[test]
+    fn bulk_cache_keeps_nested_winners_parent_fallback_and_exact_faults() {
+        let mut log = RawLog::<1>::new(8, 256);
+        log.has_bulk = true;
+        for (base, bytes) in [
+            (0x1000, &[1; 128][..]),
+            (0x1010, &[2; 16][..]),
+            (0x1040, &[3; 8][..]),
+        ] {
+            log.take_bulk(&SliceMemory { base, bytes }, base, bytes.len(), 1)
+                .unwrap();
+        }
+        log.take(&FailAll, 0x1018, 4, 1);
+        let recorded = Recorded::build(&log);
+        for (address, len, expected) in [
+            (0x1001, 4, Some(1)),  // primes the parent
+            (0x1005, 4, Some(1)),  // parent cache hit
+            (0x1011, 4, Some(2)),  // child must supersede it
+            (0x1012, 24, Some(1)), // extends past child: parent fallback
+            (0x1013, 4, Some(2)),  // smaller next read still picks child
+            (0x1018, 4, None),     // exact failure beats a primed bulk cache
+            (0x1041, 4, Some(3)),
+            (0x1044, 12, Some(1)),
+            (0x107f, 2, None),
+        ] {
+            let mut bytes = vec![0xa5; len];
+            assert_eq!(recorded.copy(address, &mut bytes), expected.is_some());
+            assert_eq!(bytes, vec![expected.unwrap_or(0xa5); len]);
+        }
+        // Changing direction and requested width must never turn the cached
+        // winner into an implicit override of the full ordered interval search.
+        for address in (0x0ffc..0x1084).rev() {
+            for len in 1..12 {
+                let expected = if address == 0x1018 && len == 4 {
+                    None
+                } else {
+                    recorded
+                        .index
+                        .bulk
+                        .iter()
+                        .rev()
+                        .find(|span| span.0 <= address && address + len <= span.1)
+                        .map(|span| log.bytes[log.spans[span.2].start as usize])
+                };
+                let mut bytes = vec![0xa5; len];
+                assert_eq!(
+                    recorded.copy(address, &mut bytes),
+                    expected.is_some(),
+                    "{address:x}/{len}"
+                );
+                assert_eq!(
+                    bytes,
+                    vec![expected.unwrap_or(0xa5); len],
+                    "{address:x}/{len}"
+                );
+            }
+        }
     }
 
     #[test]
