@@ -24,6 +24,7 @@ use crate::map::{
     models::ModelField,
     // political fill
     political::PoliticalLayers,
+    railways::{Bridges, RailAssets, RailMesh},
     // rivers
     rivers::{RiverAssets, RiverMesh},
     scene::{OUTPUT_FORMAT, Request, Scene, extent, invalid},
@@ -59,6 +60,9 @@ pub struct MapLayers<'a> {
     pub map_buildings: &'a MapBuildingAssets,
     /// This hour's placed buildings, from [`MapBuildingAssets::field`].
     pub map_building_field: &'a ModelField,
+    pub rail_assets: &'a RailAssets,
+    pub rail_mesh: &'a RailMesh,
+    pub bridges: &'a Bridges,
     // trees
     pub tree_assets: &'a TreeAssets,
     pub tree_geometry: &'a TreeGeometry,
@@ -355,6 +359,8 @@ pub fn dump_png(
             layers.map_buildings,
             layers.map_building_field.clone(),
         )?;
+        scene.set_railways(&device, &queue, layers.rail_assets, layers.rail_mesh)?;
+        scene.set_bridges(&device, &queue, layers.bridges)?;
         // weather
         let snow_mud = layers.snow_mud;
         scene.set_snow_mud(

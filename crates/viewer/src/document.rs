@@ -34,6 +34,7 @@ use crate::map::rivers::{self, RiverAssets, RiverImage, RiverMesh};
 use crate::map::trees::{self, TreeAssets, TreeField, TreeGeometry, TreeImage};
 // close zoom
 use crate::map::map_buildings::MapBuildingAssets;
+use crate::map::railways::{self as rail_layer, Bridges, RailAssets, RailMesh};
 use crate::map::sprawl::{self, Sprawl};
 // names
 use crate::map::{
@@ -108,6 +109,14 @@ pub struct Document {
     /// The map-building slot table, types and meshes; the placed buildings are
     /// per hour and come from [`Document::map_building_field`].
     pub map_buildings: MapBuildingAssets,
+    /// `gfx/models/supply/railroad.dds`.
+    pub rail_assets: RailAssets,
+    /// The traced rail network of `map/railways.txt`.
+    pub rail_mesh: RailMesh,
+    /// How long tracing the rail network took.
+    pub rail_build: Duration,
+    /// The railway bridges, which are meshes rather than strip.
+    pub bridges: Bridges,
 }
 
 impl Document {
@@ -253,6 +262,29 @@ impl Document {
         let sprawl_plan = sprawl::generate(&cities, &city_styles, &assets.spawn_city, &heights)?;
         let sprawl = Sprawl::load(&content.layers, &sprawl_plan, &mut warnings)?;
         let sprawl_build = started.elapsed();
+        let started = Instant::now();
+        let railways = installed_content::railways::read(&content.layers)?;
+        let anchors =
+            rail_layer::province_anchors(&installed_content::positions::read_unit_stacks(&content.layers)?);
+        let water = rail_layer::WaterMask {
+            heights: &heights,
+            rivers: &assets.rivers,
+        };
+        let rail_mesh = rail_layer::build(&railways, &anchors, &heights, &water);
+        let rail_build = started.elapsed();
+        let rail_assets = RailAssets::load(&content.layers)?;
+        let bridges = Bridges::load(&content.layers, &rail_mesh, &mut warnings)?;
+        if rail_mesh.unanchored > 0 {
+            warnings.push(format!(
+                "{} of {} map/railways.txt segments name a province with no map/unitstacks.txt anchor and are not drawn.",
+                rail_mesh.unanchored,
+                railways.len()
+            ));
+        }
+        warnings.push(
+            "Railways are the authored 1936 network of map/railways.txt: no recorded table carries the network as it stands at an hour, so rails built during the campaign are missing and rails lost are still drawn. Trains are dynamic and unrecorded and are not drawn at all."
+                .into(),
+        );
         let map_buildings = MapBuildingAssets::load(
             &content.layers,
             &crate::map::map_buildings::ProvinceMap {
@@ -299,6 +331,10 @@ impl Document {
             sprawl,
             sprawl_build,
             map_buildings,
+            rail_assets,
+            rail_mesh,
+            rail_build,
+            bridges,
         })
     }
 

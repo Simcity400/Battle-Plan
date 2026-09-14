@@ -18,6 +18,7 @@ pub mod gradient;
 // close zoom: the shared static-mesh pass and the layers built on it
 pub mod map_buildings;
 pub mod models;
+pub mod railways;
 // names
 pub mod labels;
 pub mod name_pass;

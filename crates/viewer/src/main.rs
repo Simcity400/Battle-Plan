@@ -557,6 +557,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 sprawl: &document.sprawl,
                 map_buildings: &document.map_buildings,
                 map_building_field: &map_building_field,
+                rail_assets: &document.rail_assets,
+                rail_mesh: &document.rail_mesh,
+                bridges: &document.bridges,
                 // trees
                 tree_assets: &document.tree_assets,
                 tree_geometry: &document.tree_geometry,
@@ -700,6 +703,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for (name, count) in &building_summary.unresolved_by_type {
             println!("  no entity: {name} x{count}");
         }
+        println!(
+            "Railways: {} authored segments, {} dropped for a missing anchor, {} curve samples, \
+             {} strip vertices; alpha {:.0} at height {:.3}; traced in {:.0} ms",
+            document.rail_mesh.segments,
+            document.rail_mesh.unanchored,
+            document.rail_mesh.samples,
+            document.rail_mesh.vertices.len(),
+            map::railways::railway_alpha(camera.height),
+            camera.height,
+            document.rail_build.as_secs_f64() * 1000.0
+        );
+        println!(
+            "Railway bridges: {} placed where a curve crosses water, {} meshes",
+            document.bridges.placed,
+            document.bridges.library.meshes.len()
+        );
         // weather
         println!(
             "Snow and mud: {}; {}x{} grid rasterised in {:.0} ms",
