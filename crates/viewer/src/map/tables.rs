@@ -131,12 +131,28 @@ impl Limitations {
         }
     }
 
+    /// Records a limitation of the recording *format* rather than of one
+    /// hour's tables.
+    ///
+    /// A gap [`Limitations::note`] reports is a table this recording happens to
+    /// be missing rows from; this is a field no format version records at all,
+    /// so there is no table to name and no hour that would carry it.
+    pub fn note_format(&mut self, affected: &str) {
+        self.lines.push(format!("Recording format: {affected}"));
+    }
+
     /// The recorded lines, one per degraded table. An hour that drew
     /// everything it reads has none.
     pub fn lines(&self) -> &[String] {
         &self.lines
     }
 }
+
+// borders: the demilitarised-zone bucket bank
+/// What the map cannot draw because no format version records a per-state
+/// demilitarised flag; see `map::demilitarized`.
+pub const DEMILITARIZED: &str =
+    "no demilitarised-state flag is recorded, so the demilitarised-zone border is not drawn";
 
 /// Every non-core table the map reads, and what a gap in it costs this hour.
 ///

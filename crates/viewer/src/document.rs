@@ -1,6 +1,7 @@
 //! A replay and the verified local game content used to draw its current hour.
 
 use std::{
+    collections::BTreeSet,
     fs, io,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -22,6 +23,8 @@ use crate::{
     map::{
         border_pass::{BorderAssets, StraitVertex, Topology, strait_quads},
         borders::{self, BorderMeshes, HeightField, ProvinceMap},
+        demilitarized::{self, Zone},
+        political::Regions,
     },
     playback::Playback,
 };
@@ -60,6 +63,11 @@ pub struct Document {
     pub straits: Vec<StraitVertex>,
     /// Wall time of the border trace, for reporting.
     pub border_trace: Duration,
+    // borders: the demilitarised-zone bucket bank
+    /// State ids to treat as demilitarised, substituting the save's `demilitarized=yes` flag for
+    /// the missing recording. Empty unless `--dump --demilitarized` sets it; see
+    /// [`Document::demilitarized_zone`] and `map::demilitarized`.
+    pub demilitarized_override: BTreeSet<u32>,
     // names
     /// Fonts and map-icon sprites, uploaded once by the scene.
     pub icons: MapIcons,
@@ -238,6 +246,8 @@ impl Document {
             border_meshes,
             straits,
             border_trace,
+            // borders: the recorded zone is empty; `--dump --demilitarized` fills this in.
+            demilitarized_override: BTreeSet::new(),
             // names
             icons,
             names,
@@ -278,7 +288,26 @@ impl Document {
     /// that cost, so the window's warning area and a `--dump` report the same
     /// thing. A core table's gap is not here: it is the frame error above.
     pub fn limitations(&self) -> io::Result<Limitations> {
-        Ok(tables::limitations(self.frame()?))
+        let mut out = tables::limitations(self.frame()?);
+        // borders: no format version records the per-state demilitarised flag, so this is a
+        // limitation of the recording rather than a gap in this hour's tables. The dump-only
+        // override substitutes the save's flag, and then the layer is drawn and the line is not
+        // true of the render in front of the reader.
+        if self.demilitarized_override.is_empty() {
+            out.note_format(tables::DEMILITARIZED);
+        }
+        Ok(out)
+    }
+
+    // borders: the demilitarised-zone bucket bank
+    /// This hour's demilitarised zone, for `map::demilitarized` and the border pass.
+    ///
+    /// The recorded set is always empty ([`crate::map::demilitarized::recorded_states`]); the
+    /// `--dump --demilitarized` override is the verification aid that lets the layer be scored.
+    pub fn demilitarized_zone(&self, regions: &Regions) -> io::Result<Zone> {
+        let mut states = demilitarized::recorded_states(self.frame()?);
+        states.extend(self.demilitarized_override.iter().copied());
+        Ok(Zone::new(&self.map, regions, &states))
     }
 
     // names

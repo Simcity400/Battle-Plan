@@ -10,6 +10,8 @@ pub mod camera;
 // counters
 pub mod counter_groups;
 pub mod counters;
+// borders: the demilitarised-zone bucket bank
+pub mod demilitarized;
 pub mod frame;
 pub mod gradient;
 // names

@@ -452,7 +452,15 @@ impl Viewer {
                 textures.width,
                 textures.height,
             )?;
-            scene.set_land_classes(&state.device, &layers.regions)?;
+            // borders: the window has no demilitarised-zone override, so the zone is the
+            // recorded one, which is empty until the recorder carries the flag.
+            let zone = document.demilitarized_zone(&layers.regions)?;
+            scene.set_classes(
+                &state.device,
+                &document.border_meshes,
+                &layers.regions,
+                &zone,
+            )?;
         }
         // weather: the snow and mud grid follows the same rebuild-then-upload
         // rule, keyed on the weather rows rather than the provinces.

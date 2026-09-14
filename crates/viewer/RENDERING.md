@@ -69,6 +69,7 @@ All readers take `&ResolvedLayers` and return owned data; parsers take bytes and
 | Naval counters | TaskForces (province, mission), Ships, Fleets, NavalCombats | |
 | Air bases | AirWings (air_base), ProvinceBuildings, StateBuildings | base level from buildings tables |
 | Orders and fronts | ArmyOrders (path, target_states, order_type) | |
+| Demilitarised-zone border | none: no table records a per-state demilitarised flag | the layer exists (`map/demilitarized.rs`) but draws nothing until the recorder carries it; `--dump --demilitarized <ids>` is the verification override |
 | Snow, mud, ice | WeatherProvinces (snow, water, mud), WeatherRegions, WeatherLimits | drives `SnowMudData` |
 | Day and night | Clock (hour) | `DayNight_Hour_SunDir` from the game hour |
 | Victory points, capitals | Provinces (victory_points), Politics (capital) | |

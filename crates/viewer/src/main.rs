@@ -14,9 +14,9 @@ use map::{
 };
 use replay::{BranchId, Hour, container::SeekResult};
 use serde::{Deserialize, Serialize};
-use std::{ffi::OsString, fs, io, path::PathBuf};
+use std::{collections::BTreeSet, ffi::OsString, fs, io, path::PathBuf};
 
-const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\nDump only: --demilitarized <state-id,...>, a verification aid that substitutes the save's demilitarized=yes flag\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -47,6 +47,12 @@ struct Options {
     // colour
     /// `--postfx off` renders without the engine's colour grading.
     postfx: bool,
+    // borders
+    /// `--dump --demilitarized <ids>`: state ids to treat as demilitarised, substituting the
+    /// save's `demilitarized=yes` flag for the missing recording so `map::demilitarized` can be
+    /// scored against a reference pair. Verification aid, `--dump` only; the window has no
+    /// equivalent.
+    demilitarized: BTreeSet<u32>,
 }
 
 impl Options {
@@ -96,6 +102,14 @@ impl Options {
                         "off" => false,
                         other => return Err(invalid(format!("`{other}` is not `on` or `off`"))),
                     };
+                }
+                // borders
+                Some("--demilitarized") => {
+                    let value = args
+                        .next()
+                        .and_then(|value| value.into_string().ok())
+                        .ok_or_else(|| invalid(USAGE))?;
+                    options.demilitarized = map::demilitarized::parse_states(&value)?;
                 }
                 Some("--exclude-game-ui") => options.exclude_game_ui = true,
                 Some("--exclude") => {
@@ -244,6 +258,13 @@ impl Options {
         }
         if dump != options.dump.is_some() || (dump && options.hour.is_none()) {
             return Err(invalid(USAGE));
+        }
+        // borders: the override substitutes a save's flag for a recording the format does not
+        // carry, so it is a verification aid for scoring one frame, not a viewer setting.
+        if !options.demilitarized.is_empty() && !dump {
+            return Err(invalid(
+                "--demilitarized substitutes a save's demilitarized=yes flag for the missing                  recording and requires --dump",
+            ));
         }
         Ok(options)
     }
@@ -458,6 +479,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             options.allow_unverified,
         )?;
         choose_initial(&mut document, &options)?;
+        // borders: the verification override, before the limitations are printed, so an hour
+        // rendered with it does not also claim the layer was not drawn.
+        document.demilitarized_override = options.demilitarized.clone();
         // An hour the collector had not finished filling still renders; what it
         // could not draw is stated here, one line per degraded table, before
         // anything that could fail on its own.
@@ -497,6 +521,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // counters: bases, labels, counters and combats in priority order.
         let (label_batch, label_report, counter_report) =
             document.overlay_batch(camera, options.size)?;
+        // borders: the demilitarised zone, empty unless --demilitarized substituted the save's
+        // flag for the missing recording.
+        let demilitarized = document.demilitarized_zone(&layers.regions)?;
+        if !demilitarized.is_empty() {
+            println!(
+                "Demilitarised states (verification override, not recorded): {}",
+                demilitarized
+                    .states()
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         let report = render::dump_png(
             &document.assets,
             // political fill + borders
@@ -505,6 +543,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 border_assets: &document.border_assets,
                 border_meshes: &document.border_meshes,
                 straits: &document.straits,
+                // borders
+                demilitarized: &demilitarized,
                 // rivers
                 river_assets: &document.river_assets,
                 river_mesh: &document.river_mesh,
@@ -552,6 +592,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             report.step,
             report.render_seconds * 1000.0
         );
+        // borders
+        if !demilitarized.is_empty() {
+            println!(
+                "Demilitarised-zone border: {} province boundaries highlighted",
+                report.demilitarized_edges
+            );
+        }
         // political fill + borders
         let (filled, distinct) = layers.summary();
         println!(

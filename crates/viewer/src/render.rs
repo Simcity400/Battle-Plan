@@ -18,6 +18,7 @@ use crate::map::{
     // borders
     border_pass::{BorderAssets, StraitVertex},
     borders::BorderMeshes,
+    demilitarized::Zone,
     // political fill
     political::PoliticalLayers,
     // rivers
@@ -40,6 +41,9 @@ pub struct MapLayers<'a> {
     pub border_assets: &'a BorderAssets,
     pub border_meshes: &'a BorderMeshes,
     pub straits: &'a [StraitVertex],
+    /// This hour's demilitarised zone; `map::demilitarized`. Empty unless `--demilitarized` is
+    /// given, because no recorded table carries the flag.
+    pub demilitarized: &'a Zone,
     // rivers
     pub river_assets: &'a RiverAssets,
     pub river_mesh: &'a RiverMesh,
@@ -262,6 +266,9 @@ pub struct DumpReport {
     // trees
     /// Canopy instances the frame drew, over every wrap copy.
     pub tree_instances: u32,
+    // borders
+    /// Province boundaries the demilitarised-zone pass drew.
+    pub demilitarized_edges: usize,
 }
 
 /// Renders one frame headlessly through the same [`Scene`] the window uses.
@@ -310,7 +317,12 @@ pub fn dump_png(
             layers.border_meshes,
             layers.straits,
         )?;
-        scene.set_land_classes(&device, &layers.political.regions)?;
+        scene.set_classes(
+            &device,
+            layers.border_meshes,
+            &layers.political.regions,
+            layers.demilitarized,
+        )?;
         // rivers
         scene.set_rivers(&device, &queue, layers.river_assets, layers.river_mesh)?;
         // trees
@@ -365,6 +377,8 @@ pub fn dump_png(
             icon_pages: scene.icon_page_count(),
             // trees
             tree_instances: scene.tree_instances(),
+            // borders
+            demilitarized_edges: scene.demilitarized_edges(),
         })
     })
 }
