@@ -609,14 +609,14 @@ impl Viewer {
                     animation_time: self.started.elapsed().as_secs_f32(),
                     // colour
                     postfx: self.postfx,
-                    // trees
-                    season: document.tree_season(),
                     // names
                     overlay: Overlay {
                         names: self.placements.as_ref(),
                         layer_alpha: self.fade.as_array(),
                         sprites: Some(&label_batch),
                     },
+                    // trees
+                    season: document.tree_season(),
                 },
             )
             .map_err(|e| e.to_string())?;

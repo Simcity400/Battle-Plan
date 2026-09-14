@@ -519,13 +519,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 animation_time: 0.0,
                 // colour
                 postfx: options.postfx,
-                // trees
-                season: document.tree_season(),
                 overlay: Overlay {
                     names: Some(&placements),
                     layer_alpha: fade.as_array(),
                     sprites: Some(&label_batch),
                 },
+                // trees
+                season: document.tree_season(),
             },
             output,
             (!unverified.is_empty()).then_some(unverified.as_str()),
