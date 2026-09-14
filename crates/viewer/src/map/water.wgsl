@@ -72,6 +72,134 @@
 // 0.502 because `saturate(0.5 + 0.5 * pow(1 - dot * 0.5, 10))` has 0.5 as its
 // floor at normal incidence and only rises toward 1 at grazing angles.
 //
+// ## Which face the engine reaches, read from both sides
+//
+// That check compared this port against the file. What it could not settle is
+// the convention on the *engine's* side: which face and which orientation the
+// engine reaches for a given reflection vector, and whether it rotates or swaps
+// axes for its left-handed world. It does neither, at any of the three places
+// where it could.
+//
+// **The shader.** The cached water pixel shader with refractions and without
+// `LOW_END_GFX` is this pass, expression for expression
+// (`m11_20260909\userdir\shadercache\dx11_win32\ps_5_0\`
+// `0008000077A21000026A5E17.scache:1893-1901`; `...E5A2100001F4D735` and
+// `...0C87AA52` are the same text with two defines reordered, and the other six
+// water shaders in that cache carry `LOW_END_GFX` or `NO_REFRACTIONS`):
+//
+//     float3 vEyeDir = normalize( Input.pos - vCamPos.xyz );
+//     float3 reflection = reflect( vEyeDir, normal );
+//     float3 reflectiveColor = texCUBE( ReflectionCubeMap, reflection ).rgb;
+//
+// No rotation, no swizzle, no gain. `CubemapIntensity` and the `cubeRotation`
+// varying the water vertex shader animates
+// (`vs_5_0\00080000174400004D560E60.scache:428`) are read only on the
+// commented-out `texCUBElod` line above it. `Input.pos` is
+// `float3( VertexIn.position.x, WATER_HEIGHT, VertexIn.position.y )` (that
+// vertex shader, line 418) and `vCamPos` is the world camera, so the reflection
+// is a world vector with `y` up on both sides; the pass's one `.xzy` swap is on
+// the LEAN half-vector three lines earlier and this file already carries it.
+// HLSL's `reflect(i, n)` and WGSL's are the same expression, and the sampler the
+// effect declares (`pdxwater.shader:86-95`: index 8, Linear/Linear/Linear,
+// Clamp, `Type = "Cube"`) is `linear_clamp`.
+//
+// **The upload.** `FUN_142410030`'s cube branch walks the six faces outermost
+// and the mips innermost, recording `(mip, face)` for each subimage;
+// `FUN_1423fc160` turns that pair into the D3D subresource index
+// `face * mipCount + mip`; and `FUN_1423fb4f0` sets `ArraySize` to 6 and the
+// `MiscFlags` dword to 4, `D3D11_RESOURCE_MISC_TEXTURECUBE`, when the loader
+// reports a cube. The file is face-major with `caps2 = 0xfe00`, so face index
+// `f` is the `f`th block in it, which is `D3D11_TEXTURECUBE_FACE`'s own
+// `+X -X +Y -Y +Z -Z`. `map::textures::upload` writes the same six faces to the
+// same six array layers behind a `Cube` view.
+//
+// **And wgpu's sampling is DirectX's on all six faces, measured rather than
+// assumed.** A scratch build replaced this sample with
+// `textureSampleLevel(cube, dir, 0)` for a direction built from the pixel's own
+// screen coordinate, so one frame of open ocean sweeps the whole sphere, and the
+// frame was compared with a CPU lookup using the DirectX face table — `sc`,
+// `tc` and `v` counted from the top row. Mean |GPU - CPU| over the atlantic pan:
+// `+X` 0.005, `-X` 0.007, `+Y` 0.003, `-Y` 0.004, `+Z` 0.011, `-Z` 0.004,
+// against face means that span 0.30 to 0.65. A wrong face or a flipped texcoord
+// could not survive that (`C:\hoi4_scratch\replay_map\cube\orient.py`).
+//
+// ## The six faces, and the cube colour the game's sea implies
+//
+// `reflection.dds` is a photographed overcast sky, 256 squared with nine mips,
+// every face near-grey and only slightly blue (`cube\faces.py`):
+//
+// | face | mip-0 mean | B/R |
+// |---|---|---|
+// | `+X` | 0.325 0.350 0.392 | 1.204 |
+// | `-X` | 0.380 0.403 0.440 | 1.156 |
+// | `+Y` | 0.355 0.374 0.410 | 1.155 |
+// | `-Y` | 0.390 0.414 0.440 | 1.128 |
+// | `+Z` | 0.630 0.649 0.670 | 1.062 |
+// | `-Z` | 0.296 0.317 0.353 | 1.191 |
+//
+// `+Y` and `-Y` carry the radial pole smear an equirectangular-to-cube
+// conversion leaves at the zenith and the nadir, which is one more way of saying
+// the cube's own up axis is `y`, as the engine's is; `+Z` is the face the sun
+// blows out. `reflection_land_unit.dds`, the only other cube under
+// `map/terrain`, is a flat 0.127 0.126 0.120 on all six.
+//
+// Everything below `texCUBE` in this pass is affine in the sample — the fresnel
+// mix, the gradient borders, the 0.2 offset, the secondary mask, `ComposeLight`,
+// the fog and `DayNightWithBlend` are all lerps and scales, and the open sea is
+// fully opaque because `waterShore` is 0 at heightmap byte 89 — so what the
+// pass writes is `M . cube + b` for a per-pixel 3x3 `M`. Four scratch builds
+// with the cube forced to black, red, green and blue measure `b` and the columns
+// of `M`; a fifth with white checks the model, and its residual is 0.0000 by day
+// and 0.0025 at night. Inverting that against the game's own frame carried back
+// through the grade (`scene\chain.py`, the winter LUT at exposure 1.6, divided
+// by `SCENE_BRIGHTNESS`) gives the cube colour the game demands with every other
+// term in the pass held at what it already computes. Medians over open sea, in
+// the units of a `--postfx off` dump (`cube\probe.py`, `cube\implied.py`):
+//
+// | frame | this pass writes | the game wants | the cube this port samples | the cube the game implies | its B/R |
+// |---|---|---|---|---|---|
+// | day `reference/03.md`, height 303 | 0.243 0.278 0.337 | 0.245 0.320 0.481 | 0.464 0.475 0.490 | 0.473 0.582 0.853 | 1.80 |
+// | night `reference/02.md`, height 310 | 0.075 0.133 0.239 | 0.089 0.159 0.311 | 0.458 0.470 0.491 | 0.526 0.573 0.801 | 1.52 |
+// | `pairD_pan_med`, height 164 | 0.243 0.282 0.341 | 0.250 0.276 0.317 | 0.426 0.443 0.470 | 0.449 0.421 0.406 | 0.90 |
+// | `pairD_pan_atlantic`, height 164 | 0.220 0.247 0.298 | 0.216 0.215 0.234 | 0.424 0.439 0.462 | 0.412 0.362 0.312 | 0.76 |
+// | `pairE` at height 164 | 0.255 0.290 0.353 | 0.291 0.358 0.517 | 0.515 0.525 0.540 | 0.605 0.701 0.941 | 1.56 |
+//
+// The port's own sample, solved out of the same four renders, is 0.42 to 0.52 on
+// every frame and reproduces the 0.463 0.475 0.496 the per-term probe above read
+// at the day camera by a completely different route, which is the check that the
+// affine model really is this pass.
+//
+// **There is no such cube.** The implied colour's blue moves by 3.0x between the
+// atlantic pan and the `pairE` camera and its blue-over-red ratio from 0.76 to
+// 1.80, where the whole cube spans 1.06 to 1.20: two of the five frames want a
+// cube whose blue-over-red is below every face's and three want it far above
+// the most saturated. Substituting whole faces says the same in the other
+// direction — with `+Y` the game-over-ours ratio is 1.22 1.33 1.57 on the day
+// frame and 1.16 1.03 0.88 on the atlantic pan, and with `+Z`, the brightest
+// face and so the largest move any face can make, it is 0.80 0.92 1.17 and
+// 0.73 0.67 0.63. No constant is right on both. The two low pans want this
+// pass's sea slightly *darker* and the three other framings want it brighter and
+// much bluer, which is a camera-dependent term and not a texture lookup.
+//
+// The land was checked at the same time and has no cube term to get wrong. The
+// cached terrain pixel shader's `PDX_IMPROVED_BLINN_PHONG` branch is
+// `float3 reflectiveColor = FAKE_CUBEMAP_COLOR;` with its `texCUBElod(
+// EnvironmentMap, ... ) * CubemapIntensity` commented out on the same line
+// (`ps_5_0\00080000F7A2100080E174D8.scache:1944`), and `constants.fxh:96`
+// defines that constant as `float3(0.0f, 0.0f, 0.0f)`. So `terrain.wgsl`'s black
+// `fresnel_glossy` term is the engine's own rather than an assumption, and the
+// only two cube samples on the map are this one and `river.wgsl`'s.
+//
+// So the reading that the sea's residual is "concentrated in the reflection
+// term" is **withdrawn**, and with it the last candidate this file owns. What
+// the per-texture sweep in `map::textures` really measured is that the cube is
+// this pass's largest single lever — 0.502 of the fresnel mix, and 58 % of
+// the blue and 74 % of the red of what the pass writes at open sea by day —
+// so any whole-sea correction lands on it whatever its cause. The cube is the
+// file's, at the file's colour space, sampled on the face the engine samples,
+// with the orientation the engine uses. Nothing in this pass's cube path is left
+// to change.
+//
 // The two underwater textures were cross-checked the same way: the shader's
 // `waterColorTint` matches a CPU decode of `colormap_water_0.dds` at the probed
 // `uv2` to 0.008 0.010 0.013 over twelve open-sea points — nearest-neighbour on
@@ -89,7 +217,10 @@
 // refraction adds only 0.056 0.081 0.111 on top. Inverting the day frame's
 // grade — the CPU mirror reproduces this viewer's own graded frame to 0.50 of
 // 255, so the inverse is trustworthy — the game's open sea implies a scene of
-// 0.067 0.119 0.195. At `SCENE_BRIGHTNESS = 0.32` the cube term alone is
+// 0.067 0.119 0.195 — read at `SCENE_BRIGHTNESS = 0.32` and against the `green`
+// LUT, before the snow rule found the winter volume; the table below re-takes it
+// at the grading the frames really use. At `SCENE_BRIGHTNESS = 0.32` the cube
+// term alone is
 // 0.061 0.062 0.065, which is 91 % of the game's *whole* red and 33 % of its
 // blue, so reaching the game's daylight sea by changing the refraction would
 // need it to be 0.05 0.33 1.00: more saturated than any texture in the water
@@ -245,7 +376,13 @@
 // Scripts for all of the above: `C:\hoi4_scratch\replay_map\sea\`
 // (`probe.sh`, `run_probes.py`, `implied_sea.py`, `gainfit.py`, `jointfit.py`,
 // `powersplit.py`, `structure_sea.py`, `texcheck.py`, `fitcoast4.py`,
-// `pairE_compare.py`, `pairE_land.py`, `shoreband2.py`, `score.sh`, `cmp.sh`).
+// `pairE_compare.py`, `pairE_land.py`, `shoreband2.py`, `score.sh`, `cmp.sh`)
+// and, for the cube sections, `C:\hoi4_scratch\replay_map\cube\`
+// (`faces.py` decodes the six faces, `probe.py` builds and renders the four
+// forced-cube variants, `implied.py` inverts the pass for the colour the game
+// demands, `orient.py` checks the sampling convention, `render.py` and
+// `layers.py` and `score.py` re-take the frames, the per-layer table and the
+// scores).
 
 /// `SHADOW_WEIGHT_WATER` (`constants.fxh:173`): open water keeps half its sun
 /// even under a full shadow.

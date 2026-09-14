@@ -85,6 +85,28 @@
 // pale ribbon at all, but it cannot invent the missing factor.
 
 
+// # The reflection cube, re-derived from the engine's own cached shader
+//
+// The sea's brightness search reopened the cube term, so this pass's copy of it was checked against
+// the cached river pixel shader rather than against `river.shader` alone.
+// `m11_20260909\userdir\shadercache\dx11_win32\ps_5_0\0008000063A2100000975206.scache:1909-1915`
+// is
+//
+//     float3 vEyeDir = normalize( Input.vPrePos_Fade.xyz - vCamPos.xyz );
+//     float3 reflection = reflect( vEyeDir, normal );
+//     float3 reflectiveColor = texCUBE( ReflectionCubeMap, reflection ).rgb * 1.3;
+//
+// which is `RIVER_REFLECTION_GAIN` and the `reflect` line below unchanged, on the same world-space
+// vector, with the same `fresnelBias` of 0.5 under it. No rotation and no swizzle, as in the water
+// pass. `river.shader:139-148` gives `ReflectionCubeMap` sampler index 14 with
+// Linear/Linear/Linear, Clamp and `Type = "Cube"`, which the cached shader declares at `register
+// (t14)` and which is `linear_clamp` here. The file this port binds there is the
+// `map/terrain/reflection.dds` the water pass reads: `FUN_141248490` loads exactly two cubes for
+// the map, that one and `reflection_land_unit.dds`, and the second is a flat 0.127 grey on all six
+// faces that no river frame shows. `water.wgsl` carries the measurement that the face order and the
+// per-face orientation are DirectX's on both sides, on all six faces, and the six face colours;
+// nothing in that is specific to the sea, so it holds here.
+
 /// `SHADOW_WEIGHT_RIVER` (`constants.fxh:174`), the lowest of the map's five receiver weights:
 /// a fully shadowed river keeps 0.6 of its sun.
 const SHADOW_WEIGHT_RIVER: f32 = 0.4;
