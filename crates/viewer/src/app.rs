@@ -54,6 +54,13 @@ pub struct Viewer {
     political: PoliticalCache,
     /// Cleared with the scene: the border geometry has to be uploaded into a new one.
     borders_uploaded: bool,
+    // close zoom
+    /// Cleared with the scene: the sprawl, the rails and the bridges are static
+    /// content and go in once.
+    close_zoom_uploaded: bool,
+    /// The hour whose map buildings and unit models are in the scene; both come
+    /// from recorded tables and are rewritten when it changes.
+    close_zoom_hour: Option<(replay::BranchId, i32)>,
     // names
     placements: Option<Placements>,
     placements_at: Option<(replay::BranchId, i32, bool)>,
@@ -103,6 +110,9 @@ impl Viewer {
             // political fill
             political: PoliticalCache::new(),
             borders_uploaded: false,
+            // close zoom
+            close_zoom_uploaded: false,
+            close_zoom_hour: None,
             // names
             placements: None,
             placements_at: None,
@@ -151,6 +161,9 @@ impl Viewer {
         // political fill
         self.political = PoliticalCache::new();
         self.borders_uploaded = false;
+        // close zoom
+        self.close_zoom_uploaded = false;
+        self.close_zoom_hour = None;
         // weather
         self.weather = WeatherCache::new();
         self.generation = 0;
@@ -442,6 +455,52 @@ impl Viewer {
             )?;
             self.borders_uploaded = true;
         }
+        // close zoom: the sprawl, the rails and the bridges are static content,
+        // so they go into a fresh scene once; the map buildings and the unit
+        // models come from recorded tables and follow the hour.
+        //
+        // The river and canopy geometry goes in here too. Both were uploaded
+        // only on the `--dump` path, so the window drew neither, which
+        // contradicts `RENDERING.md` section 1: the headless path renders
+        // through the same pipeline as the window. They are static content like
+        // the sprawl and take the same one-time upload.
+        if !self.close_zoom_uploaded {
+            scene.set_rivers(
+                &state.device,
+                &state.queue,
+                &document.river_assets,
+                &document.river_mesh,
+            )?;
+            scene.set_trees(
+                &state.device,
+                &state.queue,
+                &document.tree_assets,
+                document.tree_geometry.clone(),
+                &document.tree_field,
+            )?;
+            scene.set_sprawl(&state.device, &state.queue, &document.sprawl)?;
+            scene.set_railways(
+                &state.device,
+                &state.queue,
+                &document.rail_assets,
+                &document.rail_mesh,
+            )?;
+            scene.set_bridges(&state.device, &state.queue, &document.bridges)?;
+            self.close_zoom_uploaded = true;
+        }
+        let hour = (document.playback.branch(), document.playback.hour());
+        if self.close_zoom_hour != Some(hour) {
+            let (buildings, _) = document.map_building_field()?;
+            scene.set_map_buildings(
+                &state.device,
+                &state.queue,
+                &document.map_buildings,
+                buildings,
+            )?;
+            let (units, _) = document.unit_model_field()?;
+            scene.set_unit_models(&state.device, &state.queue, &document.unit_models, units)?;
+            self.close_zoom_hour = Some(hour);
+        }
         if let (true, Some(layers)) = (rebuilt, self.political.layers()) {
             let textures = &layers.textures;
             scene.set_gradient_textures(
@@ -503,6 +562,9 @@ impl Viewer {
             // political fill: a fresh scene holds no uploaded layers or geometry.
             self.political = PoliticalCache::new();
             self.borders_uploaded = false;
+            // close zoom
+            self.close_zoom_uploaded = false;
+            self.close_zoom_hour = None;
             // weather
             self.weather = WeatherCache::new();
         }
