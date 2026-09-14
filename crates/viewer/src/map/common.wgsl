@@ -411,6 +411,41 @@ fn screen_coord(clip: vec4<f32>) -> vec4<f32> {
 // (`constants.fxh:160-162`) remain a dead path: `standardfuncsgfx.fxh:189`
 // defines it, `fow.fxh` does not call it, and no map shader in the reference
 // run's cache calls it either.
+//
+// # The fog measures `SCENE_BRIGHTNESS`, and says it should be 1 (2026-09-15)
+//
+// `ApplyFOW` is the first thing in the whole pipeline that puts an **absolute**
+// colour into the scene. Every other pass multiplies an albedo by a light, so a
+// constant scale on the scene is invisible to it: halve the scene and the
+// albedo fit doubles and the frame is the same. The fog cannot do that. Its
+// colour is a fixed `lerp` between two literals, so whatever `map::post`'s
+// `SCENE_BRIGHTNESS` does to the scene it does to the fog as well, and the game
+// has no such factor at all.
+//
+// That makes the fog an independent measurement of the constant, on the one
+// frame that draws fog. Scaling *only* the fog colour by `k` and scoring
+// `reference/05.md`:
+//
+// | `k` | mae | delta E | SSIM L0 |
+// |---|---|---|---|
+// | 1.0, the shipped law | 18.2596 | 11.8448 | 0.6804 |
+// | 1.5 | 17.8087 | 11.6950 | 0.6826 |
+// | 2.0 | 17.4641 | 11.6006 | 0.6840 |
+// | **2.7** | **17.1801** | **11.5549** | **0.6847** |
+// | 4.0 | 17.1971 | 11.6725 | 0.6836 |
+//
+// The best of them is 2.7, and `1 / SCENE_BRIGHTNESS` is `1 / 0.37` = 2.70. The
+// unseen-to-seen land ratio this frame wants is the same story: the game's is
+// 1.554, the port's without fog is 1.141, with the shipped law 1.136, and with
+// the fog colour undivided by `SCENE_BRIGHTNESS` 1.263 --- 43 % of the gap, from
+// the fog alone, with the seen land bit-identical throughout.
+//
+// **Nothing here is scaled.** The two literals are the game's and stay the
+// game's; a 2.7 in this file would be a second fudge stacked on the first. What
+// the measurement is worth is the direction it points: it is evidence that
+// `SCENE_BRIGHTNESS` is compensating for something upstream of the post-effect
+// rather than being a constant the engine has, because the one pass that can
+// see it says the scene should not be scaled at all.
 
 const HEIGHT_FOG_END: f32 = 15.0;
 const HEIGHT_FOG_START: f32 = 12.0;
