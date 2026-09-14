@@ -9,6 +9,7 @@ pub mod gui;
 pub mod image;
 pub mod localisation;
 pub mod map;
+pub mod mesh;
 pub mod parser;
 pub mod positions;
 pub mod regions;
