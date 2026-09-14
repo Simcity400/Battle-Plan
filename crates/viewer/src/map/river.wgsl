@@ -7,9 +7,12 @@
 // Deviations from the game shader, each with the line it replaces:
 //
 // * `LOW_END_GFX` is off; the `river_low_gfx` effect is not ported.
-// * `GetShadowScaled( SHADOW_WEIGHT_RIVER, ... )` is 1: the reference profile is `shadows=no` and
-//   there is no shadow map to sample (R1 section 3.4). `SHADOW_WEIGHT_RIVER = 0.4` would scale a
-//   shadow value of 1 back to 1, so the term is left out rather than written as `* 1`.
+// * `GetShadowScaled( SHADOW_WEIGHT_RIVER, ... )` is 1. Above camera height 400 that is exact:
+//   `ShadowFadeFactor` is 0 there and the saturate inside `GetShadowScaled` pins the term to 1
+//   whatever the buffer holds. Below it the engine runs a shadow pass this port has not got, worth
+//   at most `1 - SHADOW_WEIGHT_RIVER = 0.6` on the sun of an occluded pixel; `terrain.wgsl`'s
+//   header carries what the engine binds and the measurement that rules the term out as the
+//   scene's brightness gap.
 // * `CalculatePointLights` is dropped with its two maps: the lights come from combats and effects,
 //   not from the map, and the replay records none (R1 section 3.4, `RENDERING.md` section 5).
 // * `ProvinceSecondaryColorMap` (sampler 6) is declared by the game shader and never read, and the
@@ -62,9 +65,11 @@
 // takes a blend of 0.68 and keeps most of its colour where the sea beside it is fully desaturated;
 // that difference is why the game's rivers read as *coloured* lines over a grey-blue sea.
 //
-// `SHADOW_WEIGHT_RIVER` is not a candidate: `GetShadowScaled` (`shadow.fxh:44`) returns
-// `(1 - s) + s * shadowValue`, which is 1 for any weight when the shadow value is 1, and the
-// reference profile has no caster.
+// `SHADOW_WEIGHT_RIVER` is not a candidate, and this is now measured rather than assumed:
+// `GetShadowScaled` (`shadow.fxh:44`) returns `(1 - s) + s * saturate( shadowValue )`, so it cannot
+// scale the sun below `1 - s`, and the factor the game's scene demands on our sun term is 0.17 on
+// land and 0.41 on water — under both floors, and the same at camera heights where the engine draws
+// no shadows at all. `terrain.wgsl`'s header has the tables.
 //
 // What is left is brightness, not hue. Solving the graded game pixel back through the post chain —
 // which the CPU mirror reproduces to within a byte, with the adapted luminance pinned by the

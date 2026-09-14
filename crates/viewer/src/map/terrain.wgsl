@@ -141,6 +141,107 @@
 // terrain effect, its defines, its constants, its vertex stage and its constant
 // buffers are all now accounted for, so the remaining factor of four has to be
 // in an input to the pass rather than in the pass itself.
+//
+// ## The shadow term is that input, and it is not the gap either (2026-09-14)
+//
+// The one input the pass reads that this port never renders is `ShadowMap`, and
+// every lit pass scales its sun term by it:
+// `fShadowTerm = max( GetShadowScaled( SHADOW_WEIGHT_TERRAIN, Input.vScreenCoord,
+// ShadowMap ), 0.1 )`, where `GetShadowScaled` (`shadow.fxh:44`) is
+// `(1 - w) + w * saturate( ShadowMap.r + (1 - ShadowFadeFactor) )` with weights
+// terrain 0.7, tree 0.7, border 0.7, water 0.5, river 0.4
+// (`constants.fxh:170-175`). If that buffer sampled as 0 the sun would be
+// scaled by `1 - w`, which is 0.3 here and 0.5 on the water — close enough to
+// the measured 0.24 and 0.41 above, and with the same land/sea split, to be
+// worth settling. It is settled, and the answer is no.
+//
+// **What the engine binds.** `ShadowMap` is not a depth map at this point in
+// the frame: it is a backbuffer-sized RGBA target, `CWrapWorldShadowMap+0x1d8`,
+// bound at `t12` for the terrain (`FUN_141264d30`, main branch), `t15` for the
+// water and the river and `t8` for the trees, holding `(shadow, FogColorFactor,
+// FogAlphaFactor, 1)` — the same texture and screen coordinate serve
+// `GetShadowScaled` through `.r` and `ApplyFOW` through `.g` and `.b`. The
+// `terrainunlit` and `treeunlit` effects write it (`pdxmap.shader:457-470`,
+// `tree.shader:425-445`, both compiled in the reference run's cache), sampling
+// the real 2048-square depth map at `+0x1d0` through `CalculateShadow`, and two
+// `shadowblur` passes blur it in place. `FUN_140b481a0` gates all of that on
+// `mapRenderingOptions.draw_shadows` — the byte at `settings+0x178+0x13`, which
+// `FUN_1419a3970` ties to the `"shadows_checkbox"` widget — and on
+// `vCamPos.y < DRAW_SHADOWS_CUTOFF`, **not** on `graphics.shadows`, whose only
+// located effect is the hardware check in `FUN_142224600` clearing the device
+// flag `renderer+0xf0` through `FUN_142214e00`; no function on the map path
+// reads that flag. The reference profile has `draw_shadows=yes`. So the
+// earlier reading of this port — `shadows=no`, therefore nothing casts,
+// therefore the buffer is the all-ones clear — was wrong in its premise: below
+// height 400 the game really does draw cast shadows that this viewer does not,
+// and `.r` is 1 only where the sun reaches. (The clear value is
+// `DAT_143098838 = (1, 0, 0, 1)`, so where nothing is drawn the term is 1 and
+// the fog of war is absent, which is what the fallback would have been.)
+//
+// **The prediction.** Our scene is affine in the shadow term, since
+// `ComposeLightSnow`, the border-light lerp, `ApplyFOW`, the distance fog and
+// the day-night blend are all affine in the pass's colour. Rendering the pairE
+// frame twice, once stock and once with every lit pass's `fShadowTerm` forced
+// to 0, splits each layer into an ambient part `A` and a sun part `S`, and the
+// hypothesis predicts `A + (1 - w) * S`. Medians over the same masks as the
+// table above:
+//
+// | surface | game | ours | predicted | game / ours | game / predicted |
+// |---|---|---|---|---|---|
+// | bare terrain | 0.060 0.076 0.052 | 0.255 0.310 0.165 | 0.094 0.115 0.073 | 0.24 0.25 0.32 | 0.64 0.66 0.71 |
+// | under trees | 0.089 0.104 0.097 | 0.251 0.306 0.184 | 0.093 0.117 0.084 | 0.35 0.34 0.53 | 0.95 0.89 1.15 |
+// | under cities | 0.119 0.129 0.127 | 0.286 0.322 0.216 | 0.111 0.130 0.100 | 0.42 0.40 0.59 | 1.08 0.99 1.27 |
+// | open water | 0.103 0.127 0.185 | 0.251 0.286 0.345 | 0.133 0.153 0.198 | 0.41 0.44 0.54 | 0.78 0.83 0.94 |
+// | whole frame | 0.072 0.089 0.068 | 0.251 0.290 0.192 | 0.088 0.108 0.088 | 0.29 0.31 0.35 | 0.81 0.83 0.77 |
+//
+// **The measurement.** The same split inverts: the factor the game's scene
+// actually demands on our sun term is `k = (game - A) / S`, and it is flat
+// across the three channels, which is itself the news — the gap is a scalar on
+// the sun and not a hue error. Over the 809 k bare-terrain pixels `k` is
+// **0.164 0.175 0.145**, and over open water **0.380 0.405 0.462**. The
+// hypothesis cannot reach either: `(1 - w) + w * saturate(...)` is bounded below
+// by `1 - w`, so a weight-0.7 pass can never scale the sun below 0.3 and a
+// weight-0.5 pass never below 0.5, whatever the buffer holds and whatever
+// `ShadowFadeFactor` is. The land wants 0.17 where 0.30 is the floor and the sea
+// wants 0.41 where 0.50 is.
+//
+// **And the height series closes it.** `ShadowFadeFactor` is
+// `max(0, (400 - camY) / 50)` (`FUN_140ff3fc0`, byte `0x11c`; `map::frame`
+// carries it), so above height 400 the saturate inside `GetShadowScaled` pins
+// the term to exactly 1 and `FUN_140b481a0` does not run the shadow pass at all.
+// The demanded `k` over the four fitted pairE fill-off framings, land and water
+// masked by our own `--no-water` render:
+//
+// | height | land `k` | water `k` |
+// |---|---|---|
+// | 50.178 (`hmin`) | 0.156 0.169 0.127 | 0.420 0.419 0.359 |
+// | 163.934 (`h200`) | 0.178 0.186 0.168 | 0.389 0.408 0.454 |
+// | 627.404 (`h400`) | 0.195 0.166 0.110 | 0.324 0.313 0.304 |
+// | 1589.602 (`h700`) | 0.315 0.256 0.149 | 0.270 0.282 0.275 |
+//
+// The two lower framings are below the cutoff, where the game draws shadows and
+// this port does not; the two upper ones are far above it, where the game draws
+// none either and the port is exact in this respect. The demanded factor does
+// not step at the cutoff — 0.13 to 0.19 on land below it against 0.11 to 0.32
+// above it, where the hypothesis needs exactly 1 — and its per-pixel
+// distribution does not change shape across it either. Green `k` over land, at
+// the 10th, 50th and 90th percentiles: 0.028, 0.169 and 0.385 at height 50 and
+// 0.059, 0.186 and 0.337 at 164, against -0.013, 0.166 and 0.370 at 627 and
+// 0.080, 0.256 and 0.482 at 1590. The shadowed low tail that the two lower
+// frames should carry and the two upper ones should not is absent. Scripts:
+// `C:\hoi4_scratch\replay_map\shadow\` (`probe.py` forces the term, `render.py`
+// and `heights.py` render, `ratios.py`, `predict.py`, `fitk.py` and `spread.py`
+// measure).
+//
+// So the shadow term is closed as a candidate for the brightness gap, and the
+// sun-term scalar it would have to be is now measured: **0.17 on land and 0.41
+// on water, flat in colour, and within half of itself over a thirtyfold change
+// of camera height with no step at the cutoff**. What is still owed to
+// the port, and is a separate and much smaller thing, is the shadow pass itself
+// below height 400: a 2048-square depth render of the terrain, the trees and the
+// meshes from the sun, the screen-space `terrainunlit`/`treeunlit` pre-pass and
+// its two blurs. Its whole range is a factor between 0.3 and 1 on the sun of the
+// pixels a caster occludes, so it cannot move a frame by four.
 
 @group(1) @binding(0) var terrain_diffuse: texture_2d<f32>;
 @group(1) @binding(1) var height_normal: texture_2d<f32>;
@@ -344,9 +445,12 @@ fn terrain_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     properties.specular_color = metalness_to_spec(metalness, color, spec_remapped);
     properties.non_linear_glossiness = get_non_linear_glossiness(glossiness);
 
-    // `shadows=no` leaves nothing to cast and the screen-space shadow buffer the
-    // `terrainunlit` pre-pass would fill is all ones, so `GetShadowScaled` and
-    // the `max(..., 0.1)` around it collapse to 1 (R1 section 3.4).
+    // `max( GetShadowScaled( SHADOW_WEIGHT_TERRAIN, Input.vScreenCoord,
+    // ShadowMap ), 0.1 )`. Exact above camera height 400, where
+    // `ShadowFadeFactor` is 0 and the saturate inside `GetShadowScaled` pins the
+    // term to 1; below it this is the one input the pass is missing, because the
+    // engine really does run its shadow pass there. The header measures what
+    // that costs and rules it out as the scene's brightness gap.
     let shadow_term = 1.0;
     var light = calculate_sun_light(properties, shadow_term, calculate_sun_direction(input.prepos));
     // No point lights: they come from combats and effects, not from the map
@@ -457,7 +561,8 @@ fn underwater_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     properties.specular_color = globals.frame.sun_diffuse_intensity.rgb * 0.1;
     properties.non_linear_glossiness = get_non_linear_glossiness(glossiness);
 
-    // Same shadow reasoning as the lit pass, without the 0.1 floor.
+    // `GetShadowScaled( SHADOW_WEIGHT_TERRAIN, ... )` without the lit pass's
+    // 0.1 floor; the same shadow finding covers it (see the header).
     let light = calculate_sun_light_phong(properties, 1.0, calculate_sun_direction(input.prepos));
     let lit = compose_light(properties, light.diffuse, light.specular);
     return vec4<f32>(mix(water_color_tint, lit, water_alpha), 1.0);

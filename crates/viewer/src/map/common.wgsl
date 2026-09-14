@@ -257,9 +257,23 @@ fn apply_distance_fog(color: vec3<f32>, pos: vec3<f32>) -> vec3<f32> {
 // ----------------------------------------------------------------- fow.fxh
 /// `ApplyFOW` with the factors the `terrainunlit` pre-pass would have written.
 ///
-/// The viewer is omniscient (`PLAN.md` section 2), so it does not run that
-/// pre-pass and both factors are zero, which makes this the identity. The port
+/// The engine's three-argument overload reads them from the same screen-space
+/// buffer, and with the same projective screen coordinate, that
+/// `GetShadowScaled` takes its shadow from: `FogValues.y` is `FogColorFactor`
+/// and `FogValues.z` is `FogAlphaFactor`, while `.r` is the shadow
+/// (`terrain.wgsl`'s header sets out what the engine binds there). The viewer is
+/// omniscient (`PLAN.md` section 2), and both of the engine's own routes to that
+/// leave the alpha at zero: `GetFogFactors` multiplies it by `GetIntelFactor`,
+/// the intel map's alpha, which is zero for a viewer that sees everything, and
+/// by `FOWFadeFactor`, which `FUN_140ff3fc0` writes as a literal zero unless the
+/// map mode is one of `{0, 2, 6, 7, 11}` with the user's fog-of-war toggle on.
+/// A zero alpha makes this the identity whatever the colour factor is. The port
 /// is kept so the FOW pass only has to supply the factors.
+///
+/// `GetFoW` and its `FOW_MAX`, `FOW_CAMERA_MIN` and `FOW_CAMERA_MAX`
+/// (`constants.fxh:160-162`) are a different, dead path: the reference run's
+/// shader cache carries the definition in every map pixel shader and a call in
+/// none of them.
 fn apply_fow(color: vec3<f32>, color_factor: f32, alpha_factor: f32) -> vec3<f32> {
     let fog_color = mix(vec3<f32>(0.08, 0.08, 0.1), vec3<f32>(0.98, 0.93, 0.93), color_factor);
     return mix(color, fog_color, alpha_factor);

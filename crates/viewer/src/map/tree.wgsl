@@ -7,11 +7,17 @@
 //
 // Dropped, with the reason:
 //
-// * `ShadowMap`. `shadows=no` leaves nothing to cast, the screen-space buffer
-//   the `treeunlit` pre-pass would fill is all ones and `ShadowFadeFactor` is 1
-//   at the reference height, so `GetShadowScaled(SHADOW_WEIGHT_TREE, ...)`
-//   collapses to 1 (R3 section 2.4). `fShadowTerm` is the literal 1.0 here, as
-//   it is in the terrain and river ports.
+// * `ShadowMap`, and its reason has been corrected. `graphics.shadows=no` is
+//   not what gates the map's shadow pass — `mapRenderingOptions.draw_shadows`
+//   is, the reference profile has it on, and below camera height 400 the engine
+//   really does draw the `treeunlit` pre-pass this port lacks, so the buffer is
+//   not the all-ones clear there and the canopy the game draws shadows itself.
+//   Above 400 the term is exactly 1, because `ShadowFadeFactor` is 0 and the
+//   saturate inside `GetShadowScaled` takes over. `fShadowTerm` is the literal
+//   1.0 here, as it is in the terrain and river ports, and `terrain.wgsl`'s
+//   header measures what that costs: nothing that can explain the scene's
+//   brightness gap, since `GetShadowScaled(SHADOW_WEIGHT_TREE, ...)` cannot
+//   scale the sun below 0.3 and the frame demands 0.17.
 // * `CalculatePointLights`. Point lights come from combats and effects, which
 //   no recorded table carries and which neither reference frame has
 //   (R3 section 2.4).

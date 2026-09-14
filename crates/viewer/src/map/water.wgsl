@@ -467,7 +467,12 @@ fn water_main(input: WaterVertex) -> @location(0) vec4<f32> {
     properties.specular_color = vec3<f32>(specular_intensity);
     properties.non_linear_glossiness = get_non_linear_glossiness(glossiness);
 
-    // Same shadow reasoning as the terrain pass (R1 section 3.4).
+    // `GetShadowScaled( SHADOW_WEIGHT_WATER, vShadowCoord, ShadowMap )`, where
+    // `vShadowCoord.xz` is the screen coordinate warped by the refraction
+    // distortion. `terrain.wgsl`'s header settles what the engine binds there
+    // and measures the term: exact above camera height 400, and below it a
+    // shadow pass this port has not got, bounded by `1 - SHADOW_WEIGHT_WATER`
+    // of 0.5 while the sea's own gap demands 0.41.
     // The `water` effect declares no defines either, so it is the Phong branch.
     let light = calculate_sun_light_phong(properties, 1.0, sun_dir_water);
     var out = compose_light(properties, light.diffuse, light.specular);
