@@ -40,10 +40,14 @@
 // enough on the CPU to reproduce this viewer's own graded output to within a
 // byte, and both reference frames have their adapted luminance pinned by the
 // `hdr_*_adjustment` clamps, so the scene level the game's pixels imply can be
-// solved for rather than guessed. At `EXPOSURE_SCALE = 0.32` the land solves to
-// about 1.0x of what this viewer draws, and the open sea to 1.20 1.34 1.64 by
-// day and 1.37 1.38 1.55 at night — a real water-versus-land imbalance, not a
-// global exposure one, and the same 1.6x the river pass measures.
+// solved for rather than guessed. The cleanest frame for it is hour 60826338,
+// which shares `(hour mod 24)` with the night pair's screenshot and so has the
+// same sun, moon and terminator: one frame, one exposure, sea on both sides of
+// the terminator. At `EXPOSURE_SCALE = 0.32` the land there solves to 0.96x to
+// 1.0x of what this viewer draws, the open sea on the lit side to 1.20 1.34
+// 1.64 and the open sea on the dark side to 1.37 1.38 1.55 — a real
+// water-versus-land imbalance, not a global exposure one, and the same 1.6x the
+// river pass measures at the same camera.
 //
 // Solved backwards through this shader, the game's sea wants
 // `refractiveColor * (1 - fresnel) + reflectiveColor * fresnel` to be
