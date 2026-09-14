@@ -39,6 +39,8 @@ pub mod text;
 pub mod textures;
 // trees
 pub mod trees;
+// close zoom
+pub mod unit_models;
 pub mod water;
 // weather
 pub mod weather;

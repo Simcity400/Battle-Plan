@@ -496,6 +496,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let snow_mud = document.snow_mud()?;
         // close zoom
         let (map_building_field, building_summary) = document.map_building_field()?;
+        let (unit_model_field, unit_fallbacks) = document.unit_model_field()?;
         for warning in document.warnings.iter().chain(layers.warnings()) {
             eprintln!("Warning: {warning}");
         }
@@ -560,6 +561,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 rail_assets: &document.rail_assets,
                 rail_mesh: &document.rail_mesh,
                 bridges: &document.bridges,
+                unit_models: &document.unit_models,
+                unit_model_field: &unit_model_field,
                 // trees
                 tree_assets: &document.tree_assets,
                 tree_geometry: &document.tree_geometry,
@@ -713,6 +716,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             map::railways::railway_alpha(camera.height),
             camera.height,
             document.rail_build.as_secs_f64() * 1000.0
+        );
+        println!(
+            "Unit models: {} stacks with their tag's own infantry entity, {} with the generic one, \
+             {} with no Standstill anchor; {} drawn at height {:.3} (cutoff {}); generic tags: {}",
+            unit_fallbacks.tagged,
+            unit_fallbacks.generic,
+            unit_fallbacks.unanchored,
+            report.unit_models_drawn,
+            camera.height,
+            map::unit_models::UNIT_CUTOFF,
+            if unit_fallbacks.generic_tags.is_empty() {
+                "none".to_owned()
+            } else {
+                unit_fallbacks.generic_tags.join(" ")
+            }
         );
         println!(
             "Railway bridges: {} placed where a curve crosses water, {} meshes",

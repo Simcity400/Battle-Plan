@@ -36,6 +36,7 @@ use crate::map::trees::{self, TreeAssets, TreeField, TreeGeometry, TreeImage};
 use crate::map::map_buildings::MapBuildingAssets;
 use crate::map::railways::{self as rail_layer, Bridges, RailAssets, RailMesh};
 use crate::map::sprawl::{self, Sprawl};
+use crate::map::unit_models::{Fallbacks, UnitModelAssets};
 // names
 use crate::map::{
     camera::Camera,
@@ -117,6 +118,9 @@ pub struct Document {
     pub rail_build: Duration,
     /// The railway bridges, which are meshes rather than strip.
     pub bridges: Bridges,
+    /// The infantry entities; the placed figures are per hour and come from
+    /// [`Document::unit_model_field`].
+    pub unit_models: UnitModelAssets,
 }
 
 impl Document {
@@ -274,6 +278,11 @@ impl Document {
         let rail_build = started.elapsed();
         let rail_assets = RailAssets::load(&content.layers)?;
         let bridges = Bridges::load(&content.layers, &rail_mesh, &mut warnings)?;
+        let unit_models = UnitModelAssets::load(&content.layers, &mut warnings)?;
+        warnings.push(
+            "Unit models are rifle infantry for every land stack: no division-template table is recorded, so nothing can name the sub-unit a division would show. The figures stand in their bind pose without their attached weapons, because no animation or skeleton is evaluated, and ships in port are not drawn at all."
+                .into(),
+        );
         if rail_mesh.unanchored > 0 {
             warnings.push(format!(
                 "{} of {} map/railways.txt segments name a province with no map/unitstacks.txt anchor and are not drawn.",
@@ -335,6 +344,7 @@ impl Document {
             rail_mesh,
             rail_build,
             bridges,
+            unit_models,
         })
     }
 
@@ -347,6 +357,15 @@ impl Document {
         crate::map::map_buildings::MapBuildingSummary,
     )> {
         self.map_buildings.field(self.frame()?)
+    }
+
+    // close zoom
+    /// This hour's placed unit models.
+    pub fn unit_model_field(&self) -> io::Result<(crate::map::models::ModelField, Fallbacks)> {
+        let content = &self.counters;
+        self.unit_models.field(self.frame()?, &|province| {
+            content.anchor(province, crate::map::counters::STANDSTILL)
+        })
     }
 
     // political fill

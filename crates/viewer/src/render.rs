@@ -34,6 +34,7 @@ use crate::map::{
     textures::MapAssets,
     // trees
     trees::{TreeAssets, TreeField, TreeGeometry},
+    unit_models::UnitModelAssets,
     // weather
     weather::SnowMud,
 };
@@ -63,6 +64,9 @@ pub struct MapLayers<'a> {
     pub rail_assets: &'a RailAssets,
     pub rail_mesh: &'a RailMesh,
     pub bridges: &'a Bridges,
+    pub unit_models: &'a UnitModelAssets,
+    /// This hour's placed figures, from [`UnitModelAssets::field`].
+    pub unit_model_field: &'a ModelField,
     // trees
     pub tree_assets: &'a TreeAssets,
     pub tree_geometry: &'a TreeGeometry,
@@ -284,6 +288,8 @@ pub struct DumpReport {
     pub sprawl_drawn: u32,
     /// Map buildings the frame drew, over every wrap copy.
     pub map_buildings_drawn: u32,
+    /// Unit models the frame drew, over every wrap copy.
+    pub unit_models_drawn: u32,
     // borders
     /// Province boundaries the demilitarised-zone pass drew.
     pub demilitarized_edges: usize,
@@ -361,6 +367,12 @@ pub fn dump_png(
         )?;
         scene.set_railways(&device, &queue, layers.rail_assets, layers.rail_mesh)?;
         scene.set_bridges(&device, &queue, layers.bridges)?;
+        scene.set_unit_models(
+            &device,
+            &queue,
+            layers.unit_models,
+            layers.unit_model_field.clone(),
+        )?;
         // weather
         let snow_mud = layers.snow_mud;
         scene.set_snow_mud(
@@ -408,6 +420,7 @@ pub fn dump_png(
             // close zoom
             sprawl_drawn: scene.sprawl_drawn(),
             map_buildings_drawn: scene.map_buildings_drawn(),
+            unit_models_drawn: scene.unit_models_drawn(),
             // borders
             demilitarized_edges: scene.demilitarized_edges(),
         })
