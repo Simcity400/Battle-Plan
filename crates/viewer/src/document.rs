@@ -39,6 +39,7 @@ use crate::map::{
 // counters
 use crate::map::counters::{self, CounterContent, CounterInputs, CounterReport};
 // weather
+use crate::map::tables::{self, Limitations};
 use crate::map::weather::{self, SnowMud};
 
 pub struct Document {
@@ -269,6 +270,15 @@ impl Document {
                 "branch {branch}, hour {hour} is a gap: {reason}"
             ))),
         }
+    }
+
+    /// What the hour on screen could not draw, one line per degraded table.
+    ///
+    /// The map passes degrade on their own; this is the single list of what
+    /// that cost, so the window's warning area and a `--dump` report the same
+    /// thing. A core table's gap is not here: it is the frame error above.
+    pub fn limitations(&self) -> io::Result<Limitations> {
+        Ok(tables::limitations(self.frame()?))
     }
 
     // names

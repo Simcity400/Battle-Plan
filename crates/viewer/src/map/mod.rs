@@ -24,6 +24,8 @@ pub mod post;
 pub mod rivers;
 pub mod scene;
 pub mod sprites;
+/// What each hour's tables hold, and what a gap in one costs the render.
+pub mod tables;
 pub mod terrain;
 pub mod text;
 pub mod textures;

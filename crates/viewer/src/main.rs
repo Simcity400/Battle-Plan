@@ -458,6 +458,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             options.allow_unverified,
         )?;
         choose_initial(&mut document, &options)?;
+        // An hour the collector had not finished filling still renders; what it
+        // could not draw is stated here, one line per degraded table, before
+        // anything that could fail on its own.
+        for line in document.limitations()?.lines() {
+            eprintln!("Warning: {line}");
+        }
         // political fill
         let mode = political::Mode::from_control(options.control);
         let layers = political::build(&document.map, document.frame()?, mode)?;

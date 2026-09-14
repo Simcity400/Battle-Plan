@@ -1,0 +1,415 @@
+//! Reading one decoded hour's tables when the hour does not hold all of them.
+//!
+//! The collector grows its buffers over the first hours of a session, so an
+//! early frame records several tables truncated and a staggered table not at
+//! all. `README.md` ("Truth") says the viewer shows gaps, truncated tables and
+//! unavailable tables **as such** — it does not say it refuses the hour — so a
+//! pass reads what the hour holds through [`rows`] and states what it could not
+//! draw through [`Limitations`].
+//!
+//! # Core and the rest
+//!
+//! Three tables are **core**: `Provinces` carries the per-province owner,
+//! controller and state the political fill *is*, and `CountryLinks` and
+//! `Countries` turn its raw country references into the canonical slots and
+//! tags every colour, flag and name is keyed by. Without all three there is no
+//! political map to degrade, so [`core`] refuses the frame with a message that
+//! names the table and says so. Every other table the map reads degrades: see
+//! [`limitations`] for the full list and what each gap costs.
+
+use std::io;
+
+use replay::{
+    Hour,
+    frame::{DecodedFrame, TableView},
+    rows::{TableRows, TableSchema, tables},
+};
+
+/// The core tables, named in the error a missing one produces.
+const CORE: &str = "Provinces, CountryLinks and Countries";
+
+/// What one table of one decoded hour actually holds.
+///
+/// `Truncated` keeps the rows the collector's partial walk did reach: they are
+/// real recorded rows, not a guess, and a pass may draw them. A partial walk
+/// never asserts that the absent keys were deleted, so `missing` counts rows
+/// the hour is silent about, not rows that are gone.
+pub enum Available<'a, T: TableSchema> {
+    /// Every row the hour recorded.
+    Complete(&'a [T::Row]),
+    /// The rows the walk reached, and how many rows it did not reach.
+    Truncated { rows: &'a [T::Row], missing: u32 },
+    /// The table failed for this hour, with the collector's own reason.
+    Unavailable { reason: &'a str },
+}
+
+impl<'a, T: TableSchema> Available<'a, T> {
+    /// The rows the hour holds. An unavailable table holds none.
+    pub fn rows(&self) -> &'a [T::Row] {
+        match self {
+            Available::Complete(rows) | Available::Truncated { rows, .. } => rows,
+            Available::Unavailable { .. } => &[],
+        }
+    }
+
+    /// Whether the hour holds the whole table.
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Available::Complete(_))
+    }
+
+    /// How many rows the hour is missing, where that is known. An unavailable
+    /// table has no count at all: the walk never ran.
+    pub fn missing(&self) -> Option<u32> {
+        match self {
+            Available::Complete(_) => Some(0),
+            Available::Truncated { missing, .. } => Some(*missing),
+            Available::Unavailable { .. } => None,
+        }
+    }
+}
+
+/// The rows of `T` this hour holds, whatever state its table is in.
+///
+/// The only error is a decoded table holding another table's rows, which is a
+/// corrupt file rather than a recorded gap.
+pub fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<Available<'_, T>> {
+    match &frame.tables[T::ID.index()] {
+        TableView::Complete(rows) => Ok(Available::Complete(typed::<T>(rows, frame.hour)?)),
+        TableView::Truncated { rows, missing } => Ok(Available::Truncated {
+            rows: typed::<T>(rows, frame.hour)?,
+            missing: *missing,
+        }),
+        TableView::Unavailable { reason } => Ok(Available::Unavailable { reason }),
+    }
+}
+
+/// Every row of a core table, or a named error for the whole frame.
+///
+/// A truncated `Provinces` table would paint part of the world and leave the
+/// rest unowned, which is an invented map rather than a stated gap, so the
+/// hour is refused instead. See the module docs for why these three.
+pub fn core<T: TableSchema>(frame: &DecodedFrame) -> io::Result<&[T::Row]> {
+    let table = T::ID;
+    let hour = frame.hour;
+    match rows::<T>(frame)? {
+        Available::Complete(rows) => Ok(rows),
+        Available::Truncated { missing, .. } => Err(invalid(format!(
+            "hour {hour} {table:?} is truncated ({missing} missing rows); the core tables {CORE} \
+             carry the political map itself, so this hour cannot be drawn"
+        ))),
+        Available::Unavailable { reason } => Err(invalid(format!(
+            "hour {hour} {table:?} is unavailable: {reason}; the core tables {CORE} carry the \
+             political map itself, so this hour cannot be drawn"
+        ))),
+    }
+}
+
+/// What one hour could not draw, in the words the window and a dump both show.
+///
+/// One line per degraded table, in the fixed order of [`limitations`], so the
+/// same hour always reports the same list.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Limitations {
+    lines: Vec<String>,
+}
+
+impl Limitations {
+    /// Records `affected` when this hour's `T` table is not complete.
+    ///
+    /// `affected` is what the map draws differently because of the gap, stated
+    /// in the present tense: it is read by someone looking at the render.
+    pub fn note<T: TableSchema>(&mut self, frame: &DecodedFrame, affected: &str) {
+        let table = T::ID;
+        match &frame.tables[table.index()] {
+            TableView::Complete(_) => {}
+            TableView::Truncated { missing, .. } => self.lines.push(format!(
+                "Table {table:?} truncated ({missing} missing rows): {affected}"
+            )),
+            TableView::Unavailable { reason } => self
+                .lines
+                .push(format!("Table {table:?} unavailable: {reason}: {affected}")),
+        }
+    }
+
+    /// The recorded lines, one per degraded table. An hour that drew
+    /// everything it reads has none.
+    pub fn lines(&self) -> &[String] {
+        &self.lines
+    }
+}
+
+/// Every non-core table the map reads, and what a gap in it costs this hour.
+///
+/// This is the one place that list lives: the window and `--dump` both report
+/// it, so neither can state a different limitation from the other. A pass is
+/// responsible only for degrading; the wording of the degradation is here, next
+/// to the wording of every other one.
+///
+/// The core tables are absent on purpose. A gap in one of them is not a
+/// limitation of the render, it is the absence of the render, and [`core`]
+/// names it as a frame error instead.
+pub fn limitations(frame: &DecodedFrame) -> Limitations {
+    let mut out = Limitations::default();
+    // names
+    out.note::<tables::Politics>(
+        frame,
+        "country names and counter flags fall back to the plain <TAG> key, and a capital carries \
+         no star",
+    );
+    out.note::<tables::PoliticalParties>(
+        frame,
+        "country names and counter flags fall back to the plain <TAG> key",
+    );
+    // counters: allegiance
+    out.note::<tables::Players>(
+        frame,
+        "the allegiance perspective falls back to the first human controller",
+    );
+    out.note::<tables::HumanControllers>(
+        frame,
+        "the allegiance perspective is taken from the Players table alone",
+    );
+    out.note::<tables::WarRelations>(
+        frame,
+        "no country is coloured as an enemy; the hour is drawn as if no war were running",
+    );
+    out.note::<tables::FactionMembers>(
+        frame,
+        "no country is coloured as an ally, and counters are grouped as if no faction existed",
+    );
+    // counters
+    out.note::<tables::Divisions>(
+        frame,
+        "land counters count only the recorded divisions, and a land combat's attack direction may \
+         be missing",
+    );
+    out.note::<tables::TaskForces>(
+        frame,
+        "naval counters cover only the recorded task forces, and a naval base holding one of the \
+         missing rows is drawn empty",
+    );
+    out.note::<tables::Ships>(
+        frame,
+        "a naval counter's ship count and bars cover only the recorded ships",
+    );
+    out.note::<tables::LandCombats>(
+        frame,
+        "a land combat among the missing rows carries no combat icon",
+    );
+    out.note::<tables::NavalCombats>(
+        frame,
+        "a naval combat among the missing rows carries no combat icon",
+    );
+    out.note::<tables::StateBuildings>(
+        frame,
+        "an air base among the missing rows carries no base icon",
+    );
+    out.note::<tables::ProvinceBuildings>(
+        frame,
+        "a naval base among the missing rows carries no base icon",
+    );
+    out.note::<tables::AirBases>(
+        frame,
+        "an air base among the missing rows carries no wing count",
+    );
+    out.note::<tables::AirWings>(
+        frame,
+        "an air base's wing count covers only the recorded wings",
+    );
+    out.note::<tables::LexicalTokens>(
+        frame,
+        "a base icon whose building token is among the missing rows is not drawn at all",
+    );
+    // weather
+    out.note::<tables::WeatherLimits>(
+        frame,
+        "the snow texture stays at zero because this hour records no snow ceiling",
+    );
+    out.note::<tables::WeatherProvinces>(
+        frame,
+        "the snow and mud texture stays at zero for every province among the missing rows",
+    );
+    out
+}
+
+fn typed<T: TableSchema>(rows: &TableRows, hour: Hour) -> io::Result<&[T::Row]> {
+    rows.rows::<T>().ok_or_else(|| {
+        invalid(format!(
+            "hour {hour} {:?} contains another table's rows",
+            T::ID
+        ))
+    })
+}
+
+fn invalid(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay::{
+        frame::Metrics,
+        rows::{PoliticalPartyRow, ProvinceRow, TableId},
+    };
+
+    /// A frame whose every table is unavailable, so a test only has to fill in
+    /// the ones it cares about.
+    fn frame() -> DecodedFrame {
+        DecodedFrame {
+            branch: 1,
+            hour: 60_828_478,
+            tables: std::array::from_fn(|_| TableView::Unavailable {
+                reason: "the collector had not grown its buffer yet".into(),
+            }),
+            metrics: Metrics::default(),
+        }
+    }
+
+    fn province(id: u32) -> ProvinceRow {
+        ProvinceRow {
+            id,
+            state: 10,
+            owner: 100,
+            controller: 100,
+            victory_points: 0,
+        }
+    }
+
+    #[test]
+    fn a_truncated_table_still_hands_over_the_rows_it_reached() {
+        let mut frame = frame();
+        frame.tables[TableId::PoliticalParties.index()] = TableView::Truncated {
+            rows: TableRows::PoliticalParties(vec![PoliticalPartyRow {
+                country: 100,
+                id: 1,
+                token: b"fascism".to_vec(),
+                ..Default::default()
+            }]),
+            missing: 38_015,
+        };
+        let view = rows::<tables::PoliticalParties>(&frame).unwrap();
+        assert_eq!(view.rows().len(), 1);
+        assert_eq!(view.rows()[0].token, b"fascism".to_vec());
+        assert!(!view.is_complete());
+        assert_eq!(view.missing(), Some(38_015));
+    }
+
+    #[test]
+    fn an_unavailable_table_hands_over_no_rows_and_no_count() {
+        let empty = frame();
+        let view = rows::<tables::Divisions>(&empty).unwrap();
+        assert!(view.rows().is_empty());
+        assert!(!view.is_complete());
+        assert_eq!(view.missing(), None);
+        // A complete table is not a gap at all.
+        let mut whole = frame();
+        whole.tables[TableId::Divisions.index()] =
+            TableView::Complete(TableRows::Divisions(Vec::new()));
+        let view = rows::<tables::Divisions>(&whole).unwrap();
+        assert!(view.is_complete());
+        assert_eq!(view.missing(), Some(0));
+    }
+
+    #[test]
+    fn a_table_holding_another_tables_rows_is_a_named_error() {
+        let mut frame = frame();
+        frame.tables[TableId::Divisions.index()] =
+            TableView::Complete(TableRows::Provinces(vec![province(1)]));
+        let error = rows::<tables::Divisions>(&frame).err().unwrap().to_string();
+        assert!(
+            error.contains("hour 60828478 Divisions contains another table's rows"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_core_table_gap_names_the_table_the_count_and_why_it_is_fatal() {
+        let mut frame = frame();
+        frame.tables[TableId::Provinces.index()] = TableView::Truncated {
+            rows: TableRows::Provinces(vec![province(1)]),
+            missing: 1174,
+        };
+        let error = core::<tables::Provinces>(&frame).err().unwrap().to_string();
+        assert!(
+            error.contains("hour 60828478 Provinces is truncated (1174 missing rows)"),
+            "{error}"
+        );
+        assert!(error.contains(CORE), "{error}");
+        assert!(error.contains("cannot be drawn"), "{error}");
+        // An unavailable core table keeps the collector's own reason.
+        let error = core::<tables::Countries>(&frame).err().unwrap().to_string();
+        assert!(error.contains("Countries is unavailable"), "{error}");
+        assert!(
+            error.contains("the collector had not grown its buffer yet"),
+            "{error}"
+        );
+        // A complete core table is handed over unchanged.
+        frame.tables[TableId::Provinces.index()] =
+            TableView::Complete(TableRows::Provinces(vec![province(1), province(2)]));
+        assert_eq!(core::<tables::Provinces>(&frame).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_limitation_names_its_table_and_its_missing_count() {
+        let mut frame = frame();
+        frame.tables[TableId::ProvinceBuildings.index()] = TableView::Truncated {
+            rows: TableRows::ProvinceBuildings(Vec::new()),
+            missing: 1174,
+        };
+        let mut limitations = Limitations::default();
+        limitations.note::<tables::ProvinceBuildings>(&frame, "a naval base carries no icon");
+        limitations.note::<tables::LandCombats>(&frame, "no combat icon is drawn");
+        // A complete table contributes no line at all.
+        frame.tables[TableId::Ships.index()] = TableView::Complete(TableRows::Ships(Vec::new()));
+        limitations.note::<tables::Ships>(&frame, "never reported");
+        assert_eq!(
+            limitations.lines(),
+            [
+                "Table ProvinceBuildings truncated (1174 missing rows): a naval base carries no icon".to_owned(),
+                "Table LandCombats unavailable: the collector had not grown its buffer yet: no combat icon is drawn".to_owned(),
+            ]
+        );
+        assert!(Limitations::default().lines().is_empty());
+    }
+
+    #[test]
+    fn the_registry_reports_every_degraded_table_and_no_core_one() {
+        let lines = limitations(&frame()).lines().join("\n");
+        for table in [
+            "Politics",
+            "PoliticalParties",
+            "Players",
+            "HumanControllers",
+            "WarRelations",
+            "FactionMembers",
+            "Divisions",
+            "TaskForces",
+            "Ships",
+            "LandCombats",
+            "NavalCombats",
+            "StateBuildings",
+            "ProvinceBuildings",
+            "AirBases",
+            "AirWings",
+            "LexicalTokens",
+            "WeatherLimits",
+            "WeatherProvinces",
+        ] {
+            assert!(
+                lines.contains(&format!("Table {table} unavailable")),
+                "{table} is missing from the registry"
+            );
+        }
+        // The core tables are frame errors, not limitations.
+        for table in ["Table Provinces", "Table CountryLinks", "Table Countries"] {
+            assert!(!lines.contains(table), "{table} must not be a limitation");
+        }
+        // An hour that holds everything reports nothing.
+        let mut whole = frame();
+        for table in TableId::ALL {
+            whole.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+        }
+        assert!(limitations(&whole).lines().is_empty());
+    }
+}

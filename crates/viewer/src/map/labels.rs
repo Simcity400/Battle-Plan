@@ -72,6 +72,7 @@ use super::{
     borders::{HEIGHT_SCALE, WATER_HEIGHT, world_from_pixel},
     camera::Camera,
     sprites::{self, Batch, SpriteSheet},
+    tables::{core, rows},
     text,
 };
 
@@ -329,14 +330,12 @@ pub fn build(
     frame: &DecodedFrame,
     batch: &mut Batch,
 ) -> io::Result<LabelReport> {
-    let provinces = frame.complete::<tables::Provinces>()?;
-    let links: BTreeMap<u32, u32> = frame
-        .complete::<tables::CountryLinks>()?
+    let provinces = core::<tables::Provinces>(frame)?;
+    let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
         .iter()
         .map(|link| (link.id, link.canonical_slot))
         .collect();
-    let tags: BTreeMap<u32, String> = frame
-        .complete::<tables::Countries>()?
+    let tags: BTreeMap<u32, String> = core::<tables::Countries>(frame)?
         .iter()
         .map(|country| {
             (
@@ -453,17 +452,22 @@ pub fn build(
 /// `Politics` row for every releasable tag — Schleswig, Hannover, Bavaria,
 /// Saxony and so on — each with a capital state, and taking all of them puts a
 /// star on Kiel, Essen, Erfurt and Dresden, which `array_loaded.png` does not.
+///
+/// `Politics` is staggered, so an early hour of a session holds part of it or
+/// none of it. The capitals it does hold still take a star and the rest do not;
+/// every victory-point dot is drawn either way, and `super::tables` states the
+/// gap rather than the frame being refused for it.
 fn capital_provinces(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
 ) -> io::Result<BTreeSet<u32>> {
-    let provinces = frame.complete::<tables::Provinces>()?;
+    let provinces = core::<tables::Provinces>(frame)?;
     let existing: BTreeSet<u32> = provinces
         .iter()
         .filter_map(|province| links.get(&province.owner).copied())
         .collect();
-    let wanted: BTreeSet<u32> = frame
-        .complete::<tables::Politics>()?
+    let wanted: BTreeSet<u32> = rows::<tables::Politics>(frame)?
+        .rows()
         .iter()
         .filter(|politics| politics.capital > 0)
         .filter(|politics| {

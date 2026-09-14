@@ -516,6 +516,15 @@ impl Viewer {
         for warning in layers.warnings() {
             ui.colored_label(egui::Color32::YELLOW, warning);
         }
+        // The hour on screen may be one the collector had not finished filling;
+        // what that costs the render belongs beside the other warnings.
+        for line in document
+            .limitations()
+            .map_err(|error| error.to_string())?
+            .lines()
+        {
+            ui.colored_label(egui::Color32::YELLOW, line);
+        }
         let (filled, distinct) = layers.summary();
         ui.weak(format!(
             "Political layer: {filled} provinces filled in {distinct} country colors, rebuilt in {:.0} ms",

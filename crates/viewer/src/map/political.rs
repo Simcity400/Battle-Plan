@@ -35,7 +35,10 @@ use replay::{
     rows::{CountryRow, ProvinceRow, tables},
 };
 
-use super::gradient::{self, GradientTextures, Layer, LayerKind, NO_REGION, ProvinceMap};
+use super::{
+    gradient::{self, GradientTextures, Layer, LayerKind, NO_REGION, ProvinceMap},
+    tables::core,
+};
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -117,8 +120,7 @@ impl FrameKey {
     fn new(frame: &DecodedFrame, mode: Mode) -> io::Result<Self> {
         Ok(Self {
             mode,
-            provinces: frame
-                .complete::<tables::Provinces>()?
+            provinces: core::<tables::Provinces>(frame)?
                 .iter()
                 .map(|row| [row.id, row.state, row.owner, row.controller])
                 .collect(),
@@ -212,21 +214,19 @@ impl PoliticalCache {
 
 /// Derives both layers' region keys and colours from one decoded frame.
 ///
-/// Errors are named `InvalidData`: a required table that is truncated or unavailable, a recorded
+/// Errors are named `InvalidData`: a core table that is truncated or unavailable (`super::tables`), a recorded
 /// province the map does not define, a dangling country link, a country whose colour the recorded
 /// content does not carry, or province ids that overflow the key tables.
 pub fn regions(map: &MapData, frame: &DecodedFrame, mode: Mode) -> io::Result<Regions> {
-    let countries = frame
-        .complete::<tables::Countries>()?
+    let countries = core::<tables::Countries>(frame)?
         .iter()
         .map(|country| (country.canonical_slot, country))
         .collect::<BTreeMap<_, _>>();
-    let links = frame
-        .complete::<tables::CountryLinks>()?
+    let links = core::<tables::CountryLinks>(frame)?
         .iter()
         .map(|link| (link.id, link.canonical_slot))
         .collect::<BTreeMap<_, _>>();
-    let provinces = frame.complete::<tables::Provinces>()?;
+    let provinces = core::<tables::Provinces>(frame)?;
     let count = province_table_len(map, provinces)?;
     let mut result = Regions {
         country_of: vec![NO_REGION; count],
@@ -585,6 +585,64 @@ mod tests {
         assert_eq!(regions.state_of[1], 10);
         assert!(regions.warnings[0].contains("zero controller"));
         assert!(regions.warnings[0].contains("province ids 1"));
+    }
+
+    /// A hour the collector had not finished filling still has a political map:
+    /// the fill is a function of the three core tables alone, and every other
+    /// table's gap is stated rather than refused (`README.md`, "Truth").
+    #[test]
+    fn a_truncated_non_core_table_still_renders_the_political_layer_and_is_stated() {
+        let mut frame = occupied();
+        frame.tables[TableId::ProvinceBuildings.index()] = TableView::Truncated {
+            rows: TableRows::ProvinceBuildings(Vec::new()),
+            missing: 1174,
+        };
+        // The layer is built, and it is the same one the complete hour builds:
+        // no non-core table reaches the fill at all.
+        let degraded = build(&map(), &frame, Mode::Controller).unwrap();
+        let whole = build(&map(), &occupied(), Mode::Controller).unwrap();
+        assert_eq!(degraded.textures.channel1, whole.textures.channel1);
+        assert_eq!(degraded.textures.channel2, whole.textures.channel2);
+        assert_eq!(degraded.regions.country_of, whole.regions.country_of);
+        let limitations = super::super::tables::limitations(&frame);
+        assert!(
+            limitations.lines().iter().any(|line| {
+                line.starts_with("Table ProvinceBuildings truncated (1174 missing rows): ")
+                    && line.contains("naval base")
+            }),
+            "{:?}",
+            limitations.lines()
+        );
+    }
+
+    #[test]
+    fn an_unavailable_core_table_is_a_named_error() {
+        let mut frame = occupied();
+        frame.tables[TableId::Countries.index()] = TableView::Unavailable {
+            reason: "the collector had not grown its buffer yet".into(),
+        };
+        let error = regions(&map(), &frame, Mode::Controller)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("hour 42 Countries is unavailable"),
+            "{error}"
+        );
+        assert!(
+            error.contains("the collector had not grown its buffer yet"),
+            "{error}"
+        );
+        assert!(
+            error.contains("Provinces, CountryLinks and Countries"),
+            "{error}"
+        );
+        // A core gap is a frame error, never one of the render's limitations.
+        assert!(
+            !super::super::tables::limitations(&frame)
+                .lines()
+                .iter()
+                .any(|line| line.contains("Countries"))
+        );
     }
 
     #[test]
