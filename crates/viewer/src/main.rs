@@ -690,6 +690,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 options.size,
             )
         });
+        // fog of war: the hour's `IntelMap` for the perspective the frame is
+        // drawn for. The camera decides `FOWFadeFactor`, so the report needs it.
+        let intel_map = document.intel_map(&options.perspective)?;
+        println!("{}", intel_map.line(camera.height));
         let unverified = document
             .warnings
             .iter()
@@ -742,6 +746,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 river_mesh: &document.river_mesh,
                 // weather
                 snow_mud: &snow_mud,
+                // fog of war
+                intel_map: &intel_map,
                 // the map's table frame
                 frame_assets: &document.frame_assets,
                 frame_geometry: &document.frame_geometry,

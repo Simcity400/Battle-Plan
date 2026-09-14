@@ -430,7 +430,9 @@ fn river_fragment(input: RiverVarying) -> @location(0) vec4<f32> {
     );
     var out = compose_light(properties, light.diffuse, light.specular);
 
-    out = apply_fow(out, 0.0, 0.0);
+    // `ApplyFOW( vOut, ShadowMap, Input.vScreenCoord )` (`river.shader:394`),
+    // whole, like the water's and unlike the terrain's.
+    out = apply_fow_buffer(out, input.position);
     out = apply_distance_fog(out, input.pre_pos_fade.xyz);
     out = day_night_with_blend(
         out,

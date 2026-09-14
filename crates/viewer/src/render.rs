@@ -35,7 +35,7 @@ use crate::map::{
     sprawl::Sprawl,
     // names
     sprites::MapIcons,
-    textures::MapAssets,
+    textures::{IntelMap, MapAssets},
     // trees
     trees::{TreeAssets, TreeField, TreeGeometry},
     unit_models::UnitModelAssets,
@@ -60,6 +60,9 @@ pub struct MapLayers<'a> {
     // weather
     /// The hour's `SnowMudData` grid.
     pub snow_mud: &'a SnowMud,
+    // fog of war
+    /// The hour's `IntelMap` for the perspective the frame is drawn for.
+    pub intel_map: &'a IntelMap,
     // the map's table frame
     pub frame_assets: &'a FrameAssets,
     pub frame_geometry: &'a FrameGeometry,
@@ -97,6 +100,14 @@ pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
 /// `TEXTURE_COMPRESSION_BC` is required because the game's atlases, water and
 /// border textures are authored as DXT and are uploaded still compressed;
 /// [`Scene::new`] reports a named error if the adapter lacks it.
+///
+/// `max_sampled_textures_per_shader_stage` is the adapter's rather than wgpu's
+/// default of 16, because the terrain fragment stage now needs 19: the fifteen
+/// the lit pass samples, `ShadowMap`, and the three `fow.fxh` reads —
+/// `IntelMap`, `FOWNoise` and `FOWHeight`. The game's own terrain pixel shader
+/// declares sixteen samplers on a D3D11 feature-level 11 device, whose
+/// guaranteed minimum is 128, so an adapter that can run the map at all has the
+/// headroom several times over.
 pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
     let limits = adapter.limits();
     wgpu::DeviceDescriptor {
@@ -105,6 +116,8 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
         required_limits: wgpu::Limits {
             max_texture_dimension_1d: limits.max_texture_dimension_1d,
             max_texture_dimension_2d: limits.max_texture_dimension_2d,
+            max_sampled_textures_per_shader_stage: limits.max_sampled_textures_per_shader_stage,
+            max_samplers_per_shader_stage: limits.max_samplers_per_shader_stage,
             ..Default::default()
         },
         ..Default::default()
@@ -406,6 +419,8 @@ pub fn dump_png(
             snow_mud.width,
             snow_mud.height,
         )?;
+        // fog of war
+        scene.set_fog_of_war(&queue, &layers.intel_map.texels, layers.intel_map.fog)?;
         // A first frame warms the pipeline caches so the timing below measures
         // the steady-state cost the window pays.
         scene.render(&device, &queue, request)?;

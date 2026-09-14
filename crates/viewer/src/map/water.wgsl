@@ -635,7 +635,10 @@ fn water_main(input: WaterVertex) -> @location(0) vec4<f32> {
     );
     var out = compose_light(properties, light.diffuse, light.specular);
 
-    out = apply_fow(out, 0.0, 0.0);
+    // `ApplyFOW( vOut, ShadowMap, Input.vScreenCoord )` (`pdxwater.shader:398`)
+    // at the *undistorted* screen coordinate, unlike the shadow read above, and
+    // with no `BORDER_FOW_REMOVAL_FACTOR`: the sea takes the fog whole.
+    out = apply_fow_projective(out, screen_coord(input.screen_pos));
     out = apply_distance_fog(out, input.pos);
     out = day_night_with_blend(
         out,

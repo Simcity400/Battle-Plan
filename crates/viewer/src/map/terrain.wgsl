@@ -766,8 +766,9 @@ fn terrain_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     ).rgb;
     out += city_lights * CITY_LIGHTS_INTENSITY * city_lights_mask * night_factor;
 
-    // ApplyFOW with the neutral factors an omniscient viewer produces.
-    let fogged = apply_fow(out, 0.0, 0.0);
+    // `ApplyFOW( vOut, ShadowMap, Input.vScreenCoord )`, the two factors the
+    // pre-pass wrote into this pixel's green and blue.
+    let fogged = apply_fow_buffer(out, input.position);
     out = mix(fogged, out, BORDER_FOW_REMOVAL_FACTOR * (1.0 - bloom_alpha));
     out = apply_distance_fog(out, input.prepos);
     out = day_night_with_blend(
@@ -868,13 +869,12 @@ fn underwater_main(input: TerrainVertex) -> @location(0) vec4<f32> {
 // so this is the same grid drawn again through the camera, writing what the lit
 // passes will read back at their own pixel.
 //
-// The engine's `GetFogFactors` fills `.g` and `.b`. Both are zero for this
-// viewer and for the reference profile: `FogAlphaFactor` is the intel map's
-// alpha times `FOWFadeFactor`, and `PLAN.md` section 2 makes the viewer
-// omniscient while `FUN_140ff3fc0` writes `FOWFadeFactor` as a literal zero
-// outside the five fog-of-war map modes. `common.wgsl`'s `apply_fow` records
-// the same reading at the other end of the buffer.
+// `GetFogFactors` fills `.g` and `.b` with the fog-of-war the recorded
+// perspective sees; `common.wgsl`'s `get_fog_factors` is the whole of it, and
+// `terrainunlit` passes an `ExtraHeight` of zero where `treeunlit` passes the
+// canopy's.
 @fragment
 fn terrain_unlit_main(input: TerrainVertex) -> @location(0) vec4<f32> {
-    return vec4<f32>(calculate_shadow(shadow_proj(input.prepos)), 0.0, 0.0, 1.0);
+    let fog = get_fog_factors(input.prepos, 0.0);
+    return vec4<f32>(calculate_shadow(shadow_proj(input.prepos)), fog.x, fog.y, 1.0);
 }

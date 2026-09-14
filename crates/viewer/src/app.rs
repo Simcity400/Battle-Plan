@@ -144,6 +144,10 @@ pub struct Viewer {
     perspective: map::perspective::Choice,
     // weather
     weather: WeatherCache,
+    // fog of war: the hour and perspective whose `IntelMap` is uploaded. The
+    // grid is a 6x6 box filter over the whole province image, so it is rebuilt
+    // on a change rather than every frame, like the weather grid beside it.
+    fog_hour: Option<(replay::BranchId, i32, map::perspective::Choice)>,
     // capture
     /// The readback to run once the next frame is drawn; F12 and
     /// `--window-dump` both arm it.
@@ -219,6 +223,8 @@ impl Viewer {
             perspective,
             // weather
             weather: WeatherCache::new(),
+            // fog of war
+            fog_hour: None,
             // capture
             capture,
             capture_note: None,
@@ -666,6 +672,18 @@ impl Viewer {
                 snow_mud.width,
                 snow_mud.height,
             )?;
+        }
+        // fog of war: the intel map follows the hour and the perspective, the
+        // same key the unit models and the battle plan take.
+        let fog_hour = (
+            document.playback.branch(),
+            document.playback.hour(),
+            self.perspective.clone(),
+        );
+        if self.fog_hour.as_ref() != Some(&fog_hour) {
+            let intel = document.intel_map(&self.perspective)?;
+            scene.set_fog_of_war(&state.queue, &intel.texels, intel.fog)?;
+            self.fog_hour = Some(fog_hour);
         }
         Ok(())
     }

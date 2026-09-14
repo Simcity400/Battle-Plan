@@ -119,7 +119,7 @@ fn border_fragment(input: BorderVarying) -> @location(0) vec4<f32> {
         color.rgb * get_shadow_scaled(SHADOW_WEIGHT_BORDER, input.position),
         color.a,
     );
-    let fow = apply_fow(color.rgb, 0.0, 0.0);
+    let fow = apply_fow_buffer(color.rgb, input.position);
     var rgb = mix(fow, color.rgb, BORDER_FOW_REMOVAL_FACTOR);
     rgb = apply_distance_fog(rgb, input.pos) * max(1.0, pulse);
     rgb = day_night_with_blend(rgb, calc_globe_normal(input.pos.xz), 1.0);

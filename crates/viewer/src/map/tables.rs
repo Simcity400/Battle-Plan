@@ -233,9 +233,44 @@ impl Limitations {
             }
             Perspective::Omniscient { reason } => self.lines.push(format!(
                 "Perspective omniscient: {reason}, so every stack is drawn in full, including the \
-                 ones the game hid behind a question mark",
+                 ones the game hid behind a question mark, and no fog of war is drawn over the \
+                 land no country has uncovered",
             )),
         }
+    }
+
+    /// Records what the drawn fog of war is a snapshot of.
+    ///
+    /// Called only when the frame draws fog, because the three ways it can fail
+    /// to are already stated: the table's own note, [`Limitations::note_viewpoint`]
+    /// and the omniscient branch of [`Limitations::note_perspective`].
+    ///
+    /// `fraction` is how far past the recorded hour the frame sits, and it is
+    /// the between-hours term. The client's visibility buffer is rebuilt by the
+    /// graphical update rather than at an hour boundary, the recording samples
+    /// it once an hour, and nothing interpolates it, so a frame drawn between
+    /// two hours carries the earlier hour's fog under the later hour's
+    /// divisions.
+    pub fn note_fog_of_war(&mut self, fogged: usize, fraction: f32) {
+        let between = if fraction > 0.0 {
+            format!(
+                " This frame sits {fraction:.3} h past its recorded hour and the visibility is \
+                 not interpolated, so the fog is the recorded hour's while the divisions standing \
+                 in it have moved on."
+            )
+        } else {
+            String::new()
+        };
+        self.lines.push(format!(
+            "Fog of war: {fogged} intel texels are fogged from the hour's recorded \
+             ProvinceVisibility, which is the client's own presentation buffer sampled once an \
+             hour. Two inputs of the engine's fog are not recorded and are left at their origin. \
+             FoWTime is the clock the fog's three noise octaves drift on, so the cloud pattern is \
+             the noise at time zero rather than at the instant a screenshot caught it; it moves \
+             the pattern about and not its strength. The map mode is the other, and the engine \
+             gates FOWFadeFactor on it: the fill's controller and owner modes are the engine's \
+             mode 0, which is inside the set that draws fog, so the gate is open here.{between}",
+        ));
     }
 
     /// Records that the hour's recorded province visibility answers for
@@ -251,7 +286,9 @@ impl Limitations {
              {ours}, and one country's uncovered provinces are not another's, so they are left \
              out of the engine's max and a land stack is decided by the UnitIntel ladder alone; a \
              stack standing in a province {ours} has uncovered carries no counter here where the \
-             game drew its question mark, or a question mark where the game drew it in full",
+             game drew its question mark, or a question mark where the game drew it in full. The \
+             map draws no fog of war either, for the same reason: the intel texture the lit passes \
+             fog with is built from these bytes and nothing else",
             recorded.join(", ")
         ));
     }
@@ -342,12 +379,15 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     );
     out.note::<tables::ProvinceVisibility>(
         frame,
-        "a land stack is decided by the UnitIntel detection ladder alone. The engine takes the \
-         greater of that ladder and the viewing country's own visibility byte for the province the \
-         stack stands in, and a province among the missing rows contributes no byte rather than a \
-         zero, so a stack standing in a province this perspective has uncovered carries no counter \
-         here where the game drew its question mark, or a question mark where the game drew it in \
-         full",
+        "a land stack is decided by the UnitIntel detection ladder alone, and the map draws no fog \
+         of war at all. The engine takes the greater of that ladder and the viewing country's own \
+         visibility byte for the province the stack stands in, and a province among the missing \
+         rows contributes no byte rather than a zero, so a stack standing in a province this \
+         perspective has uncovered carries no counter here where the game drew its question mark, \
+         or a question mark where the game drew it in full. The same bytes are the whole input to \
+         the engine's intel texture, which every lit map pass fogs with, so without them the land \
+         this perspective has not uncovered is drawn as clear as the land it holds, and none of it \
+         is inferred from unit positions, radar or supply",
     );
     // counters
     out.note::<tables::Divisions>(
@@ -664,7 +704,8 @@ mod tests {
         assert!(
             lines.contains(
                 "Table ProvinceVisibility unavailable: not recorded by format 14: a land stack is \
-                 decided by the UnitIntel detection ladder alone."
+                 decided by the UnitIntel detection ladder alone, and the map draws no fog of war \
+                 at all."
             ),
             "{lines}"
         );

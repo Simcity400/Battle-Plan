@@ -111,6 +111,11 @@ struct TreeVarying {
     @location(5) bitangent: vec3<f32>,
     /// `Out.vPrePos_vSeasonColumn.w`.
     @location(6) season_u: f32,
+    /// `Out.vPrePos_vSeasonColumn.y`, the raw model-space height of the vertex
+    /// before the per-instance height scale. Only `PixelShaderUnlit` reads it,
+    /// as the `ExtraHeight` that lifts the canopy out of the fog-of-war's
+    /// height fog (`tree.shader:253`, `:440`).
+    @location(7) local_y: f32,
 }
 
 /// Where one instance of one tree vertex ends up, and the rotation the vertex
@@ -197,6 +202,7 @@ fn tree_vertex(
     out.bitangent = cross(out.tangent, out.normal) * tangent.w;
     out.tint_uv = uv1 + vec2<f32>(placement.random, 0.0);
     out.season_u = tree.season_column / TREE_SEASON_COLUMNS + 1.0 / (2.0 * TREE_SEASON_COLUMNS);
+    out.local_y = position.y;
     return out;
 }
 
@@ -351,7 +357,7 @@ fn tree_fragment(input: TreeVarying) -> @location(0) vec4<f32> {
     var out = compose_light_snow(properties, diffuse_light, light.specular, snow.alpha);
 
     let globe_normal = calc_globe_normal(input.world.xz);
-    let fogged = apply_fow(out, 0.0, 0.0);
+    let fogged = apply_fow_buffer(out, input.position);
     out = mix(fogged, out, BORDER_FOW_REMOVAL_FACTOR * (1.0 - bloom_alpha));
     out = apply_distance_fog(out, input.world);
     // `DayNight` is `DayNightWithBlend` at a blend of 1
@@ -425,8 +431,11 @@ fn tree_shadow_fragment(input: TreeShadowVarying) -> @location(0) vec4<f32> {
 /// tree half of the screen-space pre-pass. It shares `VertexShader` with the
 /// lit effect, so it takes [`TreeVarying`] unchanged.
 ///
-/// The two fog factors are zero for the same reason `terrain_unlit_main`'s are,
-/// which also makes the engine's `ExtraHeight` term unobservable.
+/// `ExtraHeight` is `In.vPrePos_vSeasonColumn.y * 4 - In.vPos.y * 0.5 + 6`
+/// (`tree.shader:440`): the taller the vertex sits inside its own model and the
+/// lower the ground under it, the further the height fog's 12-to-15 window is
+/// lifted past it. A canopy crown therefore stands clear of the fog its trunk
+/// is in.
 @fragment
 fn tree_unlit_fragment(input: TreeVarying) -> @location(0) vec4<f32> {
     let diffuse = textureSample(tree_diffuse, linear_wrap, input.uv0);
@@ -436,5 +445,7 @@ fn tree_unlit_fragment(input: TreeVarying) -> @location(0) vec4<f32> {
     if tree_mask(input.world) >= TREE_MASK_CUTOFF {
         discard;
     }
-    return vec4<f32>(calculate_shadow(shadow_proj(input.world)), 0.0, 0.0, 1.0);
+    let extra_height = input.local_y * 4.0 - input.world.y * 0.5 + 6.0;
+    let fog = get_fog_factors(input.world, extra_height);
+    return vec4<f32>(calculate_shadow(shadow_proj(input.world)), fog.x, fog.y, 1.0);
 }

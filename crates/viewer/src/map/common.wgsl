@@ -166,6 +166,20 @@ struct Globals {
 /// holding the blurred screen-space buffer.
 @group(0) @binding(1) var shadow_map: texture_2d<f32>;
 @group(0) @binding(2) var shadow_map_sampler: sampler;
+/// `IntelMap`: the per-province fog input `map::textures::intel_map` builds from
+/// the hour's recorded `ProvinceVisibility`. One texel per six-by-six block of
+/// the province image, first row at world `z = 0`, and one byte a texel.
+@group(0) @binding(3) var intel_map: texture_2d<f32>;
+/// `FOWNoise`, `map/terrain/fow_noise_0.dds`.
+@group(0) @binding(4) var fow_noise: texture_2d<f32>;
+/// `FOWHeight`/`ExtraFOW`, `map/terrain/fow_rgb_waterspec_a.dds`.
+@group(0) @binding(5) var fow_extra: texture_2d<f32>;
+/// The three above share one sampler. Every slot the engine passes to
+/// `GetFogFactors` from the two unlit effects declares `Linear/Linear/Linear,
+/// Wrap` — `TerrainDiffuse`, `HeightNormal` and `TerrainColorTint` in
+/// `pdxmap.shader:383-408`, `TintMap`, `SeasonMap` and `ColorMap` in
+/// `tree.shader:31-57` — so one linear wrapping sampler serves all three.
+@group(0) @binding(6) var fow_sampler: sampler;
 
 fn cam_pos() -> vec3<f32> { return globals.frame.cam_pos_hdr_range.xyz; }
 fn hdr_range() -> f32 { return globals.frame.cam_pos_hdr_range.w; }
@@ -177,6 +191,9 @@ fn sun_specular_intensity() -> f32 { return globals.frame.gb_texture_height_sun_
 
 // ------------------------------------------------------------------ utilities
 fn to_gamma(linear: vec3<f32>) -> vec3<f32> { return pow(linear, vec3<f32>(0.45)); }
+/// `ToGamma`'s scalar overload (`standardfuncsgfx.fxh:38-41`), which only
+/// `GetFogFactors` calls.
+fn to_gamma_scalar(linear: f32) -> f32 { return pow(linear, 0.45); }
 fn to_linear(gamma: vec3<f32>) -> vec3<f32> { return pow(gamma, vec3<f32>(2.2)); }
 
 /// `fmod_loop` from `defines_hlsl_dx11.fxh`: a modulo that stays positive.
@@ -362,28 +379,179 @@ fn screen_coord(clip: vec4<f32>) -> vec4<f32> {
 }
 
 // ----------------------------------------------------------------- fow.fxh
-/// `ApplyFOW` with the factors the `terrainunlit` pre-pass would have written.
+//
+// The whole of `gfx/FX/fow.fxh`, and it is live: the pre-pass computes the two
+// factors and every lit pass reads them back out of the screen-space buffer.
+//
+// Two of the three textures the pre-pass samples are shipped content and the
+// third is built per hour:
+//
+// * `FOWNoise` is `map/terrain/fow_noise_0.dds`, a 1024-square tiling noise;
+//   `GetFOWTransparency` reads its alpha at three octaves and `GetFOWColor` its
+//   green at one.
+// * `FOWHeight`, which `GetExtraFogFactor` calls `ExtraFOW`, is
+//   `map/terrain/fow_rgb_waterspec_a.dds`. The name is the file's two halves:
+//   its RGB is the fog-of-war map (a 2816x1024 = `MAP_SIZE / 2` world image,
+//   land near 0.63 and sea near 0.28, so `g * 2 - 1` adds about +0.26 to the
+//   fog alpha on land and takes 0.44 off it at sea) and its alpha is the water
+//   specular map the water pass already binds.
+// * `IntelMap` is the per-province texture `map::textures::intel_map` builds
+//   from the hour's recorded `ProvinceVisibility`; see there for the byte law.
+//
+// The engine does not declare samplers for these in `pdxmap.shader` or
+// `tree.shader`. Both unlit pixel shaders pass three of the lit pass's own
+// sampler *slots* to `GetFogFactors` — `TerrainDiffuse, HeightNormal,
+// TerrainColorTint` (slots 0, 1, 2) for `terrainunlit` and `TintMap, SeasonMap,
+// ColorMap` (slots 2, 3, 4) for `treeunlit` — and the engine binds the three
+// FOW textures into those slots for the pre-pass draw. `pdxmesh.shader` is the
+// one shader that names them, at its own slots 5, 6 and 13, which is where the
+// names above come from.
+//
+// `GetFoW` and its `FOW_MAX`, `FOW_CAMERA_MIN` and `FOW_CAMERA_MAX`
+// (`constants.fxh:160-162`) remain a dead path: `standardfuncsgfx.fxh:189`
+// defines it, `fow.fxh` does not call it, and no map shader in the reference
+// run's cache calls it either.
+
+const HEIGHT_FOG_END: f32 = 15.0;
+const HEIGHT_FOG_START: f32 = 12.0;
+const HEIGHT_FOG_POW: f32 = 3.5;
+const HEIGHT_FOG_MAX: f32 = 1.0;
+const FOW_TRANSPARENCY_MIN: f32 = 0.3;
+const FOW_TRANSPARENCY_MAX: f32 = 0.9;
+const FOW_COLOR_MIN: f32 = 0.2;
+const FOW_COLOR_MAX: f32 = 1.0;
+const FOW_NOISE_TILING: f32 = 0.01;
+const FOW_NOISE_SPEED: f32 = 0.015;
+const BRIGHT_FOW_COLOR: vec3<f32> = vec3<f32>(0.98, 0.93, 0.93);
+const DARK_FOW_COLOR: vec3<f32> = vec3<f32>(0.08, 0.08, 0.1);
+
+/// `FoWTime`, `vFoWOpacity_FoWTime_SnowMudFade_MaxGameSpeed.y`: the clock the
+/// three noise octaves drift on. It is 0 here for the reason `SnowMudFade` is —
+/// a recording holds one sample an hour and no animation clock — so the fog's
+/// pattern is the noise at its origin. See [`map::frame`].
+fn fow_time() -> f32 { return globals.frame.fow_opacity_time_snow_mud_day_night.y; }
+
+/// `FOWFadeFactor`, which `map::frame` fills from the camera height and the
+/// question of whether this frame draws fog at all.
+fn fow_fade_factor() -> f32 { return globals.frame.ambient_neg_x_fow_fade.w; }
+
+/// `GetIntelFactor` (`fow.fxh:25-28`): how fogged this world position is,
+/// before the height, noise and camera terms.
 ///
-/// The engine's three-argument overload reads them from the same screen-space
-/// buffer, and with the same projective screen coordinate, that
-/// `GetShadowScaled` takes its shadow from: `FogValues.y` is `FogColorFactor`
-/// and `FogValues.z` is `FogAlphaFactor`, while `.r` is the shadow
-/// (`terrain.wgsl`'s header sets out what the engine binds there). The viewer is
-/// omniscient (`PLAN.md` section 2), and both of the engine's own routes to that
-/// leave the alpha at zero: `GetFogFactors` multiplies it by `GetIntelFactor`,
-/// the intel map's alpha, which is zero for a viewer that sees everything, and
-/// by `FOWFadeFactor`, which `FUN_140ff3fc0` writes as a literal zero unless the
-/// map mode is one of `{0, 2, 6, 7, 11}` with the user's fog-of-war toggle on.
-/// A zero alpha makes this the identity whatever the colour factor is. The port
-/// is kept so the FOW pass only has to supply the factors.
+/// The engine's texture is one byte a texel surfaced in `.a`; wgpu has no
+/// single-channel format that lands in alpha, so the port's is `R8Unorm` and
+/// this reads `.r`. It is the same byte.
+fn get_intel_factor(world: vec3<f32>) -> f32 {
+    return textureSampleLevel(intel_map, fow_sampler, map_uv_bottom_up(world), 0.0).r;
+}
+
+/// `GetExtraFogFactor` (`fow.fxh:30-34`). Note the flipped `v`: this texture is
+/// a world image with its first row at the north edge, unlike the intel map.
+fn get_extra_fog_factor(world: vec3<f32>) -> f32 {
+    let uv = vec2<f32>(
+        (world.x + 0.5) / MAP_SIZE_X,
+        (world.z + 0.5 - MAP_SIZE_Y) / -MAP_SIZE_Y,
+    );
+    return textureSampleLevel(fow_extra, fow_sampler, uv, 0.0).g * 2.0 - 1.0;
+}
+
+/// `GetHeightFogFactor` (`fow.fxh:36-41`): the fog lies in the low ground. It
+/// is 1 at and below world height 12 and 0 at and above 15, so a mountain top
+/// stands clear of its own fog and a canopy's `ExtraHeight` lifts it out too.
+fn get_height_fog_factor(pos: vec3<f32>) -> f32 {
+    let factor = (pos.y - HEIGHT_FOG_END) / (HEIGHT_FOG_START - HEIGHT_FOG_END);
+    return min(HEIGHT_FOG_MAX, pow(saturate(factor), HEIGHT_FOG_POW));
+}
+
+/// `GetFOWTransparency` (`fow.fxh:43-54`), three octaves of the noise alpha
+/// multiplied together and pushed through a smoothstep.
+fn get_fow_transparency(world: vec3<f32>) -> f32 {
+    let time = fow_time();
+    var noise = fow_noise_at(
+        world.xz * FOW_NOISE_TILING * 0.1 + time * FOW_NOISE_SPEED * 0.1 * vec2<f32>(0.7, 0.7),
+    ).a * 2.0;
+    noise *= fow_noise_at(
+        world.xz * FOW_NOISE_TILING * 0.5 + time * FOW_NOISE_SPEED * 0.5 * vec2<f32>(-0.8, -0.2),
+    ).a * 1.5;
+    noise *= fow_noise_at(
+        world.xz * FOW_NOISE_TILING + time * FOW_NOISE_SPEED * 0.8 * vec2<f32>(-0.1, -0.9),
+    ).a;
+    return smoothstep(0.0, 1.6, noise);
+}
+
+/// `GetFOWColor` (`fow.fxh:56-62`): which way the fog leans between its dark
+/// and bright colours, from a fourth tap of the same noise.
+fn get_fow_color(world: vec3<f32>) -> f32 {
+    let time = fow_time();
+    let color = fow_noise_at(
+        world.xz * FOW_NOISE_TILING * 0.5 + time * FOW_NOISE_SPEED * 0.5 * vec2<f32>(0.6, -0.2),
+    ).g;
+    return mix(FOW_COLOR_MIN, FOW_COLOR_MAX, color);
+}
+
+/// The noise taps, at level 0.
 ///
-/// `GetFoW` and its `FOW_MAX`, `FOW_CAMERA_MIN` and `FOW_CAMERA_MAX`
-/// (`constants.fxh:160-162`) are a different, dead path: the reference run's
-/// shader cache carries the definition in every map pixel shader and a call in
-/// none of them.
+/// The engine samples with a full mip chain. Every octave is magnified at every
+/// camera height that draws fog at all — the coarsest tiles once per 1000 world
+/// units and the finest once per 100, against a frame 500 world units across at
+/// the `reference/05.md` camera — so level 0 is the level the hardware would
+/// pick. Taking it explicitly keeps these calls legal in the `treeunlit`
+/// shader, which discards before it reaches them.
+fn fow_noise_at(uv: vec2<f32>) -> vec4<f32> {
+    return textureSampleLevel(fow_noise, fow_sampler, uv, 0.0);
+}
+
+/// `GetFogFactors` (`fow.fxh:63-77`), returning the pair the pre-pass writes
+/// into the buffer's green and blue: `(FogColorFactor, FogAlphaFactor)`.
+///
+/// `extra_height` is the canopy lift `treeunlit` passes and `terrainunlit`
+/// leaves at zero.
+fn get_fog_factors(world: vec3<f32>, extra_height: f32) -> vec2<f32> {
+    let height = get_height_fog_factor(world + vec3<f32>(0.0, extra_height, 0.0));
+    let intel = get_intel_factor(world);
+    let transparency = mix(
+        FOW_TRANSPARENCY_MIN,
+        FOW_TRANSPARENCY_MAX,
+        get_fow_transparency(world),
+    );
+    let extra = get_extra_fog_factor(world);
+    let color_factor = get_fow_color(world) * transparency;
+    let alpha_factor =
+        saturate(to_gamma_scalar(saturate(height * transparency)) + extra)
+        * intel
+        * fow_fade_factor();
+    return vec2<f32>(color_factor, alpha_factor);
+}
+
+/// `ApplyFOW( Color, FogColorFactor, FogAlphaFactor )` (`fow.fxh:79-83`).
 fn apply_fow(color: vec3<f32>, color_factor: f32, alpha_factor: f32) -> vec3<f32> {
-    let fog_color = mix(vec3<f32>(0.08, 0.08, 0.1), vec3<f32>(0.98, 0.93, 0.93), color_factor);
+    let fog_color = mix(DARK_FOW_COLOR, BRIGHT_FOW_COLOR, color_factor);
     return mix(color, fog_color, alpha_factor);
+}
+
+/// `ApplyFOW( Color, FOWTexture, UV )` (`fow.fxh:85-89`): the overload every lit
+/// pass calls, reading `FogValues.y` and `.z` out of the same screen-space
+/// buffer, at the same coordinate, that `GetShadowScaled` takes `.r` from.
+///
+/// `position` is the fragment's framebuffer position, the route
+/// [`get_shadow_scaled`] already takes to the engine's `Input.vScreenCoord.xy / .w`.
+/// Above the shadow chain's cutoff the buffer's one-texel stand-in is bound and
+/// both factors read 0, which is the identity — and `FOWFadeFactor` is 0 there
+/// too, since `DRAW_FOW_CUTOFF` and `DRAW_SHADOWS_CUTOFF` are both 400.
+fn apply_fow_buffer(color: vec3<f32>, position: vec4<f32>) -> vec3<f32> {
+    return apply_fow_at(color, position.xy / vec2<f32>(textureDimensions(shadow_map)));
+}
+
+/// The same, for the water, whose `Input.vScreenCoord` is projective and whose
+/// `ApplyFOW` takes it *undistorted*, unlike its `GetShadowScaled`
+/// (`pdxwater.shader:386-398`).
+fn apply_fow_projective(color: vec3<f32>, coord: vec4<f32>) -> vec3<f32> {
+    return apply_fow_at(color, coord.xy / coord.w);
+}
+
+fn apply_fow_at(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+    let values = textureSampleLevel(shadow_map, shadow_map_sampler, uv, 0.0);
+    return apply_fow(color, values.y, values.z);
 }
 
 // --------------------------------------------------------------- snow and mud
