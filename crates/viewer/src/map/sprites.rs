@@ -27,7 +27,7 @@ use super::{
     counters::CounterAssets,
     scene::{SAMPLE_COUNT, Targets, sampler_entry, texture_entry},
     text,
-    textures::{Bound, upload},
+    textures::{Bound, ColorSpace, upload},
 };
 
 /// `interface/mapicons.gfx:290-295`: the VP and capital strip, 20 frames.
@@ -348,7 +348,13 @@ impl IconTextures {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, icons: &MapIcons) -> io::Result<Self> {
         let mut bound = Vec::with_capacity(icons.images.len());
         for (index, image) in icons.images.iter().enumerate() {
-            bound.push(upload(device, queue, &format!("map icon {index}"), image)?);
+            bound.push(upload(
+                device,
+                queue,
+                &format!("map icon {index}"),
+                image,
+                ColorSpace::Linear,
+            )?);
         }
         let clamp = |label, mip, max_lod| {
             device.create_sampler(&wgpu::SamplerDescriptor {

@@ -76,7 +76,7 @@
 // What is left is brightness, not hue. Solving the graded game pixel back through the post chain —
 // which the CPU mirror reproduces to within a byte, with the adapted luminance pinned by the
 // `hdr_*_adjustment` clamps — the ribbon wants about 1.6x this scene level, uniformly across the
-// three channels, at `SCENE_BRIGHTNESS = 0.32`. The open sea in the same frame wants 1.4x to 1.6x
+// three channels, at the scene gain of 0.32 then in force. The open sea in the same frame wants 1.4x to 1.6x
 // and the land about 1.0x, so this is the water-versus-land level difference `water.wgsl` records
 // and not something the river pass does differently. That difference is a level and not a hue:
 // measured again on four frames, sea and land want the same per-channel rotation and differ only

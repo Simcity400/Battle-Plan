@@ -59,7 +59,7 @@ use installed_content::{
 
 use super::{
     scene::{DEPTH_FORMAT, SAMPLE_COUNT, Targets, module, sampler_entry, texture_entry},
-    textures::{Bound, Samplers, upload},
+    textures::{Bound, ColorSpace, Samplers, upload},
 };
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -431,18 +431,21 @@ impl MapFramePass {
                     queue,
                     &format!("{} diffuse", piece.entity),
                     &piece.diffuse,
+                    ColorSpace::Srgb,
                 )?,
                 upload(
                     device,
                     queue,
                     &format!("{} normal", piece.entity),
                     &piece.normal,
+                    ColorSpace::Linear,
                 )?,
                 upload(
                     device,
                     queue,
                     &format!("{} specular", piece.entity),
                     &piece.specular,
+                    ColorSpace::Linear,
                 )?,
             ]);
         }

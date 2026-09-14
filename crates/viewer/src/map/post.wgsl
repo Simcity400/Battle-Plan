@@ -16,11 +16,7 @@ struct Post {
     grade: vec4<f32>,
     /// `(day LUT layer, night LUT layer, Levels min, Levels max)`.
     luts: vec4<f32>,
-    /// `(luminance adaptation blend, scene brightness, unused, unused)`.
-    ///
-    /// The scene brightness is not the engine's: it is how bright this viewer's
-    /// scene is as a fraction of the one the game grades, and it multiplies the
-    /// scene wherever the chain reads it. See `SCENE_BRIGHTNESS` in `post.rs`.
+    /// `(luminance adaptation blend, unused, unused, unused)`.
     misc: vec4<f32>,
 }
 
@@ -52,9 +48,9 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> FullScreen {
 
 /// `--postfx off`: the float scene written straight into the 8-bit output, so
 /// the verification dump is the raw scene and the target's own clamp is the
-/// only thing that touches it. No engine stage corresponds to this; the engine
-/// renders to an 8-bit scene outright when its HDR chain is off, which is the
-/// same picture by a different route.
+/// only thing that touches it. No engine stage corresponds to this. It is what
+/// the game's own scene target is compared against: the height-290 capture
+/// dumps that target directly, and `map::textures` tabulates the two.
 @fragment
 fn copy_main(input: FullScreen) -> @location(0) vec4<f32> {
     return textureSampleLevel(scene, linear_clamp, input.uv, 0.0);
@@ -66,7 +62,7 @@ fn copy_main(input: FullScreen) -> @location(0) vec4<f32> {
 fn seed_main(input: FullScreen) -> @location(0) f32 {
     // A bilinear tap at a half-resolution texel centre is the mean of the four
     // scene texels under it, which is the `tex2Dlod0` the game takes.
-    let color = textureSampleLevel(scene, linear_clamp, input.uv, 0.0).rgb * post.misc.y;
+    let color = textureSampleLevel(scene, linear_clamp, input.uv, 0.0).rgb;
     return log(max(0.0, dot(color, LUMINANCE_VECTOR)) + 0.0001);
 }
 
@@ -177,9 +173,7 @@ fn uncharted2(x: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn grade_main(input: FullScreen) -> @location(0) vec4<f32> {
-    // The scene as the game's chain would have received it; `post.misc.y` is
-    // this viewer's own brightness gap, not one of the engine's constants.
-    var color = textureSampleLevel(scene, linear_clamp, input.uv, 0.0).rgb * post.misc.y;
+    var color = textureSampleLevel(scene, linear_clamp, input.uv, 0.0).rgb;
 
     // `Exposure`, the `ADJUSTED_EXPOSURE` branch.
     let average = textureLoad(previous_luminance, vec2<i32>(0, 0), 0).r;

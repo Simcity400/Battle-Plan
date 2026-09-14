@@ -152,7 +152,7 @@
 // of `M`; a fifth with white checks the model, and its residual is 0.0000 by day
 // and 0.0025 at night. Inverting that against the game's own frame carried back
 // through the grade (`scene\chain.py`, the winter LUT at exposure 1.6, divided
-// by `SCENE_BRIGHTNESS`) gives the cube colour the game demands with every other
+// by the scene gain then in force) gives the cube colour the game demands with every other
 // term in the pass held at what it already computes. Medians over open sea, in
 // the units of a `--postfx off` dump (`cube\probe.py`, `cube\implied.py`):
 //
@@ -196,9 +196,27 @@
 // this pass's largest single lever — 0.502 of the fresnel mix, and 58 % of
 // the blue and 74 % of the red of what the pass writes at open sea by day —
 // so any whole-sea correction lands on it whatever its cause. The cube is the
-// file's, at the file's colour space, sampled on the face the engine samples,
-// with the orientation the engine uses. Nothing in this pass's cube path is left
-// to change.
+// file's, sampled on the face the engine samples, with the orientation the
+// engine uses.
+//
+// ### And the colour space was the one thing left, after all (2026-09-15)
+//
+// "At the file's colour space" was the assumption this section did not test,
+// because `map::textures` had closed it. The capture reopens and settles it:
+// the engine binds `reflection.dds` as **`B8G8R8A8_SRGB`** — at `t8` of the
+// water draw (event 10338 of `hoi4_frame33840.rdc`), `t14` of the river draw,
+// `t9` of the tree draw and `t7` of every `pdxmesh` draw — so every cube sample
+// is sRGB-decoded and this port was reading the bytes raw. That is exactly the
+// shape the table above demands and could not find: a decode raises the cube's
+// contrast and, because the file's faces lead in blue (blue over red 1.06 to
+// 1.20), it rotates the sample toward blue as well, which is the direction
+// three of the five framings wanted. With it, and with the rest of the map's
+// colour textures decoded, the game's own scene target at open sea is
+// **1.064 1.034 1.000** of this viewer's, measured against the capture's
+// `R16G16B16A16_FLOAT` scene rather than through an inverted grade
+// (`map::textures` carries the table). The "there is no such cube" result
+// stands as stated — no *undecoded* cube colour fits all five frames — and it
+// was the right question asked of the wrong operand.
 //
 // The two underwater textures were cross-checked the same way: the shader's
 // `waterColorTint` matches a CPU decode of `colormap_water_0.dds` at the probed
@@ -217,9 +235,9 @@
 // refraction adds only 0.056 0.081 0.111 on top. Inverting the day frame's
 // grade — the CPU mirror reproduces this viewer's own graded frame to 0.50 of
 // 255, so the inverse is trustworthy — the game's open sea implies a scene of
-// 0.067 0.119 0.195 — read at `SCENE_BRIGHTNESS = 0.32` and against the `green`
+// 0.067 0.119 0.195 — read at the scene gain of 0.32 then in force, and against the `green`
 // LUT, before the snow rule found the winter volume; the table below re-takes it
-// at the grading the frames really use. At `SCENE_BRIGHTNESS = 0.32` the cube
+// at the grading the frames really use. At a scene gain of 0.32 the cube
 // term alone is
 // 0.061 0.062 0.065, which is 91 % of the game's *whole* red and 33 % of its
 // blue, so reaching the game's daylight sea by changing the refraction would
@@ -274,8 +292,8 @@
 //
 // One gain for both surfaces costs the sea 0.0 to 3.3 and the land 1.6 to 3.9,
 // and the day frame's shared gain of 0.231 0.346 0.550 is the same
-// blue-over-red rotation `map::post`'s `SCENE_BRIGHTNESS` already records as
-// 0.22 0.32 0.54 for the whole frame. What is left of the split is a level
+// blue-over-red rotation `map::post` records as 0.22 0.32 0.54 for the whole
+// frame (the sRGB decode above supplies it). What is left of the split is a level
 // difference, not a different correction: the best *uniform* gain is 0.407 for
 // the day sea against 0.275 for the day land, 0.381 against 0.294 at night and
 // 0.434 against 0.357 on the med pan, so our sea is if anything too *dark*
