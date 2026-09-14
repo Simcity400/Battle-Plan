@@ -10,7 +10,7 @@ use crate::{
 };
 use engine::{
     Memory, cair_wing, carmy, cequipment_variant, cequipment_variant_pool::DivisionSource,
-    corders_group, cship, walk::Outcome,
+    corders_group, cprovince, cship, walk::Outcome,
 };
 use replay::{
     frame::{BaselineToken, TABLE_COUNT, TableInput},
@@ -41,19 +41,19 @@ pub type ReadGroup = (&'static str, TableId, Vec<TableId>);
 
 // Native conversion reuse stays within its pack's existing timing scope.
 macro_rules! spool_inputs {
-    (lexical, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr) => {
+    (lexical, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr) => {
         $captured.table_inputs($lexical)
     };
-    (characters, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr) => {
+    (characters, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr) => {
         $captured.table_inputs($characters)
     };
-    (intel, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr) => {
-        $captured.table_inputs($baseline, $scratch)
+    (intel, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr) => {
+        $captured.table_inputs($baseline, $scratch, $intel)
     };
-    (governance, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr) => {
+    (governance, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr) => {
         $captured.table_inputs($research)
     };
-    ($pack:ident, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr) => {
+    ($pack:ident, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr) => {
         $captured.tables().map(TableInput::Sampled)
     };
 }
@@ -94,6 +94,11 @@ macro_rules! packs {
             overhead: [u64; TABLE_COUNT],
         }
         impl Captured {
+            #[cfg(test)]
+            pub(crate) fn set_intel_shadow_fixture(&mut self, value: i64) {
+                self.intel = intel::intel_shadow_fixture(value);
+            }
+
             pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
                 assert_eq!(successful.len(), TABLE_COUNT);
                 Self {
@@ -134,6 +139,7 @@ macro_rules! packs {
                 self.registry.grow(&mut capacity.variant_registry, variant_successful(successful));
             }
             /// Spool-thread conversion only. Existing core slots survive.
+            #[allow(clippy::too_many_arguments)]
             pub(crate) fn insert_tables(
                 &self,
                 destination: &mut [TableInput; TABLE_COUNT],
@@ -142,11 +148,12 @@ macro_rules! packs {
                 research: Option<&mut governance::ResearchConversion<'_>>,
                 characters: Option<&mut characters::CharacterConversion<'_>>,
                 lexical: Option<&mut lexical::LexicalConversion<'_>>,
+                intel: Option<&mut intel::IntelConversion<'_>>,
             ) -> [i64; PACK_NAMES.len()] {
                 let mut costs = [0; PACK_NAMES.len()];
                 let mut slots = costs.iter_mut();
                 $(let started = qpc();
-                for (id, view) in $pack::TABLES.into_iter().zip(spool_inputs!($pack, self.$pack, variables_baseline, variables_scratch, research, characters, lexical)) { destination[id.index()] = view; }
+                for (id, view) in $pack::TABLES.into_iter().zip(spool_inputs!($pack, self.$pack, variables_baseline, variables_scratch, research, characters, lexical, intel)) { destination[id.index()] = view; }
                 *slots.next().unwrap() = qpc() - started;)+
                 costs
             }
@@ -178,6 +185,8 @@ macro_rules! packs {
                 std::iter::once(TableId::Divisions).chain(DIVISION_SOURCE_TABLES).collect()));
             groups.push(("states and hourly state flags", TableId::States,
                 vec![TableId::States, TableId::StateFlags]));
+            groups.push(("province identity and stored client visibility", TableId::Provinces,
+                vec![TableId::Provinces, TableId::ProvinceVisibility]));
             groups
         }
     };
@@ -199,12 +208,26 @@ packs!(
     naval_history,
     production,
     projects,
+    province_visibility,
     session,
     state_flags,
     weather
 );
 
 impl Captured {
+    pub(crate) fn capture_province_visibility(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        provinces: &[cprovince::Row],
+        source: Outcome,
+        needed: bool,
+    ) -> (bool, u64) {
+        self.province_visibility
+            .capture(memory, base, state, provinces, source, needed)
+    }
+
     /// Move only ETA-owned buffers plus copied source identities into the
     /// callback-bounded worker. Empty placeholders allocate nothing.
     pub(crate) fn take_eta_request(
@@ -615,7 +638,27 @@ impl Captured {
     /// Run after root division acquisition and map.sample. Returned arrays use
     /// global TableId indices; core slots remain zero. The registry census and
     /// variant details run together on their existing cadence.
+    #[cfg(test)]
     pub fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        current_hour: i32,
+        needed: &[bool],
+        force_full: bool,
+    ) -> ([bool; TABLE_COUNT], [u64; TABLE_COUNT]) {
+        let (mut matched, mut ticks) =
+            self.capture_before_eta(memory, base, game_state, current_hour, needed, force_full);
+        let eta = TableId::DivisionEta.index();
+        (matched[eta], ticks[eta]) = self.capture_eta(memory, base, game_state, needed[eta]);
+        (matched, ticks)
+    }
+
+    /// All frame-owned acquisition independent of the moved ETA output. The
+    /// callback can run this while ETA's owned worker request is outstanding.
+    /// Caller must recover that request and call capture_eta before publishing.
+    pub(crate) fn capture_before_eta(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -691,14 +734,6 @@ impl Captured {
         );
         scatter(&division_presentation::TABLES, pass, &mut matched);
         scatter(&division_presentation::TABLES, cost, &mut ticks);
-        let (pass, cost) = self.acquire_eta(
-            memory,
-            base,
-            game_state,
-            needed[TableId::DivisionEta.index()],
-        );
-        scatter(&division_eta::TABLES, pass, &mut matched);
-        scatter(&division_eta::TABLES, cost, &mut ticks);
         // The saved campaign registry is authoritative. It includes variants
         // absent from units, current production and stockpiles. Preserve every
         // native entry and duplicate for shared off-thread key rejection.
@@ -726,12 +761,32 @@ impl Captured {
         }
         staggered!(lexical);
         for table in TABLES {
+            if table == TableId::DivisionEta {
+                continue;
+            }
             ticks[table.index()] =
                 ticks[table.index()].saturating_add(self.overhead[table.index()]);
             matched[table.index()] &= needed[table.index()]
                 && replay::cadence::should_walk(table, current_hour, force_full);
         }
         (matched, ticks)
+    }
+
+    /// Terminal ETA consumption after an accepted request has been joined. A
+    /// rejected dispatch still runs the genuine synchronous acquisition here;
+    /// terminal worker failures retain their unavailable result without retry.
+    pub(crate) fn capture_eta(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        needed: bool,
+    ) -> (bool, u64) {
+        let (pass, cost) = self.acquire_eta(memory, base, game_state, needed);
+        (
+            pass[0] && needed,
+            cost[0].saturating_add(self.overhead[TableId::DivisionEta.index()]),
+        )
     }
 }
 
@@ -1079,6 +1134,92 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
+    fn independent_capture_leaves_eta_owned_until_terminal_join_and_charges_it_once() {
+        struct FailedReads(std::cell::Cell<usize>);
+        impl Memory for FailedReads {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                self.0.set(self.0.get() + 1);
+                false
+            }
+        }
+        struct NoRead;
+        impl Memory for NoRead {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("terminal ETA report must not retry live acquisition");
+            }
+        }
+        for failure in [
+            None,
+            Some(crate::acquisition::Failure::Panicked),
+            Some(crate::acquisition::Failure::Stopped),
+        ] {
+            let mut captured = Captured::with_capacities(&Capacities::default(), &[0; TABLE_COUNT]);
+            let eta = TableId::DivisionEta.index();
+            let request = captured.take_eta_request(0, 0x1000, true);
+            let overhead = captured.overhead[eta];
+            let memory = FailedReads(std::cell::Cell::new(0));
+            let (checks, ticks) =
+                captured.capture_before_eta(&memory, 0, 0x1000, 0, &[true; TABLE_COUNT], true);
+            assert!(
+                memory.0.get() > 0,
+                "independent live work ran before ETA recovery"
+            );
+            assert!(!checks[eta]);
+            assert_eq!(ticks[eta], 0);
+            assert_eq!(captured.overhead[eta], overhead);
+            assert!(captured.eta_report.is_none());
+            let report = failure.map_or(
+                Ok(division_eta::AcquisitionReport {
+                    matched: true,
+                    ticks: 123,
+                }),
+                Err,
+            );
+            captured.restore_eta_request(request, Some(report));
+            let (matched, ticks) = captured.capture_eta(&NoRead, 0, 0x1000, true);
+            assert_eq!(matched, failure.is_none());
+            assert_eq!(ticks, overhead + if failure.is_none() { 123 } else { 0 });
+            assert!(captured.eta_report.is_none());
+            if failure.is_some() {
+                assert!(matches!(
+                    captured.division_eta.outcomes()[0],
+                    Outcome::Unavailable { .. }
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn deferred_eta_rejected_dispatch_still_runs_both_independent_live_passes() {
+        struct FailedReads(std::cell::Cell<usize>);
+        impl Memory for FailedReads {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                self.0.set(self.0.get() + 1);
+                false
+            }
+        }
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0; TABLE_COUNT]);
+        captured.divisions.finish(Outcome::Rows { len: 0 }, false);
+        captured.divisions.finish(Outcome::Rows { len: 0 }, true);
+        let request = captured.take_eta_request(0, 0x1000, true);
+        captured.restore_eta_request(request, None);
+        let memory = FailedReads(std::cell::Cell::new(0));
+        captured.capture_before_eta(&memory, 0, 0x1000, 0, &[true; TABLE_COUNT], true);
+        let before_eta = memory.0.get();
+        let (matched, _) = captured.capture_eta(&memory, 0, 0x1000, true);
+        assert!(!matched);
+        assert_eq!(
+            memory.0.get() - before_eta,
+            2,
+            "first and second ETA province-header reads remain independent"
+        );
+        assert!(matches!(
+            captured.division_eta.outcomes()[0],
+            Outcome::Unavailable { .. }
+        ));
+    }
+
+    #[test]
     fn eta_owned_handoff_restores_storage_and_terminal_worker_results_without_rereading() {
         struct NoRead;
         impl Memory for NoRead {
@@ -1155,7 +1296,7 @@ mod tests {
 
     #[test]
     fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership() {
-        assert_eq!(N, 135);
+        assert_eq!(N, 136);
         let actual: BTreeSet<_> = TABLES.into_iter().collect();
         assert_eq!(actual.len(), N);
         let expected: BTreeSet<_> = TableId::ALL
@@ -1175,12 +1316,20 @@ mod tests {
                 );
             } else if anchor == TableId::States {
                 assert_eq!(members, vec![TableId::States, TableId::StateFlags]);
+            } else if anchor == TableId::Provinces {
+                assert_eq!(
+                    members,
+                    vec![TableId::Provinces, TableId::ProvinceVisibility]
+                );
             } else {
                 assert!(members.iter().all(|table| actual.contains(table)));
             }
         }
         let groups = read_groups();
-        for table in DIVISION_SOURCE_TABLES {
+        for table in DIVISION_SOURCE_TABLES
+            .into_iter()
+            .chain([TableId::ProvinceVisibility])
+        {
             assert_eq!(
                 groups
                     .iter()

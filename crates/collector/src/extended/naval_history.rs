@@ -503,6 +503,32 @@ impl Captured {
         self.source_ticks[1] = self.source_ticks[1].saturating_add(elapsed(begin));
     }
 
+    /// Typed theatre fallback consumes the same map-admitted membership prefix
+    /// its visitor would have read; the raw theatre path uses the full source.
+    pub(crate) fn install_map_wings(&mut self, job: &super::air::AirWingJob, second: bool) {
+        let begin = qpc();
+        let sources = job.map_memberships();
+        let (output, outcome) = if second {
+            (&mut self.wing_sources.second, &mut self.wings_second)
+        } else {
+            (&mut self.wing_sources.rows, &mut self.wing_sources.outcome)
+        };
+        *outcome = Outcome::Rows { len: 0 };
+        for source in sources.iter().take(job.map_outcome.len()) {
+            let row = match source.error {
+                Some(reason) if outcome.len() < output.len() => Err(reason),
+                _ => Ok(source.value),
+            };
+            push(output, outcome, row);
+        }
+        self.add_wing_source_ticks(job.membership_ticks.saturating_add(elapsed(begin)));
+        self.finish_wings(job.map_outcome, second);
+    }
+
+    pub(crate) fn add_wing_source_ticks(&mut self, ticks: u64) {
+        self.source_ticks[1] = self.source_ticks[1].saturating_add(ticks);
+    }
+
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -1468,20 +1494,68 @@ const OOB_MASK: u32 = 0x1C0;
 pub(crate) struct NavalJob {
     pub log: RawLog<NAVAL_PACK_N>,
     pub game_state: usize,
-    wing_rows: Vec<cair_wing::Row>,
     wing_sources: Vec<ctheatre::WingMembership>,
     wing_outcome: Option<Outcome>,
+    wing_required: usize,
     capacity_charge: crate::raw_memory::Charge,
 }
 
 impl NavalJob {
+    /// Callback-owned values from the one shared complete wing census.
+    pub(crate) fn install_wings(&mut self, job: &super::air::AirWingJob) -> u64 {
+        let begin = qpc();
+        self.wing_sources.clear();
+        let (source, rows) = job.memberships();
+        // Capacity demand is independent of failure: a bad tail leaf in the
+        // complete shared census must not hide a smaller consumer's shortage.
+        self.wing_required = match source {
+            Outcome::Rows { len } => len,
+            Outcome::Truncated { len, unread_rows } => len.saturating_add(unread_rows as usize),
+            Outcome::Unavailable { .. } => rows.len().saturating_add(1),
+        };
+        let mut failure = None;
+        let mut omitted = 0_u32;
+        for row in rows {
+            if let Some(reason) = row.error {
+                failure.get_or_insert(reason);
+            } else if self.wing_sources.len() < self.wing_sources.capacity() {
+                self.wing_sources.push(row.value);
+            } else {
+                omitted = omitted.saturating_add(1);
+            }
+        }
+        self.wing_outcome = Some(match source {
+            Outcome::Rows { .. } => match failure {
+                Some(reason) => Outcome::Unavailable { reason },
+                None if omitted != 0 => Outcome::Truncated {
+                    len: self.wing_sources.len(),
+                    unread_rows: omitted,
+                },
+                None => Outcome::Rows {
+                    len: self.wing_sources.len(),
+                },
+            },
+            Outcome::Truncated { .. } => {
+                let len = self.wing_sources.len();
+                match u32::try_from(self.wing_required.saturating_sub(len)) {
+                    Ok(unread_rows) => Outcome::Truncated { len, unread_rows },
+                    Err(_) => Outcome::Unavailable {
+                        reason: "air-wing omitted source count overflow",
+                    },
+                }
+            }
+            other => other,
+        });
+        elapsed(begin)
+    }
+
     pub fn new() -> Self {
         let mut job = Self {
             log: RawLog::new(1 << 17, 4 << 20),
             game_state: 0,
-            wing_rows: vec![cair_wing::Row::default(); 4096],
             wing_sources: Vec::with_capacity(4096),
             wing_outcome: None,
+            wing_required: 0,
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         job.update_capacity_charge();
@@ -1493,17 +1567,25 @@ impl NavalJob {
         self.game_state = 0;
         self.wing_sources.clear();
         self.wing_outcome = None;
+        self.wing_required = 0;
     }
 
     pub fn grow_for_next(&self) -> bool {
-        self.log.grow_for_next() || matches!(self.wing_outcome, Some(Outcome::Truncated { .. }))
+        self.log.grow_for_next()
+            || self.wing_required > self.wing_sources.capacity()
+            || matches!(self.wing_outcome, Some(Outcome::Truncated { .. }))
     }
 
     pub fn grow(&mut self) {
         self.log.grow();
-        if let Some(Outcome::Truncated { len, unread_rows }) = self.wing_outcome {
-            let target = (len + unread_rows as usize).max(self.wing_rows.len() * 2);
-            self.wing_rows.resize(target, cair_wing::Row::default());
+        let required = match self.wing_outcome {
+            Some(Outcome::Truncated { len, unread_rows }) => self
+                .wing_required
+                .max(len.saturating_add(unread_rows as usize)),
+            _ => self.wing_required,
+        };
+        if required > self.wing_sources.capacity() {
+            let target = required.max(self.wing_sources.capacity().saturating_mul(2));
             self.wing_sources
                 .reserve_exact(target.saturating_sub(self.wing_sources.len()));
         }
@@ -1513,9 +1595,13 @@ impl NavalJob {
     fn update_capacity_charge(&mut self) {
         use crate::raw_memory::{Capacity, vector_bytes};
         self.capacity_charge.set(Capacity {
-            auxiliary_vectors: vector_bytes(&self.wing_rows) + vector_bytes(&self.wing_sources),
+            auxiliary_vectors: vector_bytes(&self.wing_sources),
             ..Default::default()
         });
+    }
+
+    pub(crate) fn wing_limit(&self) -> usize {
+        self.wing_sources.capacity()
     }
 }
 
@@ -2158,7 +2244,8 @@ fn copy_naval_pass(
     game_state: usize,
     ticks: &mut [u64; NAVAL_PACK_N],
 ) {
-    job.clear();
+    // Shared wing values were installed before this independent raw phase.
+    job.log.clear();
     job.game_state = game_state;
     let started = qpc();
     copy_naval_theatres(&mut job.log, memory, base, game_state);
@@ -2169,41 +2256,6 @@ fn copy_naval_pass(
     let started = qpc();
     copy_naval_oob(job, memory, base);
     ticks[6] += qpc().saturating_sub(started).max(0) as u64;
-    if job.log.overflowed {
-        return;
-    }
-    let started = qpc();
-    copy_naval_wings(job, memory, base, game_state);
-    ticks[0] += qpc().saturating_sub(started).max(0) as u64;
-}
-
-/// The reverse census needs authenticated wing identities and group handles.
-/// The former mirror copied only group handles, then tried to replay the full
-/// wing walker from missing bytes. Use the existing reader into bounded,
-/// reusable storage until a complete cheaper copy contract is measured.
-fn copy_naval_wings(
-    job: &mut NavalJob,
-    memory: &impl engine::Memory,
-    base: usize,
-    game_state: usize,
-) {
-    let mut failure = None;
-    let outcome = cair_wing::walk_with(
-        memory,
-        base,
-        game_state,
-        &mut job.wing_rows,
-        |pointer, _, row| match ctheatre::read_wing_membership(memory, pointer, row) {
-            Ok(source) => job.wing_sources.push(source),
-            Err(reason) => {
-                failure.get_or_insert(reason);
-            }
-        },
-    );
-    job.wing_outcome = Some(match outcome {
-        Outcome::Rows { .. } => failure.map_or(outcome, |reason| Outcome::Unavailable { reason }),
-        _ => outcome,
-    });
 }
 
 pub(crate) fn copy_naval_refresh(
@@ -2212,6 +2264,13 @@ pub(crate) fn copy_naval_refresh(
     first: &mut NavalJob,
     mut second: Option<&mut NavalJob>,
 ) -> NavalCopyReport {
+    if first.wing_outcome.is_none()
+        || second
+            .as_deref()
+            .is_some_and(|job| job.wing_outcome.is_none())
+    {
+        return NavalCopyReport::default();
+    }
     let mut ticks = [0u64; NAVAL_PACK_N];
     copy_naval_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
     let mut matched = [true; NAVAL_PACK_N];
@@ -2301,10 +2360,25 @@ pub(crate) fn decode_naval_payload(
     let copied = source_len.min(captured.wing_sources.rows.len());
     captured.wing_sources.rows[..copied].copy_from_slice(&job.wing_sources[..copied]);
     captured.wing_sources.outcome = match job.wing_outcome {
-        Some(Outcome::Rows { .. }) if copied < source_len => Outcome::Truncated {
-            len: copied,
-            unread_rows: (source_len - copied) as u32,
-        },
+        Some(Outcome::Rows { .. } | Outcome::Truncated { .. }) => {
+            let missing = match job.wing_outcome {
+                Some(Outcome::Truncated { unread_rows, .. }) => unread_rows,
+                _ => 0,
+            };
+            match u32::try_from(source_len - copied)
+                .ok()
+                .and_then(|omitted| missing.checked_add(omitted))
+            {
+                Some(0) => Outcome::Rows { len: copied },
+                Some(unread_rows) => Outcome::Truncated {
+                    len: copied,
+                    unread_rows,
+                },
+                None => Outcome::Unavailable {
+                    reason: "air-wing omitted source count overflow",
+                },
+            }
+        }
         Some(outcome) => outcome,
         None => source_unavailable(),
     };
@@ -3140,12 +3214,10 @@ mod tests {
         use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
         static LOCAL: Tracker = Tracker::new();
         let mut job = NavalJob::default();
-        job.wing_rows.reserve_exact(3);
         job.wing_sources.reserve_exact(3);
         job.capacity_charge = Charge::empty_on(&LOCAL);
         job.update_capacity_charge();
-        let expected =
-            |job: &NavalJob| vector_bytes(&job.wing_rows) + vector_bytes(&job.wing_sources);
+        let expected = |job: &NavalJob| vector_bytes(&job.wing_sources);
         let initial = LOCAL.snapshot().current.auxiliary_vectors;
         assert_eq!(initial, expected(&job));
         job.wing_outcome = Some(Outcome::Truncated {
@@ -3160,6 +3232,103 @@ mod tests {
         assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, grown);
         drop(job);
         assert_eq!(LOCAL.snapshot().current, Capacity::default());
+    }
+
+    #[test]
+    fn shared_naval_projection_preserves_truncated_prefix_and_growth() {
+        use crate::extended::air::{AirWingCopyContext, AirWingJob, wing_test_kit as kit};
+        let mut bytes = kit::fixture();
+        bytes[0x34000..0x34008].fill(0);
+        let memory = kit::memory(&bytes);
+        let mut naval = NavalJob::default();
+        naval.wing_sources.reserve_exact(1);
+        let mut wings = AirWingJob::new();
+        let context = AirWingCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [false; 2],
+            limits: [2, 3, 2],
+            naval_limits: [naval.wing_limit(); 2],
+        };
+        assert!(crate::extended::air::copy_air_refresh(&memory, context, &mut wings, None).raw_ok);
+        naval.install_wings(&wings);
+        assert_eq!(naval.wing_sources.len(), 1);
+        assert_eq!(
+            naval.wing_outcome,
+            Some(Outcome::Truncated {
+                len: 1,
+                unread_rows: 1
+            })
+        );
+        assert_eq!(naval.wing_required, 2);
+        assert!(naval.grow_for_next());
+        naval.grow();
+        assert!(naval.wing_limit() >= 2);
+    }
+
+    #[test]
+    fn naval_decode_bounds_shared_memberships_to_frame_capacity() {
+        use super::naval_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let mut job = NavalJob::new();
+        kit::stage_wings(&memory, &mut job);
+        let context = NavalCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+        };
+        assert!(super::copy_naval_refresh(&memory, context, &mut job, None).raw_ok);
+        job.wing_sources.resize(2, Default::default());
+        let capacity = Capacities {
+            wing_sources: 1,
+            ..Default::default()
+        };
+        let mut captured = Captured::with_capacities(&capacity, &[0; N]);
+        for missing in [0, 3] {
+            job.wing_outcome = Some(if missing == 0 {
+                Outcome::Rows { len: 2 }
+            } else {
+                Outcome::Truncated {
+                    len: 2,
+                    unread_rows: missing,
+                }
+            });
+            super::decode_naval_payload(&mut captured, kit::BASE, &job, &mut [0; NAVAL_PACK_N]);
+            assert_eq!(
+                captured.wing_sources.outcome,
+                Outcome::Truncated {
+                    len: 1,
+                    unread_rows: missing + 1
+                }
+            );
+            assert_eq!(captured.wing_sources.rows.len(), 1);
+        }
+    }
+
+    #[test]
+    fn shared_wing_fallback_charges_acquisition_and_installation() {
+        use crate::extended::air::{AirWingCopyContext, AirWingJob, wing_test_kit as kit};
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let mut wings = AirWingJob::new();
+        let context = AirWingCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            needed: [false; 2],
+            limits: [2, 3, 2],
+            naval_limits: [0; 2],
+        };
+        assert!(crate::extended::air::copy_air_refresh(&memory, context, &mut wings, None).raw_ok);
+        wings.membership_ticks = 101;
+        let mut captured = small();
+        captured.add_wing_source_ticks(17);
+        assert_eq!(captured.source_ticks[1], 17);
+        captured.install_map_wings(&wings, false);
+        assert!(captured.source_ticks[1] >= 118);
+        assert_eq!(captured.wing_sources.outcome, Outcome::Rows { len: 2 });
+        let first_ticks = captured.source_ticks[1];
+        captured.add_wing_source_ticks(23);
+        assert_eq!(captured.source_ticks[1], first_ticks + 23);
     }
 
     use engine::memory::SliceMemory;
@@ -3484,6 +3653,7 @@ mod tests {
             game_state: kit::GAME_STATE,
         };
         let mut first = NavalJob::new();
+        kit::stage_wings(&memory, &mut first);
         let report = super::copy_naval_refresh(&memory, ctx, &mut first, None);
         assert!(report.raw_ok);
         let sizes = memory.sizes.borrow().clone();
@@ -3609,6 +3779,8 @@ mod tests {
         };
         let mut first = NavalJob::new();
         let mut second = NavalJob::new();
+        kit::stage_wings(&memory, &mut first);
+        kit::stage_wings(&memory, &mut second);
         let report = super::copy_naval_refresh(&memory, ctx, &mut first, Some(&mut second));
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 9]);
@@ -3631,6 +3803,7 @@ mod tests {
             game_state: 0,
             ..Default::default()
         };
+        kit::stage_wings(&memory, &mut tiny);
         let report = super::copy_naval_refresh(&memory, ctx, &mut tiny, None);
         assert!(!report.raw_ok);
     }
@@ -4050,6 +4223,19 @@ pub(crate) mod naval_test_kit {
     use super::{Capacities, Captured, NavalCopyContext, NavalCopyReport, NavalJob};
     use engine::{Memory, memory::SliceMemory, walk::Outcome};
 
+    pub(crate) fn stage_wings(memory: &impl Memory, job: &mut NavalJob) {
+        let mut wings = crate::extended::air::AirWingJob::new();
+        let context = crate::extended::air::AirWingCopyContext {
+            base: BASE,
+            game_state: GAME_STATE,
+            needed: [false; 2],
+            limits: [0; 3],
+            naval_limits: [job.wing_limit(); 2],
+        };
+        assert!(crate::extended::air::copy_air_refresh(memory, context, &mut wings, None).raw_ok);
+        job.install_wings(&wings);
+    }
+
     pub(crate) const BASE: usize = 0;
     pub(crate) const GAME_STATE: usize = 0x10000;
     const CTAB: usize = 0x11000;
@@ -4333,6 +4519,8 @@ pub(crate) mod naval_test_kit {
         };
         let mut first = NavalJob::new();
         let mut second = NavalJob::new();
+        stage_wings(memory, &mut first);
+        stage_wings(memory, &mut second);
         let report = super::copy_naval_refresh(memory, ctx, &mut first, Some(&mut second));
         assert!(report.raw_ok);
         let mut captured = Captured::with_capacities(&Capacities::default(), &[0; 17]);
@@ -4372,6 +4560,8 @@ pub(crate) mod naval_test_kit {
         };
         let mut first = NavalJob::new();
         let mut second = NavalJob::new();
+        stage_wings(memory, &mut first);
+        stage_wings(memory, &mut second);
         let report = super::copy_naval_refresh(memory, ctx, &mut first, Some(&mut second));
         assert!(report.raw_ok);
         let mut captured = Captured::with_capacities(capacity, &[0; 17]);
@@ -4415,6 +4605,8 @@ pub(crate) mod naval_test_kit {
         };
         let mut first = NavalJob::new();
         let mut second = NavalJob::new();
+        stage_wings(memory, &mut first);
+        stage_wings(memory, &mut second);
         let report = super::copy_naval_refresh(memory, ctx, &mut first, Some(&mut second));
         assert!(report.raw_ok);
         let capacity = Capacities {

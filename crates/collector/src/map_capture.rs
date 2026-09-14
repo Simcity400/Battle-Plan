@@ -144,6 +144,9 @@ pub struct MapCaptured {
     /// fills these rows before the ready handoff. Preserved across `reset`
     /// via explicit clearing (set per hour, cleared by the worker).
     pub(crate) players_raw_mode: bool,
+    /// Current callback's shared complete wing source already installed this
+    /// independently bounded map projection; never a cross-hour cache.
+    owned_air_match: Option<bool>,
     pub player_names: Vec<u8>,
     player_names_second: Vec<u8>,
     pub player_names_len: usize,
@@ -165,6 +168,15 @@ pub struct MapCaptured {
 }
 
 impl MapCaptured {
+    pub(crate) fn install_owned_air(&mut self, job: &crate::extended::air::AirWingJob) -> u64 {
+        let begin = qpc();
+        let len = job.map_outcome.len();
+        self.air_wings.rows[..len].copy_from_slice(&job.map_rows[..len]);
+        self.air_wings.outcome = job.map_outcome;
+        self.owned_air_match = Some(job.map_matched);
+        qpc().saturating_sub(begin).max(0) as u64
+    }
+
     #[cfg(test)]
     pub fn new() -> Self {
         Self::with_capacities(
@@ -190,6 +202,7 @@ impl MapCaptured {
             naval_combats: CaptureRows::new(capacity.rows[6], successful[6]),
             naval_combat_participants: CaptureRows::new(capacity.rows[7], successful[7]),
             air_wings: CaptureRows::new(capacity.rows[8], successful[8]),
+            owned_air_match: None,
             army_orders: CaptureRows::new(capacity.rows[9], successful[9]),
             player_names: vec![0; capacity.player_names],
             player_names_second: comparison_rows(capacity.player_names, successful[0]),
@@ -246,6 +259,7 @@ impl MapCaptured {
         self.naval_combats.reset();
         self.naval_combat_participants.reset();
         self.air_wings.reset();
+        self.owned_air_match = None;
         self.army_orders.reset();
         self.player_names_len = 0;
         self.player_names_required = 0;
@@ -606,34 +620,39 @@ impl MapCaptured {
         }
 
         let begin = qpc();
-        let mut nested = sources.begin_air(false);
-        self.air_wings.outcome = cair_wing::walk_with(
-            memory,
-            base,
-            state,
-            &mut self.air_wings.rows,
-            |pointer, pool, row| {
-                nested = nested.saturating_add(sources.air(false, pointer, pool, row))
-            },
-        );
-        nested = nested.saturating_add(sources.finish_air(false, self.air_wings.outcome));
-        if needed[8] || source_checks.air_wings {
-            nested = nested.saturating_add(sources.begin_air(true));
-            let second = cair_wing::walk_with(
+        if let Some(equal) = self.owned_air_match {
+            matched[8] = equal;
+            self.air_wings.mismatches = usize::from(needed[8] && !equal);
+        } else {
+            let mut nested = sources.begin_air(false);
+            self.air_wings.outcome = cair_wing::walk_with(
                 memory,
                 base,
                 state,
-                &mut self.air_wings.second,
+                &mut self.air_wings.rows,
                 |pointer, pool, row| {
-                    nested = nested.saturating_add(sources.air(true, pointer, pool, row))
+                    nested = nested.saturating_add(sources.air(false, pointer, pool, row))
                 },
             );
-            nested = nested.saturating_add(sources.finish_air(true, second));
-            if needed[8] {
-                matched[8] = self.air_wings.compare(second);
+            nested = nested.saturating_add(sources.finish_air(false, self.air_wings.outcome));
+            if needed[8] || source_checks.air_wings {
+                nested = nested.saturating_add(sources.begin_air(true));
+                let second = cair_wing::walk_with(
+                    memory,
+                    base,
+                    state,
+                    &mut self.air_wings.second,
+                    |pointer, pool, row| {
+                        nested = nested.saturating_add(sources.air(true, pointer, pool, row))
+                    },
+                );
+                nested = nested.saturating_add(sources.finish_air(true, second));
+                if needed[8] {
+                    matched[8] = self.air_wings.compare(second);
+                }
             }
+            ticks[8] = ((qpc() - begin).max(0) as u64).saturating_sub(nested);
         }
-        ticks[8] = ((qpc() - begin).max(0) as u64).saturating_sub(nested);
 
         let begin = qpc();
         let orders = corder_instance::walk(

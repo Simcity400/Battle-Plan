@@ -43,8 +43,42 @@ struct MeshSlot {
 
 @group(1) @binding(10) var<uniform> slot: MeshSlot;
 
+/// `matBones`: the joint palette, three `vec4` rows per joint, every composed
+/// entity's joints end to end. A vertex's joint slots index it directly.
+///
+/// The engine writes one entity's bones per draw; this pass composes the whole
+/// layer's palette once at load, because a recorded hour has no animation clock
+/// to advance and every instance of an entity is therefore in the same pose.
+@group(1) @binding(11) var<storage, read> palette: array<vec4<f32>>;
+
 fn has(flag: u32) -> bool {
     return (slot.flags & flag) != 0u;
+}
+
+/// One joint applied to one homogeneous vector: `w` of 1 transforms a point and
+/// 0 a direction.
+fn joint_apply(joint: u32, vector: vec4<f32>) -> vec3<f32> {
+    let row = joint * 3u;
+    return vec3<f32>(
+        dot(palette[row], vector),
+        dot(palette[row + 1u], vector),
+        dot(palette[row + 2u], vector),
+    );
+}
+
+/// Linear blend skinning of one vector, the engine's `PdxMesh*Skinned` vertex
+/// path. A vertex of an unskinned mesh --- every sprawl house, every map
+/// building, the map frame --- carries four zero weights and takes the early
+/// return, so it reaches the rest of the shader as the exact bits
+/// `map::models` baked.
+fn mesh_skin(vector: vec4<f32>, joints: vec4<u32>, weights: vec4<f32>) -> vec3<f32> {
+    if weights.x + weights.y + weights.z + weights.w <= 0.0 {
+        return vector.xyz;
+    }
+    return weights.x * joint_apply(joints.x, vector)
+        + weights.y * joint_apply(joints.y, vector)
+        + weights.z * joint_apply(joints.z, vector)
+        + weights.w * joint_apply(joints.w, vector);
 }
 
 /// `mul( WorldMatrix, vPosition )` for a map object: a rotation about +Y, the
@@ -88,14 +122,19 @@ fn mesh_vertex(
     @location(4) instance_position: vec3<f32>,
     @location(5) instance_rotation: f32,
     @location(6) instance_scale: f32,
+    @location(7) joints: vec4<u32>,
+    @location(8) weights: vec4<f32>,
 ) -> MeshOut {
+    let skinned_position = mesh_skin(vec4<f32>(position, 1.0), joints, weights);
+    let skinned_normal = mesh_skin(vec4<f32>(normal, 0.0), joints, weights);
+    let skinned_tangent = mesh_skin(vec4<f32>(tangent.xyz, 0.0), joints, weights);
     let rotate = mesh_rotation(instance_rotation);
     var out: MeshOut;
-    let world = mesh_world(rotate, position, instance_position, instance_scale);
+    let world = mesh_world(rotate, skinned_position, instance_position, instance_scale);
     out.world = world;
     out.clip = globals.frame.view_projection * vec4<f32>(world, 1.0);
-    out.normal = normalize(rotate * normal);
-    out.tangent = normalize(rotate * tangent.xyz);
+    out.normal = normalize(rotate * skinned_normal);
+    out.tangent = normalize(rotate * skinned_tangent);
     out.bitangent = normalize(cross(out.normal, out.tangent) * tangent.w);
     out.uv0 = uv0;
     return out;
@@ -348,11 +387,12 @@ struct MeshShadowOut {
     @location(1) uv0: vec2<f32>,
 }
 
-/// `VertexPdxMeshStandardShadow` (`pdxmesh.shader:329-342`). Every `*Shadow`
-/// effect of the family this port draws takes this one vertex shader; the
-/// skinned twin belongs to animated meshes, which the map objects are not.
-/// `ViewProjectionMatrix` is the light's here, because `map::shadow` swaps the
-/// frame constants exactly as the engine does.
+/// `VertexPdxMeshStandardShadow` (`pdxmesh.shader:329-342`) and its
+/// `*SkinnedShadow` twin (`:344-366`), which are the same shader up to the skin
+/// and which this port merges the way it merges the lit pair: a vertex with
+/// four zero weights takes `mesh_skin`'s early return, so one entry point
+/// serves both. `ViewProjectionMatrix` is the light's here, because
+/// `map::shadow` swaps the frame constants exactly as the engine does.
 @vertex
 fn mesh_shadow_vertex(
     @location(0) position: vec3<f32>,
@@ -362,10 +402,12 @@ fn mesh_shadow_vertex(
     @location(4) instance_position: vec3<f32>,
     @location(5) instance_rotation: f32,
     @location(6) instance_scale: f32,
+    @location(7) joints: vec4<u32>,
+    @location(8) weights: vec4<f32>,
 ) -> MeshShadowOut {
     let world = mesh_world(
         mesh_rotation(instance_rotation),
-        position,
+        mesh_skin(vec4<f32>(position, 1.0), joints, weights),
         instance_position,
         instance_scale,
     );

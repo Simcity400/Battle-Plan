@@ -29,6 +29,8 @@ pub mod name_pass;
 pub mod names;
 // counters: the viewing country and what it can see
 pub mod perspective;
+// orders: the recorded player's battle plan
+pub mod orders;
 // political fill
 pub mod political;
 // colour

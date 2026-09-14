@@ -3,7 +3,9 @@
 use crate::decode;
 use crate::extended::characters::{CharacterConversion, CharacterShadow, CharacterShadowStats};
 use crate::extended::governance::{ResearchConversion, ResearchShadow, ResearchShadowStats};
-use crate::extended::intel::ScriptVariableComparison;
+use crate::extended::intel::{
+    IntelConversion, IntelShadow, IntelShadowStats, ScriptVariableComparison,
+};
 use crate::extended::lexical::{LexicalConversion, LexicalConversionStats};
 use crate::history::PreparedCampaigns;
 use crate::sampling::{
@@ -179,6 +181,42 @@ fn lexical_cache(
     }
 }
 
+fn intel_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a IntelShadow>) -> Value {
+    let mut totals = [IntelShadowStats::default(); 2];
+    let mut campaigns = 0usize;
+    for shadow in shadows {
+        campaigns += 1;
+        for (total, current) in totals.iter_mut().zip(shadow.statistics()) {
+            total.hits = total.hits.saturating_add(current.hits);
+            total.misses = total.misses.saturating_add(current.misses);
+            total.row_capacity_bytes += current.row_capacity_bytes;
+            total.replay_capacity_bytes += current.replay_capacity_bytes;
+        }
+    }
+    let native_bytes: usize = totals.iter().map(|table| table.row_capacity_bytes).sum();
+    let replay_bytes: usize = totals.iter().map(|table| table.replay_capacity_bytes).sum();
+    let tables: Vec<_> = ["ScriptFlags", "CountryIntel"]
+        .into_iter()
+        .zip(totals)
+        .map(|(name, table)| {
+            json!({
+                "name": name, "hits": table.hits, "misses": table.misses,
+                "row_capacity_bytes": table.row_capacity_bytes,
+                "replay_capacity_bytes": table.replay_capacity_bytes,
+            })
+        })
+        .collect();
+    json!({
+        "campaigns": campaigns,
+        "retained_native_capacity_bytes": native_bytes,
+        "retained_replay_capacity_bytes": replay_bytes,
+        "allocation_scope": "current native row Vec capacities plus strongly retained immutable replay Vec capacities across retained campaigns; replay bytes may also be shared with encoder and are not additive to its storage; excludes Arc control blocks and allocator overhead; separate from raw/pool accounting",
+        "counter_scope": "cumulative hourly conversion decisions including later rejected or failed writes; faults count as misses when conversion runs; enclosing clock failure clears shadows without conversion",
+        "cost_scope": "native comparison, snapshot installation and fallback conversion included in spool_work.conversion_packs intel",
+        "tables": tables,
+    })
+}
+
 fn character_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a CharacterShadow>) -> Value {
     let mut totals = [CharacterShadowStats::default(); 4];
     let mut campaigns = 0usize;
@@ -311,6 +349,7 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     variables_scratch: ScriptVariableComparison,
     research_shadow: ResearchShadow,
     character_shadow: CharacterShadow,
+    intel_shadow: IntelShadow,
     lexical_conversion: LexicalConversionStats,
     _history_file: Option<File>,
 }
@@ -350,6 +389,7 @@ impl Campaign {
             variables_scratch: ScriptVariableComparison::default(),
             research_shadow: ResearchShadow::default(),
             character_shadow: CharacterShadow::default(),
+            intel_shadow: IntelShadow::default(),
             lexical_conversion: LexicalConversionStats::default(),
             _history_file: history_file,
         })
@@ -892,6 +932,7 @@ struct Statistics {
     total_ns: u64,
     callback: Distribution,
     table_ns: [u64; TABLE_COUNT],
+    table_total_ns: [u64; TABLE_COUNT],
     war_matrix_ns: u64,
     dropped_frames: u64,
     truncated_tables: usize,
@@ -942,6 +983,7 @@ impl Default for Statistics {
             total_ns: 0,
             callback: Distribution::default(),
             table_ns: [0; TABLE_COUNT],
+            table_total_ns: [0; TABLE_COUNT],
             war_matrix_ns: 0,
             dropped_frames: 0,
             truncated_tables: 0,
@@ -986,6 +1028,13 @@ impl Default for Statistics {
 }
 
 impl Statistics {
+    fn observe_table_costs(&mut self, latest: [u64; TABLE_COUNT]) {
+        self.table_ns = latest;
+        for (total, ns) in self.table_total_ns.iter_mut().zip(latest) {
+            *total = total.saturating_add(ns);
+        }
+    }
+
     fn observe_consistency(&mut self, captured: &Captured) {
         if captured.consistency_checked[crate::sampling::PROVINCE_CHECK] {
             self.provinces_mismatches += captured.provinces_mismatches as u64;
@@ -1262,6 +1311,7 @@ impl Processor {
             lexical_cache(&campaign.staggered_cache, campaign.staggered_branch, branch),
             &mut campaign.lexical_conversion,
         );
+        let mut intel = IntelConversion::new(branch, &mut campaign.intel_shadow);
         let (mut source, pack_ticks) = decoded_with_costs(
             captured,
             clock,
@@ -1271,6 +1321,7 @@ impl Processor {
             Some(&mut research),
             Some(&mut characters),
             Some(&mut lexical),
+            Some(&mut intel),
         );
         let skipped = campaign.apply_staggered_inputs(&mut source);
         let mut work = WorkSample {
@@ -1318,7 +1369,7 @@ impl Processor {
         stats.last_hour = Some(clock.hour);
         stats.total_ns = captured.total_ns;
         stats.callback.record_ns(captured.total_ns);
-        stats.table_ns = captured.table_ns;
+        stats.observe_table_costs(captured.table_ns);
         stats.war_matrix_ns = captured.war_matrix_ns;
         stats.pool_bytes = captured.pool_bytes;
         stats.sampled_buffer_bytes = captured.allocated_bytes();
@@ -1545,7 +1596,11 @@ impl Processor {
             "order_instance_counters": self.stats.order_counters.json(),
             "campaign": stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
             "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
+            "callback_work": stats.callback.json(),
+            "callback_work_scope": "cumulative successfully processed recorded-frame callback wall costs since attach, including acquisition joins and hook overhead but excluding the original native tick; drops, failed frames and unattributed startup callbacks excluded; sampled asynchronously after decode, not a CPU counter or exact partition with native_tick_work",
             "max_ns": callback.max_ns, "table_ns": stats.table_ns.as_slice(),
+            "table_total_ns": stats.table_total_ns.as_slice(),
+            "table_total_ns_scope": "cumulative reported acquisition costs for successfully processed recorded frames; same cohort as callback_work; skipped tables contribute zero, shared reads retain existing anchor charges, worker costs overlap and are not additive callback wall time",
             "staggered_skipped": stats.staggered_skipped.as_slice(),
             "staggered_walked": stats.staggered_walked.as_slice(),
             "hours_per_second": if stats.interval_qpc == 0 { 0.0 } else {
@@ -1615,6 +1670,11 @@ impl Processor {
             self.campaigns
                 .values()
                 .map(|campaign| &campaign.lexical_conversion),
+        );
+        value["spool_work"]["intel_shadow"] = intel_shadow_status(
+            self.campaigns
+                .values()
+                .map(|campaign| &campaign.intel_shadow),
         );
         value["spool_work"]["character_shadow"] = character_shadow_status(
             self.campaigns
@@ -1802,6 +1862,7 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> replay::frame
             None,
             None,
             None,
+            None,
         )
         .0,
     )
@@ -1817,6 +1878,7 @@ fn decoded_with_costs(
     research: Option<&mut ResearchConversion<'_>>,
     characters: Option<&mut CharacterConversion<'_>>,
     lexical: Option<&mut LexicalConversion<'_>>,
+    mut intel: Option<&mut IntelConversion<'_>>,
 ) -> (FrameInput, [Option<i64>; crate::extended::PACK_NAMES.len()]) {
     let mut pack_ticks = [None; crate::extended::PACK_NAMES.len()];
     let metrics = Metrics {
@@ -1839,6 +1901,13 @@ fn decoded_with_costs(
         (None, _) | (_, None) => Some("clock unreadable around table walk"),
         _ => None,
     };
+    if let Some(reuse) = intel.as_deref_mut() {
+        let valid = failure.is_none() && captured.country_cache_error.is_none();
+        reuse.restrict(
+            valid && !captured.extended_raw_mismatches[replay::rows::TableId::ScriptFlags.index()],
+            valid && !captured.extended_raw_mismatches[replay::rows::TableId::CountryIntel.index()],
+        );
+    }
     let counters = captured.counters;
     let tables = if let Some(reason) = failure {
         std::array::from_fn(|_| TableInput::Sampled(unavailable(reason)))
@@ -2012,6 +2081,7 @@ fn decoded_with_costs(
                 research,
                 characters,
                 lexical,
+                intel,
             )
             .map(Some);
         apply_raw_verdicts(&mut tables, &captured.extended_raw_mismatches);
@@ -2271,6 +2341,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(input.tables.iter().all(|view| matches!(view, TableInput::Sampled(TableView::Unavailable { reason }) if reason == "hour changed during read")));
     }
@@ -2393,6 +2464,8 @@ mod tests {
         assert_eq!(first["p95_ns"], 300);
         assert_eq!(first["max_ns"], 300);
         assert_eq!(first["total_ns"], 300);
+        assert_eq!(first["callback_work"]["calls"], 3);
+        assert_eq!(first["callback_work"]["total_ns"], 600);
         assert_eq!(processor.status(), first);
 
         processor.error(&io::Error::other("new disk failure while paused"));
@@ -2407,10 +2480,31 @@ mod tests {
         let resumed = processor.status();
         assert_eq!(resumed["hours"], 4);
         assert_eq!(resumed["total_ns"], 50);
+        assert_eq!(resumed["callback_work"]["calls"], 4);
+        assert_eq!(resumed["callback_work"]["total_ns"], 650);
         assert_eq!(resumed["p50_ns"], 100);
         assert_eq!(resumed["p95_ns"], 300);
         assert_eq!(resumed["max_ns"], 300);
         assert_eq!(resumed["last_error"], failed["last_error"]);
+    }
+
+    #[test]
+    fn table_acquisition_totals_keep_zero_skips_distinct_from_latest_gauges() {
+        let mut stats = Statistics::default();
+        let mut first = [0; TABLE_COUNT];
+        first[0] = 100;
+        first[1] = 300;
+        stats.observe_table_costs(first);
+        let mut second = [0; TABLE_COUNT];
+        second[0] = 50;
+        second[2] = 200;
+        stats.observe_table_costs(second);
+        assert_eq!(stats.table_ns, second);
+        assert_eq!(&stats.table_total_ns[..3], &[150, 300, 200]);
+        assert!(stats.table_total_ns[3..].iter().all(|&ns| ns == 0));
+        stats.table_total_ns[0] = u64::MAX;
+        stats.observe_table_costs(first);
+        assert_eq!(stats.table_total_ns[0], u64::MAX);
     }
 
     #[test]
@@ -3431,6 +3525,7 @@ mod tests {
                 variables_scratch: ScriptVariableComparison::default(),
                 research_shadow: ResearchShadow::default(),
                 character_shadow: CharacterShadow::default(),
+                intel_shadow: IntelShadow::default(),
                 lexical_conversion: LexicalConversionStats::default(),
                 _history_file: None,
             },
@@ -3815,6 +3910,7 @@ mod tests {
             None,
             None,
             Some(&mut reuse),
+            None,
         );
         assert!(invalid.tables.iter().all(|input| matches!(
             input, TableInput::Sampled(TableView::Unavailable { reason })
@@ -4083,6 +4179,222 @@ mod tests {
         }
     }
 
+    fn intel_frame(
+        campaign: &mut Campaign<MemoryBackend>,
+        branch: BranchId,
+        hour: i32,
+        value: i64,
+    ) -> FrameInput {
+        let native = crate::extended::intel::intel_shadow_fixture(value);
+        let inputs = native.table_inputs(
+            None,
+            &mut ScriptVariableComparison::default(),
+            Some(&mut IntelConversion::new(
+                branch,
+                &mut campaign.intel_shadow,
+            )),
+        );
+        let mut frame: FrameInput = staggered_frame(branch, hour, false).into();
+        for (slot, table) in [(7, TableId::ScriptFlags), (15, TableId::CountryIntel)] {
+            frame.tables[table.index()] = inputs[slot].clone();
+        }
+        frame
+    }
+
+    fn intel_allocation(frame: &FrameInput, table: TableId) -> &Arc<TableRows> {
+        let TableInput::SharedComplete(rows) = &frame.tables[table.index()] else {
+            panic!("expected shared Intel rows")
+        };
+        rows
+    }
+
+    #[test]
+    fn intel_shadow_reuses_exact_hourly_rows_through_keyframes_failed_writes_and_new_branches() {
+        use replay::frame::TableUpdate;
+        for fail_encoding in [false, true] {
+            let (mut campaign, store) = campaign();
+            let branch = campaign.observe(None, 0, Some(1)).unwrap();
+            let first = intel_frame(&mut campaign, branch, 0, 10);
+            let original = Arc::clone(intel_allocation(&first, TableId::CountryIntel));
+            let mut reference = FrameEncoder::new();
+            let expected_first = reference
+                .encode(sampled_frame(first.clone()), false)
+                .unwrap();
+            campaign
+                .write(first, 1000, Some(1), 0, &mut WorkSample::default())
+                .unwrap();
+            campaign.observe(None, 1, Some(1)).unwrap();
+            let second = intel_frame(&mut campaign, branch, 1, 10);
+            assert!(Arc::ptr_eq(
+                &original,
+                intel_allocation(&second, TableId::CountryIntel)
+            ));
+            let expected_second = reference
+                .encode(sampled_frame(second.clone()), false)
+                .unwrap();
+            campaign
+                .write(second, 1001, Some(1), 0, &mut WorkSample::default())
+                .unwrap();
+            let recovered = recover_prefix(store.borrow().segments.get(&0).unwrap());
+            let frames: Vec<_> = recovered
+                .records
+                .iter()
+                .filter_map(|record| match record {
+                    Record::Frame(frame) => Some(frame),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(frames, vec![&expected_first, &expected_second]);
+
+            campaign.observe(None, 2, Some(1)).unwrap();
+            let mut failed = intel_frame(&mut campaign, branch, 2, 20);
+            let latest = Arc::clone(intel_allocation(&failed, TableId::CountryIntel));
+            assert!(!Arc::ptr_eq(&original, &latest));
+            if fail_encoding {
+                failed.tables[TableId::CountryLinks.index()] =
+                    TableView::Complete(TableRows::Clock(Vec::new())).into();
+            } else {
+                store.borrow_mut().fail_frame_flush = true;
+            }
+            assert!(
+                campaign
+                    .write(failed, 1002, Some(1), 0, &mut WorkSample::default())
+                    .is_err()
+            );
+            assert!(!campaign.spool.is_open());
+            campaign.observe(None, 3, Some(1)).unwrap();
+            // A freshly acquired exact native input is required even though the
+            // memo's immutable result survives the failed write/encoder reset.
+            let restored = intel_frame(&mut campaign, branch, 3, 20);
+            assert!(Arc::ptr_eq(
+                &latest,
+                intel_allocation(&restored, TableId::CountryIntel)
+            ));
+            campaign
+                .write(restored, 1003, Some(1), 0, &mut WorkSample::default())
+                .unwrap();
+            let recovered = recover_prefix(store.borrow().segments.get(&1).unwrap());
+            let frame = recovered
+                .records
+                .iter()
+                .find_map(|record| match record {
+                    Record::Frame(frame) => Some(frame),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(frame.keyframe);
+            assert_eq!(
+                frame.tables[TableId::CountryIntel.index()],
+                TableUpdate::Snapshot((*latest).clone())
+            );
+            assert!(matches!(
+                frame.tables[TableId::ScriptFlags.index()],
+                TableUpdate::Snapshot(_)
+            ));
+
+            let next_branch = campaign.observe(None, 4, Some(2)).unwrap();
+            assert_ne!(branch, next_branch);
+            let next = intel_frame(&mut campaign, next_branch, 4, 20);
+            assert!(!Arc::ptr_eq(
+                &latest,
+                intel_allocation(&next, TableId::CountryIntel)
+            ));
+            campaign
+                .write(next, 1004, Some(2), 0, &mut WorkSample::default())
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn intel_shadow_global_and_local_verdicts_invalidate_before_conversion_and_preserve_failure() {
+        for table in [TableId::ScriptFlags, TableId::CountryIntel] {
+            for failure in 0..5 {
+                let (mut campaign, _) = campaign();
+                let mut source = captured(0);
+                source.extended.set_intel_shadow_fixture(10);
+                let first = intel_frame(&mut campaign, 1, 0, 10);
+                let old = Arc::clone(intel_allocation(&first, table));
+                match failure {
+                    0 => source.extended_raw_mismatches[table.index()] = true,
+                    1 => source.country_cache_error = Some("current country cache rejected"),
+                    2 => source.clock_after = None,
+                    3 => source.clock_after = Some(clock(1)),
+                    _ => source.clock_after.as_mut().unwrap().play_session_started_at += 1,
+                }
+                let mut reuse = IntelConversion::new(1, &mut campaign.intel_shadow);
+                let (current, costs) = decoded_with_costs(
+                    &source,
+                    clock(0),
+                    1,
+                    None,
+                    &mut ScriptVariableComparison::default(),
+                    None,
+                    None,
+                    None,
+                    Some(&mut reuse),
+                );
+                assert!(matches!(
+                    current.tables[table.index()],
+                    TableInput::Sampled(TableView::Unavailable { .. })
+                ));
+                let statistics = campaign.intel_shadow.statistics();
+                assert_eq!(
+                    statistics[usize::from(table == TableId::CountryIntel)].replay_capacity_bytes,
+                    0
+                );
+                assert_eq!(
+                    statistics[usize::from(table == TableId::CountryIntel)].hits,
+                    0
+                );
+                if failure == 0 {
+                    let other = if table == TableId::ScriptFlags {
+                        TableId::CountryIntel
+                    } else {
+                        TableId::ScriptFlags
+                    };
+                    assert!(Arc::ptr_eq(
+                        intel_allocation(&first, other),
+                        intel_allocation(&current, other)
+                    ));
+                } else {
+                    assert!(
+                        statistics
+                            .iter()
+                            .all(|stat| stat.replay_capacity_bytes == 0)
+                    );
+                }
+                assert_eq!(costs.iter().all(Option::is_none), failure >= 2);
+                let next = intel_frame(&mut campaign, 1, 1, 10);
+                assert!(!Arc::ptr_eq(&old, intel_allocation(&next, table)));
+            }
+        }
+    }
+
+    #[test]
+    fn intel_shadow_status_reports_native_and_shared_replay_storage_separately() {
+        let (mut first, _) = campaign();
+        let (mut second, _) = campaign();
+        intel_frame(&mut first, 1, 0, 10);
+        intel_frame(&mut first, 1, 1, 10);
+        intel_frame(&mut second, 1, 0, 20);
+        let report = intel_shadow_status([&first.intel_shadow, &second.intel_shadow]);
+        assert_eq!(report["campaigns"], 2);
+        let a = first.intel_shadow.statistics();
+        let b = second.intel_shadow.statistics();
+        let native_bytes: usize = a.iter().chain(&b).map(|stat| stat.row_capacity_bytes).sum();
+        let replay_bytes: usize = a
+            .iter()
+            .chain(&b)
+            .map(|stat| stat.replay_capacity_bytes)
+            .sum();
+        assert_eq!(report["retained_native_capacity_bytes"], native_bytes);
+        assert_eq!(report["retained_replay_capacity_bytes"], replay_bytes);
+        for table in report["tables"].as_array().unwrap() {
+            assert_eq!(table["hits"], 1);
+            assert_eq!(table["misses"], 2);
+        }
+    }
+
     #[test]
     fn character_shadow_reuse_never_overrides_current_raw_country_or_clock_failures() {
         for table in crate::extended::characters::SHADOW_TABLES {
@@ -4131,6 +4443,7 @@ mod tests {
                             &mut ScriptVariableComparison::default(),
                             None,
                             Some(&mut reuse),
+                            None,
                             None,
                         )
                         .0;
@@ -4393,6 +4706,7 @@ mod tests {
                         None,
                         &mut ScriptVariableComparison::default(),
                         Some(&mut reuse),
+                        None,
                         None,
                         None,
                     )

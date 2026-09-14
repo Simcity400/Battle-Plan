@@ -603,6 +603,11 @@ pub struct Shared {
     pub acquisition: OnceLock<acquisition::Pool>,
     pub acquisition_dispatch_ns: AtomicU64,
     pub acquisition_wait_ns: AtomicU64,
+    /// Existing QPC brackets around the original native tick, not collector
+    /// acquisition. These diagnostic counters also include ticks with no free
+    /// recording buffer and exclude game-loop work outside the hooked function.
+    pub native_tick_ns: AtomicU64,
+    pub native_tick_calls: AtomicU64,
     pub base: usize,
     pub trampoline: usize,
     pub frequency: u64,
@@ -650,6 +655,8 @@ impl Shared {
             acquisition: OnceLock::new(),
             acquisition_dispatch_ns: AtomicU64::new(0),
             acquisition_wait_ns: AtomicU64::new(0),
+            native_tick_ns: AtomicU64::new(0),
+            native_tick_calls: AtomicU64::new(0),
             base,
             trampoline,
             frequency,
@@ -820,6 +827,10 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     }
     let original_end = qpc();
     if recording {
+        shared
+            .native_tick_ns
+            .fetch_add(shared.ns(original_end - original_begin), Ordering::Relaxed);
+        shared.native_tick_calls.fetch_add(1, Ordering::Relaxed);
         if let Some(index) = index {
             let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
             frame.clock_entry = entry;
@@ -1002,10 +1013,12 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let state = clock.game_state as usize;
                 // Owned whole-family jobs may run concurrently with these main
                 // reads. No frame, cache or live-reader reference crosses threads.
-                // Every submitted job is recovered below before typed fallback,
+                // Every submitted job is recovered before its own fallback,
                 // trailing verification, publication or return to game code.
                 let acquisition = shared.acquisition.get().expect("initialized before hook");
                 let dispatch_begin = qpc();
+                let characters_refresh = decode::characters_refresh_hour(clock.hour, force_full);
+                let mut world_request = None;
                 let mut relations_request = None;
                 if decode::relations_refresh_hour(clock.hour, force_full) {
                     let needed_any = decode::RELATIONS
@@ -1033,7 +1046,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     });
                 }
                 let mut characters_request = None;
-                if decode::characters_refresh_hour(clock.hour, force_full) {
+                if characters_refresh {
                     let needed_any = decode::CHARACTERS
                         .iter()
                         .any(|table| extended_needed[table.index()]);
@@ -1054,6 +1067,18 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         first,
                         second,
                     });
+                } else {
+                    world_request = Some(acquire_world_request(
+                        shared.base,
+                        state,
+                        &extended_needed,
+                        frame.extended.focus_pilot().focus_copy_context(
+                            shared.base,
+                            state,
+                            decode::FOCUS.map(|table| extended_needed[table.index()]),
+                        ),
+                        frame.extended.economy_rest_pilot(),
+                    ));
                 }
                 // Safety: the proven sole hourly callback retains the game
                 // boundary until both finish calls below end every live lease.
@@ -1061,6 +1086,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     && unsafe { acquisition.begin_relations(&mut relations_request) };
                 let characters_dispatched = characters_request.is_some()
                     && unsafe { acquisition.begin_characters(&mut characters_request) };
+                let world_dispatched = world_request.is_some()
+                    && unsafe { acquisition.begin_world(&mut world_request) };
                 shared
                     .acquisition_dispatch_ns
                     .fetch_add(shared.ns(qpc() - dispatch_begin), Ordering::Relaxed);
@@ -1093,51 +1120,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     matched[0] = full_match(frame.links_result, second, frame.links_mismatches);
                 }
                 frame.table_ns[3] = shared.ns(qpc() - begin);
-                let begin = qpc();
-                frame.provinces_result =
-                    cprovince::walk(&memory, shared.base, state, &mut frame.provinces);
-                if needed[PROVINCE_CHECK] {
-                    frame.consistency_checked[PROVINCE_CHECK] = true;
-                    let second =
-                        cprovince::walk(&memory, shared.base, state, &mut frame.provinces_second);
-                    frame.provinces_mismatches = mismatches(
-                        frame.provinces_result,
-                        &frame.provinces,
-                        second,
-                        &frame.provinces_second,
-                    );
-                    matched[PROVINCE_CHECK] =
-                        full_match(frame.provinces_result, second, frame.provinces_mismatches);
-                }
-                frame.table_ns[4] = shared.ns(qpc() - begin);
-                let begin = qpc();
-                frame.states_result =
-                    cstate::walk_with(&memory, shared.base, state, &mut frame.states, |source| {
-                        frame.extended.visit_state(source, false)
-                    });
-                frame.extended.finish_states(frame.states_result, false);
-                if needed[1] || extended::Captured::needs_state_check(&extended_needed) {
-                    let second = cstate::walk_with(
-                        &memory,
-                        shared.base,
-                        state,
-                        &mut frame.states_second,
-                        |source| frame.extended.visit_state(source, true),
-                    );
-                    frame.extended.finish_states(second, true);
-                    if needed[1] {
-                        frame.consistency_checked[1] = true;
-                        frame.states_mismatches = mismatches(
-                            frame.states_result,
-                            &frame.states,
-                            second,
-                            &frame.states_second,
-                        );
-                        matched[1] =
-                            full_match(frame.states_result, second, frame.states_mismatches);
-                    }
-                }
-                frame.table_ns[5] = shared.ns(qpc() - begin);
                 // Divisions group (copy/decode split): raw copies only on
                 // the game thread. Every hour stages the payload and hands
                 // the frame to the decode FIFO; the worker replays the
@@ -1269,6 +1251,54 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 shared
                     .acquisition_dispatch_ns
                     .fetch_add(shared.ns(qpc() - eta_dispatch_begin), Ordering::Relaxed);
+                // These independent core tables do not feed the division
+                // census or ETA: both authenticate their own native roots.
+                // Retain the same reads/checks, now overlapping ETA acquisition.
+                let begin = qpc();
+                frame.provinces_result =
+                    cprovince::walk(&memory, shared.base, state, &mut frame.provinces);
+                if needed[PROVINCE_CHECK] {
+                    frame.consistency_checked[PROVINCE_CHECK] = true;
+                    let second =
+                        cprovince::walk(&memory, shared.base, state, &mut frame.provinces_second);
+                    frame.provinces_mismatches = mismatches(
+                        frame.provinces_result,
+                        &frame.provinces,
+                        second,
+                        &frame.provinces_second,
+                    );
+                    matched[PROVINCE_CHECK] =
+                        full_match(frame.provinces_result, second, frame.provinces_mismatches);
+                }
+                frame.table_ns[4] = shared.ns(qpc() - begin);
+                let begin = qpc();
+                frame.states_result =
+                    cstate::walk_with(&memory, shared.base, state, &mut frame.states, |source| {
+                        frame.extended.visit_state(source, false)
+                    });
+                frame.extended.finish_states(frame.states_result, false);
+                if needed[1] || extended::Captured::needs_state_check(&extended_needed) {
+                    let second = cstate::walk_with(
+                        &memory,
+                        shared.base,
+                        state,
+                        &mut frame.states_second,
+                        |source| frame.extended.visit_state(source, true),
+                    );
+                    frame.extended.finish_states(second, true);
+                    if needed[1] {
+                        frame.consistency_checked[1] = true;
+                        frame.states_mismatches = mismatches(
+                            frame.states_result,
+                            &frame.states,
+                            second,
+                            &frame.states_second,
+                        );
+                        matched[1] =
+                            full_match(frame.states_result, second, frame.states_mismatches);
+                    }
+                }
+                frame.table_ns[5] = shared.ns(qpc() - begin);
                 // The optimized typed walk already batches relation roots and
                 // reuses callback-local country authentication. No raw Wars
                 // payload, duplicate mirror walk or decode index is constructed.
@@ -1411,24 +1441,39 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 if let Some(second) = players_second {
                     decode::recycle_players_job(second);
                 }
-                let air_second_needed = decode::AIR_WING
+                let naval_second_needed = decode::NAVAL_ORDER
                     .iter()
                     .any(|table| extended_needed[table.index()]);
-                let mut air_first = decode::acquire_air_wing_job();
-                let mut air_second = air_second_needed.then(decode::acquire_air_wing_job);
-                // A consistency pass needs both owned buffers; otherwise use
-                // the allocation-free typed double read.
-                if air_second
+                let mut naval_first = decode::acquire_naval_job();
+                let mut naval_second = naval_second_needed.then(decode::acquire_naval_job);
+                if naval_second
                     .as_ref()
                     .is_some_and(|job| job.log.spans.capacity() == 0)
                 {
-                    decode::recycle_air_wing_job(air_first);
-                    air_first = Default::default();
+                    decode::recycle_naval_job(naval_first);
+                    naval_first = Default::default();
                 }
+                let air_second_needed = needed[14]
+                    || decode::AIR_WING
+                        .iter()
+                        .chain(decode::NAVAL_ORDER.iter())
+                        .any(|table| extended_needed[table.index()]);
+                let mut air_first = decode::acquire_air_wing_job();
+                let mut air_second = air_second_needed.then(decode::acquire_air_wing_job);
+                let wing_limits = frame.extended.air_wing_pilot().wing_limits();
                 let air_ctx = extended::air::AirWingCopyContext {
                     base: shared.base,
                     game_state: state,
                     needed: decode::AIR_WING.map(|table| extended_needed[table.index()]),
+                    limits: [
+                        frame.map.air_wings.rows.len(),
+                        wing_limits[0],
+                        wing_limits[1],
+                    ],
+                    naval_limits: [
+                        naval_first.wing_limit(),
+                        naval_second.as_ref().map_or(0, |job| job.wing_limit()),
+                    ],
                 };
                 air_wing_report = extended::air::copy_air_refresh(
                     &memory,
@@ -1440,9 +1485,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     air_wing_payload = Some(air_first);
                 } else {
                     decode::recycle_air_wing_job(air_first);
-                }
-                if let Some(second) = air_second {
-                    decode::recycle_air_wing_job(second);
                 }
                 // Hourly air statistics (copy/decode split): raw copies only
                 // on the game thread, same FIFO and ordering guarantees as
@@ -1483,30 +1525,45 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 if let Some(second) = air_stats_second {
                     decode::recycle_air_stats_job(second);
                 }
-                let naval_second_needed = decode::NAVAL_ORDER
-                    .iter()
-                    .any(|table| extended_needed[table.index()]);
-                let mut naval_first = decode::acquire_naval_job();
-                let mut naval_second = naval_second_needed.then(decode::acquire_naval_job);
-                // A consistency pass needs both owned buffers; otherwise use
-                // the allocation-free typed double read.
-                if naval_second
-                    .as_ref()
-                    .is_some_and(|job| job.log.spans.capacity() == 0)
-                {
-                    decode::recycle_naval_job(naval_first);
-                    naval_first = Default::default();
-                }
                 let naval_ctx = extended::naval_history::NavalCopyContext {
                     base: shared.base,
                     game_state: state,
                 };
+                let mut naval_install_ticks = 0_u64;
+                if let Some(wings) = air_wing_payload.as_ref() {
+                    naval_install_ticks += naval_first.install_wings(wings);
+                }
+                if let Some(naval) = naval_second.as_mut()
+                    && let Some(wings) = air_second.as_ref()
+                {
+                    naval_install_ticks += naval.install_wings(wings);
+                }
                 naval_report = extended::naval_history::copy_naval_refresh(
                     &memory,
                     naval_ctx,
                     &mut naval_first,
                     naval_second.as_mut(),
                 );
+                if naval_report.raw_ok {
+                    naval_report.copy_ticks[0] += naval_install_ticks;
+                }
+                if let Some(wings) = air_wing_payload.as_ref() {
+                    naval_report.copy_ticks[0] += wings.membership_ticks;
+                    if let Some(second) = air_second.as_ref() {
+                        naval_report.copy_ticks[0] += second.membership_ticks;
+                    }
+                    air_wing_report.copy_ticks[0] += frame.map.install_owned_air(wings);
+                    if !naval_report.raw_ok {
+                        frame
+                            .extended
+                            .naval_pilot()
+                            .add_wing_source_ticks(naval_install_ticks);
+                        frame.extended.naval_pilot().install_map_wings(wings, false);
+                        if let Some(second) = air_second.as_ref() {
+                            frame.extended.naval_pilot().install_map_wings(second, true);
+                        }
+                    }
+                }
                 frame.extended.naval_pilot().raw_mode = naval_report.raw_ok;
                 if naval_report.raw_ok {
                     naval_payload = Some(naval_first);
@@ -1515,6 +1572,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 }
                 if let Some(second) = naval_second {
                     decode::recycle_naval_job(second);
+                }
+                if let Some(second) = air_second {
+                    decode::recycle_air_wing_job(second);
                 }
                 // Shared hourly bases (copy/decode split): raw copies only
                 // on the game thread, same FIFO and ordering guarantees as
@@ -1564,27 +1624,17 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 if let Some(second) = air_bases_second {
                     decode::recycle_air_bases_job(second);
                 }
-                // Shared hourly history (copy/decode split): raw copies only
-                // on the game thread, same FIFO and ordering guarantees. The
-                // regional walk is staged once with history and damage
-                // detail; both decodes read the shared spans. Staging
-                // overflow falls back to the typed walk with no payload
-                // enqueued.
+                // One hourly native walk owns history/damage rows. The FIFO
+                // worker installs them without an address index or re-walk.
+                // Both row buffers are preflighted before acquisition; missing
+                // storage uses the typed fallback. Witness overflow only fails
+                // checks and grows off-thread, never rereads the source.
                 let air_history_second_needed = decode::AIR_HISTORY
                     .iter()
                     .any(|table| extended_needed[table.index()]);
                 let mut air_history_first = decode::acquire_air_history_job();
                 let mut air_history_second =
                     air_history_second_needed.then(decode::acquire_air_history_job);
-                // A consistency pass needs both owned buffers; otherwise use
-                // the allocation-free typed double read.
-                if air_history_second
-                    .as_ref()
-                    .is_some_and(|job| job.log.spans.capacity() == 0)
-                {
-                    decode::recycle_air_history_job(air_history_first);
-                    air_history_first = Default::default();
-                }
                 let air_history_ctx = extended::air::AirHistoryCopyContext {
                     base: shared.base,
                     game_state: state,
@@ -1989,205 +2039,126 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::recycle_session_job(second);
                     }
                 }
-                // Production hourly rest (copy/decode split): raw copies only
-                // on the game thread. Every hour stages the payload and hands
-                // the frame to the decode FIFO; the worker replays lines,
-                // stockpiles, licences, deployment and licence records before
-                // the spool ready handoff. Staging overflow falls back to the
-                // typed walks with no payload enqueued.
-                {
-                    let needed_any = decode::PRODUCTION_REST
-                        .iter()
-                        .any(|table| extended_needed[table.index()]);
-                    let mut first = decode::acquire_production_rest_job();
-                    let mut second = needed_any.then(decode::acquire_production_rest_job);
-                    // A consistency pass needs both owned buffers; otherwise use
-                    // the allocation-free typed double read.
-                    if second
-                        .as_ref()
-                        .is_some_and(|job| job.log.spans.capacity() == 0)
-                    {
-                        decode::recycle_production_rest_job(first);
-                        first = Default::default();
-                    }
-                    let ctx = extended::production::ProductionRestCopyContext {
-                        base: shared.base,
-                        game_state: state,
-                        needed: [
-                            extended_needed[decode::PRODUCTION_REST[0].index()],
-                            extended_needed[decode::PRODUCTION_REST[1].index()],
-                            extended_needed[decode::PRODUCTION_REST[2].index()],
-                            extended_needed[decode::PRODUCTION_REST[3].index()],
-                            extended_needed[decode::PRODUCTION_REST[4].index()],
-                            extended_needed[decode::PRODUCTION_REST[5].index()],
-                            extended_needed[decode::PRODUCTION_REST[6].index()],
-                            extended_needed[decode::PRODUCTION_REST[7].index()],
-                        ],
+                // On non-Characters hours the same existing worker acquired
+                // this owned World bundle while the core/map work ran. H0 and
+                // forced refresh retain the current synchronous acquisition;
+                // rejected dispatch keeps its exact owned buffers for retry.
+                let (world, report, world_failure) = if world_dispatched {
+                    let join_begin = qpc();
+                    let completed = acquisition.finish_world().expect("submitted World job");
+                    shared
+                        .acquisition_wait_ns
+                        .fetch_add(shared.ns(qpc() - join_begin), Ordering::Relaxed);
+                    let failure = match completed.report {
+                        Ok(report) => report.error,
+                        Err(acquisition::Failure::Panicked) => {
+                            Some("World acquisition worker panicked")
+                        }
+                        Err(acquisition::Failure::Stopped) => {
+                            Some("World acquisition worker stopped before reading")
+                        }
                     };
-                    production_rest_report = frame
-                        .extended
-                        .production_rest_pilot()
-                        .copy_production_rest_refresh(&memory, ctx, &mut first, second.as_mut());
-                    frame.extended.production_rest_pilot().rest_raw_mode =
-                        production_rest_report.raw_ok;
-                    if production_rest_report.raw_ok {
-                        production_rest_payload = Some(first);
-                    } else {
-                        decode::recycle_production_rest_job(first);
-                    }
-                    if let Some(second) = second {
-                        decode::recycle_production_rest_job(second);
-                    }
-                }
-                // Construction hourly rest (copy/decode split): raw copies
-                // only on the game thread. Every hour stages the payload and
-                // hands the frame to the decode FIFO; the worker replays
-                // resources, the queue, occupation, resistance and
-                // collaboration before the spool ready handoff. Staging
-                // overflow falls back to the typed walks with no payload
-                // enqueued.
-                {
-                    let needed_any = decode::CONSTRUCTION_REST
-                        .iter()
-                        .any(|table| extended_needed[table.index()]);
-                    let mut first = decode::acquire_construction_rest_job();
-                    let mut second = needed_any.then(decode::acquire_construction_rest_job);
-                    // A consistency pass needs both owned buffers; otherwise use
-                    // the allocation-free typed double read.
-                    if second
-                        .as_ref()
-                        .is_some_and(|job| job.log.spans.capacity() == 0)
-                    {
-                        decode::recycle_construction_rest_job(first);
-                        first = Default::default();
-                    }
-                    let ctx = extended::construction::ConstructionRestCopyContext {
-                        base: shared.base,
-                        game_state: state,
-                        needed: [
-                            extended_needed[decode::CONSTRUCTION_REST[0].index()],
-                            extended_needed[decode::CONSTRUCTION_REST[1].index()],
-                            extended_needed[decode::CONSTRUCTION_REST[2].index()],
-                            extended_needed[decode::CONSTRUCTION_REST[3].index()],
-                            extended_needed[decode::CONSTRUCTION_REST[4].index()],
-                            extended_needed[decode::CONSTRUCTION_REST[5].index()],
-                            extended_needed[decode::CONSTRUCTION_REST[6].index()],
-                            extended_needed[decode::CONSTRUCTION_REST[7].index()],
-                            extended_needed[decode::CONSTRUCTION_REST[8].index()],
-                            extended_needed[decode::CONSTRUCTION_REST[9].index()],
-                        ],
-                    };
-                    construction_rest_report = frame
-                        .extended
-                        .construction_rest_pilot()
-                        .copy_construction_rest_refresh(&memory, ctx, &mut first, second.as_mut());
-                    frame.extended.construction_rest_pilot().rest_raw_mode =
-                        construction_rest_report.raw_ok;
-                    if construction_rest_report.raw_ok {
-                        construction_rest_payload = Some(first);
-                    } else {
-                        decode::recycle_construction_rest_job(first);
-                    }
-                    if let Some(second) = second {
-                        decode::recycle_construction_rest_job(second);
-                    }
-                }
-                // Economy hourly rest (copy/decode split): raw copies only on
-                // the game thread. Every hour stages the payload and hands the
-                // frame to the decode FIFO; the worker replays fuel,
-                // experience, supply, hubs, disrupted, foreign, definitions,
-                // resources, exchanges and purchases before the spool ready
-                // handoff. Staging overflow falls back to the typed walks with
-                // no payload enqueued.
-                {
-                    let needed_any = decode::ECONOMY_REST
-                        .iter()
-                        .any(|table| extended_needed[table.index()]);
-                    let mut first = decode::acquire_economy_rest_job();
-                    let mut second = needed_any.then(decode::acquire_economy_rest_job);
-                    // A consistency pass needs both owned buffers; otherwise use
-                    // the allocation-free typed double read.
-                    if second
-                        .as_ref()
-                        .is_some_and(|job| job.log.spans.capacity() == 0)
-                    {
-                        decode::recycle_economy_rest_job(first);
-                        first = Default::default();
-                    }
-                    let ctx = extended::economy::EconomyRestCopyContext {
-                        base: shared.base,
-                        game_state: state,
-                        needed: [
-                            extended_needed[decode::ECONOMY_REST[0].index()],
-                            extended_needed[decode::ECONOMY_REST[1].index()],
-                            extended_needed[decode::ECONOMY_REST[2].index()],
-                            extended_needed[decode::ECONOMY_REST[3].index()],
-                            extended_needed[decode::ECONOMY_REST[4].index()],
-                            extended_needed[decode::ECONOMY_REST[5].index()],
-                            extended_needed[decode::ECONOMY_REST[6].index()],
-                            extended_needed[decode::ECONOMY_REST[7].index()],
-                            extended_needed[decode::ECONOMY_REST[8].index()],
-                            extended_needed[decode::ECONOMY_REST[9].index()],
-                        ],
-                    };
-                    economy_rest_report = frame
-                        .extended
-                        .economy_rest_pilot()
-                        .copy_economy_rest_refresh(&memory, ctx, &mut first, second.as_mut());
-                    frame.extended.economy_rest_pilot().rest_raw_mode = economy_rest_report.raw_ok;
-                    if economy_rest_report.raw_ok {
-                        economy_rest_payload = Some(first);
-                    } else {
-                        decode::recycle_economy_rest_job(first);
-                    }
-                    if let Some(second) = second {
-                        decode::recycle_economy_rest_job(second);
-                    }
-                }
-                // Focus pair (copy/decode split): raw copies only on the game
-                // thread. Every hour stages the payload and hands the frame
-                // to the decode FIFO; the worker decodes before the spool
-                // ready handoff. Staging overflow falls back to the typed
-                // walk inside governance capture with no payload enqueued.
-                let mut focus_first = decode::acquire_focus_job();
-                let mut focus_second = (extended_needed[decode::FOCUS[0].index()]
-                    || extended_needed[decode::FOCUS[1].index()])
-                .then(decode::acquire_focus_job);
-                // A consistency pass needs both owned buffers; otherwise use
-                // the allocation-free typed double read.
-                if focus_second
-                    .as_ref()
-                    .is_some_and(|job| job.log.spans.capacity() == 0)
-                {
-                    decode::recycle_focus_job(focus_first);
-                    focus_first = Default::default();
-                }
-                let focus_ctx = extended::governance::FocusCopyContext {
-                    base: shared.base,
-                    game_state: state,
-                    needed: [
-                        extended_needed[decode::FOCUS[0].index()],
-                        extended_needed[decode::FOCUS[1].index()],
-                    ],
-                };
-                focus_report = frame.extended.focus_pilot().copy_focus_refresh(
-                    &memory,
-                    focus_ctx,
-                    &mut focus_first,
-                    focus_second.as_mut(),
-                );
-                frame.extended.focus_pilot().focus_raw_mode = focus_report.raw_ok;
-                if focus_report.raw_ok {
-                    focus_payload = Some(focus_first);
+                    (
+                        completed.request,
+                        completed.report.unwrap_or_default(),
+                        failure,
+                    )
                 } else {
-                    decode::recycle_focus_job(focus_first);
+                    let mut request = world_request.take().unwrap_or_else(|| {
+                        acquire_world_request(
+                            shared.base,
+                            state,
+                            &extended_needed,
+                            frame.extended.focus_pilot().focus_copy_context(
+                                shared.base,
+                                state,
+                                decode::FOCUS.map(|table| extended_needed[table.index()]),
+                            ),
+                            frame.extended.economy_rest_pilot(),
+                        )
+                    });
+                    let report = acquisition::run_world(&mut request, &memory);
+                    (request, report, None)
+                };
+                production_rest_report = report.production;
+                construction_rest_report = report.construction;
+                economy_rest_report = report.economy;
+                focus_report = report.focus;
+                // A terminal worker fault suppresses typed retries and its raw
+                // payloads; the affected tables receive explicit unavailability
+                // after independent capture. Ordinary staging overflow retains
+                // the established per-family typed fallback.
+                let terminal = world_failure.is_some();
+                frame
+                    .extended
+                    .production_rest_pilot()
+                    .apply_production_rest_report(
+                        world.production.context.needed,
+                        &production_rest_report,
+                    );
+                frame.extended.production_rest_pilot().rest_raw_mode =
+                    terminal || production_rest_report.raw_ok;
+                frame
+                    .extended
+                    .construction_rest_pilot()
+                    .apply_construction_rest_report(
+                        world.construction.context.needed,
+                        &construction_rest_report,
+                    );
+                frame.extended.construction_rest_pilot().rest_raw_mode =
+                    terminal || construction_rest_report.raw_ok;
+                frame
+                    .extended
+                    .economy_rest_pilot()
+                    .apply_economy_rest_report(world.economy.context.needed, &economy_rest_report);
+                frame.extended.economy_rest_pilot().rest_raw_mode =
+                    terminal || economy_rest_report.raw_ok;
+                frame
+                    .extended
+                    .focus_pilot()
+                    .apply_focus_report(world.focus.context.needed, &focus_report);
+                frame.extended.focus_pilot().focus_raw_mode = terminal || focus_report.raw_ok;
+                if production_rest_report.raw_ok && !terminal {
+                    production_rest_payload = Some(world.production.first);
+                } else {
+                    decode::recycle_production_rest_job(world.production.first);
                 }
-                if let Some(second) = focus_second {
+                if let Some(second) = world.production.second {
+                    decode::recycle_production_rest_job(second);
+                }
+                if construction_rest_report.raw_ok && !terminal {
+                    construction_rest_payload = Some(world.construction.first);
+                } else {
+                    decode::recycle_construction_rest_job(world.construction.first);
+                }
+                if let Some(second) = world.construction.second {
+                    decode::recycle_construction_rest_job(second);
+                }
+                if economy_rest_report.raw_ok && !terminal {
+                    economy_rest_payload = Some(world.economy.first);
+                } else {
+                    decode::recycle_economy_rest_job(world.economy.first);
+                }
+                if let Some(second) = world.economy.second {
+                    decode::recycle_economy_rest_job(second);
+                }
+                if focus_report.raw_ok && !terminal {
+                    focus_payload = Some(world.focus.first);
+                } else {
+                    decode::recycle_focus_job(world.focus.first);
+                }
+                if let Some(second) = world.focus.second {
                     decode::recycle_focus_job(second);
                 }
-                // Complete all accepted work before any family typed fallback.
-                // A worker failure returns its owned storage and grants no raw
-                // consistency credit; only then may the existing typed path run.
+                if terminal {
+                    production_rest_report.raw_ok = false;
+                    construction_rest_report.raw_ok = false;
+                    economy_rest_report.raw_ok = false;
+                    focus_report.raw_ok = false;
+                }
+                // Recover these raw families before their typed fallbacks. ETA
+                // owns separate buffers and continues through the independent
+                // extended captures below; its join remains before verification.
                 let join_begin = qpc();
                 let relations_completed = relations_dispatched.then(|| {
                     acquisition
@@ -2199,8 +2170,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .finish_characters()
                         .expect("submitted characters job")
                 });
-                let eta_completed =
-                    eta_dispatched.then(|| acquisition.finish_eta().expect("submitted ETA job"));
                 shared
                     .acquisition_wait_ns
                     .fetch_add(shared.ns(qpc() - join_begin), Ordering::Relaxed);
@@ -2217,11 +2186,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         (request, report)
                     })
                 };
-                if let Some(completed) = eta_completed {
-                    frame
-                        .extended
-                        .restore_eta_request(completed.request, Some(completed.report));
-                }
                 if let Some((request, report)) = relations_returned {
                     relations_report = report;
                     let relations = frame.extended.relations_pilot();
@@ -2269,7 +2233,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         decode::recycle_characters_job(second);
                     }
                 }
-                let (checks, ticks) = frame.extended.capture(
+                let (mut checks, mut ticks) = frame.extended.capture_before_eta(
                     &cached,
                     shared.base,
                     state,
@@ -2277,6 +2241,85 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     &extended_needed,
                     force_full,
                 );
+                let visibility = replay::rows::TableId::ProvinceVisibility.index();
+                let visibility_source = extended::province_visibility::source_outcome(
+                    frame.provinces_result,
+                    frame.consistency_checked[PROVINCE_CHECK],
+                    frame.provinces_mismatches,
+                );
+                (checks[visibility], ticks[visibility]) =
+                    frame.extended.capture_province_visibility(
+                        &memory,
+                        shared.base,
+                        state,
+                        &frame.provinces,
+                        visibility_source,
+                        extended_needed[visibility],
+                    );
+                if let Some(reason) = world_failure {
+                    frame
+                        .extended
+                        .production_rest_pilot()
+                        .fail_production_rest_capture(
+                            decode::PRODUCTION_REST.map(|table| extended_needed[table.index()]),
+                            reason,
+                        );
+                    frame
+                        .extended
+                        .construction_rest_pilot()
+                        .fail_construction_rest_capture(
+                            decode::CONSTRUCTION_REST.map(|table| extended_needed[table.index()]),
+                            reason,
+                        );
+                    frame
+                        .extended
+                        .economy_rest_pilot()
+                        .fail_economy_rest_capture(
+                            decode::ECONOMY_REST.map(|table| extended_needed[table.index()]),
+                            reason,
+                        );
+                    frame.extended.focus_pilot().fail_focus_capture(
+                        decode::FOCUS.map(|table| extended_needed[table.index()]),
+                        reason,
+                    );
+                    for (table, cost) in decode::PRODUCTION_REST
+                        .into_iter()
+                        .zip(report.production.copy_ticks)
+                        .chain(
+                            decode::CONSTRUCTION_REST
+                                .into_iter()
+                                .zip(report.construction.copy_ticks),
+                        )
+                        .chain(
+                            decode::ECONOMY_REST
+                                .into_iter()
+                                .zip(report.economy.copy_ticks),
+                        )
+                        .chain(decode::FOCUS.into_iter().zip(report.focus.copy_ticks))
+                    {
+                        checks[table.index()] = false;
+                        ticks[table.index()] = cost;
+                    }
+                }
+                // No independent live acquisition needs ETA's owned output.
+                // Finish it only after that work, never after final country or
+                // clock verification and never after the frame is published.
+                let eta_join_begin = qpc();
+                let eta_completed =
+                    eta_dispatched.then(|| acquisition.finish_eta().expect("submitted ETA job"));
+                shared
+                    .acquisition_wait_ns
+                    .fetch_add(shared.ns(qpc() - eta_join_begin), Ordering::Relaxed);
+                if let Some(completed) = eta_completed {
+                    frame
+                        .extended
+                        .restore_eta_request(completed.request, Some(completed.report));
+                }
+                let eta = replay::rows::TableId::DivisionEta.index();
+                (checks[eta], ticks[eta]) =
+                    frame
+                        .extended
+                        .capture_eta(&cached, shared.base, state, extended_needed[eta]);
                 extended_matched = checks;
                 for table in extended::TABLES {
                     let index = table.index();
@@ -2365,7 +2408,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         let index = table.index();
                         extended_matched[index] = focus_report.matched[slot];
                         frame.extended_raw_mismatches[index] =
-                            extended_needed[index] && !focus_report.matched[slot];
+                            extended_needed[index] && focus_report.mismatches[slot] != 0;
                         let ns = shared.ns(focus_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_focus_copy_ns(slot, ns);
@@ -2493,8 +2536,12 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     for (slot, table) in decode::ECONOMY_REST.iter().enumerate() {
                         let index = table.index();
                         extended_matched[index] = economy_rest_report.matched[slot];
-                        frame.extended_raw_mismatches[index] =
-                            extended_needed[index] && !economy_rest_report.matched[slot];
+                        frame.extended_raw_mismatches[index] = extended_needed[index]
+                            && if (6..9).contains(&slot) {
+                                economy_rest_report.resource_mismatches[slot - 6] != 0
+                            } else {
+                                !economy_rest_report.matched[slot]
+                            };
                         let ns = shared.ns(economy_rest_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_economy_rest_copy_ns(slot, ns);
@@ -2831,6 +2878,82 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         }
     }
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
+}
+
+fn acquire_world_request(
+    base: usize,
+    game_state: usize,
+    needed: &[bool],
+    focus: extended::governance::FocusCopyContext,
+    economy: &extended::economy::Captured,
+) -> acquisition::WorldRequest {
+    // Reuse the exact existing per-family buffer eligibility: a needed
+    // second pass without a provisioned buffer forces typed acquisition.
+    macro_rules! pair {
+        ($context:expr, $acquire:path, $recycle:path) => {{
+            let context = $context;
+            let mut first = $acquire();
+            let second = context.needed.iter().any(|&check| check).then($acquire);
+            if second
+                .as_ref()
+                .is_some_and(|job| job.log.spans.capacity() == 0)
+            {
+                $recycle(first);
+                first = Default::default();
+            }
+            acquisition::WorldPair {
+                context,
+                first,
+                second,
+            }
+        }};
+    }
+    acquisition::WorldRequest {
+        production: pair!(
+            extended::production::ProductionRestCopyContext {
+                base,
+                game_state,
+                needed: decode::PRODUCTION_REST.map(|table| needed[table.index()]),
+            },
+            decode::acquire_production_rest_job,
+            decode::recycle_production_rest_job
+        ),
+        construction: pair!(
+            extended::construction::ConstructionRestCopyContext {
+                base,
+                game_state,
+                needed: decode::CONSTRUCTION_REST.map(|table| needed[table.index()]),
+            },
+            decode::acquire_construction_rest_job,
+            decode::recycle_construction_rest_job
+        ),
+        economy: pair!(
+            economy.resource_copy_context(
+                base,
+                game_state,
+                decode::ECONOMY_REST.map(|table| needed[table.index()])
+            ),
+            decode::acquire_economy_rest_job,
+            decode::recycle_economy_rest_job
+        ),
+        focus: {
+            let mut first = decode::acquire_focus_job();
+            let second = focus
+                .needed
+                .iter()
+                .any(|&check| check)
+                .then(decode::acquire_focus_job);
+            if second.as_ref().is_some_and(|job| !job.is_provisioned()) {
+                decode::recycle_focus_job(first);
+                first = Default::default();
+            }
+            acquisition::WorldPair {
+                context: focus,
+                first,
+                second,
+            }
+        },
+    }
 }
 
 fn elapsed(begin: i64) -> u64 {

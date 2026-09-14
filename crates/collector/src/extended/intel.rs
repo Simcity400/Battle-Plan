@@ -18,10 +18,11 @@ use engine::{
     walk::Outcome,
 };
 use replay::{
+    BranchId,
     frame::{BaselineToken, TableInput, TableView},
-    rows::{self, TableId, tables},
+    rows::{self, TableId, TableRows, tables},
 };
-use std::mem::size_of;
+use std::{mem::size_of, sync::Arc};
 
 pub const N: usize = 16;
 pub const TABLES: [TableId; N] = [
@@ -111,6 +112,130 @@ struct ScopedFlag {
     scope_kind: u8,
     scope_id: u32,
     flag: cscript_flag::Row,
+}
+
+/// Spool-owned, fieldwise native snapshots. These hourly tables have no
+/// staggered cache, so the memo owns its immutable replay result directly.
+/// Neither capture leases nor live pointers survive conversion.
+#[derive(Default)]
+struct NativeShadow<R> {
+    rows: Vec<R>,
+    output: Option<Arc<TableRows>>,
+    hits: u64,
+    misses: u64,
+}
+
+impl<R: Clone + PartialEq> NativeShadow<R> {
+    fn clear(&mut self) {
+        self.rows.clear();
+        self.output = None;
+    }
+
+    fn input(
+        &mut self,
+        id: TableId,
+        current: &CaptureRows<R>,
+        outcome: Outcome,
+        allowed: bool,
+        convert: impl FnOnce() -> TableView,
+    ) -> TableInput {
+        let source = match outcome {
+            Outcome::Rows { len } if allowed && current.mismatches == 0 => current.rows.get(..len),
+            _ => None,
+        };
+        if let Some(source) = source
+            && let Some(output) = &self.output
+            && output.table() == id
+            && self.rows == source
+        {
+            self.hits = self.hits.saturating_add(1);
+            return TableInput::SharedComplete(Arc::clone(output));
+        }
+        self.misses = self.misses.saturating_add(1);
+        let converted = convert();
+        self.clear();
+        if let Some(source) = source
+            && let TableView::Complete(rows) = converted
+        {
+            debug_assert_eq!(rows.table(), id);
+            let output = Arc::new(rows);
+            self.rows.extend_from_slice(source);
+            self.output = Some(Arc::clone(&output));
+            return TableInput::SharedComplete(output);
+        }
+        TableInput::Sampled(converted)
+    }
+
+    fn statistics(&self) -> IntelShadowStats {
+        let replay_capacity_bytes = match self.output.as_deref() {
+            Some(TableRows::CountryIntel(rows)) => {
+                rows.capacity() * size_of::<rows::CountryIntelRow>()
+            }
+            Some(TableRows::ScriptFlags(rows)) => {
+                rows.capacity() * size_of::<rows::ScriptFlagRow>()
+            }
+            _ => 0,
+        };
+        IntelShadowStats {
+            hits: self.hits,
+            misses: self.misses,
+            row_capacity_bytes: self.rows.capacity() * size_of::<R>(),
+            replay_capacity_bytes,
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct IntelShadow {
+    branch: Option<BranchId>,
+    flags: NativeShadow<ScopedFlag>,
+    country_intel: NativeShadow<country_intel_row::Row>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct IntelShadowStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub row_capacity_bytes: usize,
+    pub replay_capacity_bytes: usize,
+}
+
+impl IntelShadow {
+    pub(crate) fn statistics(&self) -> [IntelShadowStats; 2] {
+        [self.flags.statistics(), self.country_intel.statistics()]
+    }
+}
+
+pub(crate) struct IntelConversion<'a> {
+    shadow: &'a mut IntelShadow,
+    allowed: [bool; 2],
+}
+
+impl<'a> IntelConversion<'a> {
+    pub(crate) fn new(branch: BranchId, shadow: &'a mut IntelShadow) -> Self {
+        if shadow.branch != Some(branch) {
+            shadow.flags.clear();
+            shadow.country_intel.clear();
+            shadow.branch = Some(branch);
+        }
+        Self {
+            shadow,
+            allowed: [true; 2],
+        }
+    }
+
+    /// Enclosing verification verdicts are applied after conversion. Disable
+    /// both hits and installation beforehand so a rejected sample is not kept.
+    pub(crate) fn restrict(&mut self, flags: bool, country_intel: bool) {
+        self.allowed[0] &= flags;
+        self.allowed[1] &= country_intel;
+        if !self.allowed[0] {
+            self.shadow.flags.clear();
+        }
+        if !self.allowed[1] {
+            self.shadow.country_intel.clear();
+        }
+    }
 }
 
 pub struct Captured {
@@ -527,8 +652,33 @@ impl Captured {
         &self,
         baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
         scratch: &mut ScriptVariableComparison,
+        reuse: Option<&mut IntelConversion<'_>>,
     ) -> [TableInput; N] {
-        self.convert_tables(TableInput::Sampled, |outcome| {
+        let outcomes = self.outcomes();
+        let (flags, country_intel) = if let Some(reuse) = reuse {
+            (
+                reuse.shadow.flags.input(
+                    TableId::ScriptFlags,
+                    &self.flags,
+                    outcomes[7],
+                    reuse.allowed[0],
+                    || self.flags_table(outcomes[7]),
+                ),
+                reuse.shadow.country_intel.input(
+                    TableId::CountryIntel,
+                    &self.country_intel,
+                    outcomes[15],
+                    reuse.allowed[1],
+                    || self.country_intel_table(outcomes[15]),
+                ),
+            )
+        } else {
+            (
+                TableInput::Sampled(self.flags_table(outcomes[7])),
+                TableInput::Sampled(self.country_intel_table(outcomes[15])),
+            )
+        };
+        self.convert_tables(TableInput::Sampled, flags, country_intel, |outcome| {
             if let Some((token, previous)) = baseline
                 && self.variables_equal(outcome, previous, scratch)
             {
@@ -541,14 +691,20 @@ impl Captured {
 
     #[cfg(test)]
     fn tables(&self) -> [TableView; N] {
-        self.convert_tables(std::convert::identity, |outcome| {
-            self.variables_table(outcome)
-        })
+        let outcomes = self.outcomes();
+        self.convert_tables(
+            std::convert::identity,
+            self.flags_table(outcomes[7]),
+            self.country_intel_table(outcomes[15]),
+            |outcome| self.variables_table(outcome),
+        )
     }
 
     fn convert_tables<V>(
         &self,
         sample: impl Fn(TableView) -> V,
+        flags: V,
+        country_intel: V,
         variables: impl FnOnce(Outcome) -> V,
     ) -> [V; N] {
         let outcomes = self.outcomes();
@@ -620,7 +776,7 @@ impl Captured {
                     subnetwork_selector: r.subnetwork_selector,
                 },
             )),
-            sample(self.flags_table(outcomes[7])),
+            flags,
             variables(outcomes[8]),
             sample(self.operations_table(outcomes[9])),
             sample(table::<tables::OperationAssignments, _>(
@@ -661,23 +817,25 @@ impl Captured {
                 },
             )),
             sample(self.relation_tuples_table(outcomes[14])),
-            sample(table::<tables::CountryIntel, _>(
-                outcomes[15],
-                &self.country_intel.rows,
-                |r| rows::CountryIntelRow {
-                    owner_country: r.owner_country,
-                    target_index: r.target_index,
-                    civilian: r.civilian,
-                    army: r.army,
-                    navy: r.navy,
-                    air: r.air,
-                },
-            )),
+            country_intel,
         ]
     }
 }
 
 impl Captured {
+    fn country_intel_table(&self, outcome: Outcome) -> TableView {
+        table::<tables::CountryIntel, _>(outcome, &self.country_intel.rows, |r| {
+            rows::CountryIntelRow {
+                owner_country: r.owner_country,
+                target_index: r.target_index,
+                civilian: r.civilian,
+                army: r.army,
+                navy: r.navy,
+                air: r.air,
+            }
+        })
+    }
+
     fn subjects_table(&self, outcome: Outcome) -> TableView {
         if !valid_arena(
             outcome,
@@ -3073,8 +3231,255 @@ impl Captured {
 pub(crate) use tests::relations_test_kit;
 
 #[cfg(test)]
+pub(crate) fn intel_shadow_fixture(value: i64) -> Captured {
+    let capacities = Capacities {
+        rows: [2; N],
+        intel_scratch: 0,
+        subject_names: 0,
+        autonomy_names: 0,
+        variable_entries: 0,
+        variable_names: 0,
+        tokens: 0,
+    };
+    let mut capture = Captured::with_capacities(&capacities, &[0; N]);
+    for (index, row) in capture.country_intel.rows.iter_mut().enumerate() {
+        *row = country_intel_row::Row {
+            owner_country: 7,
+            target_index: index as u32,
+            civilian: value,
+            army: i64::MIN,
+            navy: i64::MAX,
+            air: -1,
+        };
+    }
+    for (index, row) in capture.flags.rows.iter_mut().enumerate() {
+        *row = ScopedFlag {
+            scope_kind: COUNTRY_SCOPE,
+            scope_id: 7,
+            flag: cscript_flag::Row {
+                token: index as u32,
+                set_hour: -3,
+                value: i16::MIN,
+                remaining_days: i16::MAX,
+            },
+        };
+    }
+    capture.flags.outcome = Outcome::Rows { len: 2 };
+    capture.country_intel.outcome = Outcome::Rows { len: 2 };
+    capture
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    fn memo_inputs(
+        capture: &Captured,
+        shadow: &mut IntelShadow,
+        branch: BranchId,
+    ) -> [TableInput; N] {
+        capture.table_inputs(
+            None,
+            &mut ScriptVariableComparison::default(),
+            Some(&mut IntelConversion::new(branch, shadow)),
+        )
+    }
+
+    fn shared(input: &TableInput) -> &Arc<TableRows> {
+        let TableInput::SharedComplete(rows) = input else {
+            panic!("expected complete shared rows")
+        };
+        rows
+    }
+
+    #[test]
+    fn intel_shadow_exact_hits_own_rows_and_account_actual_capacities() {
+        let mut capture = intel_shadow_fixture(42);
+        let mut shadow = IntelShadow::default();
+        let original = capture.tables();
+        let first = memo_inputs(&capture, &mut shadow, 1);
+        let second = memo_inputs(&capture, &mut shadow, 1);
+        for slot in [7, 15] {
+            assert!(Arc::ptr_eq(shared(&first[slot]), shared(&second[slot])));
+            assert_eq!(
+                TableView::Complete((**shared(&first[slot])).clone()),
+                original[slot]
+            );
+        }
+        let stats = shadow.statistics();
+        assert!(stats.iter().all(|stat| stat.hits == 1 && stat.misses == 1));
+        assert_eq!(
+            stats[0].row_capacity_bytes,
+            shadow.flags.rows.capacity() * size_of::<ScopedFlag>()
+        );
+        assert_eq!(
+            stats[1].row_capacity_bytes,
+            shadow.country_intel.rows.capacity() * size_of::<country_intel_row::Row>()
+        );
+        assert_eq!(
+            stats[0].replay_capacity_bytes,
+            std::mem::size_of_val(shared(&first[7]).rows::<tables::ScriptFlags>().unwrap())
+        );
+        // Unused capacity is not data. Only the current successful prefix is compared.
+        capture.flags.rows.push(ScopedFlag::default());
+        capture
+            .country_intel
+            .rows
+            .push(country_intel_row::Row::default());
+        let third = memo_inputs(&capture, &mut shadow, 1);
+        assert!(Arc::ptr_eq(shared(&first[7]), shared(&third[7])));
+        assert!(Arc::ptr_eq(shared(&first[15]), shared(&third[15])));
+        drop(capture);
+        assert_eq!(shadow.flags.rows.len(), 2);
+        assert_eq!(shadow.country_intel.rows.len(), 2);
+    }
+
+    #[test]
+    fn intel_shadow_compares_every_native_field_and_order_before_reuse() {
+        for slot in [7, 15] {
+            for change in 0..8 {
+                let mut capture = intel_shadow_fixture(42);
+                let mut shadow = IntelShadow::default();
+                let first = memo_inputs(&capture, &mut shadow, 1);
+                if slot == 7 {
+                    let row = &mut capture.flags.rows[0];
+                    match change {
+                        0 => row.scope_kind = STATE_SCOPE,
+                        1 => row.scope_id += 1,
+                        2 => row.flag.token += 10,
+                        3 => row.flag.set_hour += 1,
+                        4 => row.flag.value += 1,
+                        5 => row.flag.remaining_days -= 1,
+                        6 => capture.flags.rows.swap(0, 1),
+                        _ => capture.flags.outcome = Outcome::Rows { len: 1 },
+                    }
+                } else {
+                    let row = &mut capture.country_intel.rows[0];
+                    match change {
+                        0 => row.owner_country += 1,
+                        1 => row.target_index += 10,
+                        2 => row.civilian += 1,
+                        3 => row.army += 1,
+                        4 => row.navy -= 1,
+                        5 => row.air += 1,
+                        6 => capture.country_intel.rows.swap(0, 1),
+                        _ => capture.country_intel.outcome = Outcome::Rows { len: 1 },
+                    }
+                }
+                let expected = capture.tables();
+                let next = memo_inputs(&capture, &mut shadow, 1);
+                assert!(
+                    !Arc::ptr_eq(shared(&first[slot]), shared(&next[slot])),
+                    "slot {slot}, change {change}"
+                );
+                assert_eq!(
+                    TableView::Complete((**shared(&next[slot])).clone()),
+                    expected[slot]
+                );
+                assert!(Arc::ptr_eq(
+                    shared(&first[22 - slot]),
+                    shared(&next[22 - slot])
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn intel_shadow_current_faults_truncation_and_duplicate_keys_clear_only_affected_table() {
+        for slot in [7, 15] {
+            for fault in 0..7 {
+                let mut capture = intel_shadow_fixture(42);
+                let mut shadow = IntelShadow::default();
+                let first = memo_inputs(&capture, &mut shadow, 1);
+                let outcome = match fault {
+                    0 => Outcome::Unavailable {
+                        reason: "fixture unreadable",
+                    },
+                    1 => Outcome::Truncated {
+                        len: 1,
+                        unread_rows: 3,
+                    },
+                    2 => Outcome::Rows { len: 3 },
+                    3 => Outcome::Truncated {
+                        len: 1,
+                        unread_rows: 0,
+                    },
+                    _ => Outcome::Rows { len: 2 },
+                };
+                if slot == 7 {
+                    capture.flags.outcome = outcome;
+                    if fault == 4 {
+                        capture.flags.rows[1] = capture.flags.rows[0];
+                    }
+                    if fault >= 5 {
+                        capture.flags.checked = true;
+                        capture.flags.mismatches = 1;
+                    }
+                } else {
+                    capture.country_intel.outcome = outcome;
+                    if fault == 4 {
+                        capture.country_intel.rows[1] = capture.country_intel.rows[0];
+                    }
+                    if fault >= 5 {
+                        capture.country_intel.checked = true;
+                        capture.country_intel.mismatches = 1;
+                    }
+                }
+                let expected = capture.tables();
+                let next = memo_inputs(&capture, &mut shadow, 1);
+                assert_eq!(next[slot], TableInput::Sampled(expected[slot].clone()));
+                assert!(matches!(
+                    next[slot],
+                    TableInput::Sampled(
+                        TableView::Unavailable { .. } | TableView::Truncated { .. }
+                    )
+                ));
+                assert!(Arc::ptr_eq(
+                    shared(&first[22 - slot]),
+                    shared(&next[22 - slot])
+                ));
+                assert_eq!(
+                    shadow.statistics()[usize::from(slot == 15)].replay_capacity_bytes,
+                    0
+                );
+                let recovered = memo_inputs(&intel_shadow_fixture(42), &mut shadow, 1);
+                assert!(!Arc::ptr_eq(shared(&first[slot]), shared(&recovered[slot])));
+            }
+        }
+    }
+
+    #[test]
+    fn intel_shadow_branch_restrictions_and_empty_success_never_resurrect_old_rows() {
+        let mut capture = intel_shadow_fixture(42);
+        let mut shadow = IntelShadow::default();
+        let first = memo_inputs(&capture, &mut shadow, 1);
+        let next = memo_inputs(&capture, &mut shadow, 2);
+        for slot in [7, 15] {
+            assert!(!Arc::ptr_eq(shared(&first[slot]), shared(&next[slot])));
+        }
+        let mut reuse = IntelConversion::new(2, &mut shadow);
+        reuse.restrict(false, true);
+        reuse.restrict(true, true); // A later call cannot re-enable this rejected frame.
+        let restricted = capture.table_inputs(
+            None,
+            &mut ScriptVariableComparison::default(),
+            Some(&mut reuse),
+        );
+        assert!(matches!(
+            restricted[7],
+            TableInput::Sampled(TableView::Complete(_))
+        ));
+        assert!(Arc::ptr_eq(shared(&next[15]), shared(&restricted[15])));
+        assert!(shadow.flags.output.is_none());
+        capture.flags.outcome = Outcome::Rows { len: 0 };
+        capture.country_intel.outcome = Outcome::Rows { len: 0 };
+        let empty = memo_inputs(&capture, &mut shadow, 2);
+        let repeated = memo_inputs(&capture, &mut shadow, 2);
+        for slot in [7, 15] {
+            assert!(Arc::ptr_eq(shared(&empty[slot]), shared(&repeated[slot])));
+            assert!(!Arc::ptr_eq(shared(&next[slot]), shared(&empty[slot])));
+        }
+    }
 
     #[test]
     fn relations_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
@@ -3581,6 +3986,7 @@ mod tests {
         let views = capture.table_inputs(
             encoder.comparison_baseline::<tables::ScriptVariables>(1, 1, false),
             &mut scratch,
+            None,
         );
         assert!(matches!(views[8], TableInput::ComparedEqual(_)));
         assert_eq!(
@@ -3609,6 +4015,7 @@ mod tests {
             let views = capture.table_inputs(
                 encoder.comparison_baseline::<tables::ScriptVariables>(1, 1, false),
                 &mut ScriptVariableComparison::default(),
+                None,
             );
             assert!(
                 matches!(views[8], TableInput::Sampled(TableView::Complete(_))),
@@ -3654,6 +4061,7 @@ mod tests {
             let views = capture.table_inputs(
                 encoder.comparison_baseline::<tables::ScriptVariables>(1, 1, false),
                 &mut scratch,
+                None,
             );
             assert!(
                 matches!(views[8], TableInput::ComparedEqual(_)),
@@ -3681,6 +4089,7 @@ mod tests {
             let views = capture.table_inputs(
                 encoder.comparison_baseline::<tables::ScriptVariables>(1, 1, false),
                 &mut ScriptVariableComparison::default(),
+                None,
             );
             assert!(matches!(
                 views[8],
@@ -3707,6 +4116,7 @@ mod tests {
             let views = capture.table_inputs(
                 encoder.comparison_baseline::<tables::ScriptVariables>(1, 1, false),
                 &mut ScriptVariableComparison::default(),
+                None,
             );
             assert!(
                 matches!(views[8], TableInput::Sampled(TableView::Unavailable { .. })),
@@ -3740,6 +4150,7 @@ mod tests {
             let views = capture.table_inputs(
                 encoder.comparison_baseline::<tables::ScriptVariables>(1, 1, false),
                 &mut ScriptVariableComparison::default(),
+                None,
             );
             if fault == 0 {
                 assert!(matches!(

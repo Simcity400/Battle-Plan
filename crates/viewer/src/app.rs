@@ -107,7 +107,10 @@ pub struct Viewer {
     /// scene; both come from recorded tables and are rewritten when either
     /// changes. The perspective is in the key because it decides which
     /// divisions have a model at all.
-    close_zoom_hour: Option<(replay::BranchId, i32, map::perspective::Choice)>,
+    ///
+    /// The `f32` is `Document::hour_fraction`: between two recorded hours the
+    /// figures glide, so the field is rebuilt as the fraction moves.
+    close_zoom_hour: Option<(replay::BranchId, i32, map::perspective::Choice, f32)>,
     // names
     placements: Option<Placements>,
     placements_at: Option<(replay::BranchId, i32, bool)>,
@@ -134,6 +137,7 @@ pub struct Viewer {
         Camera,
         [u32; 2],
         map::perspective::Choice,
+        f32,
     )>,
     /// Which country the counters are drawn for; the header's own control sets
     /// it and [`Document::perspective`] is kept in step with it.
@@ -469,6 +473,8 @@ impl Viewer {
             .inner;
         if response.changed() {
             self.playing = false;
+            // A scrub lands on a recorded hour, not between two.
+            document.hour_fraction = 0.0;
         }
         let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 4.0), egui::Sense::hover());
         ui.painter()
@@ -495,32 +501,51 @@ impl Viewer {
                 egui::Color32::LIGHT_RED,
             );
         }
-        if hour != document.playback.hour()
-            && let Err(error) = document.playback.seek(branch, hour)
-        {
-            self.error = Some(error.to_string());
-        }
-        if self.playing
-            && self.last_step.elapsed() >= Duration::from_secs_f64(1.0 / f64::from(self.speed))
-        {
-            self.last_step = Instant::now();
-            match document.playback.step() {
-                Ok(true) => {}
-                Ok(false) => self.playing = false,
-                Err(error) => {
-                    self.error = Some(error.to_string());
-                    self.playing = false;
-                }
+        if hour != document.playback.hour() {
+            // Every button and the scrub land on a recorded hour.
+            document.hour_fraction = 0.0;
+            if let Err(error) = document.playback.seek(branch, hour) {
+                self.error = Some(error.to_string());
             }
         }
+        // Playback is continuous, not one recorded hour at a time: the speed
+        // control is recorded hours a second and the wall clock between two
+        // repaints is a fraction of an hour, which `Document::hour_fraction`
+        // carries into the division positions. A pause leaves the fraction
+        // where it is, so the frame does not jump when it stops.
         if self.playing {
-            ui.ctx()
-                .request_repaint_after(Duration::from_secs_f64(1.0 / f64::from(self.speed)));
+            let elapsed = self.last_step.elapsed().as_secs_f64();
+            self.last_step = Instant::now();
+            let mut fraction = f64::from(document.hour_fraction) + elapsed * f64::from(self.speed);
+            while fraction >= 1.0 {
+                fraction -= 1.0;
+                match document.playback.step() {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        self.playing = false;
+                        fraction = 0.0;
+                        break;
+                    }
+                    Err(error) => {
+                        self.error = Some(error.to_string());
+                        self.playing = false;
+                        fraction = 0.0;
+                        break;
+                    }
+                }
+            }
+            document.hour_fraction = fraction as f32;
+            ui.ctx().request_repaint();
         }
         ui.horizontal(|ui| {
             let displayed = document.playback.hour();
+            let fraction = document.hour_fraction;
             ui.strong(date(displayed));
-            ui.weak(format!("Hour {displayed}"));
+            if fraction > 0.0 {
+                ui.weak(format!("Hour {displayed} + {fraction:.2} h"));
+            } else {
+                ui.weak(format!("Hour {displayed}"));
+            }
             // colour
             ui.checkbox(&mut self.postfx, "Colour grading")
                 .on_hover_text("The engine's post chain: exposure, tone map, colour LUT");
@@ -589,6 +614,7 @@ impl Viewer {
             document.playback.branch(),
             document.playback.hour(),
             self.perspective.clone(),
+            document.hour_fraction,
         );
         if self.close_zoom_hour.as_ref() != Some(&hour) {
             let (buildings, _) = document.map_building_field()?;
@@ -600,6 +626,10 @@ impl Viewer {
             )?;
             let (units, _) = document.unit_model_field(&self.perspective)?;
             scene.set_unit_models(&state.device, &state.queue, &document.unit_models, units)?;
+            // orders: the battle plan follows the hour and the perspective, on
+            // the same key as the unit models.
+            let orders = document.order_field(&self.perspective)?;
+            scene.set_orders(&state.device, &state.queue, &document.orders, &orders)?;
             self.close_zoom_hour = Some(hour);
         }
         if let (true, Some(layers)) = (rebuilt, self.political.layers()) {
@@ -690,9 +720,16 @@ impl Viewer {
                     eprintln!("Warning: {warning}");
                 }
                 println!(
-                    "Captured branch {}, hour {} to {} at {}x{}",
+                    "Captured branch {}, hour {}{} to {} at {}x{}",
                     document.playback.branch(),
                     document.playback.hour(),
+                    // counters: which frame between two recorded hours this is,
+                    // in the words `--dump` uses, so the two can be compared.
+                    if document.hour_fraction > 0.0 {
+                        format!(" + {:.3} h", document.hour_fraction)
+                    } else {
+                        String::new()
+                    },
                     capture.path.display(),
                     pixels[0],
                     pixels[1]
@@ -889,6 +926,7 @@ impl Viewer {
             camera,
             pixels,
             self.perspective.clone(),
+            document.hour_fraction,
         );
         if self.overlay_at.as_ref() != Some(&overlay_key) {
             let (batch, label_report, counter_report) = document

@@ -22,20 +22,27 @@
 //! walk. [`parse`] returns that tree verbatim and [`read`] projects the
 //! `.mesh` shape of it (section 1.2) into typed vertex streams.
 //!
-//! Skins are **not** decoded: no pass here deforms a mesh, and a skinned mesh
-//! drawn from its own vertex stream is its bind pose. Their presence is
-//! recorded on [`SubMesh::has_skin`].
+//! Skins, skeletons and both halves of `.anim` are decoded, because the figure
+//! the game draws for a division is a posed one. A `.mesh`'s own vertex stream
+//! is its bind pose, and `GER_infantry.mesh`'s bind pose is a T-pose; the
+//! engine plays the entity's default state animation and skins the mesh by it.
+//! [`SubMesh::skin`] carries the per-vertex influences, [`Mesh::skeleton`] the
+//! joints, [`read_animation`] both the `[info]` rest pose and the `[samples]`
+//! frames, and [`Mesh::palette`] composes the two into the matrix a linear
+//! blend skinning pass multiplies a vertex by.
 //!
-//! Skeletons and the `[info]` half of `.anim` **are**, because several shipped
-//! unit entities are attachment rigs: `GER_motorized_entity`'s own mesh is a
-//! three-vertex plane and the truck and rifleman the game draws for a motorized
-//! division are its `attach` blocks at the rig's `vehicle` and `infantry`
-//! joints. [`Mesh::skeleton`] carries the joints and [`read_animation`] the
-//! rest pose those joints take, which is the transform an attachment hangs
-//! from; see [`Descriptors::resolve_entity`]. The `[samples]` half of `.anim`
-//! is not decoded: this pass draws one still hour and never advances a clock,
-//! so a sampled frame would be an invention, and every joint that carries an
-//! attachment on the four shipped rigs declares no animated channel at all.
+//! The same joints place attachments, because several shipped unit entities are
+//! attachment rigs: `GER_motorized_entity`'s own mesh is a three-vertex plane
+//! and the truck and rifleman the game draws for a motorized division are its
+//! `attach` blocks at the rig's `vehicle` and `infantry` joints. An attachment
+//! hangs from [`Mesh::pose`], which is the same joint transform the palette is
+//! built from, so a rifle in a hand follows the skinned hand; see
+//! [`Descriptors::resolve_entity`].
+//!
+//! **A still hour is [`FIRST_FRAME`].** A recording samples the game once an
+//! hour and carries no animation clock, so there is no time to advance to: the
+//! frame the engine shows an entity that has just entered its default state is
+//! sample 0, and that is the one evaluated here.
 
 use std::{collections::BTreeMap, io};
 
@@ -521,6 +528,54 @@ pub struct Bounds {
     pub max: [f32; 3],
 }
 
+/// How many joints one vertex of a `[skin]` is influenced by.
+///
+/// The streams are **always** four wide. `bones` is not that width: across the
+/// 341 skinned sub-meshes of the shipped `gfx` tree it takes the values 1, 2, 3
+/// and 4 while `ix` and `w` are `4 * V` long in every one of them, and no
+/// vertex of a sub-mesh ever carries more non-zero weights than its own `bones`
+/// says. `bones` is the authoring tool's influence cap, the stream width is
+/// fixed; reading `bones` as the stride mis-strides 269 of the 341.
+pub const INFLUENCES: usize = 4;
+
+/// One `[skin]` node: which joints move a vertex and by how much (section 1.2).
+///
+/// A slot a vertex does not use is joint `-1` at weight 0 — measured: across
+/// every shipped skin the largest weight on a `-1` slot is exactly 0. The four
+/// weights of a vertex sum to 1 in 338 of the 341 sub-meshes; in the other
+/// three (`generic_railway_gun.mesh`, `algerie_heavy_cruiser.mesh`,
+/// `train_locomotive_1_equipment_2.mesh`) a handful of vertices are bound to
+/// nothing at all — all four slots `-1` at weight 0 — and those keep their bind
+/// position rather than collapsing onto the origin.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Skin {
+    /// `bones`: the largest number of non-zero influences a vertex carries.
+    pub bones: u32,
+    /// `ix`, four per vertex. `-1` is an unused slot.
+    pub joints: Vec<[i32; INFLUENCES]>,
+    /// `w`, four per vertex, in the same slot order.
+    pub weights: Vec<[f32; INFLUENCES]>,
+}
+
+impl Skin {
+    /// The joints and weights of one vertex, unused slots dropped.
+    ///
+    /// Empty for a vertex bound to nothing, which is the caller's signal to
+    /// leave it in its bind position.
+    pub fn influences(&self, vertex: usize) -> Vec<(u32, f32)> {
+        let (Some(joints), Some(weights)) = (self.joints.get(vertex), self.weights.get(vertex))
+        else {
+            return Vec::new();
+        };
+        joints
+            .iter()
+            .zip(weights)
+            .filter(|(joint, weight)| **joint >= 0 && **weight != 0.0)
+            .map(|(joint, weight)| (*joint as u32, *weight))
+            .collect()
+    }
+}
+
 /// One `[mesh]` node: a vertex stream set, its triangles and its material.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SubMesh {
@@ -536,8 +591,8 @@ pub struct SubMesh {
     pub indices: Vec<u32>,
     pub bounds: Option<Bounds>,
     pub material: Option<Material>,
-    /// Whether a `[skin]` node was present. Its streams are not decoded.
-    pub has_skin: bool,
+    /// The `[skin]` node, when the sub-mesh declares one.
+    pub skin: Option<Skin>,
 }
 
 impl SubMesh {
@@ -644,13 +699,13 @@ impl Mesh {
         self.joint(name)?.inverse_bind?.inverse()
     }
 
-    /// The joint's pose in the mesh's own space under one animation's rest
-    /// values, composed down the skeleton's `pa` chain.
+    /// The joint's pose in the mesh's own space at one frame of an animation,
+    /// composed down the skeleton's `pa` chain.
     ///
     /// The `.anim` states each joint **relative to its parent** and carries no
     /// parent of its own, so the two files are read together: the `[skeleton]`
-    /// gives the tree and the `[info]` block the transform on each link. For a
-    /// rig this is one link — every attachment joint of `motorized_frame`,
+    /// gives the tree and the animation the transform on each link. For a rig
+    /// this is one link — every attachment joint of `motorized_frame`,
     /// `cavalry_frame`, `bicycle_frame` and `artillery_frame` hangs off an
     /// identity root — and for a rifleman it is eight, from the hip out to
     /// `Right_Hand_node`.
@@ -658,33 +713,117 @@ impl Mesh {
     /// A joint the animation does not name contributes its own bind transform
     /// relative to its parent's, so a partial `.anim` still places its joint.
     /// `None` when the skeleton has no joint of that name.
-    pub fn rest_pose(&self, animation: &Animation, name: &str) -> Option<Transform> {
-        let mut chain = Vec::new();
-        let mut joint = self.joint(name)?;
-        for _ in 0..=self.skeleton.len() {
-            chain.push(joint);
-            let Some(parent) = joint.parent else { break };
-            let Some(parent) = self.skeleton.iter().find(|other| other.index == parent) else {
-                break;
-            };
-            if parent.index == joint.index {
-                break;
-            }
-            joint = parent;
-        }
-        let mut out = Transform::IDENTITY;
-        for (position, joint) in chain.iter().enumerate().rev() {
-            let local = animation.rest(&joint.name).or_else(|| {
-                let world = joint.inverse_bind?.inverse()?;
-                match chain.get(position + 1) {
-                    Some(parent) => Some(parent.inverse_bind?.compose(&world)),
-                    None => Some(world),
-                }
-            })?;
-            out = out.compose(&local);
-        }
-        Some(out)
+    ///
+    /// This is where an `attach` block hangs, and it is the left half of the
+    /// skinning matrix [`Mesh::palette`] builds, so an attachment and the joint
+    /// that carries it move together by construction.
+    pub fn pose(&self, animation: &Animation, frame: u32, name: &str) -> Option<Transform> {
+        let index = self.joint(name)?.index;
+        let locals = locals_by_name(animation, frame);
+        self.world_pose(&locals, index, &mut self.memo(), 0)
     }
+
+    /// The skinning matrix of every joint: its pose at this frame times its own
+    /// inverse bind, indexed by the joint's `ix`.
+    ///
+    /// This is what a linear blend skinning pass multiplies a bind-pose vertex
+    /// by. A joint with no usable `tx` takes the identity rather than a
+    /// singular or 1e12 matrix — `artillery_frame.mesh` writes an all-zero `tx`
+    /// for 33 of its 41 joints and `GER_infantry.mesh` writes 1e12 on
+    /// `Left_Hand_node`'s diagonal — so a vertex weighted to one of them stays
+    /// where the file put it instead of leaving the screen.
+    pub fn palette(&self, animation: &Animation, frame: u32) -> Vec<Transform> {
+        let locals = locals_by_name(animation, frame);
+        let mut memo = self.memo();
+        let slots = self
+            .skeleton
+            .iter()
+            .map(|joint| joint.index as usize + 1)
+            .max()
+            .unwrap_or(0);
+        (0..slots)
+            .map(|slot| {
+                let skinning = self
+                    .skeleton
+                    .iter()
+                    .find(|joint| joint.index as usize == slot)
+                    .and_then(|joint| {
+                        let pose = self.world_pose(&locals, joint.index, &mut memo, 0)?;
+                        Some(pose.compose(&joint.inverse_bind?))
+                    });
+                match skinning {
+                    Some(skinning) if skinning.is_finite() => skinning,
+                    _ => Transform::IDENTITY,
+                }
+            })
+            .collect()
+    }
+
+    /// An empty memo for [`Mesh::world_pose`], one slot per joint.
+    fn memo(&self) -> Vec<Option<Option<Transform>>> {
+        vec![None; self.skeleton.len()]
+    }
+
+    /// One joint's pose in the mesh's own space, memoised by its position in
+    /// [`Mesh::skeleton`]. `depth` bounds a `pa` chain that loops.
+    fn world_pose(
+        &self,
+        locals: &BTreeMap<&str, Transform>,
+        index: u32,
+        memo: &mut [Option<Option<Transform>>],
+        depth: usize,
+    ) -> Option<Transform> {
+        let at = self
+            .skeleton
+            .iter()
+            .position(|joint| joint.index == index)?;
+        if let Some(held) = memo.get(at).copied().flatten() {
+            return held;
+        }
+        if depth > self.skeleton.len() {
+            return None;
+        }
+        let joint = &self.skeleton[at];
+        let parent = joint
+            .parent
+            .filter(|parent| *parent != joint.index)
+            .and_then(|parent| self.skeleton.iter().position(|other| other.index == parent));
+        // A joint the animation names takes its transform; one it does not
+        // contributes its own bind transform relative to its parent's.
+        let local = locals.get(joint.name.as_str()).copied().or_else(|| {
+            let world = joint.inverse_bind?.inverse()?;
+            match parent {
+                Some(position) => Some(self.skeleton[position].inverse_bind?.compose(&world)),
+                None => Some(world),
+            }
+        });
+        let out = local.and_then(|local| match parent {
+            Some(position) => Some(
+                self.world_pose(locals, self.skeleton[position].index, memo, depth + 1)?
+                    .compose(&local),
+            ),
+            None => Some(local),
+        });
+        if let Some(slot) = memo.get_mut(at) {
+            *slot = Some(out);
+        }
+        out
+    }
+}
+
+/// One frame of an animation, keyed by joint name.
+///
+/// The skeleton and the animation are two files and are joined by name: R3 has
+/// the `[info]` joints "in skeleton index order", which every shipped pair
+/// honours, but a partial or reordered `.anim` would place a joint's transform
+/// on its neighbour if position were trusted.
+fn locals_by_name(animation: &Animation, frame: u32) -> BTreeMap<&str, Transform> {
+    animation
+        .joints
+        .iter()
+        .map(|joint| joint.name.as_str())
+        .zip(animation.frame(frame))
+        .collect()
 }
 
 /// Decodes a `.mesh` file into typed vertex streams (section 1.2).
@@ -774,9 +913,7 @@ fn read_joints(node: &Node) -> Vec<Joint> {
         .collect()
 }
 
-/// A decoded `.anim` file's `[info]` block: the rest pose of every joint.
-///
-/// The `[samples]` block is deliberately not decoded; see the module comment.
+/// A decoded `.anim` file: the `[info]` rest pose and the `[samples]` frames.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Animation {
     /// `fps`, the sample rate.
@@ -785,10 +922,25 @@ pub struct Animation {
     pub samples: u32,
     /// One entry per joint, in skeleton index order.
     pub joints: Vec<AnimationJoint>,
+    /// `[samples]` `t`: three floats per frame per joint that declares `t`,
+    /// **frame-major** and in joint order.
+    translations: Vec<f32>,
+    /// `[samples]` `q`: four floats, the same way.
+    rotations: Vec<f32>,
+    /// `[samples]` `s`: one float, the same way.
+    scales: Vec<f32>,
 }
 
 impl Animation {
     /// The rest pose of one joint, as a transform in its parent's space.
+    ///
+    /// This is the `[info]` block's own `t`, `q` and `s`, read verbatim. It is
+    /// also [`FIRST_FRAME`]: across all 474 shipped `.anim` files that carry a
+    /// `[samples]` block, every animated joint's frame 0 equals its `[info]`
+    /// values to the last bit, in all three channels, with no exception. The
+    /// two readings are kept apart anyway, because a modded file need not
+    /// honour it and because [`Animation::local`] is what an animating pass
+    /// would call.
     pub fn rest(&self, name: &str) -> Option<Transform> {
         let joint = self.joints.iter().find(|joint| joint.name == name)?;
         Some(Transform::from_trs(
@@ -797,7 +949,75 @@ impl Animation {
             joint.scale,
         ))
     }
+
+    /// How many joints declare each of the three channels, in `tqs` order.
+    ///
+    /// The `[samples]` streams carry only the joints that declare the channel,
+    /// so these are the strides one frame advances by.
+    pub fn channel_joints(&self) -> [usize; 3] {
+        let count = |channel: char| {
+            self.joints
+                .iter()
+                .filter(|joint| joint.channels.contains(channel))
+                .count()
+        };
+        [count('t'), count('q'), count('s')]
+    }
+
+    /// Every joint's transform in its parent's space at one frame, in file
+    /// order.
+    ///
+    /// A channel the joint does not animate contributes its `[info]` value, and
+    /// so does any channel whose stream is short of this frame, which is what
+    /// makes a file with no `[samples]` block at all evaluate to its rest pose.
+    pub fn frame(&self, frame: u32) -> Vec<Transform> {
+        let [strides_t, strides_q, strides_s] = self.channel_joints();
+        let frame = frame as usize;
+        let (mut slot_t, mut slot_q, mut slot_s) = (0usize, 0usize, 0usize);
+        let mut out = Vec::with_capacity(self.joints.len());
+        for joint in &self.joints {
+            let mut translation = joint.translation;
+            let mut rotation = joint.rotation;
+            let mut scale = joint.scale;
+            if joint.channels.contains('t') {
+                let at = (frame * strides_t + slot_t) * 3;
+                if let Some(values) = self.translations.get(at..at + 3) {
+                    translation = [values[0], values[1], values[2]];
+                }
+                slot_t += 1;
+            }
+            if joint.channels.contains('q') {
+                let at = (frame * strides_q + slot_q) * 4;
+                if let Some(values) = self.rotations.get(at..at + 4) {
+                    rotation = [values[0], values[1], values[2], values[3]];
+                }
+                slot_q += 1;
+            }
+            if joint.channels.contains('s') {
+                let at = frame * strides_s + slot_s;
+                if let Some(value) = self.scales.get(at) {
+                    scale = *value;
+                }
+                slot_s += 1;
+            }
+            out.push(Transform::from_trs(translation, rotation, scale));
+        }
+        out
+    }
+
+    /// One joint's transform in its parent's space at one frame.
+    pub fn local(&self, name: &str, frame: u32) -> Option<Transform> {
+        let index = self.joints.iter().position(|joint| joint.name == name)?;
+        self.frame(frame).into_iter().nth(index)
+    }
 }
+
+/// The frame of a state animation a still hour shows.
+///
+/// A recording holds one sample an hour and no animation clock, so an entity
+/// has no elapsed time in its default state: what the engine draws at time 0 is
+/// sample 0. Nothing here advances it.
+pub const FIRST_FRAME: u32 = 0;
 
 /// One joint's rest pose inside an `.anim` (section 1.3).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -818,7 +1038,11 @@ pub struct AnimationJoint {
     pub scale: f32,
 }
 
-/// Decodes the `[info]` block of a `.anim` file (section 1.3).
+/// Decodes the `[info]` and `[samples]` blocks of a `.anim` file (section 1.3).
+///
+/// Errors are named `InvalidData` for anything [`parse`] refuses, for a file
+/// with no `[info]` node, and for a `[samples]` stream whose length is not the
+/// frame count times the number of joints declaring that channel.
 pub fn read_animation(bytes: &[u8]) -> io::Result<Animation> {
     let root = parse(bytes)?;
     let info = root
@@ -857,7 +1081,7 @@ pub fn read_animation(bytes: &[u8]) -> io::Result<Animation> {
             }
         })
         .collect();
-    Ok(Animation {
+    let mut animation = Animation {
         fps: single("fps").unwrap_or(0.0),
         samples: info
             .property("sa")
@@ -866,7 +1090,41 @@ pub fn read_animation(bytes: &[u8]) -> io::Result<Animation> {
             .and_then(|value| u32::try_from(value).ok())
             .unwrap_or(0),
         joints,
-    })
+        ..Animation::default()
+    };
+    let Some(samples) = root.child("samples") else {
+        return Ok(animation);
+    };
+    let stream = |name: &str| {
+        samples
+            .property(name)
+            .and_then(Value::floats)
+            .unwrap_or(&[])
+            .to_vec()
+    };
+    animation.translations = stream("t");
+    animation.rotations = stream("q");
+    animation.scales = stream("s");
+    let [joints_t, joints_q, joints_s] = animation.channel_joints();
+    let frames = animation.samples as usize;
+    for (name, have, want) in [
+        ("t", animation.translations.len(), 3 * frames * joints_t),
+        ("q", animation.rotations.len(), 4 * frames * joints_q),
+        ("s", animation.scales.len(), frames * joints_s),
+    ] {
+        if have != want {
+            return Err(invalid(format!(
+                "a PDX animation of {frames} frames declares {} joints with a \"{name}\" channel, \
+                 so its [samples] \"{name}\" needs {want} floats and has {have}",
+                match name {
+                    "t" => joints_t,
+                    "q" => joints_q,
+                    _ => joints_s,
+                }
+            )));
+        }
+    }
+    Ok(animation)
 }
 
 fn read_sub_mesh(shape: &str, node: &Node) -> io::Result<SubMesh> {
@@ -927,6 +1185,10 @@ fn read_sub_mesh(shape: &str, node: &Node) -> io::Result<SubMesh> {
         normal: material.string("n").unwrap_or_default().to_string(),
         specular: material.string("spec").unwrap_or_default().to_string(),
     });
+    let skin = node
+        .child("skin")
+        .map(|skin| read_skin(shape, skin, vertices))
+        .transpose()?;
     Ok(SubMesh {
         positions,
         normals,
@@ -936,7 +1198,47 @@ fn read_sub_mesh(shape: &str, node: &Node) -> io::Result<SubMesh> {
         indices,
         bounds,
         material,
-        has_skin: node.child("skin").is_some(),
+        skin,
+    })
+}
+
+/// The `[skin]` node's four-wide influence streams (section 1.2).
+///
+/// Errors are named `InvalidData` for a stream that does not cover every vertex
+/// four times over; see [`INFLUENCES`] for why the width is not `bones`.
+fn read_skin(shape: &str, node: &Node, vertices: usize) -> io::Result<Skin> {
+    let raw_joints = node.property("ix").and_then(Value::ints).unwrap_or(&[]);
+    let raw_weights = node.property("w").and_then(Value::floats).unwrap_or(&[]);
+    let wanted = vertices * INFLUENCES;
+    if raw_joints.len() != wanted || raw_weights.len() != wanted {
+        return Err(invalid(format!(
+            "the PDX mesh shape \"{shape}\" has {} skin indices and {} weights for {vertices} \
+             vertices, not {wanted} of each",
+            raw_joints.len(),
+            raw_weights.len()
+        )));
+    }
+    let mut joints = Vec::with_capacity(vertices);
+    let mut weights = Vec::with_capacity(vertices);
+    for vertex in 0..vertices {
+        let mut slot_joints = [-1; INFLUENCES];
+        let mut slot_weights = [0.0; INFLUENCES];
+        for slot in 0..INFLUENCES {
+            slot_joints[slot] = raw_joints[vertex * INFLUENCES + slot];
+            slot_weights[slot] = raw_weights[vertex * INFLUENCES + slot];
+        }
+        joints.push(slot_joints);
+        weights.push(slot_weights);
+    }
+    Ok(Skin {
+        bones: node
+            .property("bones")
+            .and_then(Value::ints)
+            .and_then(|values| values.first().copied())
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(INFLUENCES as u32),
+        joints,
+        weights,
     })
 }
 
@@ -1543,7 +1845,7 @@ mod tests {
                 specular: "nospec.dds".into(),
             })
         );
-        assert!(!sub.has_skin);
+        assert!(sub.skin.is_none());
         assert!(sub.is_drawable());
         let lods = mesh.lods();
         assert_eq!(lods.len(), 1);
@@ -1578,7 +1880,10 @@ mod tests {
             .floats("u0", &[0.0, 0.0])
             .ints("tri", &[])
             .node(4, "skin")
-            .ints("bones", &[4])
+            .ints("bones", &[2])
+            // Four slots for the one vertex, whatever `bones` says.
+            .ints("ix", &[1, 0, -1, -1])
+            .floats("w", &[0.75, 0.25, 0.0, 0.0])
             .node(3, "skeleton")
             .node(4, "root")
             .ints("ix", &[0])
@@ -1599,8 +1904,34 @@ mod tests {
         // A joint the file gives no `tx` has no bind pose at all.
         assert_eq!(mesh.skeleton[0].inverse_bind, None);
         assert_eq!(mesh.bind_pose("root"), None);
-        assert!(mesh.shapes[0].meshes[0].has_skin);
+        let skin = mesh.shapes[0].meshes[0].skin.as_ref().unwrap();
+        assert_eq!(skin.bones, 2);
+        assert_eq!(skin.joints, vec![[1, 0, -1, -1]]);
+        // The unused slots are dropped and the `-1` never reaches a palette.
+        assert_eq!(skin.influences(0), vec![(1, 0.75), (0, 0.25)]);
+        assert!(skin.influences(1).is_empty());
         assert!(mesh.shapes[0].meshes[0].uv1.is_none());
+    }
+
+    #[test]
+    fn a_skin_stream_that_does_not_cover_every_vertex_four_times_is_refused() {
+        let bytes = Builder::new()
+            .node(1, "object")
+            .node(2, "bodyShape")
+            .node(3, "mesh")
+            .floats("p", &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+            .floats("n", &[0.0, 1.0, 0.0, 0.0, 1.0, 0.0])
+            .floats("ta", &[1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0])
+            .floats("u0", &[0.0, 0.0, 0.0, 0.0])
+            // `bones = 1` does not make the stream one wide.
+            .ints("bones", &[1])
+            .node(4, "skin")
+            .ints("bones", &[1])
+            .ints("ix", &[0, 0])
+            .floats("w", &[1.0, 1.0])
+            .bytes;
+        let error = read(&bytes).unwrap_err().to_string();
+        assert!(error.contains("not 8 of each"), "{error}");
     }
 
     #[test]
@@ -1872,12 +2203,13 @@ mod tests {
         assert!(wild.inverse().is_none());
     }
 
-    #[test]
-    fn an_animation_info_block_decodes_its_rest_pose() {
-        let bytes = Builder::new()
+    /// Two joints, three frames. `root` animates nothing, `vehicle` animates
+    /// `t` and `q`, so only `vehicle` appears in the `[samples]` streams.
+    fn animation_bytes() -> Vec<u8> {
+        Builder::new()
             .node(1, "info")
             .floats("fps", &[30.0])
-            .ints("sa", &[2])
+            .ints("sa", &[3])
             .ints("j", &[2])
             .node(2, "root")
             .strings("sa", &[""])
@@ -1889,15 +2221,196 @@ mod tests {
             .floats("t", &[0.0742, 0.0, 1.25571])
             .floats("q", &[0.0, 0.0, 0.0, 1.0])
             .floats("s", &[0.7])
-            .bytes;
-        let animation = read_animation(&bytes).unwrap();
+            .node(1, "samples")
+            // Frame-major: frame 0 repeats the `[info]` values, as every
+            // shipped file does, then the joint walks along +x.
+            .floats(
+                "t",
+                &[
+                    0.0742, 0.0, 1.25571, // frame 0
+                    1.0742, 0.0, 1.25571, // frame 1
+                    2.0742, 0.0, 1.25571, // frame 2
+                ],
+            )
+            .floats(
+                "q",
+                &[
+                    0.0, 0.0, 0.0, 1.0, // frame 0
+                    0.0, 0.0, 0.0, 1.0, // frame 1
+                    0.0, 0.0, 0.0, 1.0, // frame 2
+                ],
+            )
+            .bytes
+    }
+
+    #[test]
+    fn an_animation_info_block_decodes_its_rest_pose() {
+        let animation = read_animation(&animation_bytes()).unwrap();
         assert_eq!(animation.fps, 30.0);
-        assert_eq!(animation.samples, 2);
+        assert_eq!(animation.samples, 3);
         assert_eq!(animation.joints.len(), 2);
         assert_eq!(animation.joints[1].channels, "tq");
         let rest = animation.rest("vehicle").unwrap();
         assert_eq!(rest.translation, [0.0742, 0.0, 1.25571]);
         assert!((rest.uniform_scale() - 0.7).abs() < 1e-5);
         assert!(animation.rest("absent").is_none());
+    }
+
+    #[test]
+    fn the_samples_block_is_frame_major_over_the_joints_that_declare_the_channel() {
+        let animation = read_animation(&animation_bytes()).unwrap();
+        // One joint declares `t` and `q`, none declares `s`.
+        assert_eq!(animation.channel_joints(), [1, 1, 0]);
+        // Frame 0 is the `[info]` block, which is what a still hour draws.
+        assert_eq!(
+            animation.local("vehicle", FIRST_FRAME),
+            animation.rest("vehicle")
+        );
+        assert_eq!(
+            animation.local("vehicle", 2).unwrap().translation,
+            [2.0742, 0.0, 1.25571]
+        );
+        // A channel the joint does not animate keeps its rest value at every
+        // frame, and so does every channel of a joint with no channels at all.
+        assert!((animation.local("vehicle", 2).unwrap().uniform_scale() - 0.7).abs() < 1e-5);
+        assert_eq!(animation.local("root", 2), animation.rest("root"));
+        // A frame past the end falls back to the rest pose rather than
+        // reading another joint's samples.
+        assert_eq!(animation.local("vehicle", 99), animation.rest("vehicle"));
+        assert_eq!(animation.local("absent", 0), None);
+    }
+
+    #[test]
+    fn a_samples_stream_of_the_wrong_length_is_a_named_error() {
+        let bytes = Builder::new()
+            .node(1, "info")
+            .floats("fps", &[30.0])
+            .ints("sa", &[3])
+            .node(2, "vehicle")
+            .strings("sa", &["t"])
+            .floats("t", &[0.0, 0.0, 0.0])
+            .node(1, "samples")
+            .floats("t", &[0.0, 0.0, 0.0])
+            .bytes;
+        let error = read_animation(&bytes).unwrap_err().to_string();
+        assert!(error.contains("needs 9 floats and has 3"), "{error}");
+    }
+
+    /// A two-joint arm: `root` at the origin and `hand` bound two units out
+    /// along +x, with one vertex at the hand.
+    fn arm_bytes() -> Vec<u8> {
+        Builder::new()
+            .node(1, "object")
+            .node(2, "armShape")
+            .node(3, "mesh")
+            .floats("p", &[2.0, 0.0, 0.0])
+            .floats("n", &[0.0, 1.0, 0.0])
+            .floats("ta", &[1.0, 0.0, 0.0, 1.0])
+            .floats("u0", &[0.0, 0.0])
+            .ints("tri", &[])
+            .node(4, "skin")
+            .ints("bones", &[1])
+            .ints("ix", &[1, -1, -1, -1])
+            .floats("w", &[1.0, 0.0, 0.0, 0.0])
+            .node(3, "skeleton")
+            .node(4, "root")
+            .ints("ix", &[0])
+            .floats(
+                "tx",
+                &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            )
+            .node(4, "hand")
+            .ints("ix", &[1])
+            .ints("pa", &[0])
+            .floats(
+                "tx",
+                &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, -2.0, 0.0, 0.0],
+            )
+            .bytes
+    }
+
+    #[test]
+    fn a_palette_poses_a_joint_and_undoes_its_bind() {
+        let mesh = read(&arm_bytes()).unwrap();
+        // An animation that lifts the hand a unit and leaves the root alone.
+        let animation = read_animation(
+            &Builder::new()
+                .node(1, "info")
+                .ints("sa", &[1])
+                .node(2, "root")
+                .strings("sa", &[""])
+                .floats("t", &[0.0, 0.0, 0.0])
+                .floats("q", &[0.0, 0.0, 0.0, 1.0])
+                .floats("s", &[1.0])
+                .node(2, "hand")
+                .strings("sa", &[""])
+                .floats("t", &[2.0, 1.0, 0.0])
+                .floats("q", &[0.0, 0.0, 0.0, 1.0])
+                .floats("s", &[1.0])
+                .bytes,
+        )
+        .unwrap();
+        // The joint is where the animation puts it, which is where an
+        // attachment on it hangs.
+        assert_eq!(
+            mesh.pose(&animation, FIRST_FRAME, "hand")
+                .unwrap()
+                .translation,
+            [2.0, 1.0, 0.0]
+        );
+        // And the vertex bound to it moves with it: bind (2, 0, 0) to
+        // (2, 1, 0), the same one unit up.
+        let palette = mesh.palette(&animation, FIRST_FRAME);
+        assert_eq!(palette.len(), 2);
+        let skin = mesh.shapes[0].meshes[0].skin.as_ref().unwrap();
+        assert_eq!(skin.influences(0), vec![(1, 1.0)]);
+        assert_eq!(palette[1].transform_point([2.0, 0.0, 0.0]), [2.0, 1.0, 0.0]);
+        // The root is unmoved, so its own matrix is the identity.
+        assert_eq!(palette[0], Transform::IDENTITY);
+    }
+
+    #[test]
+    fn a_palette_under_no_animation_leaves_every_vertex_in_its_bind_pose() {
+        let mesh = read(&arm_bytes()).unwrap();
+        let palette = mesh.palette(&Animation::default(), FIRST_FRAME);
+        for (joint, matrix) in palette.iter().enumerate() {
+            let at = matrix.transform_point([2.0, 0.0, 0.0]);
+            assert!(
+                at.iter()
+                    .zip([2.0, 0.0, 0.0])
+                    .all(|(value, want)| (value - want).abs() < 1e-5),
+                "joint {joint} moved the vertex to {at:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_joint_with_an_unusable_inverse_bind_takes_the_identity() {
+        // `artillery_frame.mesh` writes an all-zero `tx` and
+        // `GER_infantry.mesh` writes 1e12 on one diagonal; neither inverts.
+        let bytes = Builder::new()
+            .node(1, "object")
+            .node(2, "s")
+            .node(3, "mesh")
+            .floats("p", &[1.0, 0.0, 0.0])
+            .floats("n", &[0.0, 1.0, 0.0])
+            .floats("ta", &[1.0, 0.0, 0.0, 1.0])
+            .floats("u0", &[0.0, 0.0])
+            .node(3, "skeleton")
+            .node(4, "zero")
+            .ints("ix", &[0])
+            .floats("tx", &[0.0; 12])
+            .node(4, "huge")
+            .ints("ix", &[1])
+            .floats(
+                "tx",
+                &[
+                    1e12, 0.0, 0.0, 0.0, 1e12, 0.0, 0.0, 0.0, 1e12, -1e30, 0.0, 0.0,
+                ],
+            )
+            .bytes;
+        let mesh = read(&bytes).unwrap();
+        let palette = mesh.palette(&Animation::default(), FIRST_FRAME);
+        assert_eq!(palette, vec![Transform::IDENTITY; 2]);
     }
 }

@@ -1648,20 +1648,19 @@ mod tests {
         assert!(malformed.into_history().is_err());
     }
 
-    /// Rewrite a replay this build wrote as the format-14 file the older build
-    /// would have written for the same frames.
+    /// Rewrite a current replay as a supported older layout for the same frames.
     ///
-    /// Format 17 only appended `TableId`s 148..=154, so downgrading a frame is
+    /// Supported formats only append table ids, so downgrading a frame is
     /// dropping the trailing entries of its timing array and the trailing
     /// entries of its table list; `encode_with_sizes` reports exactly how many
     /// bytes each of those tables took, so no encoder logic is restated here.
     /// Every block, index entry, trailer and CRC is rebuilt around the shorter
     /// frames, so the result is a real file, not a patched header word.
-    fn downgrade_to_format_14(replay: &Replay) -> Vec<u8> {
-        let recorded = FormatVersion::LEGACY_14.recorded_tables();
+    fn downgrade(replay: &Replay, format: FormatVersion) -> Vec<u8> {
+        let recorded = format.recorded_tables();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(HEADER_MAGIC);
-        bytes.extend_from_slice(&FormatVersion::LEGACY_14.version().to_le_bytes());
+        bytes.extend_from_slice(&format.version().to_le_bytes());
         bytes.extend_from_slice(&replay.keyframe_interval.to_le_bytes());
         put_bytes(&mut bytes, &replay.campaign_id).unwrap();
         let mut identity = Vec::new();
@@ -1701,95 +1700,134 @@ mod tests {
     }
 
     #[test]
-    fn a_format_14_replay_decodes_the_tables_it_recorded() {
+    fn older_replays_decode_only_the_tables_their_formats_recorded() {
         let hours = [1, 2, 721];
-        let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();
-        let old = Replay::open(downgrade_to_format_14(&current)).unwrap();
-        assert_eq!(old.format, FormatVersion::LEGACY_14);
-        assert_eq!(old.campaign_id, current.campaign_id);
-        assert_eq!(old.identity, current.identity);
-        assert_eq!(old.sessions, current.sessions);
-        assert_eq!(old.branches, current.branches);
-        let recorded = FormatVersion::LEGACY_14.recorded_tables();
+        let mut encoder = FrameEncoder::new();
+        let mut records = vec![
+            Record::SessionStart(session(1)),
+            Record::BranchStart(branch(1, hours[0])),
+        ];
         for hour in hours {
-            let SeekResult::Frame(frame) = old.seek(1, hour).unwrap() else {
-                panic!("hour {hour} did not decode at format 14");
-            };
-            let SeekResult::Frame(expected) = current.seek(1, hour).unwrap() else {
-                panic!("hour {hour} did not decode at the current version");
-            };
-            assert_eq!(frame.branch, expected.branch);
-            assert_eq!(frame.hour, expected.hour);
-            // Every table format 14 recorded decodes to exactly what the same
-            // frame decodes to now: no earlier table's encoding changed.
-            for table in TableId::ALL.into_iter().take(recorded) {
-                assert_eq!(
-                    frame.tables[table.index()],
-                    expected.tables[table.index()],
-                    "{table:?} decoded differently at format 14"
-                );
+            let mut frame = source(1, hour);
+            for table in TableId::ALL {
+                if let Some(rows) = crate::rows::sample_extended_table(table, hour as usize) {
+                    frame.tables[table.index()] = TableView::Complete(rows);
+                }
+                frame.metrics.table_ns[table.index()] = (hour as u64) * 1000 + table.index() as u64;
             }
-            // The seven tables format 17 appended report the reason a consumer
-            // states as a limitation instead of drawing them.
-            for table in TableId::ALL.into_iter().skip(recorded) {
-                assert_eq!(
-                    frame.tables[table.index()],
-                    TableView::Unavailable {
-                        reason: "not recorded by format 14".into()
-                    },
-                    "{table:?} must be unavailable, not decoded"
-                );
+            if hour == 2 {
+                frame.tables[TableId::DivisionStatus.index()] = TableView::Unavailable {
+                    reason: "native status fault".into(),
+                };
             }
+            records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
         }
-        // A file that predates a table is still a whole campaign.
-        old.into_history().unwrap();
+        let current = Replay::from_records(CAMPAIGN.into(), &[records]).unwrap();
+        for format in [FormatVersion::LEGACY_14, FormatVersion::LEGACY_17] {
+            let old = Replay::open(downgrade(&current, format)).unwrap();
+            assert_eq!(old.format, format);
+            assert_eq!(old.campaign_id, current.campaign_id);
+            assert_eq!(old.identity, current.identity);
+            assert_eq!(old.sessions, current.sessions);
+            assert_eq!(old.branches, current.branches);
+            let recorded = format.recorded_tables();
+            for hour in hours {
+                let SeekResult::Frame(frame) = old.seek(1, hour).unwrap() else {
+                    panic!("hour {hour} did not decode at format {}", format.version());
+                };
+                let SeekResult::Frame(expected) = current.seek(1, hour).unwrap() else {
+                    panic!("hour {hour} did not decode at the current version");
+                };
+                assert_eq!(frame.branch, expected.branch);
+                assert_eq!(frame.hour, expected.hour);
+                assert_eq!(
+                    &frame.metrics.table_ns[..recorded],
+                    &expected.metrics.table_ns[..recorded]
+                );
+                assert!(
+                    frame.metrics.table_ns[recorded..]
+                        .iter()
+                        .all(|&time| time == 0)
+                );
+                // Every table the older format recorded decodes to what the same
+                // frame decodes to now: no earlier table's encoding changed.
+                for table in TableId::ALL.into_iter().take(recorded) {
+                    assert_eq!(
+                        frame.tables[table.index()],
+                        expected.tables[table.index()],
+                        "{table:?} decoded differently at format {}",
+                        format.version()
+                    );
+                }
+                // Tables this format predates report the reason a consumer
+                // states as a limitation instead of drawing them.
+                for table in TableId::ALL.into_iter().skip(recorded) {
+                    assert_eq!(
+                        frame.tables[table.index()],
+                        TableView::Unavailable {
+                            reason: format.missing_reason()
+                        },
+                        "{table:?} must be unavailable, not decoded"
+                    );
+                }
+            }
+            // A file that predates a table is still a whole campaign.
+            old.into_history().unwrap();
+        }
     }
 
     #[test]
-    fn a_format_14_replay_may_be_read_but_never_appended_to() {
+    fn older_replays_may_be_read_but_never_appended_to() {
         let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
-        let old = Replay::open(downgrade_to_format_14(&current)).unwrap();
-        let error = old
-            .append(&[records(2, &[3, 4])])
-            .err()
-            .unwrap()
-            .to_string();
-        assert_eq!(
-            error,
-            "cannot append to a format 14 replay; this build writes 17"
-        );
+        for format in [FormatVersion::LEGACY_14, FormatVersion::LEGACY_17] {
+            let old = Replay::open(downgrade(&current, format)).unwrap();
+            let error = old
+                .append(&[records(2, &[3, 4])])
+                .err()
+                .unwrap()
+                .to_string();
+            assert_eq!(
+                error,
+                format!(
+                    "cannot append to a format {} replay; this build writes {FORMAT_VERSION}",
+                    format.version()
+                )
+            );
+        }
         // The same records still grow a file the writer wrote itself.
         current.append(&[records(2, &[3, 4])]).unwrap();
     }
 
     #[test]
-    fn a_format_14_replay_keeps_every_crc_and_trailer_check() {
+    fn older_replays_keep_every_crc_and_trailer_check() {
         let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
-        let bytes = downgrade_to_format_14(&current);
-        assert!(Replay::open(bytes.clone()).is_ok());
-        let footer_start = bytes.len() - FOOTER_SIZE;
-        let mut damaged = bytes.clone();
-        damaged[footer_start - 1] ^= 0x20;
-        assert_eq!(
-            Replay::open(damaged).err().unwrap().to_string(),
-            "trailer CRC mismatch"
-        );
-        // A damaged block is still a refused block, not a short read that
-        // silently drops the tables format 14 did record.
-        let mut corrupt = bytes;
-        let block = Replay::open(corrupt.clone()).unwrap().index[0].clone();
-        corrupt[(block.offset + block.length - 1) as usize] ^= 0x40;
-        let replay = Replay::open(corrupt).unwrap();
-        assert!(matches!(
-            replay.seek(1, 1).unwrap(),
-            SeekResult::Gap { reason, .. } if reason.contains("unreadable block")
-        ));
+        for format in [FormatVersion::LEGACY_14, FormatVersion::LEGACY_17] {
+            let bytes = downgrade(&current, format);
+            assert!(Replay::open(bytes.clone()).is_ok());
+            let footer_start = bytes.len() - FOOTER_SIZE;
+            let mut damaged = bytes.clone();
+            damaged[footer_start - 1] ^= 0x20;
+            assert_eq!(
+                Replay::open(damaged).err().unwrap().to_string(),
+                "trailer CRC mismatch"
+            );
+            // A damaged block is still a refused block, not a short read that
+            // silently drops the tables this format did record.
+            let mut corrupt = bytes;
+            let block = Replay::open(corrupt.clone()).unwrap().index[0].clone();
+            corrupt[(block.offset + block.length - 1) as usize] ^= 0x40;
+            let replay = Replay::open(corrupt).unwrap();
+            assert!(matches!(
+                replay.seek(1, 1).unwrap(),
+                SeekResult::Gap { reason, .. } if reason.contains("unreadable block")
+            ));
+        }
     }
 
     #[test]
-    fn a_version_this_build_never_wrote_is_refused_before_decoding_frames() {
+    fn unsupported_versions_are_refused_before_decoding_frames() {
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
-        // 15 and 16 were never written: FORMAT_VERSION went from 14 to 17.
+        // Formats15/16 were written during development but are unsupported here.
         for version in [13u16, 15, 16, FORMAT_VERSION + 1] {
             let mut bytes = replay.bytes().to_vec();
             bytes[4..6].copy_from_slice(&version.to_le_bytes());
@@ -1797,7 +1835,7 @@ mod tests {
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17 and \
+                    "unsupported replay format version {version}; this build reads 14, 17, 18 and \
                      writes {FORMAT_VERSION}"
                 )
             );

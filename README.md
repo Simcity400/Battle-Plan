@@ -37,12 +37,12 @@ Recording:
 Truth:
 
 - Record state, never pictures or invented data. Values keep the engine's own representation and precision; rounding belongs to display.
-- The viewer shows gaps, truncated tables and unavailable tables as such. Nothing is interpolated.
+- The viewer shows gaps, truncated tables and unavailable tables as such. Recorded hours are drawn exactly; between two recorded hours a moving division's position is extrapolated along its recorded route by its recorded remaining time, because the game glides and the map is meant to be indistinguishable from it (owner ruling 2026-09-14), and the frame's warning area says so. Nothing else is interpolated.
 - Save comparisons are the correctness check for captured values and print their own limitations. A comparison difference is never waived.
 
 Files:
 
-- One `.battleplan` file links recorder and viewer. It stores content identity (executable, DLC and mod layer hashes, layer order, coverage policy), never game assets or machine paths. Older formats are refused; there are no compatibility shims.
+- One `.battleplan` file links recorder and viewer. It stores content identity (executable, DLC and mod layer hashes, layer order, coverage policy), never game assets or machine paths. The writer emits format 18; finalized format-14 and format-17 recordings remain readable. Tables predating a file's format are explicitly not applicable in the oracle, never fabricated as empty or zero. Other formats and old spool segments are refused, and older files cannot be appended to.
 - The viewer resolves content by id, verifies its bytes under the recorded coverage policy, and refuses missing or mismatching content. An identity the recorder could not verify is refused unless `--allow-unverified-content` is given; that override keeps a visible warning and never waives hash checks.
 - The viewer never touches live game memory.
 

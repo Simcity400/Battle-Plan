@@ -24,6 +24,8 @@ use crate::map::{
     // the map's table frame
     mapframe::{FrameAssets, FrameGeometry},
     models::ModelField,
+    // orders: the recorded player's battle plan
+    orders::{OrderAssets, OrderField},
     // political fill
     political::PoliticalLayers,
     railways::{Bridges, RailAssets, RailMesh},
@@ -72,6 +74,10 @@ pub struct MapLayers<'a> {
     pub unit_models: &'a UnitModelAssets,
     /// This hour's placed figures, from [`UnitModelAssets::field`].
     pub unit_model_field: &'a ModelField,
+    // orders: the recorded player's battle plan
+    pub order_assets: &'a OrderAssets,
+    /// This hour's ribbons, from [`crate::document::Document::order_field`].
+    pub order_field: &'a OrderField,
     // trees
     pub tree_assets: &'a TreeAssets,
     pub tree_geometry: &'a TreeGeometry,
@@ -389,6 +395,8 @@ pub fn dump_png(
             layers.unit_models,
             layers.unit_model_field.clone(),
         )?;
+        // orders: the recorded player's battle plan
+        scene.set_orders(&device, &queue, layers.order_assets, layers.order_field)?;
         // weather
         let snow_mud = layers.snow_mud;
         scene.set_snow_mud(

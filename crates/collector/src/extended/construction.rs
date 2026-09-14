@@ -1720,68 +1720,109 @@ fn copy_collaboration_walk(
     let _ = base;
 }
 
+/// Acquire owned raw buffers and report per-table checks without borrowing the frame.
+pub(crate) fn copy_construction_rest_refresh(
+    memory: &impl Memory,
+    ctx: ConstructionRestCopyContext,
+    first: &mut ConstructionRestJob,
+    mut second: Option<&mut ConstructionRestJob>,
+) -> ConstructionRestCopyReport {
+    let started = qpc();
+    first.clear();
+    first.game_state = ctx.game_state;
+    copy_construction_rest_pass(memory, ctx.base, ctx.game_state, first);
+    let mut ticks = [0u64; 10];
+    ticks[0] = elapsed(started);
+    let mut matched = [true; 10];
+    if let Some(second_job) = second.as_deref_mut() {
+        let second_started = qpc();
+        second_job.clear();
+        second_job.game_state = ctx.game_state;
+        copy_construction_rest_pass(memory, ctx.base, ctx.game_state, second_job);
+        ticks[0] += elapsed(second_started);
+        // Per-table partitions: shared roots gate their dependents,
+        // private spans only their own table.
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+        for (slot, matched) in matched.iter_mut().enumerate() {
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+        }
+    }
+    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    ConstructionRestCopyReport {
+        raw_ok,
+        matched,
+        copy_ticks: ticks,
+        raw_bytes: first.log.raw_bytes,
+    }
+}
+
 impl Captured {
-    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
-    /// `second` while any rest table still needs double-read checks, compares
-    /// the raw logs, and records copy-only costs plus the existing
-    /// checked/mismatches bookkeeping. Returns whether the payload is
-    /// complete (`raw_ok`); on staging overflow the caller falls back to the
-    /// typed walk and enqueues nothing.
-    pub(crate) fn copy_construction_rest_refresh(
+    /// Install one completed raw-copy report without changing rows or outcomes.
+    pub(crate) fn apply_construction_rest_report(
         &mut self,
-        memory: &impl Memory,
-        ctx: ConstructionRestCopyContext,
-        first: &mut ConstructionRestJob,
-        mut second: Option<&mut ConstructionRestJob>,
-    ) -> ConstructionRestCopyReport {
-        let started = qpc();
-        first.clear();
-        first.game_state = ctx.game_state;
-        copy_construction_rest_pass(memory, ctx.base, ctx.game_state, first);
-        let mut ticks = [0u64; 10];
-        ticks[0] = elapsed(started);
-        let mut matched = [true; 10];
-        if let Some(second_job) = second.as_deref_mut() {
-            let second_started = qpc();
-            second_job.clear();
-            second_job.game_state = ctx.game_state;
-            copy_construction_rest_pass(memory, ctx.base, ctx.game_state, second_job);
-            ticks[0] += elapsed(second_started);
-            // Per-table partitions: shared roots gate their dependents,
-            // private spans only their own table.
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-            }
-        }
-        self.base_resources.checked = ctx.needed[0];
-        self.base_resources.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        self.building_construction.checked = ctx.needed[1];
-        self.building_construction.mismatches = usize::from(ctx.needed[1] && !matched[1]);
-        self.railway_construction.checked = ctx.needed[2];
-        self.railway_construction.mismatches = usize::from(ctx.needed[2] && !matched[2]);
-        self.settings.checked = ctx.needed[3];
-        self.settings.mismatches = usize::from(ctx.needed[3] && !matched[3]);
-        self.laws.checked = ctx.needed[4];
-        self.laws.mismatches = usize::from(ctx.needed[4] && !matched[4]);
-        self.garrisons.checked = ctx.needed[5];
-        self.garrisons.mismatches = usize::from(ctx.needed[5] && !matched[5]);
-        self.assigned_manpower.checked = ctx.needed[6];
-        self.assigned_manpower.mismatches = usize::from(ctx.needed[6] && !matched[6]);
-        self.reserve_manpower.checked = ctx.needed[7];
-        self.reserve_manpower.mismatches = usize::from(ctx.needed[7] && !matched[7]);
-        self.resistance.checked = ctx.needed[8];
-        self.resistance.mismatches = usize::from(ctx.needed[8] && !matched[8]);
-        self.collaboration.checked = ctx.needed[9];
-        self.collaboration.mismatches = usize::from(ctx.needed[9] && !matched[9]);
-        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
-        ConstructionRestCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
-        }
+        needed: [bool; 10],
+        report: &ConstructionRestCopyReport,
+    ) {
+        self.base_resources.checked = needed[0];
+        self.base_resources.mismatches = usize::from(needed[0] && !report.matched[0]);
+        self.building_construction.checked = needed[1];
+        self.building_construction.mismatches = usize::from(needed[1] && !report.matched[1]);
+        self.railway_construction.checked = needed[2];
+        self.railway_construction.mismatches = usize::from(needed[2] && !report.matched[2]);
+        self.settings.checked = needed[3];
+        self.settings.mismatches = usize::from(needed[3] && !report.matched[3]);
+        self.laws.checked = needed[4];
+        self.laws.mismatches = usize::from(needed[4] && !report.matched[4]);
+        self.garrisons.checked = needed[5];
+        self.garrisons.mismatches = usize::from(needed[5] && !report.matched[5]);
+        self.assigned_manpower.checked = needed[6];
+        self.assigned_manpower.mismatches = usize::from(needed[6] && !report.matched[6]);
+        self.reserve_manpower.checked = needed[7];
+        self.reserve_manpower.mismatches = usize::from(needed[7] && !report.matched[7]);
+        self.resistance.checked = needed[8];
+        self.resistance.mismatches = usize::from(needed[8] && !report.matched[8]);
+        self.collaboration.checked = needed[9];
+        self.collaboration.mismatches = usize::from(needed[9] && !report.matched[9]);
+    }
+
+    /// Finish an accepted acquisition failure without retrying live memory.
+    pub(crate) fn fail_construction_rest_capture(
+        &mut self,
+        needed: [bool; 10],
+        reason: &'static str,
+    ) {
+        self.base_resources.outcome = Outcome::Unavailable { reason };
+        self.base_resources.checked = needed[0];
+        self.base_resources.mismatches = usize::from(needed[0]);
+        self.building_construction.outcome = Outcome::Unavailable { reason };
+        self.building_construction.checked = needed[1];
+        self.building_construction.mismatches = usize::from(needed[1]);
+        self.railway_construction.outcome = Outcome::Unavailable { reason };
+        self.railway_construction.checked = needed[2];
+        self.railway_construction.mismatches = usize::from(needed[2]);
+        self.settings.outcome = Outcome::Unavailable { reason };
+        self.settings.checked = needed[3];
+        self.settings.mismatches = usize::from(needed[3]);
+        self.laws.outcome = Outcome::Unavailable { reason };
+        self.laws.checked = needed[4];
+        self.laws.mismatches = usize::from(needed[4]);
+        self.garrisons.outcome = Outcome::Unavailable { reason };
+        self.garrisons.checked = needed[5];
+        self.garrisons.mismatches = usize::from(needed[5]);
+        self.assigned_manpower.outcome = Outcome::Unavailable { reason };
+        self.assigned_manpower.checked = needed[6];
+        self.assigned_manpower.mismatches = usize::from(needed[6]);
+        self.reserve_manpower.outcome = Outcome::Unavailable { reason };
+        self.reserve_manpower.checked = needed[7];
+        self.reserve_manpower.mismatches = usize::from(needed[7]);
+        self.resistance.outcome = Outcome::Unavailable { reason };
+        self.resistance.checked = needed[8];
+        self.resistance.mismatches = usize::from(needed[8]);
+        self.collaboration.outcome = Outcome::Unavailable { reason };
+        self.collaboration.checked = needed[9];
+        self.collaboration.mismatches = usize::from(needed[9]);
+        self.rest_raw_mode = false;
     }
 }
 
@@ -2561,8 +2602,13 @@ pub(crate) mod construction_rest_test_kit {
         };
         let mut first = ConstructionRestJob::new();
         let mut second = ConstructionRestJob::new();
-        let report =
-            captured.copy_construction_rest_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = crate::extended::construction::copy_construction_rest_refresh(
+            memory,
+            ctx,
+            &mut first,
+            Some(&mut second),
+        );
+        captured.apply_construction_rest_report(ctx.needed, &report);
         assert!(report.raw_ok);
         captured.rest_raw_mode = report.raw_ok;
         let _ = captured.capture(memory, 0, BASE, &[true; N], 0, true);
@@ -2651,6 +2697,236 @@ pub(crate) mod construction_rest_test_kit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn construction_rest_copy_report_bookkeeping_and_terminal_failure_are_table_local() {
+        let mut captured =
+            Captured::with_capacities(&construction_rest_test_kit::capacities(), &[0; N]);
+        captured.rest_raw_mode = true;
+        captured.base_resources.outcome = Outcome::Rows { len: 1 };
+        captured.base_resources.mismatches = 9;
+        captured.building_construction.outcome = Outcome::Rows { len: 1 };
+        captured.building_construction.mismatches = 9;
+        captured.railway_construction.outcome = Outcome::Rows { len: 1 };
+        captured.railway_construction.mismatches = 9;
+        captured.settings.outcome = Outcome::Rows { len: 1 };
+        captured.settings.mismatches = 9;
+        captured.laws.outcome = Outcome::Rows { len: 1 };
+        captured.laws.mismatches = 9;
+        captured.garrisons.outcome = Outcome::Rows { len: 1 };
+        captured.garrisons.mismatches = 9;
+        captured.assigned_manpower.outcome = Outcome::Rows { len: 1 };
+        captured.assigned_manpower.mismatches = 9;
+        captured.reserve_manpower.outcome = Outcome::Rows { len: 1 };
+        captured.reserve_manpower.mismatches = 9;
+        captured.resistance.outcome = Outcome::Rows { len: 1 };
+        captured.resistance.mismatches = 9;
+        captured.collaboration.outcome = Outcome::Rows { len: 1 };
+        captured.collaboration.mismatches = 9;
+        captured.state_buildings.outcome = Outcome::Rows { len: 1 };
+        captured.state_buildings.checked = true;
+        captured.state_buildings.mismatches = 7;
+        let needed = std::array::from_fn(|index| index % 2 == 0);
+        let report = ConstructionRestCopyReport {
+            raw_ok: false,
+            matched: std::array::from_fn(|index| index % 3 != 0),
+            copy_ticks: std::array::from_fn(|index| index as u64 + 17),
+            raw_bytes: std::array::from_fn(|index| index as u64 + 41),
+        };
+        captured.apply_construction_rest_report(needed, &report);
+        let states = [
+            (
+                captured.base_resources.checked,
+                captured.base_resources.mismatches,
+                captured.base_resources.outcome,
+            ),
+            (
+                captured.building_construction.checked,
+                captured.building_construction.mismatches,
+                captured.building_construction.outcome,
+            ),
+            (
+                captured.railway_construction.checked,
+                captured.railway_construction.mismatches,
+                captured.railway_construction.outcome,
+            ),
+            (
+                captured.settings.checked,
+                captured.settings.mismatches,
+                captured.settings.outcome,
+            ),
+            (
+                captured.laws.checked,
+                captured.laws.mismatches,
+                captured.laws.outcome,
+            ),
+            (
+                captured.garrisons.checked,
+                captured.garrisons.mismatches,
+                captured.garrisons.outcome,
+            ),
+            (
+                captured.assigned_manpower.checked,
+                captured.assigned_manpower.mismatches,
+                captured.assigned_manpower.outcome,
+            ),
+            (
+                captured.reserve_manpower.checked,
+                captured.reserve_manpower.mismatches,
+                captured.reserve_manpower.outcome,
+            ),
+            (
+                captured.resistance.checked,
+                captured.resistance.mismatches,
+                captured.resistance.outcome,
+            ),
+            (
+                captured.collaboration.checked,
+                captured.collaboration.mismatches,
+                captured.collaboration.outcome,
+            ),
+        ];
+        for (index, (checked, mismatches, outcome)) in states.into_iter().enumerate() {
+            assert_eq!(checked, needed[index]);
+            assert_eq!(
+                mismatches,
+                usize::from(needed[index] && !report.matched[index])
+            );
+            assert_eq!(outcome, Outcome::Rows { len: 1 });
+        }
+        assert!(captured.rest_raw_mode);
+        // A later successful report replaces stale mismatch bookkeeping.
+        captured.apply_construction_rest_report(
+            [true; 10],
+            &ConstructionRestCopyReport {
+                raw_ok: true,
+                matched: [true; 10],
+                ..report
+            },
+        );
+        let states = [
+            (
+                captured.base_resources.checked,
+                captured.base_resources.mismatches,
+                captured.base_resources.outcome,
+            ),
+            (
+                captured.building_construction.checked,
+                captured.building_construction.mismatches,
+                captured.building_construction.outcome,
+            ),
+            (
+                captured.railway_construction.checked,
+                captured.railway_construction.mismatches,
+                captured.railway_construction.outcome,
+            ),
+            (
+                captured.settings.checked,
+                captured.settings.mismatches,
+                captured.settings.outcome,
+            ),
+            (
+                captured.laws.checked,
+                captured.laws.mismatches,
+                captured.laws.outcome,
+            ),
+            (
+                captured.garrisons.checked,
+                captured.garrisons.mismatches,
+                captured.garrisons.outcome,
+            ),
+            (
+                captured.assigned_manpower.checked,
+                captured.assigned_manpower.mismatches,
+                captured.assigned_manpower.outcome,
+            ),
+            (
+                captured.reserve_manpower.checked,
+                captured.reserve_manpower.mismatches,
+                captured.reserve_manpower.outcome,
+            ),
+            (
+                captured.resistance.checked,
+                captured.resistance.mismatches,
+                captured.resistance.outcome,
+            ),
+            (
+                captured.collaboration.checked,
+                captured.collaboration.mismatches,
+                captured.collaboration.outcome,
+            ),
+        ];
+        assert!(
+            states
+                .into_iter()
+                .all(|(checked, mismatches, outcome)| checked
+                    && mismatches == 0
+                    && outcome == Outcome::Rows { len: 1 })
+        );
+        let reason = "accepted acquisition worker stopped";
+        captured.fail_construction_rest_capture(needed, reason);
+        let states = [
+            (
+                captured.base_resources.checked,
+                captured.base_resources.mismatches,
+                captured.base_resources.outcome,
+            ),
+            (
+                captured.building_construction.checked,
+                captured.building_construction.mismatches,
+                captured.building_construction.outcome,
+            ),
+            (
+                captured.railway_construction.checked,
+                captured.railway_construction.mismatches,
+                captured.railway_construction.outcome,
+            ),
+            (
+                captured.settings.checked,
+                captured.settings.mismatches,
+                captured.settings.outcome,
+            ),
+            (
+                captured.laws.checked,
+                captured.laws.mismatches,
+                captured.laws.outcome,
+            ),
+            (
+                captured.garrisons.checked,
+                captured.garrisons.mismatches,
+                captured.garrisons.outcome,
+            ),
+            (
+                captured.assigned_manpower.checked,
+                captured.assigned_manpower.mismatches,
+                captured.assigned_manpower.outcome,
+            ),
+            (
+                captured.reserve_manpower.checked,
+                captured.reserve_manpower.mismatches,
+                captured.reserve_manpower.outcome,
+            ),
+            (
+                captured.resistance.checked,
+                captured.resistance.mismatches,
+                captured.resistance.outcome,
+            ),
+            (
+                captured.collaboration.checked,
+                captured.collaboration.mismatches,
+                captured.collaboration.outcome,
+            ),
+        ];
+        for (index, (checked, mismatches, outcome)) in states.into_iter().enumerate() {
+            assert_eq!(checked, needed[index]);
+            assert_eq!(mismatches, usize::from(needed[index]));
+            assert_eq!(outcome, Outcome::Unavailable { reason });
+        }
+        assert!(!captured.rest_raw_mode);
+        assert_eq!(captured.state_buildings.outcome, Outcome::Rows { len: 1 });
+        assert!(captured.state_buildings.checked);
+        assert_eq!(captured.state_buildings.mismatches, 7);
+    }
 
     #[test]
     fn construction_rest_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop()
@@ -3068,12 +3344,13 @@ mod tests {
             };
             let mut first = ConstructionRestJob::new();
             let mut second = ConstructionRestJob::new();
-            let report = captured.copy_construction_rest_refresh(
+            let report = crate::extended::construction::copy_construction_rest_refresh(
                 &memory,
                 ctx,
                 &mut first,
                 Some(&mut second),
             );
+            captured.apply_construction_rest_report(ctx.needed, &report);
             assert!(report.raw_ok, "rows={rows:?}");
             assert_eq!(report.matched, [true; 10], "rows={rows:?}");
             captured.rest_raw_mode = true;
@@ -3107,12 +3384,13 @@ mod tests {
             };
             let mut first = ConstructionRestJob::new();
             let mut second = ConstructionRestJob::new();
-            let report = captured.copy_construction_rest_refresh(
+            let report = crate::extended::construction::copy_construction_rest_refresh(
                 &memory,
                 ctx,
                 &mut first,
                 Some(&mut second),
             );
+            captured.apply_construction_rest_report(ctx.needed, &report);
             assert!(report.raw_ok);
             captured.rest_raw_mode = true;
             let _ = captured.capture(&memory, 0, kit::BASE, &[true; N], 0, true);
@@ -3141,8 +3419,13 @@ mod tests {
         };
         let mut first = ConstructionRestJob::new();
         let mut second = ConstructionRestJob::new();
-        let report =
-            captured.copy_construction_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = crate::extended::construction::copy_construction_rest_refresh(
+            &memory,
+            ctx,
+            &mut first,
+            Some(&mut second),
+        );
+        captured.apply_construction_rest_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 10]);
         // A torn resource amount between the passes changes the log.
@@ -3160,9 +3443,18 @@ mod tests {
         let mut c2 = Captured::with_capacities(&capacities, &[0; N]);
         let mut after = ConstructionRestJob::new();
         let mut after_torn = ConstructionRestJob::new();
-        let r1 = c2.copy_construction_rest_refresh(&memory, ctx_none, &mut after, None);
+        let r1 = crate::extended::construction::copy_construction_rest_refresh(
+            &memory, ctx_none, &mut after, None,
+        );
+        c2.apply_construction_rest_report(ctx_none.needed, &r1);
         assert!(r1.raw_ok);
-        let r2 = c2.copy_construction_rest_refresh(&torn_memory, ctx_none, &mut after_torn, None);
+        let r2 = crate::extended::construction::copy_construction_rest_refresh(
+            &torn_memory,
+            ctx_none,
+            &mut after_torn,
+            None,
+        );
+        c2.apply_construction_rest_report(ctx_none.needed, &r2);
         assert!(r2.raw_ok);
         assert!(!after.log.logs_equal(&after_torn.log));
     }
@@ -3188,7 +3480,10 @@ mod tests {
             census: Vec::new(),
             capacity_charge: crate::raw_memory::Charge::default(),
         };
-        let report = captured.copy_construction_rest_refresh(&memory, ctx, &mut tiny, None);
+        let report = crate::extended::construction::copy_construction_rest_refresh(
+            &memory, ctx, &mut tiny, None,
+        );
+        captured.apply_construction_rest_report(ctx.needed, &report);
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());

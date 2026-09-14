@@ -2,15 +2,13 @@
 //! Shared-walk costs are charged once to each READ_GROUPS leader, in QPC ticks.
 
 use crate::{
-    raw::RawLog,
     sampling::{CONSISTENCY_TARGET, qpc},
     table_capture::{Arena, CaptureRows, comparison, grow_capacity, grow_vec},
 };
 use engine::{
-    Memory, ccombat_tactic, ccontinuous_national_focus, ccountry, cdecision_status,
-    cdynamic_modifier_container, cgame_state, cnational_focus, cnational_focus_progress,
-    cnational_focus_tree, cpdx_array::Array, cpolitical_party, cpolitical_status, cresearch_slot,
-    ctechnology, ctechnology_sharing_group, ctechnology_status, ctechnology_template, msvc_string,
+    Memory, ccombat_tactic, ccountry, cdecision_status, cdynamic_modifier_container,
+    cnational_focus_progress, cpolitical_party, cpolitical_status, cresearch_slot, ctechnology,
+    ctechnology_sharing_group, ctechnology_status, ctechnology_template,
     power_balance_gfx_override, power_balance_manager, power_balance_range, power_balance_record,
     walk::Outcome,
 };
@@ -271,10 +269,10 @@ pub struct Captured {
     dictionary: Vec<ctechnology_template::Entry>,
     dictionary_second: Vec<ctechnology_template::Entry>,
     dictionary_required: usize,
-    /// Raw-copy split gate for the hourly focus pair (Focus,
-    /// CompletedFocuses). Set by the game thread every hour with a valid raw
-    /// payload; `capture` then skips the typed focus walks and the decode
-    /// worker fills these rows before the ready handoff. Preserved across
+    /// Owned acquisition gate for the hourly focus pair (Focus,
+    /// CompletedFocuses). Set for an accepted World payload; `capture` skips
+    /// duplicate focus walks and the decode worker installs the owned rows
+    /// before the ready handoff. Preserved across
     /// `reset` (set per hour, cleared by the worker after decode).
     pub(crate) focus_raw_mode: bool,
 }
@@ -1324,588 +1322,386 @@ fn required_rows(outcome: Outcome) -> usize {
 pub(crate) use tests::focus_test_kit;
 
 // ===========================================================================
-// Hourly Tier-H raw-copy split (Focus, CompletedFocuses).
+// Hourly Focus and CompletedFocuses owned native acquisition.
 //
-// The game thread copies raw bytes only, every hour: one shared country
-// census (mirroring `ccountry::Reader`), per-country focus-status roots with
-// vtable checks, summary fields, three token headers with heap payloads and
-// terminators, and the completed-focus roster with per-entry pointers and
-// tokens. No row is decoded on the game thread. The single FIFO decode worker
-// replays the existing `cnational_focus_progress::walk` per country against
-// the recorded spans (`crate::raw::Recorded`), so rows, ordinals, skips,
-// truncation counts and failure reasons are identical by construction (see
-// `crate::raw` for the mirror rules).
-//
-// The mirror traverses structurally and records every discoverable span,
-// never aborting except on overflow: validation, precedence and error scope
-// are local parses, so the replay derives every outcome from the same
-// recorded spans and later extras are harmless. Pooled row and arena
-// capacities are ignored while copying (a superset is recorded and the replay
-// truncates identically against the real pooled buffers).
+// The callback-bounded World job runs the existing native walker once per pass.
+// Rows and referenced token bytes are owned here; the decode worker only installs
+// admitted prefixes. No raw index, mirrored census or replayed walker remains.
+// Both passes' exact frame grants are checked before any source read, so storage
+// refusal can use the typed fallback without retrying a consumed read fault.
 // ===========================================================================
 
-/// Fault-attribution bits: summary walk (Focus) and completed-roster walk
-/// (CompletedFocuses). The shared census and focus-status roots block both
-/// slots: a fault there fails the per-country walk, which makes both outcomes
-/// unavailable with the same reason.
-const FOCUS_MASK: u32 = 0x01;
-const COMPLETED_MASK: u32 = 0x02;
-const FOCUS_CENSUS_MASK: u32 = 0x03;
-
-#[derive(Debug, Default, Clone, Copy)]
-struct FocusCountry {
-    pointer: usize,
-}
-
-/// One hour of raw focus payload: the shared census plus every country's
-/// summary and completed spans. Flat pools recycle capacities and the steady
-/// state allocates on neither thread; growth happens on the decode side only
-/// (see `crate::decode::recycle_focus_job`).
 #[derive(Debug, Default)]
 pub(crate) struct FocusJob {
-    pub log: RawLog<2>,
-    pub game_state: usize,
-    census: Vec<FocusCountry>,
+    rows: Vec<cnational_focus_progress::Row>,
+    completed: Vec<cnational_focus_progress::CompletedRow>,
+    bytes: Vec<u8>,
+    outcomes: [Option<Outcome>; 2],
+    bytes_len: usize,
+    required_bytes: usize,
+    row_grants: [usize; 2],
+    byte_grant: usize,
+    provisioned: bool,
     capacity_charge: crate::raw_memory::Charge,
 }
 
 impl FocusJob {
     pub fn new() -> Self {
+        let capacities = Capacities::default();
         let mut job = Self {
-            // Steady state is 439 countries with about 3.9k completed rows
-            // plus token bytes; both pools start above that so steady state
-            // never overflows.
-            log: RawLog::new(1 << 16, 4 << 20),
-            game_state: 0,
-            census: Vec::with_capacity(512),
-            capacity_charge: crate::raw_memory::Charge::default(),
+            rows: vec![Default::default(); capacities.rows[0]],
+            completed: vec![Default::default(); capacities.rows[1]],
+            bytes: vec![0; capacities.focus_text],
+            row_grants: [capacities.rows[0], capacities.rows[1]],
+            byte_grant: capacities.focus_text,
+            provisioned: true,
+            ..Default::default()
         };
         job.update_capacity_charge();
         job
     }
 
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
+    pub fn is_provisioned(&self) -> bool {
+        self.provisioned
+    }
+
+    #[cfg(test)]
+    pub(crate) fn capacities(&self) -> ([usize; 2], usize) {
+        ([self.rows.len(), self.completed.len()], self.bytes.len())
+    }
+
     pub fn clear(&mut self) {
-        self.log.clear();
-        self.game_state = 0;
-        self.census.clear();
+        self.outcomes = [None; 2];
+        self.bytes_len = 0;
+        self.required_bytes = 0;
+        self.row_grants = [0; 2];
+        self.byte_grant = 0;
+    }
+
+    fn prepare(&mut self, rows: [usize; 2], bytes: usize) -> bool {
+        self.clear();
+        self.row_grants = rows;
+        self.byte_grant = bytes;
+        self.provisioned && !self.grow_for_next()
     }
 
     pub fn grow_for_next(&self) -> bool {
-        self.log.grow_for_next()
+        self.rows.len() < self.row_grants[0]
+            || self.completed.len() < self.row_grants[1]
+            || self.bytes.len() < self.byte_grant
     }
 
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed hours fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
+    /// Called only after callback ownership ends, on the decode side.
     pub fn grow(&mut self) {
-        self.log.grow();
-        crate::raw::double_capacity(&mut self.census);
+        grow_vec(&mut self.rows, self.row_grants[0]);
+        grow_vec(&mut self.completed, self.row_grants[1]);
+        grow_vec(&mut self.bytes, self.byte_grant);
         self.update_capacity_charge();
     }
 
     fn update_capacity_charge(&mut self) {
         use crate::raw_memory::{Capacity, vector_bytes};
         self.capacity_charge.set(Capacity {
-            auxiliary_vectors: vector_bytes(&self.census),
+            payload_vectors: vector_bytes(&self.rows)
+                + vector_bytes(&self.completed)
+                + vector_bytes(&self.bytes),
             ..Default::default()
         });
+    }
+
+    fn outcome(&self, slot: usize) -> Outcome {
+        self.outcomes[slot].unwrap_or(Outcome::Unavailable {
+            reason: "focus acquisition not supplied",
+        })
+    }
+
+    fn token(&self, span: cnational_focus_progress::TokenSpan) -> Option<&[u8]> {
+        let end = span.start.checked_add(span.len)?;
+        self.bytes.get(..self.bytes_len)?.get(span.start..end)
     }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct FocusCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
+    /// False only for a preflight refusal, before any live source read.
     pub raw_ok: bool,
-    /// Whole-log raw equality gated by live-fault conservatism, in
-    /// [focus, completed] order.
+    /// Complete equal observations grant consistency credit; equal truncated
+    /// observations keep their prefix but do not grant a successful check.
     pub matched: [bool; 2],
-    /// Single-pass copy ticks anchor-charged to the Focus slot, matching the
-    /// read-group convention (the completed slot keeps zero game-thread cost).
+    pub mismatches: [usize; 2],
+    /// Shared native traversal and comparison are charged once to Focus.
     pub copy_ticks: [u64; 2],
+    /// Indexed raw payload bytes only. Owned rows/tokens are charged by capacity.
     pub raw_bytes: [u64; 2],
 }
 
-/// Game-thread copy parameters, bundled to keep the tick entry small.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FocusCopyContext {
     pub base: usize,
     pub game_state: usize,
     pub needed: [bool; 2],
+    pub rows: [usize; 2],
+    pub second_rows: [usize; 2],
+    pub bytes: usize,
+    pub second_bytes: usize,
 }
 
-fn focus_pool_u64(log: &RawLog<2>, start: usize) -> u64 {
-    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
-}
-
-fn focus_pool_u32(log: &RawLog<2>, start: usize) -> u32 {
-    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
-}
-
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
-fn fspan(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    addr: Option<usize>,
-    len: usize,
-    mask: u32,
-) -> Option<usize> {
-    log.take(memory, addr?, len, mask)
-}
-
-/// Authenticated census shared by the focus walks. Records the exact read set
-/// of `ccountry::Reader::new` plus one full `read_at` per slot. Returns
-/// `false` when the typed census fails, in which case every per-country walk
-/// fails identically from the same recorded spans.
-fn copy_focus_census(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    base: usize,
-    game_state: usize,
-    census: &mut Vec<FocusCountry>,
-) -> Option<(Array, u32)> {
-    let countries_start = fspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRIES),
-        16,
-        FOCUS_CENSUS_MASK,
-    )?;
-    let links_start = fspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRY_LINKS),
-        16,
-        FOCUS_CENSUS_MASK,
-    )?;
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
-    let countries = Array::from_header(raw, 8)?;
-    raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
-    let links = Array::from_header(raw, 4)?;
-    if countries.count < 2 || links.count == 0 {
-        return None;
-    }
-    let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
-    for slot in 1..countries.count {
-        let pointer_addr = (slot as usize)
-            .checked_mul(8)
-            .and_then(|offset| countries.data.checked_add(offset));
-        let pointer_start = fspan(log, memory, pointer_addr, 8, FOCUS_CENSUS_MASK)?;
-        let pointer = match usize::try_from(focus_pool_u64(log, pointer_start))
-            .ok()
-            .filter(|&pointer| pointer != 0)
-        {
-            Some(pointer) => pointer,
-            None => continue,
-        };
-        let vtable_start = fspan(log, memory, Some(pointer), 8, FOCUS_CENSUS_MASK)?;
-        let id_start = fspan(
-            log,
-            memory,
-            pointer.checked_add(ccountry::ID),
-            4,
-            FOCUS_CENSUS_MASK,
-        )?;
-        if focus_pool_u64(log, vtable_start) != vtable {
-            return None;
-        }
-        let id = focus_pool_u32(log, id_start);
-        let canonical = match focus_link(log, memory, &links, countries.count, id) {
-            Some(Some(canonical)) => canonical,
-            _ => return None,
-        };
-        let canonical_slot = match focus_link(log, memory, &links, countries.count, slot) {
-            Some(Some(canonical_slot)) => canonical_slot,
-            _ => return None,
-        };
-        if canonical_slot != canonical {
-            return None;
-        }
-        let check = match focus_link(log, memory, &links, countries.count, canonical) {
-            Some(Some(check)) => check,
-            _ => return None,
-        };
-        if check != canonical {
-            return None;
-        }
-        let canonical_addr = (canonical as usize)
-            .checked_mul(8)
-            .and_then(|offset| countries.data.checked_add(offset));
-        let canonical_pointer = fspan(log, memory, canonical_addr, 8, FOCUS_CENSUS_MASK)?;
-        if focus_pool_u64(log, canonical_pointer) != pointer as u64 {
-            return None;
-        }
-        if census.len() == census.capacity() {
-            log.overflowed = true;
-            return None;
-        }
-        census.push(FocusCountry { pointer });
-    }
-    Some((links, countries.count))
-}
-
-/// Mirror of a link-table read with local bounds checks. Outer `None`
-/// aborts the walk; inner `None` is a readable absence the typed callers
-/// also turn into a walk error.
-fn focus_link(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    links: &Array,
-    countries: u32,
-    raw: u32,
-) -> Option<Option<u32>> {
-    if raw == 0 || raw >= links.count {
-        return None;
-    }
-    let offset = (raw as usize).checked_mul(4)?;
-    let start = fspan(
-        log,
-        memory,
-        links.data.checked_add(offset),
-        4,
-        FOCUS_CENSUS_MASK,
-    )?;
-    let slot = focus_pool_u32(log, start);
-    if slot == 0 {
-        return Some(None);
-    }
-    if slot >= countries {
-        return None;
-    }
-    Some(Some(slot))
-}
-
-/// Mirror of one focus token's string reads: header, terminator and heap
-/// payload takes. Takes run unconditionally over parseable addresses; the
-/// replay validates the header and terminator itself from the same recorded
-/// spans, so later extras are harmless.
-fn copy_focus_token(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    pointer: u64,
-    offset: usize,
-    mask: u32,
-) {
-    if pointer == 0 {
-        return;
-    }
-    let Ok(pointer) = usize::try_from(pointer) else {
-        return;
-    };
-    let Some(string) = pointer.checked_add(offset) else {
-        return;
-    };
-    let Some(header_start) = fspan(log, memory, Some(string), 32, mask) else {
-        return;
-    };
-    let mut header = [0u8; 32];
-    header.copy_from_slice(&log.bytes[header_start..header_start + 32]);
-    let len = match usize::try_from(u64::from_le_bytes(
-        header[msvc_string::LENGTH..msvc_string::CAPACITY]
-            .try_into()
-            .unwrap(),
-    )) {
-        Ok(len) => len,
-        Err(_) => return,
-    };
-    let capacity = u64::from_le_bytes(header[msvc_string::CAPACITY..].try_into().unwrap());
-    if len as u64 > capacity || capacity < msvc_string::INLINE_CAPACITY {
-        return;
-    }
-    let source = if capacity == msvc_string::INLINE_CAPACITY {
-        string
-    } else {
-        match usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
-            .ok()
-            .filter(|&source| source != 0)
-        {
-            Some(source) => source,
-            None => return,
-        }
-    };
-    let Some(end) = source.checked_add(len) else {
-        return;
-    };
-    if fspan(log, memory, Some(end), 1, mask).is_none() {
-        return;
-    }
-    // Inline payloads live inside the header span, but the replay requests
-    // the exact (address, length) range, so record it exactly like a heap
-    // payload: service is exact-match, never sub-range.
-    if len != 0 {
-        let _ = fspan(log, memory, Some(source), len, mask);
-    }
-}
-
-/// Mirror of one country's focus read set: status root and vtable, tree
-/// pointer, scattered summary fields, three token takes, and the completed
-/// roster with per-entry pointers and tokens. Takes are unconditional over
-/// discoverable addresses (a superset); the replay derives every outcome.
-fn copy_focus_country(log: &mut RawLog<2>, memory: &impl engine::Memory, country: &FocusCountry) {
-    let root = match fspan(
-        log,
-        memory,
-        country.pointer.checked_add(ccountry::FOCUS_PROGRESS),
-        8,
-        FOCUS_CENSUS_MASK,
-    )
-    .and_then(|start| {
-        usize::try_from(focus_pool_u64(log, start))
-            .ok()
-            .filter(|&root| root != 0)
-    }) {
-        Some(root) => root,
-        None => return,
-    };
-    let _ = fspan(log, memory, Some(root), 8, FOCUS_CENSUS_MASK);
-    let tree = match fspan(
-        log,
-        memory,
-        country.pointer.checked_add(ccountry::FOCUS_TREE),
-        8,
-        FOCUS_MASK,
-    ) {
-        Some(start) => focus_pool_u64(log, start),
-        None => return,
-    };
-    // Scattered summary fields exactly like the typed walk: one 16-byte
-    // destination at CURRENT (covering CURRENT and CONTINUOUS contiguously),
-    // then progress, paused and completed count.
-    let selections_start = fspan(
-        log,
-        memory,
-        root.checked_add(cnational_focus_progress::CURRENT),
-        16,
-        FOCUS_MASK,
-    );
-    let progress_start = fspan(
-        log,
-        memory,
-        root.checked_add(cnational_focus_progress::PROGRESS),
-        8,
-        FOCUS_MASK,
-    );
-    let paused_start = fspan(
-        log,
-        memory,
-        root.checked_add(cnational_focus_progress::PAUSED),
-        1,
-        FOCUS_MASK,
-    );
-    let count_start = fspan(
-        log,
-        memory,
-        root.checked_add(cnational_focus_progress::COMPLETED_COUNT),
-        4,
-        FOCUS_MASK,
-    );
-    let (Some(selections_start), Some(_), Some(_), Some(_)) =
-        (selections_start, progress_start, paused_start, count_start)
-    else {
-        return;
-    };
-    let current = focus_pool_u64(log, selections_start);
-    let continuous = focus_pool_u64(log, selections_start + 8);
-    copy_focus_token(log, memory, tree, cnational_focus_tree::TOKEN, FOCUS_MASK);
-    copy_focus_token(log, memory, current, cnational_focus::TOKEN, FOCUS_MASK);
-    copy_focus_token(
-        log,
-        memory,
-        continuous,
-        ccontinuous_national_focus::TOKEN,
-        FOCUS_MASK,
-    );
-    if log.overflowed {
-        return;
-    }
-    // Completed roster: header plus per-entry pointers and tokens.
-    let header_start = match fspan(
-        log,
-        memory,
-        root.checked_add(cnational_focus_progress::COMPLETED_DATA),
-        16,
-        COMPLETED_MASK,
-    ) {
-        Some(start) => start,
-        None => return,
-    };
-    let mut header = [0u8; 16];
-    header.copy_from_slice(&log.bytes[header_start..header_start + 16]);
-    let roster = match Array::from_header(header, 8) {
-        Some(roster) => roster,
-        None => return,
-    };
-    for ordinal in 0..roster.count {
-        let entry_addr = roster
-            .data
-            .checked_add((ordinal as usize).saturating_mul(8));
-        let pointer = match fspan(log, memory, entry_addr, 8, COMPLETED_MASK).and_then(|start| {
-            usize::try_from(focus_pool_u64(log, start))
-                .ok()
-                .filter(|&pointer| pointer != 0)
-        }) {
-            Some(pointer) => pointer,
-            None => continue,
-        };
-        copy_focus_token(
-            log,
-            memory,
-            pointer as u64,
-            cnational_focus::TOKEN,
-            COMPLETED_MASK,
-        );
-        if log.overflowed {
-            return;
-        }
-    }
-}
-
-/// One structural copy pass: shared census plus every country's summary and
-/// completed takes. The job is cleared on entry so pooled refreshes never
-/// accumulate spans across hours.
 fn copy_focus_pass(
     job: &mut FocusJob,
-    memory: &impl engine::Memory,
+    memory: &impl Memory,
     base: usize,
     game_state: usize,
     ticks: &mut [u64; 2],
 ) {
-    job.clear();
-    job.game_state = game_state;
     let started = qpc();
-    if copy_focus_census(&mut job.log, memory, base, game_state, &mut job.census).is_some() {
-        for index in 0..job.census.len() {
-            let country = job.census[index];
-            copy_focus_country(&mut job.log, memory, &country);
-            if job.log.overflowed {
-                break;
+    let mut focus_total = Outcome::Rows { len: 0 };
+    let mut completed_total = Outcome::Rows { len: 0 };
+    let mut text_len = 0usize;
+    let mut text_required = 0usize;
+    match ccountry::Reader::new(memory, base, game_state) {
+        Err(reason) => {
+            focus_total = Outcome::Unavailable { reason };
+            completed_total = Outcome::Unavailable { reason };
+        }
+        Ok(countries) => {
+            for slot in 1..countries.count() {
+                let country = match countries.at(slot) {
+                    Ok(Some(country)) => country,
+                    Ok(None) => continue,
+                    Err(reason) => {
+                        focus_total = Outcome::Unavailable { reason };
+                        completed_total = Outcome::Unavailable { reason };
+                        break;
+                    }
+                };
+                let first = focus_total.len();
+                let completed = completed_total.len();
+                let text = text_len;
+                let result = cnational_focus_progress::walk(
+                    memory,
+                    base,
+                    country.pointer,
+                    country.id,
+                    &mut job.rows[first..job.row_grants[0]],
+                    &mut job.completed[completed..job.row_grants[1]],
+                    &mut job.bytes[text..job.byte_grant],
+                );
+                for row in &mut job.rows[first..first + result.outcome.len()] {
+                    for span in [&mut row.tree, &mut row.current, &mut row.continuous]
+                        .into_iter()
+                        .flatten()
+                    {
+                        span.start += text;
+                    }
+                }
+                for row in &mut job.completed[completed..completed + result.completed_outcome.len()]
+                {
+                    row.token.start += text;
+                }
+                append(&mut focus_total, result.outcome);
+                append(&mut completed_total, result.completed_outcome);
+                text_len += result.bytes_len;
+                text_required = text_required.saturating_add(result.required_bytes);
             }
         }
     }
+    job.outcomes = [Some(focus_total), Some(completed_total)];
+    job.bytes_len = text_len;
+    job.required_bytes = text_required;
     ticks[0] += elapsed(started);
 }
 
-impl Captured {
-    /// Game-thread raw copy for one hour: shared census plus every country's
-    /// summary and completed takes. Compares per-table raw partitions while
-    /// either focus table still needs double-read checks: the shared census
-    /// gates both slots, focus/completed private spans only their own.
-    pub(crate) fn copy_focus_refresh(
-        &mut self,
-        memory: &impl engine::Memory,
-        ctx: FocusCopyContext,
-        first: &mut FocusJob,
-        mut second: Option<&mut FocusJob>,
-    ) -> FocusCopyReport {
-        let needed = ctx.needed;
-        let mut ticks = [0u64; 2];
-        copy_focus_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
-        let mut matched = [true; 2];
-        if let Some(second_job) = second.as_deref_mut() {
-            let mut second_ticks = [0u64; 2];
-            copy_focus_pass(
-                second_job,
-                memory,
-                ctx.base,
-                ctx.game_state,
-                &mut second_ticks,
-            );
-            ticks[0] += second_ticks[0];
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+fn focus_token_equal(
+    first: &FocusJob,
+    a: Option<cnational_focus_progress::TokenSpan>,
+    second: &FocusJob,
+    b: Option<cnational_focus_progress::TokenSpan>,
+) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => first
+            .token(a)
+            .zip(second.token(b))
+            .is_some_and(|(a, b)| a == b),
+        _ => false,
+    }
+}
+
+/// Compare table projections, not shared arena positions: changing one table's
+/// token length may move the other table's spans without changing its fields.
+fn focus_mismatches(first: &FocusJob, second: &FocusJob, slot: usize) -> usize {
+    let outcome = first.outcome(slot);
+    if outcome != second.outcome(slot) {
+        return 1;
+    }
+    let len = outcome.len();
+    if slot == 0 {
+        let Some((a, b)) = first.rows.get(..len).zip(second.rows.get(..len)) else {
+            return 1;
+        };
+        a.iter()
+            .zip(b)
+            .filter(|(a, b)| {
+                a.country != b.country
+                    || a.progress != b.progress
+                    || a.paused != b.paused
+                    || a.completed_count != b.completed_count
+                    || !focus_token_equal(first, a.tree, second, b.tree)
+                    || !focus_token_equal(first, a.current, second, b.current)
+                    || !focus_token_equal(first, a.continuous, second, b.continuous)
+            })
+            .count()
+    } else {
+        let Some((a, b)) = first.completed.get(..len).zip(second.completed.get(..len)) else {
+            return 1;
+        };
+        a.iter()
+            .zip(b)
+            .filter(|(a, b)| {
+                a.country != b.country
+                    || a.ordinal != b.ordinal
+                    || !focus_token_equal(first, Some(a.token), second, Some(b.token))
+            })
+            .count()
+    }
+}
+
+pub(crate) fn copy_focus_refresh(
+    memory: &impl Memory,
+    ctx: FocusCopyContext,
+    first: &mut FocusJob,
+    mut second: Option<&mut FocusJob>,
+) -> FocusCopyReport {
+    let first_fits = first.prepare(ctx.rows, ctx.bytes);
+    let checking = ctx.needed.iter().any(|&needed| needed);
+    // Prepare both jobs even if the first refuses, preserving each growth hint.
+    let second_fits = !checking
+        || second
+            .as_deref_mut()
+            .is_some_and(|job| job.prepare(ctx.second_rows, ctx.second_bytes));
+    if !first_fits || !second_fits {
+        return FocusCopyReport::default();
+    }
+    let mut report = FocusCopyReport {
+        raw_ok: true,
+        ..Default::default()
+    };
+    copy_focus_pass(
+        first,
+        memory,
+        ctx.base,
+        ctx.game_state,
+        &mut report.copy_ticks,
+    );
+    if checking {
+        let second = second.expect("preflight requires the comparison job");
+        copy_focus_pass(
+            second,
+            memory,
+            ctx.base,
+            ctx.game_state,
+            &mut report.copy_ticks,
+        );
+        let started = qpc();
+        for slot in 0..2 {
+            if ctx.needed[slot] {
+                report.mismatches[slot] = focus_mismatches(first, second, slot);
+                report.matched[slot] = crate::sampling::full_match(
+                    first.outcome(slot),
+                    second.outcome(slot),
+                    report.mismatches[slot],
+                );
             }
         }
-        // Binary per refresh per table: tearing detected (0/1), not a row
-        // count. Spool gates test `==0`/`!=0` only.
-        self.focus.checked = needed[0];
-        self.focus.mismatches = usize::from(needed[0] && !matched[0]);
-        self.completed.checked = needed[1];
-        self.completed.mismatches = usize::from(needed[1] && !matched[1]);
-        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
-        FocusCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
+        first.required_bytes = first.required_bytes.max(second.required_bytes);
+        report.copy_ticks[0] += elapsed(started);
+    }
+    report
+}
+
+impl Captured {
+    pub(crate) fn focus_copy_context(
+        &self,
+        base: usize,
+        game_state: usize,
+        needed: [bool; 2],
+    ) -> FocusCopyContext {
+        FocusCopyContext {
+            base,
+            game_state,
+            needed,
+            rows: [self.focus.rows.len(), self.completed.rows.len()],
+            second_rows: [self.focus.second.len(), self.completed.second.len()],
+            bytes: self.focus_text.first.len(),
+            second_bytes: self.focus_text.second.len(),
         }
     }
 
-    /// Decode-worker interpretation of a raw focus payload. Replays the
-    /// existing per-country walk against the recorded spans, installing
-    /// identical rows, truncation counts and failure reasons into the frame's
-    /// pooled buffers. The census spans serve the walk's own country
-    /// authentication, so no live memory is touched. Clears `focus_raw_mode`
-    /// so the next capture starts clean.
+    pub(crate) fn apply_focus_report(&mut self, needed: [bool; 2], report: &FocusCopyReport) {
+        self.focus.checked = needed[0];
+        self.focus.mismatches = if needed[0] { report.mismatches[0] } else { 0 };
+        self.completed.checked = needed[1];
+        self.completed.mismatches = if needed[1] { report.mismatches[1] } else { 0 };
+    }
+
+    /// Finish an accepted acquisition failure without retrying live memory.
+    pub(crate) fn fail_focus_capture(&mut self, needed: [bool; 2], reason: &'static str) {
+        self.focus.outcome = Outcome::Unavailable { reason };
+        self.focus.checked = needed[0];
+        self.focus.mismatches = usize::from(needed[0]);
+        self.completed.outcome = Outcome::Unavailable { reason };
+        self.completed.checked = needed[1];
+        self.completed.mismatches = usize::from(needed[1]);
+        self.focus_raw_mode = false;
+    }
+
+    /// Installs only already-owned admitted prefixes. A changed frame grant is
+    /// an ownership error, never a reason to touch the live source again.
     pub(crate) fn decode_focus_payload(
         &mut self,
-        base: usize,
+        _base: usize,
         job: &FocusJob,
         decode_ticks: &mut [u64; 2],
     ) {
-        let recorded = crate::raw::Recorded::build(&job.log);
         let started = qpc();
-        let mut focus_total = Outcome::Rows { len: 0 };
-        let mut completed_total = Outcome::Rows { len: 0 };
-        let mut text_len = 0usize;
-        let mut text_required = 0usize;
-        match ccountry::Reader::new(&recorded, base, job.game_state) {
-            Err(reason) => {
-                focus_total = Outcome::Unavailable { reason };
-                completed_total = Outcome::Unavailable { reason };
-            }
-            Ok(countries) => {
-                for slot in 1..countries.count() {
-                    let country = match countries.at(slot) {
-                        Ok(Some(country)) => country,
-                        Ok(None) => continue,
-                        Err(reason) => {
-                            focus_total = Outcome::Unavailable { reason };
-                            completed_total = Outcome::Unavailable { reason };
-                            break;
-                        }
-                    };
-                    let first = focus_total.len();
-                    let completed = completed_total.len();
-                    let text = text_len;
-                    let result = cnational_focus_progress::walk(
-                        &recorded,
-                        base,
-                        country.pointer,
-                        country.id,
-                        &mut self.focus.rows[first..],
-                        &mut self.completed.rows[completed..],
-                        &mut self.focus_text.first[text..],
-                    );
-                    for row in &mut self.focus.rows[first..first + result.outcome.len()] {
-                        for span in [&mut row.tree, &mut row.current, &mut row.continuous]
-                            .into_iter()
-                            .flatten()
-                        {
-                            span.start += text;
-                        }
-                    }
-                    for row in &mut self.completed.rows
-                        [completed..completed + result.completed_outcome.len()]
-                    {
-                        row.token.start += text;
-                    }
-                    append(&mut focus_total, result.outcome);
-                    append(&mut completed_total, result.completed_outcome);
-                    text_len += result.bytes_len;
-                    text_required = text_required.saturating_add(result.required_bytes);
-                }
-            }
+        let arena_ok = self.focus_text.first.len() == job.byte_grant
+            && job.bytes_len <= job.byte_grant
+            && job.bytes_len <= job.bytes.len();
+        self.focus.outcome = job.outcome(0);
+        if !arena_ok
+            || self.focus.rows.len() != job.row_grants[0]
+            || self.focus.outcome.len() > job.row_grants[0]
+        {
+            self.focus.outcome = Outcome::Unavailable {
+                reason: "focus owned payload capacity mismatch",
+            };
+        } else {
+            let len = self.focus.outcome.len();
+            self.focus.rows[..len].copy_from_slice(&job.rows[..len]);
         }
-        self.focus.outcome = focus_total;
-        self.completed.outcome = completed_total;
-        self.focus_text.len = text_len;
-        self.focus_text.required = text_required;
+        if arena_ok {
+            self.focus_text.first[..job.bytes_len].copy_from_slice(&job.bytes[..job.bytes_len]);
+            self.focus_text.len = job.bytes_len;
+            self.focus_text.required = job.required_bytes;
+        } else {
+            self.focus_text.len = 0;
+            self.focus_text.required = job.required_bytes.max(job.byte_grant);
+        }
         decode_ticks[0] += elapsed(started);
+        let started = qpc();
+        self.completed.outcome = job.outcome(1);
+        if !arena_ok
+            || self.completed.rows.len() != job.row_grants[1]
+            || self.completed.outcome.len() > job.row_grants[1]
+        {
+            self.completed.outcome = Outcome::Unavailable {
+                reason: "completed focus owned payload capacity mismatch",
+            };
+        } else {
+            let len = self.completed.outcome.len();
+            self.completed.rows[..len].copy_from_slice(&job.completed[..len]);
+        }
+        decode_ticks[1] += elapsed(started);
         self.focus_raw_mode = false;
     }
 }
@@ -2390,6 +2186,102 @@ pub(crate) fn research_shadow_fixture(progress: i64) -> Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::cnational_focus;
+
+    #[test]
+    fn focus_copy_report_bookkeeping_and_terminal_failure_are_table_local() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0; N]);
+        captured.focus_raw_mode = true;
+        captured.focus.outcome = Outcome::Rows { len: 1 };
+        captured.focus.mismatches = 9;
+        captured.completed.outcome = Outcome::Rows { len: 1 };
+        captured.completed.mismatches = 9;
+        captured.technologies.outcome = Outcome::Rows { len: 1 };
+        captured.technologies.checked = true;
+        captured.technologies.mismatches = 7;
+        let needed = std::array::from_fn(|index| index % 2 == 0);
+        let report = FocusCopyReport {
+            raw_ok: false,
+            matched: std::array::from_fn(|index| index % 3 != 0),
+            mismatches: [1, 0],
+            copy_ticks: std::array::from_fn(|index| index as u64 + 17),
+            raw_bytes: std::array::from_fn(|index| index as u64 + 41),
+        };
+        captured.apply_focus_report(needed, &report);
+        let states = [
+            (
+                captured.focus.checked,
+                captured.focus.mismatches,
+                captured.focus.outcome,
+            ),
+            (
+                captured.completed.checked,
+                captured.completed.mismatches,
+                captured.completed.outcome,
+            ),
+        ];
+        for (index, (checked, mismatches, outcome)) in states.into_iter().enumerate() {
+            assert_eq!(checked, needed[index]);
+            assert_eq!(
+                mismatches,
+                usize::from(needed[index] && !report.matched[index])
+            );
+            assert_eq!(outcome, Outcome::Rows { len: 1 });
+        }
+        assert!(captured.focus_raw_mode);
+        // A later successful report replaces stale mismatch bookkeeping.
+        captured.apply_focus_report(
+            [true; 2],
+            &FocusCopyReport {
+                raw_ok: true,
+                matched: [true; 2],
+                mismatches: [0; 2],
+                ..report
+            },
+        );
+        let states = [
+            (
+                captured.focus.checked,
+                captured.focus.mismatches,
+                captured.focus.outcome,
+            ),
+            (
+                captured.completed.checked,
+                captured.completed.mismatches,
+                captured.completed.outcome,
+            ),
+        ];
+        assert!(
+            states
+                .into_iter()
+                .all(|(checked, mismatches, outcome)| checked
+                    && mismatches == 0
+                    && outcome == Outcome::Rows { len: 1 })
+        );
+        let reason = "accepted acquisition worker stopped";
+        captured.fail_focus_capture(needed, reason);
+        let states = [
+            (
+                captured.focus.checked,
+                captured.focus.mismatches,
+                captured.focus.outcome,
+            ),
+            (
+                captured.completed.checked,
+                captured.completed.mismatches,
+                captured.completed.outcome,
+            ),
+        ];
+        for (index, (checked, mismatches, outcome)) in states.into_iter().enumerate() {
+            assert_eq!(checked, needed[index]);
+            assert_eq!(mismatches, usize::from(needed[index]));
+            assert_eq!(outcome, Outcome::Unavailable { reason });
+        }
+        assert!(!captured.focus_raw_mode);
+        assert_eq!(captured.technologies.outcome, Outcome::Rows { len: 1 });
+        assert!(captured.technologies.checked);
+        assert_eq!(captured.technologies.mismatches, 7);
+    }
 
     fn shadow_inputs(
         captured: &Captured,
@@ -2691,19 +2583,27 @@ mod tests {
     fn focus_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
         use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
         static LOCAL: Tracker = Tracker::new();
-        let mut job = FocusJob::default();
-        job.census.reserve_exact(3);
+        let mut job = FocusJob {
+            rows: vec![Default::default(); 2],
+            completed: vec![Default::default(); 3],
+            bytes: vec![0; 10],
+            provisioned: true,
+            ..Default::default()
+        };
         job.capacity_charge = Charge::empty_on(&LOCAL);
         job.update_capacity_charge();
-        let expected = |job: &FocusJob| vector_bytes(&job.census);
-        let initial = LOCAL.snapshot().current.auxiliary_vectors;
+        let expected = |job: &FocusJob| {
+            vector_bytes(&job.rows) + vector_bytes(&job.completed) + vector_bytes(&job.bytes)
+        };
+        let initial = LOCAL.snapshot().current.payload_vectors;
         assert_eq!(initial, expected(&job));
+        assert!(!job.prepare([4, 6], 20));
         job.grow();
-        let grown = LOCAL.snapshot().current.auxiliary_vectors;
+        let grown = LOCAL.snapshot().current.payload_vectors;
         assert!(grown > initial);
         assert_eq!(grown, expected(&job));
         job.clear();
-        assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, grown);
+        assert_eq!(LOCAL.snapshot().current.payload_vectors, grown);
         drop(job);
         assert_eq!(LOCAL.snapshot().current, Capacity::default());
     }
@@ -2792,7 +2692,7 @@ mod tests {
     /// harness: two authenticated countries with inline, absent and heap focus
     /// tokens plus one- and two-entry completed rosters.
     pub(crate) mod focus_test_kit {
-        use super::{Capacities, Captured, FocusCopyContext, FocusJob};
+        use super::{Capacities, Captured, FocusJob};
         use engine::memory::SliceMemory;
         use engine::{
             ccontinuous_national_focus, ccountry, cgame_state, cnational_focus,
@@ -2951,12 +2851,11 @@ mod tests {
                 second: Option<&mut FocusJob>,
             ) -> (super::FocusCopyReport, FocusJob) {
                 let mut first = FocusJob::new();
-                let ctx = FocusCopyContext {
-                    base: BASE,
-                    game_state: GS,
-                    needed: [true, true],
-                };
-                let report = captured.copy_focus_refresh(memory, ctx, &mut first, second);
+                let ctx = captured.focus_copy_context(BASE, GS, [second.is_some(); 2]);
+                let report = crate::extended::governance::copy_focus_refresh(
+                    memory, ctx, &mut first, second,
+                );
+                captured.apply_focus_report(ctx.needed, &report);
                 (report, first)
             }
 
@@ -3193,140 +3092,324 @@ mod tests {
     }
 
     #[test]
-    fn focus_raw_compare_counts_checks_and_blocks_tearing() {
-        use focus_test_kit::Fixture;
+    fn focus_owned_comparison_preserves_table_local_fields_and_token_bytes() {
+        use focus_test_kit::{BASE, Fixture};
         let fixture = Fixture::world();
-        let memory = fixture.memory();
-        let mut captured = Fixture::captured();
-        let mut second = FocusJob::new();
-        let (report, _) = Fixture::copy_first(&mut captured, &memory, Some(&mut second));
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true, true]);
-        assert!(captured.focus.checked && captured.completed.checked);
-        assert_eq!(captured.focus.mismatches, 0);
-        assert_eq!(captured.completed.mismatches, 0);
-
-        // A torn second copy (one progress byte flips) mismatches both logs.
-        let mut torn = Fixture::world();
-        torn.bytes[0x1_6000 + cnational_focus_progress::PROGRESS - 0x1_0000] ^= 0xff;
-        let torn_memory = torn.memory();
-        let mut after = FocusJob::new();
-        let mut after_ticks = [0; 2];
-        copy_focus_pass(
-            &mut after,
-            &memory,
-            focus_test_kit::BASE,
-            0x1_0000,
-            &mut after_ticks,
-        );
-        let mut after_torn = FocusJob::new();
-        let mut torn_ticks = [0; 2];
-        copy_focus_pass(
-            &mut after_torn,
-            &torn_memory,
-            focus_test_kit::BASE,
-            0x1_0000,
-            &mut torn_ticks,
-        );
-        assert!(!after.log.logs_equal(&after_torn.log));
-        // Per-partition isolation: tearing a focus-private span flips only
-        // slot 0; the completed partition (slot 1) still agrees.
-        let focus_idx = after
-            .log
-            .spans
-            .iter()
-            .position(|span| span.ok && span.mask == 0x01)
-            .expect("focus-private span");
-        let mut second_torn = FocusJob::new();
-        let mut second_ticks = [0; 2];
-        copy_focus_pass(
-            &mut second_torn,
-            &memory,
-            focus_test_kit::BASE,
-            0x1_0000,
-            &mut second_ticks,
-        );
-        let start = second_torn.log.spans[focus_idx].start as usize;
-        // Align by span order: both logs took the same sequence, so the
-        // same index addresses the same logical read.
-        second_torn.log.bytes[start] ^= 0xff;
-        assert!(!after.log.partition_equal(&second_torn.log, 0));
-        assert!(after.log.partition_equal(&second_torn.log, 1));
-        // Identical images agree byte-for-byte.
-        let mut repeat = FocusJob::new();
-        let mut repeat_ticks = [0; 2];
-        copy_focus_pass(
-            &mut repeat,
-            &memory,
-            focus_test_kit::BASE,
-            0x1_0000,
-            &mut repeat_ticks,
-        );
-        assert!(after.log.logs_equal(&repeat.log));
-
-        // A readable-but-invalid refresh in both copies still counts its
-        // check while emitting the identical unavailable outcome.
-        let mut invalid = Fixture::world();
-        invalid.w64(0x1_6000, 0);
-        let invalid_memory = invalid.memory();
         let mut captured = Fixture::captured();
         let mut second = FocusJob::new();
         let (report, first) =
-            Fixture::copy_first(&mut captured, &invalid_memory, Some(&mut second));
+            Fixture::copy_first(&mut captured, &fixture.memory(), Some(&mut second));
         assert!(report.raw_ok);
-        assert_eq!(report.matched, [true, true]);
-        let needed = [true; TABLE_COUNT];
-        let mut replayed = Fixture::captured();
-        replayed.focus_raw_mode = true;
-        replayed.capture(
-            &invalid_memory,
-            focus_test_kit::BASE,
-            0x1_0000,
-            &needed,
-            0,
-            true,
-        );
-        let mut ticks = [0; 2];
-        replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
-        let mut typed = Fixture::captured();
-        typed.capture(
-            &invalid_memory,
-            focus_test_kit::BASE,
-            0x1_0000,
-            &needed,
-            0,
-            true,
-        );
-        assert_eq!(replayed.focus.outcome, typed.focus.outcome);
+        assert_eq!(report.matched, [true; 2]);
+        assert_eq!(report.mismatches, [0; 2]);
+        assert_eq!(report.raw_bytes, [0; 2]);
+        assert_eq!(report.copy_ticks[1], 0);
+        assert!(captured.focus.checked && captured.completed.checked);
+
+        let saved = second.rows[0];
+        for change in 0..7 {
+            second.rows[0] = saved;
+            match change {
+                0 => second.rows[0].country ^= 1,
+                1 => second.rows[0].progress ^= 1,
+                2 => second.rows[0].paused ^= 0x80,
+                3 => second.rows[0].completed_count ^= 1,
+                4 => second.rows[0].tree = None,
+                5 => second.rows[0].current = None,
+                _ => second.rows[0].continuous = None,
+            }
+            assert_eq!(focus_mismatches(&first, &second, 0), 1);
+            assert_eq!(focus_mismatches(&first, &second, 1), 0);
+        }
+        second.rows[0] = saved;
+        let saved_completed = second.completed[0];
+        second.completed[0].country ^= 1;
+        assert_eq!(focus_mismatches(&first, &second, 1), 1);
+        second.completed[0] = saved_completed;
+        second.completed[0].ordinal ^= 1;
+        assert_eq!(focus_mismatches(&first, &second, 1), 1);
+        second.completed[0] = saved_completed;
+        let token_at = saved_completed.token.start;
+        second.bytes[token_at] ^= 0xff;
+        assert_eq!(focus_mismatches(&first, &second, 0), 0);
+        assert_eq!(focus_mismatches(&first, &second, 1), 1);
+        second.bytes[token_at] ^= 0xff;
+
+        // The first completed token grows by one byte. This moves the next
+        // country's Focus span, but its referenced bytes and fields stay equal.
+        let mut longer = Fixture::world();
+        let token = 0x1_8500 + cnational_focus::TOKEN;
+        longer.bytes[token + 6 - 0x1_0000] = b'x';
+        longer.bytes[token + 7 - 0x1_0000] = 0;
+        longer.w64(token + 16, 7);
+        copy_focus_pass(&mut second, &longer.memory(), BASE, 0x1_0000, &mut [0; 2]);
+        assert_ne!(first.rows[1].current, second.rows[1].current);
+        assert_eq!(focus_mismatches(&first, &second, 0), 0);
+        assert_eq!(focus_mismatches(&first, &second, 1), 1);
+
+        // Invalid matching spans are not valid equality, and unused storage
+        // never contributes to either table's check.
+        copy_focus_pass(&mut second, &fixture.memory(), BASE, 0x1_0000, &mut [0; 2]);
+        second.bytes[second.bytes_len] ^= 1;
+        assert_eq!(focus_mismatches(&first, &second, 0), 0);
+        second.rows[0].tree = Some(cnational_focus_progress::TokenSpan {
+            start: usize::MAX,
+            len: 1,
+        });
+        assert_eq!(focus_mismatches(&first, &second, 0), 1);
+        assert_eq!(focus_mismatches(&second, &second, 0), 1);
+
+        let mut invalid = Fixture::world();
+        invalid.w64(0x1_6000, 0);
+        let (report, first) =
+            Fixture::copy_first(&mut captured, &invalid.memory(), Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(report.matched, [false; 2]);
+        assert_eq!(report.mismatches, [0; 2]);
+        captured.decode_focus_payload(BASE, &first, &mut [0; 2]);
+        assert!(matches!(
+            captured.focus.outcome,
+            Outcome::Unavailable { .. }
+        ));
+    }
+
+    struct FocusReads<'a> {
+        memory: engine::memory::SliceMemory<'a>,
+        reads: std::cell::Cell<usize>,
+        fault: Option<usize>,
+        failed: std::cell::Cell<usize>,
+    }
+
+    impl Memory for FocusReads<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.reads.set(self.reads.get() + 1);
+            if self.fault == Some(address) && self.failed.get() == 0 {
+                self.failed.set(1);
+                return false;
+            }
+            self.memory.copy(address, destination)
+        }
     }
 
     #[test]
-    fn focus_staging_overflow_reports_fallback_without_blocking() {
-        use focus_test_kit::Fixture;
+    fn focus_preflights_both_jobs_and_all_grants_before_any_source_read() {
+        use focus_test_kit::{BASE, Fixture};
         let fixture = Fixture::world();
-        let memory = fixture.memory();
-        let mut captured = Fixture::captured();
-        // Zero-capacity staging cannot hold any copy: the report declines the
-        // payload so the caller falls back to the typed walk.
-        let mut tiny = FocusJob {
-            log: RawLog::new(0, 0),
-            game_state: 0,
-            census: Vec::new(),
-            capacity_charge: crate::raw_memory::Charge::default(),
+        for pass in 0..2 {
+            for storage in 0..3 {
+                let memory = FocusReads {
+                    memory: fixture.memory(),
+                    reads: Default::default(),
+                    fault: Some(0x1_6000),
+                    failed: Default::default(),
+                };
+                let mut captured = Fixture::captured();
+                let ctx = captured.focus_copy_context(BASE, 0x1_0000, [true; 2]);
+                let mut first = FocusJob::new();
+                let mut second = FocusJob::new();
+                let short = if pass == 0 { &mut first } else { &mut second };
+                match storage {
+                    0 => short.rows.truncate(ctx.rows[0] - 1),
+                    1 => short.completed.truncate(ctx.rows[1] - 1),
+                    _ => short.bytes.truncate(ctx.bytes - 1),
+                }
+                let report = copy_focus_refresh(&memory, ctx, &mut first, Some(&mut second));
+                assert!(!report.raw_ok, "pass={pass}, storage={storage}");
+                assert_eq!(memory.reads.get(), 0);
+                assert_eq!(memory.failed.get(), 0);
+                assert!(first.outcomes.iter().all(Option::is_none));
+                assert!(second.outcomes.iter().all(Option::is_none));
+
+                // A typed fallback now observes the one-shot fault for the
+                // first time; the failed staging attempt did not consume it.
+                captured.capture(&memory, BASE, 0x1_0000, &[false; TABLE_COUNT], 0, true);
+                assert_eq!(memory.failed.get(), 1);
+                assert!(matches!(
+                    captured.focus.outcome,
+                    Outcome::Unavailable { .. }
+                ));
+                let short = if pass == 0 { &mut first } else { &mut second };
+                assert!(short.grow_for_next());
+                short.grow();
+                assert!(!short.grow_for_next());
+                short.clear();
+                assert!(short.is_provisioned());
+                assert_eq!(short.outcomes, [None; 2]);
+            }
+        }
+        let memory = FocusReads {
+            memory: fixture.memory(),
+            reads: Default::default(),
+            fault: None,
+            failed: Default::default(),
         };
-        let ctx = FocusCopyContext {
-            base: focus_test_kit::BASE,
-            game_state: 0x1_0000,
-            needed: [true, true],
-        };
-        let report = captured.copy_focus_refresh(&memory, ctx, &mut tiny, None);
+        let captured = Fixture::captured();
+        let ctx = captured.focus_copy_context(BASE, 0x1_0000, [true; 2]);
+        let report = copy_focus_refresh(&memory, ctx, &mut FocusJob::new(), None);
         assert!(!report.raw_ok);
-        // The typed path still reads the same fixture cleanly.
-        let needed = [true; TABLE_COUNT];
-        let mut typed = Fixture::captured();
-        typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
-        assert_eq!(typed.focus.outcome, Outcome::Rows { len: 2 });
-        assert_eq!(typed.completed.outcome, Outcome::Rows { len: 3 });
+        assert_eq!(memory.reads.get(), 0);
+        let mut empty = FocusJob::default();
+        let report = copy_focus_refresh(
+            &memory,
+            FocusCopyContext {
+                needed: [false; 2],
+                ..ctx
+            },
+            &mut empty,
+            None,
+        );
+        assert!(!report.raw_ok);
+        assert_eq!(memory.reads.get(), 0);
+    }
+
+    #[test]
+    fn focus_native_faults_are_terminal_and_decode_cannot_retry_sources() {
+        use focus_test_kit::{BASE, Fixture};
+        let fixture = Fixture::world();
+        for (fault, unavailable) in [
+            (0x1_0000 + engine::cgame_state::COUNTRIES, [true, true]),
+            (0x1_6000, [true, true]),
+            (0x1_6000 + cnational_focus_progress::PROGRESS, [true, false]),
+            (0x1_8800, [false, true]),
+            (0x1_8a00, [false, true]),
+        ] {
+            let memory = FocusReads {
+                memory: fixture.memory(),
+                reads: Default::default(),
+                fault: Some(fault),
+                failed: Default::default(),
+            };
+            let mut captured = Fixture::captured();
+            let (report, first) = Fixture::copy_first(&mut captured, &memory, None);
+            assert!(report.raw_ok);
+            assert_eq!(memory.failed.get(), 1);
+            let reads = memory.reads.get();
+            captured.focus_raw_mode = true;
+            captured.decode_focus_payload(BASE, &first, &mut [0; 2]);
+            assert_eq!(memory.reads.get(), reads);
+            assert!(!captured.focus_raw_mode);
+            for (slot, outcome) in [captured.focus.outcome, captured.completed.outcome]
+                .into_iter()
+                .enumerate()
+            {
+                assert_eq!(
+                    matches!(outcome, Outcome::Unavailable { .. }),
+                    unavailable[slot]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn focus_independent_comparison_grants_and_retirement_keep_truncation() {
+        use focus_test_kit::{BASE, Fixture};
+        let fixture = Fixture::world();
+        for rows in [[0, 0], [1, 1], [2, 2], [2, 3]] {
+            let mut caps = Capacities::default();
+            caps.rows[..2].copy_from_slice(&rows);
+            caps.focus_text = 128;
+            let mut captured = Captured::with_capacities(&caps, &[0; TABLE_COUNT]);
+            let mut second = FocusJob::new();
+            let (report, first) =
+                Fixture::copy_first(&mut captured, &fixture.memory(), Some(&mut second));
+            assert_eq!(report.mismatches, [0; 2]);
+            assert_eq!(report.matched, [rows[0] >= 2, rows[1] >= 3]);
+            captured.decode_focus_payload(BASE, &first, &mut [0; 2]);
+            assert_eq!(captured.focus.mismatches, 0);
+            assert_eq!(captured.completed.mismatches, 0);
+            assert_eq!(captured.focus.outcome, first.outcome(0));
+            assert_eq!(captured.completed.outcome, first.outcome(1));
+        }
+        for retired in 0..2 {
+            let mut captured = Fixture::captured();
+            let needed = [retired != 0, retired != 1];
+            if retired == 0 {
+                captured.focus.second.clear();
+            } else {
+                captured.completed.second.clear();
+            }
+            let ctx = captured.focus_copy_context(BASE, 0x1_0000, needed);
+            let report = copy_focus_refresh(
+                &fixture.memory(),
+                ctx,
+                &mut FocusJob::new(),
+                Some(&mut FocusJob::new()),
+            );
+            assert!(report.raw_ok);
+            assert_eq!(report.mismatches, [0; 2]);
+            assert_eq!(report.matched, needed);
+        }
+        for bytes in [0, 20, 88] {
+            let caps = Capacities { focus_text: bytes, ..Capacities::default() };
+            let mut captured = Captured::with_capacities(&caps, &[0; TABLE_COUNT]);
+            let (report, first) =
+                Fixture::copy_first(&mut captured, &fixture.memory(), Some(&mut FocusJob::new()));
+            assert!(report.raw_ok);
+            assert_eq!(report.mismatches, [0; 2]);
+            assert_eq!(
+                report.matched,
+                [0, 1].map(|slot| { matches!(first.outcome(slot), Outcome::Rows { .. }) })
+            );
+        }
+        let captured = Fixture::captured();
+        let ctx = captured.focus_copy_context(BASE, 0x1_0000, [true; 2]);
+        for slot in 0..2 {
+            let mut unequal = ctx;
+            unequal.second_rows[slot] = 0;
+            let report = copy_focus_refresh(
+                &fixture.memory(),
+                unequal,
+                &mut FocusJob::new(),
+                Some(&mut FocusJob::new()),
+            );
+            assert!(report.raw_ok);
+            assert_eq!(report.mismatches[slot], 1);
+            assert!(!report.matched[slot]);
+            assert_eq!(report.mismatches[1 - slot], 0);
+            assert!(report.matched[1 - slot]);
+        }
+        let report = copy_focus_refresh(
+            &fixture.memory(),
+            FocusCopyContext {
+                second_bytes: 0,
+                ..ctx
+            },
+            &mut FocusJob::new(),
+            Some(&mut FocusJob::new()),
+        );
+        assert!(report.raw_ok);
+        assert_eq!(report.mismatches, [1; 2]);
+        assert_eq!(report.matched, [false; 2]);
+    }
+
+    #[test]
+    fn focus_install_checks_original_grants_and_keeps_unaffected_table() {
+        use focus_test_kit::{BASE, Fixture};
+        let fixture = Fixture::world();
+        for changed in 0..3 {
+            let mut captured = Fixture::captured();
+            let (_, first) = Fixture::copy_first(&mut captured, &fixture.memory(), None);
+            match changed {
+                0 => {
+                    captured.focus.rows.pop();
+                }
+                1 => {
+                    captured.completed.rows.pop();
+                }
+                _ => {
+                    captured.focus_text.first.pop();
+                }
+            }
+            captured.decode_focus_payload(BASE, &first, &mut [0; 2]);
+            assert_eq!(
+                matches!(captured.focus.outcome, Outcome::Unavailable { .. }),
+                changed != 1
+            );
+            assert_eq!(
+                matches!(captured.completed.outcome, Outcome::Unavailable { .. }),
+                changed != 0
+            );
+        }
     }
 
     #[test]

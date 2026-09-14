@@ -6,7 +6,10 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
-use engine::{Memory, carmy, cequipment_variant_pool::DivisionSource, walk::Outcome};
+use engine::{
+    Memory, carmy, cequipment_variant_pool::DivisionSource, corders_group_member::MembershipCache,
+    walk::Outcome,
+};
 use replay::{
     frame::TableView,
     rows::{DivisionMovementRow, DivisionStatusRow, TableId, tables},
@@ -37,6 +40,8 @@ pub struct Captured {
     movement: CaptureRows<carmy::MovementRow>,
     status: CaptureRows<carmy::StatusRow>,
     paths: Arena<u32>,
+    movement_inputs: carmy::MovementInputs,
+    membership: MembershipCache,
 }
 impl Captured {
     pub fn with_capacities(c: &Capacities, successful: &[u16]) -> Self {
@@ -45,6 +50,10 @@ impl Captured {
             movement: CaptureRows::new(c.movement, successful[0]),
             status: CaptureRows::new(c.status, successful[1]),
             paths: Arena::new(c.paths, successful[0]),
+            movement_inputs: carmy::MovementInputs::new(16 * 1024),
+            // A bounded optimization, never a new recording limit. Larger or
+            // colliding order sets use the existing direct predicate.
+            membership: MembershipCache::new(512, 512),
         }
     }
     pub fn reset(&mut self) {
@@ -56,6 +65,8 @@ impl Captured {
         self.movement.allocated_bytes()
             + self.status.allocated_bytes()
             + self.paths.allocated_bytes()
+            + self.movement_inputs.allocated_bytes()
+            + self.membership.allocated_bytes()
     }
     pub fn grow(&mut self, c: &mut Capacities, successful: &[u16]) {
         assert_eq!(successful.len(), N);
@@ -87,7 +98,7 @@ impl Captured {
         let first = &sources.first[..first_outcome.len()];
         let second = &sources.second[..second_outcome.len()];
         let start = qpc();
-        let a = carmy::walk_movement(
+        let a = carmy::walk_movement_with_inputs(
             memory,
             base,
             state,
@@ -95,6 +106,7 @@ impl Captured {
             first_outcome,
             &mut self.movement.rows,
             &mut self.paths.first,
+            &mut self.movement_inputs,
         );
         self.movement.outcome = a.outcome;
         self.paths.len = a.paths_len;
@@ -102,7 +114,7 @@ impl Captured {
         let mut pass = [false; N];
         if needed[0] {
             self.movement.checked = true;
-            let b = carmy::walk_movement(
+            let b = carmy::walk_movement_with_inputs(
                 memory,
                 base,
                 state,
@@ -110,6 +122,7 @@ impl Captured {
                 second_outcome,
                 &mut self.movement.second,
                 &mut self.paths.second,
+                &mut self.movement_inputs,
             );
             let rows = self.movement.compare(b.outcome);
             let paths = self.paths.compare(b.paths_len, b.required_paths);
@@ -118,23 +131,25 @@ impl Captured {
         }
         let movement_ticks = qpc().saturating_sub(start).max(0) as u64;
         let start = qpc();
-        self.status.outcome = carmy::walk_status(
+        self.status.outcome = carmy::walk_status_with_membership(
             memory,
             base,
             state,
             first,
             first_outcome,
             &mut self.status.rows,
+            &mut self.membership,
         );
         if needed[1] {
             self.status.checked = true;
-            let b = carmy::walk_status(
+            let b = carmy::walk_status_with_membership(
                 memory,
                 base,
                 state,
                 second,
                 second_outcome,
                 &mut self.status.second,
+                &mut self.membership,
             );
             pass[1] = self.status.compare(b);
         }

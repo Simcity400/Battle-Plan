@@ -1635,66 +1635,95 @@ fn copy_deployment_object(
     }
 }
 
+/// Acquire owned raw buffers and report per-table checks without borrowing the frame.
+pub(crate) fn copy_production_rest_refresh(
+    memory: &impl Memory,
+    ctx: ProductionRestCopyContext,
+    first: &mut ProductionRestJob,
+    mut second: Option<&mut ProductionRestJob>,
+) -> ProductionRestCopyReport {
+    let started = qpc();
+    first.clear();
+    first.game_state = ctx.game_state;
+    copy_production_rest_pass(memory, ctx.base, ctx.game_state, first);
+    let mut ticks = [0u64; 8];
+    ticks[0] = elapsed(started);
+    let mut matched = [true; 8];
+    if let Some(second_job) = second.as_deref_mut() {
+        let second_started = qpc();
+        second_job.clear();
+        second_job.game_state = ctx.game_state;
+        copy_production_rest_pass(memory, ctx.base, ctx.game_state, second_job);
+        ticks[0] += elapsed(second_started);
+        // Per-table partitions: shared roots gate their dependents,
+        // private spans only their own table.
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+        for (slot, matched) in matched.iter_mut().enumerate() {
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+        }
+    }
+    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    ProductionRestCopyReport {
+        raw_ok,
+        matched,
+        copy_ticks: ticks,
+        raw_bytes: first.log.raw_bytes,
+    }
+}
+
 impl Captured {
-    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
-    /// `second` while any rest table still needs double-read checks, compares
-    /// the raw logs, and records copy-only costs plus the existing
-    /// checked/mismatches bookkeeping. Returns whether the payload is
-    /// complete (`raw_ok`); on staging overflow the caller falls back to the
-    /// typed walk and enqueues nothing.
-    pub(crate) fn copy_production_rest_refresh(
+    /// Install one completed raw-copy report without changing rows or outcomes.
+    pub(crate) fn apply_production_rest_report(
         &mut self,
-        memory: &impl Memory,
-        ctx: ProductionRestCopyContext,
-        first: &mut ProductionRestJob,
-        mut second: Option<&mut ProductionRestJob>,
-    ) -> ProductionRestCopyReport {
-        let started = qpc();
-        first.clear();
-        first.game_state = ctx.game_state;
-        copy_production_rest_pass(memory, ctx.base, ctx.game_state, first);
-        let mut ticks = [0u64; 8];
-        ticks[0] = elapsed(started);
-        let mut matched = [true; 8];
-        if let Some(second_job) = second.as_deref_mut() {
-            let second_started = qpc();
-            second_job.clear();
-            second_job.game_state = ctx.game_state;
-            copy_production_rest_pass(memory, ctx.base, ctx.game_state, second_job);
-            ticks[0] += elapsed(second_started);
-            // Per-table partitions: shared roots gate their dependents,
-            // private spans only their own table.
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-            }
-        }
-        // Conservative checked bookkeeping mirroring the typed paths: shared
-        // name/handle arenas block every member table on change.
-        self.lines.checked = ctx.needed[0];
-        self.lines.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        self.stockpiles.checked = ctx.needed[1];
-        self.stockpiles.mismatches = usize::from(ctx.needed[1] && !matched[1]);
-        self.licenses.checked = ctx.needed[2];
-        self.licenses.mismatches = usize::from(ctx.needed[2] && !matched[2]);
-        self.conveyors.checked = ctx.needed[3];
-        self.conveyors.mismatches = usize::from(ctx.needed[3] && !matched[3]);
-        self.deployment_lines.checked = ctx.needed[4];
-        self.deployment_lines.mismatches = usize::from(ctx.needed[4] && !matched[4]);
-        self.deployment_manpower.checked = ctx.needed[5];
-        self.deployment_manpower.mismatches = usize::from(ctx.needed[5] && !matched[5]);
-        self.deployment_equipment.checked = ctx.needed[6];
-        self.deployment_equipment.mismatches = usize::from(ctx.needed[6] && !matched[6]);
-        self.license_records.checked = ctx.needed[7];
-        self.license_records.mismatches = usize::from(ctx.needed[7] && !matched[7]);
-        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
-        ProductionRestCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
-        }
+        needed: [bool; 8],
+        report: &ProductionRestCopyReport,
+    ) {
+        self.lines.checked = needed[0];
+        self.lines.mismatches = usize::from(needed[0] && !report.matched[0]);
+        self.stockpiles.checked = needed[1];
+        self.stockpiles.mismatches = usize::from(needed[1] && !report.matched[1]);
+        self.licenses.checked = needed[2];
+        self.licenses.mismatches = usize::from(needed[2] && !report.matched[2]);
+        self.conveyors.checked = needed[3];
+        self.conveyors.mismatches = usize::from(needed[3] && !report.matched[3]);
+        self.deployment_lines.checked = needed[4];
+        self.deployment_lines.mismatches = usize::from(needed[4] && !report.matched[4]);
+        self.deployment_manpower.checked = needed[5];
+        self.deployment_manpower.mismatches = usize::from(needed[5] && !report.matched[5]);
+        self.deployment_equipment.checked = needed[6];
+        self.deployment_equipment.mismatches = usize::from(needed[6] && !report.matched[6]);
+        self.license_records.checked = needed[7];
+        self.license_records.mismatches = usize::from(needed[7] && !report.matched[7]);
+    }
+
+    /// Finish an accepted acquisition failure without retrying live memory.
+    pub(crate) fn fail_production_rest_capture(&mut self, needed: [bool; 8], reason: &'static str) {
+        self.lines.outcome = Outcome::Unavailable { reason };
+        self.lines.checked = needed[0];
+        self.lines.mismatches = usize::from(needed[0]);
+        self.stockpiles.outcome = Outcome::Unavailable { reason };
+        self.stockpiles.checked = needed[1];
+        self.stockpiles.mismatches = usize::from(needed[1]);
+        self.licenses.outcome = Outcome::Unavailable { reason };
+        self.licenses.checked = needed[2];
+        self.licenses.mismatches = usize::from(needed[2]);
+        self.conveyors.outcome = Outcome::Unavailable { reason };
+        self.conveyors.checked = needed[3];
+        self.conveyors.mismatches = usize::from(needed[3]);
+        self.deployment_lines.outcome = Outcome::Unavailable { reason };
+        self.deployment_lines.checked = needed[4];
+        self.deployment_lines.mismatches = usize::from(needed[4]);
+        self.deployment_manpower.outcome = Outcome::Unavailable { reason };
+        self.deployment_manpower.checked = needed[5];
+        self.deployment_manpower.mismatches = usize::from(needed[5]);
+        self.deployment_equipment.outcome = Outcome::Unavailable { reason };
+        self.deployment_equipment.checked = needed[6];
+        self.deployment_equipment.mismatches = usize::from(needed[6]);
+        self.license_records.outcome = Outcome::Unavailable { reason };
+        self.license_records.checked = needed[7];
+        self.license_records.mismatches = usize::from(needed[7]);
+        self.rest_raw_mode = false;
     }
 }
 
@@ -2776,8 +2805,13 @@ pub(crate) mod production_rest_test_kit {
         };
         let mut first = ProductionRestJob::new();
         let mut second = ProductionRestJob::new();
-        let report =
-            captured.copy_production_rest_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = crate::extended::production::copy_production_rest_refresh(
+            memory,
+            ctx,
+            &mut first,
+            Some(&mut second),
+        );
+        captured.apply_production_rest_report(ctx.needed, &report);
         assert!(report.raw_ok);
         captured.rest_raw_mode = report.raw_ok;
         // Typed walks skip while staged; the worker fills the buffers.
@@ -2863,6 +2897,205 @@ pub(crate) mod production_rest_test_kit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_rest_copy_report_bookkeeping_and_terminal_failure_are_table_local() {
+        let mut captured =
+            Captured::with_capacities(&production_rest_test_kit::capacities(), &[0; N]);
+        captured.rest_raw_mode = true;
+        captured.lines.outcome = Outcome::Rows { len: 1 };
+        captured.lines.mismatches = 9;
+        captured.stockpiles.outcome = Outcome::Rows { len: 1 };
+        captured.stockpiles.mismatches = 9;
+        captured.licenses.outcome = Outcome::Rows { len: 1 };
+        captured.licenses.mismatches = 9;
+        captured.conveyors.outcome = Outcome::Rows { len: 1 };
+        captured.conveyors.mismatches = 9;
+        captured.deployment_lines.outcome = Outcome::Rows { len: 1 };
+        captured.deployment_lines.mismatches = 9;
+        captured.deployment_manpower.outcome = Outcome::Rows { len: 1 };
+        captured.deployment_manpower.mismatches = 9;
+        captured.deployment_equipment.outcome = Outcome::Rows { len: 1 };
+        captured.deployment_equipment.mismatches = 9;
+        captured.license_records.outcome = Outcome::Rows { len: 1 };
+        captured.license_records.mismatches = 9;
+        captured.division_equipment.outcome = Outcome::Rows { len: 1 };
+        captured.division_equipment.checked = true;
+        captured.division_equipment.mismatches = 7;
+        let needed = std::array::from_fn(|index| index % 2 == 0);
+        let report = ProductionRestCopyReport {
+            raw_ok: false,
+            matched: std::array::from_fn(|index| index % 3 != 0),
+            copy_ticks: std::array::from_fn(|index| index as u64 + 17),
+            raw_bytes: std::array::from_fn(|index| index as u64 + 41),
+        };
+        captured.apply_production_rest_report(needed, &report);
+        let states = [
+            (
+                captured.lines.checked,
+                captured.lines.mismatches,
+                captured.lines.outcome,
+            ),
+            (
+                captured.stockpiles.checked,
+                captured.stockpiles.mismatches,
+                captured.stockpiles.outcome,
+            ),
+            (
+                captured.licenses.checked,
+                captured.licenses.mismatches,
+                captured.licenses.outcome,
+            ),
+            (
+                captured.conveyors.checked,
+                captured.conveyors.mismatches,
+                captured.conveyors.outcome,
+            ),
+            (
+                captured.deployment_lines.checked,
+                captured.deployment_lines.mismatches,
+                captured.deployment_lines.outcome,
+            ),
+            (
+                captured.deployment_manpower.checked,
+                captured.deployment_manpower.mismatches,
+                captured.deployment_manpower.outcome,
+            ),
+            (
+                captured.deployment_equipment.checked,
+                captured.deployment_equipment.mismatches,
+                captured.deployment_equipment.outcome,
+            ),
+            (
+                captured.license_records.checked,
+                captured.license_records.mismatches,
+                captured.license_records.outcome,
+            ),
+        ];
+        for (index, (checked, mismatches, outcome)) in states.into_iter().enumerate() {
+            assert_eq!(checked, needed[index]);
+            assert_eq!(
+                mismatches,
+                usize::from(needed[index] && !report.matched[index])
+            );
+            assert_eq!(outcome, Outcome::Rows { len: 1 });
+        }
+        assert!(captured.rest_raw_mode);
+        // A later successful report replaces stale mismatch bookkeeping.
+        captured.apply_production_rest_report(
+            [true; 8],
+            &ProductionRestCopyReport {
+                raw_ok: true,
+                matched: [true; 8],
+                ..report
+            },
+        );
+        let states = [
+            (
+                captured.lines.checked,
+                captured.lines.mismatches,
+                captured.lines.outcome,
+            ),
+            (
+                captured.stockpiles.checked,
+                captured.stockpiles.mismatches,
+                captured.stockpiles.outcome,
+            ),
+            (
+                captured.licenses.checked,
+                captured.licenses.mismatches,
+                captured.licenses.outcome,
+            ),
+            (
+                captured.conveyors.checked,
+                captured.conveyors.mismatches,
+                captured.conveyors.outcome,
+            ),
+            (
+                captured.deployment_lines.checked,
+                captured.deployment_lines.mismatches,
+                captured.deployment_lines.outcome,
+            ),
+            (
+                captured.deployment_manpower.checked,
+                captured.deployment_manpower.mismatches,
+                captured.deployment_manpower.outcome,
+            ),
+            (
+                captured.deployment_equipment.checked,
+                captured.deployment_equipment.mismatches,
+                captured.deployment_equipment.outcome,
+            ),
+            (
+                captured.license_records.checked,
+                captured.license_records.mismatches,
+                captured.license_records.outcome,
+            ),
+        ];
+        assert!(
+            states
+                .into_iter()
+                .all(|(checked, mismatches, outcome)| checked
+                    && mismatches == 0
+                    && outcome == Outcome::Rows { len: 1 })
+        );
+        let reason = "accepted acquisition worker stopped";
+        captured.fail_production_rest_capture(needed, reason);
+        let states = [
+            (
+                captured.lines.checked,
+                captured.lines.mismatches,
+                captured.lines.outcome,
+            ),
+            (
+                captured.stockpiles.checked,
+                captured.stockpiles.mismatches,
+                captured.stockpiles.outcome,
+            ),
+            (
+                captured.licenses.checked,
+                captured.licenses.mismatches,
+                captured.licenses.outcome,
+            ),
+            (
+                captured.conveyors.checked,
+                captured.conveyors.mismatches,
+                captured.conveyors.outcome,
+            ),
+            (
+                captured.deployment_lines.checked,
+                captured.deployment_lines.mismatches,
+                captured.deployment_lines.outcome,
+            ),
+            (
+                captured.deployment_manpower.checked,
+                captured.deployment_manpower.mismatches,
+                captured.deployment_manpower.outcome,
+            ),
+            (
+                captured.deployment_equipment.checked,
+                captured.deployment_equipment.mismatches,
+                captured.deployment_equipment.outcome,
+            ),
+            (
+                captured.license_records.checked,
+                captured.license_records.mismatches,
+                captured.license_records.outcome,
+            ),
+        ];
+        for (index, (checked, mismatches, outcome)) in states.into_iter().enumerate() {
+            assert_eq!(checked, needed[index]);
+            assert_eq!(mismatches, usize::from(needed[index]));
+            assert_eq!(outcome, Outcome::Unavailable { reason });
+        }
+        assert!(!captured.rest_raw_mode);
+        assert_eq!(
+            captured.division_equipment.outcome,
+            Outcome::Rows { len: 1 }
+        );
+        assert!(captured.division_equipment.checked);
+        assert_eq!(captured.division_equipment.mismatches, 7);
+    }
 
     #[test]
     fn production_rest_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
@@ -3945,8 +4178,13 @@ mod tests {
             };
             let mut first = ProductionRestJob::new();
             let mut second = ProductionRestJob::new();
-            let report =
-                captured.copy_production_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
+            let report = crate::extended::production::copy_production_rest_refresh(
+                &memory,
+                ctx,
+                &mut first,
+                Some(&mut second),
+            );
+            captured.apply_production_rest_report(ctx.needed, &report);
             assert!(report.raw_ok, "rows={rows:?}");
             assert_eq!(report.matched, [true; 8], "rows={rows:?}");
             captured.rest_raw_mode = true;
@@ -3990,8 +4228,13 @@ mod tests {
             };
             let mut first = ProductionRestJob::new();
             let mut second = ProductionRestJob::new();
-            let report =
-                captured.copy_production_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
+            let report = crate::extended::production::copy_production_rest_refresh(
+                &memory,
+                ctx,
+                &mut first,
+                Some(&mut second),
+            );
+            captured.apply_production_rest_report(ctx.needed, &report);
             assert!(report.raw_ok);
             captured.rest_raw_mode = true;
             let divisions = Sources {
@@ -4026,8 +4269,13 @@ mod tests {
         };
         let mut first = ProductionRestJob::new();
         let mut second = ProductionRestJob::new();
-        let report =
-            captured.copy_production_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = crate::extended::production::copy_production_rest_refresh(
+            &memory,
+            ctx,
+            &mut first,
+            Some(&mut second),
+        );
+        captured.apply_production_rest_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 8]);
         // A torn conveyor amount between the passes changes the log.
@@ -4049,9 +4297,18 @@ mod tests {
             needed: [false; 8],
         };
         let mut c2 = Captured::with_capacities(&capacities, &[0; N]);
-        let r1 = c2.copy_production_rest_refresh(&memory, ctx_none, &mut after, None);
+        let r1 = crate::extended::production::copy_production_rest_refresh(
+            &memory, ctx_none, &mut after, None,
+        );
+        c2.apply_production_rest_report(ctx_none.needed, &r1);
         assert!(r1.raw_ok);
-        let r2 = c2.copy_production_rest_refresh(&torn_memory, ctx_none, &mut after_torn, None);
+        let r2 = crate::extended::production::copy_production_rest_refresh(
+            &torn_memory,
+            ctx_none,
+            &mut after_torn,
+            None,
+        );
+        c2.apply_production_rest_report(ctx_none.needed, &r2);
         assert!(r2.raw_ok);
         assert!(!after.log.logs_equal(&after_torn.log));
     }
@@ -4077,7 +4334,10 @@ mod tests {
             census: Vec::new(),
             capacity_charge: crate::raw_memory::Charge::default(),
         };
-        let report = captured.copy_production_rest_refresh(&memory, ctx, &mut tiny, None);
+        let report = crate::extended::production::copy_production_rest_refresh(
+            &memory, ctx, &mut tiny, None,
+        );
+        captured.apply_production_rest_report(ctx.needed, &report);
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());

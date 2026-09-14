@@ -62,6 +62,9 @@ pub struct Cache {
     // A negative filter only: passing still requires the exact entry lookup.
     // It is rebuilt from successfully inserted keys during each preparation.
     filter: [u64; FILTER_WORDS],
+    // Cheap rejection before the mixed hash. Collisions only cause extra exact
+    // lookups; this bitmap never supplies bytes or authenticates a country.
+    front_filter: [u64; FILTER_WORDS],
     lengths: u64,
     len: usize,
     observed_reads: usize,
@@ -86,6 +89,7 @@ impl Cache {
         Self {
             entries: vec![Entry::EMPTY; cells].into_boxed_slice(),
             filter: [0; FILTER_WORDS],
+            front_filter: [0; FILTER_WORDS],
             lengths: 0,
             len: 0,
             observed_reads: 0,
@@ -105,6 +109,7 @@ impl Cache {
     pub fn allocated_bytes(&self) -> usize {
         std::mem::size_of_val(self.entries.as_ref())
             + std::mem::size_of_val(&self.filter)
+            + std::mem::size_of_val(&self.front_filter)
             + std::mem::size_of_val(&self.lengths)
             + std::mem::size_of_val(self.roster.as_ref())
             + std::mem::size_of_val(&self.roster)
@@ -125,6 +130,7 @@ impl Cache {
     ) -> CountryMemory<'a, M> {
         self.entries.fill(Entry::EMPTY);
         self.filter.fill(0);
+        self.front_filter.fill(0);
         self.lengths = 0;
         self.len = 0;
         self.observed_reads = 0;
@@ -198,6 +204,15 @@ impl Cache {
         )
     }
 
+    #[inline]
+    fn front_filter_bit(address: usize, len: usize) -> (usize, u64) {
+        // No multiplication or division on the frequent non-country miss.
+        // Fold alignment bits as well as higher address bits; distribution
+        // affects performance only. Insertion and lookup use the same key.
+        Self::filter_bit(address ^ (address >> 3) ^ (address >> 17) ^ (len << 9))
+    }
+
+    #[inline(always)]
     fn find(&self, address: usize, len: usize) -> Option<&Entry> {
         if self.status != SeedStatus::Ready
             || len == 0
@@ -207,8 +222,19 @@ impl Cache {
         {
             return None;
         }
-        // Reuse the existing mixed hash for both structures. Unseeded keys
-        // usually avoid the larger Entry array without computing another hash.
+        let (word, bit) = Self::front_filter_bit(address, len);
+        if self.front_filter[word] & bit == 0 {
+            return None;
+        }
+        self.find_possible(address, len)
+    }
+
+    // Keep the exact probe loop out of every monomorphized scalar reader,
+    // while allowing non-country reads to reject without a cross-crate call.
+    #[inline(never)]
+    fn find_possible(&self, address: usize, len: usize) -> Option<&Entry> {
+        // Possible front-filter hits retain the original mixed-hash filter
+        // and full exact address/length comparison, including probe bounds.
         let hash = Self::hash(address, len);
         let (word, bit) = Self::filter_bit(hash);
         if self.filter[word] & bit == 0 {
@@ -253,6 +279,8 @@ impl Cache {
                     entry.bytes[..bytes.len()].copy_from_slice(bytes);
                     let (word, bit) = Self::filter_bit(hash);
                     self.filter[word] |= bit;
+                    let (word, bit) = Self::front_filter_bit(address, bytes.len());
+                    self.front_filter[word] |= bit;
                     self.lengths |= 1_u64 << bytes.len();
                     self.len += 1;
                     return;
@@ -461,6 +489,117 @@ mod tests {
     use super::*;
     use crate::{cgame_state, read, walk::Outcome};
 
+    #[test]
+    fn front_filter_keeps_every_inserted_length_and_address_class() {
+        let mut cache = Cache::with_capacity(4096);
+        cache.status = SeedStatus::Ready;
+        let bytes = std::array::from_fn::<_, MAX_BYTES, _>(|i| i as u8);
+        for address in [
+            1,
+            7,
+            8,
+            31,
+            4095,
+            4096,
+            0x1234_5678,
+            0x0000_7fff_ffff_fff0,
+            0xffff_8000_0000_0001,
+            usize::MAX - MAX_BYTES,
+        ] {
+            for len in 1..=MAX_BYTES {
+                cache.observe(address, &bytes[..len]);
+                assert_eq!(cache.status, SeedStatus::Ready);
+                let (word, bit) = Cache::front_filter_bit(address, len);
+                assert_ne!(cache.front_filter[word] & bit, 0);
+                let entry = cache.find(address, len).expect("inserted key rejected");
+                assert_eq!(entry.address, address);
+                assert_eq!(entry.len, len);
+                assert_eq!(&entry.bytes[..len], &bytes[..len]);
+            }
+        }
+        for entry in cache.entries.iter().filter(|entry| entry.len != 0) {
+            assert!(cache.find(entry.address, entry.len).is_some());
+        }
+        assert!(cache.find(1, 0).is_none());
+        assert!(cache.find(1, MAX_BYTES + 1).is_none());
+    }
+
+    #[test]
+    fn front_filter_collision_never_serves_wrong_bytes_or_masks_source_failure() {
+        let source = Synthetic::countries();
+        let mut cache = Cache::with_capacity(64);
+        cache.status = SeedStatus::Ready;
+        let bytes = (ccountry::VTABLE_RVA as u64).to_le_bytes();
+        cache.observe(0x2000, &bytes);
+        let key = Cache::front_filter_bit(0x2000, 8);
+        let collision = (1..=FILTER_BITS * 8)
+            .find(|&address| address != 0x2000 && Cache::front_filter_bit(address, 8) == key)
+            .expect("finite bitmap permits collisions");
+        assert!(cache.find(collision, 8).is_none());
+        source.fault.set(Some(collision));
+        let memory = CountryMemory {
+            source: &source,
+            cache: &cache,
+        };
+        let mut output = [0; 8];
+        assert!(!memory.copy(collision, &mut output));
+        assert_eq!(source.observations.borrow().last(), Some(&(collision, 8)));
+        assert_eq!(memory.verify(), Ok(Verification::Matched { entries: 1 }));
+
+        let mut changed = bytes;
+        changed[0] ^= 1;
+        cache.observe(0x2000, &changed);
+        assert!(matches!(cache.status, SeedStatus::Unavailable { .. }));
+        assert!(cache.find(0x2000, 8).is_none());
+    }
+
+    #[test]
+    fn front_filter_rebuilds_only_successful_seed_keys_and_has_fixed_accounting() {
+        let source = Synthetic::countries();
+        let mut cache = Cache::with_capacity(64);
+        let allocated = cache.allocated_bytes();
+        assert_eq!(std::mem::size_of_val(&cache.front_filter), 2048);
+        let expected_allocated = std::mem::size_of_val(cache.entries.as_ref())
+            + std::mem::size_of_val(&cache.filter)
+            + std::mem::size_of_val(&cache.front_filter)
+            + std::mem::size_of_val(&cache.lengths)
+            + std::mem::size_of_val(cache.roster.as_ref())
+            + std::mem::size_of_val(&cache.roster)
+            + std::mem::size_of_val(&cache.roster_len)
+            + std::mem::size_of_val(&cache.roster_base)
+            + std::mem::size_of_val(&cache.roster_game_state);
+        assert_eq!(allocated, expected_allocated);
+        for _ in 0..2 {
+            let memory = cache.prepare(&source, 0, 0x1000);
+            assert_eq!(memory.seed_status(), SeedStatus::Ready);
+            assert!(memory.verify().is_ok());
+            let mut expected = [0; FILTER_WORDS];
+            for entry in cache.entries.iter().filter(|entry| entry.len != 0) {
+                let (word, bit) = Cache::front_filter_bit(entry.address, entry.len);
+                expected[word] |= bit;
+                assert!(cache.find(entry.address, entry.len).is_some());
+            }
+            assert_eq!(cache.front_filter, expected);
+            assert!(expected.iter().any(|&word| word != 0));
+            assert_eq!(cache.allocated_bytes(), allocated);
+        }
+        source.fault.set(Some(0x1000 + cgame_state::COUNTRIES));
+        let memory = cache.prepare(&source, 0, 0x1000);
+        assert!(matches!(
+            memory.seed_status(),
+            SeedStatus::Unavailable { .. }
+        ));
+        assert_eq!(memory.verify(), Ok(Verification::NotCached));
+        assert_eq!(cache.front_filter, [0; FILTER_WORDS]);
+        assert_eq!(cache.allocated_bytes(), allocated);
+
+        let mut disabled = Cache::with_capacity(0);
+        disabled.status = SeedStatus::Ready;
+        disabled.observe(0x2000, &[1]);
+        assert!(matches!(disabled.status, SeedStatus::Capacity { .. }));
+        assert_eq!(disabled.front_filter, [0; FILTER_WORDS]);
+    }
+
     struct Synthetic {
         bytes: RefCell<Vec<u8>>,
         fault: Cell<Option<usize>>,
@@ -635,14 +774,14 @@ mod tests {
         assert_eq!(
             cache.allocated_bytes(),
             256 * (std::mem::size_of::<Entry>() + std::mem::size_of::<Option<ccountry::Country>>())
-                + std::mem::size_of::<[u64; FILTER_WORDS]>()
+                + 2 * std::mem::size_of::<[u64; FILTER_WORDS]>()
                 + std::mem::size_of::<u64>()
                 + std::mem::size_of::<Box<[Option<ccountry::Country>]>>()
                 + 3 * std::mem::size_of::<usize>()
         );
         assert_eq!(
             Cache::with_capacity(0).allocated_bytes(),
-            std::mem::size_of::<[u64; FILTER_WORDS]>()
+            2 * std::mem::size_of::<[u64; FILTER_WORDS]>()
                 + std::mem::size_of::<u64>()
                 + std::mem::size_of::<Box<[Option<ccountry::Country>]>>()
                 + 3 * std::mem::size_of::<usize>()

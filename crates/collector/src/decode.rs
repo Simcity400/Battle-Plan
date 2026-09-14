@@ -133,8 +133,8 @@ pub const SESSION: [TableId; 3] = [
 ];
 
 /// Wing-fed air pair in calibration/report order: [equipment, cumulative].
-/// Hourly like every Tier-H table (no refresh gate). Each stages its own
-/// wing-census copies with no cross-family decoded roots.
+/// Hourly like every Tier-H table (no refresh gate). Both consume owned rows
+/// acquired by the shared map/extension/naval wing census.
 pub const AIR_WING: [TableId; 2] = [TableId::WingEquipment, TableId::WingCumulative];
 
 /// Hourly air-statistics table in calibration/report order: [statistics].
@@ -835,8 +835,8 @@ fn release_divisions_job(mut job: DivisionsJob) {
     }
 }
 
-/// Recycled hourly focus raw-payload job. Cold calls allocate; steady state
-/// reuses jobs with their capacities, so neither thread allocates per hour.
+/// Recycled hourly owned Focus rows and tokens. Pool exhaustion returns an
+/// empty refusal; allocation and growth occur only on the decode side.
 pub fn acquire_focus_job() -> FocusJob {
     if let Ok(mut pool) = FOCUS_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -846,18 +846,15 @@ pub fn acquire_focus_job() -> FocusJob {
     FocusJob::default()
 }
 
-/// Return a focus payload job to the pool after clearing it. Growth
-/// decided here runs on the calling (off-game-thread) side.
-/// Retire raw storage without clearing, growing or freeing it on the game thread.
+/// Retire Focus storage without clearing, growing or freeing it on the callback.
 pub fn recycle_focus_job(job: FocusJob) {
     defer_payload(RetiredPayload::Focus(job));
 }
 
 fn release_focus_job(mut job: FocusJob) {
-    if job.log.spans.capacity() == 0 {
+    if !job.is_provisioned() {
         return;
     }
-    crate::raw::note_growth("Focus", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
@@ -869,9 +866,8 @@ fn release_focus_job(mut job: FocusJob) {
     }
 }
 
-/// Recycled hourly wing-pack raw-payload job. Cold calls allocate; steady
-/// state reuses jobs with their capacities, so neither thread allocates
-/// per hour.
+/// Recycled hourly owned wing payload. Pool exhaustion returns an empty job;
+/// acquisition never allocates and storage is prepared off-thread.
 pub fn acquire_air_wing_job() -> AirWingJob {
     if let Ok(mut pool) = AIR_WING_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -889,13 +885,13 @@ pub fn recycle_air_wing_job(job: AirWingJob) {
 }
 
 fn release_air_wing_job(mut job: AirWingJob) {
-    if job.log.spans.capacity() == 0 {
+    if !job.has_storage() && !job.grow_for_next() {
         return;
     }
-    crate::raw::note_growth("AirWing", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
+    job.retire_witness_if_complete();
     job.clear();
     if let Ok(mut pool) = AIR_WING_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
@@ -1184,9 +1180,8 @@ fn release_air_bases_job(mut job: AirBasesJob) {
     }
 }
 
-/// Recycled hourly shared-history raw-payload job. Cold calls allocate;
-/// steady state reuses jobs with their capacities, so neither thread
-/// allocates per hour.
+/// Recycled hourly owned history/damage rows. Missing pooled storage returns
+/// an empty preflight sentinel without allocating on the game thread.
 pub fn acquire_air_history_job() -> AirHistoryJob {
     if let Ok(mut pool) = AIR_HISTORY_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -1196,26 +1191,34 @@ pub fn acquire_air_history_job() -> AirHistoryJob {
     AirHistoryJob::default()
 }
 
-/// Return a shared-history payload job to the pool after clearing it. Growth
-/// decided here runs on the calling (off-game-thread) side.
-/// Retire raw storage without clearing, growing or freeing it on the game thread.
+/// Retire owned rows/witness without clearing, growing or freeing game-side;
+/// the decode worker grows and returns this storage to its pool.
 pub fn recycle_air_history_job(job: AirHistoryJob) {
     defer_payload(RetiredPayload::AirHistory(job));
 }
 
 fn release_air_history_job(mut job: AirHistoryJob) {
-    if job.log.spans.capacity() == 0 {
+    job.publish_failure();
+    if !job.has_storage() && !job.grow_for_next() {
         return;
     }
-    crate::raw::note_growth("AirHistory", &job.log);
+    let checks_complete = job.checks_complete();
     if job.grow_for_next() {
         job.grow();
     }
+    if checks_complete {
+        job.retire_witness();
+    }
     job.clear();
-    if let Ok(mut pool) = AIR_HISTORY_JOB_POOL.lock()
-        && pool.len() < JOB_POOL_KEEP + 1
-    {
-        pool.push(job);
+    if let Ok(mut pool) = AIR_HISTORY_JOB_POOL.lock() {
+        if checks_complete {
+            for idle in pool.iter_mut() {
+                idle.retire_witness();
+            }
+        }
+        if pool.len() < JOB_POOL_KEEP + 1 {
+            pool.push(job);
+        }
     }
 }
 
@@ -4107,8 +4110,9 @@ mod tests {
         // Hourly focus worst case is 439 countries with about 3.9k completed
         // rows plus token bytes (the appendix census proves the shape).
         let focus = FocusJob::new();
-        assert!(focus.log.spans.capacity() >= 18_000);
-        assert!(focus.log.bytes.capacity() >= 1 << 20);
+        assert!(focus.capacities().0[0] >= 439);
+        assert!(focus.capacities().0[1] >= 3_900);
+        assert!(focus.capacities().1 >= 128 << 10);
         // Hourly air-statistics worst case is 330 rows (appendix census)
         // with per-history channel spans; both pools start above that so
         // steady state never overflows.
@@ -4203,10 +4207,15 @@ mod tests {
         let mut typed = focus_test_kit::Fixture::captured();
         typed.capture(&memory, focus_test_kit::BASE, 0x1_0000, &needed, 0, true);
         frame.extended.focus_pilot().focus_raw_mode = true;
-        let (report, first) =
-            focus_test_kit::Fixture::copy_first(frame.extended.focus_pilot(), &memory, None);
+        let mut comparison = FocusJob::new();
+        let (report, first) = focus_test_kit::Fixture::copy_first(
+            frame.extended.focus_pilot(),
+            &memory,
+            Some(&mut comparison),
+        );
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true, true]);
+        assert_eq!(report.mismatches, [0, 0]);
         shared.completed[index].store(0, Ordering::Relaxed);
         let job = DecodeJob {
             index,
@@ -4292,6 +4301,8 @@ mod tests {
             base: wing_test_kit::BASE,
             game_state: wing_test_kit::GAME_STATE,
             needed: [true; 2],
+            limits: [1024, 8192, 4096],
+            naval_limits: [4096; 2],
         };
         let mut first = acquire_air_wing_job();
         let report = crate::extended::air::copy_air_refresh(&memory, ctx, &mut first, None);
@@ -4487,6 +4498,7 @@ mod tests {
             game_state: naval_test_kit::GAME_STATE,
         };
         let mut first = acquire_naval_job();
+        naval_test_kit::stage_wings(&memory, &mut first);
         let report =
             crate::extended::naval_history::copy_naval_refresh(&memory, ctx, &mut first, None);
         assert!(report.raw_ok);
@@ -4561,7 +4573,7 @@ mod tests {
 
     #[test]
     fn retained_air_naval_payload_caps_fit_the_force_full_hour_live_set() {
-        // Retained raw consumers keep independent source censuses and pools.
+        // Independent fixture worlds exercise each retained consumer pool.
         use crate::extended::air::{AirWingCopyContext, wing_test_kit as air_kit};
         use crate::extended::naval_history::{NavalCopyContext, naval_test_kit as naval_kit};
         let _guard = TEST_LOCK.lock().unwrap();
@@ -4573,12 +4585,14 @@ mod tests {
             base: air_kit::BASE,
             game_state: air_kit::GAME_STATE,
             needed: [true; 2],
+            limits: [1024, 8192, 4096],
+            naval_limits: [4096; 2],
         };
         let air_report =
             crate::extended::air::copy_air_refresh(&air_memory, air_ctx, &mut air_job, None);
         assert!(
             air_report.raw_ok,
-            "wing force-full live set must fit spans/bytes"
+            "wing force-full live set must fit owned storage"
         );
         assert!(!air_job.grow_for_next());
         let naval_bytes = naval_kit::fixture();
@@ -4588,6 +4602,7 @@ mod tests {
             base: naval_kit::BASE,
             game_state: naval_kit::GAME_STATE,
         };
+        naval_kit::stage_wings(&naval_memory, &mut naval_job);
         let naval_report = crate::extended::naval_history::copy_naval_refresh(
             &naval_memory,
             naval_ctx,
@@ -4618,10 +4633,16 @@ mod tests {
         assert_eq!(snapshot.json()["focus_tables"][0], "Focus");
         // Recycled jobs keep their capacities for the next hour.
         let job = acquire_focus_job();
-        assert!(job.log.spans.capacity() >= 1 << 16);
+        assert!(job.is_provisioned());
+        assert!(job.capacities().0[0] >= 439);
+        assert!(job.capacities().0[1] >= 3_900);
+        assert!(job.capacities().1 >= 128 << 10);
         recycle_focus_job(job);
         let again = acquire_focus_job();
-        assert!(again.log.spans.capacity() >= 1 << 16);
+        assert!(again.is_provisioned());
+        assert!(again.capacities().0[0] >= 439);
+        assert!(again.capacities().0[1] >= 3_900);
+        assert!(again.capacities().1 >= 128 << 10);
         recycle_focus_job(again);
     }
 
@@ -4648,10 +4669,16 @@ mod tests {
         };
         let mut first = acquire_production_rest_job();
         let mut second = acquire_production_rest_job();
-        let report = frame
+        let report = crate::extended::production::copy_production_rest_refresh(
+            &memory,
+            ctx,
+            &mut first,
+            Some(&mut second),
+        );
+        frame
             .extended
             .production_rest_pilot()
-            .copy_production_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
+            .apply_production_rest_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 8]);
         recycle_production_rest_job(second);
@@ -4753,10 +4780,16 @@ mod tests {
         };
         let mut first = acquire_construction_rest_job();
         let mut second = acquire_construction_rest_job();
-        let report = frame
+        let report = crate::extended::construction::copy_construction_rest_refresh(
+            &memory,
+            ctx,
+            &mut first,
+            Some(&mut second),
+        );
+        frame
             .extended
             .construction_rest_pilot()
-            .copy_construction_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
+            .apply_construction_rest_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 10]);
         recycle_construction_rest_job(second);
@@ -4886,6 +4919,8 @@ mod tests {
             base: air_kit::BASE,
             game_state: air_kit::GAME_STATE,
             needed: [true; 2],
+            limits: [1024, 8192, 4096],
+            naval_limits: [4096; 2],
         };
         let mut air_job = acquire_air_wing_job();
         let air_report =
@@ -4899,6 +4934,7 @@ mod tests {
             game_state: naval_kit::GAME_STATE,
         };
         let mut naval_job = acquire_naval_job();
+        naval_kit::stage_wings(&naval_memory, &mut naval_job);
         let naval_report = crate::extended::naval_history::copy_naval_refresh(
             &naval_memory,
             naval_ctx,
@@ -5671,7 +5707,7 @@ mod tests {
         assert_eq!(json["intel_tables"][0], "UnitIntel");
         for acquire in [
             acquire_air_bases_job().log.spans.capacity() >= 1 << 17,
-            acquire_air_history_job().log.spans.capacity() >= 1 << 15,
+            acquire_air_history_job().has_storage(),
             acquire_supremacy_job().log.spans.capacity() >= 1 << 12,
             acquire_sunk_job().log.spans.capacity() >= 1 << 13,
             acquire_radar_job().log.spans.capacity() >= 1 << 12,

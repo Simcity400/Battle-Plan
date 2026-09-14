@@ -21,8 +21,9 @@ use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
 use crate::extended::{
     characters::{self, CharactersCopyContext, CharactersCopyReport, CharactersJob},
-    division_eta,
+    construction, division_eta, economy, governance,
     intel::{self, RelationsCopyContext, RelationsCopyReport, RelationsJob},
+    production,
 };
 
 pub(crate) struct CharactersRequest {
@@ -30,6 +31,44 @@ pub(crate) struct CharactersRequest {
     pub first: CharactersJob,
     pub second: Option<CharactersJob>,
 }
+
+pub(crate) struct WorldPair<J, C> {
+    pub context: C,
+    pub first: J,
+    pub second: Option<J>,
+}
+
+/// Thirty hourly tables, using only their existing owned raw-copy buffers.
+pub(crate) struct WorldRequest {
+    pub economy: WorldPair<economy::EconomyRestJob, economy::EconomyRestCopyContext>,
+    pub construction:
+        WorldPair<construction::ConstructionRestJob, construction::ConstructionRestCopyContext>,
+    pub production: WorldPair<production::ProductionRestJob, production::ProductionRestCopyContext>,
+    pub focus: WorldPair<governance::FocusJob, governance::FocusCopyContext>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct WorldReport {
+    pub economy: economy::EconomyRestCopyReport,
+    pub construction: construction::ConstructionRestCopyReport,
+    pub production: production::ProductionRestCopyReport,
+    pub focus: governance::FocusCopyReport,
+    pub error: Option<&'static str>,
+    pub ticks: u64,
+}
+
+// Exactly one field is populated. Fixed storage avoids boxing a large enum
+// in the callback; the same existing thread runs either kind of owned job.
+struct CharactersTask {
+    characters: Option<CharactersRequest>,
+    world: Option<WorldRequest>,
+}
+#[derive(Clone, Copy)]
+struct CharactersTaskReport {
+    characters: Option<CharactersCopyReport>,
+    world: Option<WorldReport>,
+}
+pub(crate) type WorldCompletion = Completion<WorldRequest, WorldReport>;
 
 pub(crate) struct RelationsRequest {
     pub context: RelationsCopyContext,
@@ -76,6 +115,7 @@ pub(crate) struct WorkerCalibration {
 pub(crate) struct Calibration {
     pub thread_ids: [u32; 3],
     pub characters: WorkerCalibration,
+    pub world: WorkerCalibration,
     pub relations: WorkerCalibration,
     pub eta: WorkerCalibration,
     pub eta_country_cache: EtaCountryCacheCalibration,
@@ -95,6 +135,42 @@ pub(crate) struct EtaCountryCacheCalibration {
     pub capacity_fallbacks: u64,
     pub unavailable_fallbacks: u64,
     pub latest: Option<EtaCountryCacheSeed>,
+    // Shares the existing ETA worker calibration lock; World leaves this empty.
+    // Published separately from country authentication to keep scopes distinct.
+    #[serde(skip)]
+    pub read_witness: EtaReadCalibration,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub(crate) struct EtaReadCalibration {
+    pub captures: u64,
+    pub hits: u64,
+    pub retained_misses: u64,
+    pub direct_reads: u64,
+    pub witness_skips: u64,
+    pub witness_fallbacks: u64,
+    pub witness_entries_peak: usize,
+    pub witness_bytes_peak: usize,
+    pub witness_entries_required: usize,
+    pub witness_bytes_required: usize,
+}
+impl EtaReadCalibration {
+    fn observe(&mut self, next: division_eta::CacheDiagnostics) {
+        self.captures = self.captures.saturating_add(1);
+        self.hits = self.hits.saturating_add(next.hits);
+        self.retained_misses = self.retained_misses.saturating_add(next.retained_misses);
+        self.direct_reads = self.direct_reads.saturating_add(next.direct_reads);
+        self.witness_skips = self.witness_skips.saturating_add(next.witness_skips);
+        self.witness_fallbacks = self
+            .witness_fallbacks
+            .saturating_add(next.witness_fallbacks);
+        self.witness_entries_peak = self.witness_entries_peak.max(next.witness_entries_peak);
+        self.witness_bytes_peak = self.witness_bytes_peak.max(next.witness_bytes_peak);
+        self.witness_entries_required = self
+            .witness_entries_required
+            .max(next.witness_entries_required);
+        self.witness_bytes_required = self.witness_bytes_required.max(next.witness_bytes_required);
+    }
 }
 impl EtaCountryCacheCalibration {
     fn observe(&mut self, seed: engine::country_memory::SeedStatus, entries: usize) {
@@ -113,6 +189,14 @@ impl EtaCountryCacheCalibration {
             }
         });
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct WorldCalibration {
+    pub country_cache: EtaCountryCacheCalibration,
+    pub acquisition_ticks: u64,
+    pub verification_failures: u64,
+    pub last_error: Option<&'static str>,
 }
 
 #[derive(Default)]
@@ -141,6 +225,28 @@ struct State<T, R> {
     completed: Option<Completion<T, R>>,
     busy: bool,
     stop: bool,
+}
+
+fn note_dispatch(counters: &Counters, accepted: bool) {
+    if accepted {
+        &counters.accepted
+    } else {
+        &counters.rejected
+    }
+    .fetch_add(1, Ordering::Relaxed);
+}
+
+fn note_completion<R>(counters: &Counters, report: &Result<R, Failure>) {
+    counters.completed.fetch_add(1, Ordering::Relaxed);
+    match report {
+        Err(Failure::Panicked) => {
+            counters.panicked.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(Failure::Stopped) => {
+            counters.stopped.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(_) => {}
+    }
 }
 
 struct Slot<T, R> {
@@ -345,6 +451,81 @@ fn run_relations(request: &mut RelationsRequest) -> RelationsCopyReport {
     )
 }
 
+/// Genuine synchronous acquisition for H0/full refresh and rejected dispatch.
+/// Extraction leaves every family's reads, fault masks and overflow unchanged.
+pub(crate) fn run_world(request: &mut WorldRequest, memory: &impl engine::Memory) -> WorldReport {
+    let started = crate::sampling::qpc();
+    let production = production::copy_production_rest_refresh(
+        memory,
+        request.production.context,
+        &mut request.production.first,
+        request.production.second.as_mut(),
+    );
+    let construction = construction::copy_construction_rest_refresh(
+        memory,
+        request.construction.context,
+        &mut request.construction.first,
+        request.construction.second.as_mut(),
+    );
+    let economy = economy::copy_economy_rest_refresh(
+        memory,
+        request.economy.context,
+        &mut request.economy.first,
+        request.economy.second.as_mut(),
+    );
+    let focus = governance::copy_focus_refresh(
+        memory,
+        request.focus.context,
+        &mut request.focus.first,
+        request.focus.second.as_mut(),
+    );
+    WorldReport {
+        economy,
+        construction,
+        production,
+        focus,
+        error: None,
+        ticks: crate::sampling::qpc().saturating_sub(started).max(0) as u64,
+    }
+}
+
+fn run_world_cached(
+    request: &mut WorldRequest,
+    memory: &impl engine::Memory,
+    country_cache: &mut engine::country_memory::Cache,
+    calibration: &Mutex<WorldCalibration>,
+) -> WorldReport {
+    let started = crate::sampling::qpc();
+    let cached = country_cache.prepare(
+        memory,
+        request.economy.context.base,
+        request.economy.context.game_state,
+    );
+    let seed = cached.seed_status();
+    let entries = cached.cached_entries();
+    let prepare_ticks = crate::sampling::qpc().saturating_sub(started).max(0) as u64;
+    let mut report = run_world(request, &cached);
+    let verify_started = crate::sampling::qpc();
+    report.error = cached.verify().err();
+    let verify_ticks = crate::sampling::qpc().saturating_sub(verify_started).max(0) as u64;
+    // Shared country authentication is charged once to the World economy
+    // anchor, not once per table. The worker total also includes this work.
+    report.economy.copy_ticks[0] = report.economy.copy_ticks[0]
+        .saturating_add(prepare_ticks)
+        .saturating_add(verify_ticks);
+    report.ticks = crate::sampling::qpc().saturating_sub(started).max(0) as u64;
+    let mut counters = calibration
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    counters.country_cache.observe(seed, entries);
+    counters.acquisition_ticks = counters.acquisition_ticks.saturating_add(report.ticks);
+    counters.verification_failures = counters
+        .verification_failures
+        .saturating_add(u64::from(report.error.is_some()));
+    counters.last_error = report.error;
+    report
+}
+
 fn run_eta_with_memory(
     request: &mut EtaRequest,
     memory: &impl engine::Memory,
@@ -365,6 +546,11 @@ fn run_eta_with_memory(
         request.sources.view(),
     );
     let mut matched = matched[0];
+    seed_calibration
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .read_witness
+        .observe(request.captured.cache_diagnostics());
     if let Err(reason) = cached.verify() {
         request.captured.fail(reason, request.checked);
         matched = false;
@@ -377,11 +563,15 @@ fn run_eta_with_memory(
 }
 
 pub(crate) struct Pool {
-    characters: Worker<CharactersRequest, CharactersCopyReport>,
+    characters: Worker<CharactersTask, CharactersTaskReport>,
+    characters_requests: Counters,
+    world_requests: Counters,
     relations: Worker<RelationsRequest, RelationsCopyReport>,
     eta: Worker<EtaRequest, division_eta::AcquisitionReport>,
     eta_country_cache_bytes: usize,
     eta_country_cache: Arc<Mutex<EtaCountryCacheCalibration>>,
+    world_country_cache_bytes: usize,
+    world_calibration: Arc<Mutex<WorldCalibration>>,
 }
 
 impl Pool {
@@ -392,8 +582,38 @@ impl Pool {
         let eta_country_cache_bytes = eta_cache.allocated_bytes();
         let eta_country_cache = Arc::new(Mutex::new(EtaCountryCacheCalibration::default()));
         let eta_worker_calibration = Arc::clone(&eta_country_cache);
+        let mut world_cache = engine::country_memory::Cache::with_capacity(8192);
+        let world_country_cache_bytes = world_cache.allocated_bytes();
+        let world_calibration = Arc::new(Mutex::new(WorldCalibration::default()));
+        let world_worker_calibration = Arc::clone(&world_calibration);
         Ok(Self {
-            characters: Worker::start("hoi4-acquire-characters", run_characters)?,
+            characters: Worker::start(
+                "hoi4-acquire-characters",
+                move |request: &mut CharactersTask| {
+                    match (&mut request.characters, &mut request.world) {
+                        (Some(characters), None) => CharactersTaskReport {
+                            characters: Some(run_characters(characters)),
+                            world: None,
+                        },
+                        (None, Some(world)) => {
+                            // SAFETY: same callback-bounded lease as the Characters job.
+                            let memory = unsafe { LiveMemory::new() };
+                            CharactersTaskReport {
+                                characters: None,
+                                world: Some(run_world_cached(
+                                    world,
+                                    &memory,
+                                    &mut world_cache,
+                                    &world_worker_calibration,
+                                )),
+                            }
+                        }
+                        _ => panic!("invalid Characters/World acquisition request"),
+                    }
+                },
+            )?,
+            characters_requests: Counters::default(),
+            world_requests: Counters::default(),
             relations: Worker::start("hoi4-acquire-relations", run_relations)?,
             eta: Worker::start("hoi4-acquire-eta", move |request| {
                 // SAFETY: dispatch retains the hourly lease until finish_eta;
@@ -403,6 +623,8 @@ impl Pool {
             })?,
             eta_country_cache_bytes,
             eta_country_cache,
+            world_country_cache_bytes,
+            world_calibration,
         })
     }
 
@@ -424,7 +646,32 @@ impl Pool {
     /// action permitting the next game tick. Do not hold a lock needed by the
     /// worker while finishing. No timeout may abandon an outstanding reader.
     pub(crate) unsafe fn begin_characters(&self, request: &mut Option<CharactersRequest>) -> bool {
-        self.characters.begin(request)
+        let mut task = request.take().map(|characters| CharactersTask {
+            characters: Some(characters),
+            world: None,
+        });
+        let accepted = self.characters.begin(&mut task);
+        if let Some(task) = task {
+            *request = task.characters;
+        }
+        note_dispatch(&self.characters_requests, accepted);
+        accepted
+    }
+
+    /// # Safety
+    /// Same callback lease as begin_characters; uses that same thread only
+    /// when no Characters refresh was scheduled for the current hour.
+    pub(crate) unsafe fn begin_world(&self, request: &mut Option<WorldRequest>) -> bool {
+        let mut task = request.take().map(|world| CharactersTask {
+            characters: None,
+            world: Some(world),
+        });
+        let accepted = self.characters.begin(&mut task);
+        if let Some(task) = task {
+            *request = task.world;
+        }
+        note_dispatch(&self.world_requests, accepted);
+        accepted
     }
 
     /// # Safety
@@ -434,7 +681,39 @@ impl Pool {
     }
 
     pub(crate) fn finish_characters(&self) -> Option<CharactersCompletion> {
-        self.characters.finish()
+        self.characters.finish().map(|completion| {
+            note_completion(&self.characters_requests, &completion.report);
+            Completion {
+                request: completion
+                    .request
+                    .characters
+                    .expect("submitted Characters request"),
+                report: completion
+                    .report
+                    .map(|report| report.characters.expect("Characters report")),
+            }
+        })
+    }
+
+    pub(crate) fn finish_world(&self) -> Option<WorldCompletion> {
+        self.characters.finish().map(|completion| {
+            note_completion(&self.world_requests, &completion.report);
+            if let Err(failure) = completion.report {
+                self.world_calibration
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .last_error = Some(match failure {
+                    Failure::Panicked => "World acquisition worker panicked",
+                    Failure::Stopped => "World acquisition worker stopped before reading",
+                });
+            }
+            Completion {
+                request: completion.request.world.expect("submitted World request"),
+                report: completion
+                    .report
+                    .map(|report| report.world.expect("World report")),
+            }
+        })
     }
 
     pub(crate) fn finish_relations(&self) -> Option<RelationsCompletion> {
@@ -450,13 +729,26 @@ impl Pool {
         self.eta.finish()
     }
     pub(crate) fn allocated_bytes(&self) -> usize {
+        self.eta_country_cache_bytes + self.world_country_cache_bytes
+    }
+    pub(crate) fn eta_country_cache_bytes(&self) -> usize {
         self.eta_country_cache_bytes
+    }
+    pub(crate) fn world_country_cache_bytes(&self) -> usize {
+        self.world_country_cache_bytes
+    }
+    pub(crate) fn world_calibration(&self) -> WorldCalibration {
+        *self
+            .world_calibration
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     pub(crate) fn calibration(&self) -> Calibration {
         Calibration {
             thread_ids: self.thread_ids(),
-            characters: self.characters.slot.counters.snapshot(),
+            characters: self.characters_requests.snapshot(),
+            world: self.world_requests.snapshot(),
             relations: self.relations.slot.counters.snapshot(),
             eta: self.eta.slot.counters.snapshot(),
             eta_country_cache: *self
@@ -526,6 +818,311 @@ mod tests {
             bytes[at + 12..at + 16].copy_from_slice(&2_u32.to_le_bytes());
         }
         bytes
+    }
+
+    fn world_request(checked: bool) -> WorldRequest {
+        let mut request = WorldRequest {
+            economy: WorldPair {
+                context: economy::EconomyRestCopyContext {
+                    base: 0,
+                    game_state: 0x1000,
+                    needed: [checked; 10],
+                    resource_rows: [0; 3],
+                    resource_second: [0; 3],
+                    resource_scratch: 0,
+                },
+                first: Default::default(),
+                second: checked.then(Default::default),
+            },
+            construction: WorldPair {
+                context: construction::ConstructionRestCopyContext {
+                    base: 0,
+                    game_state: 0x1000,
+                    needed: [checked; 10],
+                },
+                first: Default::default(),
+                second: checked.then(Default::default),
+            },
+            production: WorldPair {
+                context: production::ProductionRestCopyContext {
+                    base: 0,
+                    game_state: 0x1000,
+                    needed: [checked; 8],
+                },
+                first: Default::default(),
+                second: checked.then(Default::default),
+            },
+            focus: WorldPair {
+                context: governance::Captured::with_capacities(
+                    &Default::default(),
+                    &[0; governance::N],
+                )
+                .focus_copy_context(0, 0x1000, [checked; 2]),
+                first: Default::default(),
+                second: checked.then(Default::default),
+            },
+        };
+        macro_rules! provision {
+            ($pair:expr) => {{
+                $pair.first.log = crate::raw::RawLog::new(512, 65536);
+                if let Some(second) = &mut $pair.second {
+                    second.log = crate::raw::RawLog::new(512, 65536);
+                }
+            }};
+        }
+        provision!(request.economy);
+        provision!(request.construction);
+        provision!(request.production);
+        request.focus.first = governance::FocusJob::new();
+        request.focus.second = checked.then(governance::FocusJob::new);
+        request
+    }
+
+    #[test]
+    fn world_owned_worker_matches_direct_copy_partitions_and_returns_both_passes() {
+        for checked in [false, true] {
+            let bytes = empty_eta_memory();
+            let mut direct = world_request(checked);
+            let direct_report = run_world(
+                &mut direct,
+                &engine::memory::SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+            );
+            let mut countries = engine::country_memory::Cache::with_capacity(64);
+            let calibration = Arc::new(Mutex::new(WorldCalibration::default()));
+            let worker_calibration = Arc::clone(&calibration);
+            let worker = Worker::start("world-owned-test", move |request| {
+                run_world_cached(
+                    request,
+                    &engine::memory::SliceMemory {
+                        base: 0,
+                        bytes: &bytes,
+                    },
+                    &mut countries,
+                    &worker_calibration,
+                )
+            })
+            .unwrap();
+            let mut request = Some(world_request(checked));
+            let capacity = request.as_ref().unwrap().economy.first.log.spans.capacity();
+            assert!(worker.begin(&mut request));
+            assert!(request.is_none());
+            let completed = worker.finish().unwrap();
+            let report = completed.report.unwrap();
+            assert!(report.error.is_none());
+            assert_eq!(calibration.lock().unwrap().country_cache.ready, 1);
+            assert_eq!(
+                completed.request.economy.first.log.spans.capacity(),
+                capacity
+            );
+            macro_rules! compare {
+                ($family:ident, $n:expr) => {{
+                    assert_eq!(report.$family.raw_ok, direct_report.$family.raw_ok);
+                    assert_eq!(report.$family.matched, direct_report.$family.matched);
+                    assert_eq!(report.$family.raw_bytes, direct_report.$family.raw_bytes);
+                    assert_eq!(completed.request.$family.second.is_some(), checked);
+                    for slot in 0..$n {
+                        assert!(
+                            completed
+                                .request
+                                .$family
+                                .first
+                                .log
+                                .partition_equal(&direct.$family.first.log, slot)
+                        );
+                    }
+                }};
+            }
+            compare!(economy, 10);
+            compare!(construction, 10);
+            compare!(production, 8);
+            assert_eq!(report.focus.raw_ok, direct_report.focus.raw_ok);
+            assert_eq!(report.focus.matched, direct_report.focus.matched);
+            assert_eq!(report.focus.mismatches, direct_report.focus.mismatches);
+            assert_eq!(report.focus.raw_bytes, direct_report.focus.raw_bytes);
+            assert_eq!(completed.request.focus.second.is_some(), checked);
+            let decoded_focus = |job: &governance::FocusJob| {
+                assert!(job.is_provisioned());
+                let mut captured =
+                    governance::Captured::with_capacities(&Default::default(), &[0; governance::N]);
+                captured.decode_focus_payload(0, job, &mut [0; 2]);
+                captured.tables()[..2].to_vec()
+            };
+            assert_eq!(
+                decoded_focus(&completed.request.focus.first),
+                decoded_focus(&direct.focus.first),
+            );
+            if let Some(second) = &completed.request.focus.second {
+                assert_eq!(
+                    decoded_focus(second),
+                    decoded_focus(direct.focus.second.as_ref().unwrap())
+                );
+            }
+            worker.stop();
+            assert!(worker.join());
+            let mut rejected = Some(completed.request);
+            assert!(!worker.begin(&mut rejected));
+            let bytes = empty_eta_memory();
+            let fallback = run_world(
+                rejected.as_mut().unwrap(),
+                &engine::memory::SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+            );
+            assert_eq!(fallback.economy.raw_bytes, direct_report.economy.raw_bytes);
+            assert_eq!(fallback.economy.matched, direct_report.economy.matched);
+        }
+    }
+
+    #[test]
+    fn world_country_verification_fault_is_terminal_and_capacity_fallback_is_observable() {
+        struct Changed {
+            bytes: Vec<u8>,
+            reads: std::cell::Cell<usize>,
+        }
+        impl engine::Memory for Changed {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if !engine::Memory::copy(
+                    &engine::memory::SliceMemory {
+                        base: 0,
+                        bytes: &self.bytes,
+                    },
+                    address,
+                    output,
+                ) {
+                    return false;
+                }
+                if address == 0x1000 + engine::cgame_state::COUNTRIES {
+                    self.reads.set(self.reads.get() + 1);
+                    if self.reads.get() > 1 {
+                        output[0] ^= 1;
+                    }
+                }
+                true
+            }
+        }
+        let changed = Changed {
+            bytes: empty_eta_memory(),
+            reads: std::cell::Cell::new(0),
+        };
+        let calibration = Mutex::new(WorldCalibration::default());
+        let report = run_world_cached(
+            &mut world_request(true),
+            &changed,
+            &mut engine::country_memory::Cache::with_capacity(64),
+            &calibration,
+        );
+        assert!(report.error.is_some());
+        assert_eq!(calibration.lock().unwrap().verification_failures, 1);
+        assert_eq!(calibration.lock().unwrap().last_error, report.error);
+        let bytes = empty_eta_memory();
+        let memory = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let report = run_world_cached(
+            &mut world_request(false),
+            &memory,
+            &mut engine::country_memory::Cache::with_capacity(0),
+            &calibration,
+        );
+        assert!(report.error.is_none());
+        assert_eq!(
+            calibration.lock().unwrap().country_cache.capacity_fallbacks,
+            1
+        );
+        let mut overflow = world_request(false);
+        overflow.economy.first.log = Default::default();
+        let report = run_world(&mut overflow, &memory);
+        assert!(!report.economy.raw_ok);
+        assert!(
+            report.error.is_none(),
+            "ordinary staging overflow is not a terminal worker fault"
+        );
+        assert!(report.focus.raw_ok);
+    }
+
+    #[test]
+    fn characters_and_world_requests_reuse_one_thread_without_mixing_reports() {
+        let worker = Worker::start("characters-world-test", |request: &mut CharactersTask| {
+            assert_ne!(request.characters.is_some(), request.world.is_some());
+            CharactersTaskReport {
+                characters: request
+                    .characters
+                    .as_ref()
+                    .map(|_| CharactersCopyReport::default()),
+                world: request.world.as_ref().map(|_| WorldReport::default()),
+            }
+        })
+        .unwrap();
+        let thread = worker.slot.thread_id.load(Ordering::Acquire);
+        let mut world = Some(CharactersTask {
+            characters: None,
+            world: Some(world_request(true)),
+        });
+        assert!(worker.begin(&mut world));
+        let completed = worker.finish().unwrap();
+        assert!(completed.request.characters.is_none());
+        assert!(completed.request.world.unwrap().economy.second.is_some());
+        assert!(completed.report.unwrap().world.is_some());
+        assert!(completed.report.unwrap().characters.is_none());
+        let mut characters = Some(CharactersTask {
+            characters: Some(CharactersRequest {
+                context: CharactersCopyContext {
+                    base: 0,
+                    game_state: 0x1000,
+                },
+                first: Default::default(),
+                second: None,
+            }),
+            world: None,
+        });
+        assert!(worker.begin(&mut characters));
+        let completed = worker.finish().unwrap();
+        assert!(completed.request.world.is_none());
+        assert!(completed.report.unwrap().characters.is_some());
+        assert!(completed.report.unwrap().world.is_none());
+        assert_eq!(worker.slot.thread_id.load(Ordering::Acquire), thread);
+        worker.stop();
+        assert!(worker.join());
+    }
+
+    #[test]
+    fn world_panic_recovers_owned_bundle_without_retry_and_separate_counters_do_not_mix() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker_calls = Arc::clone(&calls);
+        let worker = Worker::start(
+            "world-panic-test",
+            move |_request: &mut WorldRequest| -> WorldReport {
+                worker_calls.fetch_add(1, Ordering::Relaxed);
+                panic!("synthetic World acquisition panic");
+            },
+        )
+        .unwrap();
+        let mut request = Some(world_request(true));
+        let capacity = request.as_ref().unwrap().focus.first.capacities();
+        assert!(worker.begin(&mut request));
+        let completed = worker.finish().unwrap();
+        assert!(matches!(completed.report, Err(Failure::Panicked)));
+        assert_eq!(completed.request.focus.first.capacities(), capacity);
+        assert!(completed.request.focus.second.is_some());
+        assert!(worker.join());
+        let mut rejected = Some(completed.request);
+        assert!(!worker.begin(&mut rejected));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        let world = Counters::default();
+        let characters = Counters::default();
+        note_dispatch(&world, true);
+        note_completion::<WorldReport>(&world, &Err(Failure::Panicked));
+        note_dispatch(&world, false);
+        assert_eq!(world.snapshot().accepted, 1);
+        assert_eq!(world.snapshot().completed, 1);
+        assert_eq!(world.snapshot().panicked, 1);
+        assert_eq!(world.snapshot().rejected, 1);
+        assert_eq!(characters.snapshot().accepted, 0);
     }
 
     #[test]
@@ -663,6 +1260,53 @@ mod tests {
         assert_eq!(calibration.ready, 2);
         assert_eq!(calibration.capacity_fallbacks, 1);
         assert_eq!(calibration.unavailable_fallbacks, 1);
+    }
+
+    #[test]
+    fn eta_read_calibration_sums_work_and_retains_peak_demand_separately() {
+        let mut calibration = EtaCountryCacheCalibration::default();
+        calibration
+            .read_witness
+            .observe(division_eta::CacheDiagnostics {
+                hits: 5,
+                retained_misses: 2,
+                direct_reads: 3,
+                witness_skips: 4,
+                witness_fallbacks: 1,
+                witness_entries_peak: 8,
+                witness_bytes_peak: 100,
+                witness_entries_required: 10,
+                witness_bytes_required: 140,
+            });
+        calibration
+            .read_witness
+            .observe(division_eta::CacheDiagnostics {
+                hits: 7,
+                retained_misses: 1,
+                direct_reads: 2,
+                witness_skips: 3,
+                witness_fallbacks: 2,
+                witness_entries_peak: 6,
+                witness_bytes_peak: 120,
+                witness_entries_required: 12,
+                witness_bytes_required: 130,
+            });
+        assert_eq!(
+            serde_json::to_value(calibration.read_witness).unwrap(),
+            serde_json::json!({
+                "captures": 2, "hits": 12, "retained_misses": 3,
+                "direct_reads": 5, "witness_skips": 7, "witness_fallbacks": 3,
+                "witness_entries_peak": 8, "witness_bytes_peak": 120,
+                "witness_entries_required": 12, "witness_bytes_required": 140,
+            })
+        );
+        // Worker read diagnostics are not mislabeled as country authentication.
+        assert!(
+            serde_json::to_value(calibration)
+                .unwrap()
+                .get("read_witness")
+                .is_none()
+        );
     }
 
     #[test]

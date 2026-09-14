@@ -22,11 +22,53 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
+         division is extrapolated along its recorded route by its recorded ETA
+         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+// counters: the glide between recorded hours
+/// `--hour`'s value: a recorded engine hour, optionally with a fraction of an
+/// hour past it.
+///
+/// `--hour 60832633` is the recorded hour and renders it exactly.
+/// `--hour 60832633.5` is half an hour later, a frame the recording does not
+/// hold: the hour's own tables are drawn and its moving divisions advanced
+/// along their recorded routes by their recorded ETA. The fraction is parsed
+/// off the text rather than through `f64` so a large engine hour cannot lose
+/// its last digits on the way.
+fn parse_hour(value: &str) -> io::Result<(Hour, Option<f32>)> {
+    let Some((whole, rest)) = value.split_once('.') else {
+        return Ok((
+            value.parse().map_err(|_| invalid("invalid engine hour"))?,
+            None,
+        ));
+    };
+    let hour: Hour = whole.parse().map_err(|_| invalid("invalid engine hour"))?;
+    if rest.is_empty() {
+        return Err(invalid("invalid engine hour"));
+    }
+    Ok((hour, Some(parse_fraction(&format!("0.{rest}"))?)))
+}
+
+/// A fraction of an hour past the recorded one, which has to stay inside it.
+///
+/// One whole hour is the next recorded hour, which is its own render: allowing
+/// it here would draw hour `h`'s tables where hour `h + 1`'s belong.
+fn parse_fraction(value: &str) -> io::Result<f32> {
+    let fraction: f32 = value
+        .parse()
+        .map_err(|_| invalid("invalid hour fraction"))?;
+    if !(0.0..1.0).contains(&fraction) {
+        return Err(invalid(
+            "the hour fraction is how far past the recorded hour the frame is and lies in [0, 1);              one whole hour is the next recorded hour, which renders on its own",
+        ));
+    }
+    Ok(fraction)
 }
 
 #[derive(Clone, Default)]
@@ -46,6 +88,15 @@ struct Options {
     /// [`render::dump_png`]; the readback is the dump's own.
     window_dump: bool,
     hour: Option<Hour>,
+    // counters: the glide between recorded hours
+    /// How far past `hour` the frame is, in hours, in `[0, 1)`.
+    ///
+    /// `--hour 60832633.5` and `--hour-fraction 0.5` are two spellings of the
+    /// same number, and it is [`document::Document::hour_fraction`]: the
+    /// recorded hour is the whole frame's state and this only advances the
+    /// moving divisions along their recorded routes. Zero renders the recorded
+    /// hour exactly.
+    hour_fraction: f32,
     branch: Option<BranchId>,
     allow_unverified: bool,
     control: bool,
@@ -211,8 +262,8 @@ impl Options {
                         Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
                 }
                 Some(
-                    "--hour" | "--branch" | "--width" | "--height" | "--camera" | "--mode"
-                    | "--perspective",
+                    "--hour" | "--hour-fraction" | "--branch" | "--width" | "--height" | "--camera"
+                    | "--mode" | "--perspective",
                 ) => {
                     let value = args
                         .next()
@@ -220,9 +271,13 @@ impl Options {
                         .ok_or_else(|| invalid(USAGE))?;
                     match arg.to_str().unwrap() {
                         "--hour" => {
-                            options.hour =
-                                Some(value.parse().map_err(|_| invalid("invalid engine hour"))?)
+                            let (hour, fraction) = parse_hour(&value)?;
+                            options.hour = Some(hour);
+                            if let Some(fraction) = fraction {
+                                options.hour_fraction = fraction;
+                            }
                         }
+                        "--hour-fraction" => options.hour_fraction = parse_fraction(&value)?,
                         "--branch" => {
                             options.branch =
                                 Some(value.parse().map_err(|_| invalid("invalid branch id"))?)
@@ -288,11 +343,12 @@ impl Options {
                 || options.replay.is_some()
                 || options.out.is_some()
                 || options.hour.is_some()
+                || options.hour_fraction != 0.0
                 || options.branch.is_some()
                 || options.camera.is_some()
             {
                 return Err(invalid(
-                    "--compare scores two images and takes no replay, --dump, --out, --hour, --branch or --camera",
+                    "--compare scores two images and takes no replay, --dump, --out, --hour, --hour-fraction, --branch or --camera",
                 ));
             }
             return Ok(options);
@@ -312,6 +368,13 @@ impl Options {
         }
         if options.headless_dump && (options.out.is_none() || options.hour.is_none()) {
             return Err(invalid(USAGE));
+        }
+        // counters: the fraction is measured from a named recorded hour, so it
+        // is meaningless without one.
+        if options.hour_fraction != 0.0 && options.hour.is_none() {
+            return Err(invalid(
+                "the hour fraction is how far past a recorded hour the frame is and needs --hour",
+            ));
         }
         // capture: `--out` is the destination of the window's F12 capture too,
         // so it names a file for all three paths and selects none of them. Only
@@ -532,6 +595,9 @@ fn choose_initial(document: &mut document::Document, options: &Options) -> io::R
     } else if let Some(branch) = options.branch {
         document.playback.select_branch(branch)?;
     }
+    // counters: the recorded hour is chosen above; this is how far past it the
+    // frame sits, which only the moving divisions read.
+    document.hour_fraction = options.hour_fraction;
     Ok(())
 }
 
@@ -598,6 +664,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // close zoom
         let (map_building_field, building_summary) = document.map_building_field()?;
         let (unit_model_field, unit_report) = document.unit_model_field(&options.perspective)?;
+        // orders: the recorded player's battle plan
+        let order_field = document.order_field(&options.perspective)?;
         for warning in document.warnings.iter().chain(layers.warnings()) {
             eprintln!("Warning: {warning}");
         }
@@ -671,6 +739,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 bridges: &document.bridges,
                 unit_models: &document.unit_models,
                 unit_model_field: &unit_model_field,
+                // orders: the recorded player's battle plan
+                order_assets: &document.orders,
+                order_field: &order_field,
                 // trees
                 tree_assets: &document.tree_assets,
                 tree_geometry: &document.tree_geometry,
@@ -701,8 +772,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             (!unverified.is_empty()).then_some(unverified.as_str()),
         )?;
         println!(
-            "Rendered branch {}, hour {hour} to {} using {}",
+            "Rendered branch {}, hour {hour}{} to {} using {}",
             document.playback.branch(),
+            if document.hour_fraction > 0.0 {
+                format!(" + {:.3} h", document.hour_fraction)
+            } else {
+                String::new()
+            },
             output.display(),
             report.adapter
         );
@@ -808,6 +884,44 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 tree.path,
                 tree.mesh.shapes.len(),
                 tree.scale
+            );
+        }
+        // orders: the recorded player's battle plan
+        println!(
+            "Battle plan: {} recorded army orders over every country ({}), {} for this perspective, {} drawn ({}), {} garrison areas with no arrow, {} with fewer than two placeable provinces; province centroids and crossings for {} provinces and {} adjacencies in {:.0} ms",
+            order_field.report.recorded,
+            order_field
+                .report
+                .per_kind_recorded
+                .iter()
+                .map(|(kind, count)| format!("{count} {kind}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            order_field.report.ours,
+            order_field.report.drawn,
+            if order_field.report.per_kind.is_empty() {
+                "none".to_owned()
+            } else {
+                order_field
+                    .report
+                    .per_kind
+                    .iter()
+                    .map(|(kind, count)| format!("{count} {kind}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+            order_field.report.no_arrow,
+            order_field.report.too_short,
+            document.province_geometry.provinces(),
+            document.province_geometry.adjacencies(),
+            document.province_geometry_build.as_secs_f64() * 1000.0
+        );
+        if order_field.report.drawn > 0 {
+            println!(
+                "  the drawn curve lands on the recorded province chain: a path province's own centroid is at most {:.3} and on average {:.3} world units from its order's curve; {} ribbon vertices",
+                order_field.report.control_gap_max_milli as f64 / 1000.0,
+                order_field.report.control_gap_mean_milli as f64 / 1000.0,
+                order_field.vertices.len()
             );
         }
         // close zoom
@@ -954,6 +1068,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.land_counters + counter_report.naval_counters,
             counter_report.no_intel_combats,
             counter_report.land_combats + counter_report.naval_combats,
+        );
+        // counters: the province term of the engine's land branch
+        println!(
+            "Province visibility: {} provinces carry a recorded byte this perspective may use{}",
+            counter_report.perspective.revealed_provinces(),
+            match counter_report.perspective.viewpoint_mismatch() {
+                Some(mismatch) => format!(
+                    "; the hour records them for {} rather than {}",
+                    mismatch.recorded.join(", "),
+                    mismatch.ours
+                ),
+                None => String::new(),
+            }
         );
         // counters
         if let Some(pass) = counter_report.grouping {
@@ -1110,6 +1237,66 @@ mod tests {
         ] {
             assert!(parse(&args).is_err(), "{args:?} should be refused");
         }
+    }
+
+    // counters: the glide between recorded hours
+    #[test]
+    fn a_fractional_hour_names_a_frame_between_two_recorded_ones() {
+        let dump = parse(&[
+            "--dump",
+            "campaign.battleplan",
+            "--hour",
+            "60832633.5",
+            "--out",
+            "frame.png",
+        ])
+        .unwrap();
+        assert_eq!(dump.hour, Some(60832633));
+        assert!((dump.hour_fraction - 0.5).abs() < 1e-6);
+
+        // The two spellings are the same number.
+        let split = parse(&[
+            "--dump",
+            "campaign.battleplan",
+            "--hour",
+            "60832633",
+            "--hour-fraction",
+            "0.5",
+            "--out",
+            "frame.png",
+        ])
+        .unwrap();
+        assert_eq!(
+            (split.hour, split.hour_fraction),
+            (dump.hour, dump.hour_fraction)
+        );
+
+        // A recorded hour renders exactly, which is a zero fraction.
+        let whole = parse(&[
+            "--dump",
+            "campaign.battleplan",
+            "--hour",
+            "60832633",
+            "--out",
+            "frame.png",
+        ])
+        .unwrap();
+        assert_eq!(whole.hour_fraction, 0.0);
+    }
+
+    #[test]
+    fn an_hour_fraction_outside_its_own_hour_or_without_one_is_refused() {
+        for bad in ["60832633.", "60832633.x", "60832633.5.5", "x.5"] {
+            assert!(parse_hour(bad).is_err(), "`{bad}` should be refused");
+        }
+        // One whole hour is the next recorded hour, which renders on its own.
+        assert!(parse_fraction("1").is_err());
+        assert!(parse_fraction("1.5").is_err());
+        assert!(parse_fraction("-0.5").is_err());
+        assert!((parse_fraction("0.75").unwrap() - 0.75).abs() < 1e-6);
+        // The fraction is measured from a named recorded hour.
+        assert!(parse(&["campaign.battleplan", "--hour-fraction", "0.5"]).is_err());
+        assert!(parse(&["--compare", "a.png", "b.png", "--hour-fraction", "0.5"]).is_err());
     }
 
     #[test]

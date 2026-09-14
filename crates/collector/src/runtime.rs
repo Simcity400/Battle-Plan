@@ -586,14 +586,29 @@ fn add_decode_status(status: &mut Value) {
     if !shared_ptr.is_null() {
         // Status is produced while runtime retains Shared and joins its spool.
         let shared = unsafe { &*shared_ptr };
+        status["native_tick_work"] = json!({
+            "elapsed_ns": shared.native_tick_ns.load(Ordering::Relaxed),
+            "calls": shared.native_tick_calls.load(Ordering::Relaxed),
+            "scope": "asynchronously sampled cumulative original native tick wall time since attach, including engine waits and callbacks without a free frame; excludes collector acquisition and game-loop work outside the hook; not a recorder-free baseline or CPU time",
+        });
         if let Some(acquisition) = shared.acquisition.get() {
+            let world = acquisition.world_calibration();
+            let calibration = acquisition.calibration();
             status["acquisition_work"] = json!({
-                "workers": acquisition.calibration(),
+                "workers": calibration,
+                "eta_read_witness": calibration.eta_country_cache.read_witness,
+                "eta_read_witness_scope": "cumulative returned worker captures, including both cold passes and later country-verification failures; excludes panics, cancelled requests and synchronous fallback; journal sizes are maximum per-pass observations, not total allocated pool bytes",
                 "dispatch_ns": shared.acquisition_dispatch_ns.load(Ordering::Relaxed),
                 "join_wait_ns": shared.acquisition_wait_ns.load(Ordering::Relaxed),
                 "table_costs_overlap": true,
-                "eta_country_cache_bytes": acquisition.allocated_bytes(),
+                "eta_country_cache_bytes": acquisition.eta_country_cache_bytes(),
                 "eta_cost_scope": "worker acquisition, own country preparation/verification and source-copy overhead; overlaps callback work; failed worker cost is unavailable",
+                "world_country_cache_bytes": acquisition.world_country_cache_bytes(),
+                "world_country_cache": world.country_cache,
+                "world_acquisition_ns": shared.ns(i64::try_from(world.acquisition_ticks).unwrap_or(i64::MAX)),
+                "world_verification_failures": world.verification_failures,
+                "world_last_error": world.last_error,
+                "world_cost_scope": "non-Characters hours on the same worker; whole-worker total includes country preparation/verification and staging attempts; accepted economy raw copies charge authentication once to CountryFuel, typed fallback table costs exclude the discarded staging attempt; overlaps callback work; panicked/stopped worker cost is unavailable",
             });
         }
     }

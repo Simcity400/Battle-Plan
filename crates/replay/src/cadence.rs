@@ -150,6 +150,7 @@ mod tests {
             TableId::DivisionMovement,
             TableId::DivisionStatus,
             TableId::DivisionEta,
+            TableId::ProvinceVisibility,
             TableId::LandCombatProgress,
             TableId::AirBaseRegistrations,
             TableId::ActiveAbilities,

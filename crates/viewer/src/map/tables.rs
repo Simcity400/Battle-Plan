@@ -150,6 +150,62 @@ impl Limitations {
         &self.lines
     }
 
+    // orders: the recorded player's battle plan
+    /// Records what the drawn battle plan cannot take from the recording.
+    ///
+    /// These are not table gaps --- `ArmyOrders` and `OrdersGroups` can be
+    /// complete and every one of them still holds --- so they are fields rather
+    /// than tables, and they are stated only on an hour that draws a plan at
+    /// all, because on an hour with none they describe nothing on screen.
+    pub fn note_battle_plan(&mut self, drawn: usize) {
+        if drawn == 0 {
+            return;
+        }
+        self.note_field(
+            "ArmyOrders (front binding)",
+            "which line orders are front lines is derived, not read: the engine draws a line \
+             bound to a CFront as the front and every other as an offensive line, and the binding \
+             and the front's own province pairs are not recorded. The line that is the only one of \
+             its group to carry its path is taken as the front, which is the line every recorded \
+             move order departs from. A front is therefore drawn through its own path provinces \
+             rather than hugging the border between them and the provinces facing them, offset \
+             ROOT_FRONT_OFFSET per overlapping line, which is the engine's own fallback when it \
+             cannot pair a line against a front",
+        );
+        self.note_field(
+            "ArmyOrders (style bytes)",
+            "the blitz, withdraw, fallback and virtual bytes of an order are not recorded, so a \
+             blitz arrow, a withdrawal, a fallback line and a virtual line are all drawn as the \
+             plain move arrow or offensive line of their group, in that group's own colour",
+        );
+        self.note_field(
+            "OrdersGroups (colour)",
+            "the army and army-group colour is the group's own CColor, which no table records; the \
+             palette is the game's own leader_group list and the entry is a fixed hash of the \
+             group handle, so two armies keep distinct stable colours but neither is the colour \
+             the game drew",
+        );
+        self.note_field(
+            "ArmyOrders (assigned divisions)",
+            "an order's assigned-division list is not recorded, so every ribbon draws the arrow \
+             type's assigned mask and none draws its unassigned one; an army group's child order \
+             is not recorded either, so an army group's front line never takes the no-child variant",
+        );
+    }
+
+    /// Records that this frame sits between two recorded hours.
+    ///
+    /// `fraction` is how far past the recorded hour the frame is, in hours. It
+    /// is never zero here: a recorded hour draws its recorded positions and has
+    /// nothing to state. The line is written once for the whole frame rather
+    /// than marked on any counter, because the game marks none and the frame is
+    /// meant to be indistinguishable from the game's.
+    pub fn note_extrapolated_positions(&mut self, hour: Hour, fraction: f32) {
+        self.lines.push(format!(
+            "Between recorded hours: this frame is {fraction:.3} h past recorded hour {hour}, so every moving division's counter and close-zoom model is extrapolated along its recorded route by its recorded DivisionEta remaining time. Recorded hours themselves are drawn exactly, and a division with no remaining time recorded does not move at all",
+        ));
+    }
+
     /// Records what the map's chosen perspective is, and what it cannot decide.
     ///
     /// The perspective is not a table gap, so [`Limitations::note`] has nothing
@@ -174,20 +230,30 @@ impl Limitations {
                          and no bars, as the game draws it",
                     ));
                 }
-                self.lines.push(
-                    "Province visibility is not recorded: the engine also shows a stack in full \
-                     when the province it stands in is fully revealed to the viewing country (the \
-                     client's own fog array, rebuilt per frame from units, radar and detection), \
-                     and no table carries it. A stack standing inside our own lines that the game \
-                     would draw in full is drawn here as a question mark"
-                        .to_owned(),
-                );
             }
             Perspective::Omniscient { reason } => self.lines.push(format!(
                 "Perspective omniscient: {reason}, so every stack is drawn in full, including the \
                  ones the game hid behind a question mark",
             )),
         }
+    }
+
+    /// Records that the hour's recorded province visibility answers for
+    /// another country than the one the map is drawn for.
+    ///
+    /// This is not a table gap either: the table is complete and every byte in
+    /// it is real. It is simply another client's buffer, and one country's
+    /// uncovered provinces are not another's, so the wording says whose it is
+    /// rather than borrowing it.
+    pub fn note_viewpoint(&mut self, recorded: &[String], ours: &str) {
+        self.lines.push(format!(
+            "Field ProvinceVisibility.viewing_country: the recorded bytes answer for {}, not \
+             {ours}, and one country's uncovered provinces are not another's, so they are left \
+             out of the engine's max and a land stack is decided by the UnitIntel ladder alone; a \
+             stack standing in a province {ours} has uncovered carries no counter here where the \
+             game drew its question mark, or a question mark where the game drew it in full",
+            recorded.join(", ")
+        ));
     }
 }
 
@@ -274,6 +340,15 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
          gives an absent entry, so a stack this perspective had detected is drawn with the game's \
          question mark",
     );
+    out.note::<tables::ProvinceVisibility>(
+        frame,
+        "a land stack is decided by the UnitIntel detection ladder alone. The engine takes the \
+         greater of that ladder and the viewing country's own visibility byte for the province the \
+         stack stands in, and a province among the missing rows contributes no byte rather than a \
+         zero, so a stack standing in a province this perspective has uncovered carries no counter \
+         here where the game drew its question mark, or a question mark where the game drew it in \
+         full",
+    );
     // counters
     out.note::<tables::Divisions>(
         frame,
@@ -294,7 +369,7 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     );
     out.note::<tables::DivisionEta>(
         frame,
-        "nothing changes in this render, which draws each recorded hour and nothing between          them; a moving counter steps from one hour's point to the next where the game glides,          and closing that would mean extrapolating along the route from this table's remaining          time and saying on the frame that the position between hours is extrapolated",
+        "a division among the missing rows does not glide: between two recorded hours its counter and its close-zoom model stay on the hour's own recorded point and then step to the next hour's, where a division with a remaining time advances along its recorded route by it",
     );
     out.note::<tables::TaskForces>(
         frame,
@@ -304,6 +379,21 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     out.note::<tables::Ships>(
         frame,
         "a naval counter's ship count and bars cover only the recorded ships",
+    );
+    // orders: the recorded player's battle plan
+    out.note::<tables::ArmyOrders>(
+        frame,
+        "the battle plan covers only the recorded orders: a front line, offensive line, offensive \
+         arrow or invasion arrow among the missing rows is not drawn at all, and a line whose \
+         virtual twin is among them is drawn as its group's front line instead of as an offensive \
+         line, because a line is identified as the front by being the only one of its group to \
+         carry its path",
+    );
+    out.note::<tables::OrdersGroups>(
+        frame,
+        "an order whose owning group is among the missing rows is drawn with the army arrow types \
+         rather than the army-group ones, because the is_army_group byte the engine picks the ag_ \
+         prefix on is this table's",
     );
     out.note::<tables::LandCombats>(
         frame,
@@ -519,7 +609,9 @@ mod tests {
         assert!(
             recorded.lines()[0].starts_with("Perspective GER: the map is drawn as the recorded")
         );
-        assert!(recorded.lines()[1].starts_with("Province visibility is not recorded"));
+        // Province visibility is a recorded table now, so its absence is the
+        // registry's line and not a sentence every perspective carries.
+        assert_eq!(recorded.lines().len(), 1);
 
         let mut asked = Limitations::default();
         asked.note_perspective(&Perspective::Country {
@@ -537,6 +629,52 @@ mod tests {
         assert!(open.lines()[0].contains("every stack is drawn in full"));
     }
 
+    /// A complete table whose bytes were recorded for somebody else is not a
+    /// table gap and not a field the recording left empty, so it carries its
+    /// own wording and names both countries.
+    #[test]
+    fn visibility_recorded_for_another_country_names_it_and_names_ours() {
+        let mut limitations = Limitations::default();
+        limitations.note_viewpoint(&["ENG".to_owned()], "GER");
+        let line = &limitations.lines()[0];
+        assert!(
+            line.starts_with(
+                "Field ProvinceVisibility.viewing_country: the recorded bytes answer for ENG, not \
+                 GER"
+            ),
+            "{line}"
+        );
+        assert!(line.contains("UnitIntel ladder alone"), "{line}");
+    }
+
+    /// An older recording has no visibility at all, and the line it produces
+    /// has to name the format that did not record it, because that is the one
+    /// thing the reader can act on: a newer recording of the same campaign.
+    #[test]
+    fn a_format_that_predates_visibility_names_the_format_in_its_line() {
+        let mut frame = frame();
+        frame.tables[TableId::ProvinceVisibility.index()] = TableView::Unavailable {
+            reason: "not recorded by format 14".into(),
+        };
+        let lines = limitations(&frame).lines().join("\n");
+        assert!(
+            lines.contains(
+                "Table ProvinceVisibility unavailable: not recorded by format 14: a land stack is \
+                 decided by the UnitIntel detection ladder alone."
+            ),
+            "{lines}"
+        );
+        frame.tables[TableId::ProvinceVisibility.index()] = TableView::Unavailable {
+            reason: "not recorded by format 17".into(),
+        };
+        assert!(
+            limitations(&frame)
+                .lines()
+                .join("\n")
+                .contains("not recorded by format 17"),
+        );
+    }
+
     #[test]
     fn the_registry_reports_every_degraded_table_and_no_core_one() {
         let lines = limitations(&frame()).lines().join("\n");
@@ -552,6 +690,7 @@ mod tests {
             "FactionMembers",
             "Subjects",
             "UnitIntel",
+            "ProvinceVisibility",
             "Divisions",
             "TaskForces",
             "Ships",

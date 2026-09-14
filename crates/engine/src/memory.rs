@@ -120,9 +120,38 @@ fn record_source_prefix(pointers: &[usize], fields: &[RecordField]) -> usize {
     completed
 }
 
+/// Opaque checkpoint in one adapter's independently verified read observations.
+/// It identifies recorder-owned storage, never a game object or a saved value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadWitness {
+    pub owner: usize,
+    pub generation: u64,
+    pub uncovered: u64,
+}
+
 /// Implementations fill the destination or return false; a failed copy may be partial.
 pub trait Memory {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool;
+
+    /// Optional checkpoint for deferring redundant derived-graph verification.
+    /// Every successful byte observation after this checkpoint must either be
+    /// retained for independent terminal comparison or make the checkpoint
+    /// incomplete. Derived capabilities must retain their own independent
+    /// verification obligations. No game read, allocation or observation-order
+    /// change is permitted here. Observation-recording wrappers must not forward
+    /// this capability; ordinary readers retain their original verifier.
+    fn read_witness(&self) -> Option<ReadWitness> {
+        None
+    }
+
+    /// True promises complete terminal verification for this exact adapter and
+    /// pass, including after a failed enclosing walk. It is not a completed
+    /// consistency check: publication still requires all terminal verifiers.
+    /// Capacity, faults, stale checkpoints and untracked dependencies return
+    /// false, preserving the caller's original graph-verification fallback.
+    fn read_witness_complete(&self, _witness: ReadWitness) -> bool {
+        false
+    }
 
     /// Optional immutable, already-owned bytes for this exact address range.
     /// Every contained nonempty read must equal `copy` without consuming any
@@ -158,6 +187,49 @@ pub trait Memory {
         _address: usize,
         _key: u32,
     ) -> Option<Result<crate::modifier_accumulator::Value, &'static str>> {
+        None
+    }
+
+    /// Optional exact core-supply predicate shared only within an acquisition
+    /// pass. Every retained key must be recomputed independently with fresh
+    /// source reads before publication, even after a failed walk. All keys and
+    /// results are cleared between passes; collisions/capacity use the ordinary
+    /// reader. Observation-recording wrappers must not forward this capability.
+    fn core_supply_access(
+        &self,
+        _base: usize,
+        _game_state: usize,
+        _owner_raw: u32,
+        _area: usize,
+    ) -> Option<Result<bool, &'static str>> {
+        None
+    }
+
+    /// Optional primary-order membership dependency cache for one ETA pass.
+    /// Own/parent first-match traversal, dirty/clean cache checks and read-lazy
+    /// prefixes must be preserved. All retained metadata, vector headers and
+    /// consumed chunks require independent terminal verification even after a
+    /// failed query, and must be cleared between passes. This is not has_order.
+    /// Observation-recording wrappers must not forward this capability.
+    fn movement_primary_root(
+        &self,
+        _base: usize,
+        _member: usize,
+    ) -> Option<Result<usize, &'static str>> {
+        None
+    }
+
+    /// Optional deterministic arithmetic memo, keyed by every raw scalar
+    /// argument. Callers must still acquire/authenticate those arguments and
+    /// perform their normal source verification on every invocation. This
+    /// capability never supplies game-derived inputs or changes lazy reads.
+    /// Observation-recording wrappers must not forward it.
+    fn movement_air_defense_value(
+        &self,
+        _defense: i64,
+        _denominator: i64,
+        _reduction: i64,
+    ) -> Option<Result<i64, &'static str>> {
         None
     }
 

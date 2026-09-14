@@ -633,6 +633,7 @@ pub mod province_graphics_layout;
 pub mod province_id_raster_layout;
 pub mod province_neighbour;
 pub mod province_pixel_span;
+pub mod province_visibility_layout;
 pub mod radar_group;
 pub mod raid_counter_source_row_layout;
 pub mod raid_database;

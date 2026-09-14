@@ -14,6 +14,7 @@ use installed_content::{
 use replay::{
     BranchId, Hour,
     container::{Replay, SeekResult},
+    format::FormatVersion,
     frame::{DecodedFrame, TableView},
     identity::Verification,
     rows::{CountryRow, TableId, TableRows, TableSchema, tables},
@@ -151,6 +152,7 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
     let railway_adjacency = save::naval_history::RailwayAdjacency::read(&content.layers);
     let mut report = compare_core(
         &frame,
+        replay.format,
         &save,
         content_read(&membership),
         content_read(&equipment_types),
@@ -266,9 +268,13 @@ fn complete_table(frame: &DecodedFrame, table: TableId) -> io::Result<&TableRows
     }
 }
 
-fn recorded_table_counts(frame: &DecodedFrame) -> BTreeMap<TableId, Result<usize, String>> {
+fn recorded_table_counts(
+    frame: &DecodedFrame,
+    format: FormatVersion,
+) -> BTreeMap<TableId, Result<usize, String>> {
     TableId::ALL
         .into_iter()
+        .filter(|&table| format.records(table))
         .map(|table| {
             let count = complete_table(frame, table)
                 .map(TableRows::len)
@@ -325,6 +331,9 @@ struct Report {
     limitations: BTreeMap<String, Vec<String>>,
     compared_tables: BTreeMap<String, usize>,
     recorded_tables: BTreeMap<TableId, Result<usize, String>>,
+    recorded_format: Option<FormatVersion>,
+    /// Header-derived absence, never inferred from an unavailable reason string.
+    not_applicable_tables: BTreeMap<TableId, String>,
     failed_comparisons: BTreeMap<String, String>,
     difference_groups: BTreeMap<String, usize>,
     active_comparison: Option<String>,
@@ -335,6 +344,17 @@ struct Report {
 }
 
 impl Report {
+    fn attempt_table(
+        &mut self,
+        table: TableId,
+        compare: impl FnOnce(&mut Self) -> io::Result<()>,
+    ) -> bool {
+        if self.not_applicable_tables.contains_key(&table) {
+            return false;
+        }
+        self.attempt(&format!("{table:?}"), compare)
+    }
+
     fn attempt(&mut self, name: &str, compare: impl FnOnce(&mut Self) -> io::Result<()>) -> bool {
         let previous = self.active_comparison.replace(name.into());
         let result = compare(self);
@@ -375,11 +395,18 @@ impl Report {
         }
     }
 
-    fn record_tables(&mut self, frame: &DecodedFrame) {
-        self.recorded_tables = recorded_table_counts(frame);
+    fn record_tables(&mut self, frame: &DecodedFrame, format: FormatVersion) {
+        self.recorded_format = Some(format);
+        self.recorded_tables = recorded_table_counts(frame, format);
+        self.not_applicable_tables = TableId::ALL
+            .into_iter()
+            .filter(|&table| !format.records(table))
+            .map(|table| (table, format.missing_reason()))
+            .collect();
         self.observed_refresh_slots.clear();
         for table in TableId::ALL {
-            if frame.metrics.table_ns[table.index()] != 0
+            if format.records(table)
+                && frame.metrics.table_ns[table.index()] != 0
                 && let Some(slot) = replay::cadence::refresh_slot(table)
             {
                 self.observed_refresh_slots.insert(slot);
@@ -480,6 +507,14 @@ impl Report {
     }
 
     fn print(&self) {
+        if let Some(format) = self.recorded_format {
+            println!(
+                "Replay format {}: comparison covers its {} recorded tables; {} later tables are not applicable",
+                format.version(),
+                format.recorded_tables(),
+                self.not_applicable_tables.len()
+            );
+        }
         println!(
             "Compared: {} provinces, {} states, {} divisions, {} war relations, {} factions, {} faction members, {} countries, {} exact field comparisons",
             self.provinces,
@@ -504,7 +539,7 @@ impl Report {
             println!("  Differences {group}: {count}");
         }
         println!(
-            "Comparison status: {}; {} table availability issues; {} failed or skipped comparison groups",
+            "Comparison status for recorded-format coverage: {}; {} table availability issues; {} failed or skipped comparison groups",
             if self.unavailable_tables() == 0 && self.failed_comparisons.is_empty() {
                 "complete"
             } else {
@@ -529,6 +564,9 @@ impl Report {
         }
         for (group, reason) in &self.failed_comparisons {
             println!("  Comparison {group} incomplete: {reason}");
+        }
+        for line in self.not_applicable_lines() {
+            println!("{line}");
         }
         for line in self.difference_lines() {
             println!("{line}");
@@ -557,6 +595,15 @@ impl Report {
                 );
             }
         }
+    }
+
+    fn not_applicable_lines(&self) -> Vec<String> {
+        self.not_applicable_tables
+            .iter()
+            .map(|(table, reason)| {
+                format!("  Not applicable {table:?}: {reason}; no comparison attempted")
+            })
+            .collect()
     }
 }
 
@@ -617,13 +664,14 @@ fn country_context(frame: &DecodedFrame) -> io::Result<CountryContext<'_>> {
 
 fn compare_core(
     frame: &DecodedFrame,
+    format: FormatVersion,
     save: &Save,
     membership: ContentRead<'_, save::MapMembership>,
     equipment_types: ContentRead<'_, save::EquipmentTypes>,
 ) -> io::Result<Report> {
     validate_identity(frame, save)?;
     let mut report = Report::default();
-    report.record_tables(frame);
+    report.record_tables(frame, format);
     report.attempt("content map membership", |_| {
         required_context("verified map membership", &membership).map(|_| ())
     });
@@ -734,7 +782,7 @@ fn compare_core(
             report,
         )
     });
-    report.attempt("ProvinceNames", |report| {
+    report.attempt_table(TableId::ProvinceNames, |report| {
         compare_province_names(frame, save, report)
     });
     Ok(report)
@@ -1006,24 +1054,27 @@ fn compare_extended(
     railway_adjacency: ContentRead<'_, save::naval_history::RailwayAdjacency>,
     report: &mut Report,
 ) {
-    report.attempt("StateFlags", |report| {
+    report.attempt_table(TableId::StateFlags, |report| {
         compare_state_flags(frame, save, report)
     });
-    report.attempt("LandCombatProgress", |report| {
+    report.attempt_table(TableId::LandCombatProgress, |report| {
         compare_combat_progress(frame, save, report)
     });
-    report.attempt("DivisionMovement", |report| {
+    report.attempt_table(TableId::DivisionMovement, |report| {
         compare_division_movement(frame, save, report)
     });
-    report.attempt("DivisionStatus", |report| {
+    report.attempt_table(TableId::DivisionStatus, |report| {
         compare_division_status(frame, save, report)
     });
-    report.attempt("DivisionEta", |report| {
+    report.attempt_table(TableId::DivisionEta, |report| {
         compare_division_eta(frame, save, report)
+    });
+    report.attempt_table(TableId::ProvinceVisibility, |report| {
+        compare_province_visibility(frame, report)
     });
     let countries = country_context(frame);
     let tokens = lexical_tokens(frame, report);
-    report.attempt("DivisionTemplates", |report| {
+    report.attempt_table(TableId::DivisionTemplates, |report| {
         compare_division_templates(
             frame,
             save,
@@ -1269,6 +1320,57 @@ fn compare_extended(
             report,
         )
     });
+}
+
+fn compare_province_visibility(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
+    let rows = complete::<tables::ProvinceVisibility>(frame)?;
+    let countries = country_context(frame)?;
+    let mut remaining = BTreeSet::new();
+    for province in complete::<tables::Provinces>(frame)? {
+        if province.id == 0 || !remaining.insert(province.id) {
+            return Err(invalid(
+                "Provinces has a null or duplicate id for visibility census",
+            ));
+        }
+    }
+    let mut seen = BTreeSet::new();
+    let mut viewing_country = None;
+    for row in rows {
+        if row.province == 0 || !seen.insert(row.province) {
+            return Err(invalid(
+                "ProvinceVisibility has a null or duplicate province id",
+            ));
+        }
+        if country_tag(row.viewing_country, &countries.links)?.is_none() {
+            return Err(invalid(
+                "ProvinceVisibility has an unassigned viewing country",
+            ));
+        }
+        if viewing_country.is_some_and(|country| country != row.viewing_country) {
+            return Err(invalid(
+                "ProvinceVisibility has inconsistent viewing country tags",
+            ));
+        }
+        viewing_country = Some(row.viewing_country);
+        if !remaining.remove(&row.province) {
+            report.difference(
+                format!("province visibility {} recorded census", row.province),
+                "present",
+                "absent from Provinces",
+            );
+        }
+    }
+    for province in remaining {
+        report.difference(
+            format!("province visibility {province} recorded census"),
+            "absent",
+            "present in Provinces",
+        );
+    }
+    report.compared("ProvinceVisibility (recorded census only)", rows.len());
+    report.limitation("visibility is a raw local presentation-cache byte absent from the text save; only its province census and recorded country identity are checked, not visibility correctness. viewing_country is the authenticated holder's raw viewpoint tag resolved through CountryLinks, not an assertion about Players[0] or a unique human. The cache may lag the hourly tick", "ProvinceVisibility.visibility/viewing_country");
+    report.limitation("the raw visibility byte is not final unit-icon visibility: unit intel, friendship, fog and modifiers still apply. No screenshot or same-instant rendering comparison is established by this oracle", "ProvinceVisibility consumer contract");
+    Ok(())
 }
 
 fn compare_state_flags(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
@@ -3251,7 +3353,13 @@ mod tests {
         membership: &save::MapMembership,
         equipment: &save::EquipmentTypes,
     ) -> io::Result<Report> {
-        compare_core(frame, save, Ok(membership), Ok(equipment))
+        compare_core(
+            frame,
+            FormatVersion::CURRENT,
+            save,
+            Ok(membership),
+            Ok(equipment),
+        )
     }
 
     fn comparison_error(result: io::Result<Report>) -> String {
@@ -3372,6 +3480,16 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                         state: 1,
                         demilitarized: 0,
                     }]));
+                tables[TableId::ProvinceVisibility.index()] =
+                    TableView::Complete(TableRows::ProvinceVisibility(
+                        [1, 2]
+                            .map(|province| replay::rows::ProvinceVisibilityRow {
+                                province,
+                                visibility: 0,
+                                viewing_country: 101,
+                            })
+                            .into(),
+                    ));
                 tables[TableId::WeatherLimits.index()] =
                     TableView::Complete(TableRows::WeatherLimits(vec![
                         replay::rows::WeatherLimitsRow::default(),
@@ -3777,14 +3895,14 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         let countries = country_context(&frame).unwrap();
         let tokens = BTreeMap::from([(7, b"infantry".as_slice())]);
         let mut report = Report::default();
-        report.record_tables(&frame);
+        report.record_tables(&frame, FormatVersion::CURRENT);
         compare_division_templates(&frame, &saved, &countries, &tokens, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         frame.tables[TableId::DivisionTemplates.index()] =
             TableView::Complete(TableRows::DivisionTemplates(vec![]));
         let countries = country_context(&frame).unwrap();
         let mut report = Report::default();
-        report.record_tables(&frame);
+        report.record_tables(&frame, FormatVersion::CURRENT);
         compare_division_templates(&frame, &saved, &countries, &tokens, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1); // Missing unused template cannot pass.
     }
@@ -3878,6 +3996,192 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
     }
 
     #[test]
+    fn format_absence_is_not_applicable_but_recorded_failures_stay_failures() {
+        for format in [
+            FormatVersion::LEGACY_14,
+            FormatVersion::LEGACY_17,
+            FormatVersion::CURRENT,
+        ] {
+            let (mut frame, _, _, _) = fixture();
+            for table in TableId::ALL {
+                if !format.records(table) {
+                    // Deliberately not the reader's reason: provenance is the
+                    // validated header, not a string in an unavailable row.
+                    frame.tables[table.index()] = TableView::Unavailable {
+                        reason: "arbitrary absent-table text".into(),
+                    };
+                }
+            }
+            let mut report = Report::default();
+            report.record_tables(&frame, format);
+            assert_eq!(report.recorded_tables.len(), format.recorded_tables());
+            assert_eq!(
+                report.not_applicable_tables.len(),
+                TableId::ALL.len() - format.recorded_tables()
+            );
+            let mut attempted = 0;
+            for table in TableId::ALL {
+                report.attempt_table(table, |_| {
+                    attempted += 1;
+                    complete_table(&frame, table).map(|_| ())
+                });
+            }
+            assert_eq!(attempted, format.recorded_tables());
+            assert!(report.outcome().is_ok());
+            assert!(report.compared_tables.is_empty());
+            let lines = report.not_applicable_lines();
+            assert_eq!(lines.len(), report.not_applicable_tables.len());
+            for &table in report.not_applicable_tables.keys() {
+                assert!(lines.iter().any(|line| line.contains(&format!(
+                    "Not applicable {table:?}: not recorded by format {}",
+                    format.version()
+                ))));
+            }
+
+            frame.tables[TableId::CountryIntel.index()] = TableView::Unavailable {
+                reason: "not recorded by format 14".into(),
+            };
+            report.record_tables(&frame, format);
+            assert_eq!(report.unavailable_tables(), 1);
+            assert!(!report.attempt_table(TableId::CountryIntel, |_| {
+                complete_table(&frame, TableId::CountryIntel).map(|_| ())
+            }));
+            assert!(report.failed_comparisons.contains_key("CountryIntel"));
+            assert!(report.outcome().is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_oracle_dispatch_skips_only_tables_that_postdate_its_format() {
+        let later = [
+            TableId::ProvinceNames,
+            TableId::LandCombatProgress,
+            TableId::DivisionTemplates,
+            TableId::DivisionMovement,
+            TableId::DivisionStatus,
+            TableId::StateFlags,
+            TableId::DivisionEta,
+            TableId::ProvinceVisibility,
+        ];
+        for format in [FormatVersion::LEGACY_14, FormatVersion::LEGACY_17] {
+            let (mut frame, saved, membership, equipment) = fixture();
+            for table in later {
+                frame.tables[table.index()] = TableView::Unavailable {
+                    reason: "not recorded by format 14".into(),
+                };
+            }
+            let mut report =
+                compare_core(&frame, format, &saved, Ok(&membership), Ok(&equipment)).unwrap();
+            compare_extended(
+                &frame,
+                &saved,
+                Ok(&membership),
+                Err("fixture has no base resources".into()),
+                Err("fixture has no adjacency".into()),
+                &mut report,
+            );
+            for table in later {
+                let name = format!("{table:?}");
+                assert_eq!(
+                    report.not_applicable_tables.contains_key(&table),
+                    !format.records(table)
+                );
+                assert_eq!(
+                    report.failed_comparisons.contains_key(&name),
+                    format.records(table),
+                    "{name}"
+                );
+                assert!(!report.compared_tables.contains_key(&name));
+            }
+            // Genuine save differences in original tables are not waived.
+            report.difference("retained captured field", 1, 2);
+            assert!(report.outcome().is_err());
+        }
+    }
+
+    #[test]
+    fn province_visibility_checks_census_and_viewpoint_without_claiming_saved_bytes() {
+        use replay::rows::ProvinceVisibilityRow;
+        let (mut frame, _, _, _) = fixture();
+        let ids: Vec<_> = complete::<tables::Provinces>(&frame)
+            .unwrap()
+            .iter()
+            .map(|row| row.id)
+            .collect();
+        assert!(ids.len() >= 2);
+        let rows: Vec<_> = ids
+            .iter()
+            .map(|&province| ProvinceVisibilityRow {
+                province,
+                visibility: 255,
+                viewing_country: 102,
+            })
+            .collect();
+        //102 is a valid alias of101; the holder's raw tag need not be canonical.
+        for byte in [0, 1, 255] {
+            let mut current = rows.clone();
+            for row in &mut current {
+                row.visibility = byte;
+            }
+            frame.tables[TableId::ProvinceVisibility.index()] =
+                TableView::Complete(TableRows::ProvinceVisibility(current));
+            let mut report = Report::default();
+            compare_province_visibility(&frame, &mut report).unwrap();
+            assert!(report.differences.is_empty());
+            assert_eq!(report.scalar_checks, 0);
+            assert!(
+                report
+                    .limitations
+                    .keys()
+                    .any(|reason| reason.contains("absent from the text save"))
+            );
+        }
+        for change in 0..5 {
+            let mut invalid_rows = rows.clone();
+            match change {
+                0 => invalid_rows[0].province = 0,
+                1 => invalid_rows[1].province = invalid_rows[0].province,
+                2 => invalid_rows[0].viewing_country = 0,
+                3 => invalid_rows[0].viewing_country = u32::MAX,
+                _ => invalid_rows[0].viewing_country = 101,
+            }
+            frame.tables[TableId::ProvinceVisibility.index()] =
+                TableView::Complete(TableRows::ProvinceVisibility(invalid_rows));
+            assert!(compare_province_visibility(&frame, &mut Report::default()).is_err());
+        }
+        for extra in [false, true] {
+            let mut changed = rows.clone();
+            if extra {
+                changed.push(ProvinceVisibilityRow {
+                    province: u32::MAX,
+                    ..rows[0].clone()
+                });
+            } else {
+                changed.pop();
+            }
+            frame.tables[TableId::ProvinceVisibility.index()] =
+                TableView::Complete(TableRows::ProvinceVisibility(changed));
+            let mut report = Report::default();
+            compare_province_visibility(&frame, &mut report).unwrap();
+            assert_eq!(report.differences.len(), 1);
+            assert!(report.outcome().is_err());
+        }
+        for unavailable in [true, false] {
+            frame.tables[TableId::ProvinceVisibility.index()] = if unavailable {
+                TableView::Unavailable {
+                    reason: "source changed".into(),
+                }
+            } else {
+                TableView::Truncated {
+                    rows: TableRows::ProvinceVisibility(rows.clone()),
+                    missing: 1,
+                }
+            };
+            assert!(compare_province_visibility(&frame, &mut Report::default()).is_err());
+        }
+    }
+
+    #[test]
     fn table_counts_collect_all_issues_and_unproved_sources_remain_incomplete() {
         let (mut frame, _, _, _) = fixture();
         frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
@@ -3886,13 +4190,13 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         frame.tables[TableId::ScriptVariables.index()] = TableView::Unavailable {
             reason: "script scope roots are not proved".into(),
         };
-        let counts = recorded_table_counts(&frame);
+        let counts = recorded_table_counts(&frame, FormatVersion::CURRENT);
         assert_eq!(counts.len(), TableId::ALL.len());
         assert!(counts[&TableId::LexicalTokens].is_err());
         assert!(counts[&TableId::ScriptVariables].is_err());
         assert_eq!(counts[&TableId::Countries], Ok(1));
         let mut report = Report::default();
-        report.record_tables(&frame);
+        report.record_tables(&frame, FormatVersion::CURRENT);
         assert!(lexical_tokens(&frame, &mut report).unwrap().is_empty());
         assert!(report.limitations.values().any(|subjects| {
             subjects
@@ -3903,7 +4207,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         frame.tables[TableId::Stockpiles.index()] = TableView::Unavailable {
             reason: "failed native walk".into(),
         };
-        let counts = recorded_table_counts(&frame);
+        let counts = recorded_table_counts(&frame, FormatVersion::CURRENT);
         let error = counts[&TableId::Stockpiles].as_ref().unwrap_err();
         assert!(error.contains("Stockpiles") && error.contains("failed native walk"));
         assert_eq!(counts.values().filter(|count| count.is_err()).count(), 3);
@@ -3921,7 +4225,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             rows: TableRows::LexicalTokens(Vec::new()),
             missing: 7,
         };
-        let counts = recorded_table_counts(&frame);
+        let counts = recorded_table_counts(&frame, FormatVersion::CURRENT);
         assert!(
             counts[&TableId::LexicalTokens]
                 .as_ref()
@@ -3959,7 +4263,9 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::Stockpiles(Vec::new()));
         assert!(lexical_tokens(&frame, &mut report).is_err());
-        assert!(recorded_table_counts(&frame)[&TableId::LexicalTokens].is_err());
+        assert!(
+            recorded_table_counts(&frame, FormatVersion::CURRENT)[&TableId::LexicalTokens].is_err()
+        );
     }
 
     #[test]
@@ -4028,6 +4334,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         add_country(&mut frame, &mut saved, 202, 9, b"ENG");
         let report = compare_core(
             &frame,
+            FormatVersion::CURRENT,
             &saved,
             Err("state membership is malformed".into()),
             Err("equipment definition is malformed".into()),
@@ -5611,7 +5918,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             }],
         );
         let mut report = Report::default();
-        report.record_tables(&frame);
+        report.record_tables(&frame, FormatVersion::CURRENT);
         assert!(report.refresh_is_current(TableId::RelationTuples, frame.hour));
         assert!(!report.refresh_is_current(TableId::ResearchSlots, frame.hour));
         let context = country_context(&frame).unwrap();
