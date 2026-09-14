@@ -233,22 +233,208 @@
 // and `heights.py` render, `ratios.py`, `predict.py`, `fitk.py` and `spread.py`
 // measure).
 //
-// So the shadow term is closed as a candidate for the brightness gap, and the
-// sun-term scalar it would have to be is now measured: **0.17 on land and 0.41
-// on water, flat in colour, and within half of itself over a thirtyfold change
-// of camera height with no step at the cutoff**.
+// So the shadow term is closed as a candidate for the brightness gap. The pass
+// itself is a separate and much smaller thing, and it is drawn now; the section
+// at the foot of this header measures it.
 //
-// ## The pass itself is ported, and it moves the gap by a per cent (2026-09-14)
+// ## And `k` is not what the frame says: the sun-term reading is withdrawn (2026-09-14)
+//
+// The paragraph that used to stand here read the table above as "the sun-term
+// scalar the game demands is 0.17 on land and 0.41 on water, flat in colour",
+// and made that the lead. It is withdrawn. `k = (game - A) / S` is the
+// coefficient of a **one-parameter model that pins the ambient's coefficient at
+// 1**, and the frame does not support that pin. Three candidates for a genuine
+// multiplier on `CalculateSunLight`'s output were predicted and measured first;
+// all three are dead, and then the shape itself turned out not to be the
+// frame's.
+//
+// **1. The day factor.** `CalculateSunLight` weights the sun by
+// `vDayFactor = 1 - DayNightFactor( CalcGlobeNormal( pos.xz ) )` and the moon by
+// the same function at `MOON_FEATHER_MIN/MAX`. The open worry was that the
+// terminator law `map::frame` fits is `DayNightWithBlend`'s, which might take a
+// different feather or a different direction from this one. The game's cached
+// terrain pixel shader answers it: both go through the *same* one-argument
+// `DayNightFactor( vGlobeNormal )` overload, at `FEATHER_MIN = -0.01` and
+// `FEATHER_MAX = 0.01`, reading the same `DayNight_Hour_SunDir.yzw`, and
+// `MOON_FEATHER_MIN/MAX` are `-0.01`/`0.01` as well
+// (`00080000F7A2100080E174D8.scache:700-703, 734-743, 1018-1038`); `common.wgsl`
+// ports that body statement for statement. Over Berlin (3010, 1568) the globe
+// normal is (0.1045, 0.9265, -0.3614) and its dot with the sun direction is
+// **-0.3088** at the day hour 60828490 and **+0.4123** at the night hour
+// 60828478 — 31 and 41 times the feather's own half-width — so `vDayFactor` is
+// exactly 1 by day and `vNightFactor` exactly 1 by night, in the game's shader
+// as in this one, and no plausible error in the declination moves a dot of 0.31
+// inside a band of 0.01. Predicted `k` **1.000** against a measured 0.17.
+//
+// **2. The light vector.** As ported, and read out of the binary rather than
+// out of R1. `FUN_141267270` writes the virtual sun as three consecutive floats
+// at `this+0x5d18`: `(1 - hourFraction) * MAP_SIZE_X` with `MAP_SIZE_X` from
+// `*(DAT_143320db8 + 0x40)`, then `DAT_14331e6ec` (`SUN_HEIGHT` 600), then
+// `DAT_14331e768` (`SUN_LATITUDE` 848). `SUN_LATITUDE` lands in the **third**
+// float, so it is a world `z` and not a pixel row — the 848-from-the-top
+// reading would have put it at `z` 1199 and *raised* `N.L`, the wrong way. The
+// same function derives the moon's `z` as `MAP_SIZE_Y - *(this+0x5d1c)`, that
+// is `2048 - SUN_HEIGHT`, which is the odd form `map::frame` already carries
+// marked UNVERIFIED; it is the decompiled form, and it is deliberate enough to
+// be reproduced. `FUN_140ff3bb0` copies those into `cb0` at 144 and 160 with
+// `DAT_14331e898` (`SUN_HEIGHT_WATER` 5000) and `DAT_14331eafc`
+// (`MOON_HEIGHT_WATER` 550) in the `.w` that `CalculateSunDirectionWater`
+// swizzles, and builds both second positions as
+// `fmod( x + MAP_SIZE_X * 0.5, MAP_SIZE_X )` at `DAT_14331e7f0` / `DAT_14331ea5c`
+// (`SECOND_SUN_LATITUDE` and `SECOND_MOON_LATITUDE`, both 100) — field for field
+// what `map::frame` writes. At Berlin `|vWorldPos.x - vSourcePos.x|` is 275 of a
+// half map width of 2816, so the wrap branch does not fire and `smoothstep(0.5,
+// 1.0, 0.098)` is 0: the second sun is not engaged and cannot be the gap
+// either. That gives `N.L` 0.6045 on flat land (sun elevation 37.2 degrees) and
+// 0.9883 on flat water.
+//
+// The prediction is what kills it. A lower sun does scale land harder than
+// water, as the two heights suggest — but not by enough, and not in the ratio
+// the split needs. `k` 0.164 on land wants `N.L` 0.0991, which at `SUN_HEIGHT`
+// 600 puts the source **6,022** world units away horizontally; `k` 0.380 on
+// water wants `N.L` 0.3759, which at `SUN_HEIGHT_WATER` 5000 puts it **12,327**
+// away. The two heights share one horizontal position by construction — the
+// water swizzle changes only `y` — so a single virtual sun cannot be 6,022 from
+// Germany for the terrain and 12,327 for the sea beside it. No map size, no
+// latitude convention, no hour and no declination closes a factor of 2.05 in
+// that ratio.
+//
+// **3. Any remaining multiplier on the sun path.** There is none.
+// `00_graphics.lua` gives `SUN_INTENSITY = 1.0` (line 1061, with a
+// commented-out 0.4 beside it), `SUN_SPECULAR_INTENSITY = 1.0` (1062) and
+// `LIGHT_HDR_RANGE = 1.0` (772), and `FUN_140ff3bb0` is where each lands in
+// `cb0`: `DAT_14331f084` into `SunDiffuseIntensity.a` at `0x17c`,
+// `DAT_14331f27c` (`MOON_INTENSITY` 2.5) into `MoonDiffuseIntensity.a` at
+// `0x18c`, `DAT_14331f120` into `SunSpecularIntensity` at `0x194` and
+// `DAT_14331d3b0` into `HdrRange` at `0xdc`. So the sun path carries no free
+// scalar at all; and `SunSpecularIntensity` and `HdrRange` are shared by the
+// terrain and the water passes, so neither could split them even if it were
+// wrong.
+//
+// **The shape itself.** `A` and `S` are not proportional across a frame: the
+// terrain normal drives them apart, because `AmbientLight` weights a sideways
+// normal at 0.10 to 0.15 and an upward one at 0.03
+// (`DayAmbientMapPosX`/`NegX`/`PosY` in the cached shader) while
+// `saturate( N.L )` runs from 0 to 0.9 over the same normals. So the game's
+// scene `G` can be regressed on `A` and `S` per channel, and the coefficient of
+// `A` is a measurement rather than an assumption. Three nested models over the
+// same bare-terrain and open-water masks as the table above:
+//
+//     sun     G = A + k*S           (one parameter, alpha pinned at 1)
+//     scale   G = r*(A + S)         (one parameter, alpha = beta)
+//     free    G = alpha*A + beta*S  (two parameters)
+//
+// Least squares, green channel, over the four fill-off pairE framings and the
+// two scored pairs, with the residual rms of each — the rms is the part that
+// does not care how collinear `A` and `S` are, and the standard error on
+// `alpha` comes from the residual variance with the sample discounted 16-fold
+// for the spatial correlation of neighbouring pixels:
+//
+// | frame | surface | free alpha | free beta | rms free | `k` | rms sun | `r` | rms scale |
+// |---|---|---|---|---|---|---|---|---|
+// | `hmin` 50.178 | land | 0.516 +- 0.016 | 0.221 | 0.0339 | 0.167 | 0.0365 | 0.253 | 0.0347 |
+// | `h200` 163.934 | land | 0.361 +- 0.011 | 0.265 | 0.0291 | 0.204 | 0.0372 | 0.274 | 0.0293 |
+// | `h400` 627.404 | land | 0.271 +- 0.011 | 0.249 | 0.0361 | 0.175 | 0.0518 | 0.252 | 0.0361 |
+// | `h700` 1589.602 | land | 0.314 +- 0.026 | 0.359 | 0.0569 | 0.301 | 0.0632 | 0.355 | 0.0569 |
+// | `03.md` 302.960 | land | 0.350 +- 0.006 | 0.230 | 0.0447 | **-0.386** | 0.0848 | 0.295 | 0.0451 |
+// | `02.md` 310.044 | land | 0.272 +- 0.006 | 0.300 | 0.0385 | **-0.136** | 0.0863 | 0.287 | 0.0385 |
+// | `hmin` | water | 0.612 +- 0.192 | 0.481 | 0.0471 | 0.404 | 0.0498 | 0.506 | 0.0473 |
+// | `h200` | water | 0.748 +- 0.048 | 0.417 | 0.0307 | 0.392 | 0.0310 | 0.448 | 0.0311 |
+// | `h400` | water | 0.289 +- 0.018 | 0.371 | 0.0187 | 0.315 | 0.0233 | 0.364 | 0.0188 |
+// | `h700` | water | 0.387 +- 0.032 | 0.334 | 0.0149 | 0.296 | 0.0158 | 0.337 | 0.0149 |
+// | `03.md` | water | 0.626 +- 0.032 | 0.413 | 0.0261 | 0.383 | 0.0268 | 0.430 | 0.0263 |
+// | `02.md` | water | 0.321 +- 0.028 | 0.433 | 0.0176 | 0.380 | 0.0199 | 0.424 | 0.0177 |
+//
+// The free `alpha` is **0.27 to 0.75, never within two standard errors of 1 and
+// more than nineteen away on every row but the two water ones with the smallest
+// samples** (30, 58, 66, 26, 108 and 121 standard errors on the six land rows).
+// The one-parameter scale model — which sets `alpha = beta` and so says nothing
+// about the sun in particular — reproduces the free fit's residual to within
+// 2.5 % on every one of the twelve rows, while pinning `alpha = 1` costs 1 % to
+// 124 % more residual, the worst of it on the two scored pairs. And on those
+// two scored pairs `k` is **negative** over land in two channels of three
+// (`reference/03.md` -0.312 -0.386 -0.141, `reference/02.md`
+// -0.551 -0.136 +0.187), because the game's scene there is *below* our ambient
+// alone: no scalar on `CalculateSunLight`'s output, of any sign the function can
+// produce, reaches it. Those two frames carry the political fill, which makes
+// `A` large (0.17 and 0.12 green against 0.03 on bare terrain) and so separates
+// the two models far better than the fill-off frames do.
+//
+// Binning those two frames by `S/A` shows it without any fit at all. Green
+// channel, `bins.py`, sextiles of `S/A`:
+//
+// | frame | `S/A` band | n | mean `A` | mean `S` | mean `G` | `G/A` | `(G - A)/S` |
+// |---|---|---|---|---|---|---|---|
+// | `03.md` | 0.07-0.41 | 159,726 | 0.3006 | 0.0774 | 0.1197 | 0.40 | -2.34 |
+// | `03.md` | 0.97-1.34 | 399,815 | 0.1489 | 0.1714 | 0.0904 | 0.61 | -0.34 |
+// | `03.md` | 16.5-37.5 | 169,734 | 0.0130 | 0.2533 | 0.1108 | 8.50 | +0.39 |
+// | `02.md` | 0.05-0.57 | 163,134 | 0.2525 | 0.0920 | 0.1027 | 0.41 | -1.63 |
+// | `02.md` | 1.62-2.52 | 408,689 | 0.0841 | 0.1800 | 0.0724 | 0.86 | -0.07 |
+// | `02.md` | 18.5-up | 175,328 | 0.0060 | 0.1621 | 0.0726 | 12.21 | +0.41 |
+//
+// Where the sun contributes almost nothing the game's scene is 0.40 of our
+// ambient, not 1.0 of it, on both the day and the night pair; the apparent `k`
+// only climbs toward 0.4 in the bands where `S` dominates and the ambient's
+// error is diluted out of it. That is a scene scale seen from two ends, and it
+// is the whole of the "flat in colour" result the withdrawn paragraph reported.
+//
+// Two readings fit the same medians and only one fits the frame: **the game's
+// whole scene, its ambient included, is about 0.25 to 0.36 of ours on land and
+// about 0.34 to 0.51 on water, and the ambient is not right after all.** `k`
+// came out at 0.17 on the bare-terrain frames rather than at the scale only
+// because forcing `alpha` to 1 has to subtract the whole of our too-bright
+// ambient out of the sun's coefficient: a scene scale `r` shows up as
+// `k = r + (r - 1) * A/S`, which with `A/S` 0.12 on land at `h200` is 0.19
+// against a measured 0.20. Nothing in `CalculateSunLight` is implicated, and the
+// land/sea split does not need a cause of its own either — as a scene scale it
+// is 0.25 against 0.51 at height 50 and 0.27 against 0.45 at 164, but 0.25
+// against 0.36 at 627 and 0.36 against 0.34 at 1590, so the two surfaces
+// converge as the camera rises where the earlier `k` had them crossing over.
+//
+// **What is left, and where to look next.** The remainder is the single
+// scene-wide gain that `SCENE_BRIGHTNESS` in `map::post` already stands for —
+// the twelve rows bracket its 0.37 — with the hue rotation and the sea's
+// residual offset that `map::post` and `water.wgsl` record. No constant is
+// refitted here, because nothing in this file changed: this is a correction to
+// what the measurement means, not to what the pass computes. But it does move
+// the search. A cause now has to multiply `(ambient + diffuseLight) * _Diffuse`
+// as a whole, which is a much narrower shape than "something on the sun", and
+// `ComposeLight` has exactly one term of that shape: **`HdrRange`**. It is
+// closed too, by name rather than by fit — `FUN_14084d9c0` is the parser that
+// reads `"LIGHT_HDR_RANGE"` into `DAT_14331d3b0`, `00_graphics.lua:772` gives it
+// 1.0, and `FUN_140ff3bb0` writes that into `cb0 + 0xdc` unless
+// `DAT_143317238` is set, in which case it writes the literal 1.0 instead, so
+// the constant buffer holds 1.0 either way. (The same parser check names every
+// other global quoted above: `DAT_14331f084` is `SUN_INTENSITY`,
+// `DAT_14331f120` is `SUN_SPECULAR_INTENSITY`, `DAT_14331e6ec` is `SUN_HEIGHT`,
+// `DAT_14331e768` is `SUN_LATITUDE` and `DAT_14331e898` is `SUN_HEIGHT_WATER`.)
+// That leaves `_Diffuse` itself — the terrain albedo after the atlas blend, the
+// colormap overlay, the snow and the mud — as the only remaining factor of that
+// shape inside this pass, and [`super::textures`] records what has already been
+// ruled out there: the decode is not a power, and the atlas tiles' own byte
+// means are what this port samples. A scale on the albedo that is not a decode,
+// or a stage between the scene and the grade that is not in `map::post`, is what
+// the next search should be aimed at — not at `CalculateSunLight`.
+//
+// Scripts: `C:\hoi4_scratch\replay_map\sunterm\` (`terms.py` is the CPU mirror
+// of the day factor and the light vector, `probe.py` forces the shadow term,
+// `render.py` renders, `gamescene.py` inverts the grade, `fit.py` and `bins.py`
+// measure).
+//
+// ## The pass itself is drawn now, and it moves nothing by much (2026-09-14)
 //
 // What was still owed to the port, and is a separate and much smaller thing,
-// was the shadow pass below height 400. `map::shadow` now draws it: the
-// 2048-square depth map with the trees and the map-object meshes as its casters
-// — **not** the terrain, which declares no shadow effect and so cannot shade
-// itself — the screen-space `terrainunlit`/`treeunlit` pre-pass, and its two
-// blurs. `--no-shadows` turns it off, which is the game's own `Draw.Shadows`
-// console toggle, so the pair is measurable in one binary. Over the same masks
-// and the same pairE frame as the table above, medians and game-over-ours
-// ratios with the chain off and on:
+// was the shadow pass below height 400 that the paragraph above leaves open.
+// `map::shadow` draws it: the 2048-square depth map, whose casters are the
+// trees and the map-object meshes and **not** the terrain — `pdxmap.shader`
+// declares no shadow effect, there is no `terrainshadow` in the binary and the
+// depth pass never calls the terrain renderer, so the heightfield cannot shade
+// itself and the relief in the game's frames is `N.L` — the screen-space
+// `treeunlit`/`terrainunlit` pre-pass, and its two blurs. `--no-shadows` turns
+// it off, which is the game's own `Draw.Shadows` console toggle, so the pair is
+// measurable in one binary. Over the same masks and the same pairE frame as the
+// table at the head of this file, medians and game-over-ours ratios with the
+// chain off and on:
 //
 // | surface | off | ratio | on | ratio |
 // |---|---|---|---|---|
@@ -260,10 +446,13 @@
 //
 // The land ratio moves 0.236 to 0.240 and the tree ratio 0.361 to 0.373; open
 // water does not move at all, because nothing in the reference frame casts onto
-// the open sea and the term there is 1 either way. So the remaining sun-term
-// gap is untouched in kind and barely touched in size: a refit of
-// `SCENE_BRIGHTNESS` on this frame would want 1.7 % less of the scene than
-// before, and the 0.17 land and 0.41 water scalars stand.
+// the open sea and the term there is 1 either way. So the scene scale the
+// section above settles on is untouched in kind and barely touched in size: a
+// refit of `SCENE_BRIGHTNESS` on this frame would want 1.7 % less of the scene
+// than before, which is inside the bracket the twelve rows already put round
+// its 0.37. The shadow pass is not the missing factor, and it was never a
+// candidate to be — it multiplies the sun alone, and the section above is what
+// rules that shape out.
 //
 // That is the predicted size. The whole range of the pass is a factor between
 // 0.3 and 1 on the sun of the pixels a caster occludes, and at the reference

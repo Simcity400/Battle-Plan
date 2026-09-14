@@ -265,7 +265,14 @@ impl Document {
             &heights,
         )?;
         let tree_build = started.elapsed();
-        let tree_assets = TreeAssets::load(&content.layers, &tree_field.palettes, &mut warnings)?;
+        let tree_assets = TreeAssets::load(
+            &content.layers,
+            &tree_field.palettes,
+            // `TreeMaskTexture` is generated from the river bitmap; see
+            // `map::trees::tree_mask`.
+            &assets.rivers,
+            &mut warnings,
+        )?;
         let tree_geometry = trees::geometry(&tree_assets);
         warnings.push(
             "Tree meshes and their textures are read from gfx/entities and gfx/models, which are outside the content coverage policy and are not hash-verified.".into(),

@@ -66,9 +66,12 @@
 //
 // `SHADOW_WEIGHT_RIVER` is not a candidate, and this was measured rather than assumed:
 // `GetShadowScaled` (`shadow.fxh:44`) returns `(1 - s) + s * saturate( shadowValue )`, so it cannot
-// scale the sun below `1 - s`, and the factor the game's scene demands on our sun term is 0.17 on
-// land and 0.41 on water — under both floors, and the same at camera heights where the engine draws
-// no shadows at all. `terrain.wgsl`'s header has the tables.
+// scale the sun below `1 - s`, and what the game's scene demands stays under that floor at every
+// camera height, the ones where the engine draws no shadows at all included. The size of that demand
+// was first read as a scalar on the sun alone — 0.17 on land, 0.41 on water — and that reading is
+// withdrawn: it holds the ambient's coefficient at 1, and regressing the game's scene on the ambient
+// and sun parts separately measures that coefficient at 0.24 to 0.81. `terrain.wgsl`'s header has
+// the tables and the three sun-path candidates it closes.
 //
 // What is left is brightness, not hue. Solving the graded game pixel back through the post chain —
 // which the CPU mirror reproduces to within a byte, with the adapted luminance pinned by the

@@ -10,6 +10,21 @@
 //
 // Dropped, with the reason:
 //
+// * Nothing on the shadow term. `fShadowTerm` is
+//   `GetShadowScaled( SHADOW_WEIGHT_TREE, In.vScreenCoord, ShadowMap )` and
+//   `map::shadow` fills that buffer below camera height 400, where the engine
+//   draws the `treeunlit` pre-pass this port now draws too; above 400 the term
+//   is exactly 1, because `ShadowFadeFactor` is 0 and the saturate inside
+//   `GetShadowScaled` takes over, and the port binds the all-ones clear value
+//   there. `graphics.shadows=no` was never what gated any of this —
+//   `mapRenderingOptions.draw_shadows` is, and the reference profile has it on.
+//   The canopy is a caster as well as a receiver: `treeshadow` and `treeunlit`
+//   are at the foot of this file. None of it can explain the scene's brightness
+//   gap, since `GetShadowScaled(SHADOW_WEIGHT_TREE, ...)` cannot scale the sun
+//   below 0.3, and the gap the frame demands is not a scalar on the sun at all
+//   — regressing the game's scene on our ambient and sun parts separately puts
+//   the ambient's own coefficient at 0.24 to 0.81 rather than at the 1 that
+//   reading assumed (`terrain.wgsl`'s header).
 // * `CalculatePointLights`. Point lights come from combats and effects, which
 //   no recorded table carries and which neither reference frame has
 //   (R3 section 2.4).
@@ -77,6 +92,11 @@ struct TreeConstants {
 }
 
 @group(1) @binding(13) var<uniform> tree: TreeConstants;
+
+/// `TreeMaskTexture`, sampler index 14 of `tree.shader`. `map::trees::tree_mask`
+/// generates it from `map/rivers.bmp` the way the engine does, one byte per
+/// texel at half the map's resolution.
+@group(1) @binding(14) var tree_mask_texture: texture_2d<f32>;
 
 struct TreeVarying {
     @builtin(position) position: vec4<f32>,
@@ -182,19 +202,29 @@ fn tree_vertex(
 
 /// `GetTreeMask`: the map-sized mask whose alpha removes trees where it is set.
 ///
-/// UNVERIFIED (R3 section 3.4): the binding. The texture comes from
-/// `pdxmap + 0xc8` and the only map-sized texture with a meaningful alpha at
-/// this uv is `colormap_rgb_cityemissivemask_a.dds`, whose alpha is the city
-/// emissive mask — "no trees inside cities". Only 0.58 % of the 99 056
-/// instances sit above the cutoff, so the reading is not measurable on either
-/// reference frame. Note the uv offsets differ from the main one by half a
-/// texel in x and by two units in z; both are the game's.
+/// The binding is settled. `FUN_1412653e0` builds the tree draw's fourteen
+/// textures on the stack and binds them from start slot 2, which puts
+/// `[pdxmap + 0xc8]` on sampler index 14, `TreeMaskTexture`; the shadow draw
+/// `FUN_141265c10` binds that one pointer alone at start slot 14, which pins it
+/// without the offset arithmetic. `pdxmap + 0xc8` is filled by `FUN_14124b030`
+/// (`source\graphics\pdxmaptexturegeneration.cpp:186`), which rasterises
+/// **`map/rivers.bmp`** into a half-size single-byte texture — so the mask is
+/// the rivers, and the clip is "no canopy over water". The earlier reading,
+/// `colormap_rgb_cityemissivemask_a.dds`, is the texture the same function
+/// binds one slot over, at index 4 as `ColorMap`.
+///
+/// The texture is `R8Unorm` here because wgpu has no `A8Unorm`, so this takes
+/// the red channel where the game's HLSL takes `.a`; it is the same byte. The
+/// sampler is the clamped one, as `tree.shader`'s `AddressU/V = "Clamp"` asks,
+/// and `wrap_u` still sends a wrap copy back onto the map it was copied from so
+/// the clamp does not smear at the seam. Note the uv offsets differ from the
+/// main one by half a texel in x and by two units in z; both are the game's.
 fn tree_mask(world: vec3<f32>) -> f32 {
     let uv = vec2<f32>(
         (world.x - 0.5) / MAP_SIZE_X,
         (world.z + 2.0 - MAP_SIZE_Y) / -MAP_SIZE_Y,
     );
-    return textureSample(color_map, linear_wrap, wrap_u(uv)).a;
+    return textureSample(tree_mask_texture, linear_clamp, wrap_u(uv)).r;
 }
 
 /// `ApplySnowTree`: a straight lerp to `SNOW_COLOR`, without the terrain's

@@ -12,9 +12,16 @@
 //   the viewer translates the geometry instead and gets the same picture.
 // * Nothing on the shadow term: `GetShadowScaled( SHADOW_WEIGHT_BORDER, ... )` is ported and reads
 //   the buffer `map::shadow` fills. The earlier reading here — the reference profile is
-//   `shadows=no`, so there is nothing to sample — was wrong in its premise: what gates the map's
-//   shadow pass is `mapRenderingOptions.draw_shadows`, which the reference profile has on, and
-//   `graphics.shadows` reaches no function on the map path at all (`terrain.wgsl`'s header).
+//   `shadows=no`, so there is no shadow map to sample — was wrong in its premise. `ShadowMap` is a
+//   backbuffer-sized RGBA target cleared to `DAT_143098838 = (1, 0, 0, 1)`, and `FUN_140b481a0`
+//   fills it from a real depth render whenever `mapRenderingOptions.draw_shadows`
+//   (`settings+0x178+0x13`, the `shadows_checkbox` widget) is set and `vCamPos.y` is below
+//   `DRAW_SHADOWS_CUTOFF`; `graphics.shadows` only reaches a hardware check in `FUN_142224600` that
+//   no map-path function reads. The reference profile has `draw_shadows=yes`, so below height 400
+//   this strip now takes the cast value and above it the clear one, which is 1 whatever the buffer
+//   holds. `terrain.wgsl`'s header measures what it costs (`GetShadowScaled` with
+//   `SHADOW_WEIGHT_BORDER` 0.7 can only scale the sun between 0.3 and 1) and rules it out as the
+//   scene's brightness gap.
 // * `MipMapLodBias = -0.5` is applied with `textureSampleBias` because wgpu's sampler has no lod
 //   bias; `MipMapMaxLod = 4` is the sampler's `lod_max_clamp`.
 

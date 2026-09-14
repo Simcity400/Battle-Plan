@@ -477,7 +477,12 @@ fn water_main(input: WaterVertex) -> @location(0) vec4<f32> {
     // projective `z`, not `.xy`, which is what the game writes and so what this
     // writes; `GetShadowScaled` divides `xy` by `w`, so only the `x` term
     // reaches the sample and the `z` one is inert. The buffer it reads is the
-    // one `map::shadow` fills below camera height 400.
+    // one `map::shadow` fills below camera height 400 and the all-ones clear
+    // value above it. The engine does not wrap this one in the terrain's
+    // `max( ..., 0.1 )` (`0008000077A21000026A5E17.scache:1963`), so the two
+    // passes do not share a floor; the sea's own gap is under
+    // `1 - SHADOW_WEIGHT_WATER` at every camera height in any case, which is
+    // what rules the term out as its cause.
     // The `water` effect declares no defines either, so it is the Phong branch.
     var shadow_coord = screen_coord(input.screen_pos);
     shadow_coord = vec4<f32>(
