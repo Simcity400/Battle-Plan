@@ -24,7 +24,7 @@ use std::{
 
 const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
          division is extrapolated along its recorded route by its recorded ETA
-         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -129,6 +129,10 @@ struct Options {
     /// game's `Draw.Shadows` console toggle does; see
     /// `map::scene::Request::no_shadows`.
     no_shadows: bool,
+    // trees
+    /// `--dump --no-trees` skips the canopy, which is what the game's
+    /// `debug_trees` console toggle does; see `map::scene::Request::no_trees`.
+    no_trees: bool,
     // borders
     /// `--dump --demilitarized <ids>`: state ids to treat as demilitarised **in addition to** the
     /// hour's recorded `StateFlags`, so an hour whose flags are short can still be scored against
@@ -155,6 +159,7 @@ impl Options {
             postfx: true,
             no_water: false,
             no_shadows: false,
+            no_trees: false,
             ..Default::default()
         };
         let mut args = args.peekable();
@@ -188,6 +193,8 @@ impl Options {
                 // colour
                 Some("--no-water") => options.no_water = true,
                 Some("--no-shadows") => options.no_shadows = true,
+                // trees
+                Some("--no-trees") => options.no_trees = true,
                 Some("--postfx") => {
                     let value = args
                         .next()
@@ -398,6 +405,14 @@ impl Options {
             return Err(invalid(
                 "--no-shadows skips the cast-shadow chain so its effect can be measured on its \
                  own and is a --dump verification aid",
+            ));
+        }
+        // trees: the same reasoning again — `debug_trees` is what showed that the game's dark
+        // forest masses live in the terrain atlas and not in the canopy, so the pair it makes is
+        // how the terrain albedo is measured per terrain type.
+        if options.no_trees && !options.headless_dump {
+            return Err(invalid(
+                "--no-trees skips the canopy so the bare terrain can be measured on its own and                  is a --dump verification aid",
             ));
         }
         // borders: the override adds a save's flag to an hour whose recorded flags are short, so
@@ -760,6 +775,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 no_water: options.no_water,
                 // shadows
                 no_shadows: options.no_shadows,
+                // trees
+                no_trees: options.no_trees,
                 overlay: Overlay {
                     names: Some(&placements),
                     layer_alpha: fade.as_array(),
@@ -1370,6 +1387,28 @@ mod tests {
                 .debug_borders
         );
         assert!(parse(&["c.battleplan", "--debug-borders"]).is_err());
+    }
+
+    // trees
+    #[test]
+    fn the_canopy_toggle_is_a_dump_only_verification_aid() {
+        let dump = parse(&[
+            "--dump",
+            "campaign.battleplan",
+            "--hour",
+            "60828490",
+            "--out",
+            "frame.png",
+            "--no-trees",
+        ])
+        .unwrap();
+        assert!(dump.no_trees);
+        assert!(
+            !parse(&["--dump", "c.battleplan", "--hour", "1", "--out", "f.png"])
+                .unwrap()
+                .no_trees
+        );
+        assert!(parse(&["c.battleplan", "--no-trees"]).is_err());
     }
 
     // capture

@@ -971,6 +971,7 @@ impl Viewer {
                     },
                     // trees
                     season: document.tree_season(),
+                    no_trees: false,
                 },
             )
             .map_err(|e| e.to_string())?;

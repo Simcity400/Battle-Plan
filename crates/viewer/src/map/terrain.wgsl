@@ -459,6 +459,77 @@
 // framings the occluded pixels are a small share of the frame: 17 % at height
 // 164, where the buildings and the sprawl still draw, and 0.7 % at height 303,
 // where they do not and only the canopy casts.
+//
+// ## The albedo is not a scale either: the gap is per atlas tile (2026-09-15)
+//
+// The section above leaves `_Diffuse` as the last term of the right shape, and
+// the search that followed it asked whether the palette-to-tile mapping or the
+// atlas layout is wrong, since a wrong tile for forest would look like a
+// land-wide albedo error. **They are not.** `super::textures::atlas_lookup`
+// carries the confirmation: `texture = N` of `common/terrain/00_terrain.txt` is
+// the byte, `calculate_map_tex_index` cuts it into `(N mod 4, N div 4)` — the
+// cached game shader's body, `MAP_NUM_TILES` 4 and all, is this file's
+// expression for expression — and decoding `atlas0.dds` and cutting it into its
+// sixteen 512-square tiles names each one as the terrain that claims it. The
+// two warnings the loader printed on every dump were noise and now say so: the
+// seven undeclared palette indices cover 53 of `terrain.bmp`'s 11,534,336
+// pixels, and palette index 14, the `texture = 255` one, is painted nowhere at
+// all.
+//
+// What the same masks do show is that the remaining gap is **not** one scale.
+// Masking both frames by the terrain type each pixel stands on — `terrain.bmp`
+// projected through the fitted `pairE` camera (3009.95, 1567.92, 163.934),
+// keeping only texels whose whole `all_same` neighbourhood shares one tile so
+// no fragment mixes two, with the game's interface and this viewer's counter
+// and name layers masked out — the game's frame demands a different factor of
+// each type. Scene space, the game's `pairE_04_notrees` carried back through
+// the trusted grade against our `--no-trees --postfx off` dump, so the fill is
+// on, the canopy off and the shadow chain on in both:
+//
+// | tile | terrain | px | game scene | this viewer | game / ours |
+// |---|---|---|---|---|---|
+// | 1 | `terrain_0` plains | 186,113 | 0.1059 0.1076 0.0943 | 0.3234 0.3529 0.2250 | 0.327 0.305 0.419 |
+// | 4 | `terrain_1` forest, `jungle_18` | 50,360 | 0.0445 0.0493 0.0457 | 0.1840 0.2322 0.1461 | 0.242 0.212 0.313 |
+// | 10 | `forest_13` urban | 5,611 | 0.1070 0.1000 0.0941 | 0.2936 0.2801 0.2319 | 0.364 0.357 0.406 |
+// | 0 | `terrain_5`, `plains_17` plains | 4,720 | 0.1039 0.0958 0.0840 | 0.2589 0.2887 0.1854 | 0.401 0.332 0.453 |
+// | 5 | `terrain_4` forest | 732 | 0.1221 0.0778 0.0745 | 0.2801 0.3616 0.1795 | 0.436 0.215 0.415 |
+// | 3 | `desert_mountain` hills | 379 | 0.0442 0.0494 0.0327 | 0.2164 0.2463 0.1132 | 0.204 0.200 0.289 |
+// | all | | 247,999 | 0.0933 0.0952 0.0841 | 0.2928 0.3253 0.2081 | 0.319 0.292 0.404 |
+//
+// The two rows with the samples — plains at 0.305 green and forest at 0.212 —
+// are a factor of 1.44 apart, and the split is geographic nowhere: over the
+// frame's four quadrants the plains ratio is 0.295, 0.315, 0.309, 0.305 and the
+// forest ratio 0.174, 0.271, 0.212, 0.190. Read as a contrast rather than as
+// two levels, the game's forest sits at **0.42, 0.51, 0.49, 0.40 of its own
+// plains** where ours sits at 0.71, 0.59, 0.72, 0.64.
+//
+// That contrast is exactly what the two tiles hold, in the two colour spaces
+// the atlas could be read in. Tile 4 against tile 1, green, over `atlas0.dds`:
+// **0.622 as bytes, 0.444 decoded**. This viewer draws 0.66 and the game draws
+// 0.45. The same reading for the other tiles the frame carries (byte, then
+// decoded, each against tile 1): tile 0 0.905 / 0.819, tile 3 0.880 / 0.764,
+// tile 5 0.816 / 0.699, tile 6 0.964 / 0.967, tile 10 0.767 / 0.602, tile 11
+// 0.736 / 0.552.
+//
+// This does not reopen the decode, which [`super::textures`] closed end to end
+// and on its own level-binned evidence, and no constant moves here. It does say
+// what a cause now has to do, which is narrower than the last section left it:
+// the remaining factor is **not** a scene-wide gain, because one gain moves
+// every type by the same amount and this frame wants 0.31 on plains and 0.21 on
+// forest. Whatever pays for it has to raise the contrast *between* atlas tiles
+// by about 1.4 while leaving the frame's level roughly where the eight-framing
+// fit already puts it. The graded 8-bit frames say the same thing in the
+// smaller numbers the grade compresses them into — game against ours, red green
+// blue, same pair: tile 1 78.0 87.7 98.5 against 90.2 103.0 97.4, tile 4
+// 29.2 41.3 54.4 against 51.3 69.6 67.5, tile 10 75.2 77.3 88.1 against
+// 81.6 86.8 95.0, tile 0 72.1 80.5 89.7 against 73.6 87.3 83.6.
+//
+// `--dump --no-trees` is the switch that makes the canopy side of this
+// measurable in one binary, and it is the game's own `debug_trees`. Scripts:
+// `C:\hoi4_scratch\replay_map\tile\` (`bcdec.py` and `atlas.py` decode and cut
+// the atlas, `hist.py` counts the palette, `typemask.py` projects the type mask
+// and tabulates the graded frames, `scene_types.py` the same in scene space,
+// `stability.py` the quadrants).
 
 /// `SHADOW_WEIGHT_TERRAIN` (`constants.fxh:170`), the share of the sun the
 /// screen-space shadow buffer is allowed to take: a fully shadowed pixel keeps
