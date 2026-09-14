@@ -209,7 +209,11 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     );
     out.note::<tables::DivisionMovement>(
         frame,
-        "a division among the missing rows counts as standing still: its counter sits on its          province's own anchor and its supply crate is not suppressed for a convoy crossing",
+        "a division among the missing rows counts as standing still: its counter sits on its          province's own anchor instead of along its route, and its supply crate is not suppressed          for a convoy crossing",
+    );
+    out.note::<tables::DivisionEta>(
+        frame,
+        "nothing changes in this render, which draws each recorded hour and nothing between          them; a moving counter steps from one hour's point to the next where the game glides,          and closing that would mean extrapolating along the route from this table's remaining          time and saying on the frame that the position between hours is extrapolated",
     );
     out.note::<tables::TaskForces>(
         frame,

@@ -819,8 +819,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         // counters
         println!(
-            "Counters: {} land, {} naval; {} air bases, {} naval bases; {} land combats, {} naval combats; {} stacks with no anchor",
+            "Counters: {} land ({} between provinces), {} naval; {} air bases, {} naval bases; {} land combats, {} naval combats; {} stacks with no anchor",
             counter_report.land_counters,
+            counter_report.moving,
             counter_report.naval_counters,
             counter_report.air_bases,
             counter_report.naval_bases,
