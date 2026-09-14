@@ -228,6 +228,10 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
         frame,
         "a land combat among the missing rows carries no combat icon",
     );
+    out.note::<tables::LandCombatProgress>(
+        frame,
+        "a land combat among the missing rows shows no progress percentage, and its direction          wedge falls back to the first attacker whose province differs rather than the attacker          the engine points at",
+    );
     out.note::<tables::NavalCombats>(
         frame,
         "a naval combat among the missing rows carries no combat icon",
