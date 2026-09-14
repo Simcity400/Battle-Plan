@@ -60,6 +60,87 @@
 // `pairE_h200_nofill` is 1, 1 and 2 levels of 255, against this viewer's 0.
 // Scripts: `C:\hoi4_scratch\replay_map\scene\pairE_compare.py`,
 // `fitE_terrain.py`.
+//
+// ## Which effect and which defines the engine actually binds
+//
+// The scene brightness search asked whether the political-map terrain draw runs
+// with the variant this port assumes. It does, and the evidence is now closed
+// enough that the question should not be reopened.
+//
+// `FUN_141261100` compiles all four map-terrain effects at construction, each by
+// its literal name against `"gfx/FX/pdxmap.lua"`, and stores the resulting
+// effect index in its own field: `"terrain"` (the string at `0x142719110`) to
+// `this+0x14`, `"terrain_low_gfx"` (`0x14298fa30`) to `this+0x18`,
+// `"underwater"` (`0x14298fa40`) to `this+0x1c` and `"terrainunlit"`
+// (`0x14298fa50`) to `this+0x20`. Compiling them all is not selecting one.
+//
+// The selection is in the draw, `FUN_141264d30(this, ctx, _, pass, ...)`, whose
+// `pass` argument picks the field: 0 takes `+0x14` or `+0x18`, 1 takes `+0x1c`
+// (underwater) and 2 takes `+0x20` (terrainunlit). For the main pass it reads a
+// byte from the graphics-settings object `*(DAT_143317038) + 0x178 + 0x18`
+// (`FUN_1401fa1c0` returns the global, `FUN_1401faa50` adds `0x178`) and takes
+// `terrain_low_gfx` when that byte is zero, `terrain` otherwise. The byte is
+// `high_gfx_shaders`, which the reference profile's `settings.txt` sets to
+// `yes`; `draw_hires_terrain`, `shadows` and `texture_quality` are read nowhere
+// on this path, and `pdxmap.shader` carries no hires terrain effect at all.
+//
+// The engine's own shader cache settles it without the decompile. A run writes
+// the fully preprocessed HLSL it handed the compiler to
+// `<userdir>/shadercache/dx11_win32/{vs,ps}_5_0/*.scache`, injected defines
+// included, so the reference profile's cache is a direct record of what was
+// compiled. `PixelShaderTerrain` appears there in exactly two define sets, and
+// the one that matches this port
+// (`ps_5_0/00080000F7A2100080E174D8.scache`, and the same body with borders on
+// in `0008000089A21000815BD390.scache`) is:
+//
+//     PIXEL_SHADER, MAP_SIZE_X 5632, MAP_SIZE_Y 2048,
+//     MAP_POW2_X 1, MAP_POW2_Y 1, FOW_POW2_X 1, FOW_POW2_Y 1,
+//     GRADIENT_BORDERS, PDX_IMPROVED_BLINN_PHONG, PDX_DIRECTX_11
+//
+// and nothing else. The two cached bodies differ in `GRADIENT_BORDERS` and in
+// nothing else, which is the console `debug_borders` toggle: the only string of
+// the five searched for that the binary contains at all is `GRADIENT_BORDERS`
+// (at `0x142719378`, read by the console handlers at `0x14024930b`,
+// `0x1402494ff` and `0x140a4df30`, among the "Borders enabled/disabled" texts).
+// `NO_SHADER_TEXTURE_LOD` exists only inside the OpenGL header block beside
+// `#define PDX_OPENGL 1` and `gfx/FX/defines_glsl.fxh`, so the D3D11 path never
+// sets it; `LOW_END_GFX` and `PDX_IMPROVED_BLINN_PHONG` are not in the binary at
+// all and can only come from the `Defines` blocks of `pdxmap.shader`.
+//
+// So the assumed set is the bound set. Three further checks against the same
+// cached source found no unported term either:
+//
+// * Every `static const` the cached terrain pixel shader carries and this port
+//   also names — 67 of them, `COLORMAP_OVERLAY_STRENGTH` and `NIGHT_DARKNESS`
+//   and the ambient basis and `FOG_MAX` and the rest — has the same value.
+//   (`constants.fxh` carries commented-out alternatives for `SNOW_COLOR` and
+//   `FOG_MAX`; the cache shows the live ones are the ones ported.)
+// * The terrain vertex shader (`vs_5_0/0008000009540000B4175865.scache`) is LOD
+//   arithmetic and two projections. It writes no colour, no fog and no lighting
+//   term, so replacing its quads with a uniform grid cannot move brightness.
+// * The pixel shader's constant buffers are `cb0`, the frame constants
+//   `FUN_140ff3fc0` fills, and `cb1`/`cb2`, which hold
+//   `ShadowMapTextureMatrix`, `QuadOffset_Scale_IsDetail`, `vSnap`,
+//   `vBorderLookup_HeightScale_UseMultisample_SeasonLerp` and
+//   `GridStart_InvCellSize`. Of those the terrain pixel shader reads none — the
+//   last is declared and never used — so there is no per-draw multiplier to
+//   port. The draw's own argument block in `FUN_141264d30` is a texture table,
+//   not constants.
+//
+// The counterfactual was measured rather than argued: rendering the reference
+// day frame with every `LOW_END_GFX` branch taken instead (flat `(0,1,0)` base
+// normal, `vSpec` 0, `ComposeLight` without the snow ambient, no city lights, no
+// distance fog) moves `reference/03.md` from mae 30.92 / delta E 20.75 to
+// 31.23 / 21.28 and lowers all three SSIM levels. Over the same 809 k
+// bare-terrain pixels of the pairE frame it moves the game-over-ours scene ratio
+// from 0.236 0.245 0.317 to 0.216 0.227 0.333 — a few per cent, and the wrong
+// way in two channels of three. It is both the wrong variant and far too small
+// an effect to be the gap.
+//
+// What this does not explain, and what is therefore left: the table above. The
+// terrain effect, its defines, its constants, its vertex stage and its constant
+// buffers are all now accounted for, so the remaining factor of four has to be
+// in an input to the pass rather than in the pass itself.
 
 @group(1) @binding(0) var terrain_diffuse: texture_2d<f32>;
 @group(1) @binding(1) var height_normal: texture_2d<f32>;
