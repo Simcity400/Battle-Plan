@@ -32,6 +32,8 @@ use crate::{
 use crate::map::rivers::{self, RiverAssets, RiverImage, RiverMesh};
 // trees
 use crate::map::trees::{self, TreeAssets, TreeField, TreeGeometry, TreeImage};
+// close zoom
+use crate::map::sprawl::{self, Sprawl};
 // names
 use crate::map::{
     camera::Camera,
@@ -97,6 +99,11 @@ pub struct Document {
     pub tree_field: TreeField,
     /// Wall time of the instance generation, for reporting.
     pub tree_build: Duration,
+    // close zoom
+    /// The city sprawl: its mesh library and its placed houses.
+    pub sprawl: Sprawl,
+    /// How long generating the sprawl took.
+    pub sprawl_build: Duration,
 }
 
 impl Document {
@@ -236,6 +243,12 @@ impl Document {
         warnings.push(
             "Tree meshes and their textures are read from gfx/entities and gfx/models, which are outside the content coverage policy and are not hash-verified.".into(),
         );
+        // close zoom
+        let started = Instant::now();
+        let (cities, city_styles) = installed_content::cities::read(&content.layers)?;
+        let sprawl_plan = sprawl::generate(&cities, &city_styles, &assets.spawn_city, &heights)?;
+        let sprawl = Sprawl::load(&content.layers, &sprawl_plan, &mut warnings)?;
+        let sprawl_build = started.elapsed();
         Ok(Self {
             playback: Playback::new(replay)?,
             map,
@@ -265,6 +278,9 @@ impl Document {
             tree_geometry,
             tree_field,
             tree_build,
+            // close zoom
+            sprawl,
+            sprawl_build,
         })
     }
 

@@ -24,6 +24,8 @@ use crate::map::{
     // rivers
     rivers::{RiverAssets, RiverMesh},
     scene::{OUTPUT_FORMAT, Request, Scene, extent, invalid},
+    // close zoom
+    sprawl::Sprawl,
     // names
     sprites::MapIcons,
     textures::MapAssets,
@@ -50,6 +52,8 @@ pub struct MapLayers<'a> {
     // weather
     /// The hour's `SnowMudData` grid.
     pub snow_mud: &'a SnowMud,
+    // close zoom
+    pub sprawl: &'a Sprawl,
     // trees
     pub tree_assets: &'a TreeAssets,
     pub tree_geometry: &'a TreeGeometry,
@@ -266,6 +270,9 @@ pub struct DumpReport {
     // trees
     /// Canopy instances the frame drew, over every wrap copy.
     pub tree_instances: u32,
+    // close zoom
+    /// City-sprawl houses the frame drew, over every wrap copy.
+    pub sprawl_drawn: u32,
     // borders
     /// Province boundaries the demilitarised-zone pass drew.
     pub demilitarized_edges: usize,
@@ -333,6 +340,8 @@ pub fn dump_png(
             layers.tree_geometry.clone(),
             layers.tree_field,
         )?;
+        // close zoom
+        scene.set_sprawl(&device, &queue, layers.sprawl)?;
         // weather
         let snow_mud = layers.snow_mud;
         scene.set_snow_mud(
@@ -377,6 +386,8 @@ pub fn dump_png(
             icon_pages: scene.icon_page_count(),
             // trees
             tree_instances: scene.tree_instances(),
+            // close zoom
+            sprawl_drawn: scene.sprawl_drawn(),
             // borders
             demilitarized_edges: scene.demilitarized_edges(),
         })

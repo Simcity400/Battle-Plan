@@ -632,18 +632,29 @@ pub struct Descriptors {
 impl Descriptors {
     /// Resolves an entity or mesh name to its `.mesh` and world scale.
     ///
-    /// A `mapobject_<paletteIndex>` is a `pdxmesh` name directly (R3 section
-    /// 3.1), so the mesh table is tried first; an entity name follows its
-    /// `pdxmesh`, or its `clone` chain when it declares none. The chain is
-    /// bounded by the number of entities, so a cyclic `clone` terminates.
+    /// **Entities are tried first.** The two tables share a namespace and the
+    /// shipped content collides in it: `gfx/entities/buildings.gfx:4-8`
+    /// declares a *pdxmesh* named `westerngfx_house_1_1` and
+    /// `buildings.asset:6-10` declares an *entity* of the same name whose only
+    /// content is `pdxmesh = "westerngfx_house_1_1"` and `scale = 1.4`. Taking
+    /// the mesh first loses that scale, and the sprawl houses come out at 1.0
+    /// against the game's 1.4 (or 1.8 and 2.0 for the taller rings). Every
+    /// name that exists in only one table resolves the same either way, which
+    /// includes every `mapobject_<paletteIndex>` the tree layer asks for
+    /// (R3 section 3.1): those are pdxmesh names with no entity.
+    ///
+    /// An entity name follows its `pdxmesh`, or its `clone` chain when it
+    /// declares none. The chain is bounded by the number of entities, so a
+    /// cyclic `clone` terminates.
     pub fn resolve(&self, name: &str) -> Option<ResolvedMesh<'_>> {
-        if let Some(definition) = self.meshes.get(name) {
+        let Some(first) = self.entities.get(name) else {
+            let definition = self.meshes.get(name)?;
             return Some(ResolvedMesh {
                 definition,
                 scale: definition.scale,
             });
-        }
-        let mut entity = self.entities.get(name)?;
+        };
+        let mut entity = first;
         let mut scale = entity.scale;
         for _ in 0..self.entities.len() {
             if let Some(mesh) = &entity.mesh {

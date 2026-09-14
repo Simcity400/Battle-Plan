@@ -15,6 +15,9 @@ pub mod demilitarized;
 pub mod frame;
 pub mod gradient;
 // names
+// close zoom: the shared static-mesh pass and the layers built on it
+pub mod models;
+// names
 pub mod labels;
 pub mod name_pass;
 pub mod names;
@@ -25,6 +28,7 @@ pub mod post;
 // rivers
 pub mod rivers;
 pub mod scene;
+pub mod sprawl;
 pub mod sprites;
 /// What each hour's tables hold, and what a gap in one costs the render.
 pub mod tables;

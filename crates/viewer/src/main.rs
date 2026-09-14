@@ -551,6 +551,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 river_mesh: &document.river_mesh,
                 // weather
                 snow_mud: &snow_mud,
+                // close zoom
+                sprawl: &document.sprawl,
                 // trees
                 tree_assets: &document.tree_assets,
                 tree_geometry: &document.tree_geometry,
@@ -664,6 +666,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 tree.scale
             );
         }
+        // close zoom
+        let summary = document.sprawl.plan_summary;
+        println!(
+            "City sprawl: {} urban pixels, {} samples, {} houses over {} entities and {} meshes;              drawn at height {:.3}: {}; {} drawn; generated in {:.0} ms",
+            summary.urban_pixels,
+            summary.samples,
+            summary.placed,
+            summary.entities,
+            summary.meshes,
+            camera.height,
+            map::models::draws_city_sprawl(camera.height),
+            report.sprawl_drawn,
+            document.sprawl_build.as_secs_f64() * 1000.0
+        );
         // weather
         println!(
             "Snow and mud: {}; {}x{} grid rasterised in {:.0} ms",
