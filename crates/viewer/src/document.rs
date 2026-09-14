@@ -166,7 +166,10 @@ impl Document {
             ));
         }
         warnings.push(
-            "Unit counters carry no division-type icon: no division-template table is recorded. The organisation and strength bars are filled by each stack's mean over its own maximum, because the template maxima the game divides by are not recorded either.".into(),
+            "Unit counters draw the unit-type icon and the bars of the standard division template, and the game draws a question mark and no bars at all for a stack its player cannot see. The replay is omniscient and records no per-country intelligence, so an enemy stack the game hid is drawn here in full.".into(),
+        );
+        warnings.push(
+            "A stack of several divisions takes its unit-type icon from its oldest division's template. Which member of a stack the engine's counter holds is decided by the icon object's own construction, which this pass does not reproduce, so a stack of mixed templates may draw a different member's glyph than the game does.".into(),
         );
         warnings.push(
             "Unit counters are gathered into the engine's camera-height groups, but the engine's own grouping relation between two countries is read as faction membership, which no reference frame can confirm; counters of allied countries in one state may therefore be gathered where the game keeps them apart, or the reverse.".into(),

@@ -203,6 +203,14 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
         frame,
         "a land counter whose division's template is among the missing rows draws no unit-type          icon, and its dark overlay panel is left bare",
     );
+    out.note::<tables::DivisionStatus>(
+        frame,
+        "a land counter's organisation and strength bars fall back to full for every division          among the missing rows, and its supply, attrition, entrenchment, exercise and no-order          glyphs are not drawn",
+    );
+    out.note::<tables::DivisionMovement>(
+        frame,
+        "a division among the missing rows counts as standing still: its counter sits on its          province's own anchor and its supply crate is not suppressed for a convoy crossing",
+    );
     out.note::<tables::TaskForces>(
         frame,
         "naval counters cover only the recorded task forces, and a naval base holding one of the \

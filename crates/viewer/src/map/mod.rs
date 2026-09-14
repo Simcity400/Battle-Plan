@@ -9,6 +9,7 @@ pub mod borders;
 pub mod camera;
 // counters
 pub mod counter_groups;
+pub mod counter_status;
 pub mod counters;
 // borders: the demilitarised-zone bucket bank
 pub mod demilitarized;
