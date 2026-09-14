@@ -554,7 +554,7 @@ impl MapFramePass {
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("map frame"),
-            color_attachments: &[Some(targets.color_attachment(wgpu::LoadOp::Load))],
+            color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
             depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
             timestamp_writes: None,
             occlusion_query_set: None,

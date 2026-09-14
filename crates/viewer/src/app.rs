@@ -51,7 +51,9 @@ const TABLE_LIST_HEIGHT: f32 = 96.0;
 ///
 /// The window does not draw the map into the swap chain: it renders it through
 /// [`Scene`] into the same offscreen `OUTPUT_FORMAT` texture a `--dump` renders
-/// into, and only hands egui the finished texture. So the surface format, the
+/// into, and only hands egui the finished texture. That is the 8-bit graded
+/// output and never the float scene behind it (`map::scene::Targets`), so egui
+/// is handed exactly the bytes the readback writes. The surface format, the
 /// MSAA resolve and egui's own colour handling sit downstream of every map pixel
 /// and cannot change one, and reading that texture back with
 /// [`render::write_png`] — the dump's own readback — is what makes the two paths

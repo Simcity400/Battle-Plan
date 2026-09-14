@@ -57,8 +57,11 @@
 // the same format, copied between the terrain draw and this one: the two rows
 // of the table above agree to the last digit an 8-bit probe can carry, on all
 // four frames. `map::scene::Targets` makes both the scene and the copy
-// `Rgba8Unorm` at the frame size and copies one into the other after
-// `terrain.draw`, which is the only ordering that can produce that.
+// `SCENE_FORMAT` at the frame size and copies one into the other after
+// `terrain.draw`, which is the only ordering that can produce that. The copy
+// follows the scene's format rather than the output's, so the sea bed reaches
+// this shader with the range the terrain pass gave it; the probe those two
+// rows were read with was 8-bit, which is why they agree only to its step.
 //
 // The cube sample is exact as well. Writing `reflect(vEyeDir, normal)` to the
 // frame and looking the same direction up in a CPU decode of `reflection.dds`
@@ -103,16 +106,20 @@
 // size, the same elongation and the same wave texture inside it. So
 // `CalculateSunDirectionWater`, the LEAN moments and the Gaussian are right.
 //
-// The level is not, and the cause is named and bounded: the game's glint core
-// is clipped white and ours reads 0.70. Ours is not short of light — with the
-// probe's gain removed this shader computes up to 3.8 there — it is short of
-// *range*. `map::scene::OUTPUT_FORMAT` is `Rgba8Unorm` where the engine's scene
-// is `R16G16B16A16_FLOAT`, so everything above 1.0 is gone before the grade,
-// and the grade needs 1.96 at `SCENE_BRIGHTNESS = 0.32` to reach white. 21 % of
-// the glint block is above 1.0 and 8 % above 1.96, against 3091 clipped pixels
-// in that frame's whole 1.72 M-pixel sea, so it costs the score almost nothing
-// and is recorded for what it is: a real, local, understood deviation whose fix
-// is a float scene target and is not this pass's to make.
+// The level was not, and the cause was named, bounded and has since been fixed
+// in the pass that owned it. This shader computes up to 3.8 at the glint, and
+// the scene target used to be `Rgba8Unorm` where the engine's is
+// `R16G16B16A16_FLOAT`, so everything above 1.0 was gone before the grade ever
+// ran. It showed as a flat ceiling rather than as a dim glint: the graded core
+// read 194.6 of 255 with not one pixel of the whole frame above 200, which no
+// dim scene produces. `map::scene::SCENE_FORMAT` is now the engine's float
+// format and the graded core reaches 255 like the game's — 1,433 pixels clipped
+// white against the game's 3,538, with the centroid still 4.8 px from the
+// game's. What remains is extent, not level: at a threshold of 180 the game's
+// glint covers 6,639 pixels and ours 3,320, and the game's reaches about 100 px
+// further west. That is a width, so it belongs to the Gaussian and the LEAN
+// moments in this file or to the sea's own colour gap below, and it is not a
+// range problem any more.
 //
 // ## Sea against land: the split is smaller than a power fit makes it look
 //

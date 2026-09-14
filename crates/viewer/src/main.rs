@@ -583,7 +583,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let snow_mud = document.snow_mud()?;
         // close zoom
         let (map_building_field, building_summary) = document.map_building_field()?;
-        let (unit_model_field, unit_fallbacks) = document.unit_model_field()?;
+        let (unit_model_field, unit_report) = document.unit_model_field()?;
         for warning in document.warnings.iter().chain(layers.warnings()) {
             eprintln!("Warning: {warning}");
         }
@@ -828,20 +828,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.rail_build.as_secs_f64() * 1000.0
         );
         println!(
-            "Unit models: {} stacks with their tag's own infantry entity, {} with the generic one, \
-             {} with no Standstill anchor; {} drawn at height {:.3} (cutoff {}); generic tags: {}",
-            unit_fallbacks.tagged,
-            unit_fallbacks.generic,
-            unit_fallbacks.unanchored,
+            "Unit models: {} stacks, {} on their tag's entity, {} on their graphical culture's, {} on the bare name, {} on the engine's placeholder box; {} took the sub-unit's sprite key, {} ride a transport, {} stand along a route, {} have no recorded template, {} have no anchor, {} are an attachment rig with nothing of their own to draw; {} drawn at height {:.3} (cutoff {})",
+            unit_report.stacks,
+            unit_report.level(map::unit_models::Level::Tag),
+            unit_report.level(map::unit_models::Level::Culture),
+            unit_report.level(map::unit_models::Level::Bare),
+            unit_report.level(map::unit_models::Level::Placeholder),
+            unit_report.sprite_key,
+            unit_report.transports,
+            unit_report.moving,
+            unit_report.untemplated,
+            unit_report.unanchored,
+            unit_report.rigs,
             report.unit_models_drawn,
             camera.height,
             map::unit_models::UNIT_CUTOFF,
-            if unit_fallbacks.generic_tags.is_empty() {
-                "none".to_owned()
-            } else {
-                unit_fallbacks.generic_tags.join(" ")
-            }
         );
+        println!(
+            " ladder inputs: {} land sub-unit keys from common/units, {} tags with a graphical culture, {} entities loaded",
+            document.unit_models.sub_units.len(),
+            document.unit_models.cultures.len(),
+            document.unit_models.library.meshes.len(),
+        );
+        for (entity, count) in unit_report.by_entity.iter().rev().take(12) {
+            println!("  {entity} x{count}");
+        }
         println!(
             "Railway bridges: {} placed where a curve crosses water, {} meshes",
             document.bridges.placed,

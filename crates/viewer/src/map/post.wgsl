@@ -50,6 +50,16 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> FullScreen {
     return out;
 }
 
+/// `--postfx off`: the float scene written straight into the 8-bit output, so
+/// the verification dump is the raw scene and the target's own clamp is the
+/// only thing that touches it. No engine stage corresponds to this; the engine
+/// renders to an 8-bit scene outright when its HDR chain is off, which is the
+/// same picture by a different route.
+@fragment
+fn copy_main(input: FullScreen) -> @location(0) vec4<f32> {
+    return textureSampleLevel(scene, linear_clamp, input.uv, 0.0);
+}
+
 /// `downsample.shader`'s log-luminance term. The bright-pass that shares the
 /// pass in the game feeds bloom only, which this port does not draw.
 @fragment

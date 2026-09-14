@@ -282,7 +282,7 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     );
     out.note::<tables::DivisionTemplates>(
         frame,
-        "a land counter whose division's template is among the missing rows draws no unit-type          icon, and its dark overlay panel is left bare",
+            "a land counter whose division's template is among the missing rows draws no unit-type icon, and its dark overlay panel is left bare; at close zoom its division model falls back to rifle infantry, because with no template there is no sub-unit key for the engine's entity ladder to start from",
     );
     out.note::<tables::DivisionStatus>(
         frame,
@@ -290,7 +290,7 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     );
     out.note::<tables::DivisionMovement>(
         frame,
-        "a division among the missing rows counts as standing still: its counter sits on its          province's own anchor instead of along its route, and its supply crate is not suppressed          for a convoy crossing",
+            "a division among the missing rows counts as standing still: its counter and its close-zoom model sit on its province's own anchor instead of along its route, the model faces a hash of the province instead of along the route, its supply crate is not suppressed for a convoy crossing, and a division the row would have shown in naval transfer draws its land figure at full size rather than a quarter-scale transport",
     );
     out.note::<tables::DivisionEta>(
         frame,

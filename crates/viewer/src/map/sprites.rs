@@ -610,7 +610,7 @@ impl SpritePass {
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("sprites"),
-            color_attachments: &[Some(targets.color_attachment(wgpu::LoadOp::Load))],
+            color_attachments: &[Some(targets.output_attachment(wgpu::LoadOp::Load))],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,

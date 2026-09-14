@@ -273,7 +273,7 @@ impl TerrainPass {
     ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("terrain"),
-            color_attachments: &[Some(targets.color_attachment(wgpu::LoadOp::Clear(
+            color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Clear(
                 wgpu::Color {
                     r: 0.0,
                     g: 0.0,

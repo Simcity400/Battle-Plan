@@ -38,7 +38,7 @@ use crate::map::trees::{self, TreeAssets, TreeField, TreeGeometry, TreeImage};
 use crate::map::map_buildings::MapBuildingAssets;
 use crate::map::railways::{self as rail_layer, Bridges, RailAssets, RailMesh};
 use crate::map::sprawl::{self, Sprawl};
-use crate::map::unit_models::{Fallbacks, UnitModelAssets};
+use crate::map::unit_models::{ModelReport, UnitModelAssets};
 // names
 use crate::map::{
     camera::Camera,
@@ -127,7 +127,8 @@ pub struct Document {
     pub rail_build: Duration,
     /// The railway bridges, which are meshes rather than strip.
     pub bridges: Bridges,
-    /// The infantry entities; the placed figures are per hour and come from
+    /// The land division entities, the sub-unit keys and the graphical
+    /// cultures; the placed figures are per hour and come from
     /// [`Document::unit_model_field`].
     pub unit_models: UnitModelAssets,
 }
@@ -289,7 +290,7 @@ impl Document {
         let bridges = Bridges::load(&content.layers, &rail_mesh, &mut warnings)?;
         let unit_models = UnitModelAssets::load(&content.layers, &mut warnings)?;
         warnings.push(
-            "Unit models are rifle infantry for every land stack: no division-template table is recorded, so nothing can name the sub-unit a division would show. The figures stand in their bind pose without their attached weapons, because no animation or skeleton is evaluated, and ships in port are not drawn at all."
+            "A division's model follows the engine's own ladder from its recorded template: the priority sub-unit's key, then its common/units sprite, each tried with the owner's tag, then its graphical culture, then bare. Four levels of that ladder need things no table records and are skipped: the equipment model number (so GER_infantry_2_entity and the other numbered models are never reached), the division designer's explicit model, the cosmetic-tag prefix and the _desert and _snow terrain variants. The figures stand in their bind pose and nothing they attach at a skeleton node is drawn, because no skeleton is evaluated: a rifleman is unarmed, an artillery division shows its frame rig without its gun and crew, and a motorized, mechanized or cavalry division shows nothing at all, because for those the rig is a decimetre-wide plane and the truck, the rifleman and the horse are the attachments. The viewer counts those stacks. a standing figure's facing is a hash, because nothing records the heading the engine last turned it to. Ships are not drawn, because a ship's entity follows its hull and refit and the recorded Ships table names neither."
                 .into(),
         );
         if rail_mesh.unanchored > 0 {
@@ -373,11 +374,19 @@ impl Document {
 
     // close zoom
     /// This hour's placed unit models.
-    pub fn unit_model_field(&self) -> io::Result<(crate::map::models::ModelField, Fallbacks)> {
+    pub fn unit_model_field(&self) -> io::Result<(crate::map::models::ModelField, ModelReport)> {
         let content = &self.counters;
-        self.unit_models.field(self.frame()?, &|province| {
-            content.anchor(province, crate::map::counters::STANDSTILL)
-        })
+        let definitions = &self.map.definitions;
+        self.unit_models.field(
+            self.frame()?,
+            &|province, slot| content.anchor(province, slot),
+            &|province| {
+                !matches!(
+                    definitions.get(&province).map(|it| it.kind),
+                    Some(map::ProvinceKind::Sea) | Some(map::ProvinceKind::Lake)
+                )
+            },
+        )
     }
 
     // political fill
