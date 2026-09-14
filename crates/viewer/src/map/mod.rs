@@ -23,6 +23,8 @@ pub mod models;
 pub mod railways;
 // names
 pub mod labels;
+// the map's table frame
+pub mod mapframe;
 pub mod name_pass;
 pub mod names;
 // political fill

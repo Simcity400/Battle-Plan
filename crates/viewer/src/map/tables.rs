@@ -131,14 +131,17 @@ impl Limitations {
         }
     }
 
-    /// Records a limitation of the recording *format* rather than of one
-    /// hour's tables.
+    /// Records a limitation of one recorded **field** rather than of a table.
     ///
-    /// A gap [`Limitations::note`] reports is a table this recording happens to
-    /// be missing rows from; this is a field no format version records at all,
-    /// so there is no table to name and no hour that would carry it.
-    pub fn note_format(&mut self, affected: &str) {
-        self.lines.push(format!("Recording format: {affected}"));
+    /// A row can be present, and its table complete, and the field still carry
+    /// nothing a pass can draw: `Countries.name` is the engine's own rendered
+    /// name and an unused country's is the empty string, and a
+    /// `ProvinceNames.name` is raw engine bytes that need not be text at all.
+    /// The table is complete, so [`Limitations::note`] has nothing to say about
+    /// it, but the pass still fell back and the reader still has to be told
+    /// which field it fell back from.
+    pub fn note_field(&mut self, field: &str, affected: &str) {
+        self.lines.push(format!("Field {field}: {affected}"));
     }
 
     /// The recorded lines, one per degraded table. An hour that drew
@@ -147,12 +150,6 @@ impl Limitations {
         &self.lines
     }
 }
-
-// borders: the demilitarised-zone bucket bank
-/// What the map cannot draw because no format version records a per-state
-/// demilitarised flag; see `map::demilitarized`.
-pub const DEMILITARIZED: &str =
-    "no demilitarised-state flag is recorded, so the demilitarised-zone border is not drawn";
 
 /// Every non-core table the map reads, and what a gap in it costs this hour.
 ///
@@ -166,7 +163,24 @@ pub const DEMILITARIZED: &str =
 /// names it as a frame error instead.
 pub fn limitations(frame: &DecodedFrame) -> Limitations {
     let mut out = Limitations::default();
+    // borders: the demilitarised-zone bucket bank
+    out.note::<tables::StateFlags>(
+        frame,
+        "the demilitarised-zone border is not drawn at all: a state this hour is silent about \
+         cannot be assumed not to be demilitarised, and half a zone is a wrong outline rather than \
+         a short one",
+    );
+    out.note::<tables::States>(
+        frame,
+        "the demilitarised-zone border is not drawn at all: the recorded flags are joined to this \
+         table's state ids, and a state it is silent about cannot be shown to exist",
+    );
     // names
+    out.note::<tables::ProvinceNames>(
+        frame,
+        "a victory point renamed in game keeps the static localised name of its province, because \
+         a province this hour is silent about cannot be assumed not to have been renamed",
+    );
     out.note::<tables::Politics>(
         frame,
         "country names and counter flags fall back to the plain <TAG> key, and a capital carries \
@@ -409,10 +423,30 @@ mod tests {
         assert!(Limitations::default().lines().is_empty());
     }
 
+    /// A complete table whose field is empty is not a table gap, so it carries
+    /// its own wording and names the field rather than the table.
+    #[test]
+    fn an_empty_recorded_field_names_the_field_and_not_a_table() {
+        let mut limitations = Limitations::default();
+        limitations.note_field(
+            "Countries.name",
+            "1 country (SIA) records no name, so its label is built from the localisation key",
+        );
+        assert_eq!(
+            limitations.lines(),
+            ["Field Countries.name: 1 country (SIA) records no name, so its label is built from \
+              the localisation key"
+                .to_owned()]
+        );
+    }
+
     #[test]
     fn the_registry_reports_every_degraded_table_and_no_core_one() {
         let lines = limitations(&frame()).lines().join("\n");
         for table in [
+            "StateFlags",
+            "States",
+            "ProvinceNames",
             "Politics",
             "PoliticalParties",
             "Players",

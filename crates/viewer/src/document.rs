@@ -31,6 +31,7 @@ use crate::{
 // rivers
 use crate::map::rivers::{self, RiverAssets, RiverImage, RiverMesh};
 // trees
+use crate::map::mapframe::{self, FrameAssets, FrameGeometry};
 use crate::map::trees::{self, TreeAssets, TreeField, TreeGeometry, TreeImage};
 // close zoom
 use crate::map::map_buildings::MapBuildingAssets;
@@ -69,9 +70,10 @@ pub struct Document {
     /// Wall time of the border trace, for reporting.
     pub border_trace: Duration,
     // borders: the demilitarised-zone bucket bank
-    /// State ids to treat as demilitarised, substituting the save's `demilitarized=yes` flag for
-    /// the missing recording. Empty unless `--dump --demilitarized` sets it; see
-    /// [`Document::demilitarized_zone`] and `map::demilitarized`.
+    /// State ids to treat as demilitarised **in addition to** the recorded ones, so an hour whose
+    /// `StateFlags` are short can still be scored against a reference pair. Empty unless
+    /// `--dump --demilitarized` sets it; see [`Document::demilitarized_zone`] and
+    /// `map::demilitarized`.
     pub demilitarized_override: BTreeSet<u32>,
     // names
     /// Fonts and map-icon sprites, uploaded once by the scene.
@@ -93,6 +95,11 @@ pub struct Document {
     /// The counter, base and combat anchors from `map/unitstacks.txt` and
     /// `map/buildings.txt`.
     pub counters: CounterContent,
+    // the map's table frame
+    /// The three band meshes of `map/ambient_object.txt` and their textures.
+    pub frame_assets: FrameAssets,
+    /// The band geometry, already in world space.
+    pub frame_geometry: FrameGeometry,
     // trees
     /// The canopy meshes, their textures and the `tree_*` season blocks.
     pub tree_assets: TreeAssets,
@@ -181,12 +188,6 @@ impl Document {
             ));
         }
         warnings.push(
-            "Country names come from the recorded ruling party's ideology group; cosmetic tags and dynamic country names are not recorded, so a country under one differs from the game.".into(),
-        );
-        warnings.push(
-            "Victory-point labels come from the static localisation; runtime renames (set_province_name, which turns Danzig into Gdańsk) are not recorded.".into(),
-        );
-        warnings.push(
             "Fonts are read from gfx/fonts, which is outside the content coverage policy and is not hash-verified.".into(),
         );
         warnings.push(
@@ -247,6 +248,9 @@ impl Document {
                 rivers::MIN_RIVER_POINTS
             ));
         }
+        // the map's table frame
+        let frame_assets = FrameAssets::load(&content.layers, &mut warnings)?;
+        let frame_geometry = mapframe::geometry(&frame_assets);
         // trees
         let started = Instant::now();
         let tree_field = trees::generate(
@@ -321,7 +325,7 @@ impl Document {
             border_meshes,
             straits,
             border_trace,
-            // borders: the recorded zone is empty; `--dump --demilitarized` fills this in.
+            // borders: the zone is the recording's; `--dump --demilitarized` only adds to it.
             demilitarized_override: BTreeSet::new(),
             // names
             icons,
@@ -332,6 +336,9 @@ impl Document {
             river_mesh,
             river_trace,
             river_build,
+            // the map's table frame
+            frame_assets,
+            frame_geometry,
             // counters
             counters,
             // trees
@@ -392,13 +399,59 @@ impl Document {
     /// that cost, so the window's warning area and a `--dump` report the same
     /// thing. A core table's gap is not here: it is the frame error above.
     pub fn limitations(&self) -> io::Result<Limitations> {
-        let mut out = tables::limitations(self.frame()?);
-        // borders: no format version records the per-state demilitarised flag, so this is a
-        // limitation of the recording rather than a gap in this hour's tables. The dump-only
-        // override substitutes the save's flag, and then the layer is drawn and the line is not
-        // true of the render in front of the reader.
-        if self.demilitarized_override.is_empty() {
-            out.note_format(tables::DEMILITARIZED);
+        let frame = self.frame()?;
+        let mut out = tables::limitations(frame);
+        // names: `Countries.name` is the engine's own rendered name, so an empty one is a country
+        // whose name the recording holds but the engine never built. The name layer falls back to
+        // the ideology-group key for it, which a cosmetic or dynamic name would not match.
+        let unnamed = name_pass::unnamed_countries(&self.map, frame)?;
+        if !unnamed.is_empty() {
+            out.note_field(
+                "Countries.name",
+                &format!(
+                    "{} {} ({}{}) on the map record no name, so theirs is built from the \
+                     <TAG>_<ideology> localisation key instead and will differ from the game under \
+                     a cosmetic tag or a dynamic name",
+                    unnamed.len(),
+                    if unnamed.len() == 1 {
+                        "country"
+                    } else {
+                        "countries"
+                    },
+                    unnamed
+                        .iter()
+                        .take(8)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    if unnamed.len() > 8 { ", …" } else { "" },
+                ),
+            );
+        }
+        // names: bytes the port cannot lay out as text. The province keeps its static name rather
+        // than being drawn with replacement marks; see `map::labels`.
+        let unreadable = labels::unreadable_overrides(frame)?;
+        if !unreadable.is_empty() {
+            out.note_field(
+                "ProvinceNames.name",
+                &format!(
+                    "the recorded name of {} {} ({}) is not text this port can lay out, so {} \
+                     keeps the static localised name of its province",
+                    unreadable.len(),
+                    if unreadable.len() == 1 {
+                        "province"
+                    } else {
+                        "provinces"
+                    },
+                    unreadable
+                        .iter()
+                        .take(8)
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    if unreadable.len() == 1 { "it" } else { "each" },
+                ),
+            );
         }
         Ok(out)
     }
@@ -406,10 +459,12 @@ impl Document {
     // borders: the demilitarised-zone bucket bank
     /// This hour's demilitarised zone, for `map::demilitarized` and the border pass.
     ///
-    /// The recorded set is always empty ([`crate::map::demilitarized::recorded_states`]); the
-    /// `--dump --demilitarized` override is the verification aid that lets the layer be scored.
+    /// The recorded set is the hour's own `StateFlags` joined to its `States`
+    /// ([`crate::map::demilitarized::recorded_states`]). The `--dump --demilitarized` override
+    /// only ever *adds* to it, so an hour that records the flag is drawn from the recording
+    /// whatever the command line says.
     pub fn demilitarized_zone(&self, regions: &Regions) -> io::Result<Zone> {
-        let mut states = demilitarized::recorded_states(self.frame()?);
+        let mut states = demilitarized::recorded_states(self.frame()?)?;
         states.extend(self.demilitarized_override.iter().copied());
         Ok(Zone::new(&self.map, regions, &states))
     }

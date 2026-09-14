@@ -21,6 +21,8 @@ use crate::map::{
     demilitarized::Zone,
     // close zoom
     map_buildings::MapBuildingAssets,
+    // the map's table frame
+    mapframe::{FrameAssets, FrameGeometry},
     models::ModelField,
     // political fill
     political::PoliticalLayers,
@@ -56,6 +58,9 @@ pub struct MapLayers<'a> {
     // weather
     /// The hour's `SnowMudData` grid.
     pub snow_mud: &'a SnowMud,
+    // the map's table frame
+    pub frame_assets: &'a FrameAssets,
+    pub frame_geometry: &'a FrameGeometry,
     // close zoom
     pub sprawl: &'a Sprawl,
     pub map_buildings: &'a MapBuildingAssets,
@@ -349,6 +354,13 @@ pub fn dump_png(
         )?;
         // rivers
         scene.set_rivers(&device, &queue, layers.river_assets, layers.river_mesh)?;
+        // the map's table frame
+        scene.set_map_frame(
+            &device,
+            &queue,
+            layers.frame_assets,
+            layers.frame_geometry.clone(),
+        )?;
         // trees
         scene.set_trees(
             &device,

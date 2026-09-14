@@ -22,7 +22,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that substitutes the save's demilitarized=yes flag\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -66,11 +66,16 @@ struct Options {
     /// `--postfx off` renders without the engine's colour grading.
     postfx: bool,
     // borders
-    /// `--dump --demilitarized <ids>`: state ids to treat as demilitarised, substituting the
-    /// save's `demilitarized=yes` flag for the missing recording so `map::demilitarized` can be
-    /// scored against a reference pair. Verification aid, `--dump` only; the window has no
-    /// equivalent.
+    /// `--dump --demilitarized <ids>`: state ids to treat as demilitarised **in addition to** the
+    /// hour's recorded `StateFlags`, so an hour whose flags are short can still be scored against
+    /// a reference pair. Verification aid, `--dump` only; the window has no equivalent and draws
+    /// the recording.
     demilitarized: BTreeSet<u32>,
+    /// `--dump --debug-borders`: the game's own console toggle, which removes the gradient
+    /// political fill and the border strips and leaves bare terrain. Pairing a frame with and
+    /// without it is how the fill law is measured against the game's `pairE_*_{fill,nofill}`
+    /// captures; `map::gradient` records what those measurements settled.
+    debug_borders: bool,
 }
 
 impl Options {
@@ -134,6 +139,7 @@ impl Options {
                         .ok_or_else(|| invalid(USAGE))?;
                     options.demilitarized = map::demilitarized::parse_states(&value)?;
                 }
+                Some("--debug-borders") => options.debug_borders = true,
                 Some("--exclude-game-ui") => options.exclude_game_ui = true,
                 Some("--exclude") => {
                     let value = args
@@ -293,12 +299,12 @@ impl Options {
         if options.out.is_some() && options.replay.is_none() {
             return Err(invalid(USAGE));
         }
-        // borders: the override substitutes a save's flag for a recording the format does not
-        // carry, so it is a verification aid for scoring one frame, not a viewer setting.
+        // borders: the override adds a save's flag to an hour whose recorded flags are short, so
+        // it is a verification aid for scoring one frame, not a viewer setting.
         if !options.demilitarized.is_empty() && !options.headless_dump {
             return Err(invalid(
-                "--demilitarized substitutes a save's demilitarized=yes flag for the missing \
-                 recording and requires --dump",
+                "--demilitarized adds a save's demilitarized=yes states to the hour's recorded \
+                 StateFlags and requires --dump",
             ));
         }
         Ok(options)
@@ -525,7 +531,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // political fill
         let mode = political::Mode::from_control(options.control);
-        let layers = political::build(&document.map, document.frame()?, mode)?;
+        let mut layers = political::build(&document.map, document.frame()?, mode)?;
+        if options.debug_borders {
+            // The engine's `debug_borders` removes both the gradient fill and the border strips.
+            // Channel 2's green is each layer's transparency, the factor the whole
+            // `gradient_border_apply` result is mixed in by, so zeroing it is exactly the
+            // shader's own `#ifndef GRADIENT_BORDERS` early-out; the strips are their own pass
+            // and are emptied here.
+            for texel in layers.textures.channel2.iter_mut() {
+                texel[1] = 0;
+            }
+            for mesh in document.border_meshes.meshes.iter_mut() {
+                mesh.chunks.clear();
+                mesh.draws.clear();
+            }
+            println!("debug_borders: the political fill and the border strips are not drawn");
+        }
         // weather
         let snow_mud = document.snow_mud()?;
         // close zoom
@@ -559,12 +580,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // counters: bases, labels, counters and combats in priority order.
         let (label_batch, label_report, counter_report) =
             document.overlay_batch(camera, options.size)?;
-        // borders: the demilitarised zone, empty unless --demilitarized substituted the save's
-        // flag for the missing recording.
+        // borders: the hour's recorded StateFlags, plus whatever --demilitarized added.
         let demilitarized = document.demilitarized_zone(&layers.regions)?;
         if !demilitarized.is_empty() {
             println!(
-                "Demilitarised states (verification override, not recorded): {}",
+                "Demilitarised states{}: {}",
+                if options.demilitarized.is_empty() {
+                    " (recorded)"
+                } else {
+                    " (recorded, plus the --demilitarized override)"
+                },
                 demilitarized
                     .states()
                     .iter()
@@ -588,6 +613,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 river_mesh: &document.river_mesh,
                 // weather
                 snow_mud: &snow_mud,
+                // the map's table frame
+                frame_assets: &document.frame_assets,
+                frame_geometry: &document.frame_geometry,
                 // close zoom
                 sprawl: &document.sprawl,
                 map_buildings: &document.map_buildings,
@@ -678,6 +706,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.river_trace.circular.len(),
             document.river_trace.unreachable,
             document.river_build.as_secs_f64() * 1000.0
+        );
+        // the map's table frame
+        println!(
+            "Map frame: {} pieces, {} vertices over world z {:.1}..{:.1} ({})",
+            document.frame_assets.pieces.len(),
+            document.frame_geometry.vertices.len(),
+            document.frame_geometry.z_span[0],
+            document.frame_geometry.z_span[1],
+            document
+                .frame_assets
+                .pieces
+                .iter()
+                .map(|piece| format!("{} x{}", piece.path, piece.scale))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
         // trees
         let season = document.tree_season();

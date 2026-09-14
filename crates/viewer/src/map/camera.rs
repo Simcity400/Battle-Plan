@@ -27,6 +27,10 @@ pub const TILT_LEAD: f32 = 30.0;
 pub const MIN_HEIGHT: f32 = 50.0;
 /// `CAMERA_MAX_HEIGHT` (`00_graphics.lua:1496`).
 pub const MAX_HEIGHT: f32 = 3000.0;
+/// `CAMERA_OUTSIDE_MAP_DISTANCE_TOP` and `..._BOTTOM` (`00_graphics.lua:1184-5`),
+/// which are equal. How far past the map's own top and bottom edges the engine
+/// lets the *visible ground* reach before it pulls the camera back.
+pub const OUTSIDE_MAP_DISTANCE: f32 = 200.0;
 /// `MAP_SIZE_X` injected into every map shader (R1 section 3.5).
 pub const MAP_SIZE_X: f32 = 5632.0;
 /// `MAP_SIZE_Y` injected into every map shader.
@@ -197,6 +201,41 @@ impl Camera {
         ]
     }
 
+    /// Pulls the centre back until the visible ground stays inside the map
+    /// grown by [`OUTSIDE_MAP_DISTANCE`] on the top and bottom edges.
+    ///
+    /// defines. It compares the visible z extent against
+    /// `mapHeight + TOP + BOTTOM`; while the view fits, it shifts the camera by
+    /// whatever it overshoots at either edge, and once the view is taller than
+    /// the allowance it centres the overshoot instead, which is why the whole
+    /// map frame is symmetric. The map's x edges are not clamped at all - the
+    /// map wraps there.
+    ///
+    /// The three far-zoom fits pin it from the other side. `pairD_out20` at
+    /// height 2122.295 fits a centre whose visible ground tops out at z 2244.3,
+    /// 3.7 units short of the 2248 limit, and `pairD_out40` at
+    /// `CAMERA_MAX_HEIGHT` sees 2476.2 units of z - more than the 2448 the
+    /// allowance gives - and fits a centre 0.9 units from where this centres it.
+    ///
+    /// `--dump --camera` sets the camera directly and never calls this, so a
+    /// headless frame still renders exactly the camera it is given.
+    pub fn clamp_center(&mut self, viewport: [u32; 2]) {
+        let Some([_, low, _, high]) = self.visible_ground(viewport, 0.0) else {
+            return;
+        };
+        let bottom = low + OUTSIDE_MAP_DISTANCE;
+        let over_top = high - (MAP_SIZE_Y + OUTSIDE_MAP_DISTANCE);
+        self.center[1] -= if high - low > MAP_SIZE_Y + 2.0 * OUTSIDE_MAP_DISTANCE {
+            (bottom + over_top) * 0.5
+        } else if over_top > 0.0 {
+            over_top
+        } else if bottom < 0.0 {
+            bottom
+        } else {
+            return;
+        };
+    }
+
     /// Drags the ground point under `from` to sit under `to`.
     ///
     /// The camera only ever translates in `xz`, so the ground point under a
@@ -211,6 +250,7 @@ impl Camera {
         };
         self.center[0] += from[0] - to[0];
         self.center[1] += from[1] - to[1];
+        self.clamp_center(viewport);
     }
 
     /// Changes the height by `factor`, keeping the ground point under `screen`.
@@ -227,6 +267,7 @@ impl Camera {
         };
         self.center[0] += before[0] - after[0];
         self.center[1] += before[1] - after[1];
+        self.clamp_center(viewport);
     }
 
     /// Centres the map and picks the lowest height that shows all of it.
@@ -514,6 +555,47 @@ mod tests {
         assert_eq!(camera.height, MAX_HEIGHT);
         camera.zoom(1000.0, cursor, VIEWPORT);
         assert_eq!(camera.height, MIN_HEIGHT);
+    }
+
+    #[test]
+    fn the_centre_is_clamped_to_the_map_plus_the_outside_distance() {
+        // A camera looking past the top edge is pulled back until the visible
+        // ground stops at MAP_SIZE_Y + OUTSIDE_MAP_DISTANCE.
+        let mut camera = Camera {
+            center: [3010.0, 2200.0],
+            height: 600.0,
+        };
+        camera.clamp_center(VIEWPORT);
+        let rect = camera.visible_ground(VIEWPORT, 0.0).unwrap();
+        assert!(
+            (rect[3] - (MAP_SIZE_Y + OUTSIDE_MAP_DISTANCE)).abs() < 1e-2,
+            "{rect:?}"
+        );
+        // And past the bottom edge, back to -OUTSIDE_MAP_DISTANCE.
+        let mut camera = Camera {
+            center: [3010.0, -400.0],
+            height: 600.0,
+        };
+        camera.clamp_center(VIEWPORT);
+        let rect = camera.visible_ground(VIEWPORT, 0.0).unwrap();
+        assert!((rect[1] - -OUTSIDE_MAP_DISTANCE).abs() < 1e-2, "{rect:?}");
+        // A view taller than the allowance is centred on it instead, which is
+        // what `pairD_out40` fits: at CAMERA_MAX_HEIGHT the clamp lands within
+        // 0.9 world units of that frame's fitted centre of 1017.96.
+        let mut camera = Camera {
+            center: [3011.2, 1600.0],
+            height: MAX_HEIGHT,
+        };
+        camera.clamp_center(VIEWPORT);
+        assert!((camera.center[1] - 1017.96).abs() < 1.5, "{camera:?}");
+        // A camera already inside is not moved at all: `pairD_out20`'s fit.
+        let mut camera = Camera {
+            center: [3011.86, 1364.30],
+            height: 2122.295,
+        };
+        let before = camera.center;
+        camera.clamp_center(VIEWPORT);
+        assert_eq!(camera.center, before);
     }
 
     #[test]

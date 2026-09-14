@@ -1,6 +1,7 @@
 //! Game content layers, identity hashes, and Rust parsers for the viewer.
 
 pub mod adjacencies;
+pub mod ambient;
 pub mod buildings;
 pub mod cities;
 pub mod content;
