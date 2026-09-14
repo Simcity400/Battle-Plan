@@ -1,7 +1,7 @@
 //! A replay and the verified local game content used to draw its current hour.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -15,6 +15,7 @@ use replay::{
     container::{Replay, SeekResult},
     frame::DecodedFrame,
     identity::Verification,
+    rows::tables as row_tables,
 };
 
 use crate::{
@@ -48,6 +49,7 @@ use crate::map::{
 // counters
 use crate::map::counters::{self, CounterContent, CounterInputs, CounterReport};
 // weather
+use crate::map::perspective;
 use crate::map::tables::{self, Limitations};
 use crate::map::weather::{self, SnowMud};
 
@@ -173,7 +175,7 @@ impl Document {
             ));
         }
         warnings.push(
-            "Unit counters draw the unit-type icon and the bars of the standard division template, and the game draws a question mark and no bars at all for a stack its player cannot see. The replay is omniscient and records no per-country intelligence, so an enemy stack the game hid is drawn here in full.".into(),
+            "Unit counters are drawn for one country: a stack it cannot see carries the game's own question-mark icon, a question mark in place of its count and no bars. Which stacks those are is decided from the recorded faction, war, subject and UnitIntel tables; the engine also reveals a stack standing in a province the viewing country has fully uncovered, and no table records that, so a stack the game drew in full may carry a question mark here. --perspective omniscient draws every stack in full instead.".into(),
         );
         warnings.push(
             "A stack of several divisions takes its unit-type icon from its oldest division's template. Which member of a stack the engine's counter holds is decided by the icon object's own construction, which this pass does not reproduce, so a stack of mixed templates may draw a different member's glyph than the game does.".into(),
@@ -398,9 +400,21 @@ impl Document {
     /// The map passes degrade on their own; this is the single list of what
     /// that cost, so the window's warning area and a `--dump` report the same
     /// thing. A core table's gap is not here: it is the frame error above.
-    pub fn limitations(&self) -> io::Result<Limitations> {
+    pub fn limitations(&self, perspective: &perspective::Choice) -> io::Result<Limitations> {
         let frame = self.frame()?;
         let mut out = tables::limitations(frame);
+        // counters: which country the map is drawn for. Stated on every frame,
+        // degraded or not, because every counter on it depends on the answer.
+        let vision = self.vision(perspective)?;
+        out.note_perspective(&self.perspective_state(perspective, &vision)?);
+        for table in vision.truncated() {
+            out.note_field(
+                &format!("{table} (perspective)"),
+                "the rows this hour did not reach are read as no relation and no detection at \
+                 all, so a stack among them carries the game's question mark where the game drew \
+                 it in full",
+            );
+        }
         // names: `Countries.name` is the engine's own rendered name, so an empty one is a country
         // whose name the recording holds but the engine never built. The name layer falls back to
         // the ideology-group key for it, which a cosmetic or dynamic name would not match.
@@ -456,6 +470,61 @@ impl Document {
         Ok(out)
     }
 
+    // counters: the viewing country
+    /// What this hour's counters can see, for the limitation lines and the header.
+    pub fn vision(&self, perspective: &perspective::Choice) -> io::Result<perspective::Vision> {
+        let frame = self.frame()?;
+        let links: BTreeMap<u32, u32> = tables::core::<row_tables::CountryLinks>(frame)?
+            .iter()
+            .map(|link| (link.id, link.canonical_slot))
+            .collect();
+        let tags: BTreeMap<u32, String> = tables::core::<row_tables::Countries>(frame)?
+            .iter()
+            .map(|country| {
+                (
+                    country.canonical_slot,
+                    String::from_utf8_lossy(&country.tag).into_owned(),
+                )
+            })
+            .collect();
+        perspective::Vision::read(frame, &links, &tags, perspective)
+    }
+
+    /// The perspective in the shape `map::tables` words it in.
+    fn perspective_state(
+        &self,
+        perspective: &perspective::Choice,
+        vision: &perspective::Vision,
+    ) -> io::Result<tables::Perspective> {
+        let Some(ours) = vision.ours() else {
+            let reason = match vision.fallback() {
+                Some(perspective::Fallback::Requested) | None => {
+                    "the render was asked for the omniscient view".to_owned()
+                }
+                Some(perspective::Fallback::NoPlayer) => {
+                    "this hour records no human player to draw it for".to_owned()
+                }
+                Some(perspective::Fallback::UnknownTag(tag)) => {
+                    format!("this hour records no country {tag} to draw it for")
+                }
+                Some(perspective::Fallback::MissingTable(table)) => format!(
+                    "table {table} is unavailable for this hour and an unavailable table is not \
+                     evidence that it is empty"
+                ),
+            };
+            return Ok(tables::Perspective::Omniscient { reason });
+        };
+        let tag = tables::core::<row_tables::Countries>(self.frame()?)?
+            .iter()
+            .find(|country| country.canonical_slot == ours)
+            .map(|country| String::from_utf8_lossy(&country.tag).into_owned())
+            .unwrap_or_else(|| format!("country slot {ours}"));
+        Ok(tables::Perspective::Country {
+            tag,
+            requested: matches!(perspective, perspective::Choice::Tag(_)),
+        })
+    }
+
     // borders: the demilitarised-zone bucket bank
     /// This hour's demilitarised zone, for `map::demilitarized` and the border pass.
     ///
@@ -495,6 +564,7 @@ impl Document {
         &self,
         camera: Camera,
         viewport: [u32; 2],
+        perspective: &perspective::Choice,
     ) -> io::Result<(Batch, LabelReport, CounterReport)> {
         let frame = self.frame()?;
         let icons = counters::build(
@@ -505,6 +575,7 @@ impl Document {
                 map: &self.map,
                 camera,
                 viewport,
+                perspective,
             },
             frame,
         )?;

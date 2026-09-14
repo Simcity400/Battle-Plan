@@ -22,7 +22,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -49,6 +49,12 @@ struct Options {
     branch: Option<BranchId>,
     allow_unverified: bool,
     control: bool,
+    // counters
+    /// `--perspective`: which country the unit counters are drawn for.
+    /// `recorded` (the default) is the hour's own human player, `omniscient`
+    /// draws every stack in full and a tag draws the map as that country sees
+    /// it. See `map::perspective`.
+    perspective: map::perspective::Choice,
     camera: Option<Camera>,
     size: [u32; 2],
     game_dir: Option<PathBuf>,
@@ -193,7 +199,10 @@ impl Options {
                     options.user_dir =
                         Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
                 }
-                Some("--hour" | "--branch" | "--width" | "--height" | "--camera" | "--mode") => {
+                Some(
+                    "--hour" | "--branch" | "--width" | "--height" | "--camera" | "--mode"
+                    | "--perspective",
+                ) => {
                     let value = args
                         .next()
                         .and_then(|value| value.into_string().ok())
@@ -245,6 +254,10 @@ impl Options {
                                 "controller" => true,
                                 _ => return Err(invalid("mode must be owner or controller")),
                             }
+                        }
+                        // counters
+                        "--perspective" => {
+                            options.perspective = map::perspective::Choice::parse(&value)?
                         }
                         _ => unreachable!(),
                     }
@@ -526,7 +539,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // An hour the collector had not finished filling still renders; what it
         // could not draw is stated here, one line per degraded table, before
         // anything that could fail on its own.
-        for line in document.limitations()?.lines() {
+        for line in document.limitations(&options.perspective)?.lines() {
             eprintln!("Warning: {line}");
         }
         // political fill
@@ -579,7 +592,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // counters: bases, labels, counters and combats in priority order.
         let (label_batch, label_report, counter_report) =
-            document.overlay_batch(camera, options.size)?;
+            document.overlay_batch(camera, options.size, &options.perspective)?;
         // borders: the hour's recorded StateFlags, plus whatever --demilitarized added.
         let demilitarized = document.demilitarized_zone(&layers.regions)?;
         if !demilitarized.is_empty() {
@@ -871,6 +884,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.land_combats,
             counter_report.naval_combats,
             counter_report.unanchored
+        );
+        // counters: the perspective, and what it hid
+        println!(
+            "Counter perspective: {}; {} of {} counters carry the game's question mark, {} of {} combat icons do",
+            if counter_report.perspective.is_omniscient() {
+                "omniscient".to_owned()
+            } else {
+                options.perspective.to_string()
+            },
+            counter_report.no_intel_counters,
+            counter_report.land_counters + counter_report.naval_counters,
+            counter_report.no_intel_combats,
+            counter_report.land_combats + counter_report.naval_combats,
         );
         // counters
         if let Some(pass) = counter_report.grouping {

@@ -149,6 +149,58 @@ impl Limitations {
     pub fn lines(&self) -> &[String] {
         &self.lines
     }
+
+    /// Records what the map's chosen perspective is, and what it cannot decide.
+    ///
+    /// The perspective is not a table gap, so [`Limitations::note`] has nothing
+    /// to say about it, but every counter on the frame depends on it and the
+    /// reader has to be told which country the map was drawn for — and, when it
+    /// was drawn for nobody, why. The wording lives here beside every other
+    /// degradation's so the window and a dump cannot state different ones.
+    pub fn note_perspective(&mut self, perspective: &Perspective) {
+        match perspective {
+            Perspective::Country { tag, requested } => {
+                if *requested {
+                    self.lines.push(format!(
+                        "Perspective {tag}: the map is drawn as {tag} sees it rather than as the \
+                         recording's own player does, so a stack {tag} cannot see carries the \
+                         game's question mark here and one the recorded player could not see may \
+                         not",
+                    ));
+                } else {
+                    self.lines.push(format!(
+                        "Perspective {tag}: the map is drawn as the recorded human player sees it. \
+                         A stack {tag} has no intelligence on carries the game's own question mark \
+                         and no bars, as the game draws it",
+                    ));
+                }
+                self.lines.push(
+                    "Province visibility is not recorded: the engine also shows a stack in full \
+                     when the province it stands in is fully revealed to the viewing country (the \
+                     client's own fog array, rebuilt per frame from units, radar and detection), \
+                     and no table carries it. A stack standing inside our own lines that the game \
+                     would draw in full is drawn here as a question mark"
+                        .to_owned(),
+                );
+            }
+            Perspective::Omniscient { reason } => self.lines.push(format!(
+                "Perspective omniscient: {reason}, so every stack is drawn in full, including the \
+                 ones the game hid behind a question mark",
+            )),
+        }
+    }
+}
+
+/// What the map's perspective resolved to, in the two shapes it can take.
+///
+/// `map::perspective` decides this; the wording of it lives here.
+pub enum Perspective {
+    /// One country's view. `requested` is set when the caller named the tag
+    /// rather than taking the recorded player, so the line can say the map is
+    /// not the recording's own view.
+    Country { tag: String, requested: bool },
+    /// Every stack in full, with the reason in the words the line uses.
+    Omniscient { reason: String },
 }
 
 /// Every non-core table the map reads, and what a gap in it costs this hour.
@@ -201,11 +253,26 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     );
     out.note::<tables::WarRelations>(
         frame,
-        "no country is coloured as an enemy; the hour is drawn as if no war were running",
+        "no country is coloured as an enemy and the hour is drawn as if no war were running; a war \
+         is also what stops a faction partner from being seen in full, so a missing table can only \
+         show more than the game did, never less",
     );
     out.note::<tables::FactionMembers>(
         frame,
-        "no country is coloured as an ally, and counters are grouped as if no faction existed",
+        "no country is coloured as an ally, and counters are grouped as if no faction existed; a \
+         partner among the missing rows is also a country whose stacks this perspective cannot see \
+         and draws with the game's question mark",
+    );
+    out.note::<tables::Subjects>(
+        frame,
+        "an overlord and its subject among the missing rows do not see each other's stacks, so one \
+         of them carries the game's question mark where the game drew it in full",
+    );
+    out.note::<tables::UnitIntel>(
+        frame,
+        "a division or task force among the missing rows keeps the detection level 0 the engine \
+         gives an absent entry, so a stack this perspective had detected is drawn with the game's \
+         question mark",
     );
     // counters
     out.note::<tables::Divisions>(
@@ -440,6 +507,34 @@ mod tests {
         );
     }
 
+    /// Every counter on the frame depends on the perspective, so it is stated
+    /// whether or not anything degraded — and an omniscient frame says why.
+    #[test]
+    fn the_perspective_is_stated_on_every_frame_and_names_the_country() {
+        let mut recorded = Limitations::default();
+        recorded.note_perspective(&Perspective::Country {
+            tag: "GER".into(),
+            requested: false,
+        });
+        assert!(recorded.lines()[0].starts_with("Perspective GER: the map is drawn as the recorded"));
+        assert!(recorded.lines()[1].starts_with("Province visibility is not recorded"));
+
+        let mut asked = Limitations::default();
+        asked.note_perspective(&Perspective::Country {
+            tag: "SOV".into(),
+            requested: true,
+        });
+        assert!(asked.lines()[0].contains("rather than as the recording's own player does"));
+
+        let mut open = Limitations::default();
+        open.note_perspective(&Perspective::Omniscient {
+            reason: "table FactionMembers is unavailable for this hour".into(),
+        });
+        assert_eq!(open.lines().len(), 1);
+        assert!(open.lines()[0].contains("table FactionMembers is unavailable"));
+        assert!(open.lines()[0].contains("every stack is drawn in full"));
+    }
+
     #[test]
     fn the_registry_reports_every_degraded_table_and_no_core_one() {
         let lines = limitations(&frame()).lines().join("\n");
@@ -453,6 +548,8 @@ mod tests {
             "HumanControllers",
             "WarRelations",
             "FactionMembers",
+            "Subjects",
+            "UnitIntel",
             "Divisions",
             "TaskForces",
             "Ships",

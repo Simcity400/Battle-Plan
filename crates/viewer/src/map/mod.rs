@@ -27,6 +27,8 @@ pub mod labels;
 pub mod mapframe;
 pub mod name_pass;
 pub mod names;
+// counters: the viewing country and what it can see
+pub mod perspective;
 // political fill
 pub mod political;
 // colour

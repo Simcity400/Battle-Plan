@@ -14,6 +14,7 @@ use crate::{
     render,
 };
 // names
+use crate::map;
 use crate::map::{
     // counters
     counters::CounterReport,
@@ -123,7 +124,16 @@ pub struct Viewer {
     /// changed: 22 of a still frame's 27 ms. Keyed like `PoliticalCache` and
     /// the name placements beside it.
     overlay: Option<Batch>,
-    overlay_at: Option<(replay::BranchId, i32, Camera, [u32; 2])>,
+    overlay_at: Option<(
+        replay::BranchId,
+        i32,
+        Camera,
+        [u32; 2],
+        map::perspective::Choice,
+    )>,
+    /// Which country the counters are drawn for; the header's own control sets
+    /// it and [`Document::perspective`] is kept in step with it.
+    perspective: map::perspective::Choice,
     // weather
     weather: WeatherCache,
     // capture
@@ -157,6 +167,8 @@ impl Viewer {
             pinned: Some((options.size, options.camera)),
             exit: true,
         });
+        // counters: the header's control starts where the command line put it.
+        let perspective = options.perspective.clone();
         let mut viewer = Self {
             game_text: config.game_dir.to_string_lossy().into_owned(),
             user_text: config.user_dir.to_string_lossy().into_owned(),
@@ -196,6 +208,7 @@ impl Viewer {
             counter_report: CounterReport::default(),
             overlay: None,
             overlay_at: None,
+            perspective,
             // weather
             weather: WeatherCache::new(),
             // capture
@@ -751,7 +764,9 @@ impl Viewer {
         // part that changes with the hour. The persistent content limitations
         // and the political layer's follow, in the order `--dump` prints them,
         // so a capture beside a dump lists the same lines in the same order.
-        let limitations = document.limitations().map_err(|error| error.to_string())?;
+        let limitations = document
+            .limitations(&self.perspective)
+            .map_err(|error| error.to_string())?;
         let mut warnings = limitations.lines().to_vec();
         warnings.extend(document.warnings.iter().cloned());
         warnings.extend(layers.warnings().iter().cloned());
@@ -865,10 +880,11 @@ impl Viewer {
             document.playback.hour(),
             camera,
             pixels,
+            self.perspective.clone(),
         );
-        if self.overlay_at != Some(overlay_key) {
+        if self.overlay_at.as_ref() != Some(&overlay_key) {
             let (batch, label_report, counter_report) = document
-                .overlay_batch(camera, pixels)
+                .overlay_batch(camera, pixels, &self.perspective)
                 .map_err(|error| error.to_string())?;
             self.label_report = label_report;
             self.counter_report = counter_report;
@@ -992,10 +1008,34 @@ impl eframe::App for Viewer {
                     self.camera = None;
                     self.camera_manual = false;
                 }
-                // names: the header names every layer that reaches a pixel.
-                ui.weak(
-                    "Omniscient · Terrain, water, political fill, borders, names and labels",
+                // counters: which country the unit counters are drawn for. The
+                // recorded player is the default; omniscient is the explicit
+                // alternative, not a fallback anyone reaches by accident.
+                ui.separator();
+                ui.selectable_value(
+                    &mut self.perspective,
+                    map::perspective::Choice::Recorded,
+                    "Player view",
+                )
+                .on_hover_text(
+                    "Draw the unit counters as the recording's own human player saw them: a stack                      it has no intelligence on carries the game's question mark and no bars",
                 );
+                ui.selectable_value(
+                    &mut self.perspective,
+                    map::perspective::Choice::Omniscient,
+                    "Omniscient",
+                )
+                .on_hover_text(
+                    "Draw every recorded stack in full, including the ones the game hid from its                      player",
+                );
+                // names: the header names every layer that reaches a pixel.
+                ui.weak(format!(
+                    "{} · Terrain, water, political fill, borders, names and labels",
+                    match &self.perspective {
+                        map::perspective::Choice::Omniscient => "Omniscient".to_owned(),
+                        choice => format!("Counters as {choice} sees them"),
+                    }
+                ));
             });
             ui.add_space(5.0);
             if let Some(error) = &self.error {
