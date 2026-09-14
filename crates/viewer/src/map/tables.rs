@@ -516,7 +516,9 @@ mod tests {
             tag: "GER".into(),
             requested: false,
         });
-        assert!(recorded.lines()[0].starts_with("Perspective GER: the map is drawn as the recorded"));
+        assert!(
+            recorded.lines()[0].starts_with("Perspective GER: the map is drawn as the recorded")
+        );
         assert!(recorded.lines()[1].starts_with("Province visibility is not recorded"));
 
         let mut asked = Limitations::default();

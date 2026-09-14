@@ -181,7 +181,7 @@ impl Document {
             "A stack of several divisions takes its unit-type icon from its oldest division's template. Which member of a stack the engine's counter holds is decided by the icon object's own construction, which this pass does not reproduce, so a stack of mixed templates may draw a different member's glyph than the game does.".into(),
         );
         warnings.push(
-            "Unit counters are gathered into the engine's camera-height groups, but the engine's own grouping relation between two countries is read as faction membership, which no reference frame can confirm; counters of allied countries in one state may therefore be gathered where the game keeps them apart, or the reverse.".into(),
+            "Unit counters are gathered into the engine's camera-height groups. The engine's own grouping relation is the co-belligerent byte it sets for each country on its own side of a war it is in, and the recorded WarRelations table is pairwise, so two countries count as co-belligerents here when they share an ongoing enemy and are not at war with each other; a war whose two sides share no third country would keep counters apart that the game gathers.".into(),
         );
         if !labels.centroid_fallbacks.is_empty() {
             warnings.push(format!(
