@@ -378,7 +378,7 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     );
     out.note::<tables::Ships>(
         frame,
-        "a naval counter's ship count and bars cover only the recorded ships",
+        "a naval counter's ship count covers only the recorded ships, where the game counts every          ship in the task force's own array",
     );
     // orders: the recorded player's battle plan
     out.note::<tables::ArmyOrders>(
@@ -402,6 +402,10 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     out.note::<tables::LandCombatProgress>(
         frame,
         "a land combat among the missing rows shows no progress percentage, and its direction          wedge falls back to the first attacker whose province differs rather than the attacker          the engine points at",
+    );
+    out.note::<tables::AirBaseRegistrations>(
+        frame,
+        "an air base among the missing rows shows no plane count, because the recorded          registrations are what says whether the viewing country is shown one at all",
     );
     out.note::<tables::NavalCombats>(
         frame,
@@ -699,6 +703,7 @@ mod tests {
             "StateBuildings",
             "ProvinceBuildings",
             "AirBases",
+            "AirBaseRegistrations",
             "AirWings",
             "LexicalTokens",
             "WeatherLimits",

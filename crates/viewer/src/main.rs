@@ -1046,11 +1046,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         // counters
         println!(
-            "Counters: {} land ({} between provinces), {} naval; {} air bases, {} naval bases; {} land combats, {} naval combats; {} stacks with no anchor",
+            "Counters: {} land ({} between provinces), {} naval; {} air bases ({} showing their plane count), {} naval bases; {} land combats, {} naval combats; {} stacks with no anchor",
             counter_report.land_counters,
             counter_report.moving,
             counter_report.naval_counters,
             counter_report.air_bases,
+            counter_report.air_base_counts,
             counter_report.naval_bases,
             counter_report.land_combats,
             counter_report.naval_combats,
@@ -1081,6 +1082,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ),
                 None => String::new(),
             }
+        );
+        // counters: the combat icon's direction wedge follows the same intelligence gate
+        println!(
+            "Combat direction wedges: {} drawn of {} icons; the engine hides the wedge for a combat              the viewer has no intelligence on",
+            (counter_report.land_combats).saturating_sub(counter_report.no_intel_combats),
+            counter_report.land_combats,
         );
         // counters
         if let Some(pass) = counter_report.grouping {
