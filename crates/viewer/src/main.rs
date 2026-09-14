@@ -14,9 +14,15 @@ use map::{
 };
 use replay::{BranchId, Hour, container::SeekResult};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, ffi::OsString, fs, io, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    ffi::OsString,
+    fs, io,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
-const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\nDump only: --demilitarized <state-id,...>, a verification aid that substitutes the save's demilitarized=yes flag\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that substitutes the save's demilitarized=yes flag\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -26,7 +32,19 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[derive(Clone, Default)]
 struct Options {
     replay: Option<PathBuf>,
-    dump: Option<PathBuf>,
+    /// Where a rendered frame is written: `--dump`'s and `--window-dump`'s
+    /// output, and the destination of the window's own F12 capture.
+    out: Option<PathBuf>,
+    /// `--dump`: render one frame without opening a window.
+    headless_dump: bool,
+    // capture
+    /// `--window-dump`: open the window and render one frame through the
+    /// windowed path at `size` and `camera` into `dump`, then close.
+    ///
+    /// The window and `--dump` are only comparable if the frame comes out of the
+    /// window's own path, so this drives [`app::Viewer`] rather than
+    /// [`render::dump_png`]; the readback is the dump's own.
+    window_dump: bool,
     hour: Option<Hour>,
     branch: Option<BranchId>,
     allow_unverified: bool,
@@ -69,13 +87,18 @@ impl Options {
             ..Default::default()
         };
         let mut args = args.peekable();
-        let mut dump = false;
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--dump") if options.replay.is_none() => {
                     options.replay =
                         Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?));
-                    dump = true;
+                    options.headless_dump = true;
+                }
+                // capture
+                Some("--window-dump") if options.replay.is_none() => {
+                    options.replay =
+                        Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?));
+                    options.window_dump = true;
                 }
                 Some("--compare") if options.compare.is_none() && options.replay.is_none() => {
                     let game = PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?);
@@ -154,7 +177,7 @@ impl Options {
                 }
                 Some("--allow-unverified-content") => options.allow_unverified = true,
                 Some("--out") => {
-                    options.dump = Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
+                    options.out = Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
                 }
                 Some("--game-dir") => {
                     options.game_dir =
@@ -230,9 +253,10 @@ impl Options {
             return Err(invalid("image dimensions must be 1 through 16384"));
         }
         if options.compare.is_some() {
-            if dump
+            if options.headless_dump
+                || options.window_dump
                 || options.replay.is_some()
-                || options.dump.is_some()
+                || options.out.is_some()
                 || options.hour.is_some()
                 || options.branch.is_some()
                 || options.camera.is_some()
@@ -256,12 +280,22 @@ impl Options {
                 "--mask, --diff, --json, --regions, --upscale, --dim, --exclude and --exclude-game-ui require --compare",
             ));
         }
-        if dump != options.dump.is_some() || (dump && options.hour.is_none()) {
+        if options.headless_dump && (options.out.is_none() || options.hour.is_none()) {
+            return Err(invalid(USAGE));
+        }
+        // capture: `--out` is the destination of the window's F12 capture too,
+        // so it names a file for all three paths and selects none of them. Only
+        // `--dump` renders without a window; `--window-dump` needs a destination
+        // because it closes the window as soon as it has written one.
+        if options.window_dump && options.out.is_none() {
+            return Err(invalid("--window-dump writes one frame and needs --out"));
+        }
+        if options.out.is_some() && options.replay.is_none() {
             return Err(invalid(USAGE));
         }
         // borders: the override substitutes a save's flag for a recording the format does not
         // carry, so it is a verification aid for scoring one frame, not a viewer setting.
-        if !options.demilitarized.is_empty() && !dump {
+        if !options.demilitarized.is_empty() && !options.headless_dump {
             return Err(invalid(
                 "--demilitarized substitutes a save's demilitarized=yes flag for the missing \
                  recording and requires --dump",
@@ -470,7 +504,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = &options.user_dir {
         config.user_dir = path.clone();
     }
-    if let Some(output) = &options.dump {
+    if let (Some(output), true) = (&options.out, options.headless_dump) {
         if let Some(error) = config_error {
             return Err(invalid(format!("viewer.json: {error}")).into());
         }
@@ -832,6 +866,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         wgpu_options: render::configuration(),
         ..Default::default()
     };
+    // capture: a `--window-dump` failure has to leave the process, and the only
+    // thing the window can hand back through `run_native` is what it wrote here.
+    let failure: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let reported = Arc::clone(&failure);
     eframe::run_native(
         "Battle Plan",
         native,
@@ -841,10 +879,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 config,
                 options,
                 config_error,
+                reported,
             )))
         }),
     )?;
-    Ok(())
+    let failure = failure.lock().map_err(|error| error.to_string())?.take();
+    match failure {
+        Some(error) => Err(invalid(error).into()),
+        None => Ok(()),
+    }
 }
 
 fn main() -> std::process::ExitCode {
@@ -967,7 +1010,8 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(dump.replay, Some(PathBuf::from("campaign.battleplan")));
-        assert_eq!(dump.dump, Some(PathBuf::from("frame.png")));
+        assert_eq!(dump.out, Some(PathBuf::from("frame.png")));
+        assert!(dump.headless_dump);
         assert_eq!(dump.hour, Some(60826315));
         assert!(dump.control);
         assert!(dump.compare.is_none());
@@ -977,10 +1021,71 @@ mod tests {
 
         let window = parse(&["campaign.battleplan", "--branch", "2"]).unwrap();
         assert_eq!(window.replay, Some(PathBuf::from("campaign.battleplan")));
-        assert!(window.dump.is_none() && window.compare.is_none());
+        assert!(window.out.is_none() && window.compare.is_none());
+        assert!(!window.headless_dump && !window.window_dump);
 
         assert!(parse(&["--dump", "campaign.battleplan", "--hour", "1"]).is_err());
         assert!(parse(&["--dump", "campaign.battleplan", "--out", "f.png"]).is_err());
+    }
+
+    // capture
+    #[test]
+    fn window_dump_takes_the_dump_options_and_drives_the_window() {
+        let options = parse(&[
+            "--window-dump",
+            "campaign.battleplan",
+            "--hour",
+            "60826315",
+            "--branch",
+            "1",
+            "--out",
+            "frame.png",
+            "--camera",
+            "100,200,300",
+            "--width",
+            "1279",
+            "--height",
+            "723",
+            "--mode",
+            "controller",
+            "--postfx",
+            "off",
+        ])
+        .unwrap();
+        assert!(options.window_dump);
+        assert_eq!(options.replay, Some(PathBuf::from("campaign.battleplan")));
+        assert_eq!(options.out, Some(PathBuf::from("frame.png")));
+        assert!(!options.headless_dump);
+        assert_eq!(options.size, [1279, 723]);
+        assert!(options.control && !options.postfx);
+        // It writes one frame and closes, so it needs somewhere to write it.
+        assert!(parse(&["--window-dump", "campaign.battleplan", "--hour", "1"]).is_err());
+        // Only one of the two paths can own the replay.
+        assert!(
+            parse(&[
+                "--dump",
+                "a.battleplan",
+                "--hour",
+                "1",
+                "--out",
+                "f.png",
+                "--window-dump",
+                "b.battleplan"
+            ])
+            .is_err()
+        );
+    }
+
+    // capture
+    #[test]
+    fn the_window_takes_out_as_the_destination_of_its_own_capture() {
+        let options = parse(&["campaign.battleplan", "--out", "capture.png"]).unwrap();
+        assert!(!options.window_dump);
+        // `--out` alone still opens a window; it only names where F12 writes.
+        assert!(!options.headless_dump);
+        assert_eq!(options.out, Some(PathBuf::from("capture.png")));
+        // A destination with nothing to render into it is still a mistake.
+        assert!(parse(&["--out", "capture.png"]).is_err());
     }
 
     #[test]

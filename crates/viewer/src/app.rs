@@ -1,5 +1,7 @@
 use crate::{
-    Config, Options, choose_initial,
+    Config,
+    Options,
+    choose_initial,
     document::Document,
     map::{
         camera::Camera,
@@ -8,6 +10,8 @@ use crate::{
         political::{self, PoliticalCache},
         scene::Scene,
     },
+    // capture
+    render,
 };
 // names
 use crate::map::{
@@ -16,6 +20,7 @@ use crate::map::{
     labels::LabelReport,
     name_pass::{LayerFade, Placements},
     scene::{Overlay, Request},
+    sprites::Batch,
     // weather
     weather::WeatherCache,
 };
@@ -23,9 +28,48 @@ use eframe::{egui, wgpu};
 use replay::{branches::Parentage, container::SeekResult, frame::TableView, rows::TableId};
 use std::{
     path::PathBuf,
-    sync::mpsc,
+    sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
+
+/// The largest share of the central panel the warning area may take before it
+/// scrolls instead of growing.
+///
+/// It lists what the hour could not draw, which `--dump` prints too, so all of
+/// it stays reachable; but unbounded it took the map's place entirely. At
+/// 1200x800 the persistent content limitations alone wrapped past the bottom of
+/// the panel and left the map one pixel tall.
+const WARNING_SHARE: f32 = 0.4;
+
+/// The height the recorded-table list scrolls within, for the same reason: 148
+/// tables wrap to twenty lines, and the bottom panel grew to hold every one.
+const TABLE_LIST_HEIGHT: f32 = 96.0;
+
+// capture
+/// A readback of the window's map target, pending until a frame has been drawn.
+///
+/// The window does not draw the map into the swap chain: it renders it through
+/// [`Scene`] into the same offscreen `OUTPUT_FORMAT` texture a `--dump` renders
+/// into, and only hands egui the finished texture. So the surface format, the
+/// MSAA resolve and egui's own colour handling sit downstream of every map pixel
+/// and cannot change one, and reading that texture back with
+/// [`render::write_png`] — the dump's own readback — is what makes the two paths
+/// comparable without a screenshot tool.
+///
+/// What the two paths do not share is the animation clock, so a capture renders
+/// its frame at `animation_time` 0, the still frame `--dump` renders.
+struct Capture {
+    path: PathBuf,
+    /// Frames to draw before the readback. `--window-dump` draws the pair a
+    /// headless dump draws, so the luminance adaptation has the same history.
+    remaining: u32,
+    /// `--window-dump`: the pixel size and camera the frame is pinned to, so
+    /// neither the panel layout nor the display's scale factor decides them. A
+    /// `None` camera is the fit to that size, which is the dump's default too.
+    pinned: Option<([u32; 2], Option<Camera>)>,
+    /// `--window-dump` closes the window once it has written its frame.
+    exit: bool,
+}
 
 pub struct Viewer {
     config: Config,
@@ -52,25 +96,46 @@ pub struct Viewer {
     postfx: bool,
     // political fill
     political: PoliticalCache,
-    /// Cleared with the scene: the border geometry has to be uploaded into a new one.
-    borders_uploaded: bool,
+    /// Cleared with the scene: the border, river and tree geometry, and the
+    /// close-zoom sprawl, rails and bridges, have to be uploaded into a new one.
+    geometry_uploaded: bool,
     // close zoom
-    /// Cleared with the scene: the sprawl, the rails and the bridges are static
-    /// content and go in once.
-    close_zoom_uploaded: bool,
     /// The hour whose map buildings and unit models are in the scene; both come
     /// from recorded tables and are rewritten when it changes.
     close_zoom_hour: Option<(replay::BranchId, i32)>,
     // names
     placements: Option<Placements>,
     placements_at: Option<(replay::BranchId, i32, bool)>,
-    fade: LayerFade,
+    /// `None` until the first frame seeds it settled at that frame's own camera
+    /// height; see [`Viewer::map`].
+    fade: Option<LayerFade>,
     last_frame: Instant,
     label_report: LabelReport,
     // counters
     counter_report: CounterReport,
+    /// The last icon layer built, and the frame, camera and viewport it was
+    /// built for; the two reports beside it come from the same build.
+    ///
+    /// `Document::overlay_batch` reads the decoded frame, the camera and the
+    /// viewport and nothing else, and the window repaints continuously for the
+    /// water animation, so without this it rebuilt every counter, base, label
+    /// and combat icon about forty times a second for a result that had not
+    /// changed: 22 of a still frame's 27 ms. Keyed like `PoliticalCache` and
+    /// the name placements beside it.
+    overlay: Option<Batch>,
+    overlay_at: Option<(replay::BranchId, i32, Camera, [u32; 2])>,
     // weather
     weather: WeatherCache,
+    // capture
+    /// The readback to run once the next frame is drawn; F12 and
+    /// `--window-dump` both arm it.
+    capture: Option<Capture>,
+    /// What the last capture wrote, or why it failed, for the header.
+    capture_note: Option<String>,
+    /// How a `--window-dump` failure leaves the process; see `main::run`.
+    failure: Arc<Mutex<Option<String>>>,
+    /// Names the F12 captures of one session apart when `--out` did not.
+    captures: u32,
 }
 
 impl Viewer {
@@ -79,12 +144,19 @@ impl Viewer {
         config: Config,
         options: Options,
         error: Option<String>,
+        // capture
+        failure: Arc<Mutex<Option<String>>>,
     ) -> Self {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
-        // names: the cross-fade starts already settled at the opening height.
-        let camera_height = options
-            .camera
-            .map_or(crate::map::camera::MAX_HEIGHT, |camera| camera.height);
+        // capture: `--window-dump` arms the readback before the first frame, so
+        // every frame it draws is a capture frame and the animation clock never
+        // starts.
+        let capture = options.window_dump.then(|| Capture {
+            path: options.out.clone().unwrap_or_default(),
+            remaining: 1,
+            pinned: Some((options.size, options.camera)),
+            exit: true,
+        });
         let mut viewer = Self {
             game_text: config.game_dir.to_string_lossy().into_owned(),
             user_text: config.user_dir.to_string_lossy().into_owned(),
@@ -92,6 +164,10 @@ impl Viewer {
             camera: options.camera,
             camera_manual: options.camera.is_some(),
             control: options.control,
+            // colour: `--postfx off` reaches the window too, so a window and a
+            // dump of the same state can be the same frame; the checkbox starts
+            // where the command line put it.
+            postfx: options.postfx,
             config,
             options,
             document: None,
@@ -105,24 +181,28 @@ impl Viewer {
             speed: 24,
             last_step: Instant::now(),
             started: Instant::now(),
-            // colour
-            postfx: true,
             // political fill
             political: PoliticalCache::new(),
-            borders_uploaded: false,
+            geometry_uploaded: false,
             // close zoom
-            close_zoom_uploaded: false,
             close_zoom_hour: None,
             // names
             placements: None,
             placements_at: None,
-            fade: LayerFade::instant(camera_height),
+            fade: None,
             last_frame: Instant::now(),
             label_report: LabelReport::default(),
             // counters
             counter_report: CounterReport::default(),
+            overlay: None,
+            overlay_at: None,
             // weather
             weather: WeatherCache::new(),
+            // capture
+            capture,
+            capture_note: None,
+            failure,
+            captures: 0,
         };
         if !viewer.settings
             && let Some(path) = viewer.options.replay.clone()
@@ -160,9 +240,8 @@ impl Viewer {
         self.scene = None;
         // political fill
         self.political = PoliticalCache::new();
-        self.borders_uploaded = false;
+        self.geometry_uploaded = false;
         // close zoom
-        self.close_zoom_uploaded = false;
         self.close_zoom_hour = None;
         // weather
         self.weather = WeatherCache::new();
@@ -175,6 +254,10 @@ impl Viewer {
         // names
         self.placements = None;
         self.placements_at = None;
+        self.fade = None;
+        // counters
+        self.overlay = None;
+        self.overlay_at = None;
     }
 
     fn poll(&mut self) {
@@ -445,7 +528,7 @@ impl Viewer {
             .scene
             .as_mut()
             .ok_or_else(|| std::io::Error::other("the map scene was not created"))?;
-        if !self.borders_uploaded {
+        if !self.geometry_uploaded {
             scene.set_borders(
                 &state.device,
                 &state.queue,
@@ -453,18 +536,11 @@ impl Viewer {
                 &document.border_meshes,
                 &document.straits,
             )?;
-            self.borders_uploaded = true;
-        }
-        // close zoom: the sprawl, the rails and the bridges are static content,
-        // so they go into a fresh scene once; the map buildings and the unit
-        // models come from recorded tables and follow the hour.
-        //
-        // The river and canopy geometry goes in here too. Both were uploaded
-        // only on the `--dump` path, so the window drew neither, which
-        // contradicts `RENDERING.md` section 1: the headless path renders
-        // through the same pipeline as the window. They are static content like
-        // the sprawl and take the same one-time upload.
-        if !self.close_zoom_uploaded {
+            // rivers and trees: both are traced from static content, so like the
+            // border meshes they are uploaded once into a new scene and never
+            // rebuilt. Without this the window's `Scene` keeps `rivers` and
+            // `trees` at `None` and `Scene::render` skips both passes, which is
+            // two whole map layers the window did not draw and `--dump` did.
             scene.set_rivers(
                 &state.device,
                 &state.queue,
@@ -478,6 +554,10 @@ impl Viewer {
                 document.tree_geometry.clone(),
                 &document.tree_field,
             )?;
+            // close zoom: the sprawl, the rails and the bridges are static
+            // content too, and take the same one-time upload. The map buildings
+            // and the unit models are not: they come from recorded tables and
+            // follow the hour, below.
             scene.set_sprawl(&state.device, &state.queue, &document.sprawl)?;
             scene.set_railways(
                 &state.device,
@@ -486,7 +566,7 @@ impl Viewer {
                 &document.rail_mesh,
             )?;
             scene.set_bridges(&state.device, &state.queue, &document.bridges)?;
-            self.close_zoom_uploaded = true;
+            self.geometry_uploaded = true;
         }
         let hour = (document.playback.branch(), document.playback.hour());
         if self.close_zoom_hour != Some(hour) {
@@ -539,6 +619,90 @@ impl Viewer {
         Ok(())
     }
 
+    // capture
+    /// Reads the map target back into a PNG once a frame has been drawn into it.
+    ///
+    /// Called at the end of [`Viewer::map`], where the scene holds exactly the
+    /// frame the window just produced. The readback and the unverified-content
+    /// banner are [`render`]'s, the ones `--dump` uses, so what lands on disk
+    /// differs from a dump of the same state only where the two paths differ.
+    fn save_capture(
+        &mut self,
+        state: &eframe::egui_wgpu::RenderState,
+        document: &Document,
+        camera: Camera,
+        pixels: [u32; 2],
+        warnings: &[String],
+        ctx: &egui::Context,
+    ) {
+        match &mut self.capture {
+            Some(capture) if capture.remaining > 0 => {
+                capture.remaining -= 1;
+                ctx.request_repaint();
+                return;
+            }
+            Some(_) => {}
+            None => return,
+        }
+        let capture = self.capture.take().expect("matched above");
+        let scene = self.scene.as_ref().expect("a frame was drawn");
+        let unverified = document
+            .warnings
+            .iter()
+            .filter(|warning| warning.starts_with("UNVERIFIED CONTENT"))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
+        let written = (|| -> std::io::Result<()> {
+            if !unverified.is_empty() {
+                render::render_banner(scene, &state.device, &state.queue, &unverified)?;
+            }
+            render::write_png(scene, &state.device, &state.queue, &capture.path)
+        })();
+        match written {
+            Ok(()) => {
+                // The warning area is the window's own report of what this hour
+                // could not draw, and a capture is read beside a `--dump`, which
+                // prints the same list; printing it here is what lets the two be
+                // compared without a human reading the window.
+                for warning in warnings {
+                    eprintln!("Warning: {warning}");
+                }
+                println!(
+                    "Captured branch {}, hour {} to {} at {}x{}",
+                    document.playback.branch(),
+                    document.playback.hour(),
+                    capture.path.display(),
+                    pixels[0],
+                    pixels[1]
+                );
+                println!(
+                    "Camera: {},{},{}",
+                    camera.center[0], camera.center[1], camera.height
+                );
+                println!(
+                    "Mode: {}; colour grading {}",
+                    if self.control { "controller" } else { "owner" },
+                    if self.postfx { "on" } else { "off" }
+                );
+                self.capture_note = Some(format!("Saved {}", capture.path.display()));
+            }
+            Err(error) => {
+                let message = format!("{}: {error}", capture.path.display());
+                if capture.exit
+                    && let Ok(mut failure) = self.failure.lock()
+                {
+                    *failure = Some(message.clone());
+                }
+                eprintln!("{message}");
+                self.capture_note = Some(message);
+            }
+        }
+        if capture.exit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
     fn map(
         &mut self,
         ui: &mut egui::Ui,
@@ -561,9 +725,8 @@ impl Viewer {
             );
             // political fill: a fresh scene holds no uploaded layers or geometry.
             self.political = PoliticalCache::new();
-            self.borders_uploaded = false;
+            self.geometry_uploaded = false;
             // close zoom
-            self.close_zoom_uploaded = false;
             self.close_zoom_hour = None;
             // weather
             self.weather = WeatherCache::new();
@@ -583,18 +746,24 @@ impl Viewer {
             .political
             .layers()
             .ok_or("The political layers are unavailable")?;
-        for warning in layers.warnings() {
-            ui.colored_label(egui::Color32::YELLOW, warning);
-        }
         // The hour on screen may be one the collector had not finished filling;
-        // what that costs the render belongs beside the other warnings.
-        for line in document
-            .limitations()
-            .map_err(|error| error.to_string())?
-            .lines()
-        {
-            ui.colored_label(egui::Color32::YELLOW, line);
-        }
+        // what that costs the render leads the warning area, because it is the
+        // part that changes with the hour. The persistent content limitations
+        // and the political layer's follow, in the order `--dump` prints them,
+        // so a capture beside a dump lists the same lines in the same order.
+        let limitations = document.limitations().map_err(|error| error.to_string())?;
+        let mut warnings = limitations.lines().to_vec();
+        warnings.extend(document.warnings.iter().cloned());
+        warnings.extend(layers.warnings().iter().cloned());
+        egui::ScrollArea::vertical()
+            .id_salt("warnings")
+            .max_height(ui.available_height() * WARNING_SHARE)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for warning in &warnings {
+                    ui.colored_label(egui::Color32::YELLOW, warning);
+                }
+            });
         let (filled, distinct) = layers.summary();
         ui.weak(format!(
             "Political layer: {filled} provinces filled in {distinct} country colors, rebuilt in {:.0} ms",
@@ -611,10 +780,19 @@ impl Viewer {
             ));
         }
         let size = ui.available_size().max(egui::vec2(1.0, 1.0));
-        let pixels = [
-            (size.x * ui.ctx().pixels_per_point()).round() as u32,
-            (size.y * ui.ctx().pixels_per_point()).round() as u32,
-        ];
+        // capture: `--window-dump` renders at the size it was asked for rather
+        // than at the size the panels left over, so the frame it writes does not
+        // depend on this display's scale factor or on where the warning area
+        // wrapped. Every other frame renders the map area at device pixels,
+        // which is the space the projection and the overlay batch already use.
+        let pinned = self.capture.as_ref().and_then(|capture| capture.pinned);
+        let pixels = match pinned {
+            Some((size, _)) => size,
+            None => [
+                (size.x * ui.ctx().pixels_per_point()).round() as u32,
+                (size.y * ui.ctx().pixels_per_point()).round() as u32,
+            ],
+        };
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::drag());
         let map_size = [document.map.width as f32, document.map.height as f32];
         if !self.camera_manual {
@@ -652,13 +830,24 @@ impl Viewer {
                 camera.zoom((scroll * 0.002).exp(), physical(pointer), pixels);
             }
         }
+        let camera = match pinned {
+            Some((size, camera)) => camera.unwrap_or_else(|| Camera::fit(map_size, size)),
+            None => *camera,
+        };
         // names: the engine integrates the layer cross-fade by the frame delta
         // and clamps to [0, 1], so it takes one second whatever the zoom speed.
-        let camera = *camera;
+        // It has to start from a settled value, and only this frame knows which:
+        // a window given no `--camera` fits the map to a viewport that does not
+        // exist until there is one, and a replay opened after a zoom starts at a
+        // camera the last one left behind.
         let delta = self.last_frame.elapsed().as_secs_f32();
         self.last_frame = Instant::now();
-        self.fade = self.fade.step(camera.height, delta);
-        let states = LayerFade::wants_states(camera.height) || self.fade.state > 0.0;
+        let fade = self
+            .fade
+            .get_or_insert_with(|| LayerFade::instant(camera.height))
+            .step(camera.height, delta);
+        self.fade = Some(fade);
+        let states = LayerFade::wants_states(camera.height) || fade.state > 0.0;
         let names_key = (document.playback.branch(), document.playback.hour(), states);
         if self.placements_at != Some(names_key) {
             match document.place_names(states) {
@@ -671,11 +860,31 @@ impl Viewer {
         }
         // counters: one batch carries the bases, the labels, the counters and
         // the combat icons in `DEFAULT_PRIORITY_*` order.
-        let (label_batch, label_report, counter_report) = document
-            .overlay_batch(camera, pixels)
-            .map_err(|error| error.to_string())?;
-        self.label_report = label_report;
-        self.counter_report = counter_report;
+        let overlay_key = (
+            document.playback.branch(),
+            document.playback.hour(),
+            camera,
+            pixels,
+        );
+        if self.overlay_at != Some(overlay_key) {
+            let (batch, label_report, counter_report) = document
+                .overlay_batch(camera, pixels)
+                .map_err(|error| error.to_string())?;
+            self.label_report = label_report;
+            self.counter_report = counter_report;
+            self.overlay = Some(batch);
+            self.overlay_at = Some(overlay_key);
+        }
+        let label_batch = self.overlay.as_ref().expect("built above");
+        // capture: the animation clock is the one input a live window cannot
+        // share with a headless frame, so a capture frame renders at 0, the
+        // still frame `--dump` renders. `Scene::render` then takes the
+        // luminance adaptation instantaneously, because the clock did not
+        // advance, which is what a dump's own pair of frames does.
+        let animation_time = match self.capture {
+            Some(_) => 0.0,
+            None => self.started.elapsed().as_secs_f32(),
+        };
         let scene = self.scene.as_mut().unwrap();
         scene
             .render(
@@ -685,14 +894,14 @@ impl Viewer {
                     size: pixels,
                     camera,
                     day_night: DayNight::at_hour(document.playback.hour()),
-                    animation_time: self.started.elapsed().as_secs_f32(),
+                    animation_time,
                     // colour
                     postfx: self.postfx,
                     // names
                     overlay: Overlay {
                         names: self.placements.as_ref(),
-                        layer_alpha: self.fade.as_array(),
-                        sprites: Some(&label_batch),
+                        layer_alpha: fade.as_array(),
+                        sprites: Some(label_batch),
                     },
                     // trees
                     season: document.tree_season(),
@@ -718,6 +927,9 @@ impl Viewer {
             }
             self.generation = scene.generation();
         }
+        // capture: the frame is drawn and the scene still holds it, so the
+        // readback is the dump's own.
+        self.save_capture(state, document, camera, pixels, &warnings, ui.ctx());
         ui.painter().image(
             self.texture.unwrap(),
             rect,
@@ -734,6 +946,23 @@ impl Viewer {
 impl eframe::App for Viewer {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.poll();
+        // capture: F12 writes the map target as it stands, at its own pixel
+        // size, through the readback `--dump` uses. It is the only way to score
+        // a window frame against a dump without a screenshot tool, which would
+        // measure the swap chain and the desktop compositor instead of the map.
+        if self.capture.is_none() && ui.input(|input| input.key_pressed(egui::Key::F12)) {
+            self.captures += 1;
+            let path =
+                self.options.out.clone().unwrap_or_else(|| {
+                    PathBuf::from(format!("window-capture-{}.png", self.captures))
+                });
+            self.capture = Some(Capture {
+                path,
+                remaining: 0,
+                pinned: None,
+                exit: false,
+            });
+        }
         egui::Panel::top("header").show(ui, |ui| {
             ui.add_space(5.0);
             ui.horizontal(|ui| {
@@ -772,6 +1001,10 @@ impl eframe::App for Viewer {
             if let Some(error) = &self.error {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
             }
+            // capture
+            if let Some(note) = &self.capture_note {
+                ui.weak(note);
+            }
         });
         self.paths(ui.ctx());
         if let Some(mut document) = self.document.take() {
@@ -795,38 +1028,43 @@ impl eframe::App for Viewer {
                         ui.colored_label(egui::Color32::LIGHT_RED, format!("Gap: {reason}"));
                     }
                     SeekResult::Frame(frame) => {
-                        ui.horizontal_wrapped(|ui| {
-                            for table in TableId::ALL {
-                                match &frame.tables[table.index()] {
-                                    TableView::Complete(rows) => {
-                                        ui.weak(format!("{table:?}: {}", rows.len()));
+                        egui::ScrollArea::vertical()
+                            .id_salt("tables")
+                            .max_height(TABLE_LIST_HEIGHT)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    for table in TableId::ALL {
+                                        match &frame.tables[table.index()] {
+                                            TableView::Complete(rows) => {
+                                                ui.weak(format!("{table:?}: {}", rows.len()));
+                                            }
+                                            TableView::Truncated { missing, .. } => {
+                                                ui.colored_label(
+                                                    egui::Color32::YELLOW,
+                                                    format!(
+                                                        "{table:?}: truncated, {missing} missing"
+                                                    ),
+                                                );
+                                            }
+                                            TableView::Unavailable { reason } => {
+                                                ui.colored_label(
+                                                    egui::Color32::LIGHT_RED,
+                                                    format!("{table:?}: {reason}"),
+                                                );
+                                            }
+                                        }
                                     }
-                                    TableView::Truncated { missing, .. } => {
-                                        ui.colored_label(
-                                            egui::Color32::YELLOW,
-                                            format!("{table:?}: truncated, {missing} missing"),
-                                        );
-                                    }
-                                    TableView::Unavailable { reason } => {
-                                        ui.colored_label(
-                                            egui::Color32::LIGHT_RED,
-                                            format!("{table:?}: {reason}"),
-                                        );
-                                    }
-                                }
-                            }
-                            ui.weak(format!(
-                                "Capture {:.3} ms",
-                                frame.metrics.total_ns as f64 / 1_000_000.0
-                            ));
-                        });
+                                    ui.weak(format!(
+                                        "Capture {:.3} ms",
+                                        frame.metrics.total_ns as f64 / 1_000_000.0
+                                    ));
+                                });
+                            });
                     }
                 }
             });
             egui::CentralPanel::default().show(ui, |ui| {
-                for warning in &document.warnings {
-                    ui.colored_label(egui::Color32::YELLOW, warning);
-                }
                 if let Err(error) = self.map(ui, frame, &document) {
                     self.error = Some(error);
                 }

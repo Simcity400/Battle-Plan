@@ -62,6 +62,20 @@
 // constant `pdxwater.shader` does not have. The other unported candidate is the
 // bloom add, which `green_night` drives hard (`BLOOM_SCALE 1.5`,
 // `BRIGHT_THRESHOLD 0.8`) and which would lift exactly the bright night water.
+//
+// The fresh daylight pair reproduces that imbalance from the other side. This
+// shader's `_Diffuse` was written straight to the frame again at the fitted
+// `reference/03.md` camera and the game's own frame inverted through the colour
+// grade pixel by pixel: over the open sea our `_Diffuse` is 0.239 0.267 0.306
+// and the game's scene implies 0.062 0.112 0.179, which against
+// `SCENE_BRIGHTNESS = 0.32` is 0.80 1.32 1.83 of ours — the same
+// green-and-blue shortfall the night solve above found, with red now slightly
+// over. Splitting the daylight pair by surface says the same thing in a
+// different currency: fitting `gain * scene^p` ahead of the exposure, the sea
+// prefers `p = 2.2` (mean absolute error 21.73 to 16.29) while the land prefers
+// `p = 1` (25.52, rising to 27.63 at 2.2), so the sea is not only dim but flat,
+// and whatever is missing here is not the whole-scene scale the post pass
+// carries. Scripts: `C:\hoi4_scratch\replay_map\scene\power.py`, `implied.py`.
 
 @group(1) @binding(0) var height_texture: texture_2d<f32>;
 @group(1) @binding(1) var lean_texture1: texture_2d<f32>;
