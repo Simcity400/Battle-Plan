@@ -530,6 +530,185 @@
 // the atlas, `hist.py` counts the palette, `typemask.py` projects the type mask
 // and tabulates the graded frames, `scene_types.py` the same in scene space,
 // `stability.py` the quadrants).
+//
+// ## The contrast is the atlas texel squared, and no mechanism produces it (2026-09-15)
+//
+// The section above leaves one shape: something has to raise the contrast
+// *between* atlas tiles by about 1.4 while leaving the frame's level where the
+// eight-framing fit puts it. That shape was fitted, and then every mechanism
+// this pass has that could carry it was measured. The fit is clean; the
+// mechanism is missing; nothing is ported here.
+//
+// **The fit.** `game_scene = c * (atlas texel)^p` per channel, holding the
+// overlay, the lighting and the grade as ported, against the six tiles of the
+// table above. Taken on each tile's own byte mean over `atlas0.dds` and on the
+// `game / ours` ratio, so the lighting divides out (weighted by the tile's
+// pixel count; `p - 1` is the slope of `log(game/ours)` on `log(atlas)`):
+//
+// | fit | `p` R G B | `c` R G B |
+// |---|---|---|
+// | six tiles, weighted by px | 1.458 1.728 1.860 | 0.419 0.438 0.801 |
+// | six tiles, unweighted | 1.208 1.541 1.521 | 0.371 0.381 0.595 |
+// | the four largest, unweighted | 1.629 1.745 1.982 | 0.526 0.498 0.951 |
+//
+// **One `(c, p)` per channel does not explain the six together.** The weighted
+// fit's own residuals — the factor each tile is still out by after it — are
+// green 0.993 (`terrain_0` plains), 0.978 (`terrain_1` forest), 1.411
+// (`forest_13` urban), 1.163 (`terrain_5` plains), 0.813 (`terrain_4` forest)
+// and 0.717 (`desert_mountain` hills). The two tiles with the samples carry the
+// fit and the other four do not follow it, and no exponent moves them: the
+// hills tile stays at 0.67 to 0.79 of the fit and the urban tile at 1.15 to
+// 1.46 under every exponent between 1 and 2.7, including the sRGB curve. The
+// urban row has a cause that is not the albedo — the game draws city sprawl
+// over it and this viewer does not, which is the same layer the header's first
+// table shows at 0.42 against bare terrain's 0.24 — and the hills and the
+// second forest row are 379 and 732 pixels.
+//
+// **Where it does hold it is a decode, and the exponent is close to 2.2.**
+// Rebuilding the albedo on the CPU through the real `GetOverlay` — the atlas
+// texels of each tile against the colormap values actually under that tile's
+// mask, so the blend's non-linearity is evaluated pixel by pixel — the
+// exponent that closes plains against forest is 1.66 2.27 2.71 with
+// `c` 0.454 0.528 1.333. Rendered rather than predicted, `pow(2.2)` on the
+// texel at the sampling site (before the four-tile blend, the overlay, the
+// snow, the mud and the lighting) takes the plains-over-forest spread of the
+// demanded factor from **1.354 1.437 1.340 to 1.026 1.076 1.168** and brings
+// the hills tile back with it:
+//
+// | tile | terrain | game / ours, ported | game / ours, texel `^2.2` |
+// |---|---|---|---|
+// | 1 | `terrain_0` plains | 0.327 0.305 0.419 | 0.503 0.450 0.651 |
+// | 4 | `terrain_1` forest | 0.242 0.212 0.313 | 0.491 0.419 0.557 |
+// | 10 | `forest_13` urban | 0.364 0.357 0.406 | 0.435 0.431 0.474 |
+// | 0 | `terrain_5` plains | 0.401 0.332 0.453 | 0.642 0.504 0.690 |
+// | 5 | `terrain_4` forest | 0.436 0.215 0.415 | 0.930 0.420 0.824 |
+// | 3 | `desert_mountain` hills | 0.204 0.200 0.289 | 0.445 0.429 0.725 |
+// | all | | 0.319 0.292 0.404 | 0.503 0.447 0.634 |
+//
+// The forest-over-plains contrast the game's own frame carries is
+// 0.420 0.458 0.485; this viewer draws 0.569 0.658 0.649 and with the texel
+// squared draws 0.431 0.493 0.566. Green is closed to 7 %, red to 3 %, blue
+// only to 17 % — blue's own closing exponent is about 3.3, which is not a
+// gamma of any kind, and the per-channel exponent 1.66 2.27 2.71 fitted on the
+// CPU mirror does **not** transfer to the render (it leaves 1.109 1.065 1.160,
+// worse in red than a flat 2.2), because the mirror has no specular and no
+// normal.
+//
+// **And it does not explain the level.** The whole-frame land factor only moves
+// from 0.319 0.292 0.404 to 0.503 0.447 0.634, so `SCENE_BRIGHTNESS` survives —
+// refitted, it goes from 0.37 to about 0.45. This is a contrast law and not a
+// level law, which is the test this section was set.
+//
+// ### The mechanisms, each measured
+//
+// A decode of the atlas texel is what the numbers describe. Nothing in the
+// engine performs one, and these are the candidates that were open:
+//
+// * **The BC3 decode and the mip chain.** A hardware decode is linear in the
+//   byte domain, and the file's own mips carry the byte domain unchanged: the
+//   forest-over-plains green mean of `atlas0.dds` is 0.6217 at mip 0 and
+//   0.6221 at mip 6, flat to 0.5 % over all seven levels this pass can select,
+//   and the other tiles' ratios move by less. So no filtering choice, and no
+//   difference between our lod and the game's, can move a tile's mean.
+// * **`texture_quality`.** `FUN_141249190` loads `map/terrain/atlas%d.dds` with
+//   the settings byte, and the reference profile's `settings.txt` has
+//   `texture_quality=0`. The three files are the same content at three sizes —
+//   tile-4-over-tile-1 green is 0.622 in all three — so the suffix cannot be it
+//   either, and the game ships exactly one `atlas0.dds` with no mod enabled
+//   (`dlc_load.json` is empty).
+// * **`GetOverlay`.** Read out of the reference run's own cached terrain pixel
+//   shader rather than inferred: `ToGamma` is `pow(x, 0.45)`, `ToLinear` is
+//   `pow(x, 2.2)`, the branch is per channel on **`vOverlayGamma`** — the
+//   colormap, not the atlas — and the return is `lerp( vColor, res, 0.75 )`
+//   (`00080000F7A2100080E174D8.scache:535-546`). `common.wgsl`'s `get_overlay`
+//   is that, operand for operand. Feeding it a decoded colormap instead of a
+//   decoded texel was measured and does the wrong thing: it pushes every tile
+//   from the screen branch into the multiply branch, which darkens the albedo
+//   by 2.5x but leaves the contrast where it was — the plains-over-forest
+//   spread stays at 1.323 1.319 1.346 against the ported 1.354 1.437 1.340.
+// * **The terrain colormap's own values.** This was the cheapest candidate and
+//   the most likely, and it is real but already drawn. Over the visible land of
+//   the `pairE` frame, `colormap_rgb_cityemissivemask_a.dds` *is* darker over
+//   the forest and the hills than over the plains — tint means 0.2069 0.2596
+//   0.1214 under tile 1 against 0.1857 0.2325 0.0851 under tile 4 and
+//   0.1789 0.2103 0.0706 under tile 3, that is 0.90 0.90 0.70 and
+//   0.87 0.81 0.58 of the plains tint. But this pass samples it and blends it
+//   at 0.75 in both frames, so it is in this viewer's contrast already; it
+//   explains part of why the ported contrast is 0.66 rather than the atlas's
+//   own 0.62, not why the game's is 0.45. (`tile/cmap.py`.)
+// * **The snow, the mud and the province secondary mask.** Neutralised all
+//   three at once and re-rendered the same frame: every per-tile factor moves
+//   by at most 0.004 and the plains-over-forest spread goes 1.354 1.437 1.340
+//   to 1.330 1.434 1.332. The snow's per-tile gate is `1 - vSpec` with `vSpec`
+//   the atlas normal's alpha, which is 0.584 over the plains tile and 0.816
+//   over the forest one, so the snow term is the *wrong way round* for this gap
+//   even before its size is measured: it brightens forest harder than plains.
+// * **The pass itself.** `ComposeLight` and `ComposeLightSnow` are
+//   `((ambient + diffuse) * _Diffuse) * HdrRange + specular`
+//   (`scache:1055-1082`), linear in the albedo, so a contrast that is not in
+//   the albedo cannot be in the lit result either. The one term of the cached
+//   shader this port omits is `CalculatePointLights`, which only adds light.
+// * **Cast shadows of the trees the game's `debug_trees` removes**, which would
+//   darken exactly the forest tiles. Cropping the same forest patch out of both
+//   frames at 2x shows the *same* tile texture at the same scale with no
+//   tree-shaped occlusion in either — the game's is uniformly darker and bluer,
+//   which is a tone difference and not an added shadow.
+//
+// ### Scored end to end, because the previous test conflated two textures
+//
+// [`super::textures`] rejects an sRGB view of the atlas, on format evidence
+// that is per texture and stands, and its end-to-end table scores "atlas +
+// colormap" together. The atlas **alone** was never scored, and the bullet
+// above shows the colormap half is what breaks: it moves the level without
+// moving the contrast, and [`super::textures`] separately records that it
+// breaks the brightest sextile. So the atlas-alone variant was swept against
+// `SCENE_BRIGHTNESS` refitted for it, best against best. Mean absolute error:
+//
+// | variant | gain | `03.md` | `02.md` | `04.md` | `05.md` |
+// |---|---|---|---|---|---|
+// | this head | 0.37 | 25.0852 | 21.4115 | 20.8258 | 18.2330 |
+// | texel `^2.2` | 0.40 | 21.8721 | 18.8792 | 20.8255 | 20.9907 |
+// | texel `^2.2` | **0.45** | **20.8161** | **18.1164** | 18.9874 | 19.1019 |
+// | texel `^2.2` | 0.48 | 21.4187 | 18.9339 | **18.7297** | 18.2385 |
+// | texel `^2.2` | 0.50 | 22.3652 | 19.9402 | 18.9758 | 17.8344 |
+// | texel `^2.2` | 0.55 | 25.9657 | 23.3053 | 20.7508 | **17.4292** |
+//
+// At its own best gain of 0.45 it is better on three of the four pairs (by
+// 4.27, 3.30 and 1.84 of mean absolute error) and worse on `05.md` by 0.87; its
+// delta E improves on all four (16.68 to 14.13, 14.67 to 12.61, 13.09 to 11.97,
+// 11.91 to 11.91) and its SSIM on three (0.6734 to 0.6843, 0.6969 to 0.7122,
+// 0.6536 to 0.6628, and 0.6760 to 0.6624 on `05.md`). That is a broader
+// improvement than the "atlas + colormap" row it replaces, which lost `04.md`
+// by 4.3.
+//
+// **It is still not ported**, and the reason is the one [`super::textures`]
+// gives: the shipped header is a legacy `DDPIXELFORMAT` with `DXT5`, the
+// loader's enum switch has no path to `BC3_UNORM_SRGB`, the shader-resource
+// view takes the same enum, and `PixelShaderTerrain` applies no `ToLinear` to
+// any sample. A `pow(2.2)` in this file would be a constant with a fit behind
+// it and no mechanism, and the frame does not even ask for one number — red
+// wants about 2.2, green about 2.4 and blue about 3.3.
+//
+// **What the next attempt should start from.** The transform the game's frame
+// demands is a contrast expansion of roughly the square, applied to the atlas
+// texel before the overlay, the snow, the lighting and the blend, and *not* to
+// the colormap; it is compatible with the level-independence
+// [`super::textures`] measures, because binning by our own final level mixes
+// tiles and a per-texel power does not survive that mixing. The sea is not
+// governed by it: carrying the land's fitted `(c, p)` onto
+// `underwater_terrain_0.dds`'s own mean (0.177 0.219 0.244) predicts a water
+// factor of 0.190 0.144 0.238 against the 0.412 0.445 0.536 measured, short by
+// 2.2 to 3.1x, and `colormap_water_0.dds` (0.191 0.302 0.399) gives the same
+// answer — consistent with `water.wgsl`, which accounts for the sea's gap in
+// the reflection term instead. So the cause to look for is one that acts on the
+// land atlas and on nothing else.
+//
+// Scripts: `C:\hoi4_scratch\replay_map\tile\` (`cmap.py` reads the colormap
+// under each tile's mask, `transfer.py` fits `(c, p)` and rebuilds the albedo
+// through `GetOverlay`) and `C:\hoi4_scratch\replay_map\atlaspow\`
+// (`patch.py` raises the texel to a power at the sampling site, `gain.py` sets
+// the constant, `run.sh` and `sweep.sh` render and score, `tiles.py` rebuilds
+// the per-tile table for any dump, `crop.py` cuts the patch comparison).
 
 /// `SHADOW_WEIGHT_TERRAIN` (`constants.fxh:170`), the share of the sun the
 /// screen-space shadow buffer is allowed to take: a fully shadowed pixel keeps
