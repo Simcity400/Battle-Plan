@@ -7,7 +7,10 @@ use crate::{
     spooling::unavailable,
     table_capture::{Arena, CaptureRows, grow_capacity},
 };
-use engine::{Memory, carmy, carmy::DivisionSeed, cprovince, walk::Outcome};
+use engine::{
+    Memory, carmy, carmy::DivisionSeed, corders_group_member::MembershipCapacity, cprovince,
+    walk::Outcome,
+};
 use replay::{
     frame::TableInput,
     rows::{DivisionMovementRow, DivisionStatusRow, TableId, tables},
@@ -24,6 +27,9 @@ pub struct Capacities {
     status: usize,
     paths: usize,
     geometry: cprovince::GeometryCapacities,
+    /// Shared DivisionStatus membership bounds, so every pooled packet grows
+    /// after any buffer overflows rather than each losing its own hour.
+    membership: MembershipCapacity,
 }
 impl Default for Capacities {
     fn default() -> Self {
@@ -32,8 +38,14 @@ impl Default for Capacities {
             status: 8192,
             paths: 128 * 1024,
             geometry: cprovince::GeometryCapacities::default(),
+            membership: carmy::StatusCapacities::new(8192).membership,
         }
     }
+}
+fn status_packet(c: &Capacities) -> carmy::StatusPacket {
+    let mut packet = carmy::StatusPacket::new(c.status);
+    packet.grow(c.status, c.membership);
+    packet
 }
 
 pub struct Captured {
@@ -46,6 +58,7 @@ pub struct Captured {
     geometry_second: Option<cprovince::GeometryPacket>,
     status_packet: carmy::StatusPacket,
     status_second: Option<carmy::StatusPacket>,
+    membership: MembershipCapacity,
     source_capacity: usize,
     source_required: usize,
     source_lens: [usize; 2],
@@ -89,9 +102,9 @@ impl Captured {
             geometry: cprovince::GeometryPacket::with_capacities(c.geometry),
             geometry_second: (successful[0] < CONSISTENCY_TARGET)
                 .then(|| cprovince::GeometryPacket::with_capacities(c.geometry)),
-            status_packet: carmy::StatusPacket::new(c.status),
-            status_second: (successful[1] < CONSISTENCY_TARGET)
-                .then(|| carmy::StatusPacket::new(c.status)),
+            status_packet: status_packet(c),
+            status_second: (successful[1] < CONSISTENCY_TARGET).then(|| status_packet(c)),
+            membership: c.membership,
             source_capacity: c.movement.max(c.status),
             source_required: 0,
             source_lens: [0; 2],
@@ -135,6 +148,12 @@ impl Captured {
         assert_eq!(successful.len(), N);
         self.movement.grow(&mut c.movement, CONSISTENCY_TARGET);
         self.status.grow(&mut c.status, CONSISTENCY_TARGET);
+        for packet in std::iter::once(&self.status_packet).chain(&self.status_second) {
+            c.membership = c
+                .membership
+                .grown(packet.required_capacities().membership);
+        }
+        self.membership = c.membership;
         self.paths.grow(&mut c.paths, CONSISTENCY_TARGET);
         let mut geometry_required = self.geometry.required_capacities();
         if let Some(geometry) = &self.geometry_second {
@@ -166,8 +185,8 @@ impl Captured {
             self.status_second = None;
         } else {
             self.status_second
-                .get_or_insert_with(|| carmy::StatusPacket::new(c.status))
-                .grow(c.status);
+                .get_or_insert_with(|| status_packet(c))
+                .grow(c.status, c.membership);
         }
         self.movement_packet.reserve(c.movement, c.paths);
         self.reserve_sources(
@@ -183,12 +202,13 @@ impl Captured {
         self.source_capacity = self.source_capacity.max(capacity);
         self.movement_packet
             .reserve(self.source_capacity, self.paths.first.len());
-        self.status_packet.grow(self.source_capacity);
+        self.status_packet
+            .grow(self.source_capacity, self.membership);
         if let Some(packet) = &mut self.movement_second {
             packet.reserve(self.source_capacity, self.paths.first.len());
         }
         if let Some(packet) = &mut self.status_second {
-            packet.grow(self.source_capacity);
+            packet.grow(self.source_capacity, self.membership);
         }
     }
     pub fn capture(
@@ -574,6 +594,7 @@ mod tests {
                 provinces: 1,
                 neighbour_entries: 0,
             },
+            membership: carmy::StatusCapacities::new(0).membership,
         };
         let mut capture = Captured::with_capacities(&capacity, &[0, 0]);
         capture.reserve_sources(1);
