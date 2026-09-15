@@ -138,6 +138,17 @@
 // which the `floor(vOutline)` gate then discards) while channel 2 is the country
 // fill — the reverse of this viewer's layer order.
 //
+// **Done, and the field now matches at all three pixels.** `map::gradient`'s
+// two layers are the strategic regions and the countries in that order, a
+// pixel in no region of a layer holds alpha 255, and the country thickness
+// defines are areas rather than lengths to square, which is what had made the
+// fill a rim: at 25 map pixels rather than 5 the field carries to where the
+// game's does. Measured on the capture's own `GradientBorderChannel1` at the
+// three pixels above, this viewer's layer-2 alpha is now 0.9098, 0.5608 and
+// 0.6235 against the game's 0.9098, 0.5608 and 0.6196, where it was 0.7098,
+// 0.0000 and 0.0000. `reference/03.md` moves 15.4296 / 9.0116 / 0.6944 to
+// 12.3392 / 7.0562 / 0.7262 with it.
+//
 // The fog of war is the one remaining difference this pass can see and it is a
 // recording gap, not a port one: the game's pre-pass buffer carries
 // `FogAlphaFactor` 0.1137 at (917, 246) and 0 at the other two, and the
