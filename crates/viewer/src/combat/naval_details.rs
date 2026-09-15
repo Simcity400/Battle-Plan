@@ -202,7 +202,7 @@ fn active(
             "icon".into(),
             Widget {
                 sprite: Some(name),
-                frame: Some(u32::from(key.side) ^ u32::from(reversed)),
+                frame: Some(icon_frame(key.side, reversed)),
                 ..Widget::default()
             },
         );
@@ -279,14 +279,16 @@ fn active(
                 asset.size[0],
                 document,
             );
-            show(
-                &mut values,
-                if key.side == 0 {
-                    "escape_icon_left"
-                } else {
-                    "escape_icon_right"
-                },
-            );
+            let icon = if key.side == 0 {
+                "escape_icon_left"
+            } else {
+                "escape_icon_right"
+            };
+            show(&mut values, icon);
+            // 1417DBBE0 places the escape icon at the bar's final x plus the
+            // icon's authored x; CENTER_UP alone would add half the ship width.
+            values.entry(icon.into()).or_default().offset[0] =
+                escape_bar_x(asset.size[0], document) - asset.size[0] / 2.0;
         }
         let wnd = if key.side == 0 { "left" } else { "right" };
         let grid = match key.column {
@@ -301,7 +303,7 @@ fn active(
         let offset_x = if key.column == "sunk" {
             0.0
         } else {
-            100.0 - asset.size[0] + ((asset.size[0] - 1.0) * 0.5).trunc()
+            combat_box_x(asset.size[0])
         };
         out.naval_entries.push(NavalEntry {
             grid,
@@ -315,6 +317,33 @@ fn active(
         .retain(|w| !w.starts_with("NavalCombatShips: live HP/org bars"));
     out.warnings.push("Format-22 naval rows: native state/formation/reveal boxes, source0 and retained source1 slots, normalized-state/subunit/formation/country/damaged grouping, copied sprites, native sorted group counts, mean strength/organisation and escape progress are bound. Organisation maxima apply recorded modifiers46/47/27e with default-leader and HQ sources; missing terms in complete captured sources mean zero. UNVERIFIED: native carrier classification also queries embedded equipment flags, pride tint, sunk-strip layout, incoming-entry relation edge cases and remaining flag/text geometry need native operand and per-widget attribution beyond reference07.".into());
     Ok(())
+}
+/// 1417DBBE0 sets the one-based icon frame to `(left ^ reversed) + 1`, where
+/// `left` is the column's side byte (1 for the attacker's left column) and a
+/// group is reversed when any member is escaping (8) or state 16. Fitting both
+/// frames of the shipped strips to pairJ_naval_5.png agrees: ENG's fighting
+/// submarines use frame 1 (MAE 34.5 against 43.0), the escaping one frame 0,
+/// ROM's escaping convoy frame 1 (13.6 against 49.6) and its sunk convoy 0.
+pub(super) fn icon_frame(side: u8, reversed: bool) -> u32 {
+    u32::from(side == 0) ^ u32::from(reversed)
+}
+/// A combat-box entry's x inside its 100-wide UPPER_RIGHT grid. 1417D0380
+/// passes `-(1 - width) / 2` (C division) as the item position. pairJ_naval_5
+/// puts the 48-wide submarines at grid + 77 and the 52-wide convoy at + 75,
+/// which is `100 - trunc((width - 1) / 2)`; the grid's own right-format
+/// arithmetic is UNVERIFIED beyond these two widths.
+pub(super) fn combat_box_x(width: f32) -> f32 {
+    100.0 - ((width - 1.0) * 0.5).trunc()
+}
+/// The escape bar's final x in the entry: `width / 2 - bar / 2 + authored x`.
+pub(super) fn escape_bar_x(width: f32, document: &Document) -> f32 {
+    let bar = document
+        .icons
+        .combat
+        .sprites
+        .get("GFX_naval_combat_escape_bar")
+        .map_or(54.0, |s| s.size[0]);
+    (width / 2.0).trunc() - (bar / 2.0).trunc() - 1.0
 }
 fn fixed_ratio(value: i64, maximum: i64) -> i128 {
     i128::from(value) * 100_000 / i128::from(maximum)
@@ -363,7 +392,15 @@ fn center_icon(values: &mut Values, key: &str, name: &str, width: f32, document:
             (width / 2.0).trunc() - width / 2.0 - (asset.size[0] / 2.0).trunc();
     }
 }
-fn descriptions(
+/// 1417DBBE0: the attacker's left column writes the country flag into
+/// `desc_left` and the count into `desc_right`; the right column swaps them.
+/// `desc_left` keeps its authored x (-8, left format). `desc_right` moves to
+/// `authored x + icon width - maxWidth` so its right-aligned text ends 8 px
+/// past the icon. The flag text is the inline 0x12 country marker.
+/// pairJ_naval_5.png: ENG's flag starts at icon - 8 and its count ends at
+/// icon + 56; ROM's count "1" starts at icon - 8 and its flag ends 8 px past
+/// the icon.
+pub(super) fn descriptions(
     values: &mut Values,
     owner: u32,
     count: usize,
@@ -371,31 +408,32 @@ fn descriptions(
     width: f32,
     flags: &BTreeMap<u32, String>,
 ) {
+    let (count_key, flag_key) = if side == 0 {
+        ("desc_right", "desc_left")
+    } else {
+        ("desc_left", "desc_right")
+    };
+    let offset = |key: &str| {
+        if key == "desc_right" {
+            [width - 105.0, 0.0]
+        } else {
+            [0.0; 2]
+        }
+    };
     values.insert(
-        if side == 0 { "desc_right" } else { "desc_left" }.into(),
+        count_key.into(),
         Widget {
             text: Some(count.to_string()),
-            text_width: Some(9.0 * count.to_string().len() as f32),
-            offset: if side == 0 {
-                [width - 8.0, 0.0]
-            } else {
-                [-4.0, 0.0]
-            },
+            offset: offset(count_key),
             ..Widget::default()
         },
     );
     if let Some(flag) = flags.get(&owner) {
         values.insert(
-            if side == 0 { "desc_left" } else { "desc_right" }.into(),
+            flag_key.into(),
             Widget {
-                flag: Some(flag.clone()),
-                text: Some(String::new()),
-                size: Some([9.0, 6.0]),
-                offset: if side == 0 {
-                    [-4.0, 6.0]
-                } else {
-                    [width - 8.0, 6.0]
-                },
+                text: Some(format!("{}{flag}", super::INLINE_FLAG)),
+                offset: offset(flag_key),
                 ..Widget::default()
             },
         );
@@ -624,6 +662,17 @@ mod tests {
         row.weapon_context.sources.pop();
         assert_eq!(organisation_maximum(&row), Some(3_300_000));
     }
+    #[test]
+    fn the_left_column_takes_the_second_frame_unless_reversed() {
+        assert_eq!(icon_frame(0, false), 1);
+        assert_eq!(icon_frame(0, true), 0);
+        assert_eq!(icon_frame(1, true), 1);
+        assert_eq!(icon_frame(1, false), 0);
+        // pairJ_naval_5.png: submarines (48) at +77, convoys (52) at +75.
+        assert_eq!(combat_box_x(48.0), 77.0);
+        assert_eq!(combat_box_x(52.0), 75.0);
+    }
+
     #[test]
     fn reveal_and_exact_state_select_boxes() {
         let mut row = NavalCombatShipRow {

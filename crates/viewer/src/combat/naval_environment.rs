@@ -212,6 +212,81 @@ fn weapon(row: &NavalCombatShipRow, case: usize, pride_in_battle: bool) -> Optio
     Some(mul(add(ONE, factor), base).max(0))
 }
 
+/// The largest light/heavy gun, torpedo or depth-charge attack any convoy
+/// equipment declares, in fixed5. A live convoy's weapon getters
+/// (141AC36A0/3700/3760/3780) read its equipment definition's fields
+/// unmodified, and format 22 does not record which convoy equipment a slot
+/// carries nor which field each getter reads, so a total is bounded by this
+/// value per convoy. `None` when a convoy definition is not a plain literal.
+/// Shipped content: `convoy` declares lg_attack 0.25 and torpedo_attack 0.
+pub(super) fn convoy_weapon_bound(layers: &installed_content::ResolvedLayers) -> io::Result<Option<i64>> {
+    use installed_content::parser::Item;
+    let mut definitions: BTreeMap<String, Vec<Item>> = BTreeMap::new();
+    let mut paths: Vec<_> = layers
+        .paths()
+        .filter(|p| p.starts_with("common/units/equipment/") && p.ends_with(".txt"))
+        .collect();
+    paths.sort_unstable();
+    for path in paths {
+        for item in installed_content::parser::parse(&layers.read(path)?)?.items {
+            if item.key.as_deref() != Some(b"equipments") {
+                continue;
+            }
+            for entry in item.value.items().unwrap_or_default() {
+                if let (Some(key), Some(items)) = (entry.key.as_deref(), entry.value.items()) {
+                    definitions.insert(String::from_utf8_lossy(key).into_owned(), items.to_vec());
+                }
+            }
+        }
+    }
+    let scalar = |items: &[Item], key: &str| {
+        items
+            .iter()
+            .rev()
+            .find(|i| i.key.as_deref() == Some(key.as_bytes()))
+            .and_then(|i| i.value.scalar_str())
+            .map(str::to_owned)
+    };
+    // A value is the definition's own, else its archetype's or parent's.
+    let lookup = |name: &str, key: &str| -> Option<String> {
+        let mut current = name.to_owned();
+        for _ in 0..8 {
+            let items = definitions.get(&current)?;
+            if let Some(value) = scalar(items, key) {
+                return Some(value);
+            }
+            current = scalar(items, "archetype").or_else(|| scalar(items, "parent"))?;
+        }
+        None
+    };
+    let mut bound = 0_i64;
+    for name in definitions.keys() {
+        if lookup(name, "type").as_deref() != Some("convoy") {
+            continue;
+        }
+        for key in ["lg_attack", "hg_attack", "torpedo_attack", "sub_attack"] {
+            let Some(value) = lookup(name, key) else {
+                continue;
+            };
+            let Ok(value) = value.parse::<f64>() else {
+                return Ok(None);
+            };
+            if !(0.0..1e9).contains(&value) {
+                return Ok(None);
+            }
+            bound = bound.max((value * ONE as f64).ceil() as i64);
+        }
+    }
+    Ok(Some(bound))
+}
+
+/// The displayed whole number of `ships` plus `convoys` live convoys, when
+/// every convoy value in `[0, bound]` truncates to the same integer.
+fn bounded_total(ships: i64, convoys: i64, bound: Option<i64>) -> Option<i64> {
+    let high = ships.checked_add(convoys.checked_mul(bound?)?)?;
+    (ships / ONE == high / ONE).then_some(ships / ONE)
+}
+
 // 140B387D0 has different precedence from map weather-particle selection.
 fn weather_suffix(weather: &WeatherRegionRow) -> &'static str {
     if weather.heavy_rain != 0 {
@@ -378,23 +453,33 @@ pub(super) fn bind(
                 ("stat_torpedo", 3),
                 ("stat_depth_charges", 2),
             ] {
-                let sum = members.iter().try_fold(0, |sum, r| {
-                    Some(add(sum, weapon(r, case, prides.contains(&r.owner))?))
-                });
+                let convoys = members
+                    .iter()
+                    .filter(|r| r.live_ship == 0 && r.live_convoy != 0)
+                    .count() as i64;
+                let sum = members
+                    .iter()
+                    .filter(|r| r.live_ship != 0 || r.live_convoy == 0)
+                    .try_fold(0, |sum, r| {
+                        Some(add(sum, weapon(r, case, prides.contains(&r.owner))?))
+                    })
+                    .and_then(|ships| {
+                        bounded_total(ships, convoys, document.icons.combat.convoy_weapon_bound)
+                    });
                 let wnd = if side == 0 { "left" } else { "right" };
                 if let Some(sum) = sum {
                     text(
                         &mut out.values,
                         &format!("header_container/{wnd}_wnd/{widget}"),
-                        (sum / ONE).to_string(),
+                        sum.to_string(),
                     );
                 } else {
-                    out.warnings.push(format!("Naval {wnd} {widget}: convoy equipment weapons or an unsupported modifier operand is missing; total remains dash."));
+                    out.warnings.push(format!("Naval {wnd} {widget}: an unsupported modifier operand is missing, or live convoys whose unrecorded equipment values could change the displayed whole number; total remains dash."));
                 }
             }
         }
     }
-    out.warnings.push("Naval environment/summary: weather picture uses the native heavy-rain/light-rain/blizzard/snow priority and recorded task-force province-night join; totals use active source0 state2/8 members and native ordered weapon modifiers, doctrine, weather, critical and HQ arithmetic. UNVERIFIED: high-speed UI night override, weather-icon category eligibility (+64 definition flags), custom sea modifiers, pride-country alias eligibility and zero-decimal tie rounding require their missing operands or a same-hour format22 capture. Convoy weapon values are not recorded; affected totals stay dash. AA/positioning remain recorded cached values: UI AA recomputation requires ship+218 base AA, which weapon_bases does not record, plus modifiers88/89 and positioning. Modifier tooltips remain unported.".into());
+    out.warnings.push("Naval environment/summary: weather picture uses the native heavy-rain/light-rain/blizzard/snow priority and recorded task-force province-night join; totals use active source0 state2/8 members and native ordered weapon modifiers, doctrine, weather, critical and HQ arithmetic. UNVERIFIED: high-speed UI night override, weather-icon category eligibility (+64 definition flags), custom sea modifiers, pride-country alias eligibility and zero-decimal tie rounding require their missing operands or a same-hour format22 capture. Convoy weapon values are not recorded: a total is shown only when every convoy equipment value the content allows leaves its whole number unchanged, otherwise dash. AA/positioning remain recorded cached values: UI AA recomputation requires ship+218 base AA, which weapon_bases does not record, plus modifiers88/89 and positioning. Modifier tooltips remain unported.".into());
     Ok(())
 }
 fn weather_icons(out: &mut Bindings, document: &Document, weather: &WeatherRegionRow) {
@@ -467,6 +552,16 @@ mod tests {
             ]
         );
     }
+    #[test]
+    fn a_convoy_total_is_shown_only_when_no_allowed_value_changes_the_whole_number() {
+        // pairJ_naval_5.png: one Romanian convoy, content bound 0.25, shows 0.
+        assert_eq!(bounded_total(0, 1, Some(25_000)), Some(0));
+        assert_eq!(bounded_total(8_190_000, 0, Some(25_000)), Some(81));
+        assert_eq!(bounded_total(8_190_000, 1, Some(25_000)), None);
+        assert_eq!(bounded_total(0, 4, Some(25_000)), None);
+        assert_eq!(bounded_total(0, 1, None), None);
+    }
+
     #[test]
     fn carrier_penalty_free_allowance_counts_only_eligible_active_planes() {
         use replay::rows::NavalCombatPlane;

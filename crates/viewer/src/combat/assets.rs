@@ -16,6 +16,8 @@ pub struct Sprite {
     pub size: [f32; 2],
     pub vertical: bool,
     pub progress: bool,
+    /// `effectFile = gfx/FX/progress_startend.lua`: three stacked bands.
+    pub start_end: bool,
 }
 pub struct Assets {
     pub windows: BTreeMap<String, Node>,
@@ -24,6 +26,7 @@ pub struct Assets {
     pub flags: BTreeMap<String, Flag>,
     pub tactic_pictures: BTreeMap<String, String>,
     pub score_defines: Option<super::land_details::ScoreDefines>,
+    pub convoy_weapon_bound: Option<i64>,
     pub text_colors: fonts::TextColors,
     pub warnings: Vec<String>,
 }
@@ -364,6 +367,8 @@ impl Assets {
                     size,
                     vertical: string(&declaration.items, "horizontal") == Some("no"),
                     progress,
+                    start_end: string(&declaration.items, "effectFile")
+                        .is_some_and(|file| file.ends_with("progress_startend.lua")),
                 },
             );
         }
@@ -416,6 +421,7 @@ impl Assets {
             flags,
             tactic_pictures,
             score_defines: super::land_details::ScoreDefines::load(layers)?,
+            convoy_weapon_bound: super::naval_environment::convoy_weapon_bound(layers)?,
             text_colors: fonts::read_text_colors(layers)?,
             warnings,
         })

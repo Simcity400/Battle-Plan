@@ -1,6 +1,6 @@
 //! Format-22 operands override legacy gaps, without substituting a save or live state.
 use super::{
-    Selection, Values, Widget,
+    INLINE_FLAG, Selection, Values, Widget,
     binding::{Bindings, fill, hide, sprite, text},
 };
 use crate::{document::Document, map::tables::rows};
@@ -45,13 +45,28 @@ fn mul(a: i64, b: i64) -> i64 {
 fn fraction(value: i64, maximum: i64) -> f32 {
     ((value as f64 / maximum.max(100) as f64).clamp(0.0, 1.0)) as f32
 }
+/// CCombatantEntry (1415BA240) names a committed division "name 0x12TAG" for
+/// the attacker and "0x12TAG name" for the defender; the reserve entry
+/// (1415BAC10) uses the bare name. The country is the division's owner
+/// (+0x1DC when positive, else +0x1D8), recorded as `effective_owner`. The
+/// 140C79AC0 alternative owner branch is not recorded: UNVERIFIED for units
+/// whose +0x3B8 parent reports state 2.
+fn entry_name(row: &LandCombatDivisionRow, committed: bool, flag: Option<&String>) -> String {
+    let name = bytes(&row.name);
+    match flag.filter(|_| committed) {
+        Some(flag) if row.side == 0 => format!("{name} {INLINE_FLAG}{flag}"),
+        Some(flag) => format!("{INLINE_FLAG}{flag} {name}"),
+        None => name,
+    }
+}
 fn entry(
     row: &LandCombatDivisionRow,
     committed: bool,
     bonus: Option<i64>,
+    flag: Option<&String>,
     mut values: Values,
 ) -> Values {
-    text(&mut values, "name", bytes(&row.name));
+    text(&mut values, "name", entry_name(row, committed, flag));
     let strength = fraction(row.strength, row.max_strength);
     fill(
         &mut values,
@@ -145,6 +160,36 @@ fn role_rosters<'a>(
     groups
 }
 
+/// CLandCombatant vtable+F8 (1413CD7E0): true once two of the side's units
+/// (CCombatant+0x20, the full LandCombats roster in order) stand in different
+/// provinces. A unit's province is its location (+0x1F0), or its movement
+/// source (+0x1F8) when it stands in the combat province and has one.
+/// CLandBorderWarCombatant's slot (14011CD10) always returns false.
+fn several_directions(
+    combat: &replay::rows::LandCombatRow,
+    divisions: &BTreeMap<(u8, u64), &LandCombatDivisionRow>,
+    movement: &BTreeMap<u64, u32>,
+) -> Option<bool> {
+    let mut first = None;
+    for unit in &combat.attackers {
+        let row = divisions.get(&(0, *unit))?;
+        let province = if row.province == combat.province {
+            match *movement.get(unit)? {
+                0 => row.province,
+                source => source,
+            }
+        } else {
+            row.province
+        };
+        match first {
+            None => first = Some(province),
+            Some(seen) if seen != province => return Some(true),
+            Some(_) => (),
+        }
+    }
+    Some(false)
+}
+
 fn land(
     out: &mut Bindings,
     document: &Document,
@@ -165,6 +210,11 @@ fn land(
         .map(|r| ((r.side, r.division), r))
         .collect();
     let modifiers = rows::<tables::LandCombatModifiers>(frame)?;
+    let movement: BTreeMap<_, _> = rows::<tables::DivisionMovement>(frame)?
+        .rows()
+        .iter()
+        .map(|row| (row.division, row.source))
+        .collect();
     if detail.is_none()
         && divisions.is_empty()
         && !modifiers.rows().iter().any(|row| row.combat == id)
@@ -235,6 +285,7 @@ fn land(
                                 detail.defender_bonus
                             }
                         }),
+                        flags.get(&row.context.effective_owner),
                         widgets,
                     );
                 } else {
@@ -343,6 +394,8 @@ fn land(
             if modifier.indicator != 0 {
                 kinds.push(8);
             }
+            // 1415C9860's order. Frame 6 is attacker-only and asks the
+            // combatant's vtable+F8, which for CLandCombatant is 1413CD7E0.
             for (mask, kind) in [
                 (0x8000, 2),
                 (0x4000, 1),
@@ -350,10 +403,21 @@ fn land(
                 (0x800, 3),
                 (0x1000, 4),
                 (0x20, 5),
+                (0, 6),
                 (0x40000, 7),
                 (0x800000, 9),
             ] {
-                if modifier.flags & mask != 0 {
+                if mask == 0 {
+                    if side == 0 {
+                        match combat.map(|combat| {
+                            several_directions(combat, &divisions, &movement)
+                        }) {
+                            Some(Some(true)) => kinds.push(kind),
+                            Some(Some(false)) => (),
+                            _ => out.warnings.push("Land attacker multiple-direction icon: an attacker's LandCombatDivisions location or DivisionMovement source is missing; the icon is omitted rather than guessed.".into()),
+                        }
+                    }
+                } else if modifier.flags & mask != 0 {
                     kinds.push(kind);
                 }
             }
@@ -472,8 +536,8 @@ mod tests {
             stat_values: [8_000_000, 6_000_000, 0, 10_000_000, 2_000_000],
             ..Default::default()
         };
-        let active = entry(&row, true, Some(10_000), Values::new());
-        let reserve = entry(&row, false, Some(10_000), Values::new());
+        let active = entry(&row, true, Some(10_000), None, Values::new());
+        let reserve = entry(&row, false, Some(10_000), None, Values::new());
         assert_eq!(active["str_bar"].fill, Some(0.25));
         assert_eq!(reserve["str_bar"].fill, Some(0.5));
         assert_eq!(active["org_bar"].fill, Some(0.5));
@@ -498,7 +562,7 @@ mod tests {
             stat_values: [36_958_320, 7_635_582, 833, 23_127_045, 5_736_750],
             ..Default::default()
         };
-        let active = entry(&row, true, None, Values::new());
+        let active = entry(&row, true, None, None, Values::new());
         assert_eq!(
             active["name"].text.as_deref(),
             Some("169th 'Madison' Division")
@@ -508,6 +572,81 @@ mod tests {
         assert_eq!(active["defense"].text.as_deref(), Some("365"));
         assert_eq!(active["soft_attack"].text, None);
         assert_eq!(active["hard_attack"].text, None);
+    }
+
+    #[test]
+    fn committed_names_carry_the_owner_flag_on_the_side_the_native_entry_writes() {
+        let mut row = LandCombatDivisionRow {
+            name: b"144ya Strelkovaya Diviziya".to_vec(),
+            ..Default::default()
+        };
+        let flag = "SOV_communism".to_string();
+        assert_eq!(
+            entry_name(&row, true, Some(&flag)),
+            format!("144ya Strelkovaya Diviziya {INLINE_FLAG}SOV_communism")
+        );
+        assert_eq!(
+            entry_name(&row, false, Some(&flag)),
+            "144ya Strelkovaya Diviziya"
+        );
+        row.side = 1;
+        assert_eq!(
+            entry_name(&row, true, Some(&flag)),
+            format!("{INLINE_FLAG}SOV_communism 144ya Strelkovaya Diviziya")
+        );
+        assert_eq!(entry_name(&row, true, None), "144ya Strelkovaya Diviziya");
+    }
+
+    #[test]
+    fn several_directions_compare_locations_or_the_source_in_the_combat_province() {
+        let combat = replay::rows::LandCombatRow {
+            province: 362,
+            attackers: vec![1, 2],
+            ..Default::default()
+        };
+        let rows = [
+            LandCombatDivisionRow {
+                division: 1,
+                province: 9263,
+                ..Default::default()
+            },
+            LandCombatDivisionRow {
+                division: 2,
+                province: 389,
+                ..Default::default()
+            },
+        ];
+        let mut divisions: BTreeMap<_, _> = rows.iter().map(|r| ((0, r.division), r)).collect();
+        let mut movement = BTreeMap::new();
+        // pairJ_land_5.png: 144ya at 9263 and 2-p Morit at 389 show the icon.
+        assert_eq!(
+            several_directions(&combat, &divisions, &movement),
+            Some(true)
+        );
+        let entered = [
+            LandCombatDivisionRow {
+                division: 1,
+                province: 362,
+                ..Default::default()
+            },
+            LandCombatDivisionRow {
+                division: 2,
+                province: 9263,
+                ..Default::default()
+            },
+        ];
+        divisions = entered.iter().map(|r| ((0, r.division), r)).collect();
+        assert_eq!(several_directions(&combat, &divisions, &movement), None);
+        movement.insert(1, 9263);
+        assert_eq!(
+            several_directions(&combat, &divisions, &movement),
+            Some(false)
+        );
+        movement.insert(1, 0);
+        assert_eq!(
+            several_directions(&combat, &divisions, &movement),
+            Some(true)
+        );
     }
 
     #[test]

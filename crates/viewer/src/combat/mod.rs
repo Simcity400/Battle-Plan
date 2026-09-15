@@ -418,6 +418,22 @@ pub(crate) fn naval_bubble_progress(
     .node(root, rect, "", &values)?;
     Ok(drawn.batch)
 }
+/// Native inline country flag marker (`0x12` followed by the country), which
+/// CCombatantEntry (1415BA240) writes into land division names. Bindings put
+/// the resolved flag-atlas key after it, ended by a space or the string end.
+pub(crate) const INLINE_FLAG: char = '\u{12}';
+/// The small `gfx/flags/small` cell.
+const INLINE_FLAG_SIZE: [f32; 2] = [10.0, 7.0];
+/// pairJ_land_5.png: right-aligned "<flag> 169th 'Madison' Division" (117 px
+/// of Arial12 text) starts 129 px before its box edge, and "<flag> 900
+/// Infantry Division" (101 px) 113 px before it. An attacker's trailing flag
+/// starts exactly at the pen after "name ".
+const INLINE_FLAG_ADVANCE: f32 = 12.0;
+enum Chunk {
+    Text(String, [f32; 4]),
+    Icon(String),
+    Flag(String),
+}
 struct Painter<'a> {
     assets: &'a Assets,
     drawn: &'a mut Drawn,
@@ -512,6 +528,7 @@ impl Painter<'_> {
                     origin
                 };
                 if sprite.progress {
+                    let (at, rotation) = progress_turn(at, size, rotation);
                     self.progress(sprite, at, size, rotation, data.and_then(|d| d.fill));
                 } else {
                     let frame = data
@@ -546,7 +563,13 @@ impl Painter<'_> {
                     "maxWidth",
                 )?
                 .map(|v| v as f32));
-                self.text(font, value, origin, align, width);
+                let value = match width {
+                    Some(width) if string(&child.items, "fixedsize") == Some("yes") => {
+                        self.ellipsize(font, value, width)
+                    }
+                    _ => value.to_owned(),
+                };
+                self.text(font, &value, origin, align, width);
             }
         }
         Ok(())
@@ -613,7 +636,7 @@ impl Painter<'_> {
         align: text::Align,
         width: Option<f32>,
     ) {
-        if !value.contains(['\n', '£', '§']) {
+        if !value.contains(['\n', '£', '§', INLINE_FLAG]) {
             self.drawn.batch.text(
                 &text::layout(font, value, origin, align, width),
                 font.color(),
@@ -622,59 +645,8 @@ impl Painter<'_> {
         }
         let mut color = font.color();
         for (line, raw) in value.lines().enumerate() {
-            let mut chunks: Vec<(String, [f32; 4], bool)> = Vec::new();
-            let mut run = String::new();
-            let mut chars = raw.chars().peekable();
-            while let Some(ch) = chars.next() {
-                if ch == '§' || ch == '£' {
-                    if !run.is_empty() {
-                        chunks.push((std::mem::take(&mut run), color, false));
-                    }
-                    if ch == '§' {
-                        if let Some(code) = chars.next() {
-                            color = if code == '!' {
-                                font.color()
-                            } else if let Some(rgb) = self.assets.text_colors.get(&code) {
-                                [
-                                    rgb[0] as f32 / 255.0,
-                                    rgb[1] as f32 / 255.0,
-                                    rgb[2] as f32 / 255.0,
-                                    1.0,
-                                ]
-                            } else {
-                                color
-                            };
-                        }
-                    } else {
-                        let mut name = String::from("GFX_");
-                        while let Some(c) = chars
-                            .peek()
-                            .copied()
-                            .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-                        {
-                            name.push(c);
-                            chars.next();
-                        }
-                        if chars.peek() == Some(&'£') {
-                            chars.next();
-                        }
-                        chunks.push((name, [1.0; 4], true));
-                    }
-                } else {
-                    run.push(ch);
-                }
-            }
-            if !run.is_empty() {
-                chunks.push((run, color, false));
-            }
-            let length = |chunk: &(String, [f32; 4], bool)| {
-                if chunk.2 {
-                    self.assets.sprites.get(&chunk.0).map_or(0.0, |s| s.size[0])
-                } else {
-                    text::measure(font, &chunk.0)
-                }
-            };
-            let measured: f32 = chunks.iter().map(length).sum();
+            let chunks = self.chunks(font, raw, &mut color);
+            let measured: f32 = chunks.iter().map(|c| self.length(font, c)).sum();
             let slack = (width.unwrap_or(0.0) - measured).max(0.0);
             let mut x = origin[0]
                 + match align {
@@ -684,28 +656,135 @@ impl Painter<'_> {
                 };
             let y = origin[1] + line as f32 * font.line_height();
             for chunk in chunks {
-                let advance = length(&chunk);
+                let advance = self.length(font, &chunk);
                 let remaining = width.map(|w| (origin[0] + w - x).max(0.0));
                 self.drawn
                     .batch
                     .at_layer(100_000_000 + self.drawn.batch.quads.len() as u32);
-                if chunk.2 {
-                    if remaining.is_none_or(|w| w >= advance)
-                        && let Some(sprite) = self.assets.sprites.get(&chunk.0)
-                    {
-                        self.drawn
-                            .batch
-                            .scaled(&sprite.sheet, 0, [x, y], sprite.size, chunk.1);
+                match &chunk {
+                    Chunk::Icon(name) => {
+                        if remaining.is_none_or(|w| w >= advance)
+                            && let Some(sprite) = self.assets.sprites.get(name)
+                        {
+                            self.drawn.batch.scaled(
+                                &sprite.sheet,
+                                0,
+                                [x, y],
+                                sprite.size,
+                                [1.0; 4],
+                            );
+                        }
                     }
-                } else {
-                    self.drawn.batch.text(
-                        &text::layout(font, &chunk.0, [x, y], text::Align::Left, remaining),
-                        chunk.1,
-                    );
+                    Chunk::Flag(key) => {
+                        if remaining.is_none_or(|w| w >= INLINE_FLAG_SIZE[0])
+                            && let Some((texture, uv)) =
+                                self.assets.flags.get(key).and_then(|flag| flag.inline)
+                        {
+                            // The 10x7 flag's top is five pixels below the
+                            // line top in both Arial12 (pairJ_land_5.png) and
+                            // hoi_16mbs (pairJ_naval_5.png ship descriptions).
+                            let top = y + 5.0;
+                            self.drawn.batch.cell(
+                                texture,
+                                [x, top],
+                                INLINE_FLAG_SIZE,
+                                uv,
+                                [1.0; 4],
+                            );
+                        }
+                    }
+                    Chunk::Text(run, color) => {
+                        self.drawn.batch.text(
+                            &text::layout(font, run, [x, y], text::Align::Left, remaining),
+                            *color,
+                        );
+                    }
                 }
                 x += advance;
             }
         }
+    }
+    /// One line of rich text: colour runs, `£icon£` sprites and inline flags.
+    fn chunks(&self, font: &text::Font, raw: &str, color: &mut [f32; 4]) -> Vec<Chunk> {
+        let mut chunks = Vec::new();
+        let mut run = String::new();
+        let mut chars = raw.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '§' || ch == '£' || ch == INLINE_FLAG {
+                if !run.is_empty() {
+                    chunks.push(Chunk::Text(std::mem::take(&mut run), *color));
+                }
+                if ch == '§' {
+                    if let Some(code) = chars.next() {
+                        *color = if code == '!' {
+                            font.color()
+                        } else if let Some(rgb) = self.assets.text_colors.get(&code) {
+                            [
+                                rgb[0] as f32 / 255.0,
+                                rgb[1] as f32 / 255.0,
+                                rgb[2] as f32 / 255.0,
+                                1.0,
+                            ]
+                        } else {
+                            *color
+                        };
+                    }
+                } else if ch == INLINE_FLAG {
+                    let mut key = String::new();
+                    while let Some(c) = chars.peek().copied().filter(|c| *c != ' ') {
+                        key.push(c);
+                        chars.next();
+                    }
+                    chunks.push(Chunk::Flag(key));
+                } else {
+                    let mut name = String::from("GFX_");
+                    while let Some(c) = chars
+                        .peek()
+                        .copied()
+                        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    {
+                        name.push(c);
+                        chars.next();
+                    }
+                    if chars.peek() == Some(&'£') {
+                        chars.next();
+                    }
+                    chunks.push(Chunk::Icon(name));
+                }
+            } else {
+                run.push(ch);
+            }
+        }
+        if !run.is_empty() {
+            chunks.push(Chunk::Text(run, *color));
+        }
+        chunks
+    }
+    fn length(&self, font: &text::Font, chunk: &Chunk) -> f32 {
+        match chunk {
+            Chunk::Icon(name) => self.assets.sprites.get(name).map_or(0.0, |s| s.size[0]),
+            Chunk::Flag(_) => INLINE_FLAG_ADVANCE,
+            Chunk::Text(run, _) => text::measure(font, run),
+        }
+    }
+    /// A `fixedsize` text box that overflows its `maxWidth` keeps the longest
+    /// prefix whose width with `...` appended is at most `maxWidth - 3`.
+    ///
+    /// Measured in pairJ_land_5.png's Arial12 reserve names (maxWidth 74):
+    /// "884 Infantry ..." (70), "144th Infantr..." (69), "5th Royal Ma..." (71),
+    /// "16th Royal M..." (71) and "22 Dywizja ..." (66) are shown, while the
+    /// next longer prefixes measure 77, 75, 74, 77 and 72. The native routine is
+    /// UNVERIFIED: "Iraqi al-Mushati al-16r" shows as "Iraqi" over "al-Musha..."
+    /// (76), which this rule does not produce.
+    fn ellipsize(&self, font: &text::Font, value: &str, width: f32) -> String {
+        if value.contains(['\n', '§', '£']) {
+            return value.into();
+        }
+        let mut color = font.color();
+        ellipsize(self.chunks(font, value, &mut color), width, |run| {
+            text::measure(font, run)
+        })
+        .unwrap_or_else(|| value.into())
     }
     fn progress(
         &mut self,
@@ -715,54 +794,78 @@ impl Painter<'_> {
         rotation: f32,
         fill: Option<f32>,
     ) {
-        if fill.is_none() {
-            // An unavailable value leaves the authored frame empty.
-            return;
-        }
+        // An unavailable value leaves the authored frame empty.
         let Some(fill) = fill else { return };
         let fill = fill.clamp(0.0, 1.0);
         // progress.shader PixelTexture selects texture one at x <= CurrentState,
         // texture two otherwise. Native threshold-edge sampling still needs a
         // same-hour format-22 crop; the blend is not a crossfade.
-        if let Some(second) = &sprite.second {
-            self.progress_segment(second, at, size, rotation, sprite.vertical, [fill, 1.0]);
-        }
-        self.progress_segment(
-            &sprite.sheet,
+        let bar = Bar {
             at,
             size,
             rotation,
-            sprite.vertical,
-            [0.0, fill],
-        );
+            vertical: sprite.vertical,
+        };
+        if let Some(second) = &sprite.second {
+            self.progress_segment(second, bar, [fill, 1.0], [fill, 1.0], [0.0, 1.0]);
+        }
+        if sprite.start_end {
+            // progress_startend.shader: TextureOne is three stacked bands. The
+            // filled part draws the middle band, the start band over it, then
+            // the stop band shifted by 1 - state so its right end meets the
+            // fill edge. pairJ_naval_5.png's escaping convoy (state 0.36147)
+            // fits this band order at MAE 12.77 against 19.81 for the order a
+            // vertically cancelled coordinate would select.
+            for (band, u) in [
+                ([1.0 / 3.0, 2.0 / 3.0], [0.0, fill]),
+                ([0.0, 1.0 / 3.0], [0.0, fill]),
+                ([2.0 / 3.0, 1.0], [1.0 - fill, 1.0]),
+            ] {
+                self.progress_segment(&sprite.sheet, bar, [0.0, fill], u, band);
+            }
+        } else {
+            self.progress_segment(&sprite.sheet, bar, [0.0, fill], [0.0, fill], [0.0, 1.0]);
+        }
     }
+    /// Draws the `range` fraction of `bar` along its fill axis, sampling the
+    /// frame's `u` fraction along that axis and its `band` across it.
     fn progress_segment(
         &mut self,
         sheet: &crate::map::sprites::SpriteSheet,
-        at: [f32; 2],
-        size: [f32; 2],
-        rotation: f32,
-        vertical: bool,
+        bar: Bar,
         range: [f32; 2],
+        u: [f32; 2],
+        band: [f32; 2],
     ) {
+        let Bar {
+            at,
+            size,
+            rotation,
+            vertical,
+        } = bar;
         let fill = range[1] - range[0];
         if fill <= 0.0 {
             return;
         }
         let mut target = size;
-        if vertical {
-            target[1] *= fill;
+        target[usize::from(vertical)] *= fill;
+        let frame = sheet.frame_uv(0);
+        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        let uv = if vertical {
+            [
+                lerp(frame[0], frame[2], band[0]),
+                lerp(frame[1], frame[3], u[0]),
+                lerp(frame[0], frame[2], band[1]),
+                lerp(frame[1], frame[3], u[1]),
+            ]
         } else {
-            target[0] *= fill;
-        }
-        let mut uv = sheet.frame_uv(0);
-        if vertical {
-            uv[3] = uv[1] + (uv[3] - uv[1]) * range[1];
-            uv[1] += range[0];
-        } else {
-            uv[2] = uv[0] + (uv[2] - uv[0]) * range[1];
-            uv[0] += range[0];
-        }
+            [
+                lerp(frame[0], frame[2], u[0]),
+                lerp(frame[1], frame[3], band[0]),
+                lerp(frame[0], frame[2], u[1]),
+                lerp(frame[1], frame[3], band[1]),
+            ]
+        };
         // Keep the cropped foreground's centre on the rotated original rectangle.
         let mut delta = [(target[0] - size[0]) * 0.5, (target[1] - size[1]) * 0.5];
         delta[usize::from(vertical)] += size[usize::from(vertical)] * range[0];
@@ -783,6 +886,80 @@ impl Painter<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Bar {
+    at: [f32; 2],
+    size: [f32; 2],
+    rotation: f32,
+    vertical: bool,
+}
+
+/// [`Painter::ellipsize`]'s rule over already parsed chunks: `None` keeps the
+/// text unchanged (it fits, or carries a sprite this rule does not cut).
+fn ellipsize(chunks: Vec<Chunk>, width: f32, measure: impl Fn(&str) -> f32) -> Option<String> {
+    let length = |chunk: &Chunk| match chunk {
+        Chunk::Text(run, _) => Some(measure(run)),
+        Chunk::Flag(_) => Some(INLINE_FLAG_ADVANCE),
+        Chunk::Icon(_) => None,
+    };
+    let full = chunks.iter().map(length).sum::<Option<f32>>()?;
+    if full <= width {
+        return None;
+    }
+    let limit = width - 3.0 - measure("...");
+    let mut kept = String::new();
+    let mut total = 0.0;
+    for chunk in chunks {
+        match chunk {
+            Chunk::Text(run, _) => {
+                let mut prefix = String::new();
+                for ch in run.chars() {
+                    prefix.push(ch);
+                    if total + measure(&prefix) > limit {
+                        prefix.pop();
+                        kept.push_str(&prefix);
+                        return Some(format!("{kept}..."));
+                    }
+                }
+                total += measure(&run);
+                kept.push_str(&run);
+            }
+            Chunk::Flag(key) => {
+                if total + INLINE_FLAG_ADVANCE > limit {
+                    break;
+                }
+                total += INLINE_FLAG_ADVANCE;
+                kept.push(INLINE_FLAG);
+                kept.push_str(&key);
+            }
+            Chunk::Icon(_) => return None,
+        }
+    }
+    Some(format!("{kept}..."))
+}
+
+/// Where a `.gui` quarter-turned progress bar lands, as the unrotated quad and
+/// the clockwise turn [`Batch::rotated`] applies about its centre.
+///
+/// `landcombat.gui` turns the 16x7 `GFX_combat_unit_bar_org/str` bars by
+/// `rotation = 1.5708`. pairJ_land_5.png (every committed and reserve entry)
+/// shows the game turning them **counter-clockwise**: texture one, which the
+/// progress shader keeps at `x <= state`, fills from the bottom. The turned
+/// 7x16 rectangle ends at the declared x and spans the declared y from -10 to
+/// +6, `[x - h, y + h - w - 1, h, w]` (committed bars at (1031,681) measure
+/// x 1024..1031, y 671..687; reserve bars at (915,852) x 908..915, y 842..858).
+/// The native pivot is UNVERIFIED; no other quarter-turned progress bar is
+/// drawn by these windows. Half turns (the naval map icon) keep the centre.
+fn progress_turn(at: [f32; 2], size: [f32; 2], rotation: f32) -> ([f32; 2], f32) {
+    if (rotation - std::f32::consts::FRAC_PI_2).abs() > 1e-3 {
+        return (at, rotation);
+    }
+    let [w, h] = size;
+    let turned = [at[0] - h, at[1] + h - w - 1.0];
+    let centre = [turned[0] + h * 0.5, turned[1] + w * 0.5];
+    ([centre[0] - w * 0.5, centre[1] - h * 0.5], -rotation)
+}
+
 fn clip_quads(batch: &mut Batch, first: usize, clip: [f32; 4]) {
     for quad in &mut batch.quads[first..] {
         let [x, y, w, h] = quad.rect;
@@ -801,5 +978,49 @@ fn clip_quads(batch: &mut Batch, first: usize, clip: [f32; 4]) {
             v0 + (v1 - v0) * (bottom - y) / h,
         ];
         quad.rect = [left, top, (right - left).max(0.0), (bottom - top).max(0.0)];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_quarter_turned_bar_ends_at_its_declared_x_and_fills_upwards() {
+        // pairJ_land_5.png reserve bar declared at (915, 852), 16x7.
+        let authored: f32 = "1.5708".parse().unwrap();
+        let (at, rotation) = progress_turn([915.0, 852.0], [16.0, 7.0], authored);
+        assert_eq!(rotation, -authored);
+        // The unrotated quad's centre is the turned rectangle's centre.
+        assert_eq!([at[0] + 8.0, at[1] + 3.5], [911.5, 850.0]);
+        // A half turn keeps its position and angle.
+        assert_eq!(
+            progress_turn([1.0, 2.0], [16.0, 7.0], std::f32::consts::PI),
+            ([1.0, 2.0], std::f32::consts::PI)
+        );
+    }
+
+    #[test]
+    fn a_fixed_size_box_keeps_the_measured_prefix_before_its_ellipsis() {
+        // Arial12 advances of the pairJ_land_5.png reserve names (maxWidth 74).
+        let advance = |ch: char| match ch {
+            'I' | 'i' | 'l' | 'f' => 2.0,
+            ' ' | '.' | 't' => 3.0,
+            'r' | '-' => 4.0,
+            'y' => 5.0,
+            'M' | 'D' => 8.0,
+            _ => 6.0,
+        };
+        let measure = |run: &str| run.chars().map(advance).sum::<f32>();
+        let chunk = |run: &str| vec![Chunk::Text(run.into(), [1.0; 4])];
+        let cut = ellipsize(chunk("884 Infantry Division"), 74.0, measure).unwrap();
+        assert!(cut.ends_with("...") && measure(&cut) <= 71.0);
+        assert!(measure(&format!("{}D...", &cut[..cut.len() - 3])) > 71.0);
+        assert_eq!(ellipsize(chunk("Short"), 74.0, measure), None);
+        // A trailing inline flag is dropped before the name is cut.
+        let mut flagged = chunk("Name that is long enough ");
+        flagged.push(Chunk::Flag("SOV".into()));
+        let cut = ellipsize(flagged, 130.0, measure).unwrap();
+        assert!(!cut.contains(INLINE_FLAG));
     }
 }
