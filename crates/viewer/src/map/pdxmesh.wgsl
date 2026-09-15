@@ -25,12 +25,9 @@ const FLAG_ALPHA_TEST: u32 = 8u;
 @group(1) @binding(1) var specular_map: texture_2d<f32>;
 @group(1) @binding(2) var normal_map: texture_2d<f32>;
 @group(1) @binding(3) var snow_mud_data: texture_2d<f32>;
-@group(1) @binding(4) var gradient_border_channel1: texture_2d<f32>;
-@group(1) @binding(5) var gradient_border_channel2: texture_2d<f32>;
-@group(1) @binding(6) var province_secondary_color_map: texture_2d<f32>;
-@group(1) @binding(7) var environment_map: texture_cube<f32>;
-@group(1) @binding(8) var linear_wrap: sampler;
-@group(1) @binding(9) var linear_clamp: sampler;
+@group(1) @binding(4) var environment_map: texture_cube<f32>;
+@group(1) @binding(5) var linear_wrap: sampler;
+@group(1) @binding(6) var linear_clamp: sampler;
 
 /// `ConstantBuffer(1, 28)` reduced to what a static map object uses, plus the
 /// viewer's own world-wrap offset and the layer alpha.
@@ -41,14 +38,14 @@ struct MeshSlot {
     cubemap_intensity: f32,
 }
 
-@group(1) @binding(10) var<uniform> slot: MeshSlot;
+@group(1) @binding(7) var<uniform> slot: MeshSlot;
 
 /// `matBones`: the joint palette, three `vec4` rows per joint, every composed
 /// entity's joints end to end. A vertex's joint slots index it directly.
 ///
 /// The frozen palette is followed by visible instances' animated palettes.
 /// palette_offset selects the instance; vertex and index buffers stay resident.
-@group(1) @binding(11) var<storage, read> palette: array<vec4<f32>>;
+@group(1) @binding(8) var<storage, read> palette: array<vec4<f32>>;
 
 fn has(flag: u32) -> bool {
     return (slot.flags & flag) != 0u;
@@ -296,32 +293,13 @@ fn mesh_fragment(input: MeshOut) -> @location(0) vec4<f32> {
         snow_alpha = snowed.alpha;
     }
 
-    // `PDX_GRADIENT_BORDERS`: country borders and occupation stripes are
-    // painted onto 3D objects with the same map uv the terrain uses
-    // (R3 section 2.2). `wrap_u` sends a wrap copy back onto the map it was
-    // copied from, as the tree and river ports do.
-    let map_uv = wrap_u(vec2<f32>(
-        (pos.x + 0.5) / MAP_SIZE_X,
-        (pos.z + 0.5 - MAP_SIZE_Y) / -MAP_SIZE_Y,
-    ));
-    let border = gradient_border_apply(
-        color,
-        map_uv,
-        gradient_border_channel1,
-        gradient_border_channel2,
-        linear_clamp,
-        1.0,
-        globals.frame.gb_cam_dist_override_outline_cutoff.zw,
-        globals.frame.gb_cam_dist_override_outline_cutoff.xy,
-    );
-    let secondary = secondary_color_mask(
-        border.color,
-        map_uv,
-        province_secondary_color_map,
-        linear_wrap,
-        border.bloom_alpha,
-    );
-    color = secondary.color;
+    // `pdxmesh.shader:508-517` paints gradient borders and the occupation
+    // mask onto the object under `#ifdef PDX_GRADIENT_BORDERS`, and no map
+    // mesh effect defines it: none of the 39 cached `PixelPdxMeshStandard`
+    // sources carries the define (only the railway effect does), and no
+    // pdxmesh draw in either RenderDoc capture binds `GradientBorderChannel*`
+    // or `ProvinceSecondaryColorMap`. The block is not compiled, so a mesh
+    // keeps its own albedo over a tinted province.
 
     lighting.world_space_pos = pos;
     lighting.to_camera_dir = normalize(cam_pos() - pos);

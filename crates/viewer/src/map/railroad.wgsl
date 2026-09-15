@@ -96,9 +96,9 @@ fn rail_fragment(input: RailOut) -> @location(0) vec4<f32> {
     let mud_snow = textureSample(snow_mud_texture, linear_wrap, map_uv_bottom_up(pos));
     color = apply_snow_rail(color, mud_snow).color;
 
-    // `PDX_GRADIENT_BORDERS`, with the same map uv the terrain and the mesh
-    // layers use. `wrap_u` sends a wrap copy back onto the map it was copied
-    // from, as the tree, river and mesh ports do.
+    // `PDX_GRADIENT_BORDERS`, with the same map uv the terrain uses. `wrap_u`
+    // sends a wrap copy back onto the map it was copied from, as the tree and
+    // river ports do.
     let map_uv = wrap_u(vec2<f32>(
         (pos.x + 0.5) / MAP_SIZE_X,
         (pos.z + 0.5 - MAP_SIZE_Y) / -MAP_SIZE_Y,
