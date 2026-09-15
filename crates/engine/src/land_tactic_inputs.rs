@@ -347,11 +347,16 @@ pub fn capture_context(
         ];
         for (index, side) in sides.into_iter().enumerate() {
             //141299340 passes the first linked-set node as a CCountryTag*.
+            // A side whose last unit has left keeps an empty set until the
+            // combat is removed; the null CCountryTag 0 records that no country
+            // scope, preference, weight or unlock list exists for that side.
             let first = pointer(memory, side, crate::cland_combatant::COUNTRIES)?;
-            if first == 0 {
-                return Err("tactic side has no country scope");
+            if first != 0 {
+                row.countries[index] = field(memory, first, 0)?;
+                if row.countries[index] == 0 {
+                    return Err("tactic side country scope is null");
+                }
             }
-            row.countries[index] = field(memory, first, 0)?;
         }
         let viewpoint = field::<u32>(memory, game, 0x520)?;
         row.countries[2] = if viewpoint as i32 > 0 {
@@ -368,19 +373,26 @@ pub fn capture_context(
         }
         let weight_context = ccombat_tactic::WeightContext::read(memory, base)?;
         for (index, commander) in commanders.iter().enumerate() {
-            let country = countries.resolve(row.countries[index])?;
-            let mut token = [0; TOKEN_LIMIT];
-            let preferred =
-                ccombat_tactic::preferred(memory, base, country.pointer, country.id, &mut token);
-            if preferred.outcome != (Outcome::Rows { len: 1 }) {
-                return Err("tactic country preference unavailable");
-            }
-            row.preferred_tactic_ids[index][0] = preferred.row.tactic_id;
-            if let Some(weight) =
-                ccombat_tactic::weight(memory, country.pointer, &preferred, weight_context)?
-            {
-                row.country_weights[index] = weight;
-                row.country_weight_present[index] = 1;
+            if row.countries[index] != 0 {
+                let country = countries.resolve(row.countries[index])?;
+                let mut token = [0; TOKEN_LIMIT];
+                let preferred = ccombat_tactic::preferred(
+                    memory,
+                    base,
+                    country.pointer,
+                    country.id,
+                    &mut token,
+                );
+                if preferred.outcome != (Outcome::Rows { len: 1 }) {
+                    return Err("tactic country preference unavailable");
+                }
+                row.preferred_tactic_ids[index][0] = preferred.row.tactic_id;
+                if let Some(weight) =
+                    ccombat_tactic::weight(memory, country.pointer, &preferred, weight_context)?
+                {
+                    row.country_weights[index] = weight;
+                    row.country_weight_present[index] = 1;
+                }
             }
             let leader = commander.pointer;
             let parent = parent_commander(memory, base, &countries, leader)?;
@@ -409,6 +421,9 @@ pub fn capture_context(
         }
         let doctrine_rows = array(memory, system, 8, 0xa0, 65536)?;
         for index in 0..3 {
+            if row.countries[index] == 0 {
+                continue;
+            }
             let country = countries.resolve(row.countries[index])?;
             let country_row = doctrine_rows
                 .element(country.canonical_slot, 0xa0)

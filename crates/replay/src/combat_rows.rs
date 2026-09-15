@@ -245,6 +245,9 @@ value_struct!(LandCombatTacticCandidate { ordinal: u32, tactic_id: i32, unlock_i
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatTacticInputs {
+    /// Attacker, defender and viewpoint country. A side's null tag 0 means its
+    /// country set was empty (its last unit had left before teardown); that
+    /// side's country preference, weight and unlocks are then absent.
     pub countries: [u32; 3],
     pub preferred_tactic_ids: [[i32; 3]; 2],
     pub commander_handles: [[u64; 2]; 2],
