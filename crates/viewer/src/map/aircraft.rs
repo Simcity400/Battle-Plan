@@ -44,6 +44,13 @@
 //! mission region uses its base region. Missiles and carrier basing need other
 //! inputs and are skipped. Exact eligibility, count and dogfight agreement
 //! require a recorded scenario/mission-effective census, not a pixel refit.
+//! Country admission starts from the viewing country's own war/volunteer
+//! context, not from unit-vision sharing. At both reference hours Germany has
+//! no such context and no assigned own missions: exactly zero flight slots.
+//! The native pairK census confirms an empty German roster at heights 50..310,
+//! with air map mode both off and on, after allowing simulation to advance.
+//! Nonempty wartime/air-volunteer roster reconstruction remains UNVERIFIED:
+//! the replay does not store the manager's native participant arrays.
 //!
 //! The airborne manager has no dedicated height define or gate in its update.
 //! We retain the shared DRAW_MAP_OBJECTS_CUTOFF=1100. Its airborne-specific
@@ -56,7 +63,10 @@
 //! are sampled at their frame rate and interpolated; the route banking uses
 //! its tangent, with the unrecorded smoothing history omitted.
 
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
 use installed_content::{
     ResolvedLayers,
@@ -568,6 +578,36 @@ fn formation_count(planes: i32) -> (usize, usize) {
     if n >= 3 { (3, n / 3) } else { (1, n) }
 }
 
+/// admission: a peaceful faction member must not inherit its partners' wars.
+/// Native wartime allies and air-volunteer donor arrays are not recorded;
+/// common enemies and VolunteerHosts reconstruct those connections. Their
+/// exact equivalence outside the verified empty-roster frames is UNVERIFIED.
+fn scenario_countries(ours: u32, wars: &[(u32, u32)], volunteers: &[(u32, u32)]) -> BTreeSet<u32> {
+    let mut hosts = BTreeSet::from([ours]);
+    hosts.extend(
+        volunteers
+            .iter()
+            .filter_map(|&(sender, host)| (sender == ours).then_some(host)),
+    );
+    let enemies: BTreeSet<_> = wars
+        .iter()
+        .flat_map(|&(a, b)| [(a, b), (b, a)])
+        .filter_map(|(a, b)| hosts.contains(&a).then_some(b))
+        .collect();
+    let mut friends = hosts;
+    friends.extend(
+        wars.iter()
+            .flat_map(|&(a, b)| [(a, b), (b, a)])
+            .filter_map(|(a, b)| enemies.contains(&b).then_some(a)),
+    );
+    let mut countries = friends.clone();
+    countries.extend(enemies.iter().copied());
+    countries.extend(volunteers.iter().filter_map(|&(sender, host)| {
+        (friends.contains(&host) || enemies.contains(&host)).then_some(sender)
+    }));
+    countries
+}
+
 impl AircraftPlan {
     pub fn build(
         frame: &DecodedFrame,
@@ -618,23 +658,30 @@ impl AircraftPlan {
                 regions.entry(region).or_default().push(anchor);
             }
         }
+        let Some(ours) = vision.ours() else {
+            out.diagnostics
+                .push("aircraft require a viewing country (native manager +108)".into());
+            return Ok(out);
+        };
         let wars = rows::<tables::WarRelations>(frame)?;
-        let enemies: std::collections::BTreeSet<_> = wars
+        let wars: Vec<_> = wars
             .rows()
             .iter()
             .filter(|w| super::allegiance::ongoing(w.start_hour, w.end_hour, frame.hour))
-            .flat_map(|w| {
-                [
-                    (w.first_country, w.second_country),
-                    (w.second_country, w.first_country),
-                ]
-            })
-            .filter_map(|(a, b)| {
-                let a = *links.get(&a)?;
-                let b = *links.get(&b)?;
-                vision.shares_vision(a).then_some(b)
+            .filter_map(|w| {
+                Some((
+                    *links.get(&w.first_country)?,
+                    *links.get(&w.second_country)?,
+                ))
             })
             .collect();
+        let volunteers = rows::<tables::VolunteerHosts>(frame)?;
+        let volunteers: Vec<_> = volunteers
+            .rows()
+            .iter()
+            .filter_map(|v| Some((*links.get(&v.country)?, *links.get(&v.host)?)))
+            .collect();
+        let countries = scenario_countries(ours, &wars, &volunteers);
         let wings = rows::<tables::AirWings>(frame)?;
         let mut ordered: Vec<&AirWingRow> = wings.rows().iter().collect();
         // Stable replacement for the manager's transient random wing order.
@@ -655,14 +702,18 @@ impl AircraftPlan {
             let Some(&slot) = links.get(&owner) else {
                 continue;
             };
-            if !vision.shares_vision(slot) && !enemies.contains(&slot) {
+            if !countries.contains(&slot) {
                 continue;
             }
-            let base = if wing.base_override != 0 {
-                wing.base_override
-            } else {
-                wing.air_base
-            };
+            // 14122efd0 only scans our training fallback and passes no scout
+            // destination list for allied/enemy countries. 140f66100 rejects
+            // a resolved base override (a transfer), rather than flying from it.
+            if (slot != ours && wing.mission_mask & (0x800 | 0x4000) != 0)
+                || wing.base_override != 0
+            {
+                continue;
+            }
+            let base = wing.air_base;
             let Some(base) = bases.get(&base) else {
                 out.diagnostics
                     .push(format!("wing {} missing base", wing.id));
@@ -955,6 +1006,17 @@ const DESCRIPTORS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unrelated_wars_do_not_admit_aircraft_to_a_peaceful_viewer() {
+        let wars = [(2, 3), (4, 3), (5, 6)];
+        assert_eq!(scenario_countries(1, &wars, &[]), BTreeSet::from([1]));
+        assert_eq!(scenario_countries(2, &wars, &[]), BTreeSet::from([2, 3, 4]));
+        assert_eq!(
+            scenario_countries(1, &wars, &[(1, 2)]),
+            BTreeSet::from([1, 2, 3, 4])
+        );
+        assert!(!scenario_countries(2, &wars, &[(7, 5)]).contains(&7));
+    }
     #[test]
     fn country_keys_precede_bare_equipment_and_do_not_add_a_culture() {
         assert_eq!(
