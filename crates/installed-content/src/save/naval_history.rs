@@ -4,8 +4,8 @@
 use std::{collections::BTreeMap, io};
 
 use super::{
-    Decimal, GameDate, Item, Value, block, boolean, bytes, field, integer, invalid, object_id,
-    required_block, required_bytes, scalar, typed_handle,
+    Decimal, GameDate, Item, block, boolean, bytes, field, integer, invalid, null_permitted_handle,
+    object_id, required_block, required_bytes, scalar, typed_handle,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -705,13 +705,6 @@ fn country_list(items: &[Item], key: &[u8]) -> io::Result<Vec<Vec<u8>>> {
             Ok(tag.to_vec())
         })
         .collect()
-}
-
-fn null_permitted_handle(value: &Value) -> io::Result<u64> {
-    let fields = block(value)?;
-    let id: u32 = integer(&required_bytes(fields, b"id")?)?;
-    let kind: u32 = integer(&required_bytes(fields, b"type")?)?;
-    Ok((u64::from(id) << 32) | u64::from(kind))
 }
 
 fn sunk_ship(items: &[Item]) -> io::Result<SunkShip> {

@@ -3,7 +3,7 @@
 use std::{collections::BTreeMap, io};
 
 use super::{
-    Decimal, GameDate, Item, Value, block, boolean, bytes, decimal, field, integer, invalid,
+    Decimal, Item, SavedDate, Value, block, boolean, bytes, decimal, field, integer, invalid,
     required_block, required_bytes, scalar,
 };
 
@@ -31,38 +31,9 @@ pub struct Politics {
     pub parties: BTreeMap<Vec<u8>, Decimal>,
     pub ideas: Vec<Vec<u8>>,
     pub ruling_party: Option<Vec<u8>>,
-    pub last_election: Option<ElectionDate>,
+    pub last_election: Option<SavedDate>,
     pub election_frequency: Option<i32>,
     pub elections_allowed: Option<bool>,
-}
-
-/// Politics permits the exact negative-year value written for some elections.
-/// This does not extend the supported campaign calendar to arbitrary BCE dates.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ElectionDate {
-    Calendar(GameDate),
-    /// Literal `-1.1.1.1`; its name makes no claim about election eligibility.
-    YearMinusOneStart,
-}
-
-impl ElectionDate {
-    fn parse(value: &[u8]) -> io::Result<Self> {
-        if value == b"-1.1.1.1" {
-            Ok(Self::YearMinusOneStart)
-        } else {
-            GameDate::parse(value).map(Self::Calendar)
-        }
-    }
-
-    pub fn engine_hour(self) -> io::Result<i32> {
-        match self {
-            Self::Calendar(date) => date.engine_hour(),
-            // Formatter 2254180 uses signed year /8760 and hour %24. Month
-            // 177140 and day 176DB0 use (delta /24) %365, so delta=-8760
-            // uniquely writes -1.1.1.1 with epoch 43,800,000.
-            Self::YearMinusOneStart => Ok(43_791_240),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -221,7 +192,7 @@ fn parse_politics(items: &[Item]) -> io::Result<Politics> {
         ideas: list(items, b"ideas")?,
         ruling_party: bytes(items, b"ruling_party")?,
         last_election: bytes(items, b"last_election")?
-            .map(|value| ElectionDate::parse(&value))
+            .map(|value| SavedDate::parse(&value))
             .transpose()?,
         election_frequency: optional_integer(items, b"election_frequency")?,
         elections_allowed: field(items, b"elections_allowed")?
@@ -496,6 +467,7 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::save::GameDate;
 
     fn parse_text(text: &[u8]) -> io::Result<Pack> {
         parse(&crate::parser::parse(text)?.items)
@@ -516,7 +488,7 @@ mod tests {
                 .last_election
                 .unwrap()
         };
-        assert_eq!(date(b"AAA"), ElectionDate::YearMinusOneStart);
+        assert_eq!(date(b"AAA"), SavedDate::Invalid);
         let raw = date(b"AAA").engine_hour().unwrap();
         assert_eq!(raw, 43_791_240);
         let delta = raw - 43_800_000;
@@ -530,7 +502,7 @@ mod tests {
         );
         assert!(GameDate::parse(b"-1.1.1.1").is_err());
         for value in [b"-1.1.1.2".as_slice(), b"-2.1.1.1", b"-1.2.1.1"] {
-            assert!(ElectionDate::parse(value).is_err());
+            assert!(SavedDate::parse(value).is_err());
         }
     }
 
