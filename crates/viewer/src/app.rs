@@ -718,11 +718,21 @@ impl Viewer {
                 &zone,
             )?;
         }
-        // weather: the snow and mud grid follows the same rebuild-then-upload
-        // rule, keyed on the weather rows rather than the provinces.
-        if self
-            .weather
-            .ensure(&document.map, &document.assets.perm_snow, document.frame()?)?
+        // weather: the snow and mud grid is built on a worker thread, because a
+        // cold branch walks every hour from its start; it is uploaded when it
+        // arrives. A capture waits for the hour it names, except during the
+        // profiling sweep, whose frames measure the window without waiting.
+        let sources = map::weather::Sources {
+            map: document.map.clone(),
+            perm_snow: document.assets.perm_snow.clone(),
+            regions: document.strategic_regions.clone(),
+            replay: document.playback.replay_handle(),
+        };
+        let wait = self
+            .capture
+            .as_ref()
+            .is_some_and(|capture| !map::counter_move::profiling() || capture.remaining == 0);
+        if self.weather.ensure(&sources, document.frame()?, wait)?
             && let Some(snow_mud) = self.weather.data()
         {
             scene.set_snow_mud(
@@ -733,6 +743,13 @@ impl Viewer {
                 snow_mud.height,
                 &snow_mud.province_snow,
             )?;
+            if map::counter_move::profiling() {
+                eprintln!(
+                    "PROFILE weather frame {} hour {}",
+                    self.profile_frame,
+                    document.playback.hour()
+                );
+            }
         }
         // fog of war: the intel map follows the hour and the perspective, the
         // same key the unit models and the battle plan take.
@@ -897,6 +914,10 @@ impl Viewer {
             .refresh_layers(state, document)
             .err()
             .map(|error| error.to_string());
+        // weather: keep polling while the worker builds the hour on screen.
+        if self.weather.pending() {
+            ui.ctx().request_repaint();
+        }
         if let Some(error) = &self.map_error {
             ui.centered_and_justified(|ui| {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
@@ -1439,6 +1460,15 @@ impl eframe::App for Viewer {
                     {
                         self.error = Some(error.to_string());
                     }
+                }
+                // A cold seek: jump to the branch's last hour, whose per-branch
+                // caches (the snow and mud display cache) start empty.
+                if self.profile_frame == 121
+                    && std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).as_deref() == Ok("seek_end")
+                    && let Some((_, last)) = document.playback.range(document.playback.branch())
+                    && let Err(error) = document.playback.seek(document.playback.branch(), last)
+                {
+                    self.error = Some(error.to_string());
                 }
                 document.hour_fraction = if self.profile_frame < 121 || self.profile_frame >= 241 {
                     self.options.hour_fraction

@@ -574,7 +574,12 @@ impl Painter<'_> {
                 .map(|v| v as f32));
                 let value = match width {
                     Some(width) if string(&child.items, "fixedsize") == Some("yes") => {
-                        self.ellipsize(font, value, width)
+                        // CInstantTextObject (1422D7A00) replaces an unset box
+                        // dimension with 200.
+                        let height = installed_content::gui::number(&child.items, "maxHeight")?
+                            .filter(|v| *v != 0.0)
+                            .map_or(200.0, |v| v as f32);
+                        self.fit(font, value, width, height)
                     }
                     _ => value.to_owned(),
                 };
@@ -740,7 +745,11 @@ impl Painter<'_> {
                     }
                 } else if ch == INLINE_FLAG {
                     let mut key = String::new();
-                    while let Some(c) = chars.peek().copied().filter(|c| *c != ' ') {
+                    while let Some(c) = chars
+                        .peek()
+                        .copied()
+                        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    {
                         key.push(c);
                         chars.next();
                     }
@@ -776,24 +785,24 @@ impl Painter<'_> {
             Chunk::Text(run, _) => text::measure(font, run),
         }
     }
-    /// A `fixedsize` text box that overflows its `maxWidth` keeps the longest
-    /// prefix whose width with `...` appended is at most `maxWidth - 3`.
-    ///
-    /// Measured in pairJ_land_5.png's Arial12 reserve names (maxWidth 74):
-    /// "884 Infantry ..." (70), "144th Infantr..." (69), "5th Royal Ma..." (71),
-    /// "16th Royal M..." (71) and "22 Dywizja ..." (66) are shown, while the
-    /// next longer prefixes measure 77, 75, 74, 77 and 72. The native routine is
-    /// UNVERIFIED: "Iraqi al-Mushati al-16r" shows as "Iraqi" over "al-Musha..."
-    /// (76), which this rule does not produce.
-    fn ellipsize(&self, font: &text::Font, value: &str, width: f32) -> String {
+    /// The text a `fixedsize` box shows: [`fit`] with this font's metrics.
+    fn fit(&self, font: &text::Font, value: &str, width: f32, height: f32) -> String {
+        use crate::map::names::GlyphMetrics;
         if value.contains(['\n', '§', '£']) {
             return value.into();
         }
         let mut color = font.color();
-        ellipsize(self.chunks(font, value, &mut color), width, |run| {
-            text::measure(font, run)
-        })
-        .unwrap_or_else(|| value.into())
+        let glyphs = Glyphs {
+            // The font loader (142287830) stores a zero height for the space,
+            // which is what ends a word.
+            glyph: |ch| {
+                GlyphMetrics::glyph(font, ch).map(|g| (g.xadvance, ch == ' ' || g.height == 0.0))
+            },
+            kerning: |a, b| GlyphMetrics::kerning(font, a, b),
+            line_height: font.line_height(),
+        };
+        fit(self.chunks(font, value, &mut color), width, height, &glyphs)
+            .unwrap_or_else(|| value.into())
     }
     fn progress(
         &mut self,
@@ -806,6 +815,15 @@ impl Painter<'_> {
         // An unavailable value leaves the authored frame empty.
         let Some(fill) = fill else { return };
         let fill = fill.clamp(0.0, 1.0);
+        // CProgressbarSprite builds its vertex buffer (14234A5E0,
+        // progressbarsprite.cpp:163) from (0,0)..(w,h) plus (0,-1) in y-up
+        // space on this renderer ((-0.5,-0.5) on the other branch), like the
+        // masked flag sprite, whereas ordinary sprites (14234C9D0) add nothing.
+        // Every progress bar is therefore drawn one pixel below its layout
+        // position, turned with the quad. pairJ_naval_5.png: the naval progress
+        // bar, both escape bars and the ship strength/organisation bars.
+        let (sin, cos) = rotation.sin_cos();
+        let at = [at[0] - sin, at[1] + cos];
         // progress.shader PixelTexture selects texture one at x <= CurrentState,
         // texture two otherwise. Native threshold-edge sampling still needs a
         // same-hour format-22 crop; the blend is not a crossfade.
@@ -903,48 +921,168 @@ struct Bar {
     vertical: bool,
 }
 
-/// [`Painter::ellipsize`]'s rule over already parsed chunks: `None` keeps the
-/// text unchanged (it fits, or carries a sprite this rule does not cut).
-fn ellipsize(chunks: Vec<Chunk>, width: f32, measure: impl Fn(&str) -> f32) -> Option<String> {
-    let length = |chunk: &Chunk| match chunk {
-        Chunk::Text(run, _) => Some(measure(run)),
-        Chunk::Flag(_) => Some(INLINE_FLAG_ADVANCE),
-        Chunk::Icon(_) => None,
-    };
-    let full = chunks.iter().map(length).sum::<Option<f32>>()?;
-    if full <= width {
-        return None;
-    }
-    let limit = width - 3.0 - measure("...");
-    let mut kept = String::new();
-    let mut total = 0.0;
+/// The font operands the native text layout reads.
+struct Glyphs<G, K> {
+    /// Advance and whether the glyph ends a word; `None` without a glyph.
+    glyph: G,
+    kerning: K,
+    line_height: f32,
+}
+
+/// One element of laid-out text: a character or an inline country flag.
+#[derive(Clone, Debug, PartialEq)]
+enum Unit {
+    Char(char),
+    Flag(String),
+}
+
+/// What a `fixedsize` box shows, as text for [`Painter::text`]; `None` keeps
+/// the value unchanged (it fits, or carries a sprite this port does not lay out).
+///
+/// The box's CInstantTextObject (1422D7D10) lays the text out once through the
+/// font (142286770 -> 142285B10) with its `maxWidth`, `maxHeight` and
+/// truncation, and draws that result through a second pass (14228C8D0 ->
+/// 142285B10) that wraps at `maxWidth` with no height limit and no truncation.
+/// pairJ_land_5.png's Arial12 reserve names (maxWidth 74, maxHeight 16) show
+/// "884 Infantry ...", "144th Infantr...", "5th Royal Ma...", "16th Royal M...",
+/// "22 Dywizja ..." and, because that ellipsis overflows, "Iraqi" over
+/// "al-Musha...".
+fn fit<G, K>(chunks: Vec<Chunk>, width: f32, height: f32, glyphs: &Glyphs<G, K>) -> Option<String>
+where
+    G: Fn(char) -> Option<(f32, bool)>,
+    K: Fn(char, char) -> f32,
+{
+    let mut units = Vec::new();
     for chunk in chunks {
         match chunk {
-            Chunk::Text(run, _) => {
-                let mut prefix = String::new();
-                for ch in run.chars() {
-                    prefix.push(ch);
-                    if total + measure(&prefix) > limit {
-                        prefix.pop();
-                        kept.push_str(&prefix);
-                        return Some(format!("{kept}..."));
-                    }
-                }
-                total += measure(&run);
-                kept.push_str(&run);
-            }
-            Chunk::Flag(key) => {
-                if total + INLINE_FLAG_ADVANCE > limit {
-                    break;
-                }
-                total += INLINE_FLAG_ADVANCE;
-                kept.push(INLINE_FLAG);
-                kept.push_str(&key);
-            }
+            Chunk::Text(run, _) => units.extend(run.chars().map(Unit::Char)),
+            Chunk::Flag(key) => units.push(Unit::Flag(key)),
             Chunk::Icon(_) => return None,
         }
     }
-    Some(format!("{kept}..."))
+    let laid = lay_out(&units, width, height, true, false, glyphs);
+    let shown = lay_out(&laid, width, f32::INFINITY, false, true, glyphs);
+    (shown != units).then(|| {
+        let mut text = String::new();
+        for unit in shown {
+            match unit {
+                Unit::Char(ch) => text.push(ch),
+                Unit::Flag(key) => {
+                    text.push(INLINE_FLAG);
+                    text.push_str(&key);
+                }
+            }
+        }
+        text
+    })
+}
+
+/// 142285B10. A glyph that does not end a word, or that starts one, and whose
+/// advance plus kerning would reach `width` starts a new line (142283E90) while
+/// two line heights plus the finished lines stay below `height`; otherwise the
+/// layout stops before it. A word as long as its line breaks at that glyph.
+/// With `truncate`, a stopped layout ends in an ellipsis (14228DE40): up to
+/// three trailing characters become dots until the line's remaining width
+/// holds three dot advances plus three pixels, then the missing dots are
+/// appended, so the result can still overflow. `newlines` writes each line
+/// break, dropping the trailing space the native line width excludes.
+fn lay_out<G, K>(
+    units: &[Unit],
+    width: f32,
+    height: f32,
+    truncate: bool,
+    newlines: bool,
+    glyphs: &Glyphs<G, K>,
+) -> Vec<Unit>
+where
+    G: Fn(char) -> Option<(f32, bool)>,
+    K: Fn(char, char) -> f32,
+{
+    let room_for_line = |lines: f32| 2.0 * glyphs.line_height + lines < height;
+    let mut out = Vec::new();
+    let mut word = Vec::new();
+    let (mut line, mut word_width, mut lines) = (0.0_f32, 0.0_f32, 0.0_f32);
+    let mut previous = None;
+    let mut stopped = false;
+    for unit in units {
+        let (step, ends_word) = match unit {
+            Unit::Char('\n') => {
+                if !room_for_line(lines) {
+                    stopped = true;
+                    break;
+                }
+                word.push(unit.clone());
+                out.append(&mut word);
+                (line, word_width, previous) = (0.0, 0.0, None);
+                lines += glyphs.line_height;
+                continue;
+            }
+            Unit::Char(ch) => match (glyphs.glyph)(*ch) {
+                Some((advance, ends)) => {
+                    let kerning = previous.map_or(0.0, |p| (glyphs.kerning)(p, *ch));
+                    (advance + kerning, ends)
+                }
+                None => {
+                    word.push(unit.clone());
+                    previous = None;
+                    continue;
+                }
+            },
+            // An inline flag is a formatting code: no kerning and no word end.
+            Unit::Flag(_) => (INLINE_FLAG_ADVANCE, false),
+        };
+        if (!ends_word || word_width == 0.0) && width <= line + step {
+            if !room_for_line(lines) {
+                stopped = true;
+                break;
+            }
+            if newlines && line != word_width && out.last() == Some(&Unit::Char(' ')) {
+                out.pop();
+            }
+            if line == word_width {
+                out.append(&mut word);
+                word_width = 0.0;
+            }
+            if newlines {
+                out.push(Unit::Char('\n'));
+            }
+            out.append(&mut word);
+            line = word_width;
+            lines += glyphs.line_height;
+        }
+        word_width += step;
+        line += step;
+        word.push(unit.clone());
+        if ends_word {
+            out.append(&mut word);
+            word_width = 0.0;
+        }
+        previous = match unit {
+            Unit::Char(ch) => Some(*ch),
+            Unit::Flag(_) => None,
+        };
+    }
+    out.append(&mut word);
+    if stopped && truncate && out.len() > 2 {
+        let dot = (glyphs.glyph)('.').map_or(0.0, |(advance, _)| advance);
+        let mut room = width - line;
+        let mut need = (dot + 1.0) * 3.0 - (glyphs.kerning)('.', '.');
+        let mut replaced = 0;
+        while replaced < 3 && room < need {
+            let index = out.len() - 1 - replaced;
+            // UNVERIFIED for a flag: the native codes stored behind it.
+            let advance = match &out[index] {
+                Unit::Char(ch) => (glyphs.glyph)(*ch).map_or(0.0, |(advance, _)| advance),
+                Unit::Flag(_) => 0.0,
+            };
+            room += advance - dot;
+            need -= dot;
+            out[index] = Unit::Char('.');
+            replaced += 1;
+        }
+        out.extend(std::iter::repeat_n(Unit::Char('.'), 3 - replaced));
+    }
+    out
 }
 
 /// Where a `.gui` quarter-turned progress bar lands, as the unrotated quad and
@@ -955,8 +1093,9 @@ fn ellipsize(chunks: Vec<Chunk>, width: f32, measure: impl Fn(&str) -> f32) -> O
 /// shows the game turning them **counter-clockwise**: texture one, which the
 /// progress shader keeps at `x <= state`, fills from the bottom. The turned
 /// 7x16 rectangle ends at the declared x and spans the declared y from -10 to
-/// +6, `[x - h, y + h - w - 1, h, w]` (committed bars at (1031,681) measure
-/// x 1024..1031, y 671..687; reserve bars at (915,852) x 908..915, y 842..858).
+/// +6, `[x - h, y + h - w - 1, h, w]` as drawn (committed bars at (1031,681)
+/// measure x 1024..1031, y 671..687; reserve bars at (915,852) x 908..915,
+/// y 842..858). The returned quad excludes the progress quad's own offset.
 /// The native pivot is UNVERIFIED; no other quarter-turned progress bar is
 /// drawn by these windows. Half turns (the naval map icon) keep the centre.
 fn progress_turn(at: [f32; 2], size: [f32; 2], rotation: f32) -> ([f32; 2], f32) {
@@ -964,7 +1103,9 @@ fn progress_turn(at: [f32; 2], size: [f32; 2], rotation: f32) -> ([f32; 2], f32)
         return (at, rotation);
     }
     let [w, h] = size;
-    let turned = [at[0] - h, at[1] + h - w - 1.0];
+    // Before the progress quad's own one-pixel offset, which this turn carries
+    // one pixel to the right.
+    let turned = [at[0] - h - 1.0, at[1] + h - w - 1.0];
     let centre = [turned[0] + h * 0.5, turned[1] + w * 0.5];
     ([centre[0] - w * 0.5, centre[1] - h * 0.5], -rotation)
 }
@@ -1000,8 +1141,9 @@ mod tests {
         let authored: f32 = "1.5708".parse().unwrap();
         let (at, rotation) = progress_turn([915.0, 852.0], [16.0, 7.0], authored);
         assert_eq!(rotation, -authored);
-        // The unrotated quad's centre is the turned rectangle's centre.
-        assert_eq!([at[0] + 8.0, at[1] + 3.5], [911.5, 850.0]);
+        // The unrotated quad's centre is the turned rectangle's centre, one
+        // pixel left of the drawn 908..915 before the progress quad's offset.
+        assert_eq!([at[0] + 8.0, at[1] + 3.5], [910.5, 850.0]);
         // A half turn keeps its position and angle.
         assert_eq!(
             progress_turn([1.0, 2.0], [16.0, 7.0], std::f32::consts::PI),
@@ -1010,26 +1152,59 @@ mod tests {
     }
 
     #[test]
-    fn a_fixed_size_box_keeps_the_measured_prefix_before_its_ellipsis() {
-        // Arial12 advances of the pairJ_land_5.png reserve names (maxWidth 74).
-        let advance = |ch: char| match ch {
-            'I' | 'i' | 'l' | 'f' => 2.0,
-            ' ' | '.' | 't' => 3.0,
-            'r' | '-' => 4.0,
-            'y' => 5.0,
-            'M' | 'D' => 8.0,
-            _ => 6.0,
+    fn a_fixed_size_box_truncates_then_wraps_like_the_game() {
+        // Arial12 advances and kerning pairs of the pairJ_land_5.png reserve
+        // names (maxWidth 74, maxHeight 16, lineHeight 14).
+        let glyphs = Glyphs {
+            glyph: |ch: char| {
+                let advance = match ch {
+                    'I' | 'i' | 'j' | 'l' => 2.0,
+                    ' ' | '.' | 't' => 3.0,
+                    '-' | 'f' | 'r' => 4.0,
+                    'k' => 5.0,
+                    'D' | 'R' | 'S' => 7.0,
+                    'G' | 'M' => 8.0,
+                    'w' => 10.0,
+                    _ => 6.0,
+                };
+                Some((advance, ch == ' '))
+            },
+            kerning: |a: char, b: char| match (a, b) {
+                ('y' | 'r', '.') | ('1', '1') => -1.0,
+                _ => 0.0,
+            },
+            line_height: 14.0,
         };
-        let measure = |run: &str| run.chars().map(advance).sum::<f32>();
-        let chunk = |run: &str| vec![Chunk::Text(run.into(), [1.0; 4])];
-        let cut = ellipsize(chunk("884 Infantry Division"), 74.0, measure).unwrap();
-        assert!(cut.ends_with("...") && measure(&cut) <= 71.0);
-        assert!(measure(&format!("{}D...", &cut[..cut.len() - 3])) > 71.0);
-        assert_eq!(ellipsize(chunk("Short"), 74.0, measure), None);
-        // A trailing inline flag is dropped before the name is cut.
-        let mut flagged = chunk("Name that is long enough ");
-        flagged.push(Chunk::Flag("SOV".into()));
-        let cut = ellipsize(flagged, 130.0, measure).unwrap();
-        assert!(!cut.contains(INLINE_FLAG));
+        let shown = |run: &str| {
+            let chunks = vec![Chunk::Text(run.into(), [1.0; 4])];
+            fit(chunks, 74.0, 16.0, &glyphs)
+        };
+        for (name, game) in [
+            ("884 Infantry Division", "884 Infantry ..."),
+            ("144th Infantry Division", "144th Infantr..."),
+            ("5th Royal Marines Division", "5th Royal Ma..."),
+            ("16th Royal Marines Division", "16th Royal M..."),
+            ("22 Dywizja Piechoty Górskiej", "22 Dywizja ..."),
+            // The ellipsis overflows the box, so the drawing pass wraps it.
+            ("Iraqi al-Mushati al-16r", "Iraqi\nal-Musha..."),
+        ] {
+            assert_eq!(shown(name).as_deref(), Some(game), "{name}");
+        }
+        assert_eq!(shown("Short"), None);
+        // With room for a second line, the layout wraps instead of cutting.
+        let chunks = vec![Chunk::Text("Iraqi al-Mushati al-16r".into(), [1.0; 4])];
+        assert_eq!(
+            fit(chunks, 74.0, 29.0, &glyphs).as_deref(),
+            Some("Iraqi al-Mushati\nal-16r")
+        );
+        // A flag that would reach the edge stops the layout before it.
+        let chunks = vec![
+            Chunk::Text("Name that is long enough ".into(), [1.0; 4]),
+            Chunk::Flag("SOV".into()),
+        ];
+        assert_eq!(
+            fit(chunks, 130.0, 16.0, &glyphs).as_deref(),
+            Some("Name that is long enough...")
+        );
     }
 }

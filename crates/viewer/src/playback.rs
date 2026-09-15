@@ -1,6 +1,6 @@
 //! Exact-hour playback through the shared replay decoder, with one cached block.
 
-use std::{collections::BTreeMap, io};
+use std::{collections::BTreeMap, io, sync::Arc};
 
 use replay::{
     BranchId, Hour, SessionId,
@@ -29,7 +29,8 @@ impl CachedBlock {
 }
 
 pub struct Playback {
-    replay: Replay,
+    /// Shared so a worker thread can walk the same file without a copy.
+    replay: Arc<Replay>,
     branch: BranchId,
     hour: Hour,
     current: SeekResult,
@@ -47,7 +48,7 @@ impl Playback {
         let branch = first.id;
         let hour = first.first_hour;
         let mut playback = Self {
-            replay,
+            replay: Arc::new(replay),
             branch,
             hour,
             current: gap(branch, hour, "hour has not been decoded".into()),
@@ -62,6 +63,11 @@ impl Playback {
 
     pub fn replay(&self) -> &Replay {
         &self.replay
+    }
+
+    /// A handle to the same replay for a worker thread.
+    pub fn replay_handle(&self) -> Arc<Replay> {
+        Arc::clone(&self.replay)
     }
 
     pub fn branch(&self) -> BranchId {
