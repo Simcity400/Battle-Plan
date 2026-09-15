@@ -11,6 +11,7 @@ pub mod camera;
 // counters
 pub mod counter_groups;
 pub mod counter_move;
+pub mod counter_order;
 pub mod counter_portraits;
 pub mod counter_status;
 pub mod counters;

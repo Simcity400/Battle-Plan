@@ -13,5 +13,13 @@ incremental = false
 debug = 0
 incremental = false
 
+# The replay crate's 2,000-hour fault acceptance test takes about 121 s unoptimised and
+# about 16 s optimised; optimising this one crate keeps the full test suite short.
+[profile.dev.package.replay]
+opt-level = 2
+
+[profile.test.package.replay]
+opt-level = 2
+
 [target.x86_64-pc-windows-msvc]
 linker = "lld-link"

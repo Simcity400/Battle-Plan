@@ -731,6 +731,7 @@ impl Viewer {
                 &snow_mud.texels,
                 snow_mud.width,
                 snow_mud.height,
+                &snow_mud.province_snow,
             )?;
         }
         // fog of war: the intel map follows the hour and the perspective, the

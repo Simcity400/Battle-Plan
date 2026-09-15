@@ -462,6 +462,7 @@ pub fn dump_png(
             &snow_mud.texels,
             snow_mud.width,
             snow_mud.height,
+            &snow_mud.province_snow,
         )?;
         // fog of war
         scene.set_fog_of_war(&queue, &layers.intel_map.texels, layers.intel_map.fog)?;
