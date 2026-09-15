@@ -79,6 +79,7 @@ struct Capture {
 }
 
 pub struct Viewer {
+    combat: crate::combat::Window,
     config: Config,
     options: Options,
     game_text: String,
@@ -196,6 +197,7 @@ impl Viewer {
         // counters: the header's control starts where the command line put it.
         let perspective = options.perspective.clone();
         let mut viewer = Self {
+            combat: crate::combat::Window::default(),
             game_text: config.game_dir.to_string_lossy().into_owned(),
             user_text: config.user_dir.to_string_lossy().into_owned(),
             settings: config.resolve_options().is_err(),
@@ -282,6 +284,7 @@ impl Viewer {
             ctx.request_repaint();
         });
         self.loading = Some(receiver);
+        self.combat.close();
         self.document = None;
         self.scene = None;
         // political fill
@@ -315,6 +318,12 @@ impl Viewer {
         let result = self.loading.as_ref().map(|receiver| receiver.try_recv());
         match result {
             Some(Ok(Ok(document))) => {
+                if let Some(selector) = self.options.combat {
+                    match selector.resolve(&document) {
+                        Ok(selection) => self.combat.open(selection),
+                        Err(error) => self.error = Some(error.to_string()),
+                    }
+                }
                 self.document = Some(document);
                 self.loading = None;
             }
@@ -907,6 +916,7 @@ impl Viewer {
             .map_err(|error| error.to_string())?;
         let mut warnings = limitations.lines().to_vec();
         warnings.extend(document.warnings.iter().cloned());
+        warnings.extend(self.combat.warnings());
         warnings.extend(layers.warnings().iter().cloned());
         egui::ScrollArea::vertical()
             .id_salt("warnings")
@@ -946,7 +956,7 @@ impl Viewer {
                 (size.y * ui.ctx().pixels_per_point()).round() as u32,
             ],
         };
-        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::drag());
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
         let map_size = [document.map.width as f32, document.map.height as f32];
         if !self.camera_manual {
             self.camera = Some(Camera::fit(map_size, pixels));
@@ -963,7 +973,83 @@ impl Viewer {
                 (position.y - rect.top()) * scale,
             ]
         };
+        if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.combat.close();
+        }
+        let combat_geometry = self
+            .combat
+            .draw(document, pixels, &self.perspective)
+            .map_err(|error| error.to_string())?;
+        let point = response
+            .hover_pos()
+            .or_else(|| response.interact_pointer_pos())
+            .map(physical);
+        if response.drag_started() {
+            self.combat.dragging = point.is_some_and(|point| {
+                combat_geometry.as_ref().is_some_and(|window| {
+                    window.contains(point) && point[1] < window.rect[1] + 35.0
+                })
+            });
+        }
+        if response.drag_stopped() {
+            self.combat.dragging = false;
+        }
+        let over_combat = self.combat.dragging
+            || point.is_some_and(|point| {
+                combat_geometry
+                    .as_ref()
+                    .is_some_and(|window| window.contains(point))
+            });
+        if response.clicked()
+            && let Some(point) = point
+            && combat_geometry
+                .as_ref()
+                .is_some_and(|window| window.closes(point))
+        {
+            self.combat.close();
+        }
+        if over_combat {
+            if response.clicked()
+                && let Some((side, direction)) = point.and_then(|point| {
+                    combat_geometry
+                        .as_ref()
+                        .and_then(|window| window.scroll_action(point))
+                })
+            {
+                self.combat.scroll[side] =
+                    self.combat.scroll[side].saturating_add_signed(direction as isize);
+            }
+            if response.dragged() && self.combat.dragging {
+                let delta = response.drag_delta();
+                self.combat.offset[0] += delta.x * scale;
+                self.combat.offset[1] += delta.y * scale;
+            }
+            if let Some(side) = point.and_then(|point| {
+                combat_geometry
+                    .as_ref()
+                    .and_then(|window| window.list_at(point))
+            }) {
+                let scroll = ui.input(|input| {
+                    input
+                        .raw
+                        .events
+                        .iter()
+                        .filter_map(|event| match event {
+                            egui::Event::MouseWheel { delta, .. } => Some(delta.y),
+                            _ => None,
+                        })
+                        .sum::<f32>()
+                });
+                if scroll < 0.0 {
+                    self.combat.scroll[side] = self.combat.scroll[side].saturating_add(1);
+                }
+                if scroll > 0.0 {
+                    self.combat.scroll[side] = self.combat.scroll[side].saturating_sub(1);
+                }
+            }
+        }
         if response.dragged()
+            && !over_combat
             && let Some(pointer) = response.interact_pointer_pos()
         {
             self.camera_manual = true;
@@ -975,7 +1061,7 @@ impl Viewer {
                 pixels,
             );
         }
-        if response.hovered() {
+        if response.hovered() && !over_combat {
             let scroll = ui.input(|input| input.smooth_scroll_delta.y);
             if scroll != 0.0 {
                 self.camera_manual = true;
@@ -1078,8 +1164,33 @@ impl Viewer {
             self.overlay = Some(batch);
             self.overlay_fraction = Some(document.hour_fraction);
         }
+        // Resolve clicks against this hour and camera's newly rebuilt hit regions.
+        if response.clicked()
+            && !over_combat
+            && let Some(point) = point
+            && let Some(hit) = self
+                .counter_report
+                .combat_hits
+                .iter()
+                .rev()
+                .find(|hit| hit.contains(point))
+        {
+            self.combat.open(hit.selection);
+        }
         let overlay_ms = overlay_timer.elapsed().as_secs_f64() * 1000.0;
-        let label_batch = self.overlay.as_ref().expect("built above");
+        let mut combat_batch;
+        let label_batch = if let Some(drawn) = self
+            .combat
+            .draw(document, pixels, &self.perspective)
+            .map_err(|error| error.to_string())?
+        {
+            warnings.extend(drawn.warnings.iter().cloned());
+            combat_batch = self.overlay.as_ref().expect("built above").clone();
+            combat_batch.quads.extend(drawn.batch.quads);
+            &combat_batch
+        } else {
+            self.overlay.as_ref().expect("built above")
+        };
         // capture: the animation clock is the one input a live window cannot
         // share with a headless frame, so a capture frame renders at 0, the
         // still frame `--dump` renders. `Scene::render` then takes the

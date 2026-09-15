@@ -73,6 +73,7 @@ impl SpriteSheet {
 
 /// Every texture and font the icon layer draws from.
 pub struct MapIcons {
+    pub combat: crate::combat::Assets,
     /// Decoded pages and strips; the batch refers to these by index.
     pub images: Vec<dds::Texture>,
     pub fonts: text::Fonts,
@@ -87,14 +88,16 @@ impl MapIcons {
     /// `interface` and `gfx/interface` are covered content and go through
     /// [`ResolvedLayers::read`]; `gfx/fonts` is not, and [`text::Fonts::load`]
     /// states that limitation (`RENDERING.md` section 4).
-    pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
+    pub fn load(layers: &ResolvedLayers, combat_details: bool) -> io::Result<Self> {
         let mut images = Vec::new();
         let fonts = text::Fonts::load(layers, &mut images)?;
         let sprites = gfx::sprites(layers)?;
         let victory_points = load_sheet(layers, &sprites, VICTORY_POINT_STRIP, &mut images)?;
         // counters
         let counters = CounterAssets::load(layers, &sprites, &mut images)?;
+        let combat = crate::combat::Assets::load(layers, &sprites, &mut images, combat_details)?;
         Ok(Self {
+            combat,
             images,
             fonts,
             victory_points,

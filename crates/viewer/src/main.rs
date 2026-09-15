@@ -1,4 +1,5 @@
 mod app;
+mod combat;
 mod compare;
 mod document;
 mod map;
@@ -24,7 +25,7 @@ use std::{
 
 const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
          division is extrapolated along its recorded route by its recorded ETA
-         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with device rectangles, sprite frames and text\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with device rectangles, sprite frames and text\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -73,6 +74,7 @@ fn parse_fraction(value: &str) -> io::Result<f32> {
 
 #[derive(Clone, Default)]
 struct Options {
+    combat: Option<combat::Selector>,
     replay: Option<PathBuf>,
     /// Where a rendered frame is written: `--dump`'s and `--window-dump`'s
     /// output, and the destination of the window's own F12 capture.
@@ -172,6 +174,30 @@ impl Options {
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
             match arg.to_str() {
+                Some("--combat" | "--combat-at") => {
+                    if options.combat.is_some() {
+                        return Err(invalid("choose exactly one --combat or --combat-at"));
+                    }
+                    let value = args
+                        .next()
+                        .and_then(|s| s.into_string().ok())
+                        .ok_or_else(|| invalid("combat selection requires an integer"))?;
+                    options.combat = Some(if arg == "--combat-at" {
+                        combat::Selector::Province(
+                            value
+                                .parse()
+                                .map_err(|_| invalid("combat province must be a u32"))?,
+                        )
+                    } else {
+                        combat::Selector::Id(
+                            value
+                                .strip_prefix("0x")
+                                .map(|v| u64::from_str_radix(v, 16))
+                                .unwrap_or_else(|| value.parse())
+                                .map_err(|_| invalid("combat id must be a full u64 handle"))?,
+                        )
+                    });
+                }
                 Some("--dump") if options.replay.is_none() => {
                     options.replay =
                         Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?));
@@ -393,6 +419,9 @@ impl Options {
             return Err(invalid("--counters-json requires --dump"));
         }
         if options.compare.is_some() {
+            if options.combat.is_some() {
+                return Err(invalid("--combat requires a replay"));
+            }
             if options.headless_dump
                 || options.window_dump
                 || options.replay.is_some()
@@ -420,6 +449,9 @@ impl Options {
             return Err(invalid(
                 "--mask, --diff, --json, --regions, --upscale, --dim, --exclude and --exclude-game-ui require --compare",
             ));
+        }
+        if options.combat.is_some() && options.replay.is_none() {
+            return Err(invalid("--combat and --combat-at require a replay"));
         }
         if options.headless_dump && (options.out.is_none() || options.hour.is_none()) {
             return Err(invalid(USAGE));
@@ -782,7 +814,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Warning: {warning}");
         }
         // counters: bases, labels, counters and combats in priority order.
-        let (label_batch, label_report, counter_report) =
+        let (mut label_batch, label_report, counter_report) =
             document.overlay_batch(camera, options.size, &options.perspective, omitted)?;
         if let Some(path) = &options.counters_json {
             let census = document
@@ -790,6 +822,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .counters
                 .census(&label_batch, &document.icons.fonts);
             std::fs::write(path, serde_json::to_vec_pretty(&census)?)?;
+        }
+        if let Some(selector) = options.combat {
+            let mut window = combat::Window::default();
+            let selection = selector.resolve(&document)?;
+            window.open(selection);
+            if let Some(drawn) = window.draw(&document, options.size, &options.perspective)? {
+                println!("Combat window: {selection:?}, rect {:?}", drawn.rect);
+                for warning in &drawn.warnings {
+                    eprintln!("Warning: {warning}");
+                }
+                label_batch.quads.extend(drawn.batch.quads);
+            }
         }
         // borders: the hour's recorded StateFlags, plus whatever --demilitarized added.
         let rail_mesh = document.rail_mesh()?;
@@ -1283,6 +1327,21 @@ mod tests {
 
     fn parse(args: &[&str]) -> io::Result<Options> {
         Options::parse(args.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn combat_selection_retains_the_complete_native_handle() {
+        let options = parse(&["battle.battleplan", "--combat", "0xffffffffffffffff"]).unwrap();
+        assert_eq!(options.combat, Some(combat::Selector::Id(u64::MAX)));
+        assert_eq!(
+            parse(&["battle.battleplan", "--combat-at", "362"])
+                .unwrap()
+                .combat,
+            Some(combat::Selector::Province(362))
+        );
+        assert!(parse(&["--combat", "1"]).is_err());
+        assert!(parse(&["battle.battleplan", "--combat", "1", "--combat-at", "362"]).is_err());
+        assert!(parse(&["battle.battleplan", "--combat-at", "4294967296"]).is_err());
     }
 
     #[test]
