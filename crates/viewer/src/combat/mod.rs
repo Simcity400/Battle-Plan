@@ -488,10 +488,14 @@ impl Painter<'_> {
                 .and_then(|d| d.flag.as_ref())
                 .and_then(|key| self.assets.flags.get(key))
             {
-                // 14162F510: the DX11 masked-shield path shifts both the flag
-                // and overlay by (0,-1), before the GUI/display scale.
+                // 14162F510 offsets the masked-shield quad by (0,-1) on this
+                // renderer (-0.5,-0.5 on the other branch) in its y-up vertex
+                // space: the flag and overlay land one pixel *below* the
+                // authored position. Sub-pixel fits of all six medium flags in
+                // pairJ_land_5/6 and pairJ_naval_5 put them 2 px below the old
+                // (0,-1) screen shift (UK flag MAE 55.8 -> 6.0).
                 let origin = if sprite == Some("GFX_flag_small2") {
-                    [origin[0], origin[1] - 1.0]
+                    [origin[0], origin[1] + 1.0]
                 } else {
                     origin
                 };
