@@ -13,6 +13,7 @@ pub const TOKEN: usize = 0x10;
 pub const NAME: usize = 0x30;
 /// CCombatTactic i32 database id; archived offsets.rs:813 and preferred-tactic identity read.
 pub const ID: usize = 0x98;
+pub const COUNTER_ID: usize = 0x90;
 /// CCombatTactic u32 modifier-metadata key; archived tactic_weight.rs:29 and preferred-tactic weight reader.
 pub const MODIFIER_KEY: usize = 0x174;
 

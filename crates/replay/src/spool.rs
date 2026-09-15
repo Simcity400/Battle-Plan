@@ -16,7 +16,7 @@ use crate::{
     identity::SessionStart,
 };
 
-pub const RECORD_MAGIC: [u8; 4] = *b"H4SL";
+pub const RECORD_MAGIC: [u8; 4] = *b"H4SM";
 pub const RECORD_HEADER_BYTES: usize = 12;
 pub const MAX_RECORD_BYTES: usize = 128 * 1024 * 1024;
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
@@ -178,7 +178,7 @@ impl Record {
         Ok(match input.u8()? {
             0 => Self::SessionStart(SessionStart::decode(input)?),
             1 => Self::BranchStart(BranchStart::decode(input)?),
-            // A spool segment carries the `H4SL` record magic this build
+            // A spool segment carries the `H4SM` record magic this build
             // writes, so its frames are always the current layout; older
             // segments are refused whole at the magic.
             2 => Self::Frame(Frame::decode(input, FormatVersion::CURRENT)?),
@@ -655,7 +655,7 @@ mod tests {
         assert!(recovered.records.is_empty());
         let reason = recovered.damage.unwrap();
         assert!(reason.contains("unsupported spool record magic \"H4SK\""));
-        assert!(reason.contains("expected \"H4SL\""));
+        assert!(reason.contains("expected \"H4SM\""));
     }
 
     #[test]

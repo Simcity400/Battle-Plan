@@ -2063,7 +2063,9 @@ mod tests {
                     naval_strike: false,
                     sides: [
                         saved::ResultSide {
+                            details: Default::default(),
                             members: vec![saved::ResultMember {
+                                details: Default::default(),
                                 id: member,
                                 sunk_by: Some(vec![0xff, b'a']),
                             }],

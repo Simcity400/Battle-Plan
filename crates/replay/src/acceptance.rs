@@ -34,7 +34,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 157] = [
+const DOMAIN_TABLES: [TableId; 163] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
@@ -192,6 +192,12 @@ const DOMAIN_TABLES: [TableId; 157] = [
     TableId::ShipModels,
     TableId::SupplyNodes,
     TableId::TrainInventory,
+    TableId::LandCombatDetails,
+    TableId::LandCombatDivisions,
+    TableId::LandCombatModifiers,
+    TableId::NavalCombatDetails,
+    TableId::NavalCombatShips,
+    TableId::NavalCombatResultDetails,
 ];
 /// The fault campaign drives every table except the six the clock, campaign,
 /// country, province and state fixtures build directly, so a new table cannot

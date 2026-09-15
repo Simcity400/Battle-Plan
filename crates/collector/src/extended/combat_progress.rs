@@ -173,6 +173,7 @@ mod tests {
     }
     fn source(id: u64) -> cland_combat::Source {
         cland_combat::Source {
+            pointer: 0,
             id,
             attackers: Array { data: 0, count: 0 },
             defenders: Array { data: 0, count: 0 },

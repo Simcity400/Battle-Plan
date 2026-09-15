@@ -42,7 +42,7 @@ Truth:
 
 Files:
 
-- One `.battleplan` file links recorder and viewer. It stores content identity (executable, DLC and mod layer hashes, layer order, coverage policy), never game assets or machine paths. The writer emits format 21; finalized format-14, format-17, format-18, format-19 and format-20 recordings remain readable. Tables predating a file's format are explicitly not applicable in the oracle, never fabricated as empty or zero. Other formats and old spool segments are refused, and older files cannot be appended to.
+- One `.battleplan` file links recorder and viewer. It stores content identity (executable, DLC and mod layer hashes, layer order, coverage policy), never game assets or machine paths. The writer emits format 22; finalized format-14, format-17, format-18, format-19, format-20 and format-21 recordings remain readable. Tables predating a file's format are explicitly not applicable in the oracle, never fabricated as empty or zero. Other formats and old spool segments are refused, and older files cannot be appended to.
 - The viewer resolves content by id, verifies its bytes under the recorded coverage policy, and refuses missing or mismatching content. An identity the recorder could not verify is refused unless `--allow-unverified-content` is given; that override keeps a visible warning and never waives hash checks.
 - The viewer never touches live game memory.
 

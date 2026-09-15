@@ -3,6 +3,7 @@
 
 pub mod air;
 pub mod characters;
+pub mod combat_details;
 pub mod construction;
 pub mod economy;
 pub mod governance;
@@ -406,6 +407,7 @@ pub struct LandCombat {
     /// Direct side unit references, not the separate front subset.
     pub attackers: Vec<u64>,
     pub defenders: Vec<u64>,
+    pub details: combat_details::LandDetails,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -474,6 +476,7 @@ pub struct NavalCombat {
     pub defender_positioning: Decimal,
     pub attacker_anti_air: Decimal,
     pub defender_anti_air: Decimal,
+    pub details: combat_details::NavalDetails,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -485,6 +488,7 @@ pub struct NavalCombatParticipant {
     pub convoy: Option<u64>,
     pub owner: Vec<u8>,
     pub state: u32,
+    pub details: combat_details::NavalMemberDetails,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1180,6 +1184,7 @@ fn parse_land_combat(items: &[Item]) -> io::Result<LandCombat> {
         duration: integer(&required_bytes(items, b"duration")?)?,
         attackers: participants(items, b"attacker")?,
         defenders: participants(items, b"defender")?,
+        details: combat_details::land(items)?,
     })
 }
 
@@ -1382,15 +1387,7 @@ fn parse_naval_combat(
                 .filter(|item| item.key.as_deref() == Some(b"member"))
             {
                 let fields = block(&item.value)?;
-                let row = NavalCombatParticipant {
-                    combat: id,
-                    side,
-                    battle_slot: integer::<i32>(&required_bytes(fields, b"unique_id")?)? as u32,
-                    ship: field(fields, b"ship")?.map(typed_handle).transpose()?,
-                    convoy: field(fields, b"convoy")?.map(typed_handle).transpose()?,
-                    owner: required_bytes(required_block(fields, b"cached_info")?, b"tag")?,
-                    state: integer::<i32>(&required_bytes(fields, b"state")?)? as u32,
-                };
+                let row = combat_details::naval_participant(fields, id, side)?;
                 if participants
                     .insert((id, side, row.battle_slot), row)
                     .is_some()
@@ -1407,6 +1404,7 @@ fn parse_naval_combat(
         defender_positioning: Decimal::parse(&required_bytes(defender, b"positioning")?)?,
         attacker_anti_air: Decimal::parse(&required_bytes(attacker, b"anti_air")?)?,
         defender_anti_air: Decimal::parse(&required_bytes(defender, b"anti_air")?)?,
+        details: combat_details::naval(items)?,
     })
 }
 
@@ -2862,7 +2860,7 @@ faction={id={id=0 type=88} members={} name=""}"#,
             "",
             "combat={land_combat={
             id={type=62 id=3} location=42 day=10 duration=240
-            attacker={unit={type=51 id=7} front={unit={type=51 id=99}} unit={type=52 id=7}}
+            attacker={unit={type=51 id=7} front={type=51 id=99} unit={type=52 id=7}}
             defender={unit={type=51 id=8}}
         }}",
         )

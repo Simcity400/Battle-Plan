@@ -660,6 +660,7 @@ pub struct ResultSide {
     /// CD7010 emits its +0x20 vector as repeated ship blocks in native order.
     /// These handles can identify ships or convoys.
     pub members: Vec<ResultMember>,
+    pub details: super::combat_details::ResultSideDetails,
     /// CD7010 copies +0x38 country references to tags without sorting.
     pub countries: Vec<Vec<u8>>,
 }
@@ -667,6 +668,7 @@ pub struct ResultSide {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResultMember {
     pub id: u64,
+    pub details: super::combat_details::NavalMemberDetails,
     /// 1962D80 serializes snapshot+90 only if nonempty and writer mode permits.
     /// Its exact byte length is the captured entry+B0 presence_value.
     pub sunk_by: Option<Vec<u8>>,
@@ -744,12 +746,14 @@ fn sunk_ship(items: &[Item]) -> io::Result<SunkShip> {
 
 fn result_side(items: &[Item]) -> io::Result<ResultSide> {
     Ok(ResultSide {
+        details: super::combat_details::result_side(items)?,
         members: items
             .iter()
             .filter(|entry| entry.key.as_deref() == Some(b"ship"))
             .map(|entry| {
                 let items = block(&entry.value)?;
                 Ok(ResultMember {
+                    details: super::combat_details::naval_member(items)?,
                     id: typed_handle(
                         field(items, b"unique_id")?
                             .ok_or_else(|| invalid("naval result member lacks unique_id"))?,

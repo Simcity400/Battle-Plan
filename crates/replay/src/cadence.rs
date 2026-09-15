@@ -157,6 +157,12 @@ mod tests {
             TableId::SupplyNodes,
             TableId::TrainInventory,
             TableId::LandCombatProgress,
+            TableId::LandCombatDetails,
+            TableId::LandCombatDivisions,
+            TableId::LandCombatModifiers,
+            TableId::NavalCombatDetails,
+            TableId::NavalCombatShips,
+            TableId::NavalCombatResultDetails,
             TableId::AirBaseRegistrations,
             TableId::ActiveAbilities,
         ] {

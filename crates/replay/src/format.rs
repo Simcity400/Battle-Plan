@@ -5,6 +5,7 @@
 //! and Fronts (ids156..158). Format20 appends CountryAppearance, ArmyIconInputs
 //! and ShipModels (ids159..161).
 //! Format21 appends SupplyNodes and TrainInventory (ids162..163).
+//! Format22 appends land and naval combat-window operands (ids164..169).
 //! All retain earlier table encodings, container fields, keyframe rules and CRC checks.
 //!
 //! A frame body is a `table_ns` entry per recorded table followed by one update
@@ -15,7 +16,7 @@
 //!
 //! Formats 15 and 16 were written during development but are not supported by
 //! this compatibility reader. Compatibility applies to finalized replay files,
-//! not old spool segments: H4SL spool records use [`FormatVersion::CURRENT`].
+//! not old spool segments: H4SM spool records use [`FormatVersion::CURRENT`].
 
 use crate::{FORMAT_VERSION, codec::invalid, frame::TABLE_COUNT, rows::TableId};
 use std::io;
@@ -66,13 +67,19 @@ impl FormatVersion {
         version: 20,
         recorded_tables: TableId::ShipModels.index() + 1,
     };
+    /// Last version before combat window inputs.
+    pub const LEGACY_21: Self = Self {
+        version: 21,
+        recorded_tables: TableId::TrainInventory.index() + 1,
+    };
     /// Every readable version, oldest first.
-    pub const READABLE: [Self; 6] = [
+    pub const READABLE: [Self; 7] = [
         Self::LEGACY_14,
         Self::LEGACY_17,
         Self::LEGACY_18,
         Self::LEGACY_19,
         Self::LEGACY_20,
+        Self::LEGACY_21,
         Self::CURRENT,
     ];
 
@@ -128,7 +135,8 @@ mod tests {
         assert_eq!(FormatVersion::LEGACY_18.recorded_tables, 156);
         assert_eq!(FormatVersion::LEGACY_19.recorded_tables, 159);
         assert_eq!(FormatVersion::LEGACY_20.recorded_tables, 162);
-        assert_eq!(FormatVersion::CURRENT.recorded_tables, 164);
+        assert_eq!(FormatVersion::LEGACY_21.recorded_tables, 164);
+        assert_eq!(FormatVersion::CURRENT.recorded_tables, 170);
         // The writer's version must stay readable, or a file this build wrote
         // could not be reopened.
         assert_eq!(
@@ -171,13 +179,13 @@ mod tests {
     #[test]
     fn unsupported_versions_are_refused() {
         // Development formats15/16 existed but have no supported decoder here.
-        for version in [0, 13, 15, 16, 22, u16::MAX] {
+        for version in [0, 13, 15, 16, 23, u16::MAX] {
             let error = FormatVersion::read(version).unwrap_err().to_string();
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21 and \
-                     writes 21"
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22 and \
+                     writes 22"
                 )
             );
         }
@@ -201,6 +209,16 @@ mod tests {
             }
             for table in [TableId::SupplyNodes, TableId::TrainInventory] {
                 assert_eq!(format.records(table), format.version() >= 21);
+            }
+            for table in [
+                TableId::LandCombatDetails,
+                TableId::LandCombatDivisions,
+                TableId::LandCombatModifiers,
+                TableId::NavalCombatDetails,
+                TableId::NavalCombatShips,
+                TableId::NavalCombatResultDetails,
+            ] {
+                assert_eq!(format.records(table), format.version() >= 22);
             }
         }
         assert!(FormatVersion::LEGACY_19.records(TableId::Fronts));

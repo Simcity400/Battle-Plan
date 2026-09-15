@@ -22,6 +22,7 @@ use replay::{
 
 mod air;
 mod characters;
+mod combat_details;
 mod construction;
 mod economy;
 mod fog;
@@ -1060,6 +1061,7 @@ fn compare_extended(
     plans::compare(frame, save, report);
     map_inputs::compare(frame, save, report);
     supply_trains::compare(frame, save, report);
+    combat_details::compare(frame, save, report);
     report.attempt_table(TableId::StateFlags, |report| {
         compare_state_flags(frame, save, report)
     });
@@ -5256,6 +5258,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         saved.land_combats.insert(
             combat,
             save::LandCombat {
+                details: Default::default(),
                 id: combat,
                 province: 2,
                 day: -1,
@@ -5297,6 +5300,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         saved.land_combats.insert(
             combat,
             save::LandCombat {
+                details: Default::default(),
                 id: combat,
                 province: 1,
                 day: -1,
@@ -5394,6 +5398,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         saved.naval_combats.insert(
             combat,
             save::NavalCombat {
+                details: Default::default(),
                 id: combat,
                 province: 2,
                 attacker_positioning: Decimal::parse(b"0.00001").unwrap(),
@@ -5414,6 +5419,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         saved.naval_combat_participants.insert(
             (combat, 1, u32::MAX),
             save::NavalCombatParticipant {
+                details: Default::default(),
                 combat,
                 side: 1,
                 battle_slot: u32::MAX,

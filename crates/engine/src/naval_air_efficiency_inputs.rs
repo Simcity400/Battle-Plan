@@ -1,0 +1,528 @@
+//! Raw CFEXAir sortie operands (141963700/141965010) and the ordered wing
+//! category-kill inputs consumed by tooltip1417D2430. No efficiency, maximum
+//! organisation, fighter bonus or kill aggregation is evaluated here.
+use crate::{Memory, cnaval_combatant::field, cpdx_array::Array};
+
+const WING_LIMIT: usize = crate::cfex_air::WING_CAPACITY;
+const KILL_LIMIT: u32 = 4096;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Modifier {
+    pub raw: i64,
+    pub present: u8,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    /// Source selection:0 no active wings,1 absent base,2 absent host,3 carrier.
+    pub source: u8,
+    pub carrier: u64,
+    pub first_wing: u64,
+    pub pool_type_flags: u64,
+    pub task_force: u64,
+    pub mission: i32,
+    pub mission_factor: i64,
+    pub is_attacker: u8,
+    pub country: u32,
+    pub container_present: u8,
+    pub base_crowding: i64,
+    pub carrier_organisation: i64,
+    pub carrier_base_organisation: i64,
+    pub night: i64,
+    pub combat_duration: i32,
+    pub base_efficiency: i64,
+    pub mission_duration_threshold: i32,
+    /// Country night key23, combat weather key22, province weather key22.
+    pub modifiers: [Modifier; 3],
+    /// Keys22,23: raw metadata flags and feature selector.
+    pub modifier_metadata: [[u32; 2]; 2],
+    pub feature_flags: u32,
+    pub eligibility_callback: u8,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct WingKill {
+    pub wing: u64,
+    pub index: u32,
+    /// Equipment category bitmask passed to140F742C0, not a pointer or handle.
+    pub category: u64,
+    pub count: i32,
+}
+
+fn add(pointer: usize, offset: usize) -> Result<usize, &'static str> {
+    pointer
+        .checked_add(offset)
+        .ok_or("naval air source address overflow")
+}
+fn ptr(memory: &impl Memory, pointer: usize, offset: usize) -> Result<usize, &'static str> {
+    field::<u64>(memory, pointer, offset).map(|p| p as usize)
+}
+fn auth(memory: &impl Memory, base: usize, pointer: usize, rva: usize) -> Result<(), &'static str> {
+    if pointer == 0 || field::<u64>(memory, pointer, 0)? != add(base, rva)? as u64 {
+        return Err("naval air source identity mismatch");
+    }
+    Ok(())
+}
+fn array(
+    memory: &impl Memory,
+    pointer: usize,
+    offset: usize,
+    stride: usize,
+    limit: u32,
+) -> Result<(Array, [u8; 16]), &'static str> {
+    let header = field(memory, pointer, offset)?;
+    let array = Array::from_header(header, stride).ok_or("naval air array invalid")?;
+    if array.count > limit {
+        return Err("naval air array bound exceeded");
+    }
+    Ok((array, header))
+}
+fn element(array: Array, index: u32, stride: usize) -> Result<usize, &'static str> {
+    array
+        .element(index, stride)
+        .ok_or("naval air array element overflow")
+}
+fn wing(memory: &impl Memory, base: usize, reference: u64) -> Result<Option<usize>, &'static str> {
+    let Some(secondary) = crate::creference_registry::resolve(memory, base, reference)? else {
+        return Ok(None);
+    };
+    let Some(primary) = secondary
+        .checked_sub(crate::cair_wing::SECONDARY)
+        .filter(|p| *p != 0)
+    else {
+        return Ok(None);
+    };
+    auth(memory, base, primary, crate::cair_wing::VTABLE_RVA)?;
+    auth(
+        memory,
+        base,
+        secondary,
+        crate::cair_wing::SECONDARY_VTABLE_RVA,
+    )?;
+    if field::<u64>(memory, primary, crate::cair_wing::REFERENCE_TYPE)? != reference {
+        return Err("naval air wing reference mismatch");
+    }
+    Ok(Some(primary))
+}
+fn modifier(memory: &impl Memory, address: usize, key: u32) -> Result<Modifier, &'static str> {
+    if address == 0 {
+        return Ok(Modifier::default());
+    }
+    let value = if let Some(value) = memory.modifier_accumulator_value(address, key) {
+        value?
+    } else {
+        let _ = array(memory, address, 0, 16, 8192)?;
+        crate::modifier_accumulator::lookup_at(memory, address, key)?
+    };
+    Ok(Modifier {
+        raw: value.raw,
+        present: u8::from(value.present),
+    })
+}
+
+/// The caller authenticates its combat census. Recheck plane/group/combat
+/// identity here; live object resolution and all source reads remain bounded.
+pub fn read(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    plane: usize,
+    group: usize,
+    combat: usize,
+) -> Result<Row, &'static str> {
+    auth(memory, base, plane, crate::cfex_air::VTABLE_RVA)?;
+    auth(memory, base, combat, crate::cnaval_combat::VTABLE_RVA)?;
+    if ptr(memory, plane, 8)? != group {
+        return Err("naval air group mismatch");
+    }
+    let (wings, wing_header) = array(memory, plane, 0x40, 8, WING_LIMIT as u32)?;
+    let mut row = Row::default();
+    if wings.count == 0 {
+        return Ok(row);
+    }
+    row.source = 1;
+    let base_reference = field(memory, plane, 0x1c)?;
+    let Some(air_base) = crate::creference_registry::resolve(memory, base, base_reference)? else {
+        return Ok(row);
+    };
+    auth(memory, base, air_base, crate::cair_base::VTABLE_RVA)?;
+    if field::<u64>(memory, air_base, crate::cair_base::HANDLE)? != base_reference {
+        return Err("naval air base reference mismatch");
+    }
+    row.source = 2;
+    row.carrier = field(memory, air_base, crate::cair_base::HOST_REFERENCE)?;
+    let Some(carrier) = crate::creference_registry::resolve(memory, base, row.carrier)? else {
+        return Ok(row);
+    };
+    auth(memory, base, carrier, crate::cship::VTABLE_RVA)?;
+    if field::<u64>(memory, carrier, crate::cship::HANDLE)? != row.carrier {
+        return Err("naval air carrier reference mismatch");
+    }
+    row.source = 3;
+    let task = ptr(memory, carrier, crate::cship::TASK_FORCE)?;
+    auth(memory, base, task, crate::ctask_force::VTABLE_RVA)?;
+    row.task_force = field(memory, task, crate::cunit::HANDLE)?;
+    row.country = field(memory, task, crate::cunit::ROSTER_OWNER)?;
+    row.mission = field(memory, task, 0x4ec)?;
+    if !(0..256).contains(&row.mission) {
+        return Err("naval air mission bound exceeded");
+    }
+    let mission_factors = ptr(memory, base, 0x0332_0968)?;
+    if mission_factors == 0 {
+        return Err("naval air mission factors absent");
+    }
+    row.mission_factor = field(memory, mission_factors, row.mission as usize * 8)?;
+    let side = ptr(memory, group, crate::cfex_group::SIDE)?;
+    auth(memory, base, side, crate::cnaval_combatant::VTABLE_RVA)?;
+    if ptr(memory, side, crate::cnaval_combatant::COMBAT)? != combat {
+        return Err("naval air side combat mismatch");
+    }
+    row.is_attacker = field(memory, side, 0xb8)?;
+    for index in 0..wings.count {
+        let reference = field(memory, element(wings, index, 8)?, 0)?;
+        if let Some(primary) = wing(memory, base, reference)? {
+            let pool = ptr(memory, primary, crate::cair_wing::POOL)?;
+            auth(memory, base, pool, crate::cair_wing_pool::VTABLE_RVA)?;
+            let definition = ptr(memory, pool, crate::cair_wing_pool::DEFINITION)?;
+            auth(
+                memory,
+                base,
+                definition,
+                crate::csub_unit_definition::VTABLE_RVA,
+            )?;
+            row.first_wing = reference;
+            row.pool_type_flags =
+                field(memory, definition, crate::csub_unit_definition::AIR_FLAGS)?;
+            if ptr(memory, primary, crate::cair_wing::POOL)? != pool
+                || ptr(memory, pool, crate::cair_wing_pool::DEFINITION)? != definition
+            {
+                return Err("naval air wing pool changed");
+            }
+            break;
+        }
+    }
+    row.carrier_organisation = field(memory, carrier, crate::cship::ORGANISATION)?;
+    row.carrier_base_organisation = field(memory, carrier, 0x300)?;
+    row.night = field(memory, combat, 0xb8)?;
+    row.combat_duration = field(memory, combat, 0x44)?;
+    row.base_efficiency = field(memory, base, 0x0331_ef38)?;
+    row.mission_duration_threshold = field(memory, base, 0x0331_9ec8)?;
+    let countries = crate::ccountry::Reader::new(memory, base, game)?;
+    let country = countries.resolve(row.country)?;
+    row.modifiers[0] = modifier(
+        memory,
+        add(country.pointer, crate::ccountry::MODIFIER_ACCUMULATOR)?,
+        0x23,
+    )?;
+    let combat_weather = ptr(memory, combat, 0xb0)?;
+    row.modifiers[1] = modifier(
+        memory,
+        if combat_weather == 0 {
+            0
+        } else {
+            add(combat_weather, 0x10)?
+        },
+        0x22,
+    )?;
+    let province = ptr(memory, combat, crate::cnaval_combat::PROVINCE)?;
+    auth(memory, base, province, crate::cprovince::VTABLE_RVA)?;
+    let province_id = field::<u32>(memory, province, crate::cprovince::ID)?;
+    let weather = ptr(memory, game, crate::cgame_state::WEATHER_MANAGER)?;
+    auth(memory, base, weather, crate::cweather_manager::VTABLE_RVA)?;
+    let (weather_provinces, weather_header) = array(memory, weather, 0x370, 0x330, 65536)?;
+    row.modifiers[2] = modifier(
+        memory,
+        add(element(weather_provinces, province_id, 0x330)?, 0x280)?,
+        0x22,
+    )?;
+    let crowd_country = field::<u32>(memory, plane, 0x64)?;
+    let slot = if crowd_country == 0 {
+        0
+    } else {
+        countries.resolve(crowd_country)?.canonical_slot
+    };
+    let (containers, container_header) = array(
+        memory,
+        air_base,
+        crate::cair_base::COUNTRY_CONTAINERS,
+        8,
+        65536,
+    )?;
+    let container = ptr(memory, element(containers, slot, 8)?, 0)?;
+    if container != 0 {
+        auth(
+            memory,
+            base,
+            container,
+            crate::ccountry_air_container::VTABLE_RVA,
+        )?;
+        row.container_present = 1;
+        row.base_crowding = field(memory, container, 0xd8)?;
+    }
+    use crate::modifier_definition as md;
+    let definitions = ptr(memory, base, md::TABLE_RVA)?;
+    if definitions == 0 {
+        return Err("naval air modifier metadata absent");
+    }
+    for (out, key) in row.modifier_metadata.iter_mut().zip([0x22, 0x23]) {
+        let at = add(definitions, key * md::STRIDE)?;
+        *out = [
+            field(memory, at, md::FLAGS)?,
+            field(memory, at, md::FEATURE_SELECTOR)?,
+        ];
+    }
+    let callback = field::<u64>(memory, base, md::ELIGIBILITY_CALLBACK_RVA)?;
+    row.eligibility_callback = if callback == 0 {
+        0
+    } else if callback == add(base, md::ELIGIBILITY_FLAGS_GETTER_RVA)? as u64 {
+        1
+    } else {
+        return Err("naval air modifier callback unsupported");
+    };
+    row.feature_flags = field(memory, base, md::TRADE_FEATURE_FLAGS_RVA)?;
+    if field::<[u8; 16]>(memory, plane, 0x40)? != wing_header
+        || field::<[u8; 16]>(memory, air_base, crate::cair_base::COUNTRY_CONTAINERS)?
+            != container_header
+        || field::<[u8; 16]>(memory, weather, 0x370)? != weather_header
+        || ptr(memory, combat, 0xb0)? != combat_weather
+        || ptr(memory, combat, crate::cnaval_combat::PROVINCE)? != province
+        || ptr(memory, carrier, crate::cship::TASK_FORCE)? != task
+        || field::<u64>(memory, air_base, crate::cair_base::HOST_REFERENCE)? != row.carrier
+        || field::<u64>(memory, plane, 0x1c)? != base_reference
+        || ptr(memory, base, 0x0332_0968)? != mission_factors
+        || ptr(memory, base, md::TABLE_RVA)? != definitions
+        || ptr(memory, game, crate::cgame_state::WEATHER_MANAGER)? != weather
+    {
+        return Err("naval air efficiency source changed");
+    }
+    Ok(row)
+}
+
+/// Preserves each active wing's native category order. The GUI aggregates
+/// equal categories afterwards. Preflight every count before writing any row.
+pub fn append_kills(
+    memory: &impl Memory,
+    base: usize,
+    plane: usize,
+    buffers: &mut crate::cfex_member::DetailBuffers<'_>,
+) -> Result<[usize; 2], &'static str> {
+    capture_kills(
+        memory,
+        base,
+        plane,
+        buffers.plane_kills,
+        &mut buffers.plane_kills_len,
+        &mut buffers.plane_kills_required,
+    )
+}
+
+fn capture_kills(
+    memory: &impl Memory,
+    base: usize,
+    plane: usize,
+    output: &mut [WingKill],
+    used: &mut usize,
+    demand: &mut usize,
+) -> Result<[usize; 2], &'static str> {
+    auth(memory, base, plane, crate::cfex_air::VTABLE_RVA)?;
+    let (wings, header) = array(memory, plane, 0x40, 8, WING_LIMIT as u32)?;
+    let mut sources = [(0usize, 0u64, Array { data: 0, count: 0 }, [0u8; 16]); WING_LIMIT];
+    let mut required = 0usize;
+    for index in 0..wings.count {
+        let reference = field(memory, element(wings, index, 8)?, 0)?;
+        if let Some(primary) = wing(memory, base, reference)? {
+            let (kills, header) = array(memory, primary, 0x9f8, 16, KILL_LIMIT)?;
+            required = required
+                .checked_add(kills.count as usize)
+                .ok_or("naval air kill demand overflow")?;
+            sources[index as usize] = (primary, reference, kills, header);
+        }
+    }
+    *demand = demand
+        .checked_add(required)
+        .ok_or("naval air kill demand overflow")?;
+    let start = *used;
+    let end = start
+        .checked_add(required)
+        .ok_or("naval air kill length overflow")?;
+    if end > output.len() {
+        return Err(crate::cfex_member::DETAIL_ARENA_CAPACITY);
+    }
+    let mut length = start;
+    let mut bytes = [0u8; 64 * 16];
+    for (primary, reference, kills, source_header) in sources.into_iter().take(wings.count as usize)
+    {
+        if primary == 0 {
+            continue;
+        }
+        for index in (0..kills.count as usize).step_by(64) {
+            let count = (kills.count as usize - index).min(64);
+            if !crate::read_slice(
+                memory,
+                element(kills, index as u32, 16)?,
+                &mut bytes[..count * 16],
+            ) {
+                return Err("naval air kill entries unreadable");
+            }
+            for (offset, entry) in bytes[..count * 16].chunks_exact(16).enumerate() {
+                output[length] = WingKill {
+                    wing: reference,
+                    index: (index + offset) as u32,
+                    category: u64::from_le_bytes(entry[..8].try_into().unwrap()),
+                    count: i32::from_le_bytes(entry[8..12].try_into().unwrap()),
+                };
+                length += 1;
+            }
+        }
+        if field::<[u8; 16]>(memory, primary, 0x9f8)? != source_header
+            || field::<u64>(memory, primary, crate::cair_wing::REFERENCE_TYPE)? != reference
+        {
+            return Err("naval air wing kill source changed");
+        }
+    }
+    if field::<[u8; 16]>(memory, plane, 0x40)? != header {
+        return Err("naval air kill wing list changed");
+    }
+    *used = end;
+    Ok([start, required])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const PLANE: usize = 0x1000;
+    const COMBAT: usize = 0x6000;
+    const WING: usize = 0x4000;
+    const HANDLE: u64 = (123 << 32) | 69;
+    struct Fixture {
+        bytes: Vec<u8>,
+        root: u64,
+    }
+    impl Memory for Fixture {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if address == crate::creference_registry::LOW_ROOTS_RVA + 69 * 8
+                && destination.len() == 8
+            {
+                destination.copy_from_slice(&self.root.to_le_bytes());
+                return true;
+            }
+            let Some(end) = address.checked_add(destination.len()) else {
+                return false;
+            };
+            let Some(source) = self.bytes.get(address..end) else {
+                return false;
+            };
+            destination.copy_from_slice(source);
+            true
+        }
+    }
+    impl Fixture {
+        fn put(&mut self, at: usize, bytes: &[u8]) {
+            self.bytes[at..at + bytes.len()].copy_from_slice(bytes);
+        }
+        fn q(&mut self, at: usize, value: u64) {
+            self.put(at, &value.to_le_bytes());
+        }
+        fn d(&mut self, at: usize, value: u32) {
+            self.put(at, &value.to_le_bytes());
+        }
+        fn array(&mut self, at: usize, data: usize, count: u32) {
+            self.q(at, data as u64);
+            self.d(at + 8, count);
+            self.d(at + 12, count);
+        }
+        fn new() -> Self {
+            let mut result = Self {
+                bytes: vec![0; 0x8000],
+                root: 0x2000,
+            };
+            result.q(PLANE, crate::cfex_air::VTABLE_RVA as u64);
+            result.q(COMBAT, crate::cnaval_combat::VTABLE_RVA as u64);
+            result.array(PLANE + 0x40, 0x1500, 1);
+            result.q(0x1500, HANDLE);
+            result.q(0x2008, 0x3000);
+            result.d(0x2010, 1);
+            result.d(0x2014, 7);
+            result.bytes[0x2018] = 5;
+            result.bytes[0x3000 + 13 * 24 + 4] = 255;
+            let hash = HANDLE
+                .rotate_left(32)
+                .wrapping_mul(crate::creference_registry::HASH_MULTIPLIER);
+            let slot = (((hash >> 32) as u32 ^ hash as u32) & 7) as usize;
+            result.bytes[0x3000 + slot * 24 + 4] = 1;
+            result.q(0x3000 + slot * 24 + 8, HANDLE);
+            result.q(0x3000 + slot * 24 + 16, (WING + 0x10) as u64);
+            result.q(WING, crate::cair_wing::VTABLE_RVA as u64);
+            result.q(WING + 0x10, crate::cair_wing::SECONDARY_VTABLE_RVA as u64);
+            result.q(WING + 0x18, HANDLE);
+            result.array(WING + 0x9f8, 0x5000, 2);
+            for (index, count) in [i32::MIN, i32::MAX].into_iter().enumerate() {
+                result.q(0x5000 + index * 16, 0x100000400);
+                result.d(0x5008 + index * 16, count as u32);
+            }
+            result
+        }
+    }
+    #[test]
+    fn kills_preserve_full_wing_category_duplicates_and_signed_counts() {
+        let fixture = Fixture::new();
+        let mut rows = [WingKill::default(); 2];
+        let (mut used, mut required) = (0, 0);
+        assert_eq!(
+            capture_kills(&fixture, 0, PLANE, &mut rows, &mut used, &mut required),
+            Ok([0, 2])
+        );
+        assert_eq!((used, required), (2, 2));
+        for (index, count) in [i32::MIN, i32::MAX].into_iter().enumerate() {
+            assert_eq!(
+                rows[index],
+                WingKill {
+                    wing: HANDLE,
+                    index: index as u32,
+                    category: 0x100000400,
+                    count
+                }
+            );
+        }
+    }
+    #[test]
+    fn pressure_preserves_whole_plane_and_invalid_wing_is_a_failure() {
+        let mut fixture = Fixture::new();
+        let mut rows = [WingKill::default(); 1];
+        let (mut used, mut required) = (0, 0);
+        assert_eq!(
+            capture_kills(&fixture, 0, PLANE, &mut rows, &mut used, &mut required),
+            Err(crate::cfex_member::DETAIL_ARENA_CAPACITY)
+        );
+        assert_eq!((used, required), (0, 2));
+        assert_eq!(rows, [WingKill::default()]);
+        fixture.q(WING, 0);
+        assert!(capture_kills(&fixture, 0, PLANE, &mut [], &mut 0, &mut 0).is_err());
+    }
+    #[test]
+    fn no_active_wings_and_no_base_are_distinct_native_branches() {
+        let mut fixture = Fixture::new();
+        assert_eq!(read(&fixture, 0, 0, PLANE, 0, COMBAT).unwrap().source, 1);
+        fixture.array(PLANE + 0x40, 0, 0);
+        assert_eq!(read(&fixture, 0, 0, PLANE, 0, COMBAT), Ok(Row::default()));
+        fixture.q(PLANE, 0);
+        assert!(read(&fixture, 0, 0, PLANE, 0, COMBAT).is_err());
+    }
+    #[test]
+    fn modifiers_preserve_raw_values_and_absence_before_ui_clamping() {
+        let mut fixture = Fixture::new();
+        fixture.array(0x7000, 0x7020, 1);
+        fixture.d(0x7020, 0x22);
+        fixture.q(0x7028, i64::MIN as u64);
+        assert_eq!(
+            modifier(&fixture, 0x7000, 0x22),
+            Ok(Modifier {
+                raw: i64::MIN,
+                present: 1
+            })
+        );
+        assert_eq!(modifier(&fixture, 0x7000, 0x23), Ok(Modifier::default()));
+        fixture.array(0x7000, 0x7020, 8193);
+        assert!(modifier(&fixture, 0x7000, 0x22).is_err());
+    }
+}

@@ -231,6 +231,9 @@ packs!(
     supply_trains,
     characters,
     combat_progress,
+    combat_details,
+    naval_details,
+    naval_result_details,
     construction,
     division_eta,
     division_presentation,
@@ -824,6 +827,9 @@ impl Captured {
             session,
             weather,
             combat_progress,
+            combat_details,
+            naval_details,
+            naval_result_details,
             state_flags,
             country_appearance,
             ship_models,
@@ -1614,7 +1620,7 @@ mod tests {
 
     #[test]
     fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership() {
-        assert_eq!(N, 144);
+        assert_eq!(N, 150);
         let actual: BTreeSet<_> = TABLES.into_iter().collect();
         assert_eq!(actual.len(), N);
         let expected: BTreeSet<_> = TableId::ALL
