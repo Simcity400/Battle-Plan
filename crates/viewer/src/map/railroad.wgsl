@@ -9,8 +9,8 @@
 // Dropped, with the reason:
 //
 // * `ApplyFOW( Color.rgb, ShadowMap, Input.vScreenCoord )`, the screen-space
-//   fog-of-war read. The omniscient viewer has no fog buffer, and the buffer
-//   the `terrainunlit` pre-pass would fill is all ones on this profile.
+//   fog-of-war read, is not ported here yet: with fog of war on a railway is
+//   drawn unfogged, which `map::tables`' fog-of-war line states.
 // * `LeanTexture1/2`, `RiverData`, `HeightNormal`, `CityLightsAndSnowNoise`,
 //   `LightIndexMap` and `LightDataMap` are declared as samplers by the effect
 //   and are read by none of its code.

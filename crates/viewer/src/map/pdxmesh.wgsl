@@ -215,23 +215,12 @@ const MESH_NIGHT_AMBIENT: array<vec3<f32>, 6> = array<vec3<f32>, 6>(
     vec3<f32>(0.8, 0.8, 0.8),
 );
 
-/// The day half of `ComposeLightMesh`'s basis is the constant buffer the
-/// `AMBIENT_LIGHT_*` defines fill (`00_graphics.lua:1053-1058`), which the
-/// frame block already carries.
-fn mesh_day_ambient(index: u32) -> vec3<f32> {
-    switch index {
-        case 0u: { return globals.frame.ambient_pos_x_shadow_fade.rgb; }
-        case 1u: { return globals.frame.ambient_neg_x_fow_fade.rgb; }
-        case 2u: { return globals.frame.ambient_pos_y_min_mesh_alpha.rgb; }
-        case 3u: { return globals.frame.ambient_neg_y_neg_fog.rgb; }
-        case 4u: { return globals.frame.ambient_pos_z.rgb; }
-        default: { return globals.frame.ambient_neg_z_cubemap.rgb; }
-    }
-}
-
 /// `AmbientLight(WorldNormal, vDayFactor, DayAmbientColors, NightAmbientColors)`
-/// with the unit basis (`standardfuncsgfx.fxh:456-472`).
-fn mesh_ambient_light(world_normal: vec3<f32>, day_factor: f32) -> vec3<f32> {
+/// with the unit basis (`standardfuncsgfx.fxh:456-472`), including the
+/// `NegFogMultiplier` normal bend at its head (`common.wgsl`'s
+/// `ambient_normal_bend`).
+fn mesh_ambient_light(world_normal_in: vec3<f32>, day_factor: f32) -> vec3<f32> {
+    let world_normal = ambient_normal_bend(world_normal_in);
     let squared = world_normal * world_normal;
     let ix = select(0u, 1u, world_normal.x < 0.0);
     let iy = select(2u, 3u, world_normal.y < 0.0);
@@ -387,8 +376,8 @@ fn mesh_fragment(input: MeshOut) -> @location(0) vec4<f32> {
     }
 
     // `ApplyFOW( vColor, FogColorFactor, min( FogAlphaFactor, NegFogMultiplier ) )`
-    // is the identity while both factors are zero, which is what an omniscient
-    // viewer leaves them at, so it is not called.
+    // is the identity while both factors are zero, as with fog of war off. It is not
+    // called yet, so with fog of war on a map object is drawn unfogged; `map::tables` says so.
     color = apply_distance_fog(color, pos);
     // `DayNight` is `DayNightWithBlend` at a blend of 1
     // (`standardfuncsgfx.fxh:397-400`).

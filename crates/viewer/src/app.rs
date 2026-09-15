@@ -397,7 +397,12 @@ impl Viewer {
                         ui.selectable_value(
                             &mut selected_session,
                             session.id,
-                            format!("Session {} · process {}", index + 1, session.process_id),
+                            format!(
+                                "Session {} · process {} · {}",
+                                index + 1,
+                                session.process_id,
+                                session.sample_boundary
+                            ),
                         );
                     }
                 });
@@ -1322,6 +1327,18 @@ impl eframe::App for Viewer {
                 index: 0,
             });
         }
+        // counters: what the header's viewing-country chooser offers and shows,
+        // read from the hour on screen before the header borrows `self`.
+        let (country_tags, viewing) = match &self.document {
+            Some(document) => (
+                document.country_tags().unwrap_or_default(),
+                document
+                    .vision(&self.perspective)
+                    .and_then(|vision| document.viewing_tag(&vision))
+                    .ok(),
+            ),
+            None => (Vec::new(), None),
+        };
         egui::Panel::top("header").show(ui, |ui| {
             ui.add_space(5.0);
             ui.horizontal(|ui| {
@@ -1351,33 +1368,54 @@ impl eframe::App for Viewer {
                     self.camera = None;
                     self.camera_manual = false;
                 }
-                // counters: which country the unit counters are drawn for. The
-                // recorded player is the default; omniscient is the explicit
-                // alternative, not a fallback anyone reaches by accident.
+                // counters: the game's two map controls, a viewing country and
+                // the fog-of-war switch. The chooser lists every country the
+                // hour on screen holds; the recorded player is the default.
                 ui.separator();
-                ui.selectable_value(
-                    &mut self.perspective,
-                    map::perspective::Choice::Recorded,
-                    "Player view",
-                )
-                .on_hover_text(
-                    "Draw the unit counters as the recording's own human player saw them: a stack                      it has no intelligence on carries the game's question mark and no bars",
-                );
-                ui.selectable_value(
-                    &mut self.perspective,
-                    map::perspective::Choice::Omniscient,
-                    "Omniscient",
-                )
-                .on_hover_text(
-                    "Draw every recorded stack in full, including the ones the game hid from its                      player",
-                );
+                let selected = match &self.perspective.country {
+                    map::perspective::Country::Recorded => format!(
+                        "Recorded player{}",
+                        viewing
+                            .as_deref()
+                            .map(|tag| format!(" ({tag})"))
+                            .unwrap_or_default()
+                    ),
+                    map::perspective::Country::Tag(tag) => tag.clone(),
+                };
+                egui::ComboBox::from_id_salt("viewing_country")
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.perspective.country,
+                            map::perspective::Country::Recorded,
+                            "Recorded player",
+                        );
+                        for tag in &country_tags {
+                            ui.selectable_value(
+                                &mut self.perspective.country,
+                                map::perspective::Country::Tag(tag.clone()),
+                                tag,
+                            );
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "View the map as this country, as the game's console tag does: allegiance \
+                         colours, the battle plan, aircraft and what its intelligence shows are \
+                         that country's, whoever controls it",
+                    );
+                ui.checkbox(&mut self.perspective.fog, "Fog of war")
+                    .on_hover_text(
+                        "The game's fow console switch. On, a stack the viewing country has no \
+                         intelligence on carries the question mark and uncovered land is fogged; \
+                         off, every stack is drawn in full and no fog is drawn, still as the \
+                         viewing country",
+                    );
                 // names: the header names every layer that reaches a pixel.
                 ui.weak(format!(
-                    "{} · Terrain, water, political fill, borders, names and labels",
-                    match &self.perspective {
-                        map::perspective::Choice::Omniscient => "Omniscient".to_owned(),
-                        choice => format!("Counters as {choice} sees them"),
-                    }
+                    "Viewed as {}, fog of war {} · Terrain, water, political fill, borders, names and labels",
+                    viewing.as_deref().unwrap_or("no country"),
+                    if self.perspective.fog { "on" } else { "off" },
                 ));
             });
             ui.add_space(5.0);

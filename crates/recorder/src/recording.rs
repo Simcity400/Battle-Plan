@@ -252,6 +252,7 @@ fn capture(pid: u32, output: &Path, user: &Path) -> Result<bool, String> {
         process_id: pid,
         process_start_time: process.start_time,
         qpc_frequency: frequency as u64,
+        sample_boundary: replay::identity::SampleBoundary::EndOfHour,
         identity,
     };
     let mut session_bytes = Vec::new();

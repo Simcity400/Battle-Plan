@@ -381,8 +381,12 @@ pub fn inspect(path: &Path) -> Result<()> {
     );
     for session in &replay.sessions {
         println!(
-            "session={} pid={} process_start_filetime={} qpc_frequency={}",
-            session.id, session.process_id, session.process_start_time, session.qpc_frequency
+            "session={} pid={} process_start_filetime={} qpc_frequency={} sample_boundary={}",
+            session.id,
+            session.process_id,
+            session.process_start_time,
+            session.qpc_frequency,
+            session.sample_boundary
         );
         print_identity(&format!("session {}", session.id), &session.identity);
     }
@@ -856,6 +860,7 @@ mod tests {
             process_id: 2,
             process_start_time: 3,
             qpc_frequency: 100,
+            sample_boundary: replay::identity::SampleBoundary::EndOfHour,
             identity: Identity {
                 game_version: "synthetic".into(),
                 exe_hash: [1; 32],
@@ -906,6 +911,12 @@ mod tests {
                     TableId::WorldTension => TableUpdate::Snapshot(TableRows::WorldTension(vec![
                         WorldTensionRow::default(),
                     ])),
+                    TableId::WeatherPassState => {
+                        TableUpdate::Snapshot(TableRows::WeatherPassState(vec![Default::default()]))
+                    }
+                    TableId::CounterSettings => {
+                        TableUpdate::Snapshot(TableRows::CounterSettings(vec![Default::default()]))
+                    }
                     _ => TableUpdate::Snapshot(TableRows::empty(TableId::ALL[index])),
                 }),
             })

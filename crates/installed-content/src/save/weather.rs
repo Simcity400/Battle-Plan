@@ -10,6 +10,10 @@ pub struct Pack {
     /// Entry order and repeated numeric keys are retained, including slot zero.
     pub provinces: Option<Vec<Province>>,
     pub regions: Option<Vec<Region>>,
+    /// F0D8E0 writes the +0x58/+0x5c cursors and the +0x308 seed unconditionally.
+    pub current_province: Option<i32>,
+    pub current_region: Option<i32>,
+    pub seed: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +52,8 @@ pub struct Region {
     pub blizzard: Option<bool>,
     pub sandstorm: Option<bool>,
     pub arctic_water: Option<bool>,
+    /// F0DDC0 writes the +0x30 16-bit words as `active_modifiers` only for a positive +0x3c count.
+    pub active_modifiers: Option<Vec<u32>>,
 }
 
 pub fn parse(items: &[Item]) -> io::Result<Pack> {
@@ -112,15 +118,44 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
                         blizzard: field(items, b"blizzard")?.map(boolean).transpose()?,
                         sandstorm: field(items, b"sandstorm")?.map(boolean).transpose()?,
                         arctic_water: field(items, b"arctic_water")?.map(boolean).transpose()?,
+                        active_modifiers: field(items, b"active_modifiers")?
+                            .map(|value| {
+                                block(value)?
+                                    .iter()
+                                    .map(|entry| {
+                                        if entry.key.is_some() {
+                                            return Err(invalid(
+                                                "weather active modifiers have a keyed entry",
+                                            ));
+                                        }
+                                        integer::<u32>(scalar(&entry.value)?)
+                                    })
+                                    .collect::<io::Result<Vec<_>>>()
+                            })
+                            .transpose()?,
                     })
                 })
                 .collect::<io::Result<Vec<_>>>()
         })
         .transpose()?;
+    let scalar_field = |key: &[u8]| -> io::Result<Option<Vec<u8>>> {
+        field(weather, key)?
+            .map(|value| scalar(value).map(<[u8]>::to_vec))
+            .transpose()
+    };
     Ok(Pack {
         present: true,
         provinces,
         regions,
+        current_province: scalar_field(b"current_province")?
+            .map(|bytes| integer(&bytes))
+            .transpose()?,
+        current_region: scalar_field(b"current_region")?
+            .map(|bytes| integer(&bytes))
+            .transpose()?,
+        seed: scalar_field(b"seed")?
+            .map(|bytes| integer(&bytes))
+            .transpose()?,
     })
 }
 

@@ -307,6 +307,7 @@ mod tests {
             process_id: id as u32,
             process_start_time: id,
             qpc_frequency: 10_000_000,
+            sample_boundary: replay::identity::SampleBoundary::EndOfHour,
             identity: Identity {
                 game_version: "synthetic".into(),
                 exe_hash: [1; 32],

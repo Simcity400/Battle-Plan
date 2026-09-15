@@ -25,7 +25,6 @@
 //   — regressing the game's scene on our ambient and sun parts separately puts
 //   the ambient's own coefficient at 0.24 to 0.81 rather than at the 1 that
 //   reading assumed (`terrain.wgsl`'s header).
-// * `ApplyFOW`'s two factors, which the omniscient viewer leaves at zero.
 //
 // The `tree` effect declares no `Defines`, so `CalculateSunLight` takes the
 // plain Phong branch (`standardfuncsgfx.fxh:642-663`), not the improved

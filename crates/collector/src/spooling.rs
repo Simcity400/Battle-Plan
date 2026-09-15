@@ -1285,10 +1285,7 @@ impl Processor {
         let origin = if suppress || campaign.tracker.current_branch().is_none() {
             None
         } else {
-            captured
-                .clock_entry
-                .filter(|entry| entry.campaign_id == clock.campaign_id)
-                .map(|entry| entry.hour)
+            load_origin(captured, &clock)
         };
         let branch = campaign.observe(origin, clock.hour, Some(clock.play_session_started_at))?;
         *bound_branch = Some(branch);
@@ -1865,6 +1862,15 @@ fn sampled_frame(source: FrameInput) -> replay::frame::DecodedFrame {
             TableInput::ComparedEqual(_) => panic!("fixture expected ordinary sampled rows"),
         }),
     }
+}
+
+/// The hour a reload resumed from, for parentage. At the end-of-hour boundary
+/// sample after a load is the loaded hour itself and the entry hour equals it.
+fn load_origin(captured: &Captured, clock: &Clock) -> Option<i32> {
+    captured
+        .clock_entry
+        .filter(|entry| entry.campaign_id == clock.campaign_id)
+        .map(|entry| entry.hour)
 }
 
 #[cfg(test)]
@@ -2652,7 +2658,8 @@ mod tests {
 
     fn captured(hour: i32) -> Captured {
         let mut captured = Captured::new();
-        captured.clock_entry = Some(clock(hour - 1));
+        // End-of-hour sampling reads every clock before the original tick.
+        captured.clock_entry = Some(clock(hour));
         captured.clock_before = Some(clock(hour));
         captured.clock_after = Some(clock(hour));
         captured.qpc = 1000 + i64::from(hour);
@@ -3543,6 +3550,7 @@ mod tests {
             process_id: 100,
             process_start_time: 1000,
             qpc_frequency: 10_000_000,
+            sample_boundary: replay::identity::SampleBoundary::EndOfHour,
             identity: Identity {
                 game_version: "fixture".into(),
                 exe_hash: [1; 32],
@@ -3672,6 +3680,83 @@ mod tests {
             replay.seek(third, 11).unwrap(),
             SeekResult::Frame(_)
         ));
+    }
+
+    /// End-of-hour boundary: the first hook call after a load reads the loaded
+    /// hour L at the entry of tick L+1, so the new branch starts at L and its
+    /// parent is the branch that recorded L. Detach writes no frame for the
+    /// hour still open when it happens; the last hour needs one more tick.
+    #[test]
+    fn end_of_hour_reload_starts_at_the_loaded_hour_and_detach_invents_no_sample() {
+        let (mut campaign, store) = campaign();
+        let write = |campaign: &mut Campaign<MemoryBackend>, hour: i32, signal: i64| {
+            let mut source = captured(hour);
+            for clock in [
+                &mut source.clock_entry,
+                &mut source.clock_before,
+                &mut source.clock_after,
+            ] {
+                clock.as_mut().unwrap().play_session_started_at = signal;
+            }
+            let current = source.clock_before.unwrap();
+            let origin = campaign
+                .tracker
+                .current_branch()
+                .and_then(|_| load_origin(&source, &current));
+            assert!(origin.is_none() || origin == Some(hour));
+            let branch = campaign.observe(origin, hour, Some(signal)).unwrap();
+            let frame = decoded(&source, current, branch);
+            campaign
+                .write(
+                    frame,
+                    1000 + i64::from(hour),
+                    Some(signal),
+                    0,
+                    &mut WorkSample::default(),
+                )
+                .unwrap();
+            branch
+        };
+        let first = write(&mut campaign, 10, 1);
+        assert_eq!(write(&mut campaign, 11, 1), first);
+        assert_eq!(write(&mut campaign, 12, 1), first);
+        // Load the hour-11 save: the first tick after the load samples hour 11.
+        let reloaded = write(&mut campaign, 11, 2);
+        assert_ne!(reloaded, first);
+        let start = campaign.tracker.branch_start(reloaded).unwrap();
+        assert_eq!(start.reason, BranchReason::LoadSignal);
+        assert_eq!(start.first_hour, 11);
+        assert_eq!(start.loaded_hour, Some(11));
+        assert_eq!(
+            start.parent,
+            Parentage::Probable {
+                branch: first,
+                hour: 11
+            }
+        );
+        campaign.detach(0).unwrap();
+        let recovered: Vec<_> = store
+            .borrow()
+            .segments
+            .iter()
+            .map(|(&index, bytes)| (index, recover_prefix(bytes)))
+            .collect();
+        let replay = Replay::from_recovered(ID.to_vec(), &recovered).unwrap();
+        assert_eq!(replay.recorded_hours(first).unwrap(), vec![10, 11, 12]);
+        assert_eq!(replay.recorded_hours(reloaded).unwrap(), vec![11]);
+        assert_eq!(
+            replay.sessions[0].sample_boundary,
+            replay::identity::SampleBoundary::EndOfHour
+        );
+        let last_detach = replay
+            .controls
+            .iter()
+            .rev()
+            .find_map(|control| match control {
+                ControlRecord::Detach { last_hour, .. } => Some(*last_hour),
+                _ => None,
+            });
+        assert_eq!(last_detach, Some(Some(11)));
     }
 
     #[test]
@@ -3851,6 +3936,14 @@ mod tests {
             TableView::Complete(TableRows::WeatherLimits(vec![WeatherLimitsRow::default()]));
         tables[TableId::WorldTension.index()] =
             TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow::default()]));
+        tables[TableId::WeatherPassState.index()] =
+            TableView::Complete(TableRows::WeatherPassState(vec![
+                replay::rows::WeatherPassStateRow::default(),
+            ]));
+        tables[TableId::CounterSettings.index()] =
+            TableView::Complete(TableRows::CounterSettings(vec![
+                replay::rows::CounterSettingsRow::default(),
+            ]));
         if skip {
             for table in TableId::ALL {
                 if replay::cadence::is_staggered(table) {

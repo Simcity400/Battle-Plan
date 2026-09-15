@@ -18,7 +18,9 @@
 // * **Day ambient only.** `AmbientLight( normal, 0.0, DayAmbientColors,
 //   DayAmbientColors )` passes the day cube for both cubes and a day factor of
 //   zero, so the night cube and `NIGHT_AMBIENT_BOOST` never reach it. The
-//   terminator does not cross the frame.
+//   terminator does not cross the frame. That day cube is the constant
+//   buffer's `AmbientPosX..AmbientNegZ`, the mesh basis, not the terrain's
+//   `DayAmbientMap*` constants.
 // * **No distance fog.** `ApplyDistanceFog` is commented out in the shipped
 //   shader, alone among the map meshes.
 // * **No cube reflection.** The `EnvironmentMap` block is commented out too.
@@ -137,9 +139,9 @@ fn map_frame_fragment(input: MapFrameVertexOut) -> @location(0) vec4<f32> {
         normalize(BORDER_SUN_DIRECTION),
         lighting,
     );
-    // The night cube is never reached: the shipped call passes the day cube
-    // twice with a day factor of zero.
-    let ambient = ambient_light(lighting.normal, 0.0);
+    // The night cube is never reached: the shipped call passes the constant
+    // buffer's day cube twice with a day factor of zero.
+    let ambient = border_ambient_light(lighting.normal);
     let diffuse = ((ambient + light.diffuse) * lighting.diffuse) * hdr_range();
     return vec4<f32>(diffuse + light.specular, 0.0);
 }

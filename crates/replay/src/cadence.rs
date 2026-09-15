@@ -39,6 +39,7 @@ pub const fn refresh_slot(table: TableId) -> Option<u32> {
         | TableId::ProvinceBuildings
         | TableId::ProvinceNames
         | TableId::DivisionTemplates
+        | TableId::WeatherProvinceNeighbours
         | TableId::LexicalTokens => Some(3),
         _ => None,
     }
@@ -158,6 +159,17 @@ mod tests {
             TableId::CounterLayers,
             TableId::CharacterPortraits,
             TableId::LeaderPortraits,
+            TableId::WeatherPassState,
+            TableId::WeatherProvincePasses,
+            TableId::WeatherRegionPasses,
+            TableId::CounterSettings,
+            TableId::SelectedUnits,
+            TableId::TaskForceCounterInputs,
+            TableId::FleetCounterInputs,
+            TableId::CountryCounterInputs,
+            TableId::OrdersGroupCounterInputs,
+            TableId::DivisionOrderCaches,
+            TableId::LeaderPortraitPaths,
             TableId::SupplyNodes,
             TableId::TrainInventory,
             TableId::LandCombatProgress,
@@ -212,6 +224,7 @@ mod tests {
             TableId::ProjectBreakthroughs,
             TableId::StateBuildings,
             TableId::ProvinceBuildings,
+            TableId::WeatherProvinceNeighbours,
             TableId::LexicalTokens,
         ] {
             assert_eq!(refresh_slot(table), Some(3));

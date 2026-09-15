@@ -14,7 +14,8 @@
 //   out as the scene's brightness gap.
 // * `ProvinceSecondaryColorMap` (sampler 6) is declared by the game shader and never read, and the
 //   `HeightNormal` line (sampler 7) is commented out in the game shader; neither is bound.
-// * `ApplyFOW` is the identity while the viewer is omniscient, as in the other passes.
+// * `ApplyFOW` reads the shared screen-space fog buffer (`apply_fow_buffer`), which is the identity
+//   with fog of war off, as in the other passes.
 // * `world_offset_x` is added to the vertex before anything else. The engine draws three world-wrap
 //   copies by translating the camera (R2 section 2.3); the ribbons never cross the x seam, because
 //   the tracer clamps there, so the viewer translates the geometry instead.

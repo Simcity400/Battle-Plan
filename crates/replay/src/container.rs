@@ -259,6 +259,7 @@ impl Replay {
         append_blocks(&mut bytes, &mut index, &pending.blocks)?;
         finish_file(
             &mut bytes,
+            FormatVersion::CURRENT,
             &pending.sessions,
             &pending.branches,
             &pending.gaps,
@@ -310,6 +311,7 @@ impl Replay {
         controls.extend(pending.controls);
         finish_file(
             &mut bytes,
+            FormatVersion::CURRENT,
             &sessions,
             &branches,
             &gaps,
@@ -372,6 +374,7 @@ impl Replay {
         self.bytes.truncate(self.trailer_start);
         finish_file(
             &mut self.bytes,
+            FormatVersion::CURRENT,
             &self.sessions,
             &self.branches,
             &self.gaps,
@@ -517,7 +520,9 @@ impl Replay {
         let header_end = trailer_start - header.remaining();
         let mut trailer = Decoder::new(trailer_bytes);
         expect_magic(&mut trailer, TRAILER_MAGIC)?;
-        let sessions = decode_list(&mut trailer, SessionStart::decode)?;
+        let sessions = decode_list(&mut trailer, |decoder| {
+            SessionStart::decode_format(decoder, format)
+        })?;
         let branches = decode_list(&mut trailer, BranchStart::decode)?;
         let gaps = decode_list(&mut trailer, Gap::decode)?;
         let controls = decode_list(&mut trailer, ControlRecord::decode)?;
@@ -919,8 +924,10 @@ fn append_blocks(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_file(
     bytes: &mut Vec<u8>,
+    format: FormatVersion,
     sessions: &[SessionStart],
     branches: &[BranchStart],
     gaps: &[Gap],
@@ -930,7 +937,9 @@ fn finish_file(
 ) -> io::Result<()> {
     let trailer_start = bytes.len();
     bytes.extend_from_slice(TRAILER_MAGIC);
-    encode_list(bytes, sessions, SessionStart::encode)?;
+    encode_list(bytes, sessions, |session, out| {
+        session.encode_format(out, format)
+    })?;
     encode_list(bytes, branches, BranchStart::encode)?;
     encode_list(bytes, gaps, Gap::encode)?;
     encode_list(bytes, controls, ControlRecord::encode)?;
@@ -1254,6 +1263,7 @@ mod tests {
             process_id: id as u32,
             process_start_time: id,
             qpc_frequency: 10_000_000,
+            sample_boundary: crate::identity::SampleBoundary::EndOfHour,
             identity: Identity {
                 game_version: "test".into(),
                 exe_hash: [1; 32],
@@ -1301,6 +1311,14 @@ mod tests {
             TableView::Complete(TableRows::WeatherLimits(vec![WeatherLimitsRow::default()]));
         tables[TableId::WorldTension.index()] =
             TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow::default()]));
+        tables[TableId::WeatherPassState.index()] =
+            TableView::Complete(TableRows::WeatherPassState(vec![
+                crate::rows::WeatherPassStateRow::default(),
+            ]));
+        tables[TableId::CounterSettings.index()] =
+            TableView::Complete(TableRows::CounterSettings(vec![
+                crate::rows::CounterSettingsRow::default(),
+            ]));
         DecodedFrame {
             branch,
             hour,
@@ -1327,6 +1345,7 @@ mod tests {
         let mut bytes = prefix;
         finish_file(
             &mut bytes,
+            FormatVersion::CURRENT,
             &replay.sessions,
             &replay.branches,
             &replay.gaps,
@@ -1567,6 +1586,7 @@ mod tests {
         let mut invalid_trailer = replay.bytes()[..replay.trailer_start].to_vec();
         finish_file(
             &mut invalid_trailer,
+            FormatVersion::CURRENT,
             &replay.sessions,
             &replay.branches,
             &replay.gaps,
@@ -1675,7 +1695,7 @@ mod tests {
                 let sizes = frame.encode_with_sizes(&mut payload).unwrap();
                 let trailing: usize = sizes[recorded..].iter().sum();
                 payload.truncate(payload.len() - trailing);
-                if format.records(TableId::ShipModels) {
+                if format.records(TableId::ShipModels) && format.version() < 23 {
                     let index = TableId::ShipModels.index();
                     let start =
                         8 + 4 + 1 + 8 + TABLE_COUNT * 8 + 16 + sizes[..index].iter().sum::<usize>();
@@ -1693,9 +1713,22 @@ mod tests {
         }
         let mut index = Vec::new();
         append_blocks(&mut bytes, &mut index, &blocks).unwrap();
+        // Formats before 24 could only sample after the hourly update.
+        let sessions: Vec<_> = replay
+            .sessions
+            .iter()
+            .cloned()
+            .map(|mut session| {
+                if !format.records_sample_boundary() {
+                    session.sample_boundary = crate::identity::SampleBoundary::AfterHourlyUpdate;
+                }
+                session
+            })
+            .collect();
         finish_file(
             &mut bytes,
-            &replay.sessions,
+            format,
+            &sessions,
             &replay.branches,
             &replay.gaps,
             &replay.controls,
@@ -1747,12 +1780,24 @@ mod tests {
             FormatVersion::LEGACY_20,
             FormatVersion::LEGACY_21,
             FormatVersion::LEGACY_22,
+            FormatVersion::LEGACY_23,
         ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             assert_eq!(old.format, format);
             assert_eq!(old.campaign_id, current.campaign_id);
             assert_eq!(old.identity, current.identity);
-            assert_eq!(old.sessions, current.sessions);
+            // The only session difference is the boundary older formats imply.
+            assert_eq!(
+                current.sessions[0].sample_boundary,
+                crate::identity::SampleBoundary::EndOfHour
+            );
+            assert!(old.sessions.iter().all(|session| session.sample_boundary
+                == crate::identity::SampleBoundary::AfterHourlyUpdate));
+            let mut implied = current.sessions.clone();
+            for session in &mut implied {
+                session.sample_boundary = crate::identity::SampleBoundary::AfterHourlyUpdate;
+            }
+            assert_eq!(old.sessions, implied);
             assert_eq!(old.branches, current.branches);
             let recorded = format.recorded_tables();
             for hour in hours {
@@ -1815,6 +1860,7 @@ mod tests {
             FormatVersion::LEGACY_20,
             FormatVersion::LEGACY_21,
             FormatVersion::LEGACY_22,
+            FormatVersion::LEGACY_23,
         ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             let error = old
@@ -1845,6 +1891,7 @@ mod tests {
             FormatVersion::LEGACY_20,
             FormatVersion::LEGACY_21,
             FormatVersion::LEGACY_22,
+            FormatVersion::LEGACY_23,
         ] {
             let bytes = downgrade(&current, format);
             assert!(Replay::open(bytes.clone()).is_ok());
@@ -1879,7 +1926,7 @@ mod tests {
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23 and \
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24 and \
                      writes {FORMAT_VERSION}"
                 )
             );

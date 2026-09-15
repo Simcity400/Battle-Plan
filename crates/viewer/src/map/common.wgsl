@@ -714,6 +714,32 @@ struct LightingProperties {
     non_linear_glossiness: f32,
 }
 
+/// The line at the head of both `AmbientLight` overloads
+/// (`standardfuncsgfx.fxh:459`), "add more of bottom ambient below objects":
+/// `lerp(N, normalize(N - smoothstep(-0.6, 0.5, dot(N, (0, -1, 0))) * (0, 0.9, 0)), NegFogMultiplier)`.
+///
+/// Every compiled map effect that lights through `AmbientLight` executes it:
+/// the cached terrain, underwater, tree, `pdxmesh` (and its border variant),
+/// water, river and map-arrow pixel shaders all read `cb0[20].w` in the lerp
+/// (`hoi4_frame33840.rdc`'s terrain shader, instructions 542-551).
+///
+/// `NegFogMultiplier` is 1 on every map draw. The constant-buffer constructor
+/// `FUN_140223170` stores 1.0 at `+0x14c`, and the fill
+/// (`FUN_140ff3fc0`/`FUN_140ff3bb0`) never writes that slot, so no camera
+/// height, map mode or fog state reaches it. Of the eleven callers of the fill,
+/// only `FUN_141db7190` (the GUI entity sprite's offscreen view,
+/// `entity_sprite.cpp`) overwrites it, with 0. Both RenderDoc captures hold 1
+/// at every draw.
+///
+/// For a normal with `y >= 0.6` the smoothstep is 0 and the bend only
+/// renormalises. Below that it pulls the normal down toward `-y`, which
+/// selects the `NegY` ambient for sideways and downward faces.
+fn ambient_normal_bend(world_normal: vec3<f32>) -> vec3<f32> {
+    let lower = smoothstep(-0.6, 0.5, dot(world_normal, vec3<f32>(0.0, -1.0, 0.0)));
+    let bent = normalize(world_normal - lower * vec3<f32>(0.0, 0.9, 0.0));
+    return mix(world_normal, bent, globals.frame.ambient_neg_y_neg_fog.w);
+}
+
 /// `AmbientLight`, and the whole of it is the six `static const` triples below
 /// rather than `cb0`'s `AmbientPos*`/`AmbientNeg*`. The capture settles that:
 /// `hoi4_frame33840.rdc`'s terrain pixel shader loads the basis into its two
@@ -729,9 +755,8 @@ struct LightingProperties {
 /// `t * that + day`). The `saturate` this port used to wrap around the night
 /// term is gone; it never bound, since the largest night value times three is
 /// 0.6, but the capture shows the engine does not write it.
-fn ambient_light(world_normal: vec3<f32>, day_factor: f32) -> vec3<f32> {
-    // The `NegFogMultiplier` normal bend is a no-op while that constant is 0
-    // (R1 section 3.3), so the lerp at the head of `AmbientLight` is dropped.
+fn ambient_light(world_normal_in: vec3<f32>, day_factor: f32) -> vec3<f32> {
+    let world_normal = ambient_normal_bend(world_normal_in);
     let squared = world_normal * world_normal;
     let ix = select(0u, 1u, world_normal.x < 0.0);
     let iy = select(2u, 3u, world_normal.y < 0.0);
@@ -741,6 +766,35 @@ fn ambient_light(world_normal: vec3<f32>, day_factor: f32) -> vec3<f32> {
     return squared.x * mix(day[ix], NIGHT_AMBIENT_BOOST * night[ix], day_factor)
         + squared.y * mix(day[iy], NIGHT_AMBIENT_BOOST * night[iy], day_factor)
         + squared.z * mix(day[iz], NIGHT_AMBIENT_BOOST * night[iz], day_factor);
+}
+
+/// The day half of `ComposeLightMesh`'s basis, and the whole of
+/// `PixelPdxMeshBorder`'s: the constant buffer's `AmbientPosX..AmbientNegZ`,
+/// which the `AMBIENT_LIGHT_*` defines fill (`00_graphics.lua:1053-1058`) and
+/// the frame block already carries.
+fn mesh_day_ambient(index: u32) -> vec3<f32> {
+    switch index {
+        case 0u: { return globals.frame.ambient_pos_x_shadow_fade.rgb; }
+        case 1u: { return globals.frame.ambient_neg_x_fow_fade.rgb; }
+        case 2u: { return globals.frame.ambient_pos_y_min_mesh_alpha.rgb; }
+        case 3u: { return globals.frame.ambient_neg_y_neg_fog.rgb; }
+        case 4u: { return globals.frame.ambient_pos_z.rgb; }
+        default: { return globals.frame.ambient_neg_z_cubemap.rgb; }
+    }
+}
+
+/// `AmbientLight(N, 0.0, DayAmbientColors, DayAmbientColors)`, the call
+/// `PixelPdxMeshBorder` makes (`pdxmesh.shader:651`): the day cube is the
+/// constant buffer's `AmbientPos*`/`AmbientNeg*`, not the terrain's
+/// `DayAmbientMap*`, and at a day factor of 0 the lerp is the day term alone.
+/// The cached border shader (`000800004CA1100060129A52`) loads `x0[0..5]` from
+/// `cb0[17..22]` and runs the normal bend before indexing it.
+fn border_ambient_light(world_normal_in: vec3<f32>) -> vec3<f32> {
+    let world_normal = ambient_normal_bend(world_normal_in);
+    let squared = world_normal * world_normal;
+    return squared.x * mesh_day_ambient(select(0u, 1u, world_normal.x < 0.0))
+        + squared.y * mesh_day_ambient(select(2u, 3u, world_normal.y < 0.0))
+        + squared.z * mesh_day_ambient(select(4u, 5u, world_normal.z < 0.0));
 }
 
 fn fresnel_schlick(specular_color: vec3<f32>, e: vec3<f32>, h: vec3<f32>) -> vec3<f32> {

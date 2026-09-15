@@ -303,6 +303,13 @@ fn run(module: HMODULE) -> Result<(), String> {
     {
         return Err("collector config QPC frequency differs".into());
     }
+    if session.sample_boundary != sampling::SAMPLE_BOUNDARY {
+        return Err(format!(
+            "collector samples at the {} boundary; the session declares {}",
+            sampling::SAMPLE_BOUNDARY,
+            session.sample_boundary
+        ));
+    }
     let exe =
         hash_executable(File::open(module_path(ptr::null_mut())?).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
@@ -582,6 +589,7 @@ fn add_decode_status(status: &mut Value) {
         *status = json!({});
     }
     status["decode_work"] = decode::calibration_json();
+    status["sample_boundary"] = json!(sampling::SAMPLE_BOUNDARY.name());
     let shared_ptr = SHARED.load(Ordering::Acquire);
     if !shared_ptr.is_null() {
         // Status is produced while runtime retains Shared and joins its spool.

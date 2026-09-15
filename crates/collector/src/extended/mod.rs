@@ -28,7 +28,7 @@ const VARIANT_TABLES: [TableId; 4] = [
     TableId::VariantStats,
     TableId::VariantUpgrades,
 ];
-const DIVISION_SOURCE_TABLES: [TableId; 9] = [
+const DIVISION_SOURCE_TABLES: [TableId; 10] = [
     TableId::DivisionEquipment,
     TableId::ArmyUpgradeGroups,
     TableId::ArmyUpgradeRequests,
@@ -38,6 +38,7 @@ const DIVISION_SOURCE_TABLES: [TableId; 9] = [
     TableId::DivisionStatus,
     TableId::DivisionEta,
     TableId::ArmyIconInputs,
+    TableId::DivisionOrderCaches,
 ];
 pub type ReadGroup = (&'static str, TableId, Vec<TableId>);
 
@@ -226,6 +227,14 @@ macro_rules! packs {
 packs!(
     air,
     army_icon_inputs,
+    division_order_caches,
+    weather_passes,
+    weather_neighbours,
+    counter_state,
+    naval_counters,
+    country_counters,
+    group_counters,
+    leader_paths,
     country_appearance,
     ship_models,
     province_unit_order,
@@ -842,7 +851,13 @@ impl Captured {
             character_portraits,
             leader_portraits,
             supply_trains,
-            plans
+            plans,
+            weather_passes,
+            counter_state,
+            naval_counters,
+            country_counters,
+            group_counters,
+            leader_paths
         );
         staggered!(
             characters,
@@ -851,7 +866,8 @@ impl Captured {
             intel,
             projects,
             map_names,
-            division_templates
+            division_templates,
+            weather_neighbours
         );
         let air_needed = local(&air::TABLES, needed);
         self.air.finish_wings(
@@ -880,6 +896,14 @@ impl Captured {
         );
         scatter(&army_icon_inputs::TABLES, pass, &mut matched);
         scatter(&army_icon_inputs::TABLES, cost, &mut ticks);
+        let (pass, cost) = self.division_order_caches.capture(
+            memory,
+            base,
+            needed[TableId::DivisionOrderCaches.index()],
+            self.divisions.sources(),
+        );
+        scatter(&division_order_caches::TABLES, pass, &mut matched);
+        scatter(&division_order_caches::TABLES, cost, &mut ticks);
         let production_needed = local(&production::TABLES, needed);
         let (pass, cost) = self.production.acquire(
             memory,
@@ -1386,6 +1410,46 @@ mod tests {
     }
 
     #[test]
+    fn format24_owned_capacity_costs_include_comparison_storage_until_retirement() {
+        macro_rules! cost {
+            ($pack:ident) => {{
+                let capacities = $pack::Capacities::default();
+                let cold =
+                    $pack::Captured::with_capacities(&capacities, &[0; $pack::N]).allocated_bytes();
+                let warm = $pack::Captured::with_capacities(
+                    &capacities,
+                    &[crate::sampling::CONSISTENCY_TARGET; $pack::N],
+                )
+                .allocated_bytes();
+                assert!(cold > warm && warm > 0);
+                println!(
+                    "{} owned bytes per pool slot: cold={} warm={}",
+                    stringify!($pack),
+                    cold,
+                    warm
+                );
+                (cold, warm)
+            }};
+        }
+        let totals = [
+            cost!(weather_passes),
+            cost!(weather_neighbours),
+            cost!(counter_state),
+            cost!(naval_counters),
+            cost!(country_counters),
+            cost!(group_counters),
+            cost!(division_order_caches),
+            cost!(leader_paths),
+        ]
+        .into_iter()
+        .fold((0, 0), |sum, (cold, warm)| (sum.0 + cold, sum.1 + warm));
+        println!(
+            "format24 packs owned bytes per pool slot: cold={} warm={}",
+            totals.0, totals.1
+        );
+    }
+
+    #[test]
     fn independent_capture_leaves_eta_owned_until_terminal_join_and_charges_it_once() {
         struct FailedReads(std::cell::Cell<usize>);
         impl Memory for FailedReads {
@@ -1660,7 +1724,7 @@ mod tests {
 
     #[test]
     fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership() {
-        assert_eq!(N, 154);
+        assert_eq!(N, 166);
         let actual: BTreeSet<_> = TABLES.into_iter().collect();
         assert_eq!(actual.len(), N);
         let expected: BTreeSet<_> = TableId::ALL

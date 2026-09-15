@@ -25,7 +25,7 @@ use std::{
 
 const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
          division is extrapolated along its recorded route by its recorded ETA
-         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with device rectangles, sprite frames and text\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with device rectangles, sprite frames and text\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -106,10 +106,10 @@ struct Options {
     allow_unverified: bool,
     control: bool,
     // counters
-    /// `--perspective`: which country the unit counters are drawn for.
-    /// `recorded` (the default) is the hour's own human player, `omniscient`
-    /// draws every stack in full and a tag draws the map as that country sees
-    /// it. See `map::perspective`.
+    /// `--perspective` and `--fog`: the game's two map controls. `recorded`
+    /// (the default) views the map as the hour's own human player and a tag as
+    /// that country; `--fog off` is the game's `fow` console switch. See
+    /// `map::perspective`.
     perspective: map::perspective::Choice,
     camera: Option<Camera>,
     size: [u32; 2],
@@ -314,8 +314,8 @@ impl Options {
                 }
                 Some(
                     "--hour" | "--hour-fraction" | "--branch" | "--width" | "--height" | "--camera"
-                    | "--mode" | "--perspective" | "--animation-time" | "--animation-step"
-                    | "--window-frames",
+                    | "--mode" | "--perspective" | "--fog" | "--animation-time"
+                    | "--animation-step" | "--window-frames",
                 ) => {
                     let value = args
                         .next()
@@ -398,7 +398,10 @@ impl Options {
                         }
                         // counters
                         "--perspective" => {
-                            options.perspective = map::perspective::Choice::parse(&value)?
+                            options.perspective.country = map::perspective::Country::parse(&value)?
+                        }
+                        "--fog" => {
+                            options.perspective.fog = map::perspective::Choice::parse_fog(&value)?
                         }
                         _ => unreachable!(),
                     }
@@ -734,6 +737,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             options.allow_unverified,
         )?;
         choose_initial(&mut document, &options)?;
+        let session = document.playback.session();
+        if let Some(session) = document
+            .playback
+            .replay()
+            .sessions
+            .iter()
+            .find(|candidate| candidate.id == session)
+        {
+            println!(
+                "Sample boundary: {} (session {})",
+                session.sample_boundary, session.id
+            );
+        }
+        // counters: a dump names its hour, so a viewing country that hour does not hold is an
+        // error here rather than the window's stated fallback to the recorded player.
+        if let map::perspective::Resolution::Absent(tag) =
+            document.vision(&options.perspective)?.resolution()
+        {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "--perspective {tag}: hour {} records no country {tag}",
+                    document.playback.hour()
+                ),
+            )));
+        }
         // borders: the verification override, before the limitations are printed, so an hour
         // rendered with it does not also claim the layer was not drawn.
         document.demilitarized_override = options.demilitarized.clone();
@@ -793,10 +822,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
         let (unit_model_field, unit_report) =
             document.unit_model_field(&options.perspective, camera.height)?;
-        // fog of war: the hour's `IntelMap` for the perspective the frame is
-        // drawn for. The camera decides `FOWFadeFactor`, so the report needs it.
+        // fog of war: the hour's `IntelMap` for the viewing country and the fog
+        // switch. The camera decides `FOWFadeFactor`, so the report needs it.
         let intel_map = document.intel_map(&options.perspective)?;
-        println!("{}", intel_map.line(camera.height));
+        println!("{}", intel_map.line(camera.height, options.perspective.fog));
         let unverified = document
             .warnings
             .iter()
@@ -1216,13 +1245,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.naval_combats,
             counter_report.unanchored
         );
-        // counters: the perspective, and what it hid
+        // counters: the viewing country and the fog switch, and what they hid
         println!(
-            "Counter perspective: {}; {} of {} counters carry the game's question mark, {} of {} combat icons do",
-            if counter_report.perspective.is_omniscient() {
-                "omniscient".to_owned()
+            "Counter perspective: viewing country {} ({}), fog of war {}; {} of {} counters carry the game's question mark, {} of {} combat icons do",
+            document.viewing_tag(&counter_report.perspective)?,
+            options.perspective.country,
+            if counter_report.perspective.fog() {
+                "on"
             } else {
-                options.perspective.to_string()
+                "off"
             },
             counter_report.no_intel_counters,
             counter_report.land_counters + counter_report.naval_counters,
@@ -1342,6 +1373,32 @@ mod tests {
         assert!(parse(&["--combat", "1"]).is_err());
         assert!(parse(&["battle.battleplan", "--combat", "1", "--combat-at", "362"]).is_err());
         assert!(parse(&["battle.battleplan", "--combat-at", "4294967296"]).is_err());
+    }
+
+    /// The game's two map controls, and no third.
+    #[test]
+    fn perspective_and_fog_are_the_two_view_options() {
+        let default = parse(&["campaign.battleplan"]).unwrap();
+        assert_eq!(default.perspective, map::perspective::Choice::default());
+        assert!(default.perspective.fog);
+        let options = parse(&[
+            "campaign.battleplan",
+            "--perspective",
+            "sov",
+            "--fog",
+            "off",
+        ])
+        .unwrap();
+        assert_eq!(
+            options.perspective,
+            map::perspective::Choice {
+                country: map::perspective::Country::Tag("SOV".into()),
+                fog: false,
+            }
+        );
+        assert!(parse(&["campaign.battleplan", "--perspective", "omniscient"]).is_err());
+        assert!(parse(&["campaign.battleplan", "--fog", "maybe"]).is_err());
+        assert!(parse(&["campaign.battleplan", "--fog"]).is_err());
     }
 
     #[test]
