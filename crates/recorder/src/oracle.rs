@@ -1062,7 +1062,7 @@ fn compare_extended(
     plans::compare(frame, save, report);
     map_inputs::compare(frame, save, report);
     counters::compare(frame, save, report);
-    supply_trains::compare(frame, save, report);
+    supply_trains::compare(frame, save, &membership, report);
     combat_details::compare(frame, save, report);
     report.attempt_table(TableId::StateFlags, |report| {
         compare_state_flags(frame, save, report)
