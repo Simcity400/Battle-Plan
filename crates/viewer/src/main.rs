@@ -24,7 +24,7 @@ use std::{
 
 const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
          division is extrapolated along its recorded route by its recorded ETA
-         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,y,vertical-span> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -133,6 +133,8 @@ struct Options {
     /// `--dump --no-trees` skips the canopy, which is what the game's
     /// `debug_trees` console toggle does; see `map::scene::Request::no_trees`.
     no_trees: bool,
+    /// Dump-only comma-separated pass omissions, for residual attribution.
+    layers: map::layers::Omissions,
     // borders
     /// `--dump --demilitarized <ids>`: state ids to treat as demilitarised **in addition to** the
     /// hour's recorded `StateFlags`, so an hour whose flags are short can still be scored against
@@ -195,6 +197,13 @@ impl Options {
                 Some("--no-shadows") => options.no_shadows = true,
                 // trees
                 Some("--no-trees") => options.no_trees = true,
+                Some("--layers") => {
+                    let value = args
+                        .next()
+                        .and_then(|value| value.into_string().ok())
+                        .ok_or_else(|| invalid(USAGE))?;
+                    options.layers = map::layers::Omissions::parse(&value)?;
+                }
                 Some("--postfx") => {
                     let value = args
                         .next()
@@ -343,6 +352,9 @@ impl Options {
         }
         if options.size.iter().any(|size| !(1..=16384).contains(size)) {
             return Err(invalid("image dimensions must be 1 through 16384"));
+        }
+        if options.layers != map::layers::Omissions::default() && !options.headless_dump {
+            return Err(invalid("--layers omits named passes and requires --dump"));
         }
         if options.compare.is_some() {
             if options.headless_dump
@@ -661,21 +673,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Layer 1, the strategic regions, is static content; the dump builds it once here.
         let strategic = political::strategic_layer(&document.map, &document.strategic_regions)?;
         let mut layers = political::build(&document.map, document.frame()?, mode, &strategic)?;
-        if options.debug_borders {
+        if options.debug_borders || options.layers.gradient {
             // The engine's `debug_borders` removes both the gradient fill and the border strips.
             // Channel 2's green is each layer's transparency, the factor the whole
             // `gradient_border_apply` result is mixed in by, so zeroing it is exactly the
             // shader's own `#ifndef GRADIENT_BORDERS` early-out; the strips are their own pass
-            // and are emptied here.
+            // and are omitted separately below.
             for texel in layers.textures.channel2.iter_mut() {
                 texel[1] = 0;
             }
-            for mesh in document.border_meshes.meshes.iter_mut() {
-                mesh.chunks.clear();
-                mesh.draws.clear();
-            }
-            println!("debug_borders: the political fill and the border strips are not drawn");
         }
+        let mut omitted = options.layers;
+        omitted.borders |= options.debug_borders;
+        omitted.gradient |= options.debug_borders;
+        omitted.trees |= options.no_trees;
+        println!("Omitted dump layers: {omitted:?}");
         // weather
         let snow_mud = document.snow_mud()?;
         // close zoom
@@ -727,7 +739,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // counters: bases, labels, counters and combats in priority order.
         let (label_batch, label_report, counter_report) =
-            document.overlay_batch(camera, options.size, &options.perspective)?;
+            document.overlay_batch(camera, options.size, &options.perspective, omitted)?;
         // borders: the hour's recorded StateFlags, plus whatever --demilitarized added.
         let demilitarized = document.demilitarized_zone(&layers.regions)?;
         if !demilitarized.is_empty() {
@@ -750,6 +762,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &document.assets,
             // political fill + borders
             render::MapLayers {
+                omitted,
                 political: &layers,
                 border_assets: &document.border_assets,
                 border_meshes: &document.border_meshes,
@@ -805,7 +818,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // trees
                 no_trees: options.no_trees,
                 overlay: Overlay {
-                    names: Some(&placements),
+                    names: (!omitted.labels).then_some(&placements),
                     layer_alpha: fade.as_array(),
                     sprites: Some(&label_batch),
                 },
@@ -1418,6 +1431,24 @@ mod tests {
                 .debug_borders
         );
         assert!(parse(&["c.battleplan", "--debug-borders"]).is_err());
+        let dump = parse(&[
+            "--dump",
+            "c.battleplan",
+            "--hour",
+            "1",
+            "--out",
+            "f.png",
+            "--layers",
+            "labels,counters,gradient",
+        ])
+        .unwrap();
+        assert!(dump.layers.labels && dump.layers.counters && dump.layers.gradient);
+        assert!(!dump.layers.borders);
+        for value in ["unknown", "labels,", ""] {
+            assert!(map::layers::Omissions::parse(value).is_err());
+        }
+        assert!(parse(&["c.battleplan", "--layers", "trees"]).is_err());
+        assert!(parse(&["--compare", "g.png", "v.png", "--layers", "trees"]).is_err());
     }
 
     // trees

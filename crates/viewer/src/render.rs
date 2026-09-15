@@ -46,6 +46,7 @@ use crate::map::{
 // political fill + borders
 /// Everything a headless render needs beyond the terrain and water assets.
 pub struct MapLayers<'a> {
+    pub omitted: crate::map::layers::Omissions,
     /// The hour's gradient-border textures and the region keys behind them.
     pub political: &'a PoliticalLayers,
     pub border_assets: &'a BorderAssets,
@@ -369,21 +370,25 @@ pub fn dump_png(
             textures.width,
             textures.height,
         )?;
-        scene.set_borders(
-            &device,
-            &queue,
-            layers.border_assets,
-            layers.border_meshes,
-            layers.straits,
-        )?;
-        scene.set_classes(
-            &device,
-            layers.border_meshes,
-            &layers.political.regions,
-            layers.demilitarized,
-        )?;
+        if !layers.omitted.borders {
+            scene.set_borders(
+                &device,
+                &queue,
+                layers.border_assets,
+                layers.border_meshes,
+                layers.straits,
+            )?;
+            scene.set_classes(
+                &device,
+                layers.border_meshes,
+                &layers.political.regions,
+                layers.demilitarized,
+            )?;
+        }
         // rivers
-        scene.set_rivers(&device, &queue, layers.river_assets, layers.river_mesh)?;
+        if !layers.omitted.rivers {
+            scene.set_rivers(&device, &queue, layers.river_assets, layers.river_mesh)?;
+        }
         // the map's table frame
         scene.set_map_frame(
             &device,
@@ -392,44 +397,63 @@ pub fn dump_png(
             layers.frame_geometry.clone(),
         )?;
         // trees
-        scene.set_trees(
-            &device,
-            &queue,
-            layers.tree_assets,
-            layers.tree_geometry.clone(),
-            layers.tree_field,
-        )?;
+        if !layers.omitted.trees {
+            scene.set_trees(
+                &device,
+                &queue,
+                layers.tree_assets,
+                layers.tree_geometry.clone(),
+                layers.tree_field,
+            )?;
+        }
         // close zoom
-        scene.set_sprawl(&device, &queue, layers.sprawl)?;
-        scene.set_map_buildings(
-            &device,
-            &queue,
-            layers.map_buildings,
-            layers.map_building_field.clone(),
-        )?;
-        scene.set_railways(&device, &queue, layers.rail_assets, layers.rail_mesh)?;
-        scene.set_trains(
-            &device,
-            &queue,
-            layers.trains.clone(),
-            layers.train_plan.clone(),
-        )?;
-        scene.set_aircraft(
-            &device,
-            &queue,
-            layers.aircraft.clone(),
-            layers.aircraft_plan.clone(),
-        )?;
-        scene.set_bridges(&device, &queue, layers.bridges)?;
-        scene.set_unit_models(
-            &device,
-            &queue,
-            layers.unit_models,
-            layers.unit_model_field.clone(),
-        )?;
+        if !layers.omitted.sprawl {
+            scene.set_sprawl(&device, &queue, layers.sprawl)?;
+        }
+        if !layers.omitted.buildings {
+            scene.set_map_buildings(
+                &device,
+                &queue,
+                layers.map_buildings,
+                layers.map_building_field.clone(),
+            )?;
+        }
+        if !layers.omitted.rails {
+            scene.set_railways(&device, &queue, layers.rail_assets, layers.rail_mesh)?;
+            scene.set_trains(
+                &device,
+                &queue,
+                layers.trains.clone(),
+                layers.train_plan.clone(),
+            )?;
+            scene.set_bridges(&device, &queue, layers.bridges)?;
+        }
+        if !layers.omitted.models {
+            scene.set_aircraft(
+                &device,
+                &queue,
+                layers.aircraft.clone(),
+                layers.aircraft_plan.clone(),
+            )?;
+            scene.set_unit_models(
+                &device,
+                &queue,
+                layers.unit_models,
+                layers.unit_model_field.clone(),
+            )?;
+        }
         // orders: the recorded player's battle plan
-        scene.set_orders(&device, &queue, layers.order_assets, layers.order_field)?;
-        scene.set_weather_effects(&device, &queue, layers.weather_assets, layers.weather_field)?;
+        if !layers.omitted.orders {
+            scene.set_orders(&device, &queue, layers.order_assets, layers.order_field)?;
+        }
+        if !layers.omitted.weather {
+            scene.set_weather_effects(
+                &device,
+                &queue,
+                layers.weather_assets,
+                layers.weather_field,
+            )?;
+        }
         // weather
         let snow_mud = layers.snow_mud;
         scene.set_snow_mud(

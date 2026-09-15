@@ -1028,7 +1028,13 @@ impl Viewer {
                 .prepared_overlay
                 .as_mut()
                 .expect("prepared above")
-                .draw(document, camera, pixels, &self.perspective)
+                .draw(
+                    document,
+                    camera,
+                    pixels,
+                    &self.perspective,
+                    Default::default(),
+                )
                 .map_err(|error| error.to_string())?;
             self.label_report = label_report;
             self.counter_report = counter_report;

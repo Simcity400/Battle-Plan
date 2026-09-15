@@ -25,6 +25,7 @@ pub mod railways;
 pub mod trains;
 // names
 pub mod labels;
+pub mod layers;
 // the map's table frame
 pub mod mapframe;
 pub mod name_pass;
