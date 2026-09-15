@@ -107,10 +107,9 @@ pub struct Viewer {
     /// scene; both come from recorded tables and are rewritten when either
     /// changes. The perspective is in the key because it decides which
     /// divisions have a model at all.
-    ///
-    /// The `f32` is `Document::hour_fraction`: between two recorded hours the
-    /// figures glide, so the field is rebuilt as the fraction moves.
-    close_zoom_hour: Option<(replay::BranchId, i32, map::perspective::Choice, f32)>,
+    close_zoom_hour: Option<(replay::BranchId, i32, map::perspective::Choice)>,
+    unit_models: Option<map::unit_models::PreparedModels>,
+    unit_fraction: Option<f32>,
     // names
     placements: Option<Placements>,
     placements_at: Option<(replay::BranchId, i32, bool)>,
@@ -124,20 +123,22 @@ pub struct Viewer {
     /// The last icon layer built, and the frame, camera and viewport it was
     /// built for; the two reports beside it come from the same build.
     ///
-    /// `Document::overlay_batch` reads the decoded frame, the camera and the
-    /// viewport and nothing else, and the window repaints continuously for the
+    /// The prepared layer reads the decoded frame, camera, viewport and
+    /// perspective. The window repaints continuously for the
     /// water animation, so without this it rebuilt every counter, base, label
     /// and combat icon about forty times a second for a result that had not
     /// changed: 22 of a still frame's 27 ms. Keyed like `PoliticalCache` and
-    /// the name placements beside it.
+    /// the name placements beside it. Fraction-only changes reuse that preparation
+    /// and advance the moving group anchors and sprite rectangles.
     overlay: Option<Batch>,
+    prepared_overlay: Option<crate::document::PreparedOverlay>,
+    overlay_fraction: Option<f32>,
     overlay_at: Option<(
         replay::BranchId,
         i32,
         Camera,
         [u32; 2],
         map::perspective::Choice,
-        f32,
     )>,
     /// Which country the counters are drawn for; the header's own control sets
     /// it and [`Document::perspective`] is kept in step with it.
@@ -158,6 +159,7 @@ pub struct Viewer {
     failure: Arc<Mutex<Option<String>>>,
     /// Names the F12 captures of one session apart when `--out` did not.
     captures: u32,
+    profile_frame: u32,
 }
 
 impl Viewer {
@@ -175,7 +177,11 @@ impl Viewer {
         // starts.
         let capture = options.window_dump.then(|| Capture {
             path: options.out.clone().unwrap_or_default(),
-            remaining: 1,
+            remaining: if map::counter_move::profiling() {
+                241
+            } else {
+                1
+            },
             pinned: Some((options.size, options.camera)),
             exit: true,
         });
@@ -210,6 +216,8 @@ impl Viewer {
             geometry_uploaded: false,
             // close zoom
             close_zoom_hour: None,
+            unit_models: None,
+            unit_fraction: None,
             // names
             placements: None,
             placements_at: None,
@@ -219,6 +227,8 @@ impl Viewer {
             // counters
             counter_report: CounterReport::default(),
             overlay: None,
+            prepared_overlay: None,
+            overlay_fraction: None,
             overlay_at: None,
             perspective,
             // weather
@@ -230,6 +240,7 @@ impl Viewer {
             capture_note: None,
             failure,
             captures: 0,
+            profile_frame: 0,
         };
         if !viewer.settings
             && let Some(path) = viewer.options.replay.clone()
@@ -270,6 +281,9 @@ impl Viewer {
         self.geometry_uploaded = false;
         // close zoom
         self.close_zoom_hour = None;
+        self.unit_models = None;
+        self.unit_fraction = None;
+        self.profile_frame = 0;
         // weather
         self.weather = WeatherCache::new();
         self.generation = 0;
@@ -284,6 +298,8 @@ impl Viewer {
         self.fade = None;
         // counters
         self.overlay = None;
+        self.prepared_overlay = None;
+        self.overlay_fraction = None;
         self.overlay_at = None;
     }
 
@@ -568,6 +584,7 @@ impl Viewer {
         state: &eframe::egui_wgpu::RenderState,
         document: &Document,
     ) -> Result<(), std::io::Error> {
+        let timer = Instant::now();
         let mode = political::Mode::from_control(self.control);
         let rebuilt = self.political.ensure(
             &document.map,
@@ -575,6 +592,12 @@ impl Viewer {
             document.frame()?,
             mode,
         )?;
+        if map::counter_move::profiling() {
+            eprintln!(
+                "PROFILE political {:.6}",
+                timer.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         let scene = self
             .scene
             .as_mut()
@@ -623,7 +646,6 @@ impl Viewer {
             document.playback.branch(),
             document.playback.hour(),
             self.perspective.clone(),
-            document.hour_fraction,
         );
         if self.close_zoom_hour.as_ref() != Some(&hour) {
             let (buildings, _) = document.map_building_field()?;
@@ -633,12 +655,26 @@ impl Viewer {
                 &document.map_buildings,
                 buildings,
             )?;
-            let (units, _) = document.unit_model_field(&self.perspective)?;
-            scene.set_unit_models(&state.device, &state.queue, &document.unit_models, units)?;
+            // Train routes depend on the recorded hour and the perspective, which
+            // is this block's own key; the moving fraction is applied per frame.
+            scene.set_trains(
+                &state.device,
+                &state.queue,
+                document.trains.clone(),
+                document.train_plan(&self.perspective)?,
+            )?;
+            self.unit_models = Some(document.prepare_unit_models(&self.perspective)?);
+            self.unit_fraction = None;
             // orders: the battle plan follows the hour and the perspective, on
             // the same key as the unit models.
             let orders = document.order_field(&self.perspective)?;
             scene.set_orders(&state.device, &state.queue, &document.orders, &orders)?;
+            scene.set_weather_effects(
+                &state.device,
+                &state.queue,
+                document.weather_effects.clone(),
+                crate::map::weather_effects::field(document.frame()?)?,
+            )?;
             self.close_zoom_hour = Some(hour);
         }
         if let (true, Some(layers)) = (rebuilt, self.political.layers()) {
@@ -788,6 +824,8 @@ impl Viewer {
         frame: &eframe::Frame,
         document: &Document,
     ) -> Result<(), String> {
+        let map_timer = Instant::now();
+        map::counter_move::take_profile();
         let state = frame
             .wgpu_render_state()
             .ok_or("WGPU renderer is unavailable")?;
@@ -915,6 +953,27 @@ impl Viewer {
             Some((size, camera)) => camera.unwrap_or_else(|| Camera::fit(map_size, size)),
             None => *camera,
         };
+        let scene = self.scene.as_mut().expect("created above");
+        if map::unit_models::draws(camera.height)
+            && self.unit_fraction != Some(document.hour_fraction)
+        {
+            let timer = Instant::now();
+            let units = self
+                .unit_models
+                .as_ref()
+                .expect("prepared above")
+                .field(&document.unit_models, document.hour_fraction);
+            scene
+                .set_unit_models(&state.device, &state.queue, &document.unit_models, units)
+                .map_err(|error| error.to_string())?;
+            self.unit_fraction = Some(document.hour_fraction);
+            if map::counter_move::profiling() {
+                eprintln!(
+                    "PROFILE models {:.6}",
+                    timer.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+        }
         // names: the engine integrates the layer cross-fade by the frame delta
         // and clamps to [0, 1], so it takes one second whatever the zoom speed.
         // It has to start from a settled value, and only this frame knows which:
@@ -947,17 +1006,30 @@ impl Viewer {
             camera,
             pixels,
             self.perspective.clone(),
-            document.hour_fraction,
         );
+        let overlay_timer = Instant::now();
         if self.overlay_at.as_ref() != Some(&overlay_key) {
-            let (batch, label_report, counter_report) = document
-                .overlay_batch(camera, pixels, &self.perspective)
+            self.prepared_overlay = Some(
+                document
+                    .prepare_overlay(camera, pixels, &self.perspective)
+                    .map_err(|error| error.to_string())?,
+            );
+            self.overlay_at = Some(overlay_key);
+            self.overlay_fraction = None;
+        }
+        if self.overlay_fraction != Some(document.hour_fraction) {
+            let (batch, label_report, counter_report) = self
+                .prepared_overlay
+                .as_mut()
+                .expect("prepared above")
+                .draw(document, camera, pixels, &self.perspective)
                 .map_err(|error| error.to_string())?;
             self.label_report = label_report;
             self.counter_report = counter_report;
             self.overlay = Some(batch);
-            self.overlay_at = Some(overlay_key);
+            self.overlay_fraction = Some(document.hour_fraction);
         }
+        let overlay_ms = overlay_timer.elapsed().as_secs_f64() * 1000.0;
         let label_batch = self.overlay.as_ref().expect("built above");
         // capture: the animation clock is the one input a live window cannot
         // share with a headless frame, so a capture frame renders at 0, the
@@ -1017,7 +1089,19 @@ impl Viewer {
         }
         // capture: the frame is drawn and the scene still holds it, so the
         // readback is the dump's own.
+        if map::counter_move::profiling() {
+            eprintln!(
+                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6}",
+                self.profile_frame,
+                document.hour_fraction,
+                camera.height,
+                map_timer.elapsed().as_secs_f64() * 1000.0,
+                overlay_ms,
+                map::counter_move::take_profile()
+            );
+        }
         self.save_capture(state, document, camera, pixels, &warnings, ui.ctx());
+        self.profile_frame += 1;
         ui.painter().image(
             self.texture.unwrap(),
             rect,
@@ -1176,6 +1260,26 @@ impl eframe::App for Viewer {
                     }
                 }
             });
+            if map::counter_move::profiling() && self.capture.is_some() {
+                // Deterministic diagnostic sweep, including at a replay's final
+                // hour. Ordinary playback continues to use the timeline clock.
+                if (self.profile_frame == 121 || self.profile_frame == 181)
+                    && std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).as_deref() == Ok("hours")
+                {
+                    let delta = if self.profile_frame == 121 { 1 } else { -1 };
+                    if let Err(error) = document
+                        .playback
+                        .seek(document.playback.branch(), document.playback.hour() + delta)
+                    {
+                        self.error = Some(error.to_string());
+                    }
+                }
+                document.hour_fraction = if self.profile_frame < 121 || self.profile_frame >= 241 {
+                    self.options.hour_fraction
+                } else {
+                    ((self.profile_frame - 121) % 120) as f32 / 120.0
+                };
+            }
             egui::CentralPanel::default().show(ui, |ui| {
                 if let Err(error) = self.map(ui, frame, &document) {
                     self.error = Some(error);

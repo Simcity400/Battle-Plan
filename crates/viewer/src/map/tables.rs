@@ -114,6 +114,27 @@ pub struct Limitations {
 }
 
 impl Limitations {
+    pub fn note_trains(&mut self, frame: &DecodedFrame) {
+        self.note::<replay::rows::tables::RailEdges>(frame, "train routes unavailable");
+        self.note::<replay::rows::tables::RailCooldowns>(frame, "train routes unavailable");
+        self.note::<replay::rows::tables::ProvinceSupply>(frame, "train hub locations unavailable");
+        self.note_field("Supply trains", "UNVERIFIED reconstruction: no SupplyNodes table exists. Supply companion nodes (+0xb8, stride 0xe8: kind +8, flag +0xc, available +0x38, consumed +0x40), selected parent routes, related-controller access bitmap and CCountrySupplySystem +0x120 allocated train inventory are missing. Routes use recorded RailEdges/RailCooldowns and ProvinceSupply hubs with shortest paths and equal hub weights; equipment_1 substitutes for the missing equipment mix, with no inventory cap. The engine's camera gate, speed, country wagon lists and scales are reproduced. Phase uses seed 0x54524149 XOR the ordered route provinces, a global 9200..12000 ms departure schedule and the frame animation clock (dump=0). Exact count/position modulo phase remains unverified until those simulation inputs are recorded.");
+    }
+
+    /// Entity light state is a field omission, even when every table is whole.
+    pub fn note_point_lights(&mut self) {
+        self.lines.push(
+            "Point lights: transient entity emissions are absent. LandCombats and NavalCombats \
+         do not record the entity event clock, effect lifetime, flicker phase, random seed, \
+         selected model or animated muzzle/attachment transform. Bombing and nuclear events \
+         are not reconstructed from hourly totals. Citylight's enable gate and entity-light \
+         visibility are UNVERIFIED; an associated entity/light timeline would settle them. \
+         The two retained RenderDoc captures select only zero-colour lights; their nonzero \
+         data rows are stale and unreferenced. Terrain city emissive masks remain independent."
+                .into(),
+        );
+    }
+
     /// Records `affected` when this hour's `T` table is not complete.
     ///
     /// `affected` is what the map draws differently because of the gap, stated
@@ -236,11 +257,10 @@ impl Limitations {
         self.lines.push(format!(
             "Fog of war: {fogged} intel texels are fogged from the hour's recorded \
              ProvinceVisibility, which is the client's own presentation buffer sampled once an \
-             hour. Two inputs of the engine's fog are not recorded and are left at their origin. \
-             FoWTime is the clock the fog's three noise octaves drift on, so the cloud pattern is \
-             the noise at time zero rather than at the instant a screenshot caught it; it moves \
-             the pattern about and not its strength. The map mode is the other, and the engine \
-             gates FOWFadeFactor on it: the fill's controller and owner modes are the engine's \
+             hour. The engine's FoWTime epoch is not recorded: the window animates the three \
+             noise octaves on its own frame clock and a dump samples time zero. The pattern \
+             therefore differs from the instant a screenshot caught it. The engine also \
+             gates FOWFadeFactor on map mode: the fill's controller and owner modes are the engine's \
              mode 0, which is inside the set that draws fog, so the gate is open here.{between}",
         ));
     }
@@ -341,7 +361,13 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     out.note::<tables::Subjects>(
         frame,
         "an overlord and its subject among the missing rows do not see each other's stacks, so one \
-         of them carries the game's question mark where the game drew it in full",
+         of them carries the game's question mark where the game drew it in full; subject colour \
+         inheritance among the missing rows is unavailable, so those countries keep their own \
+         authored colour",
+    );
+    out.note::<tables::Autonomy>(
+        frame,
+        "current subject colour switches among the missing rows are unavailable; those subjects keep their own authored colour",
     );
     out.note::<tables::UnitIntel>(
         frame,
@@ -369,7 +395,7 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     );
     out.note::<tables::DivisionTemplates>(
         frame,
-            "a land counter whose division's template is among the missing rows draws no unit-type icon, and its dark overlay panel is left bare; at close zoom its division model falls back to rifle infantry, because with no template there is no sub-unit key for the engine's entity ladder to start from",
+            "a land counter whose division's template is among the missing rows draws no unit-type icon, and its dark overlay panel is left bare; question-mark counters with missing template rows retain separate source plates because their grouping keys are unknown; at close zoom its division model falls back to rifle infantry, because with no template there is no sub-unit key for the engine's entity ladder to start from",
     );
     out.note::<tables::DivisionStatus>(
         frame,
@@ -392,6 +418,17 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
         frame,
         "a naval counter's ship count covers only the recorded ships, where the game counts every          ship in the task force's own array",
     );
+    if rows::<tables::Ships>(frame).is_ok_and(|ships| !ships.rows().is_empty()) {
+        out.note_field(
+            "Ships (at-sea models)",
+            "at-sea hull models are not drawn: the ship-to-equipment-variant link, hull sprite, model \
+         number and formation-selection flags are not recorded. Ships.category is a coarse class \
+         enum and class_id names a class-history entry, so neither supplies the engine's entity \
+         selector and no substitute hull is drawn. Stationary port formations are hidden by the \
+         engine itself; their absence is not this recording limitation. The port's static \
+         building mesh and its counter are drawn by their existing passes",
+        );
+    }
     // orders: the recorded player's battle plan
     out.note::<tables::ArmyOrderPlans>(
         frame,
@@ -447,6 +484,19 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
         "a base icon whose building token is among the missing rows is not drawn at all",
     );
     // weather
+    out.note::<tables::WeatherRegions>(
+        frame,
+        "weather effects are drawn only for the recorded region rows",
+    );
+    if rows::<tables::WeatherRegions>(frame).is_ok_and(|v| {
+        v.rows().iter().any(|r| {
+            [r.light_rain, r.heavy_rain, r.snow, r.blizzard, r.sandstorm]
+                .iter()
+                .any(|v| *v != 0)
+        })
+    }) {
+        out.note_field("weather particle presentation", "WeatherRegions selects the game's authored emitters and textures at map/weatherpositions.txt anchors. Particle states, seed and elapsed time are not recorded: this presentation uses a deterministic seed per region and hour and the window animation clock (dump time 0), initialized with stationary birth phases. UNVERIFIED: variation distribution, curve interpolation and turbulence dynamics require particle-update decompilation or consecutive captured instance buffers. Weather assets are outside hash-verified content coverage.");
+    }
     out.note::<tables::WeatherLimits>(
         frame,
         "the snow texture stays at zero because this hour records no snow ceiling",
@@ -709,6 +759,7 @@ mod tests {
             "WarRelations",
             "FactionMembers",
             "Subjects",
+            "Autonomy",
             "UnitIntel",
             "ProvinceVisibility",
             "Divisions",
@@ -722,6 +773,7 @@ mod tests {
             "AirBaseRegistrations",
             "AirWings",
             "LexicalTokens",
+            "WeatherRegions",
             "WeatherLimits",
             "WeatherProvinces",
         ] {

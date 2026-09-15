@@ -9,10 +9,8 @@ use super::{
     textures::{Bound, Samplers},
 };
 
-/// Everything `pdxwater.shader` binds, minus the three the port drops:
-/// `GradientBorderChannel3` and the two point-light maps feed
-/// `dominance_fx_apply` and `CalculatePointLights`, which have no recorded data
-/// and no map-borne lights (R1 section 3.4, `RENDERING.md` section 5).
+/// Water-specific textures. Tiled point-light maps are shared through group 0.
+/// `GradientBorderChannel3` belongs to the unrecorded dominance effect.
 pub struct WaterInputs<'a> {
     pub heightmap: &'a Bound,
     pub lean1: &'a Bound,

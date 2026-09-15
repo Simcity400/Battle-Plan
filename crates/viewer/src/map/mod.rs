@@ -21,6 +21,7 @@ pub mod gradient;
 pub mod map_buildings;
 pub mod models;
 pub mod railways;
+pub mod trains;
 // names
 pub mod labels;
 // the map's table frame
@@ -32,6 +33,7 @@ pub mod perspective;
 // orders: the recorded player's battle plan
 pub mod orders;
 // political fill
+pub mod pointlights;
 pub mod political;
 // colour
 pub mod post;
@@ -55,3 +57,4 @@ pub mod unit_models;
 pub mod water;
 // weather
 pub mod weather;
+pub mod weather_effects;

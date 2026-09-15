@@ -73,14 +73,18 @@ pub struct MapLayers<'a> {
     pub map_building_field: &'a ModelField,
     pub rail_assets: &'a RailAssets,
     pub rail_mesh: &'a RailMesh,
+    pub trains: &'a std::sync::Arc<crate::map::trains::TrainAssets>,
+    pub train_plan: &'a crate::map::trains::TrainPlan,
     pub bridges: &'a Bridges,
     pub unit_models: &'a UnitModelAssets,
-    /// This hour's placed figures, from [`UnitModelAssets::field`].
+    /// This hour's placed figures, from [`super::map::unit_models::PreparedModels::field`].
     pub unit_model_field: &'a ModelField,
     // orders: the recorded player's battle plan
     pub order_assets: &'a OrderAssets,
     /// This hour's ribbons, from [`crate::document::Document::order_field`].
     pub order_field: &'a OrderField,
+    pub weather_assets: std::sync::Arc<crate::map::weather_effects::Assets>,
+    pub weather_field: crate::map::weather_effects::Field,
     // trees
     pub tree_assets: &'a TreeAssets,
     pub tree_geometry: &'a TreeGeometry,
@@ -401,6 +405,12 @@ pub fn dump_png(
             layers.map_building_field.clone(),
         )?;
         scene.set_railways(&device, &queue, layers.rail_assets, layers.rail_mesh)?;
+        scene.set_trains(
+            &device,
+            &queue,
+            layers.trains.clone(),
+            layers.train_plan.clone(),
+        )?;
         scene.set_bridges(&device, &queue, layers.bridges)?;
         scene.set_unit_models(
             &device,
@@ -410,6 +420,7 @@ pub fn dump_png(
         )?;
         // orders: the recorded player's battle plan
         scene.set_orders(&device, &queue, layers.order_assets, layers.order_field)?;
+        scene.set_weather_effects(&device, &queue, layers.weather_assets, layers.weather_field)?;
         // weather
         let snow_mud = layers.snow_mud;
         scene.set_snow_mud(

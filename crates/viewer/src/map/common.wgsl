@@ -151,6 +151,7 @@ struct Globals {
     /// frame constant here, because every caster and every receiver in one
     /// frame takes the same one. See `map::shadow`.
     shadow_matrix: mat4x4<f32>,
+    light_grid: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -470,9 +471,8 @@ const BRIGHT_FOW_COLOR: vec3<f32> = vec3<f32>(0.98, 0.93, 0.93);
 const DARK_FOW_COLOR: vec3<f32> = vec3<f32>(0.08, 0.08, 0.1);
 
 /// `FoWTime`, `vFoWOpacity_FoWTime_SnowMudFade_MaxGameSpeed.y`: the clock the
-/// three noise octaves drift on. It is 0 here for the reason `SnowMudFade` is —
-/// a recording holds one sample an hour and no animation clock — so the fog's
-/// pattern is the noise at its origin. See [`map::frame`].
+/// three noise octaves drift on. The window uses its frame animation clock;
+/// a dump uses zero. The unrecorded epoch is stated in map::tables.
 fn fow_time() -> f32 { return globals.frame.fow_opacity_time_snow_mud_day_night.y; }
 
 /// `FOWFadeFactor`, which `map::frame` fills from the camera height and the
@@ -1243,4 +1243,52 @@ fn sample_water(
     var normal = vec3<f32>(blended.b.x, 1.0, blended.b.y);
     normal *= 1.0 / sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
     return WaterSample(blended.b, blended.m, normal);
+}
+
+// --------------------------------------------------------- tiled_pointlights.fxh
+// Point/clamp/LOD-zero sampling, expressed as clamped textureLoad so the
+// RGBA32F data texture does not require optional float32 filtering support.
+@group(0) @binding(7) var light_index_map: texture_2d<f32>;
+@group(0) @binding(8) var light_data_map: texture_2d<f32>;
+
+fn get_light_index_uv(world_space_pos: vec3<f32>, grid: vec4<f32>) -> vec2<f32> {
+    let xz = world_space_pos.xz - grid.xy;
+    let cell_index = xz * grid.zw;
+    return cell_index * vec2<f32>(1.0 / 64.0);
+}
+
+// CalculatePointLights plus CalculatePointLight's two effect-defined branches.
+// The incoming sun term is accumulated before environment and composition.
+fn calculate_point_lights(
+    properties: LightingProperties, incoming: LightOut, improved: bool, grid: vec4<f32>,
+) -> LightOut {
+    let uv = get_light_index_uv(properties.world_space_pos, grid);
+    let cell = vec2<i32>(clamp(floor(uv * 64.0), vec2<f32>(0.0), vec2<f32>(63.0)));
+    let indices = textureLoad(light_index_map, cell, 0);
+    var light = incoming;
+    for (var i = 0u; i < 4u; i++) {
+        let index = indices[i] * 255.0;
+        if index >= 255.0 { break; }
+        let data1 = textureLoad(light_data_map, vec2<i32>(min(i32(index * 2.0 + 0.5), 127), 0), 0);
+        let data2 = textureLoad(light_data_map, vec2<i32>(min(i32(index * 2.0 + 1.5), 127), 0), 0);
+        let pos_to_light = data1.xyz - properties.world_space_pos;
+        let distance = length(pos_to_light);
+        let intensity = saturate((data1.w - distance) / data2.w);
+        if intensity > 0.0 {
+            let to_light = pos_to_light / distance;
+            let color = data2.rgb * intensity;
+            if improved {
+                let contribution = improved_blinn_phong(color, to_light, properties);
+                light.diffuse += contribution.diffuse;
+                light.specular += contribution.specular;
+            } else {
+                light.diffuse += calculate_light(properties.normal, -to_light, color);
+                light.specular += calculate_pbr_specular_power(
+                    properties.world_space_pos, properties.normal,
+                    properties.specular_color, properties.glossiness, color, -to_light,
+                );
+            }
+        }
+    }
+    return light;
 }

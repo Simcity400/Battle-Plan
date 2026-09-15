@@ -12,7 +12,7 @@
 //
 // Dropped, with the reason:
 //
-// * CalculatePointLights and generated mip levels: not verified on pair H.
+// * Generated mip levels: not verified on pair H.
 //   Authored texture mip levels are retained.
 // * The `#ifndef NO_SHADER_TEXTURE_LOD` half of `CalculateTerrainNormal`, the
 //   terrain-atlas and water normals. The shipped shader has an explicit
@@ -145,7 +145,7 @@ fn arrow_terrain_normal(uv_terrain: vec2<f32>) -> vec3<f32> {
 }
 
 /// Plain Phong: maparrow declares no PDX_IMPROVED_BLINN_PHONG.
-/// It shares the terrain shadow weight; point lights remain unavailable.
+/// It shares the terrain shadow weight and accumulates tiled point lights.
 fn arrow_lighting(prepos: vec3<f32>, normal: vec3<f32>, color: vec4<f32>, shadow_term: f32) -> vec3<f32> {
     var properties: LightingProperties;
     properties.world_space_pos = prepos;
@@ -155,7 +155,8 @@ fn arrow_lighting(prepos: vec3<f32>, normal: vec3<f32>, color: vec4<f32>, shadow
     properties.glossiness = 0.05;
     properties.specular_color = vec3<f32>(color.a);
     properties.non_linear_glossiness = get_non_linear_glossiness(color.a);
-    let light = calculate_sun_light_phong(properties, shadow_term, calculate_sun_direction(prepos));
+    var light = calculate_sun_light_phong(properties, shadow_term, calculate_sun_direction(prepos));
+    light = calculate_point_lights(properties, light, false, globals.light_grid);
     return compose_light(properties, light.diffuse, light.specular);
 }
 

@@ -84,14 +84,14 @@ fn mesh_skin(vector: vec4<f32>, joints: vec4<u32>, weights: vec4<f32>) -> vec3<f
 /// `mul( WorldMatrix, vPosition )` for a map object: a rotation about +Y, the
 /// only rotation `map/buildings.txt`, `map/unitstacks.txt` and the sprawl
 /// generator carry, plus the uniform scale and the translation.
-fn mesh_rotation(instance_rotation: f32) -> mat3x3<f32> {
+fn mesh_rotation(instance_rotation: f32, pitch: f32) -> mat3x3<f32> {
     let s = sin(instance_rotation);
     let c = cos(instance_rotation);
     return mat3x3<f32>(
         vec3<f32>(c, 0.0, s),
         vec3<f32>(0.0, 1.0, 0.0),
         vec3<f32>(-s, 0.0, c),
-    );
+    ) * mat3x3<f32>(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, cos(pitch), sin(pitch)), vec3<f32>(0.0, -sin(pitch), cos(pitch)));
 }
 
 fn mesh_world(
@@ -111,6 +111,7 @@ struct MeshOut {
     @location(2) bitangent: vec3<f32>,
     @location(3) uv0: vec2<f32>,
     @location(4) world: vec3<f32>,
+    @location(5) @interpolate(flat) train_clip: vec4<f32>,
 }
 
 @vertex
@@ -124,14 +125,18 @@ fn mesh_vertex(
     @location(6) instance_scale: f32,
     @location(7) joints: vec4<u32>,
     @location(8) weights: vec4<f32>,
+    @location(9) instance_pitch: f32,
+    @location(10) train_clip: vec4<f32>,
 ) -> MeshOut {
     let skinned_position = mesh_skin(vec4<f32>(position, 1.0), joints, weights);
     let skinned_normal = mesh_skin(vec4<f32>(normal, 0.0), joints, weights);
     let skinned_tangent = mesh_skin(vec4<f32>(tangent.xyz, 0.0), joints, weights);
-    let rotate = mesh_rotation(instance_rotation);
+    let rotate = mesh_rotation(instance_rotation, instance_pitch);
     var out: MeshOut;
     let world = mesh_world(rotate, skinned_position, instance_position, instance_scale);
     out.world = world;
+    out.train_clip = train_clip;
+    out.train_clip.x += slot.world_offset_x;
     out.clip = globals.frame.view_projection * vec4<f32>(world, 1.0);
     out.normal = normalize(rotate * skinned_normal);
     out.tangent = normalize(rotate * skinned_tangent);
@@ -333,6 +338,7 @@ fn mesh_fragment(input: MeshOut) -> @location(0) vec4<f32> {
     } else {
         light = calculate_sun_light_phong(lighting, shadow_term, sun_direction);
     }
+    light = calculate_point_lights(lighting, light, has(FLAG_IMPROVED_BLINN_PHONG), globals.light_grid);
     var diffuse_light = light.diffuse;
     var specular_light = light.specular;
 
@@ -375,6 +381,13 @@ fn mesh_fragment(input: MeshOut) -> @location(0) vec4<f32> {
     // The returned alpha is the emissive mask the engine's bloom reads, floored
     // by `MinMeshAlpha`; this pass writes colour only, so it never reaches a
     // target, but the value is kept as the shader computes it.
+    // pdxmesh.shader TRAIN: white RGB, independent of diffuse alpha.
+    // Zero-alpha cars outside the route are omitted by TrainPlan::field.
+    if has(16u) {
+        let delta = input.world.xz - input.train_clip.xy;
+        let clip_alpha = select(0.0, 1.0, dot(delta, input.train_clip.zw) >= 0.0);
+        return vec4<f32>(color, clip_alpha * smoothstep(0.0, 2.5, length(delta)) * slot.alpha);
+    }
     return vec4<f32>(color, max(alpha, globals.frame.ambient_pos_y_min_mesh_alpha.w) * slot.alpha);
 }
 
@@ -404,9 +417,11 @@ fn mesh_shadow_vertex(
     @location(6) instance_scale: f32,
     @location(7) joints: vec4<u32>,
     @location(8) weights: vec4<f32>,
+    @location(9) instance_pitch: f32,
+    @location(10) train_clip: vec4<f32>,
 ) -> MeshShadowOut {
     let world = mesh_world(
-        mesh_rotation(instance_rotation),
+        mesh_rotation(instance_rotation, instance_pitch),
         mesh_skin(vec4<f32>(position, 1.0), joints, weights),
         instance_position,
         instance_scale,

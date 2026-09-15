@@ -25,9 +25,6 @@
 //   — regressing the game's scene on our ambient and sun parts separately puts
 //   the ambient's own coefficient at 0.24 to 0.81 rather than at the 1 that
 //   reading assumed (`terrain.wgsl`'s header).
-// * `CalculatePointLights`. Point lights come from combats and effects, which
-//   no recorded table carries and which neither reference frame has
-//   (R3 section 2.4).
 // * `ApplyFOW`'s two factors, which the omniscient viewer leaves at zero.
 //
 // The `tree` effect declares no `Defines`, so `CalculateSunLight` takes the
@@ -336,11 +333,14 @@ fn tree_fragment(input: TreeVarying) -> @location(0) vec4<f32> {
     // `GetShadowScaled( SHADOW_WEIGHT_TREE, In.vScreenCoord, ShadowMap )`
     // (`tree.shader:381`), without the terrain's 0.1 floor. `map::shadow` fills
     // the buffer below camera height 400 and binds its clear value above it.
-    let light = calculate_sun_light_phong(
+    var light = calculate_sun_light_phong(
         properties,
         get_shadow_scaled(SHADOW_WEIGHT_TREE, input.position),
         calculate_sun_direction(input.world),
     );
+    // Capture 33840 binds a zero GridStart_InvCellSize in this effect's cb2.
+    // Preserve that observed input: point/clamp samples index cell (0,0).
+    light = calculate_point_lights(properties, light, false, vec4<f32>(0.0));
     var diffuse_light = light.diffuse;
 
     // `texCUBEbias( EnvironmentMap, float4( reflect(...), 3 - vRoughness * 3 ) )`:

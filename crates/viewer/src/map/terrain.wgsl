@@ -218,10 +218,9 @@
 //   `FUN_140ff3fc0` fills, and `cb1`/`cb2`, which hold
 //   `ShadowMapTextureMatrix`, `QuadOffset_Scale_IsDetail`, `vSnap`,
 //   `vBorderLookup_HeightScale_UseMultisample_SeasonLerp` and
-//   `GridStart_InvCellSize`. Of those the terrain pixel shader reads none — the
-//   last is declared and never used — so there is no per-draw multiplier to
-//   port. The draw's own argument block in `FUN_141264d30` is a texture table,
-//   not constants.
+//   `GridStart_InvCellSize`. The last selects tiled point lights (now ported).
+//   Both retained captures select only zero-colour entries; this constant is
+//   not a whole-scene multiplier.
 //
 // The counterfactual was measured rather than argued: rendering the reference
 // day frame with every `LOW_END_GFX` branch taken instead (flat `(0,1,0)` base
@@ -801,8 +800,7 @@ fn terrain_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     // is 0 and the saturate inside `GetShadowScaled` pins the term to 1 anyway.
     let shadow_term = max(get_shadow_scaled(SHADOW_WEIGHT_TERRAIN, input.position), 0.1);
     var light = calculate_sun_light(properties, shadow_term, calculate_sun_direction(input.prepos));
-    // No point lights: they come from combats and effects, not from the map
-    // itself, and the reference frame has none (R1 section 3.4).
+    light = calculate_point_lights(properties, light, true, globals.light_grid);
 
     let eye_dir = normalize(input.prepos - cam_pos());
     // FAKE_CUBEMAP_COLOR is black, so the Fresnel term adds nothing; kept for
@@ -912,11 +910,12 @@ fn underwater_main(input: TerrainVertex) -> @location(0) vec4<f32> {
 
     // `GetShadowScaled( SHADOW_WEIGHT_TERRAIN, ... )` without the lit pass's
     // 0.1 floor (`pdxmap.shader:444`).
-    let light = calculate_sun_light_phong(
+    var light = calculate_sun_light_phong(
         properties,
         get_shadow_scaled(SHADOW_WEIGHT_TERRAIN, input.position),
         calculate_sun_direction(input.prepos),
     );
+    light = calculate_point_lights(properties, light, false, globals.light_grid);
     let lit = compose_light(properties, light.diffuse, light.specular);
     return vec4<f32>(mix(water_color_tint, lit, water_alpha), 1.0);
 }

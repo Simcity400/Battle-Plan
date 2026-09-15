@@ -680,6 +680,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let snow_mud = document.snow_mud()?;
         // close zoom
         let (map_building_field, building_summary) = document.map_building_field()?;
+        let mut train_plan = document.train_plan(&options.perspective)?;
+        println!(
+            "Supply trains (UNVERIFIED routes/weights/inventory): {} routes, {} mesh objects at time 0, seed 0x54524149",
+            train_plan.route_count(),
+            train_plan.field(&document.trains, 0.0).instances.len()
+        );
+        for line in train_plan.diagnostics() {
+            println!("{line}");
+        }
         let (unit_model_field, unit_report) = document.unit_model_field(&options.perspective)?;
         // orders: the recorded player's battle plan
         let order_field = document.order_field(&options.perspective)?;
@@ -759,12 +768,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 map_building_field: &map_building_field,
                 rail_assets: &document.rail_assets,
                 rail_mesh: &document.rail_mesh,
+                trains: &document.trains,
+                train_plan: &train_plan,
                 bridges: &document.bridges,
                 unit_models: &document.unit_models,
                 unit_model_field: &unit_model_field,
                 // orders: the recorded player's battle plan
                 order_assets: &document.orders,
                 order_field: &order_field,
+                weather_assets: document.weather_effects.clone(),
+                weather_field: crate::map::weather_effects::field(document.frame()?)?,
                 // trees
                 tree_assets: &document.tree_assets,
                 tree_geometry: &document.tree_geometry,

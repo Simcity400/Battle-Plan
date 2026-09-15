@@ -674,11 +674,14 @@ fn water_main(input: WaterVertex) -> @location(0) vec4<f32> {
         shadow_coord.z + refraction_distortion.y * 20.0,
         shadow_coord.w,
     );
-    let light = calculate_sun_light_phong(
+    var light = calculate_sun_light_phong(
         properties,
         get_shadow_scaled_projective(SHADOW_WEIGHT_WATER, shadow_coord),
         sun_dir_water,
     );
+    // Both captures bind a zero GridStart_InvCellSize in this effect's cb2.
+    // Preserve that observed input: point/clamp samples index cell (0,0).
+    light = calculate_point_lights(properties, light, false, vec4<f32>(0.0));
     var out = compose_light(properties, light.diffuse, light.specular);
 
     // `ApplyFOW( vOut, ShadowMap, Input.vScreenCoord )` (`pdxwater.shader:398`)

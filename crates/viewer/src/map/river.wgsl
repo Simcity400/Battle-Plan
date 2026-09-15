@@ -12,8 +12,6 @@
 //   `ShadowFadeFactor` is 0 and the saturate inside `GetShadowScaled` pins the term to 1 anyway.
 //   `terrain.wgsl`'s header carries what the engine binds and the measurement that rules the term
 //   out as the scene's brightness gap.
-// * `CalculatePointLights` is dropped with its two maps: the lights come from combats and effects,
-//   not from the map, and the replay records none (R1 section 3.4, `RENDERING.md` section 5).
 // * `ProvinceSecondaryColorMap` (sampler 6) is declared by the game shader and never read, and the
 //   `HeightNormal` line (sampler 7) is commented out in the game shader; neither is bound.
 // * `ApplyFOW` is the identity while the viewer is omniscient, as in the other passes.
@@ -423,11 +421,14 @@ fn river_fragment(input: RiverVarying) -> @location(0) vec4<f32> {
     // direction is `CalculateSunDirection`, not the `CalculateSunDirectionWater` the wave highlight
     // above uses: the game shader calls the two-argument `CalculateSunLight` overload, which takes
     // the sun direction from `vVirtualSunPos.xyz` rather than the `*_HEIGHT_WATER` swizzle.
-    let light = calculate_sun_light_phong(
+    var light = calculate_sun_light_phong(
         properties,
         get_shadow_scaled(SHADOW_WEIGHT_RIVER, input.position),
         calculate_sun_direction(input.pre_pos_fade.xyz),
     );
+    // Capture 33840 binds a zero GridStart_InvCellSize in this effect's cb2.
+    // Preserve that observed input: point/clamp samples index cell (0,0).
+    light = calculate_point_lights(properties, light, false, vec4<f32>(0.0));
     var out = compose_light(properties, light.diffuse, light.specular);
 
     // `ApplyFOW( vOut, ShadowMap, Input.vScreenCoord )` (`river.shader:394`),
