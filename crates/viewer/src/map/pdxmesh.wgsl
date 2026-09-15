@@ -84,14 +84,14 @@ fn mesh_skin(vector: vec4<f32>, joints: vec4<u32>, weights: vec4<f32>) -> vec3<f
 /// `mul( WorldMatrix, vPosition )` for a map object: a rotation about +Y, the
 /// only rotation `map/buildings.txt`, `map/unitstacks.txt` and the sprawl
 /// generator carry, plus the uniform scale and the translation.
-fn mesh_rotation(instance_rotation: f32, pitch: f32) -> mat3x3<f32> {
+fn mesh_rotation(instance_rotation: f32, pitch: f32, roll: f32) -> mat3x3<f32> {
     let s = sin(instance_rotation);
     let c = cos(instance_rotation);
     return mat3x3<f32>(
         vec3<f32>(c, 0.0, s),
         vec3<f32>(0.0, 1.0, 0.0),
         vec3<f32>(-s, 0.0, c),
-    ) * mat3x3<f32>(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, cos(pitch), sin(pitch)), vec3<f32>(0.0, -sin(pitch), cos(pitch)));
+    ) * mat3x3<f32>(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, cos(pitch), sin(pitch)), vec3<f32>(0.0, -sin(pitch), cos(pitch))) * mat3x3<f32>(vec3<f32>(cos(roll), sin(roll), 0.0), vec3<f32>(-sin(roll), cos(roll), 0.0), vec3<f32>(0.0, 0.0, 1.0));
 }
 
 fn mesh_world(
@@ -126,12 +126,13 @@ fn mesh_vertex(
     @location(7) joints: vec4<u32>,
     @location(8) weights: vec4<f32>,
     @location(9) instance_pitch: f32,
+    @location(11) instance_roll: f32,
     @location(10) train_clip: vec4<f32>,
 ) -> MeshOut {
     let skinned_position = mesh_skin(vec4<f32>(position, 1.0), joints, weights);
     let skinned_normal = mesh_skin(vec4<f32>(normal, 0.0), joints, weights);
     let skinned_tangent = mesh_skin(vec4<f32>(tangent.xyz, 0.0), joints, weights);
-    let rotate = mesh_rotation(instance_rotation, instance_pitch);
+    let rotate = mesh_rotation(instance_rotation, instance_pitch, instance_roll);
     var out: MeshOut;
     let world = mesh_world(rotate, skinned_position, instance_position, instance_scale);
     out.world = world;
@@ -418,10 +419,11 @@ fn mesh_shadow_vertex(
     @location(7) joints: vec4<u32>,
     @location(8) weights: vec4<f32>,
     @location(9) instance_pitch: f32,
+    @location(11) instance_roll: f32,
     @location(10) train_clip: vec4<f32>,
 ) -> MeshShadowOut {
     let world = mesh_world(
-        mesh_rotation(instance_rotation, instance_pitch),
+        mesh_rotation(instance_rotation, instance_pitch, instance_roll),
         mesh_skin(vec4<f32>(position, 1.0), joints, weights),
         instance_position,
         instance_scale,

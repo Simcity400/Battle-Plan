@@ -2,6 +2,7 @@
 //! that consume them; each module owns one intermediate or one pass.
 
 // counters
+pub mod aircraft;
 pub mod allegiance;
 // borders
 pub mod border_pass;

@@ -680,6 +680,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let snow_mud = document.snow_mud()?;
         // close zoom
         let (map_building_field, building_summary) = document.map_building_field()?;
+        let aircraft_plan = document.aircraft_plan(&options.perspective)?;
+        for line in aircraft_plan.report(&document.aircraft) {
+            println!("{line}");
+        }
         let mut train_plan = document.train_plan(&options.perspective)?;
         println!(
             "Supply trains (UNVERIFIED routes/weights/inventory): {} routes, {} mesh objects at time 0, seed 0x54524149",
@@ -768,6 +772,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 map_building_field: &map_building_field,
                 rail_assets: &document.rail_assets,
                 rail_mesh: &document.rail_mesh,
+                aircraft: &document.aircraft,
+                aircraft_plan: &aircraft_plan,
                 trains: &document.trains,
                 train_plan: &train_plan,
                 bridges: &document.bridges,
@@ -1021,6 +1027,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             report.unit_models_drawn,
             camera.height,
             map::unit_models::UNIT_CUTOFF,
+        );
+        println!(
+            "Aircraft: {} models submitted in this camera",
+            report.aircraft_drawn
         );
         println!(
             " ladder inputs: {} land sub-unit keys from common/units, {} tags with a graphical culture, {} entities loaded",

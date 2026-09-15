@@ -566,6 +566,7 @@ impl TrainPlan {
                                 + std::f32::consts::FRAC_PI_2,
                             scale: car.scale,
                             pitch: (a[1] - b[1]).atan2(dx.hypot(dz)),
+                            roll: 0.0,
                             train_clip: if back < 2.5 {
                                 let (p, t) = route.at(0.0);
                                 let n = t[0].hypot(t[2]).max(0.0001);

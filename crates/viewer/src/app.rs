@@ -663,6 +663,12 @@ impl Viewer {
                 document.trains.clone(),
                 document.train_plan(&self.perspective)?,
             )?;
+            scene.set_aircraft(
+                &state.device,
+                &state.queue,
+                document.aircraft.clone(),
+                document.aircraft_plan(&self.perspective)?,
+            )?;
             self.unit_models = Some(document.prepare_unit_models(&self.perspective)?);
             self.unit_fraction = None;
             // orders: the battle plan follows the hour and the perspective, on

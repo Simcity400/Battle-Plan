@@ -73,6 +73,8 @@ pub struct MapLayers<'a> {
     pub map_building_field: &'a ModelField,
     pub rail_assets: &'a RailAssets,
     pub rail_mesh: &'a RailMesh,
+    pub aircraft: &'a std::sync::Arc<crate::map::aircraft::AircraftAssets>,
+    pub aircraft_plan: &'a crate::map::aircraft::AircraftPlan,
     pub trains: &'a std::sync::Arc<crate::map::trains::TrainAssets>,
     pub train_plan: &'a crate::map::trains::TrainPlan,
     pub bridges: &'a Bridges,
@@ -318,6 +320,7 @@ pub struct DumpReport {
     pub map_buildings_drawn: u32,
     /// Unit models the frame drew, over every wrap copy.
     pub unit_models_drawn: u32,
+    pub aircraft_drawn: u32,
     // borders
     /// Province boundaries the demilitarised-zone pass drew.
     pub demilitarized_edges: usize,
@@ -411,6 +414,12 @@ pub fn dump_png(
             layers.trains.clone(),
             layers.train_plan.clone(),
         )?;
+        scene.set_aircraft(
+            &device,
+            &queue,
+            layers.aircraft.clone(),
+            layers.aircraft_plan.clone(),
+        )?;
         scene.set_bridges(&device, &queue, layers.bridges)?;
         scene.set_unit_models(
             &device,
@@ -471,6 +480,7 @@ pub fn dump_png(
             sprawl_drawn: scene.sprawl_drawn(),
             map_buildings_drawn: scene.map_buildings_drawn(),
             unit_models_drawn: scene.unit_models_drawn(),
+            aircraft_drawn: scene.aircraft_drawn(),
             // borders
             demilitarized_edges: scene.demilitarized_edges(),
             // shadows

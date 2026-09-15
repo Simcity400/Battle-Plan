@@ -114,6 +114,18 @@ pub struct Limitations {
 }
 
 impl Limitations {
+    pub fn note_aircraft(&mut self, frame: &DecodedFrame) {
+        self.note::<tables::WingEquipment>(
+            frame,
+            "aircraft with missing equipment identity are not drawn",
+        );
+        self.note::<tables::VariantDefinitions>(
+            frame,
+            "aircraft with missing variant definitions are not drawn",
+        );
+        self.note_field("Flying aircraft", "Generated from seed 0x41495250 and recorded AirWings/AirBases/WingEquipment/VariantDefinitions. UNVERIFIED: mission eligibility and sortie-effective counts, hostile air-intel estimates, scenario roster/outcome/phase, designer/graphical/cosmetic overrides and airborne camera/fade. The port uses recorded effective_planes, independent default mission scenarios and integer province centroids/authored animated formations; no dogfight pairing or particle/death outcomes. Single-CAS attachment slot alias and modded NAirGfx Lua overrides remain UNVERIFIED. Paused animation speed .22; dump clock zero; window clock advances. Carrier/missile basing is skipped. A draw-bearing scenario census and height sweep would settle count, placement and gate; frame33840 contains no airborne PDX draws.");
+    }
+
     pub fn note_trains(&mut self, frame: &DecodedFrame) {
         self.note::<replay::rows::tables::RailEdges>(frame, "train routes unavailable");
         self.note::<replay::rows::tables::RailCooldowns>(frame, "train routes unavailable");
