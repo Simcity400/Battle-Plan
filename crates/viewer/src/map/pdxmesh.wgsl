@@ -46,9 +46,8 @@ struct MeshSlot {
 /// `matBones`: the joint palette, three `vec4` rows per joint, every composed
 /// entity's joints end to end. A vertex's joint slots index it directly.
 ///
-/// The engine writes one entity's bones per draw; this pass composes the whole
-/// layer's palette once at load, because a recorded hour has no animation clock
-/// to advance and every instance of an entity is therefore in the same pose.
+/// The frozen palette is followed by visible instances' animated palettes.
+/// palette_offset selects the instance; vertex and index buffers stay resident.
 @group(1) @binding(11) var<storage, read> palette: array<vec4<f32>>;
 
 fn has(flag: u32) -> bool {
@@ -84,6 +83,17 @@ fn mesh_skin(vector: vec4<f32>, joints: vec4<u32>, weights: vec4<f32>) -> vec3<f
 /// `mul( WorldMatrix, vPosition )` for a map object: a rotation about +Y, the
 /// only rotation `map/buildings.txt`, `map/unitstacks.txt` and the sprawl
 /// generator carry, plus the uniform scale and the translation.
+fn mesh_animated(vector: vec4<f32>, bind: vec4<f32>, joints: vec4<u32>, weights: vec4<f32>, rigid: u32, offset: u32) -> vec3<f32> {
+    if offset == 0u {
+        if (rigid & 0x80000000u) != 0u { return vector.xyz; }
+        return mesh_skin(vector,joints,weights);
+    }
+    if dot(weights,vec4<f32>(1.0)) == 0.0 {
+        return mesh_skin(bind,vec4<u32>((rigid & 0x7fffffffu)+offset),vec4<f32>(1.0,0.0,0.0,0.0));
+    }
+    return mesh_skin(bind,joints+vec4<u32>(offset),weights);
+}
+
 fn mesh_rotation(instance_rotation: f32, pitch: f32, roll: f32) -> mat3x3<f32> {
     let s = sin(instance_rotation);
     let c = cos(instance_rotation);
@@ -125,14 +135,18 @@ fn mesh_vertex(
     @location(6) instance_scale: f32,
     @location(7) joints: vec4<u32>,
     @location(8) weights: vec4<f32>,
-    @location(9) instance_pitch: f32,
-    @location(11) instance_roll: f32,
+    @location(9) instance_angles: vec2<f32>,
     @location(10) train_clip: vec4<f32>,
+    @location(11) palette_offset: u32,
+    @location(12) bind_position: vec3<f32>,
+    @location(13) bind_normal: vec3<f32>,
+    @location(14) bind_tangent: vec3<f32>,
+    @location(15) rigid_joint: u32,
 ) -> MeshOut {
-    let skinned_position = mesh_skin(vec4<f32>(position, 1.0), joints, weights);
-    let skinned_normal = mesh_skin(vec4<f32>(normal, 0.0), joints, weights);
-    let skinned_tangent = mesh_skin(vec4<f32>(tangent.xyz, 0.0), joints, weights);
-    let rotate = mesh_rotation(instance_rotation, instance_pitch, instance_roll);
+    let skinned_position = mesh_animated(vec4<f32>(position, 1.0), vec4<f32>(bind_position, 1.0), joints, weights, rigid_joint, palette_offset);
+    let skinned_normal = mesh_animated(vec4<f32>(normal, 0.0), vec4<f32>(bind_normal, 0.0), joints, weights, rigid_joint, palette_offset);
+    let skinned_tangent = mesh_animated(vec4<f32>(tangent.xyz, 0.0), vec4<f32>(bind_tangent, 0.0), joints, weights, rigid_joint, palette_offset);
+    let rotate = mesh_rotation(instance_rotation, instance_angles.x, instance_angles.y);
     var out: MeshOut;
     let world = mesh_world(rotate, skinned_position, instance_position, instance_scale);
     out.world = world;
@@ -418,13 +432,17 @@ fn mesh_shadow_vertex(
     @location(6) instance_scale: f32,
     @location(7) joints: vec4<u32>,
     @location(8) weights: vec4<f32>,
-    @location(9) instance_pitch: f32,
-    @location(11) instance_roll: f32,
+    @location(9) instance_angles: vec2<f32>,
     @location(10) train_clip: vec4<f32>,
+    @location(11) palette_offset: u32,
+    @location(12) bind_position: vec3<f32>,
+    @location(13) bind_normal: vec3<f32>,
+    @location(14) bind_tangent: vec3<f32>,
+    @location(15) rigid_joint: u32,
 ) -> MeshShadowOut {
     let world = mesh_world(
-        mesh_rotation(instance_rotation, instance_pitch, instance_roll),
-        mesh_skin(vec4<f32>(position, 1.0), joints, weights),
+        mesh_rotation(instance_rotation, instance_angles.x, instance_angles.y),
+        mesh_animated(vec4<f32>(position, 1.0), vec4<f32>(bind_position, 1.0), joints, weights, rigid_joint, palette_offset),
         instance_position,
         instance_scale,
     );

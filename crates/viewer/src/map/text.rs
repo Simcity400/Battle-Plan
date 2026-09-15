@@ -14,8 +14,9 @@
 //! colour. The dark edge around on-map text is baked into the atlas page — the
 //! `A` box of `hoi_mapfont4` is a black body at alpha 128 with a white halo at
 //! alpha 70, and the `B` box of `hoi_20bs` is a white body at alpha 255 with a
-//! black rim. Nothing here adds an outline; the page is sampled as authored and
-//! multiplied by the definition's `color`.
+//! black rim. Nothing here adds an outline. Screen-space text multiplies the
+//! authored page by the definition's `color`; world-space `mapname.shader`
+//! ignores that definition colour and samples the RGBA page directly.
 //!
 //! # Colour codes
 //!

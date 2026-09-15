@@ -154,7 +154,7 @@ impl TerrainPass {
             bind_group_layouts: &[Some(globals), Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = |label, entry, depth_compare| {
+        let pipeline = |label, entry, depth_compare, format, samples| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
@@ -176,7 +176,7 @@ impl TerrainPass {
                     bias: Default::default(),
                 }),
                 multisample: wgpu::MultisampleState {
-                    count: SAMPLE_COUNT,
+                    count: samples,
                     ..Default::default()
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -233,18 +233,20 @@ impl TerrainPass {
             cache: None,
         });
         Ok(Self {
-            // The sea bed goes down first and the lit terrain over it, so the
-            // terrain needs `LessEqual` to win on the shared geometry; the two
-            // height clips leave that overlap empty in any case.
             terrain: pipeline(
                 "terrain",
                 "terrain_main",
                 Some(wgpu::CompareFunction::LessEqual),
+                format,
+                SAMPLE_COUNT,
             ),
             underwater: pipeline(
                 "underwater",
                 "underwater_main",
-                Some(wgpu::CompareFunction::Less),
+                // Frame33840 event 61 uses LESS_EQUAL for the refraction draw.
+                Some(wgpu::CompareFunction::LessEqual),
+                super::water::REFRACTION_FORMAT,
+                1,
             ),
             unlit,
             layout,
@@ -305,10 +307,8 @@ impl TerrainPass {
         }));
     }
 
-    /// Draws the grid again with `terrainunlit`, into the shadow pre-pass the
-    /// caller opened. The engine declares no unlit twin of `underwater`, so the
-    /// sea bed writes nothing and the pixels below the water plane keep the
-    /// buffer's fully lit clear value.
+    /// Draws the terrain grid, including beneath water, with `terrainunlit`
+    /// into the shadow pre-pass the caller opened.
     pub fn draw_unlit(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -328,7 +328,32 @@ impl TerrainPass {
         pass.draw(0..vertices, 0..1);
     }
 
-    /// Draws the sea bed and then the lit terrain into a cleared scene target.
+    /// Draws the sea bed into the separate native-format water input.
+    pub fn draw_refraction(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        targets: &Targets,
+        globals: &wgpu::BindGroup,
+        grid: Grid,
+    ) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("water refraction"),
+            color_attachments: &[Some(targets.refraction_attachment())],
+            depth_stencil_attachment: Some(targets.refraction_depth_attachment()),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        let Some(bind_group) = &self.bind_group else {
+            return;
+        };
+        pass.set_bind_group(0, globals, &[]);
+        pass.set_bind_group(1, bind_group, &[]);
+        pass.set_pipeline(&self.underwater);
+        pass.draw(0..grid.quads() * 6, 0..1);
+    }
+
+    /// Draws lit terrain, including the floor behind translucent water.
     pub fn draw(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -360,8 +385,6 @@ impl TerrainPass {
         }
         pass.set_bind_group(0, globals, &[]);
         pass.set_bind_group(1, bind_group, &[]);
-        pass.set_pipeline(&self.underwater);
-        pass.draw(0..vertices, 0..1);
         pass.set_pipeline(&self.terrain);
         pass.draw(0..vertices, 0..1);
     }

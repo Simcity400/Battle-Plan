@@ -207,6 +207,9 @@ pub struct VolunteerPermission {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Country {
     pub tag: Vec<u8>,
+    /// CCountry 70C580 writes token372f unconditionally from primary+1488.
+    /// Empty means none; omission stays distinct for the oracle to reject.
+    pub cosmetic_tag: Option<Vec<u8>>,
     /// A direct country-name field, if the save carries one. Usually absent;
     /// localisation and cosmetic tags are not substituted for captured names.
     pub name: Option<Vec<u8>>,
@@ -256,6 +259,10 @@ pub struct Division {
     pub province: Option<u32>,
     /// CArmy writer C80E00 emits the standard template, not fake intel, iff nonnull.
     pub template: Option<u64>,
+    /// CArmy C80E00 writes primary+3C8 only when the alternate is nonnull.
+    pub alternate_template: Option<u64>,
+    /// C80E00 writes primary+630 only when nonzero; text retains truthiness.
+    pub separate_counter: bool,
     /// Saved strength is absolute current hit points in native /100000 units.
     pub hit_points: Decimal,
     pub organisation: Decimal,
@@ -429,6 +436,9 @@ pub struct Ship {
     pub organisation: Decimal,
     pub experience: Decimal,
     pub sunk_convoys: i32,
+    /// C2EF80 writes the embedded primary+40 pool under equipment.
+    /// Absence is retained so the oracle can reject a missing required wrapper.
+    pub equipment: Option<production::Pool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -799,6 +809,7 @@ fn parse_country(tag: &[u8], items: &[Item]) -> io::Result<Country> {
     let politics = field(items, b"politics")?.map(block).transpose()?;
     Ok(Country {
         tag: tag.to_vec(),
+        cosmetic_tag: bytes(items, b"cosmetic_tag")?,
         name: bytes(items, b"name")?,
         political_power: politics
             .map(|items| decimal(items, b"political_power"))
@@ -860,6 +871,13 @@ fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<Division> {
         template: field(items, b"division_template_id")?
             .map(typed_handle)
             .transpose()?,
+        alternate_template: field(items, b"fake_intel_division_template_id")?
+            .map(typed_handle)
+            .transpose()?,
+        separate_counter: field(items, b"leader")?
+            .map(boolean)
+            .transpose()?
+            .unwrap_or(false),
         hit_points: Decimal::parse(&required_bytes(items, b"strength")?)?,
         organisation: Decimal::parse(&required_bytes(items, b"organisation")?)?,
         country_intel: country_intel(items)?,
@@ -1220,6 +1238,11 @@ fn parse_ship(task_force: u64, items: &[Item]) -> io::Result<Ship> {
             .map(|value| integer(scalar(value)?))
             .transpose()?
             .unwrap_or(0),
+        equipment: field(items, b"equipment")?
+            .map(block)
+            .transpose()?
+            .map(production::parse_pool)
+            .transpose()?,
     })
 }
 
@@ -1992,6 +2015,65 @@ pub fn read_equipment_types(layers: &ResolvedLayers) -> io::Result<EquipmentType
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map_input_fields_preserve_literal_bytes_and_native_omissions() {
+        let country = crate::parser::parse(b"cosmetic_tag=BRM_british").unwrap();
+        assert_eq!(
+            parse_country(b"BRM", &country.items).unwrap().cosmetic_tag,
+            Some(b"BRM_british".to_vec())
+        );
+        assert_eq!(parse_country(b"GER", &[]).unwrap().cosmetic_tag, None);
+        let empty = crate::parser::parse(b"cosmetic_tag=\"\"").unwrap();
+        assert_eq!(
+            parse_country(b"GER", &empty.items).unwrap().cosmetic_tag,
+            Some(Vec::new())
+        );
+        let division = crate::parser::parse(b"id={id=1 type=51} logical_country=GER strength=1 organisation=1 leader=yes fake_intel_division_template_id={id=4294967295 type=50}").unwrap();
+        let row = parse_division(b"GER", &division.items).unwrap();
+        assert!(row.separate_counter);
+        assert_eq!(
+            row.alternate_template,
+            Some((u64::from(u32::MAX) << 32) | 50)
+        );
+        assert_eq!(row.template, None);
+        let ship = crate::parser::parse(b"id={id=1 type=51} strength=1 organisation=1 equipment={equipment={id={id=3 type=70} amount=-1} equipment={id={id=4 type=70} amount=0}}").unwrap();
+        let row = parse_ship(9, &ship.items).unwrap();
+        let pool = row.equipment.unwrap();
+        assert_eq!(pool.equipment.len(), 2);
+        assert_eq!(pool.equipment[0].amount.raw, -100_000);
+        assert_eq!(pool.equipment[1].variant, (4_u64 << 32) | 70);
+    }
+
+    #[test]
+    fn map_input_fields_refuse_ambiguous_or_malformed_saved_operands() {
+        for fields in ["cosmetic_tag=x cosmetic_tag=y", "cosmetic_tag={}"] {
+            let doc = crate::parser::parse(fields.as_bytes()).unwrap();
+            assert!(parse_country(b"GER", &doc.items).is_err());
+        }
+        for field in [
+            "leader=2",
+            "leader=yes leader=no",
+            "fake_intel_division_template_id={id=0 type=0}",
+            "fake_intel_division_template_id={id=1}",
+            "fake_intel_division_template_id={id=1 type=50} fake_intel_division_template_id={id=2 type=50}",
+        ] {
+            let source = format!(
+                "id={{id=1 type=51}} logical_country=GER strength=1 organisation=1 {field}"
+            );
+            let doc = crate::parser::parse(source.as_bytes()).unwrap();
+            assert!(parse_division(b"GER", &doc.items).is_err(), "{field}");
+        }
+        for field in [
+            "equipment={} equipment={}",
+            "equipment={equipment={id={id=1 type=70}}}",
+            "equipment={equipment={id={id=1 type=70} amount=0.000001}}",
+        ] {
+            let source = format!("id={{id=1 type=51}} strength=1 organisation=1 {field}");
+            let doc = crate::parser::parse(source.as_bytes()).unwrap();
+            assert!(parse_ship(9, &doc.items).is_err(), "{field}");
+        }
+    }
 
     #[test]
     fn decimals_preserve_engine_units_and_literal_precision_without_rounding() {

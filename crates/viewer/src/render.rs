@@ -426,7 +426,7 @@ pub fn dump_png(
                 layers.trains.clone(),
                 layers.train_plan.clone(),
             )?;
-            scene.set_bridges(&device, &queue, layers.bridges)?;
+            scene.set_bridges(&device, &queue, layers.bridges, layers.rail_mesh)?;
         }
         if !layers.omitted.models {
             scene.set_aircraft(

@@ -60,7 +60,7 @@ const TABLE_LIST_HEIGHT: f32 = 96.0;
 /// comparable without a screenshot tool.
 ///
 /// What the two paths do not share is the animation clock, so a capture renders
-/// its frame at `animation_time` 0, the still frame `--dump` renders.
+/// its frame at `animation_time` 0 by default, or an explicit sequence clock.
 struct Capture {
     path: PathBuf,
     /// Frames to draw before the readback. `--window-dump` draws the pair a
@@ -72,6 +72,10 @@ struct Capture {
     pinned: Option<([u32; 2], Option<Camera>)>,
     /// `--window-dump` closes the window once it has written its frame.
     exit: bool,
+    time: Option<f32>,
+    step: f32,
+    frames: u32,
+    index: u32,
 }
 
 pub struct Viewer {
@@ -109,7 +113,7 @@ pub struct Viewer {
     /// divisions have a model at all.
     close_zoom_hour: Option<(replay::BranchId, i32, map::perspective::Choice)>,
     unit_models: Option<map::unit_models::PreparedModels>,
-    unit_fraction: Option<f32>,
+    unit_fraction: Option<(f32, bool, bool)>,
     // names
     placements: Option<Placements>,
     placements_at: Option<(replay::BranchId, i32, bool)>,
@@ -184,6 +188,10 @@ impl Viewer {
             },
             pinned: Some((options.size, options.camera)),
             exit: true,
+            time: Some(options.animation_time),
+            step: options.animation_step,
+            frames: options.window_frames.max(1),
+            index: 0,
         });
         // counters: the header's control starts where the command line put it.
         let perspective = options.perspective.clone();
@@ -628,18 +636,7 @@ impl Viewer {
                 document.tree_geometry.clone(),
                 &document.tree_field,
             )?;
-            // close zoom: the sprawl, the rails and the bridges are static
-            // content too, and take the same one-time upload. The map buildings
-            // and the unit models are not: they come from recorded tables and
-            // follow the hour, below.
             scene.set_sprawl(&state.device, &state.queue, &document.sprawl)?;
-            scene.set_railways(
-                &state.device,
-                &state.queue,
-                &document.rail_assets,
-                &document.rail_mesh,
-            )?;
-            scene.set_bridges(&state.device, &state.queue, &document.bridges)?;
             self.geometry_uploaded = true;
         }
         let hour = (
@@ -648,6 +645,15 @@ impl Viewer {
             self.perspective.clone(),
         );
         if self.close_zoom_hour.as_ref() != Some(&hour) {
+            let rail_mesh = document.rail_mesh()?;
+            scene.set_railways(
+                &state.device,
+                &state.queue,
+                &document.rail_assets,
+                &rail_mesh,
+            )?;
+            scene.set_bridges(&state.device, &state.queue, &document.bridges, &rail_mesh)?;
+
             let (buildings, _) = document.map_building_field()?;
             scene.set_map_buildings(
                 &state.device,
@@ -758,7 +764,19 @@ impl Viewer {
             Some(_) => {}
             None => return,
         }
-        let capture = self.capture.take().expect("matched above");
+        let mut capture = self.capture.take().expect("matched above");
+        let output = if capture.frames > 1 || capture.index > 0 {
+            let stem = capture
+                .path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy();
+            capture
+                .path
+                .with_file_name(format!("{stem}-{:04}.png", capture.index))
+        } else {
+            capture.path.clone()
+        };
         let scene = self.scene.as_ref().expect("a frame was drawn");
         let unverified = document
             .warnings
@@ -771,7 +789,7 @@ impl Viewer {
             if !unverified.is_empty() {
                 render::render_banner(scene, &state.device, &state.queue, &unverified)?;
             }
-            render::write_png(scene, &state.device, &state.queue, &capture.path)
+            render::write_png(scene, &state.device, &state.queue, &output)
         })();
         match written {
             Ok(()) => {
@@ -793,7 +811,7 @@ impl Viewer {
                     } else {
                         String::new()
                     },
-                    capture.path.display(),
+                    output.display(),
                     pixels[0],
                     pixels[1]
                 );
@@ -801,12 +819,15 @@ impl Viewer {
                     "Camera: {},{},{}",
                     camera.center[0], camera.center[1], camera.height
                 );
+                if let Some(time) = capture.time {
+                    println!("Animation time: {time:.6} s");
+                }
                 println!(
                     "Mode: {}; colour grading {}",
                     if self.control { "controller" } else { "owner" },
                     if self.postfx { "on" } else { "off" }
                 );
-                self.capture_note = Some(format!("Saved {}", capture.path.display()));
+                self.capture_note = Some(format!("Saved {}", output.display()));
             }
             Err(error) => {
                 let message = format!("{}: {error}", capture.path.display());
@@ -819,7 +840,14 @@ impl Viewer {
                 self.capture_note = Some(message);
             }
         }
-        if capture.exit {
+        if capture.frames > 1 {
+            capture.frames -= 1;
+            capture.index += 1;
+            capture.time = capture.time.map(|t| t + capture.step);
+            capture.remaining = 0;
+            self.capture = Some(capture);
+            ctx.request_repaint();
+        } else if capture.exit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
@@ -960,19 +988,28 @@ impl Viewer {
             None => *camera,
         };
         let scene = self.scene.as_mut().expect("created above");
-        if map::unit_models::draws(camera.height)
-            && self.unit_fraction != Some(document.hour_fraction)
+        if map::unit_models::draws_any(camera.height)
+            && self.unit_fraction
+                != Some((
+                    document.hour_fraction,
+                    map::unit_models::draws(camera.height),
+                    camera.height < map::unit_models::SHIPS_DISTANCE_CUTOFF,
+                ))
         {
             let timer = Instant::now();
-            let units = self
-                .unit_models
-                .as_ref()
-                .expect("prepared above")
-                .field(&document.unit_models, document.hour_fraction);
+            let units = self.unit_models.as_ref().expect("prepared above").field(
+                &document.unit_models,
+                document.hour_fraction,
+                camera.height,
+            );
             scene
                 .set_unit_models(&state.device, &state.queue, &document.unit_models, units)
                 .map_err(|error| error.to_string())?;
-            self.unit_fraction = Some(document.hour_fraction);
+            self.unit_fraction = Some((
+                document.hour_fraction,
+                map::unit_models::draws(camera.height),
+                camera.height < map::unit_models::SHIPS_DISTANCE_CUTOFF,
+            ));
             if map::counter_move::profiling() {
                 eprintln!(
                     "PROFILE models {:.6}",
@@ -1048,10 +1085,11 @@ impl Viewer {
         // still frame `--dump` renders. `Scene::render` then takes the
         // luminance adaptation instantaneously, because the clock did not
         // advance, which is what a dump's own pair of frames does.
-        let animation_time = match self.capture {
-            Some(_) => 0.0,
-            None => self.started.elapsed().as_secs_f32(),
-        };
+        let animation_time = self
+            .capture
+            .as_ref()
+            .and_then(|c| c.time)
+            .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
         let scene = self.scene.as_mut().unwrap();
         scene
             .render(
@@ -1145,6 +1183,10 @@ impl eframe::App for Viewer {
                 remaining: 0,
                 pinned: None,
                 exit: false,
+                time: None,
+                step: 0.0,
+                frames: 1,
+                index: 0,
             });
         }
         egui::Panel::top("header").show(ui, |ui| {

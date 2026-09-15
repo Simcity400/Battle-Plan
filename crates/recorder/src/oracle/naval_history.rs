@@ -1447,6 +1447,8 @@ mod tests {
                         expeditionary_owner: None,
                         province: None,
                         template: None,
+                        alternate_template: None,
+                        separate_counter: false,
                         hit_points: Decimal::parse(b"0").unwrap(),
                         organisation: Decimal::parse(b"0").unwrap(),
                         country_intel: Vec::new(),

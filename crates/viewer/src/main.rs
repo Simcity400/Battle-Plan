@@ -24,7 +24,7 @@ use std::{
 
 const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
          division is extrapolated along its recorded route by its recorded ETA
-         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded|omniscient, the country the unit counters are drawn for\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with device rectangles, sprite frames and text\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -87,6 +87,9 @@ struct Options {
     /// window's own path, so this drives [`app::Viewer`] rather than
     /// [`render::dump_png`]; the readback is the dump's own.
     window_dump: bool,
+    animation_time: f32,
+    animation_step: f32,
+    window_frames: u32,
     hour: Option<Hour>,
     // counters: the glide between recorded hours
     /// How far past `hour` the frame is, in hours, in `[0, 1)`.
@@ -135,6 +138,8 @@ struct Options {
     no_trees: bool,
     /// Dump-only comma-separated pass omissions, for residual attribution.
     layers: map::layers::Omissions,
+    /// Write the actual rendered counter quads, grouped into plates.
+    counters_json: Option<PathBuf>,
     // borders
     /// `--dump --demilitarized <ids>`: state ids to treat as demilitarised **in addition to** the
     /// hour's recorded `StateFlags`, so an hour whose flags are short can still be scored against
@@ -191,6 +196,10 @@ impl Options {
                 }
                 Some("--json") => {
                     options.json = Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
+                }
+                Some("--counters-json") => {
+                    options.counters_json =
+                        Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
                 }
                 // colour
                 Some("--no-water") => options.no_water = true,
@@ -279,7 +288,8 @@ impl Options {
                 }
                 Some(
                     "--hour" | "--hour-fraction" | "--branch" | "--width" | "--height" | "--camera"
-                    | "--mode" | "--perspective",
+                    | "--mode" | "--perspective" | "--animation-time" | "--animation-step"
+                    | "--window-frames",
                 ) => {
                     let value = args
                         .next()
@@ -294,6 +304,29 @@ impl Options {
                             }
                         }
                         "--hour-fraction" => options.hour_fraction = parse_fraction(&value)?,
+                        "--animation-time" | "--animation-step" => {
+                            let seconds = value.parse::<f32>().map_err(|_| {
+                                invalid("animation time must be finite nonnegative seconds")
+                            })?;
+                            if !seconds.is_finite() || seconds < 0.0 {
+                                return Err(invalid(
+                                    "animation time must be finite nonnegative seconds",
+                                ));
+                            }
+                            if arg == "--animation-time" {
+                                options.animation_time = seconds;
+                            } else {
+                                options.animation_step = seconds;
+                            }
+                        }
+                        "--window-frames" => {
+                            options.window_frames = value
+                                .parse()
+                                .map_err(|_| invalid("invalid window frame count"))?;
+                            if !(1..=1000).contains(&options.window_frames) {
+                                return Err(invalid("window frames must be 1..1000"));
+                            }
+                        }
                         "--branch" => {
                             options.branch =
                                 Some(value.parse().map_err(|_| invalid("invalid branch id"))?)
@@ -356,6 +389,9 @@ impl Options {
         if options.layers != map::layers::Omissions::default() && !options.headless_dump {
             return Err(invalid("--layers omits named passes and requires --dump"));
         }
+        if options.counters_json.is_some() && !options.headless_dump {
+            return Err(invalid("--counters-json requires --dump"));
+        }
         if options.compare.is_some() {
             if options.headless_dump
                 || options.window_dump
@@ -401,6 +437,13 @@ impl Options {
         // because it closes the window as soon as it has written one.
         if options.window_dump && options.out.is_none() {
             return Err(invalid("--window-dump writes one frame and needs --out"));
+        }
+        if !options.window_dump
+            && (options.animation_time != 0.0
+                || options.animation_step != 0.0
+                || options.window_frames != 0)
+        {
+            return Err(invalid("animation sampling options require --window-dump"));
         }
         if options.out.is_some() && options.replay.is_none() {
             return Err(invalid(USAGE));
@@ -698,14 +741,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         let mut train_plan = document.train_plan(&options.perspective)?;
         println!(
-            "Supply trains (UNVERIFIED routes/weights/inventory): {} routes, {} mesh objects at time 0, seed 0x54524149",
+            "Supply trains (recorded simulation; UNVERIFIED presentation phase): {} routes, {} mesh objects at time 0, seed 0x54524149",
             train_plan.route_count(),
             train_plan.field(&document.trains, 0.0).instances.len()
         );
         for line in train_plan.diagnostics() {
             println!("{line}");
         }
-        let (unit_model_field, unit_report) = document.unit_model_field(&options.perspective)?;
         // orders: the recorded player's battle plan
         let order_field = document.order_field(&options.perspective)?;
         for warning in document.warnings.iter().chain(layers.warnings()) {
@@ -717,6 +759,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 options.size,
             )
         });
+        let (unit_model_field, unit_report) =
+            document.unit_model_field(&options.perspective, camera.height)?;
         // fog of war: the hour's `IntelMap` for the perspective the frame is
         // drawn for. The camera decides `FOWFadeFactor`, so the report needs it.
         let intel_map = document.intel_map(&options.perspective)?;
@@ -740,7 +784,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // counters: bases, labels, counters and combats in priority order.
         let (label_batch, label_report, counter_report) =
             document.overlay_batch(camera, options.size, &options.perspective, omitted)?;
+        if let Some(path) = &options.counters_json {
+            let census = document
+                .icons
+                .counters
+                .census(&label_batch, &document.icons.fonts);
+            std::fs::write(path, serde_json::to_vec_pretty(&census)?)?;
+        }
         // borders: the hour's recorded StateFlags, plus whatever --demilitarized added.
+        let rail_mesh = document.rail_mesh()?;
         let demilitarized = document.demilitarized_zone(&layers.regions)?;
         if !demilitarized.is_empty() {
             println!(
@@ -784,7 +836,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 map_buildings: &document.map_buildings,
                 map_building_field: &map_building_field,
                 rail_assets: &document.rail_assets,
-                rail_mesh: &document.rail_mesh,
+                rail_mesh: &rail_mesh,
                 aircraft: &document.aircraft,
                 aircraft_plan: &aircraft_plan,
                 trains: &document.trains,
@@ -1012,18 +1064,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("  no entity: {name} x{count}");
         }
         println!(
-            "Railways: {} authored segments, {} dropped for a missing anchor, {} curve samples, \
+            "Railways: {} recorded graph curves, {} dropped for a missing anchor, {} curve samples, \
              {} strip vertices; alpha {:.0} at height {:.3}; traced in {:.0} ms",
-            document.rail_mesh.segments,
-            document.rail_mesh.unanchored,
-            document.rail_mesh.samples,
-            document.rail_mesh.vertices.len(),
+            rail_mesh.segments,
+            rail_mesh.unanchored,
+            rail_mesh.samples,
+            rail_mesh.vertices.len(),
             map::railways::railway_alpha(camera.height),
             camera.height,
             document.rail_build.as_secs_f64() * 1000.0
         );
         println!(
-            "Unit models: {} stacks, {} on their tag's entity, {} on their graphical culture's, {} on the bare name, {} on the engine's placeholder box; {} took the sub-unit's sprite key, {} ride a transport, {} stand along a route, {} have no recorded template, {} have no anchor, {} are hidden from this perspective, {} carry attached entities and {} of those are an attachment rig with no geometry of their own; {} drawn at height {:.3} (cutoff {})",
+            "Unit models: {} stacks, {} on their tag's entity, {} on their graphical culture's, {} on the bare name, {} on the engine's placeholder box; {} took the sub-unit's sprite key, {} ride a transport, {} stand along a route, {} have no recorded template, {} have no anchor, {} are hidden from this perspective, {} carry attached entities and {} of those are an attachment rig with no geometry of their own; {} drawn at height {:.3} (land cutoff {}, ship cutoff {}); {} at-sea hulls prepared",
             unit_report.stacks,
             unit_report.level(map::unit_models::Level::Tag),
             unit_report.level(map::unit_models::Level::Culture),
@@ -1040,6 +1092,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             report.unit_models_drawn,
             camera.height,
             map::unit_models::UNIT_CUTOFF,
+            map::unit_models::SHIPS_DISTANCE_CUTOFF,
+            unit_report.ship_hulls,
         );
         println!(
             "Aircraft: {} models submitted in this camera",
@@ -1055,8 +1109,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("  {entity} x{count}");
         }
         println!(
-            "Railway bridges: {} placed where a curve crosses water, {} meshes",
-            document.bridges.placed,
+            "Railway bridges: {} placed on river adjacencies, {} meshes",
+            rail_mesh.bridges.len(),
             document.bridges.library.meshes.len()
         );
         // weather

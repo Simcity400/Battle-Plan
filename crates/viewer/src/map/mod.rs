@@ -11,10 +11,13 @@ pub mod camera;
 // counters
 pub mod counter_groups;
 pub mod counter_move;
+pub mod counter_portraits;
 pub mod counter_status;
 pub mod counters;
 // borders: the demilitarised-zone bucket bank
 pub mod demilitarized;
+pub mod entity_animation;
+pub mod entity_effects;
 pub mod frame;
 pub mod gradient;
 // names

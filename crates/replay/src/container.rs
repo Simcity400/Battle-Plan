@@ -1727,6 +1727,8 @@ mod tests {
             FormatVersion::LEGACY_14,
             FormatVersion::LEGACY_17,
             FormatVersion::LEGACY_18,
+            FormatVersion::LEGACY_19,
+            FormatVersion::LEGACY_20,
         ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             assert_eq!(old.format, format);
@@ -1787,6 +1789,8 @@ mod tests {
             FormatVersion::LEGACY_14,
             FormatVersion::LEGACY_17,
             FormatVersion::LEGACY_18,
+            FormatVersion::LEGACY_19,
+            FormatVersion::LEGACY_20,
         ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             let error = old
@@ -1813,6 +1817,8 @@ mod tests {
             FormatVersion::LEGACY_14,
             FormatVersion::LEGACY_17,
             FormatVersion::LEGACY_18,
+            FormatVersion::LEGACY_19,
+            FormatVersion::LEGACY_20,
         ] {
             let bytes = downgrade(&current, format);
             assert!(Replay::open(bytes.clone()).is_ok());
@@ -1847,7 +1853,7 @@ mod tests {
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19 and \
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21 and \
                      writes {FORMAT_VERSION}"
                 )
             );

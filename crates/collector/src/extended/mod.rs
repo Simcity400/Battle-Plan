@@ -28,7 +28,7 @@ const VARIANT_TABLES: [TableId; 4] = [
     TableId::VariantStats,
     TableId::VariantUpgrades,
 ];
-const DIVISION_SOURCE_TABLES: [TableId; 8] = [
+const DIVISION_SOURCE_TABLES: [TableId; 9] = [
     TableId::DivisionEquipment,
     TableId::ArmyUpgradeGroups,
     TableId::ArmyUpgradeRequests,
@@ -37,6 +37,7 @@ const DIVISION_SOURCE_TABLES: [TableId; 8] = [
     TableId::DivisionMovement,
     TableId::DivisionStatus,
     TableId::DivisionEta,
+    TableId::ArmyIconInputs,
 ];
 pub type ReadGroup = (&'static str, TableId, Vec<TableId>);
 
@@ -208,6 +209,10 @@ macro_rules! packs {
             })+
             groups.push(("divisions, equipment, upgrades, movement, counter status and ETA", TableId::Divisions,
                 std::iter::once(TableId::Divisions).chain(DIVISION_SOURCE_TABLES).collect()));
+            groups.push(("country census, appearance and supply trains", TableId::Countries,
+                vec![TableId::Countries, TableId::CountryAppearance, TableId::SupplyNodes, TableId::TrainInventory]));
+            groups.push(("ship census and model operands", TableId::Ships,
+                vec![TableId::Ships, TableId::ShipModels]));
             groups.push(("states and hourly state flags", TableId::States,
                 vec![TableId::States, TableId::StateFlags]));
             groups.push(("province identity and stored client visibility", TableId::Provinces,
@@ -220,6 +225,10 @@ macro_rules! packs {
 }
 packs!(
     air,
+    army_icon_inputs,
+    country_appearance,
+    ship_models,
+    supply_trains,
     characters,
     combat_progress,
     construction,
@@ -690,7 +699,7 @@ impl Captured {
         let naval = local(&naval_history::TABLES, needed);
         SourceChecks {
             land_combats: needed[TableId::LandCombatProgress.index()],
-            ships: false,
+            ships: needed[TableId::ShipModels.index()],
             air_wings: air[0] || air[2] || naval_history::needs_wing_sources(&naval),
             order_groups: naval_history::needs_order_sources(&naval)
                 || plans::TABLES.iter().any(|t| needed[t.index()]),
@@ -745,7 +754,7 @@ impl Captured {
             // Static allocation checks above remain conservative for fallback.
             checks: SourceChecks {
                 land_combats: needed[TableId::LandCombatProgress.index()],
-                ships: false,
+                ships: needed[TableId::ShipModels.index()],
                 air_wings: (!air_raw && (air_needed[0] || air_needed[2]))
                     || (!naval_raw && naval_history::needs_wing_sources(&naval)),
                 order_groups: (!naval_raw && naval_history::needs_order_sources(&naval))
@@ -816,6 +825,9 @@ impl Captured {
             weather,
             combat_progress,
             state_flags,
+            country_appearance,
+            ship_models,
+            supply_trains,
             plans
         );
         staggered!(
@@ -846,6 +858,14 @@ impl Captured {
         scatter(&naval_history::TABLES, pass, &mut matched);
         scatter(&naval_history::TABLES, cost, &mut ticks);
 
+        let (pass, cost) = self.army_icon_inputs.capture(
+            memory,
+            base,
+            needed[TableId::ArmyIconInputs.index()],
+            self.divisions.sources(),
+        );
+        scatter(&army_icon_inputs::TABLES, pass, &mut matched);
+        scatter(&army_icon_inputs::TABLES, cost, &mut ticks);
         let production_needed = local(&production::TABLES, needed);
         let (pass, cost) = self.production.acquire(
             memory,
@@ -986,14 +1006,31 @@ impl<M: Memory> MapSources for Sources<'_, M> {
         self.captured.combat_progress.finish(second, outcome);
         self.attribute_overhead(TableId::LandCombatProgress, begin, 0)
     }
-    fn begin_ships(&mut self, _: bool) -> u64 {
-        0
+    fn begin_ships(&mut self, second: bool) -> u64 {
+        if second && !self.checks.ships {
+            return 0;
+        }
+        let begin = qpc();
+        self.captured.ship_models.begin(second);
+        self.attribute_overhead(TableId::ShipModels, begin, 0)
     }
-    fn ship(&mut self, _: bool, _: usize, _: &cship::Row) -> u64 {
-        0
+    fn ship(&mut self, second: bool, pointer: usize, row: &cship::Row) -> u64 {
+        if second && !self.checks.ships {
+            return 0;
+        }
+        let begin = qpc();
+        self.captured
+            .ship_models
+            .visit(self.memory, self.base, pointer, row, second);
+        self.attribute_overhead(TableId::ShipModels, begin, 0)
     }
-    fn finish_ships(&mut self, _: bool, _: Outcome) -> u64 {
-        0
+    fn finish_ships(&mut self, second: bool, outcome: Outcome) -> u64 {
+        if second && !self.checks.ships {
+            return 0;
+        }
+        let begin = qpc();
+        self.captured.ship_models.finish(second, outcome);
+        self.attribute_overhead(TableId::ShipModels, begin, 0)
     }
     fn begin_air(&mut self, second: bool) -> u64 {
         if self.air_raw {
@@ -1577,7 +1614,7 @@ mod tests {
 
     #[test]
     fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership() {
-        assert_eq!(N, 139);
+        assert_eq!(N, 144);
         let actual: BTreeSet<_> = TABLES.into_iter().collect();
         assert_eq!(actual.len(), N);
         let expected: BTreeSet<_> = TableId::ALL
@@ -1605,6 +1642,18 @@ mod tests {
                         TableId::Fronts
                     ]
                 );
+            } else if anchor == TableId::Countries {
+                assert_eq!(
+                    members,
+                    vec![
+                        TableId::Countries,
+                        TableId::CountryAppearance,
+                        TableId::SupplyNodes,
+                        TableId::TrainInventory
+                    ]
+                );
+            } else if anchor == TableId::Ships {
+                assert_eq!(members, vec![TableId::Ships, TableId::ShipModels]);
             } else if anchor == TableId::States {
                 assert_eq!(members, vec![TableId::States, TableId::StateFlags]);
             } else if anchor == TableId::Provinces {
@@ -1996,6 +2045,7 @@ mod tests {
                 captured.sources(&memory, 0, &needed, true, true).checks(),
                 SourceChecks {
                     land_combats: needed[TableId::LandCombatProgress.index()],
+                    ships: needed[TableId::ShipModels.index()],
                     order_groups: plans::TABLES.iter().any(|t| needed[t.index()]),
                     ..SourceChecks::default()
                 }

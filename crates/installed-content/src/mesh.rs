@@ -478,7 +478,7 @@ impl Transform {
         out.is_finite().then_some(out)
     }
 
-    fn is_finite(&self) -> bool {
+    pub fn is_finite(&self) -> bool {
         self.basis
             .iter()
             .flatten()
@@ -721,6 +721,28 @@ impl Mesh {
         let index = self.joint(name)?.index;
         let locals = locals_by_name(animation, frame);
         self.world_pose(&locals, index, &mut self.memo(), 0)
+    }
+
+    /// World transforms of a sampled local pose, indexed by skeleton joint index.
+    pub fn sampled_pose(&self, animation: &Animation, locals: &[JointPose]) -> Vec<Transform> {
+        let locals: BTreeMap<&str, Transform> = animation
+            .joints
+            .iter()
+            .zip(locals)
+            .map(|(joint, local)| (joint.name.as_str(), local.transform()))
+            .collect();
+        let mut memo = self.memo();
+        (0..self
+            .skeleton
+            .iter()
+            .map(|j| j.index as usize + 1)
+            .max()
+            .unwrap_or(0))
+            .map(|slot| {
+                self.world_pose(&locals, slot as u32, &mut memo, 0)
+                    .unwrap_or(Transform::IDENTITY)
+            })
+            .collect()
     }
 
     /// The skinning matrix of every joint: its pose at this frame times its own
@@ -971,6 +993,13 @@ impl Animation {
     /// so does any channel whose stream is short of this frame, which is what
     /// makes a file with no `[samples]` block at all evaluate to its rest pose.
     pub fn frame(&self, frame: u32) -> Vec<Transform> {
+        self.frame_trs(frame)
+            .iter()
+            .map(JointPose::transform)
+            .collect()
+    }
+
+    fn frame_trs(&self, frame: u32) -> Vec<JointPose> {
         let [strides_t, strides_q, strides_s] = self.channel_joints();
         let frame = frame as usize;
         let (mut slot_t, mut slot_q, mut slot_s) = (0usize, 0usize, 0usize);
@@ -1000,15 +1029,99 @@ impl Animation {
                 }
                 slot_s += 1;
             }
-            out.push(Transform::from_trs(translation, rotation, scale));
+            out.push(JointPose {
+                translation,
+                rotation,
+                scale,
+            });
         }
         out
+    }
+
+    /// 142399290: loop period is the last sample's time, (samples - 1) / fps;
+    /// a single-sample clip lasts one frame interval.
+    pub fn duration(&self) -> f32 {
+        if self.fps > 0.0 {
+            self.samples.saturating_sub(1).max(1) as f32 / self.fps
+        } else {
+            0.0
+        }
+    }
+
+    pub fn sample(&self, seconds: f32, looping: bool) -> Vec<JointPose> {
+        let duration = self.duration();
+        let time = if looping && duration > 0.0 {
+            seconds.rem_euclid(duration)
+        } else {
+            seconds.clamp(0.0, duration)
+        };
+        let frame = time * self.fps;
+        let a = (frame.floor() as u32).min(self.samples.saturating_sub(1));
+        let b = (a + 1).min(self.samples.saturating_sub(1));
+        let weight = frame.fract();
+        self.frame_trs(a)
+            .into_iter()
+            .zip(self.frame_trs(b))
+            .map(|(a, b)| a.blend(b, weight))
+            .collect()
     }
 
     /// One joint's transform in its parent's space at one frame.
     pub fn local(&self, name: &str, frame: u32) -> Option<Transform> {
         let index = self.joints.iter().position(|joint| joint.name == name)?;
         self.frame(frame).into_iter().nth(index)
+    }
+}
+
+/// Local translation, quaternion and uniform scale. Blend before composing parents.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JointPose {
+    pub translation: [f32; 3],
+    pub rotation: [f32; 4],
+    pub scale: f32,
+}
+impl JointPose {
+    pub fn transform(&self) -> Transform {
+        Transform::from_trs(self.translation, self.rotation, self.scale)
+    }
+    pub fn blend(self, mut other: Self, t: f32) -> Self {
+        if t <= 0.0 {
+            return self;
+        }
+        if t >= 1.0 {
+            return other;
+        }
+        let mut dot: f32 = self
+            .rotation
+            .iter()
+            .zip(other.rotation)
+            .map(|(a, b)| a * b)
+            .sum();
+        if dot < 0.0 {
+            other.rotation.iter_mut().for_each(|q| *q = -*q);
+            dot = -dot;
+        }
+        let (a, b) = if dot > 0.9995 {
+            (1.0 - t, t)
+        } else {
+            let theta = dot.clamp(-1.0, 1.0).acos();
+            (
+                ((1.0 - t) * theta).sin() / theta.sin(),
+                (t * theta).sin() / theta.sin(),
+            )
+        };
+        let mut rotation = std::array::from_fn(|i| a * self.rotation[i] + b * other.rotation[i]);
+        let norm = rotation.iter().map(|q| q * q).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            rotation.iter_mut().for_each(|q| *q /= norm);
+        }
+        Self {
+            translation: std::array::from_fn(|i| {
+                self.translation[i] + (other.translation[i] - self.translation[i]) * t
+            }),
+            rotation,
+            scale: self.scale + (other.scale - self.scale) * t,
+        }
     }
 }
 
@@ -1350,7 +1463,41 @@ pub struct EntityDefinition {
     /// `state = { name = … animation = … }` pairs, in file order. A state name
     /// occurs several times when the engine picks between weighted variants;
     /// the first is taken.
-    pub states: Vec<(String, String)>,
+    pub states: Vec<EntityState>,
+    pub get_state_from_parent: Option<bool>,
+    pub locators: Vec<(String, Transform)>,
+}
+
+/// Authored state variants retain their order and events, including states with no clip.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EntityState {
+    pub name: String,
+    pub animation: String,
+    pub looping: bool,
+    pub next_state: Option<String>,
+    pub chance: f32,
+    pub blend: f32,
+    pub speed: f32,
+    pub start: f32,
+    pub random_start: f32,
+    pub propagate: Vec<(String, String)>,
+    pub events: Vec<EntityEvent>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EntityEvent {
+    pub time: f32,
+    pub node: String,
+    pub light: Option<String>,
+    pub particle: Option<String>,
+    pub keep_particle: bool,
+    pub trigger_once: bool,
+}
+
+fn number(items: &[parser::Item], key: &[u8], fallback: f32) -> f32 {
+    text(items, key)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(fallback)
 }
 
 /// One `animation = { name = … file = … }` block of a `gfx/models/**/*.asset`.
@@ -1398,7 +1545,9 @@ pub struct InheritedEntity<'a> {
     /// each `name` winning, in the order the nearest link declares them.
     pub attachments: Vec<&'a Attachment>,
     /// State name to animation id, the nearest declaration winning.
-    pub states: BTreeMap<&'a str, &'a str>,
+    pub states: BTreeMap<&'a str, Vec<&'a EntityState>>,
+    pub get_state_from_parent: Option<bool>,
+    pub locators: BTreeMap<&'a str, Transform>,
 }
 
 impl Descriptors {
@@ -1437,10 +1586,16 @@ impl Descriptors {
                     out.attachments.push(attachment);
                 }
             }
-            for (state, animation) in &current.states {
-                out.states
-                    .entry(state.as_str())
-                    .or_insert(animation.as_str());
+            out.get_state_from_parent = out.get_state_from_parent.or(current.get_state_from_parent);
+            for (name, transform) in &current.locators {
+                out.locators.entry(name).or_insert(*transform);
+            }
+            let mut local = BTreeMap::<&str, Vec<&EntityState>>::new();
+            for state in &current.states {
+                local.entry(&state.name).or_default().push(state);
+            }
+            for (name, variants) in local {
+                out.states.entry(name).or_insert(variants);
             }
             let Some(parent) = current.clone.as_deref() else {
                 break;
@@ -1477,7 +1632,9 @@ impl Descriptors {
         let animation = inherited
             .states
             .get(state)
-            .and_then(|id| {
+            .and_then(|variants| variants.first())
+            .and_then(|state| {
+                let id = &state.animation;
                 definition
                     .animations
                     .iter()
@@ -1692,10 +1849,42 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         .filter(|item| item.key.as_deref() == Some(b"state"))
         .filter_map(|item| {
             let block = item.value.items()?;
-            Some((
-                unquote(text(block, b"name")?),
-                unquote(text(block, b"animation")?),
-            ))
+            Some(EntityState {
+                name: unquote(text(block, b"name")?),
+                animation: text(block, b"animation").map(unquote).unwrap_or_default(),
+                looping: text(block, b"looping") != Some("no"),
+                next_state: text(block, b"next_state").map(unquote),
+                chance: number(block, b"chance", 1.0),
+                blend: number(block, b"animation_blend_time", 0.0),
+                speed: number(block, b"animation_speed", 1.0),
+                start: number(block, b"animation_start_time", 0.0),
+                random_start: number(block, b"animation_random_start_time", 0.0),
+                propagate: block
+                    .iter()
+                    .filter(|i| i.key.as_deref() == Some(b"propagate_state"))
+                    .filter_map(|i| i.value.items())
+                    .flatten()
+                    .filter_map(|i| {
+                        Some((
+                            String::from_utf8_lossy(i.key.as_deref()?).into_owned(),
+                            unquote(i.value.scalar_str()?),
+                        ))
+                    })
+                    .collect(),
+                events: block
+                    .iter()
+                    .filter(|i| i.key.as_deref() == Some(b"event"))
+                    .filter_map(|i| i.value.items())
+                    .map(|event| EntityEvent {
+                        time: number(event, b"time", 0.0),
+                        node: text(event, b"node").map(unquote).unwrap_or_default(),
+                        light: text(event, b"light").map(unquote),
+                        particle: text(event, b"particle").map(unquote),
+                        keep_particle: text(event, b"keep_particle") == Some("yes"),
+                        trigger_once: text(event, b"trigger_once") == Some("yes"),
+                    })
+                    .collect(),
+            })
         })
         .collect();
     Some(EntityDefinition {
@@ -1705,6 +1894,32 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         scale: text(items, b"scale").and_then(|value| value.trim().parse().ok()),
         attachments,
         default_state: text(items, b"default_state").map(unquote),
+        get_state_from_parent: text(items, b"get_state_from_parent").map(|v| v == "yes"),
+        locators: items
+            .iter()
+            .filter(|i| i.key.as_deref() == Some(b"locator"))
+            .filter_map(|i| {
+                let fields = i.value.items()?;
+                let vector = |key: &[u8]| {
+                    let values = fields
+                        .iter()
+                        .find(|i| i.key.as_deref() == Some(key))
+                        .and_then(|i| i.value.items())
+                        .unwrap_or(&[])
+                        .iter()
+                        .filter_map(|i| i.value.scalar_str()?.parse::<f32>().ok())
+                        .collect::<Vec<_>>();
+                    std::array::from_fn::<_, 3, _>(|i| values.get(i).copied().unwrap_or(0.0))
+                };
+                let r = vector(b"rotation").map(|v| v.to_radians() * 0.5);
+                let x = Transform::from_trs([0.0; 3], [r[0].sin(), 0.0, 0.0, r[0].cos()], 1.0);
+                let y = Transform::from_trs([0.0; 3], [0.0, r[1].sin(), 0.0, r[1].cos()], 1.0);
+                let z = Transform::from_trs([0.0; 3], [0.0, 0.0, r[2].sin(), r[2].cos()], 1.0);
+                let mut transform = y.compose(&x).compose(&z);
+                transform.translation = vector(b"position");
+                Some((unquote(text(fields, b"name")?), transform))
+            })
+            .collect(),
         states,
     })
 }
@@ -1723,6 +1938,85 @@ fn unquote(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampled_pose_uses_first_joint_definition_across_lods() {
+        let joint = Joint {
+            name: "root".into(),
+            index: 0,
+            parent: None,
+            inverse_bind: Some(Transform::IDENTITY),
+        };
+        let mesh = Mesh {
+            skeleton: vec![
+                joint.clone(),
+                Joint {
+                    inverse_bind: Some(Transform {
+                        basis: [[0.0; 3]; 3],
+                        translation: [0.0; 3],
+                    }),
+                    ..joint
+                },
+            ],
+            ..Mesh::default()
+        };
+        let animation = Animation {
+            fps: 2.0,
+            samples: 3,
+            joints: vec![AnimationJoint {
+                name: "root".into(),
+                channels: "tq".into(),
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: 1.0,
+                ..AnimationJoint::default()
+            }],
+            translations: vec![0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            rotations: vec![0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0],
+            ..Animation::default()
+        };
+        let sampled = mesh.sampled_pose(&animation, &animation.sample(0.0, true));
+        assert_eq!(sampled.len(), 1);
+        assert_eq!(sampled, mesh.palette(&animation, 0));
+        let middle = mesh.sampled_pose(&animation, &animation.sample(0.25, true))[0];
+        assert!((middle.translation[0] - 1.0).abs() < 1e-6);
+        assert!((middle.determinant() - 1.0).abs() < 1e-5);
+        assert_eq!(
+            animation.sample(animation.duration(), true),
+            animation.sample(0.0, true)
+        );
+        assert_eq!(
+            animation.sample(100.0, false),
+            animation.sample(animation.duration(), false)
+        );
+    }
+
+    #[test]
+    fn entity_states_keep_variants_empty_states_and_effect_events() {
+        let descriptors=parse_descriptors(br#"
+          entity = { name = parent
+            state = { name = move animation = walk chance = 2 animation_blend_time = 0.4 looping = no next_state = idle
+              event = { time = 0.2 node = muzzle light = flash particle = fire keep_particle = yes trigger_once = yes }
+              propagate_state = { weapon = fire }
+            }
+            state = { name = move animation = march chance = 1 }
+            state = { name = idle }
+          }
+          entity = { name = child clone = parent state = { name = idle animation = rest } }
+        "#,"gfx/entities/test.asset").unwrap();
+        let entity = descriptors.inherit("child").unwrap();
+        assert_eq!(entity.states["move"].len(), 2);
+        assert_eq!(entity.states["idle"][0].animation, "rest");
+        let state = entity.states["move"][0];
+        assert_eq!(state.chance, 2.0);
+        assert_eq!(state.blend, 0.4);
+        assert!(!state.looping);
+        assert_eq!(state.next_state.as_deref(), Some("idle"));
+        assert_eq!(state.propagate, vec![("weapon".into(), "fire".into())]);
+        let event = &state.events[0];
+        assert_eq!(event.time, 0.2);
+        assert_eq!(event.light.as_deref(), Some("flash"));
+        assert!(event.keep_particle && event.trigger_once);
+    }
 
     /// Builds a container by hand, so the tests do not depend on installed content.
     #[derive(Default)]
@@ -2157,7 +2451,7 @@ mod tests {
                 ("artillery", "generic_gun_entity"),
             ]
         );
-        assert_eq!(german.states.get("idle"), Some(&"idle"));
+        assert_eq!(german.states["idle"][0].animation, "idle");
         // The default state picks the animation id, the mesh the animation
         // name and the descriptor the file.
         let resolved = descriptors.resolve_entity("german").unwrap();

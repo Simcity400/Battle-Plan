@@ -656,17 +656,8 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> TerrainVertex {
 
 @fragment
 fn terrain_main(input: TerrainVertex) -> @location(0) vec4<f32> {
-    // `pdxmap.shader:232` carries this clip commented out, yet the sea bed the
-    // `underwater` effect draws would never be visible without it: the water
-    // plane is fully transparent wherever the heightmap byte is above 95
-    // (`pdxwater.shader:281-282`), so an unclipped lit terrain shows through as
-    // land-coloured sea. The engine classifies its LOD quads on the CPU
-    // instead, which the shader files do not show and which R1 section 5.3
-    // leaves UNVERIFIED. Splitting the two passes exactly at WATER_HEIGHT is
-    // the only division consistent with that shore alpha.
-    if input.prepos.y < WATER_HEIGHT {
-        discard;
-    }
+    // Native terrain also draws below water (frame33840 pixel histories).
+    // The sea-bed material belongs to the separate WaterRefraction target.
     let offsets = vec2<f32>(-0.5 / MAP_SIZE_X, -0.5 / MAP_SIZE_Y);
     let ids = textureSample(terrain_id_map, point_clamp, wrap_u(input.uv + offsets));
     let index = calculate_map_tex_index(ids);
@@ -835,51 +826,13 @@ fn terrain_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     return vec4<f32>(out, saturate(city_lights_mask * night_factor * CITY_LIGHTS_BLOOM_FACTOR));
 }
 
-// `PixelShaderUnderwater` (`pdxmap.shader:407-455`), checked against the source
-// line by line and measured term by term on four frames; `water.wgsl` carries
-// the numbers and the scripts, and this is what the check settled.
-//
-// The `underwater` effect (`pdxmap.shader:495-499`) names no defines, where
-// `terrain` names `PDX_IMPROVED_BLINN_PHONG` and `terrain_low_gfx` names
-// `LOW_END_GFX`; the engine compiles it by that name and no other
-// (`FUN_141261100` calls the effect loader with `"gfx/FX/pdxmap.lua"` and the
-// literal `"underwater"`, exactly as it does for `terrain`, `terrain_low_gfx`
-// and `terrainunlit`, and the only other arguments are a vertex declaration and
-// an out-list). So this pass takes the plain Phong branch of `CalculateSunLight`
-// and `_Glossiness` is the specular exponent directly, which is why
-// `MAP_SPECULAR_WIDTH` of 15 is passed to `calculate_sun_light_phong` and not
-// through `GetNonLinearGlossiness`.
-//
-// Two facts the measurements added, both about the sea floor:
-//
-// * `map/heightmap.bmp` is the byte 89 over every ocean — 7.47 M of its 11.5 M
-//   pixels — so `prepos.y` here is 8.9 and `vWaterAlpha` is a constant 0.4675
-//   over open water. The `vMin` 5.3 and `vMax` 13.0 the shader calls a "depth
-//   fog" never vary: `vMax` is above `WATER_HEIGHT` and the floor never drops
-//   below 8.9. Every open-sea refraction the water plane samples is therefore
-//   53 % water tint and 47 % lit sea bed, not the tint alone.
-// * The sea bed is lit at about 0.60 of its albedo by day where the water
-//   surface beside it is lit at 1.02, and that is the engine's own doing rather
-//   than a porting slip: this pass calls `CalculateSunDirection`, which uses the
-//   virtual sun's real `y`, while `pdxwater.shader` calls
-//   `CalculateSunDirectionWater`, which swaps in `*_HEIGHT_WATER` through the
-//   `.xwz` swizzle and puts the source nearly overhead.
-//
-// The game's own `debug_water` toggle takes this draw away together with the
-// water plane, and what it leaves is lit terrain: `pdxmap.shader:232`'s
-// commented-out clip really is off and the engine draws `PixelShaderTerrain`
-// below water too, under this pass. `terrain_main` above discards it instead,
-// which is invisible while the underwater draw covers it and is what
-// `map/water.wgsl` records against the `pairE` frames.
-//
-// The two textures were cross-checked against CPU decodes at the probed `uv2`:
-// the tint is `colormap_water_0.dds` (matching to within the 8-bit probe's own
-// step, which also rules out a flipped `v`) and the diffuse is
-// `underwater_terrain_0.dds`, whose whole-file mean 0.1781 0.2171 0.2434 is
-// what the shader reads because the file's spatial standard deviation is only
-// 0.013. Which sampler slot the engine binds each of them to is inferred from
-// the asset set rather than read from the decompile; `water.wgsl` records that
-// as the one UNVERIFIED item here.
+// `PixelShaderUnderwater` (pdxmap.shader:407-455), with its plain Phong
+// effect. This writes only the separate eight-bit WaterRefraction target.
+// Frame33840 draws 61..145 bind underwater_terrain_0 and colormap_water_0
+// as sRGB, and blend half the water tint with the lit floor by
+// saturate((world_y - 5.3) / 7.7). The open floor is about y=8.9.
+// The native terrain scene is a later draw, including below the waterline.
+// RENDERING.md's water section records the sampled inputs and pixel histories.
 @fragment
 fn underwater_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     if WATER_HEIGHT - input.prepos.y + TERRAIN_WATER_CLIP_HEIGHT < 0.0 {

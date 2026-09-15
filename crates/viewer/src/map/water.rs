@@ -9,6 +9,10 @@ use super::{
     textures::{Bound, Samplers},
 };
 
+/// The separate sea-bed target bound at water t5 in frame33840, event 10338.
+/// It stores linear colour in eight-bit UNORM, without multisampling.
+pub const REFRACTION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+
 /// Water-specific textures. Tiled point-light maps are shared through group 0.
 /// `GradientBorderChannel3` belongs to the unrecorded dominance effect.
 pub struct WaterInputs<'a> {
@@ -87,10 +91,9 @@ impl WaterPass {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
-                // The plane is blended, so it tests against the terrain but
-                // leaves the depth buffer to the passes that follow it.
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Less),
+                // Native water follows trees and writes depth (frame32511 event10001).
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),

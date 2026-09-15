@@ -31,7 +31,7 @@ pub struct CityBuilding {
 pub struct CityGroup {
     /// The `map/cities.bmp` palette index this style claims.
     pub color_index: u8,
-    /// Fraction of sampled pixels that spawn a building.
+    /// Signed displacement strength toward the ring-weighted neighbouring houses.
     pub density: f64,
     /// The `building` blocks, sorted by ascending `distance`.
     pub buildings: Vec<CityBuilding>,
@@ -43,8 +43,6 @@ impl CityGroup {
     /// The file's own comment says the blocks are "sorted by distance
     /// (growing)", so a pixel takes the last block whose `distance` it reaches;
     /// beyond the last one it stays in the last block, which is what puts the
-    /// tallest mesh in the core of a blob. UNVERIFIED (R3 section 4.1): the
-    /// engine's own selection site was not read, only the file's comment.
     pub fn building_for(&self, distance: u32) -> Option<&CityBuilding> {
         let mut chosen = None;
         for building in &self.buildings {
@@ -52,7 +50,7 @@ impl CityGroup {
                 chosen = Some(building);
             }
         }
-        chosen.or(self.buildings.first())
+        chosen
     }
 }
 
@@ -193,7 +191,7 @@ city_group = {
     fn the_ring_is_the_last_block_the_distance_reaches() {
         let cities = parse(SAMPLE).unwrap();
         let group = cities.group_for(15).unwrap();
-        assert_eq!(group.building_for(0).unwrap().distance, 1);
+        assert!(group.building_for(0).is_none());
         assert_eq!(group.building_for(1).unwrap().distance, 1);
         assert_eq!(group.building_for(2).unwrap().distance, 2);
         assert_eq!(group.building_for(9).unwrap().distance, 2);

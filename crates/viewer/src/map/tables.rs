@@ -127,22 +127,32 @@ impl Limitations {
     }
 
     pub fn note_trains(&mut self, frame: &DecodedFrame) {
-        self.note::<replay::rows::tables::RailEdges>(frame, "train routes unavailable");
+        self.note::<replay::rows::tables::ProvinceSupply>(
+            frame,
+            "railway supply-source spurs and port anchors unavailable",
+        );
+        self.note::<replay::rows::tables::RailEdges>(
+            frame,
+            "railway strips, bridges and train routes unavailable",
+        );
         self.note::<replay::rows::tables::RailCooldowns>(frame, "train routes unavailable");
-        self.note::<replay::rows::tables::ProvinceSupply>(frame, "train hub locations unavailable");
-        self.note_field("Supply trains", "UNVERIFIED reconstruction: no SupplyNodes table exists. Supply companion nodes (+0xb8, stride 0xe8: kind +8, flag +0xc, available +0x38, consumed +0x40), selected parent routes, related-controller access bitmap and CCountrySupplySystem +0x120 allocated train inventory are missing. Routes use recorded RailEdges/RailCooldowns and ProvinceSupply hubs with shortest paths and equal hub weights; equipment_1 substitutes for the missing equipment mix, with no inventory cap. The engine's camera gate, speed, country wagon lists and scales are reproduced. Phase uses seed 0x54524149 XOR the ordered route provinces, a global 9200..12000 ms departure schedule and the frame animation clock (dump=0). Exact count/position modulo phase remains unverified until those simulation inputs are recorded.");
+        self.note::<replay::rows::tables::SupplyNodes>(frame, "supply trains are hidden: node weights and selected parent routes are unavailable; no shortest-path substitute is used");
+        self.note::<replay::rows::tables::TrainInventory>(frame, "supply trains are hidden: allocated variants, fleet cap and controller access are unavailable");
+        self.note::<replay::rows::tables::VariantDefinitions>(
+            frame,
+            "supply trains are hidden: allocated variant model keys are unavailable",
+        );
+        self.note_field("Supply train phase", "UNVERIFIED: the scheduler seed/counter, remaining interval and existing train fleet are unrecorded. Presentation uses seed 0x54524149 XOR ordered route provinces, a global 9200..12000 ms schedule and animation time (dump=0). Routes/weights/access and signed ordered inventory are recorded in format 21. Rail spline anchors, continent wagon fallback, wheel animation and exhaust remain unverified; captured spline and consecutive train instances would settle them. A null or missing variant join suppresses that consist; the engine's unrecorded first-owned-train fallback is not invented.");
     }
 
     /// Entity light state is a field omission, even when every table is whole.
     pub fn note_point_lights(&mut self) {
         self.lines.push(
-            "Point lights: transient entity emissions are absent. LandCombats and NavalCombats \
-         do not record the entity event clock, effect lifetime, flicker phase, random seed, \
-         selected model or animated muzzle/attachment transform. Bombing and nuclear events \
-         are not reconstructed from hourly totals. Citylight's enable gate and entity-light \
-         visibility are UNVERIFIED; an associated entity/light timeline would settle them. \
-         The two retained RenderDoc captures select only zero-colour lights; their nonzero \
-         data rows are stale and unreferenced. Terrain city emissive masks remain independent."
+            "Entity animation: window clocks sample authored states, blends, attachments and muzzle/cigarette light and particle events. \
+         DivisionMovement and LandCombats select movement and combat states; missing movement rows cannot identify marching units. \
+         Seed is 0x414e494d XOR the unit handle. UNVERIFIED: original state-entry times, shared RNG sequence, initial combat phase, \
+         entity visibility and particle dynamics need associated entity/event timelines. Dump time zero retains the default first pose and no events. \
+         Bombing/nuclear events and citylight's enable gate remain unrecorded."
                 .into(),
         );
     }
@@ -194,7 +204,7 @@ impl Limitations {
         if drawn == 0 {
             return;
         }
-        self.note_field("ArmyOrderPlans (geometry)", "unbound snapped province-pair caches and graph traversal priority are not recorded; unbound lines use province-centroid/crossing curves. Child-count front offsets and overlap ordering outside the captured single-army plan remain unverified");
+        self.note_field("ArmyOrderPlans (geometry)", "Offensive borders use reconstructed province pairs and integer gradient-border chains; move endpoints snap to the nearest stored offensive control. UNVERIFIED: format 19 lacks ordered predecessor/successor IDs, so only unique reciprocal same-group target/assignment matches are linked. Record COrderInstance +1F8/+204 ordered child IDs (and predecessor/virtual order) to settle this. Native neighbour tie order, reconstructed adjacency crossings, single-province lines, concave offset probes and +38C child-count/graph overlap order remain unverified. Unlinked and fallback lines use their own centroid/crossing path; +88 sorted_pairs is not read by the unbound presentation builder");
         self.note_field("ArmyOrderPlans (presentation)", "deselected, unexecuted presentation; order text, execution animation, selection and terrain-detail normal distortion are not drawn");
     }
 
@@ -332,8 +342,11 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     out.note::<tables::States>(
         frame,
         "the demilitarised-zone border is not drawn at all: the recorded flags are joined to this \
-         table's state ids, and a state it is silent about cannot be shown to exist",
+         table's state ids, and a state it is silent about cannot be shown to exist; a capital \
+         also carries no star without its state's recorded controller",
     );
+    out.note::<tables::CountryAppearance>(frame, "country colours use authored RGB with HSV modifiers and recorded autonomy inheritance; runtime/cosmetic colours are unavailable for this hour");
+    out.note::<tables::ArmyIconInputs>(frame, "missing division rows use the standard template and recover only HQ-provider separation from OrdersGroups; alternate template grouping is unavailable");
     // names
     out.note::<tables::ProvinceNames>(
         frame,
@@ -379,7 +392,7 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     );
     out.note::<tables::Autonomy>(
         frame,
-        "current subject colour switches among the missing rows are unavailable; those subjects keep their own authored colour",
+        "current subject colour switches among the missing rows are unavailable; those subjects keep their own colour",
     );
     out.note::<tables::UnitIntel>(
         frame,
@@ -399,6 +412,21 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
          this perspective has not uncovered is drawn as clear as the land it holds, and none of it \
          is inferred from unit positions, radar or supply",
     );
+    if rows::<tables::Divisions>(frame).is_ok_and(|rows| !rows.rows().is_empty()) {
+        out.note_field("Counter presentation", "UNVERIFIED: CProvince occupant array +0xE0/count+0xEC order and map-icon insertion history are unrecorded; cold province/bucket and handle order can differ from native first-fit item order. Absent ArmyIconInputs rows fall back to the true template. Client selection and counter grouping settings are not recorded.");
+    }
+    out.note::<tables::OrdersGroups>(frame, "HQ provider plates and portraits require hq_provider and leader; missing groups have no HQ decoration");
+    out.note::<tables::UnitLeaders>(
+        frame,
+        "HQ portraits require the orders-group leader's character identity",
+    );
+    out.note::<tables::Characters>(
+        frame,
+        "HQ portraits require the leader character's authored token",
+    );
+    if rows::<tables::TaskForces>(frame).is_ok_and(|rows| !rows.rows().is_empty()) {
+        out.note_field("Naval counter presentation", "Missing native inputs: CShip+0x628 archetype flags, +0x730 carrier air base, +0x308 maximum strength and derived maximum organisation; ShipModels in format21 supplies sprite+0xE8 and variant+0x40, but the mixed-ship icon selector still lacks carrier state and stable tie order; CTaskForce+0x390/+0x391 mission state, +0x3C0 invasion support and +0x4B0 linked reference. Province naval occupant roster +0xF8/count+0x104 order and combat +0x20C are unrecorded. CFleet+0x120..0x12C marker RGBA and CCountry+0x250 naval-pride ship are missing. Counts cover recorded ships, capital/type/status cells remain incomplete, and bars fall back to full.");
+    }
     // counters
     out.note::<tables::Divisions>(
         frame,
@@ -407,7 +435,7 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     );
     out.note::<tables::DivisionTemplates>(
         frame,
-            "a land counter whose division's template is among the missing rows draws no unit-type icon, and its dark overlay panel is left bare; question-mark counters with missing template rows retain separate source plates because their grouping keys are unknown; at close zoom its division model falls back to rifle infantry, because with no template there is no sub-unit key for the engine's entity ladder to start from",
+            "a land counter whose division's template is among the missing rows draws no unit-type icon, and its dark overlay panel is left bare; different missing templates remain separate because their grouping keys are unknown; at close zoom its division model falls back to rifle infantry, because with no template there is no sub-unit key for the engine's entity ladder to start from",
     );
     out.note::<tables::DivisionStatus>(
         frame,
@@ -430,16 +458,9 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
         frame,
         "a naval counter's ship count covers only the recorded ships, where the game counts every          ship in the task force's own array",
     );
-    if rows::<tables::Ships>(frame).is_ok_and(|ships| !ships.rows().is_empty()) {
-        out.note_field(
-            "Ships (at-sea models)",
-            "at-sea hull models are not drawn: the ship-to-equipment-variant link, hull sprite, model \
-         number and formation-selection flags are not recorded. Ships.category is a coarse class \
-         enum and class_id names a class-history entry, so neither supplies the engine's entity \
-         selector and no substitute hull is drawn. Stationary port formations are hidden by the \
-         engine itself; their absence is not this recording limitation. The port's static \
-         building mesh and its counter are drawn by their existing passes",
-        );
+    out.note::<tables::ShipModels>(frame, "at-sea hulls are hidden unless ShipModels, Ships and TaskForces are complete; stationary port formations stay hidden by the engine's own rule");
+    if rows::<tables::ShipModels>(frame).is_ok_and(|r| !r.rows().is_empty()) {
+        out.note_field("ShipModels formation", "UNVERIFIED: capital selection needs the first ordered task-force member and ship flag bits 6/22, absent from format 21; the capital slot is omitted. Support slots use recorded bit 8 then bits 7/39, with unique handles. Native roster order, persistent member/node RNG, formation heading/motion and earlier explicit graphical variant selection are unrecorded; a formation draw capture and those operands would settle them. Support node choice uses a deterministic handle phase and the authored default animation pose, not a fitted transform.");
     }
     // orders: the recorded player's battle plan
     out.note::<tables::ArmyOrderPlans>(
@@ -483,6 +504,32 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
         frame,
         "a naval base among the missing rows carries no base icon",
     );
+    let mut damaged = 0;
+    let mut uncertain = 0;
+    if let (Ok(states), Ok(provinces)) = (
+        rows::<tables::StateBuildings>(frame),
+        rows::<tables::ProvinceBuildings>(frame),
+    ) {
+        for row in states
+            .rows()
+            .iter()
+            .chain(provinces.rows())
+            .filter(|row| row.level > 0)
+        {
+            let (_, damage, unknown) = super::map_buildings::health_state(
+                row.level,
+                row.healthy_level,
+                row.partial_health,
+            );
+            damaged += usize::from(damage);
+            uncertain += usize::from(unknown);
+        }
+    }
+    if damaged > 0 || uncertain > 0 {
+        out.note_field("Building damage", &format!(
+            "{damaged} recorded building rows have average health below 80%; their damaged-state smoke/fire is not drawn. UNVERIFIED: {uncertain} rows lie in the 60..80% destroyed-mesh recovery band and use a newly created entity's healthy state; prior renderer state would settle them."
+        ));
+    }
     out.note::<tables::AirBases>(
         frame,
         "an air base among the missing rows carries no wing count",
@@ -507,7 +554,7 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
                 .any(|v| *v != 0)
         })
     }) {
-        out.note_field("weather particle presentation", "WeatherRegions selects the game's authored emitters and textures at map/weatherpositions.txt anchors. Particle states, seed and elapsed time are not recorded: this presentation uses a deterministic seed per region and hour and the window animation clock (dump time 0), initialized with stationary birth phases. UNVERIFIED: variation distribution, curve interpolation and turbulence dynamics require particle-update decompilation or consecutive captured instance buffers. Weather assets are outside hash-verified content coverage.");
+        out.note_field("weather particle presentation", "WeatherRegions selects authored emitters and textures at map/weatherpositions.txt anchors. Native emission debt, uniform variation and counter hash, Catmull-Rom curve tables, changing gradient turbulence and Euler updates follow particle-update decompilation (weather_effects.rs). UNVERIFIED presentation history: particle states, native seed and frame deltas are not recorded. The retained region/hour/anchor seed warms four maximum lifetimes at 60 Hz, then follows the window clock (dump time 0); exact matching needs recorded seeds/frame deltas or consecutive complete state buffers. Weather assets are outside hash-verified content coverage.");
     }
     out.note::<tables::WeatherLimits>(
         frame,

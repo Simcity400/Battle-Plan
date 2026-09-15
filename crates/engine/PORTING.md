@@ -140,3 +140,35 @@ Excluded subpaths without a registry row: runtime text inputs, and the technolog
 DivisionEta154 is an hourly companion keyed by the full division:u64 handle. It records next/destination/path_total:u32 and next_remaining/destination_remaining:i64 fixed5. CUnit BECF90/BEDD50 supply the route/current-progress algorithm; CArmy C72EE0/C6FA00/C70670, CRailwayManager1954F90 and CNavalUnitTransfer1955DF0 supply passive effective-speed derivations. No native calls or additional hook are installed. Full routes over4096 entries are explicitly unavailable; the256-entry DivisionMovement prefix is not substituted for full coverage. Owned operands feed duration arithmetic off-thread.
 
 Native UI at60831010 matches ordinary SOV54 next28h/full138h and naval ENG871 full188h. Strategic-redeployment FRA5 at60831510 matches next2h and army-list full71h. The map counter's146h is proved to be a different pathfinding-cache result (BED280/BED3A0, army+300, duration14516912), not current-route BECF90. No UI-dependent cached estimate is substituted. Save comparisons cover full census and route metadata only, because durations are not serialized. Artifacts and current cost/lifecycle verdict: PLAN section1 and `captures\m21_takeover_20260913\eta_native_reference.md`. Polling and viewer source remain unchanged; a third callback-bounded acquisition worker and per-pass modifier snapshots await live acceptance.
+
+
+## Supply train inputs, format21 (code-only, 2026-09-15)
+
+SupplyNodes162 records each canonical country's companion node index, province,
+kind, flag, fixed5 available/consumed, province-keyed parent and immediate selected
+route. TrainInventory163 stores ordered full variant references/signed i32 counts,
+node census size and shared canonical-slot-indexed controller-access bytes per
+country. Both are hourly. Nodes join Countries/Provinces, parents join the same
+country's node provinces, and allocations join VariantDefinitions (existing
+four-hour definition/name refresh). The native missing-route branch separately
+records whether its two controller-companion subtype-zero node lookups emit a
+synthetic naval break. Consumers retain native path duplicates/order and the
+100-parent native traversal limit before reversing land portions.
+
+Verified consumers: 141598790, 1411FC780, 141213EA0, 141213CA0, 140EB3740,
+141213980, 1412040E0, 141598230, 141C4EB80, 141C4F3C0 and 1406E1B30.
+The access check is in route validity, not the departure draw; inventory contains
+variant references, not equipment-type tokens. Serializer14121C6D0 writes truck
+allocation+148 and settings/disrupted/foreign-homebase containers, omitting the
+allocated trains+120 and companion simulation nodes. The oracle checks saved
+country/province/variant joins and prints these coverage limits; it does not
+substitute truck counts, stockpiles or hub settings for the requested operands.
+
+Engine layouts: supply_node.rs, supply_parent_map.rs, supply_route.rs,
+supply_train_entry.rs, supply_companion.rs and ccountry_supply_system.rs.
+Preallocated independent rows/arenas, 200-success table windows, per-table read
+and spool costs, explicit work bounds and whole-row truncation are integrated.
+No native calls or live pointers cross to conversion. No game or lock access;
+live consistency, fresh-save oracle, actual cost and throughput remain unmeasured.
+Contract, canonical evidence, bounds, gate outcomes and later-session procedure:
+`captures\m21_takeover_20260913\recorder3_handoff.md`.

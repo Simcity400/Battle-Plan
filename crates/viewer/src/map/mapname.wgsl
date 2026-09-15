@@ -3,6 +3,13 @@
 // The engine's `Transp_OffsetX` is `ConstantBuffer(1, 32)`, rebound once per
 // name; this pass carries the same two floats per vertex so the whole layer is
 // one draw (see `name_pass.rs`). Everything else is the shader as written.
+//
+// Verified against frame33840 PS 135334: compiling the retained mapname
+// ps_5_0 cache with D3DCOMPILE_OPTIMIZATION_LEVEL3 reproduces all 3408 bytes
+// (DXBC checksum DFA8F0D38DD19B71052792C25B3753AA). Its input signature has
+// position/UV only: there is no country colour, font-definition colour, SDF
+// threshold, shadow offset or procedural outline. See RENDERING.md's name
+// material audit for the mip comparison and individual pixel histories.
 
 // `DiffuseTexture`: the `hoi_mapfont4` atlas page. `MipMapLodBias = -0.4`,
 // applied with `textureSampleBias` because wgpu's sampler has no bias field.
@@ -50,8 +57,12 @@ fn vertex_main(
 fn fragment_main(in: NameOut) -> @location(0) vec4<f32> {
     var sample = textureSampleBias(name_page, name_sampler, in.uv, MAPNAME_LOD_BIAS);
     sample.a = sample.a * in.alpha;
-    // The atlas holds a black body and a white halo; the shader only darkens,
-    // it never tints, so there is no font colour in this multiply (R2 4.6).
+    // The authored body is black at alpha 128/255, with a pale translucent
+    // rim (e.g. white at alpha 70/255). Both RGB and alpha must be filtered
+    // as straight UNORM, using the authored mip chain. Night scales RGB
+    // alone; the tint seen on screen also contains the background mixed by
+    // SrcAlpha/InvSrcAlpha and the subsequent HDR scene grade. Neither the
+    // core's black nor its alpha should be replaced by an opaque white fill.
     let night = day_night_factor(calc_globe_normal(in.prepos.xz));
     return vec4<f32>(sample.rgb * (1.0 - night * MAPNAME_NIGHT), sample.a);
 }

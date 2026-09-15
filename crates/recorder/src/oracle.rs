@@ -27,11 +27,13 @@ mod economy;
 mod fog;
 mod governance;
 mod intel;
+mod map_inputs;
 mod naval_history;
 mod plans;
 mod production;
 mod projects;
 mod session;
+mod supply_trains;
 mod weather;
 
 type TokenNames<'a> = BTreeMap<u32, &'a [u8]>;
@@ -1056,6 +1058,8 @@ fn compare_extended(
     report: &mut Report,
 ) {
     plans::compare(frame, save, report);
+    map_inputs::compare(frame, save, report);
+    supply_trains::compare(frame, save, report);
     report.attempt_table(TableId::StateFlags, |report| {
         compare_state_flags(frame, save, report)
     });
@@ -3664,6 +3668,8 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 expeditionary_owner: Some(b"SOV".to_vec()),
                 province: Some(1),
                 template: Some(template),
+                alternate_template: None,
+                separate_counter: false,
                 hit_points: Decimal::parse(b"90071992547.40993").unwrap(),
                 organisation: Decimal::parse(b"53.45454").unwrap(),
                 country_intel: Vec::new(),
@@ -5238,6 +5244,8 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                     expeditionary_owner: None,
                     province: Some(province),
                     template: None,
+                    alternate_template: None,
+                    separate_counter: false,
                     hit_points: Decimal::parse(b"1").unwrap(),
                     organisation: org,
                     country_intel: Vec::new(),
@@ -5501,6 +5509,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 organisation: Decimal::parse(b"78.72001").unwrap(),
                 experience: Decimal::parse(b"34.32537").unwrap(),
                 sunk_convoys: -1,
+                equipment: None,
             },
         );
         frame.tables[TableId::Fleets.index()] =

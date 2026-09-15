@@ -880,6 +880,7 @@ impl AircraftPlan {
                         roll,
                         scale,
                         train_clip: [0.0; 4],
+                        ..ModelInstance::default()
                     },
                 ))
             })

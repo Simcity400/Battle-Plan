@@ -2076,6 +2076,7 @@ mod tests {
             // This test isolates the already-staged air/naval consumers. The
             // independent live combat-progress window is covered separately.
             extension_checks[replay::rows::TableId::LandCombatProgress.index()] = false;
+            extension_checks[replay::rows::TableId::ShipModels.index()] = false;
             for table in crate::extended::plans::TABLES {
                 extension_checks[table.index()] = false;
             }
