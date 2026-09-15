@@ -8,6 +8,7 @@ use crate::extended::intel::{
 };
 use crate::extended::lexical::{LexicalConversion, LexicalConversionStats};
 use crate::history::PreparedCampaigns;
+use crate::projection::{Projection, ProjectionScratch, project_table, scalar_table};
 use crate::sampling::{
     CONSISTENCY_TABLES, CONSISTENCY_TARGET, Captured, LossBatch, LostObservation,
     qpc as current_qpc, stable_clock,
@@ -350,6 +351,7 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     research_shadow: ResearchShadow,
     character_shadow: CharacterShadow,
     intel_shadow: IntelShadow,
+    projection_scratch: ProjectionScratch,
     lexical_conversion: LexicalConversionStats,
     _history_file: Option<File>,
 }
@@ -390,6 +392,7 @@ impl Campaign {
             research_shadow: ResearchShadow::default(),
             character_shadow: CharacterShadow::default(),
             intel_shadow: IntelShadow::default(),
+            projection_scratch: ProjectionScratch::default(),
             lexical_conversion: LexicalConversionStats::default(),
             _history_file: history_file,
         })
@@ -1312,6 +1315,13 @@ impl Processor {
             &mut campaign.lexical_conversion,
         );
         let mut intel = IntelConversion::new(branch, &mut campaign.intel_shadow);
+        let mut projection = Projection::new(
+            &campaign.encoder,
+            branch,
+            clock.hour,
+            !campaign.spool.is_open(),
+            &mut campaign.projection_scratch,
+        );
         let (mut source, pack_ticks) = decoded_with_costs(
             captured,
             clock,
@@ -1322,6 +1332,7 @@ impl Processor {
             Some(&mut characters),
             Some(&mut lexical),
             Some(&mut intel),
+            Some(&mut projection),
         );
         let skipped = campaign.apply_staggered_inputs(&mut source);
         let mut work = WorkSample {
@@ -1665,6 +1676,12 @@ impl Processor {
         // the status `json!` so the macro stays under its recursion limit as
         // families move over.
         let mut value = value;
+        value["spool_work"]["native_projection"] = json!(
+            self.campaigns
+                .values()
+                .map(|campaign| campaign.projection_scratch.json())
+                .collect::<Vec<_>>()
+        );
         value["war_owned_snapshots"] = stats.war_snapshots.json();
         value["spool_work"]["lexical_conversion"] = lexical_conversion_status(
             self.campaigns
@@ -1863,6 +1880,7 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> replay::frame
             None,
             None,
             None,
+            None,
         )
         .0,
     )
@@ -1879,6 +1897,7 @@ fn decoded_with_costs(
     characters: Option<&mut CharacterConversion<'_>>,
     lexical: Option<&mut LexicalConversion<'_>>,
     mut intel: Option<&mut IntelConversion<'_>>,
+    mut projection: Option<&mut Projection<'_>>,
 ) -> (FrameInput, [Option<i64>; crate::extended::PACK_NAMES.len()]) {
     let mut pack_ticks = [None; crate::extended::PACK_NAMES.len()];
     let metrics = Metrics {
@@ -1923,7 +1942,7 @@ fn decoded_with_costs(
             naval_participants,
             air,
             orders,
-        ] = crate::map_spool::tables(&captured.map);
+        ] = crate::map_spool::table_inputs(&captured.map, projection.as_deref_mut());
         let core = [
             TableView::Complete(TableRows::Clock(vec![ClockRow {
                 hour: clock.hour,
@@ -1946,13 +1965,28 @@ fn decoded_with_costs(
                 navy_id: counters.and_then(|c| c.navy_id),
                 land_combat_id: counters.and_then(|c| c.land_combat_id),
                 multiplayer_random_count: counters.and_then(|c| c.multiplayer_random_count),
-            }])),
+            }]))
+            .into(),
             TableView::Complete(TableRows::Campaign(vec![CampaignRow {
                 id: clock.campaign_id.as_bytes().to_vec(),
-            }])),
-            table::<tables::Countries, _>(
+            }]))
+            .into(),
+            project_table::<tables::Countries, _>(
+                projection.as_deref_mut(),
                 captured.countries_result,
                 &captured.countries,
+                |country| u128::from(country.id),
+                |country, previous| {
+                    country.id == previous.id
+                        && country.canonical_slot == previous.canonical_slot
+                        && country.tag.as_bytes() == previous.tag
+                        && country.name.as_bytes() == previous.name
+                        && country.political_power_raw == previous.political_power_raw
+                        && country.command_power_raw == previous.command_power_raw
+                        && country.stability_raw == previous.stability_raw
+                        && country.war_support_raw == previous.war_support_raw
+                        && country.convoys_raw == previous.convoys_raw
+                },
                 |country| CountryRow {
                     id: country.id,
                     canonical_slot: country.canonical_slot,
@@ -1966,23 +2000,29 @@ fn decoded_with_costs(
                 },
             ),
             if captured.consistency_checked[0] && captured.links_mismatches != 0 {
-                unavailable("country links changed during double read")
+                unavailable("country links changed during double read").into()
             } else {
-                table::<tables::CountryLinks, _>(captured.links_result, &captured.links, |link| {
-                    CountryLinkRow {
+                scalar_table::<tables::CountryLinks, _>(
+                    projection.as_deref_mut(),
+                    captured.links_result,
+                    &captured.links,
+                    |link| u128::from(link.id),
+                    |link| CountryLinkRow {
                         id: link.id,
                         canonical_slot: link.canonical_slot,
-                    }
-                })
+                    },
+                )
             },
             if captured.consistency_checked[crate::sampling::PROVINCE_CHECK]
                 && captured.provinces_mismatches != 0
             {
-                unavailable("provinces changed during double read")
+                unavailable("provinces changed during double read").into()
             } else {
-                table::<tables::Provinces, _>(
+                scalar_table::<tables::Provinces, _>(
+                    projection.as_deref_mut(),
                     captured.provinces_result,
                     &captured.provinces,
+                    |province| u128::from(province.id),
                     |province| ProvinceRow {
                         id: province.id,
                         state: province.state,
@@ -1993,22 +2033,28 @@ fn decoded_with_costs(
                 )
             },
             if captured.consistency_checked[1] && captured.states_mismatches != 0 {
-                unavailable("states changed during double read")
+                unavailable("states changed during double read").into()
             } else {
-                table::<tables::States, _>(captured.states_result, &captured.states, |state| {
-                    StateRow {
+                scalar_table::<tables::States, _>(
+                    projection.as_deref_mut(),
+                    captured.states_result,
+                    &captured.states,
+                    |state| u128::from(state.id),
+                    |state| StateRow {
                         id: state.id,
                         owner: state.owner,
                         controller: state.controller,
-                    }
-                })
+                    },
+                )
             },
             if captured.consistency_checked[2] && captured.divisions_mismatches != 0 {
-                unavailable("divisions changed during double read")
+                unavailable("divisions changed during double read").into()
             } else {
-                table::<tables::Divisions, _>(
+                scalar_table::<tables::Divisions, _>(
+                    projection.as_deref_mut(),
                     captured.divisions_result,
                     &captured.divisions,
+                    |division| u128::from(division.id),
                     |division| DivisionRow {
                         id: division.id,
                         roster_owner: division.roster_owner,
@@ -2023,12 +2069,16 @@ fn decoded_with_costs(
                 )
             },
             if captured.consistency_checked[3] && captured.wars_mismatches != 0 {
-                unavailable("war relations changed during double read")
+                unavailable("war relations changed during double read").into()
             } else if let Some(reason) = war_matrix_issue(captured) {
-                unavailable(reason)
+                unavailable(reason).into()
             } else {
-                table::<tables::WarRelations, _>(captured.wars_result, &captured.wars, |war| {
-                    WarRelationRow {
+                scalar_table::<tables::WarRelations, _>(
+                    projection.as_deref_mut(),
+                    captured.wars_result,
+                    &captured.wars,
+                    |war| (u128::from(war.first_country) << 32) | u128::from(war.second_country),
+                    |war| WarRelationRow {
                         first_country: war.first_country,
                         second_country: war.second_country,
                         start_hour: war.start_hour,
@@ -2039,16 +2089,18 @@ fn decoded_with_costs(
                         first_unknown_casualties: war.first_unknown_casualties,
                         second_unknown_casualties: war.second_unknown_casualties,
                         first_was_instigator: war.first_was_instigator,
-                    }
-                })
+                    },
+                )
             },
-            faction_table(captured),
+            faction_table(captured).into(),
             if captured.consistency_checked[5] && captured.faction_members_mismatches != 0 {
-                unavailable("faction members changed during double read")
+                unavailable("faction members changed during double read").into()
             } else {
-                table::<tables::FactionMembers, _>(
+                scalar_table::<tables::FactionMembers, _>(
+                    projection.as_deref_mut(),
                     captured.faction_members_result,
                     &captured.faction_members,
+                    |member| u128::from(member.country),
                     |member| FactionMemberRow {
                         country: member.country,
                         faction: member.faction,
@@ -2070,7 +2122,7 @@ fn decoded_with_costs(
         let mut tables =
             std::array::from_fn(|_| TableInput::Sampled(unavailable("table was not acquired")));
         for (destination, value) in tables.iter_mut().zip(core) {
-            *destination = TableInput::Sampled(value);
+            *destination = value;
         }
         pack_ticks = captured
             .extended
@@ -2082,6 +2134,7 @@ fn decoded_with_costs(
                 characters,
                 lexical,
                 intel,
+                projection,
             )
             .map(Some);
         apply_raw_verdicts(&mut tables, &captured.extended_raw_mismatches);
@@ -2338,6 +2391,7 @@ mod tests {
             1,
             Some(baseline),
             &mut ScriptVariableComparison::default(),
+            None,
             None,
             None,
             None,
@@ -3526,6 +3580,7 @@ mod tests {
                 research_shadow: ResearchShadow::default(),
                 character_shadow: CharacterShadow::default(),
                 intel_shadow: IntelShadow::default(),
+                projection_scratch: ProjectionScratch::default(),
                 lexical_conversion: LexicalConversionStats::default(),
                 _history_file: None,
             },
@@ -3910,6 +3965,7 @@ mod tests {
             None,
             None,
             Some(&mut reuse),
+            None,
             None,
         );
         assert!(invalid.tables.iter().all(|input| matches!(
@@ -4332,6 +4388,7 @@ mod tests {
                     None,
                     None,
                     Some(&mut reuse),
+                    None,
                 );
                 assert!(matches!(
                     current.tables[table.index()],
@@ -4443,6 +4500,7 @@ mod tests {
                             &mut ScriptVariableComparison::default(),
                             None,
                             Some(&mut reuse),
+                            None,
                             None,
                             None,
                         )
@@ -4706,6 +4764,7 @@ mod tests {
                         None,
                         &mut ScriptVariableComparison::default(),
                         Some(&mut reuse),
+                        None,
                         None,
                         None,
                         None,

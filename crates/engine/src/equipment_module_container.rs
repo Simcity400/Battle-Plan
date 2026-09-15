@@ -7,7 +7,7 @@ use crate::{
     cequipment_variant::{self, Literal, TextOutcome, TextSpan, complete, text_failure},
     cpdx_array::Array,
     equipment_module_entry,
-    memory::RecordField,
+    memory::{RecordField, RecordLayout, RecordSources},
     read_slice,
 };
 
@@ -75,6 +75,10 @@ pub fn walk(
                 len: 32,
             },
         ];
+        const HEADERS_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&HEADERS, 16).expect("valid record layout");
+        const DEFINITIONS_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&DEFINITIONS, 45).expect("valid record layout");
         let mut pointers = [0; BATCH];
         let mut headers = [0; BATCH * 16];
         let mut entries = [0; BATCH * equipment_module_entry::STRIDE];
@@ -84,8 +88,11 @@ pub fn walk(
             for (pointer, source) in pointers.iter_mut().zip(sources) {
                 *pointer = source.pointer();
             }
-            let copied =
-                memory.copy_records(&pointers[..sources.len()], &HEADERS, 16, &mut headers);
+            let copied = memory.copy_records(
+                RecordSources::Pointers(&pointers[..sources.len()]),
+                &HEADERS_LAYOUT,
+                &mut headers,
+            );
             for (index, source) in sources.iter().enumerate() {
                 if index >= copied {
                     return Err("variant module array unreadable or invalid");
@@ -118,9 +125,8 @@ pub fn walk(
                                 .unwrap_or(0);
                     }
                     let definition_copied = memory.copy_records(
-                        &definitions[..count],
-                        &DEFINITIONS,
-                        45,
+                        RecordSources::Pointers(&definitions[..count]),
+                        &DEFINITIONS_LAYOUT,
                         &mut definition_fields,
                     );
                     for (slot, entry) in entries[..count * equipment_module_entry::STRIDE]

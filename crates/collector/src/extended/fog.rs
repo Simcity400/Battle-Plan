@@ -4,17 +4,20 @@
 use crate::{
     raw::RawLog,
     sampling::{full_match, qpc},
-    spooling::table,
     table_capture::{Arena, CaptureRows},
 };
 use engine::{
-    Memory, cair_base, ccontroller_area, ccountry, cpdx_array::Array, cgame_state, ctheatre,
+    Memory, cair_base, ccontroller_area, ccountry, ctheatre,
+    memory::{RecordLayout, RecordSources},
     radar_group, unit_viewer_entry, walk::Outcome,
 };
 use replay::{
-    frame::TableView,
+    frame::TableInput,
     rows::{self, TableId, tables},
 };
+
+#[cfg(test)]
+use replay::frame::TableView;
 
 pub const N: usize = 6;
 pub const TABLES: [TableId; N] = [
@@ -65,15 +68,10 @@ pub struct Captured {
     intel: CaptureRows<unit_viewer_entry::Row>,
     registrations: CaptureRows<cair_base::RegistrationRow>,
     wings: Arena<u64>,
-    /// Raw-copy split gate for the hourly radar payload (RadarCoverage).
-    /// Set by the game thread every hour with a valid raw payload; `capture`
-    /// then skips the typed walk and the decode worker fills the rows before
-    /// the ready handoff. Preserved across `reset`, cleared by the worker.
+    /// Owned hourly payload staged for direct worker installation. Preserved
+    /// across reset and cleared only after the current payload is installed.
     pub(crate) radar_raw_mode: bool,
-    /// Raw-copy split gate for the hourly intel payload (UnitIntel). Set by
-    /// the game thread every hour with a valid raw payload; `capture` then
-    /// skips the typed walk and the decode worker fills the rows before the
-    /// ready handoff. Preserved across `reset`, cleared by the worker.
+    /// Owned UnitIntel payload uses the shared division census when available.
     pub(crate) intel_raw_mode: bool,
     /// Raw-copy split gate for the shared hourly bases payload's
     /// registrations half (AirBaseRegistrations). Set by the game thread
@@ -154,11 +152,8 @@ impl Captured {
         let mut matched = [false; N];
         let mut ticks = [0; N];
 
-        // Hourly radar raw-copy split: on hours with a valid raw payload the
-        // game thread stages bytes via `copy_radar_refresh` and the decode
-        // worker fills the typed rows before the ready handoff, so the typed
-        // walk is skipped here. Matched flags and costs come from the raw
-        // compare, applied by the caller after this returns.
+        // A staged owned payload already contains this hour's native rows.
+        // Its acquisition checks and costs are applied by the caller.
         if self.radar_raw_mode {
             // Refresh payload staged: leave the reset outcome for the decode
             // worker, which installs identical rows and outcomes.
@@ -268,11 +263,7 @@ impl Captured {
         // ticks[3] stays zero: the named read group above owns this traversal.
         ticks[2] = elapsed(begin);
 
-        // Hourly intel raw-copy split: on hours with a valid raw payload the
-        // game thread stages bytes via `copy_intel_refresh` (own division
-        // and fleet census takes, shared once inside the payload) and the
-        // decode worker fills the typed rows before the ready handoff, so
-        // the typed walk is skipped here.
+        // Shared census acquisition already produced this hour's owned rows.
         if self.intel_raw_mode {
             // Refresh payload staged: leave the reset outcome for the decode
             // worker, which installs identical rows and outcomes.
@@ -367,82 +358,64 @@ impl Captured {
         ]
     }
 
-    /// Spool-thread conversion; raw values and incomplete-table status survive.
+    #[cfg(test)]
     pub fn tables(&self) -> [TableView; N] {
+        self.table_inputs(None).map(|input| match input {
+            TableInput::Sampled(view) => view,
+            _ => unreachable!("no projection supplied"),
+        })
+    }
+
+    pub(crate) fn table_inputs(&self, mut projection: Option<&mut crate::projection::Projection<'_>>) -> [TableInput; N] {
+        use crate::projection::scalar_table;
         let outcomes = self.outcomes();
         [
-            self.radar_table(outcomes[0]),
-            table::<tables::VolunteerHosts, _>(outcomes[1], &self.volunteers.rows, |r| {
-                rows::VolunteerHostRow {
-                    country: r.country,
-                    position: r.position,
-                    host: r.host,
-                    deployed_divisions: r.deployed_divisions,
-                }
-            }),
-            self.area_table(outcomes[2]),
-            table::<tables::StationedUnits, _>(outcomes[3], &self.units.rows, |r| {
-                rows::StationedUnitRow {
-                    theatre: r.theatre,
-                    ordinal: r.ordinal,
-                    unit: r.unit,
-                }
-            }),
-            table::<tables::UnitIntel, _>(outcomes[4], &self.intel.rows, |r| rows::UnitIntelRow {
-                unit: r.unit,
-                ordinal: r.ordinal,
-                viewer: r.viewer,
-                level: r.level,
-            }),
-            self.registration_table(outcomes[5]),
+            self.radar_table(outcomes[0], projection.as_deref_mut()),
+            scalar_table::<tables::VolunteerHosts, _>(projection.as_deref_mut(), outcomes[1], &self.volunteers.rows,
+                |r| (u128::from(r.country) << 32) | u128::from(r.position), |r| rows::VolunteerHostRow {
+                    country: r.country, position: r.position, host: r.host, deployed_divisions: r.deployed_divisions,
+                }),
+            self.area_table(outcomes[2], projection.as_deref_mut()),
+            scalar_table::<tables::StationedUnits, _>(projection.as_deref_mut(), outcomes[3], &self.units.rows,
+                |r| (u128::from(r.theatre) << 32) | u128::from(r.ordinal), |r| rows::StationedUnitRow {
+                    theatre: r.theatre, ordinal: r.ordinal, unit: r.unit,
+                }),
+            scalar_table::<tables::UnitIntel, _>(projection.as_deref_mut(), outcomes[4], &self.intel.rows,
+                |r| (u128::from(r.unit) << 32) | u128::from(r.ordinal), |r| rows::UnitIntelRow {
+                    unit: r.unit, ordinal: r.ordinal, viewer: r.viewer, level: r.level,
+                }),
+            self.registration_table(outcomes[5], projection),
         ]
     }
 
-    fn radar_table(&self, outcome: Outcome) -> TableView {
+    fn radar_table(&self, outcome: Outcome, projection: Option<&mut crate::projection::Projection<'_>>) -> TableInput {
         if !valid_arena(outcome, &self.radar.rows, &self.radar_provinces) {
-            return crate::spooling::unavailable(
-                "radar coverage vector lies outside the captured arena",
-            );
+            return crate::spooling::unavailable("radar coverage vector lies outside the captured arena").into();
         }
-        table::<tables::RadarCoverage, _>(outcome, &self.radar.rows, |r| rows::RadarCoverageRow {
-            country: r.country,
-            ordinal: r.ordinal,
-            state: r.state,
-            provinces: self.radar_provinces.first[r.provinces_start..r.provinces_start + r.provinces_len]
-                .to_vec(),
-        })
+        let provinces = |r: &radar_group::Row| &self.radar_provinces.first[r.provinces_start..r.provinces_start + r.provinces_len];
+        crate::projection::project_table::<tables::RadarCoverage, _>(projection, outcome, &self.radar.rows, ArenaRow::key,
+            |r, old| r.country == old.country && r.ordinal == old.ordinal && r.state == old.state && provinces(r) == old.provinces,
+            |r| rows::RadarCoverageRow { country: r.country, ordinal: r.ordinal, state: r.state, provinces: provinces(r).to_vec() })
     }
 
-    fn area_table(&self, outcome: Outcome) -> TableView {
+    fn area_table(&self, outcome: Outcome, projection: Option<&mut crate::projection::Projection<'_>>) -> TableInput {
         if !valid_arena(outcome, &self.areas.rows, &self.area_provinces) {
-            return crate::spooling::unavailable(
-                "controller area province vector lies outside the captured arena",
-            );
+            return crate::spooling::unavailable("controller area province vector lies outside the captured arena").into();
         }
-        table::<tables::TheatreAreas, _>(outcome, &self.areas.rows, |r| rows::TheatreAreaRow {
-            theatre: r.theatre,
-            ordinal: r.ordinal,
-            representative: r.representative,
-            provinces: self.area_provinces.first
-                [r.provinces_start..r.provinces_start + r.provinces_len]
-                .to_vec(),
-        })
+        let provinces = |r: &ccontroller_area::Row| &self.area_provinces.first[r.provinces_start..r.provinces_start + r.provinces_len];
+        crate::projection::project_table::<tables::TheatreAreas, _>(projection, outcome, &self.areas.rows, ArenaRow::key,
+            |r, old| r.theatre == old.theatre && r.ordinal == old.ordinal && r.representative == old.representative && provinces(r) == old.provinces,
+            |r| rows::TheatreAreaRow { theatre: r.theatre, ordinal: r.ordinal, representative: r.representative, provinces: provinces(r).to_vec() })
     }
 
-    fn registration_table(&self, outcome: Outcome) -> TableView {
+    fn registration_table(&self, outcome: Outcome, projection: Option<&mut crate::projection::Projection<'_>>) -> TableInput {
         if !valid_arena(outcome, &self.registrations.rows, &self.wings) {
-            return crate::spooling::unavailable(
-                "air registration wing vector lies outside the captured arena",
-            );
+            return crate::spooling::unavailable("air registration wing vector lies outside the captured arena").into();
         }
-        table::<tables::AirBaseRegistrations, _>(outcome, &self.registrations.rows, |r| {
-            rows::AirBaseRegistrationRow {
-                base: r.base,
-                slot: r.slot,
-                country: r.country,
-                wings: self.wings.first[r.wings_start..r.wings_start + r.wings_len].to_vec(),
-            }
-        })
+        let wings = |r: &cair_base::RegistrationRow| &self.wings.first[r.wings_start..r.wings_start + r.wings_len];
+        crate::projection::project_table::<tables::AirBaseRegistrations, _>(projection, outcome, &self.registrations.rows, ArenaRow::key,
+            |r, old| r.base == old.base && r.slot == old.slot && r.country == old.country && wings(r) == old.wings,
+            |r| rows::AirBaseRegistrationRow { base: r.base, slot: r.slot, country: r.country, wings: wings(r).to_vec() })
     }
 
     /// Game-thread bookkeeping for the shared bases/registrations/aces copy:
@@ -873,70 +846,271 @@ fn arena_second<R: ArenaRow<T>, T: Default + Clone + PartialEq>(
     full_match(captured.outcome, outcome, captured.mismatches)
 }
 
-// ===========================================================================
-// Hourly radar split (RadarCoverage).
-//
-// The game thread copies raw bytes only: the country census, per-country
-// radar pools with group vectors, and per-group state links with coverage
-// vectors. No row is decoded on the game thread. The single FIFO decode
-// worker replays `radar_group::walk` against the recorded spans, so rows,
-// ordinals, skips, truncation counts and failure reasons are identical by
-// construction (see `crate::raw` for the mirror rules).
-//
-// Coverage takes are exact spans with cap-independent shapes (the vector
-// count comes from the header, never the pooled caps): the mirror always
-// takes the full vector and the replay skips reads past pooled capacity,
-// truncating identically. Pooled row and arena capacities are ignored while
-// copying: a superset is recorded and the replay truncates identically
-// against the real pooled buffers.
-// ===========================================================================
-
-/// Hourly payload slots in calibration/report order: [radar].
+/// These jobs own the final native table inputs. Source witnesses exist only
+/// during the independent cold checks; no address lookup or memory replay is
+/// used to install a payload on the worker.
 pub(crate) const RADAR_N: usize = 1;
-const RADAR_MASK: u32 = 0x01;
+pub(crate) const INTEL_N: usize = 1;
 
-/// One hour of raw radar payload. Flat pools recycle capacities and the
-/// steady state allocates on neither thread; growth happens on the decode
-/// side only (see `crate::decode::recycle_radar_job`).
-#[derive(Debug, Default)]
-pub(crate) struct RadarJob {
-    pub log: RawLog<RADAR_N>,
-    pub game_state: usize,
+#[derive(Debug)]
+pub(crate) struct OwnedFogJob<R> {
+    rows: Vec<R>,
+    provinces: Vec<u32>,
+    outcome: Outcome,
+    provinces_len: usize,
+    required_provinces: usize,
+    row_limit: usize,
+    province_limit: usize,
+    acquired: bool,
+    checking: bool,
+    source_witness: RawLog<1>,
+    raw_bytes: u64,
+    capacity_charge: crate::raw_memory::Charge,
+}
+
+pub(crate) type RadarJob = OwnedFogJob<radar_group::Row>;
+pub(crate) type IntelJob = OwnedFogJob<unit_viewer_entry::Row>;
+
+impl<R: Default + Copy> Default for OwnedFogJob<R> {
+    fn default() -> Self {
+        Self::with_storage(0, 0, 0, 0)
+    }
+}
+
+impl<R: Default + Copy> OwnedFogJob<R> {
+    fn with_storage(rows: usize, provinces: usize, spans: usize, bytes: usize) -> Self {
+        let mut job = Self {
+            rows: vec![R::default(); rows],
+            provinces: vec![0; provinces],
+            outcome: Outcome::Rows { len: 0 },
+            provinces_len: 0,
+            required_provinces: 0,
+            row_limit: 0,
+            province_limit: 0,
+            acquired: false,
+            checking: false,
+            source_witness: RawLog::new(spans, bytes),
+            raw_bytes: 0,
+            capacity_charge: Default::default(),
+        };
+        job.update_capacity_charge();
+        job
+    }
+
+    fn update_capacity_charge(&mut self) {
+        self.capacity_charge.set(crate::raw_memory::Capacity {
+            payload_vectors: crate::raw_memory::vector_bytes(&self.rows)
+                + crate::raw_memory::vector_bytes(&self.provinces),
+            ..Default::default()
+        });
+    }
+
+    pub fn clear(&mut self) {
+        self.outcome = Outcome::Rows { len: 0 };
+        self.provinces_len = 0;
+        self.required_provinces = 0;
+        self.row_limit = 0;
+        self.province_limit = 0;
+        self.acquired = false;
+        self.raw_bytes = 0;
+        self.source_witness.clear();
+    }
+
+    pub fn initialized(&self) -> bool {
+        self.rows.capacity() != 0
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        self.rows.capacity() * size_of::<R>()
+            + self.provinces.capacity() * size_of::<u32>()
+            + self.source_witness.spans.capacity() * size_of::<crate::raw::Span>()
+            + self.source_witness.bytes.capacity()
+    }
+
+    pub fn grow_for_next(&self) -> bool {
+        self.row_limit > self.rows.len()
+            || self.province_limit > self.provinces.len()
+            || self.source_witness.grow_for_next()
+            || (self.checking && self.source_witness.bytes.capacity() == 0)
+            || (self.acquired && !self.checking && self.source_witness.bytes.capacity() != 0)
+    }
+
+    /// Called only during worker-side recycling, including witness retirement.
+    pub fn grow(&mut self) {
+        if self.row_limit > self.rows.len() {
+            self.rows.resize(self.row_limit, R::default());
+        }
+        if self.province_limit > self.provinces.len() {
+            self.provinces.resize(self.province_limit, 0);
+        }
+        if self.checking {
+            if self.source_witness.bytes.capacity() == 0 {
+                self.source_witness = RawLog::new(1 << 15, 2 << 20);
+            }
+            if self.source_witness.grow_for_next() {
+                self.source_witness.grow();
+            }
+        } else if self.acquired {
+            self.source_witness = RawLog::default();
+        }
+        self.update_capacity_charge();
+    }
+
+    pub fn note_growth(&self) {
+        if self.grow_for_next() {
+            crate::raw::publish_growth(std::any::type_name::<R>(), serde_json::json!({
+                "row_capacity": self.rows.len(), "required_rows": self.row_limit,
+                "province_capacity": self.provinces.len(), "required_provinces": self.province_limit,
+                "cold_witness_overflow": self.source_witness.overflowed,
+                "cold_witness_retiring": self.acquired && !self.checking && self.source_witness.bytes.capacity() != 0,
+            }));
+        }
+    }
+
+    fn prepare(&mut self, rows: usize, provinces: usize, checking: bool) {
+        self.clear();
+        self.row_limit = rows;
+        self.province_limit = provinces;
+        self.checking = checking;
+    }
+
+    fn fits(&self, rows: usize, provinces: usize) -> bool {
+        rows <= self.rows.len() && provinces <= self.provinces.len()
+    }
+
+    fn matches(&self, second: &Self) -> bool
+    where
+        R: PartialEq,
+    {
+        self.acquired && second.acquired && self.checking && second.checking
+            && !self.source_witness.overflowed && !second.source_witness.overflowed
+            && !self.source_witness.fault[0] && !second.source_witness.fault[0]
+            && self.source_witness.partition_equal(&second.source_witness, 0)
+            && self.outcome == second.outcome
+            && self.rows[..self.outcome.len()] == second.rows[..second.outcome.len()]
+            && self.provinces_len == second.provinces_len
+            && self.required_provinces == second.required_provinces
+            && self.provinces[..self.provinces_len] == second.provinces[..second.provinces_len]
+    }
 }
 
 impl RadarJob {
     pub fn new() -> Self {
-        Self {
-            // Late-campaign worst case is 18 coverage groups (appendix
-            // census); both pools start above that so steady state never
-            // overflows (see the worst-case caps test).
-            log: RawLog::new(1 << 12, 1 << 20),
-            game_state: 0,
+        Self::with_storage(1024, 65_536, 1 << 14, 1 << 20)
+    }
+}
+
+impl IntelJob {
+    pub fn new() -> Self {
+        Self::with_storage(32_768, 0, 1 << 15, 2 << 20)
+    }
+}
+
+/// A source counter in warm acquisition and an exact independent observation
+/// witness during cold acquisition. It never serves a previously read value.
+struct FogMemory<'a, M> {
+    inner: &'a M,
+    witness: Option<std::cell::RefCell<&'a mut RawLog<1>>>,
+    bytes: std::cell::Cell<u64>,
+}
+
+impl<M: Memory> FogMemory<'_, M> {
+    fn count(&self, bytes: usize) {
+        self.bytes.set(self.bytes.get().saturating_add(bytes as u64));
+    }
+}
+
+impl<M: Memory> Memory for FogMemory<'_, M> {
+    fn authenticated_countries(&self, base: usize, state: usize) -> Option<ccountry::AuthenticatedRoster<'_>> {
+        if self.witness.is_some() { None } else { self.inner.authenticated_countries(base, state) }
+    }
+
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        let succeeded = if let Some(witness) = &self.witness {
+            let mut witness = witness.borrow_mut();
+            if let Some(start) = witness.take(self.inner, address, destination.len(), 1) {
+                destination.copy_from_slice(&witness.bytes[start..start + destination.len()]);
+                true
+            } else { false }
+        } else {
+            self.inner.copy(address, destination)
+        };
+        if succeeded { self.count(destination.len()); }
+        succeeded
+    }
+
+    fn copy_scattered<const K: usize>(&self, addresses: [usize; K], destinations: &mut [&mut [u8]; K]) -> usize {
+        let completed = if let Some(witness) = &self.witness {
+            let mut witness = witness.borrow_mut();
+            let lengths = std::array::from_fn(|index| destinations[index].len());
+            let Some((starts, completed)) = witness.take_scattered(self.inner, addresses, lengths, [1; K]) else { return 0; };
+            for index in 0..completed {
+                destinations[index].copy_from_slice(&witness.bytes[starts[index]..starts[index] + lengths[index]]);
+            }
+            completed
+        } else {
+            self.inner.copy_scattered(addresses, destinations)
+        };
+        for field in destinations.iter().take(completed) { self.count(field.len()); }
+        completed
+    }
+
+    fn copy_records(
+        &self,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        // Warm shared-source batches retain one native guarded call. Cold
+        // captures keep their original ordered source observations instead.
+        if self.witness.is_none() {
+            let completed = self.inner.copy_records(sources, layout, destination);
+            self.count(layout.completed_bytes(completed));
+            return completed;
         }
-    }
-
-    pub fn clear(&mut self) {
-        self.log.clear();
-        self.game_state = 0;
-    }
-
-    pub fn grow_for_next(&self) -> bool {
-        self.log.grow_for_next()
-    }
-
-    pub fn grow(&mut self) {
-        self.log.grow();
+        if sources.len().checked_mul(layout.field_count()).is_none()
+            || sources
+                .len()
+                .checked_mul(layout.stride())
+                .is_none_or(|bytes| bytes > destination.len())
+        {
+            return 0;
+        }
+        let mut completed = 0;
+        for index in 0..sources.len() {
+            for field in layout.fields() {
+                let Some(start) = index
+                    .checked_mul(layout.stride())
+                    .and_then(|start| start.checked_add(field.destination_offset))
+                else {
+                    return completed;
+                };
+                let Some(end) = start.checked_add(field.len) else { return completed; };
+                let Some(output) = destination.get_mut(start..end) else { return completed; };
+                if !output.is_empty()
+                    && !sources
+                        .pointer(index)
+                        .filter(|&pointer| pointer != 0)
+                        .and_then(|pointer| pointer.checked_add(field.source_offset))
+                        .filter(|&address| address.checked_add(field.len).is_some())
+                        .is_some_and(|address| self.copy(address, output))
+                {
+                    return completed;
+                }
+                completed += 1;
+            }
+        }
+        completed
     }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct RadarCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed
-    /// walk (identical rows through the existing path) and enqueues no
-    /// payload.
     pub raw_ok: bool,
     pub matched: [bool; RADAR_N],
+    pub mismatches: [usize; RADAR_N],
     pub copy_ticks: [u64; RADAR_N],
+    /// Actual successful source bytes, including the one native acquisition.
     pub raw_bytes: [u64; RADAR_N],
 }
 
@@ -947,584 +1121,13 @@ pub(crate) struct RadarCopyContext {
     pub needed: [bool; RADAR_N],
 }
 
-fn radar_pool_u64(log: &RawLog<RADAR_N>, start: usize) -> u64 {
-    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
-}
-
-fn radar_pool_u32(log: &RawLog<RADAR_N>, start: usize) -> u32 {
-    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
-}
-
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
-fn gspan(
-    log: &mut RawLog<RADAR_N>,
-    memory: &impl engine::Memory,
-    addr: Option<usize>,
-    len: usize,
-    mask: u32,
-) -> Option<usize> {
-    log.take(memory, addr?, len, mask)
-}
-
-/// Mirror of one link-table read with local bounds checks. Returns `None`
-/// exactly when the typed resolve fails; the replay derives its own reason.
-fn radar_link(
-    log: &mut RawLog<RADAR_N>,
-    memory: &impl engine::Memory,
-    links: &Array,
-    countries: u32,
-    raw: u32,
-) -> Option<u32> {
-    if raw == 0 || raw >= links.count {
-        return None;
-    }
-    let offset = (raw as usize).checked_mul(4)?;
-    let start = gspan(
-        log,
-        memory,
-        links.data.checked_add(offset),
-        4,
-        RADAR_MASK,
-    )?;
-    let slot = radar_pool_u32(log, start);
-    if slot == 0 || slot >= countries {
-        return None;
-    }
-    Some(slot)
-}
-
-/// One structural copy pass: country census, per-country radar pools with
-/// group vectors, and per-group state links with coverage vectors. The job
-/// is cleared on entry so pooled refreshes never accumulate spans across
-/// hours.
-fn copy_radar_pass(
-    job: &mut RadarJob,
-    memory: &impl engine::Memory,
-    base: usize,
-    game_state: usize,
-    ticks: &mut [u64; RADAR_N],
-) {
-    job.clear();
-    job.game_state = game_state;
-    let started = qpc();
-    copy_radar_tables(job, memory, base, game_state);
-    ticks[0] += elapsed(started);
-}
-
-fn copy_radar_tables(
-    job: &mut RadarJob,
-    memory: &impl engine::Memory,
-    base: usize,
-    game_state: usize,
-) {
-    let log = &mut job.log;
-    let countries_start = gspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRIES),
-        16,
-        RADAR_MASK,
-    );
-    let links_start = gspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRY_LINKS),
-        16,
-        RADAR_MASK,
-    );
-    let (Some(countries_start), Some(links_start)) = (countries_start, links_start) else {
-        return;
-    };
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
-    let countries_array = match Array::from_header(raw, 8) {
-        Some(array) => array,
-        None => return,
-    };
-    raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
-    let links = match Array::from_header(raw, 4) {
-        Some(array) => array,
-        None => return,
-    };
-    if countries_array.count < 2 || links.count == 0 {
-        return;
-    }
-    let country_vtable = match base.checked_add(ccountry::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return,
-    };
-    let pool_vtable = match base.checked_add(engine::cradars_pool::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return,
-    };
-    let state_vtable = match base.checked_add(engine::cstate::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return,
-    };
-    for slot in 1..countries_array.count {
-        let pointer_addr = (slot as usize)
-            .checked_mul(8)
-            .and_then(|offset| countries_array.data.checked_add(offset));
-        let pointer_start = match gspan(log, memory, pointer_addr, 8, RADAR_MASK) {
-            Some(start) => start,
-            None => return,
-        };
-        let pointer = match usize::try_from(radar_pool_u64(log, pointer_start))
-            .ok()
-            .filter(|&pointer| pointer != 0)
-        {
-            Some(pointer) => pointer,
-            None => continue,
-        };
-        let vtable_start = match gspan(log, memory, Some(pointer), 8, RADAR_MASK) {
-            Some(start) => start,
-            None => return,
-        };
-        let id_start = match gspan(log, memory, pointer.checked_add(ccountry::ID), 4, RADAR_MASK)
-        {
-            Some(start) => start,
-            None => return,
-        };
-        if radar_pool_u64(log, vtable_start) != country_vtable {
-            return;
-        }
-        let id = radar_pool_u32(log, id_start);
-        let canonical = match radar_link(log, memory, &links, countries_array.count, id) {
-            Some(canonical) => canonical,
-            None => return,
-        };
-        if radar_link(log, memory, &links, countries_array.count, slot) != Some(canonical) {
-            return;
-        }
-        if radar_link(log, memory, &links, countries_array.count, canonical) != Some(canonical) {
-            return;
-        }
-        let canonical_addr = (canonical as usize)
-            .checked_mul(8)
-            .and_then(|offset| countries_array.data.checked_add(offset));
-        let canonical_pointer = match gspan(log, memory, canonical_addr, 8, RADAR_MASK) {
-            Some(start) => start,
-            None => return,
-        };
-        if radar_pool_u64(log, canonical_pointer) != pointer as u64 {
-            return;
-        }
-        if slot != canonical {
-            continue;
-        }
-        if !copy_radar_country(
-            log,
-            memory,
-            base,
-            pointer,
-            pool_vtable,
-            state_vtable,
-            &links,
-            &countries_array,
-            countries_array.count,
-        ) {
-            return;
-        }
-        if log.overflowed {
-            return;
-        }
-    }
-}
-
-/// Mirror of one country's radar pool, group vector and groups: pool vtable
-/// with country agreement, group pointers with parent checks, state links
-/// and coverage vectors. Returns false exactly when the typed walk fails at
-/// or before this country.
-#[allow(clippy::too_many_arguments)]
-fn copy_radar_country(
-    log: &mut RawLog<RADAR_N>,
-    memory: &impl engine::Memory,
-    base: usize,
-    pointer: usize,
-    pool_vtable: u64,
-    state_vtable: u64,
-    links: &Array,
-    countries_array: &Array,
-    countries: u32,
-) -> bool {
-    let pool = match gspan(
-        log,
-        memory,
-        pointer.checked_add(ccountry::RADARS_POOL),
-        8,
-        RADAR_MASK,
-    ) {
-        Some(start) => start,
-        None => return false,
-    };
-    if radar_pool_u64(log, pool) != pool_vtable {
-        return false;
-    }
-    let owner = match gspan(
-        log,
-        memory,
-        pointer.checked_add(ccountry::RADARS_POOL_COUNTRY),
-        4,
-        RADAR_MASK,
-    ) {
-        Some(start) => radar_pool_u32(log, start),
-        None => return false,
-    };
-    // Owner agreement mirrors the walk's resolve; the link takes serve the
-    // replay identically through multiplicity.
-    if !radar_resolve(log, memory, base, links, countries_array, countries, pointer, owner) {
-        return false;
-    }
-    let groups_header = match gspan(
-        log,
-        memory,
-        pointer.checked_add(ccountry::RADAR_GROUPS),
-        16,
-        RADAR_MASK,
-    ) {
-        Some(start) => start,
-        None => return false,
-    };
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[groups_header..groups_header + 16]);
-    let groups = match Array::from_header(raw, 8) {
-        Some(array) => array,
-        None => return false,
-    };
-    for ordinal in 0..groups.count {
-        let addr = (ordinal as usize)
-            .checked_mul(8)
-            .and_then(|offset| groups.data.checked_add(offset));
-        let group_start = match gspan(log, memory, addr, 8, RADAR_MASK) {
-            Some(start) => start,
-            None => return false,
-        };
-        let group = match usize::try_from(radar_pool_u64(log, group_start))
-            .ok()
-            .filter(|&group| group != 0)
-        {
-            Some(group) => group,
-            None => return false,
-        };
-        if group % 8 != 0 {
-            return false;
-        }
-        let parent = match gspan(
-            log,
-            memory,
-            group.checked_add(radar_group::PARENT),
-            8,
-            RADAR_MASK,
-        ) {
-            Some(start) => start,
-            None => return false,
-        };
-        if radar_pool_u64(log, parent) != pointer.checked_add(ccountry::RADARS_POOL).unwrap_or(0) as u64 {
-            return false;
-        }
-        let state_addr = match gspan(
-            log,
-            memory,
-            group.checked_add(radar_group::STATE),
-            8,
-            RADAR_MASK,
-        ) {
-            Some(start) => start,
-            None => return false,
-        };
-        let state = match usize::try_from(radar_pool_u64(log, state_addr)).ok() {
-            Some(state) => state,
-            None => return false,
-        };
-        if state != 0 {
-            let vtable = match gspan(log, memory, Some(state), 8, RADAR_MASK) {
-                Some(start) => start,
-                None => return false,
-            };
-            if radar_pool_u64(log, vtable) != state_vtable {
-                return false;
-            }
-            if gspan(log, memory, state.checked_add(engine::cstate::ID), 4, RADAR_MASK).is_none()
-            {
-                return false;
-            }
-        }
-        let covered_header = match gspan(
-            log,
-            memory,
-            group.checked_add(radar_group::PROVINCES),
-            16,
-            RADAR_MASK,
-        ) {
-            Some(start) => start,
-            None => return false,
-        };
-        raw.copy_from_slice(&log.bytes[covered_header..covered_header + 16]);
-        let covered = match Array::from_header(raw, 4) {
-            Some(array) => array,
-            None => return false,
-        };
-        // Coverage words arrive in 64-element chunks (`copy_u32s`); takes
-        // decompose per chunk in walk order with cap-independent shapes, so
-        // the replay serves every chunk identically and skips reads past
-        // pooled capacity, truncating identically.
-        let mut first = 0u32;
-        while first < covered.count {
-            let chunk = ((covered.count - first) as usize).min(64);
-            let address = (first as usize)
-                .checked_mul(4)
-                .and_then(|offset| covered.data.checked_add(offset));
-            if gspan(log, memory, address, chunk * 4, RADAR_MASK).is_none() {
-                return false;
-            }
-            if log.overflowed {
-                return false;
-            }
-            first += chunk as u32;
-        }
-        if log.overflowed {
-            return false;
-        }
-    }
-    true
-}
-
-/// Mirror of the walk's pool-country resolve: link entry plus the full
-/// `read_at` span set with canonical agreement, taken explicitly (the owner
-/// raw may be an alias the census loop never took). Returns false exactly
-/// when the typed resolve fails.
-#[allow(clippy::too_many_arguments)]
-fn radar_resolve(
-    log: &mut RawLog<RADAR_N>,
-    memory: &impl engine::Memory,
-    base: usize,
-    links: &Array,
-    countries_array: &Array,
-    countries: u32,
-    pointer: usize,
-    owner: u32,
-) -> bool {
-    let country_vtable = match base.checked_add(ccountry::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return false,
-    };
-    let canonical = match radar_link(log, memory, links, countries, owner) {
-        Some(canonical) => canonical,
-        None => return false,
-    };
-    let pointer_addr = (canonical as usize)
-        .checked_mul(8)
-        .and_then(|offset| countries_array.data.checked_add(offset));
-    let pointer_start = match gspan(log, memory, pointer_addr, 8, RADAR_MASK) {
-        Some(start) => start,
-        None => return false,
-    };
-    let canonical_pointer = match usize::try_from(radar_pool_u64(log, pointer_start))
-        .ok()
-        .filter(|&pointer| pointer != 0)
-    {
-        Some(pointer) => pointer,
-        None => return false,
-    };
-    let vtable_start = match gspan(log, memory, Some(canonical_pointer), 8, RADAR_MASK) {
-        Some(start) => start,
-        None => return false,
-    };
-    let id_start = match gspan(
-        log,
-        memory,
-        canonical_pointer.checked_add(ccountry::ID),
-        4,
-        RADAR_MASK,
-    ) {
-        Some(start) => start,
-        None => return false,
-    };
-    if radar_pool_u64(log, vtable_start) != country_vtable {
-        return false;
-    }
-    let id = radar_pool_u32(log, id_start);
-    if radar_link(log, memory, links, countries, id) != Some(canonical) {
-        return false;
-    }
-    if radar_link(log, memory, links, countries, canonical) != Some(canonical) {
-        return false;
-    }
-    let check_addr = (canonical as usize)
-        .checked_mul(8)
-        .and_then(|offset| countries_array.data.checked_add(offset));
-    let check_start = match gspan(log, memory, check_addr, 8, RADAR_MASK) {
-        Some(start) => start,
-        None => return false,
-    };
-    if radar_pool_u64(log, check_start) != canonical_pointer as u64 {
-        return false;
-    }
-    canonical_pointer == pointer
-}
-
-impl Captured {
-    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
-    /// `second` while the radar table still needs double-read checks,
-    /// compares the raw logs, and records copy-only costs plus the existing
-    /// checked/mismatches bookkeeping. Returns whether the payload is
-    /// complete (`raw_ok`); on staging overflow the caller falls back to the
-    /// typed walk and enqueues nothing.
-    pub(crate) fn copy_radar_refresh(
-        &mut self,
-        memory: &impl Memory,
-        ctx: RadarCopyContext,
-        first: &mut RadarJob,
-        mut second: Option<&mut RadarJob>,
-    ) -> RadarCopyReport {
-        let mut ticks = [0u64; RADAR_N];
-        copy_radar_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
-        let mut matched = [true; RADAR_N];
-        if let Some(second_job) = second.as_deref_mut() {
-            let mut second_ticks = [0u64; RADAR_N];
-            copy_radar_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
-            for (total, extra) in ticks.iter_mut().zip(second_ticks) {
-                *total += extra;
-            }
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-            }
-        }
-        // Conservative checked bookkeeping mirroring the typed path.
-        self.radar.checked = ctx.needed[0];
-        self.radar.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        let raw_ok = !first.log.overflowed
-            && second.is_none_or(|job| !job.log.overflowed);
-        RadarCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
-        }
-    }
-
-    /// Decode-worker interpretation of a raw radar payload: replays the
-    /// radar walk against the recorded spans into the pooled buffers, with
-    /// the identical arena handling the game thread applies. Installs
-    /// identical rows, truncation counts and failure reasons.
-    pub(crate) fn decode_radar_payload(
-        &mut self,
-        base: usize,
-        job: &RadarJob,
-        decode_ticks: &mut [u64; RADAR_N],
-    ) {
-        use crate::raw::Recorded;
-        let recorded = Recorded::build(&job.log);
-        let started = qpc();
-        let first = radar_group::walk(
-            &recorded,
-            base,
-            job.game_state,
-            &mut self.radar.rows,
-            &mut self.radar_provinces.first,
-        );
-        arena_first(
-            &mut self.radar,
-            &mut self.radar_provinces,
-            first.outcome,
-            first.provinces_len,
-            first.required_provinces,
-        );
-        // Reproduce the typed path's duplicate-key scan exactly as for
-        // registrations: the spool conversion sorts by unique key
-        // downstream, so only the verdict matters here.
-        if self.radar.checked && matches!(self.radar.outcome, Outcome::Rows { .. }) {
-            let len = self.radar.outcome.len();
-            let mut keys: Vec<u128> =
-                self.radar.rows[..len].iter().map(ArenaRow::key).collect();
-            keys.sort_unstable();
-            if keys.windows(2).any(|pair| pair[0] == pair[1]) {
-                self.radar.mismatches += 1;
-            }
-        }
-        decode_ticks[0] += elapsed(started);
-        self.radar_raw_mode = false;
-    }
-}
-
-// ===========================================================================
-// Hourly intel split (UnitIntel).
-//
-// The game thread copies raw bytes only: the country census, per-country
-// division and fleet rosters with task-force vectors, and every unit's
-// viewer vector with its entries. The division and fleet census spans are
-// the walk's own takes (shared once inside this payload between the
-// division and fleet paths, not duplicated per unit); the already-moved
-// Divisions and Map jobs keep their own copies with different read sets,
-// and duplicating these small census headers here is net-positive (see the
-// counts proof in the caps test). No row is decoded on the game thread. The
-// single FIFO decode worker replays `unit_viewer_entry::walk` against the
-// recorded spans, so rows, ordinals, skips, truncation counts and failure
-// reasons are identical by construction (see `crate::raw` for the mirror
-// rules).
-//
-// Viewer entry blocks are cap-independent (batch counts come from the
-// vector headers, never the pooled caps): the mirror always takes full
-// batches and the replay skips rows past pooled capacity, counting omits
-// identically. Pooled row capacities are ignored while copying: a superset
-// is recorded and the replay truncates identically against the real pooled
-// buffers.
-// ===========================================================================
-
-/// Hourly payload slots in calibration/report order: [intel]. Division and
-/// fleet units decode from the same shared spans; the harness proves both
-/// paths against the direct walk.
-pub(crate) const INTEL_N: usize = 1;
-const INTEL_MASK: u32 = 0x01;
-
-/// Viewer batch chunking. Must match the engine walk's batching exactly.
-const INTEL_MIRROR_BATCH: usize = 32;
-
-/// One hour of raw intel payload. Flat pools recycle capacities and the
-/// steady state allocates on neither thread; growth happens on the decode
-/// side only (see `crate::decode::recycle_intel_job`).
-#[derive(Debug, Default)]
-pub(crate) struct IntelJob {
-    pub log: RawLog<INTEL_N>,
-    pub game_state: usize,
-}
-
-impl IntelJob {
-    pub fn new() -> Self {
-        Self {
-            // Late-campaign worst case is 24 intel rows over ~2.9k divisions
-            // and ~240 task forces (appendix census); both pools start above
-            // that so steady state never overflows (see the caps test).
-            log: RawLog::new(1 << 15, 2 << 20),
-            game_state: 0,
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.log.clear();
-        self.game_state = 0;
-    }
-
-    pub fn grow_for_next(&self) -> bool {
-        self.log.grow_for_next()
-    }
-
-    pub fn grow(&mut self) {
-        self.log.grow();
-    }
-}
-
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct IntelCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed
-    /// walk (identical rows through the existing path) and enqueues no
-    /// payload.
     pub raw_ok: bool,
     pub matched: [bool; INTEL_N],
+    pub mismatches: [usize; INTEL_N],
     pub copy_ticks: [u64; INTEL_N],
+    /// Actual successful source bytes; shared census costs remain with Divisions.
     pub raw_bytes: [u64; INTEL_N],
 }
 
@@ -1535,443 +1138,124 @@ pub(crate) struct IntelCopyContext {
     pub needed: [bool; INTEL_N],
 }
 
-fn intel_pool_u64(log: &RawLog<INTEL_N>, start: usize) -> u64 {
-    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
+fn acquire_radar(job: &mut RadarJob, memory: &impl Memory, ctx: RadarCopyContext) {
+    let source = FogMemory {
+        inner: memory,
+        witness: job.checking.then(|| std::cell::RefCell::new(&mut job.source_witness)),
+        bytes: std::cell::Cell::new(0),
+    };
+    let result = radar_group::walk(&source, ctx.base, ctx.game_state,
+        &mut job.rows[..job.row_limit], &mut job.provinces[..job.province_limit]);
+    job.outcome = result.outcome;
+    job.provinces_len = result.provinces_len;
+    job.required_provinces = result.required_provinces;
+    job.raw_bytes = source.bytes.get();
+    job.acquired = true;
 }
 
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
-fn ispan(
-    log: &mut RawLog<INTEL_N>,
-    memory: &impl engine::Memory,
-    addr: Option<usize>,
-    len: usize,
-    mask: u32,
-) -> Option<usize> {
-    log.take(memory, addr?, len, mask)
+/// Independent pointer-census passes captured before the fog acquisition.
+/// The match verdict excludes all fields private to the Divisions table.
+#[derive(Clone, Copy)]
+pub(crate) struct IntelDivisionSources<'a> {
+    pub first: unit_viewer_entry::DivisionSources<'a>,
+    pub second: Option<unit_viewer_entry::DivisionSources<'a>>,
+    pub matched: bool,
 }
 
-/// Mirror of one link-table read with local bounds checks. Returns `None`
-/// exactly when the typed resolve fails; the replay derives its own reason.
-fn intel_link(
-    log: &mut RawLog<INTEL_N>,
-    memory: &impl engine::Memory,
-    links: &Array,
-    countries: u32,
-    raw: u32,
-) -> Option<u32> {
-    if raw == 0 || raw >= links.count {
-        return None;
-    }
-    let offset = (raw as usize).checked_mul(4)?;
-    let start = ispan(log, memory, links.data.checked_add(offset), 4, INTEL_MASK)?;
-    let slot = u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap());
-    if slot == 0 || slot >= countries {
-        return None;
-    }
-    Some(slot)
-}
-
-/// Mirror of one unit's viewer takes: vtable, handle and vector header plus
-/// every entry batch, with the walk's identity validation. Returns false
-/// exactly when the typed unit read fails.
-fn copy_intel_unit(
-    log: &mut RawLog<INTEL_N>,
-    memory: &impl engine::Memory,
-    _base: usize,
-    unit: usize,
-    vtable: u64,
-) -> bool {
-    // copy_scattered triple: vtable word, handle word, viewer header.
-    let primary = match ispan(log, memory, Some(unit), 8, INTEL_MASK) {
-        Some(start) => start,
-        None => return false,
+fn acquire_intel(job: &mut IntelJob, memory: &impl Memory, ctx: IntelCopyContext, divisions: Option<unit_viewer_entry::DivisionSources<'_>>) {
+    let source = FogMemory {
+        inner: memory,
+        witness: job.checking.then(|| std::cell::RefCell::new(&mut job.source_witness)),
+        bytes: std::cell::Cell::new(0),
     };
-    let handle = match ispan(log, memory, unit.checked_add(engine::cunit::HANDLE), 8, INTEL_MASK)
-    {
-        Some(start) => start,
-        None => return false,
-    };
-    let header = match ispan(
-        log,
-        memory,
-        unit.checked_add(engine::cunit::VIEWER_DATA),
-        16,
-        INTEL_MASK,
-    ) {
-        Some(start) => start,
-        None => return false,
-    };
-    if intel_pool_u64(log, primary) != vtable || intel_pool_u64(log, handle) == 0 {
-        return false;
-    }
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[header..header + 16]);
-    let viewers = match Array::from_header(raw, unit_viewer_entry::STRIDE) {
-        Some(array) => array,
-        None => return false,
-    };
-    // Entry batches mirror the walk's 32-entry chunk reads exactly.
-    let batches = (viewers.count as usize).div_ceil(INTEL_MIRROR_BATCH).max(1);
-    for batch in 0..batches {
-        let first = batch * INTEL_MIRROR_BATCH;
-        let count = (viewers.count as usize - first).min(INTEL_MIRROR_BATCH);
-        if count == 0 {
-            break;
-        }
-        let address = viewers.element(first as u32, unit_viewer_entry::STRIDE);
-        if ispan(
-            log,
-            memory,
-            address,
-            count * unit_viewer_entry::STRIDE,
-            INTEL_MASK,
-        )
-        .is_none()
-        {
-            return false;
-        }
-        if log.overflowed {
-            return false;
-        }
-    }
-    true
-}
-
-/// Mirror of one country's division roster takes. Returns false exactly
-/// when the typed walk fails at or before this roster.
-fn copy_intel_divisions(
-    log: &mut RawLog<INTEL_N>,
-    memory: &impl engine::Memory,
-    base: usize,
-    pointer: usize,
-) -> bool {
-    let header = match ispan(
-        log,
-        memory,
-        pointer.checked_add(ccountry::DIVISIONS),
-        16,
-        INTEL_MASK,
-    ) {
-        Some(start) => start,
-        None => return false,
-    };
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[header..header + 16]);
-    let roster = match Array::from_header(raw, 8) {
-        Some(array) => array,
-        None => return false,
-    };
-    let expected = match base.checked_add(engine::carmy::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return false,
-    };
-    for index in 0..roster.count {
-        let addr = (index as usize)
-            .checked_mul(8)
-            .and_then(|offset| roster.data.checked_add(offset));
-        let entry = match ispan(log, memory, addr, 8, INTEL_MASK) {
-            Some(start) => start,
-            None => return false,
-        };
-        let unit = match usize::try_from(intel_pool_u64(log, entry))
-            .ok()
-            .filter(|&unit| unit != 0)
-        {
-            Some(unit) => unit,
-            None => return false,
-        };
-        if !copy_intel_unit(log, memory, base, unit, expected) {
-            return false;
-        }
-        if log.overflowed {
-            return false;
-        }
-    }
-    true
-}
-
-/// Mirror of one country's fleet/task-force roster takes. Returns false
-/// exactly when the typed walk fails at or before this roster.
-fn copy_intel_fleets(
-    log: &mut RawLog<INTEL_N>,
-    memory: &impl engine::Memory,
-    base: usize,
-    pointer: usize,
-) -> bool {
-    let header = match ispan(
-        log,
-        memory,
-        pointer.checked_add(ccountry::FLEETS),
-        16,
-        INTEL_MASK,
-    ) {
-        Some(start) => start,
-        None => return false,
-    };
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[header..header + 16]);
-    let roster = match Array::from_header(raw, 8) {
-        Some(array) => array,
-        None => return false,
-    };
-    let expected_fleet = match base.checked_add(engine::cfleet::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return false,
-    };
-    let expected_unit = match base.checked_add(engine::ctask_force::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return false,
-    };
-    for index in 0..roster.count {
-        let addr = (index as usize)
-            .checked_mul(8)
-            .and_then(|offset| roster.data.checked_add(offset));
-        let entry = match ispan(log, memory, addr, 8, INTEL_MASK) {
-            Some(start) => start,
-            None => return false,
-        };
-        let fleet = match usize::try_from(intel_pool_u64(log, entry))
-            .ok()
-            .filter(|&fleet| fleet != 0)
-        {
-            Some(fleet) => fleet,
-            None => return false,
-        };
-        let vtable = match ispan(log, memory, Some(fleet), 8, INTEL_MASK) {
-            Some(start) => start,
-            None => return false,
-        };
-        if intel_pool_u64(log, vtable) != expected_fleet {
-            return false;
-        }
-        let forces_header = match ispan(
-            log,
-            memory,
-            fleet.checked_add(engine::cfleet::TASK_FORCES),
-            16,
-            INTEL_MASK,
-        ) {
-            Some(start) => start,
-            None => return false,
-        };
-        raw.copy_from_slice(&log.bytes[forces_header..forces_header + 16]);
-        let forces = match Array::from_header(raw, 8) {
-            Some(array) => array,
-            None => return false,
-        };
-        for task in 0..forces.count {
-            let addr = (task as usize)
-                .checked_mul(8)
-                .and_then(|offset| forces.data.checked_add(offset));
-            let entry = match ispan(log, memory, addr, 8, INTEL_MASK) {
-                Some(start) => start,
-                None => return false,
-            };
-            let unit = match usize::try_from(intel_pool_u64(log, entry))
-                .ok()
-                .filter(|&unit| unit != 0)
-            {
-                Some(unit) => unit,
-                None => return false,
-            };
-            if !copy_intel_unit(log, memory, base, unit, expected_unit) {
-                return false;
-            }
-            if log.overflowed {
-                return false;
-            }
-        }
-        if log.overflowed {
-            return false;
-        }
-    }
-    true
-}
-
-/// One structural copy pass: country census plus per-country division and
-/// fleet takes with viewer entries. The census spans are taken once and
-/// shared by both unit paths. The job is cleared on entry so pooled
-/// refreshes never accumulate spans across hours.
-fn copy_intel_pass(
-    job: &mut IntelJob,
-    memory: &impl engine::Memory,
-    base: usize,
-    game_state: usize,
-    ticks: &mut [u64; INTEL_N],
-) {
-    job.clear();
-    job.game_state = game_state;
-    let started = qpc();
-    copy_intel_tables(job, memory, base, game_state);
-    ticks[0] += elapsed(started);
-}
-
-fn copy_intel_tables(
-    job: &mut IntelJob,
-    memory: &impl engine::Memory,
-    base: usize,
-    game_state: usize,
-) {
-    let log = &mut job.log;
-    let countries_start = ispan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRIES),
-        16,
-        INTEL_MASK,
-    );
-    let links_start = ispan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRY_LINKS),
-        16,
-        INTEL_MASK,
-    );
-    let (Some(countries_start), Some(links_start)) = (countries_start, links_start) else {
-        return;
-    };
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
-    let countries_array = match Array::from_header(raw, 8) {
-        Some(array) => array,
-        None => return,
-    };
-    raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
-    let links = match Array::from_header(raw, 4) {
-        Some(array) => array,
-        None => return,
-    };
-    if countries_array.count < 2 || links.count == 0 {
-        return;
-    }
-    let country_vtable = match base.checked_add(ccountry::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return,
-    };
-    for slot in 1..countries_array.count {
-        let pointer_addr = (slot as usize)
-            .checked_mul(8)
-            .and_then(|offset| countries_array.data.checked_add(offset));
-        let pointer_start = match ispan(log, memory, pointer_addr, 8, INTEL_MASK) {
-            Some(start) => start,
-            None => return,
-        };
-        let pointer = match usize::try_from(intel_pool_u64(log, pointer_start))
-            .ok()
-            .filter(|&pointer| pointer != 0)
-        {
-            Some(pointer) => pointer,
-            None => continue,
-        };
-        let vtable_start = match ispan(log, memory, Some(pointer), 8, INTEL_MASK) {
-            Some(start) => start,
-            None => return,
-        };
-        let id_start = match ispan(log, memory, pointer.checked_add(ccountry::ID), 4, INTEL_MASK)
-        {
-            Some(start) => start,
-            None => return,
-        };
-        if intel_pool_u64(log, vtable_start) != country_vtable {
-            return;
-        }
-        let id = u32::from_le_bytes(log.bytes[id_start..id_start + 4].try_into().unwrap());
-        let canonical = match intel_link(log, memory, &links, countries_array.count, id) {
-            Some(canonical) => canonical,
-            None => return,
-        };
-        if intel_link(log, memory, &links, countries_array.count, slot) != Some(canonical) {
-            return;
-        }
-        if intel_link(log, memory, &links, countries_array.count, canonical) != Some(canonical) {
-            return;
-        }
-        let canonical_addr = (canonical as usize)
-            .checked_mul(8)
-            .and_then(|offset| countries_array.data.checked_add(offset));
-        let canonical_pointer = match ispan(log, memory, canonical_addr, 8, INTEL_MASK) {
-            Some(start) => start,
-            None => return,
-        };
-        if intel_pool_u64(log, canonical_pointer) != pointer as u64 {
-            return;
-        }
-        if slot != canonical {
-            continue;
-        }
-        if !copy_intel_divisions(log, memory, base, pointer) {
-            return;
-        }
-        if log.overflowed {
-            return;
-        }
-        if !copy_intel_fleets(log, memory, base, pointer) {
-            return;
-        }
-        if log.overflowed {
-            return;
-        }
-    }
+    job.outcome = unit_viewer_entry::walk_with_divisions(&source, ctx.base, ctx.game_state, &mut job.rows[..job.row_limit], divisions);
+    job.raw_bytes = source.bytes.get();
+    job.acquired = true;
 }
 
 impl Captured {
-    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
-    /// `second` while the intel table still needs double-read checks,
-    /// compares the raw logs, and records copy-only costs plus the existing
-    /// checked/mismatches bookkeeping. Returns whether the payload is
-    /// complete (`raw_ok`); on staging overflow the caller falls back to the
-    /// typed walk and enqueues nothing.
-    pub(crate) fn copy_intel_refresh(
-        &mut self,
-        memory: &impl Memory,
-        ctx: IntelCopyContext,
-        first: &mut IntelJob,
-        mut second: Option<&mut IntelJob>,
-    ) -> IntelCopyReport {
-        let mut ticks = [0u64; INTEL_N];
-        copy_intel_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
-        let mut matched = [true; INTEL_N];
-        if let Some(second_job) = second.as_deref_mut() {
-            let mut second_ticks = [0u64; INTEL_N];
-            copy_intel_pass(second_job, memory, ctx.base, ctx.game_state, &mut second_ticks);
-            for (total, extra) in ticks.iter_mut().zip(second_ticks) {
-                *total += extra;
-            }
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-            }
+    pub(crate) fn copy_radar_refresh(&mut self, memory: &impl Memory, ctx: RadarCopyContext,
+        first: &mut RadarJob, mut second: Option<&mut RadarJob>) -> RadarCopyReport {
+        let started = qpc();
+        let row_limit = self.radar.rows.len();
+        let province_limit = self.radar_provinces.first.len();
+        let fits = first.fits(row_limit, province_limit) && second.as_deref().is_none_or(|job| job.fits(row_limit, province_limit));
+        first.prepare(row_limit, province_limit, ctx.needed[0]);
+        if fits { acquire_radar(first, memory, ctx); }
+        let mut matched = !ctx.needed[0];
+        if let Some(second) = second.as_deref_mut() {
+            second.prepare(row_limit, province_limit, ctx.needed[0]);
+            if fits { acquire_radar(second, memory, ctx); }
+            matched = first.matches(second);
         }
-        // Conservative checked bookkeeping mirroring the typed path.
-        self.intel.checked = ctx.needed[0];
-        self.intel.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        let raw_ok = !first.log.overflowed
-            && second.is_none_or(|job| !job.log.overflowed);
-        IntelCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
+        self.radar.checked = ctx.needed[0];
+        self.radar.mismatches = usize::from(ctx.needed[0] && !matched);
+        RadarCopyReport {
+            raw_ok: first.acquired && !first.source_witness.overflowed && second.is_none_or(|job| job.acquired && !job.source_witness.overflowed),
+            matched: [matched && matches!(first.outcome, Outcome::Rows { .. })],
+            mismatches: [self.radar.mismatches], copy_ticks: [elapsed(started)], raw_bytes: [first.raw_bytes],
         }
     }
 
-    /// Decode-worker interpretation of a raw intel payload: replays the unit
-    /// viewer walk against the recorded spans into the pooled buffers, with
-    /// the identical bounded/capacity handling the game thread applies.
-    /// Installs identical rows, truncation counts and failure reasons.
-    pub(crate) fn decode_intel_payload(
-        &mut self,
-        base: usize,
-        job: &IntelJob,
-        decode_ticks: &mut [u64; INTEL_N],
-    ) {
-        use crate::raw::Recorded;
-        let recorded = Recorded::build(&job.log);
+    pub(crate) fn decode_radar_payload(&mut self, _base: usize, job: &RadarJob, decode_ticks: &mut [u64; RADAR_N]) {
         let started = qpc();
-        let walked = unit_viewer_entry::walk(&recorded, base, job.game_state, &mut self.intel.rows);
-        self.intel.outcome = bounded(walked, self.intel.rows.len());
+        if !job.acquired || job.row_limit != self.radar.rows.len() || job.province_limit != self.radar_provinces.first.len() {
+            self.radar.outcome = Outcome::Unavailable { reason: "radar owned payload capacity mismatch" };
+        } else {
+            let len = job.outcome.len();
+            self.radar.rows[..len].copy_from_slice(&job.rows[..len]);
+            self.radar_provinces.first[..job.provinces_len].copy_from_slice(&job.provinces[..job.provinces_len]);
+            arena_first(&mut self.radar, &mut self.radar_provinces, job.outcome, job.provinces_len, job.required_provinces);
+            if self.radar.checked && matches!(self.radar.outcome, Outcome::Rows { .. }) {
+                let mut keys: Vec<u128> = self.radar.rows[..len].iter().map(ArenaRow::key).collect();
+                keys.sort_unstable();
+                if keys.windows(2).any(|pair| pair[0] == pair[1]) { self.radar.mismatches += 1; }
+            }
+        }
+        decode_ticks[0] += elapsed(started);
+        self.radar_raw_mode = false;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn copy_intel_refresh(&mut self, memory: &impl Memory, ctx: IntelCopyContext,
+        first: &mut IntelJob, second: Option<&mut IntelJob>) -> IntelCopyReport {
+        self.copy_intel_refresh_with_divisions(memory, ctx, first, second, None)
+    }
+
+    pub(crate) fn copy_intel_refresh_with_divisions(&mut self, memory: &impl Memory, ctx: IntelCopyContext,
+        first: &mut IntelJob, mut second: Option<&mut IntelJob>, divisions: Option<IntelDivisionSources<'_>>) -> IntelCopyReport {
+        let started = qpc();
+        let row_limit = self.intel.rows.len();
+        let fits = first.fits(row_limit, 0) && second.as_deref().is_none_or(|job| job.fits(row_limit, 0));
+        first.prepare(row_limit, 0, ctx.needed[0]);
+        if fits { acquire_intel(first, memory, ctx, divisions.map(|sources| sources.first)); }
+        let mut matched = !ctx.needed[0];
+        if let Some(second) = second.as_deref_mut() {
+            second.prepare(row_limit, 0, ctx.needed[0]);
+            if fits { acquire_intel(second, memory, ctx, divisions.map(|sources| sources.second.unwrap_or(unit_viewer_entry::DivisionSources {
+                entries: &[], outcome: Outcome::Unavailable { reason: "independent division census not supplied" },
+            }))); }
+            matched = first.matches(second)
+                && divisions.is_none_or(|sources| sources.second.is_some() && sources.matched);
+        }
+        self.intel.checked = ctx.needed[0];
+        self.intel.mismatches = usize::from(ctx.needed[0] && !matched);
+        IntelCopyReport {
+            raw_ok: first.acquired && !first.source_witness.overflowed && second.is_none_or(|job| job.acquired && !job.source_witness.overflowed),
+            matched: [matched && matches!(first.outcome, Outcome::Rows { .. })],
+            mismatches: [self.intel.mismatches], copy_ticks: [elapsed(started)], raw_bytes: [first.raw_bytes],
+        }
+    }
+
+    pub(crate) fn decode_intel_payload(&mut self, _base: usize, job: &IntelJob, decode_ticks: &mut [u64; INTEL_N]) {
+        let started = qpc();
+        if !job.acquired || job.row_limit != self.intel.rows.len() {
+            self.intel.outcome = Outcome::Unavailable { reason: "intel owned payload capacity mismatch" };
+        } else {
+            let len = job.outcome.len();
+            self.intel.rows[..len].copy_from_slice(&job.rows[..len]);
+            self.intel.outcome = job.outcome;
+        }
         decode_ticks[0] += elapsed(started);
         self.intel_raw_mode = false;
     }
@@ -2497,6 +1781,100 @@ mod tests {
     }
 
     #[test]
+    fn newly_prepared_fog_jobs_keep_cold_witnesses_until_a_warm_capture() {
+        let mut radar = RadarJob::new();
+        let mut intel = IntelJob::new();
+        assert!(!radar.grow_for_next());
+        assert!(!intel.grow_for_next());
+        let radar_bytes = radar.allocated_bytes();
+        let intel_bytes = intel.allocated_bytes();
+        // Prewarming runs the normal worker recycling path before a capture.
+        // Neither clear nor an explicit growth call may retire untouched proof
+        // storage; the first cold capture needs both independently owned pools.
+        radar.grow();
+        intel.grow();
+        radar.clear();
+        intel.clear();
+        assert_eq!(radar.allocated_bytes(), radar_bytes);
+        assert_eq!(intel.allocated_bytes(), intel_bytes);
+        assert!(radar.source_witness.bytes.capacity() != 0);
+        assert!(intel.source_witness.bytes.capacity() != 0);
+    }
+
+    #[test]
+    fn owned_fog_witness_retires_and_regrows_offthread_without_accepting_missing_checks() {
+        use super::intel_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0; N]);
+        let mut first = IntelJob::default();
+        let mut second = IntelJob::new();
+        let mut ctx = IntelCopyContext { base: kit::BASE, game_state: kit::GAME_STATE, needed: [true] };
+        let report = captured.copy_intel_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(!report.raw_ok);
+        assert!(first.grow_for_next());
+        first.grow();
+        first.clear();
+        let report = captured.copy_intel_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok && report.matched[0]);
+        let before = first.allocated_bytes();
+        ctx.needed = [false];
+        assert!(captured.copy_intel_refresh(&memory, ctx, &mut first, None).raw_ok);
+        assert!(first.grow_for_next());
+        first.grow();
+        first.clear();
+        assert!(first.allocated_bytes() < before);
+        assert_eq!(first.source_witness.bytes.capacity(), 0);
+        let warm_capacity = first.allocated_bytes();
+        assert!(captured.copy_intel_refresh(&memory, ctx, &mut first, None).raw_ok);
+        assert_eq!(first.allocated_bytes(), warm_capacity);
+        ctx.needed = [true];
+        assert!(!captured.copy_intel_refresh(&memory, ctx, &mut first, Some(&mut second)).raw_ok);
+        first.grow();
+        first.clear();
+        let report = captured.copy_intel_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok && report.matched[0]);
+        let report = captured.copy_intel_refresh(&memory, ctx, &mut first, None);
+        assert!(report.raw_ok);
+        assert!(!report.matched[0]);
+        assert_eq!(captured.intel.mismatches, 1);
+    }
+
+    #[test]
+    fn cold_intel_check_retains_unpublished_native_timer_and_shared_census_verdict() {
+        use super::intel_test_kit as kit;
+        struct ChangingTimer<'a> { bytes: &'a [u8], calls: Cell<usize> }
+        impl Memory for ChangingTimer<'_> {
+            fn copy(&self, address: usize, out: &mut [u8]) -> bool {
+                if !kit::memory(self.bytes).copy(address, out) { return false; }
+                if address == kit::VIEWERS {
+                    let calls = self.calls.replace(self.calls.get() + 1);
+                    if calls != 0 { out[unit_viewer_entry::TIMER] ^= 1; }
+                }
+                true
+            }
+        }
+        let bytes = kit::fixture();
+        let memory = ChangingTimer { bytes: &bytes, calls: Cell::new(0) };
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0; N]);
+        let ctx = IntelCopyContext { base: kit::BASE, game_state: kit::GAME_STATE, needed: [true] };
+        let mut first = IntelJob::new();
+        let mut second = IntelJob::new();
+        let report = captured.copy_intel_refresh(&memory, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        assert_eq!(&first.rows[..first.outcome.len()], &second.rows[..second.outcome.len()]);
+        assert!(!report.matched[0]);
+        let entries = [unit_viewer_entry::DivisionSource { pointer: kit::DIVISION, canonical: 1 }];
+        let pass = unit_viewer_entry::DivisionSources { entries: &entries, outcome: Outcome::Rows { len: 1 } };
+        for (second_source, matched) in [(Some(pass), false), (None, true)] {
+            let report = captured.copy_intel_refresh_with_divisions(&kit::memory(&bytes), ctx, &mut first, Some(&mut second),
+                Some(IntelDivisionSources { first: pass, second: second_source, matched }));
+            assert!(report.raw_ok);
+            assert!(!report.matched[0]);
+        }
+    }
+
+    #[test]
     fn radar_tables_are_hourly_tier_h_with_no_refresh_gate() {
         use replay::rows::TableId;
         assert!(!replay::cadence::is_staggered(TableId::RadarCoverage));
@@ -2534,7 +1912,8 @@ mod tests {
             let direct = kit::direct_with(&memory, rows, provinces);
             let (split, report, _) = kit::split_with(&memory, rows, provinces);
             assert!(report.raw_ok, "rows={rows} provinces={provinces}");
-            assert_eq!(report.matched, [true; 1], "rows={rows} provinces={provinces}");
+            assert_eq!(report.matched, [matches!(direct.outcome, Outcome::Rows { .. })], "rows={rows} provinces={provinces}");
+            assert_eq!(report.mismatches, [0]);
             kit::assert_matches_direct(&split, &direct);
         }
         let direct = kit::direct_with(&memory, 1, 2);
@@ -2608,8 +1987,7 @@ mod tests {
         let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 6]);
         let torn_report = captured2.copy_radar_refresh(&torn_memory, ctx, &mut second, None);
         assert!(torn_report.raw_ok);
-        assert!(!first.log.partition_equal(&second.log, 0));
-        assert!(!first.log.logs_equal(&second.log));
+        assert!(!first.matches(&second));
     }
 
     #[test]
@@ -2623,10 +2001,7 @@ mod tests {
             game_state: kit::GAME_STATE,
             needed: [true; 1],
         };
-        let mut tiny = RadarJob {
-            log: crate::raw::RawLog::new(1, 1),
-            game_state: 0,
-        };
+        let mut tiny = RadarJob::default();
         let capacities = super::Capacities {
             rows: [1024, 4, 4, 4, 4, 4],
             radar_provinces: 65_536,
@@ -2648,15 +2023,15 @@ mod tests {
         let job = RadarJob::new();
         let spans = 2 + 439 * 8 + 18 * 8;
         assert!(
-            job.log.spans.capacity() >= spans,
+            job.source_witness.spans.capacity() >= spans,
             "span cap {} < worst case {spans}",
-            job.log.spans.capacity()
+            job.source_witness.spans.capacity()
         );
         let bytes = 439 * 64 + 18 * 128;
         assert!(
-            job.log.bytes.capacity() >= bytes,
+            job.source_witness.bytes.capacity() >= bytes,
             "byte cap {} < worst case {bytes}",
-            job.log.bytes.capacity()
+            job.source_witness.bytes.capacity()
         );
     }
 
@@ -2730,7 +2105,8 @@ mod tests {
             let direct = kit::direct_with(&memory, cap);
             let (split, report, _) = kit::split_with(&memory, cap);
             assert!(report.raw_ok, "cap={cap}");
-            assert_eq!(report.matched, [true; 1], "cap={cap}");
+            assert_eq!(report.matched, [matches!(direct.outcome, Outcome::Rows { .. })], "cap={cap}");
+            assert_eq!(report.mismatches, [0]);
             kit::assert_matches_direct(&split, &direct);
             kit::assert_paths_match_direct(&split, &direct);
         }
@@ -2808,20 +2184,13 @@ mod tests {
         let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 6]);
         let torn_report = captured2.copy_intel_refresh(&torn_memory, ctx, &mut second, None);
         assert!(torn_report.raw_ok);
-        assert!(!first.log.partition_equal(&second.log, 0));
-        assert!(!first.log.logs_equal(&second.log));
+        assert!(!first.matches(&second));
     }
 
     #[test]
-    fn intel_census_duplication_is_bounded_and_net_positive() {
-        // Shared-copy counts proof: the division/fleet census spans this
-        // payload duplicates (country headers, slot words, roster headers
-        // and entry pointers already copied by the moved Divisions and Map
-        // jobs with different read sets) are a small bounded prefix of the
-        // log, while the move removes the whole 0.386 ms intel walk from the
-        // game thread (appendix steady state). Census spans: 2 headers + 1
-        // slot x 7 words + 2 roster headers + 2 entry words = 13 takes here;
-        // the full log carries every viewer span exactly once.
+    fn cold_intel_witness_covers_native_census_and_viewer_inputs() {
+        // The cold direct-source path witnesses the full native acquisition,
+        // including unpublished timer/padding bytes. Warm jobs retain no log.
         use super::intel_test_kit as kit;
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
@@ -2838,13 +2207,13 @@ mod tests {
         ];
         for addr in census_addrs {
             assert!(
-                first.log.spans.iter().any(|span| span.addr == addr),
+                first.source_witness.spans.iter().any(|span| span.addr == addr),
                 "census span missing at {addr:x}"
             );
         }
         // Viewer spans are taken exactly once per batch read.
         let viewer_takes = first
-            .log
+            .source_witness
             .spans
             .iter()
             .filter(|span| span.addr == kit::VIEWERS && span.len == 48)
@@ -2863,10 +2232,7 @@ mod tests {
             game_state: kit::GAME_STATE,
             needed: [true; 1],
         };
-        let mut tiny = IntelJob {
-            log: crate::raw::RawLog::new(1, 1),
-            game_state: 0,
-        };
+        let mut tiny = IntelJob::default();
         let capacities = super::Capacities {
             rows: [4, 4, 4, 4, 32_768, 4],
             radar_provinces: 8,
@@ -2880,27 +2246,21 @@ mod tests {
 
     #[test]
     fn intel_pools_cover_appendix_worst_case() {
-        // Worst-case caps proof: the steady-state pools exceed a
-        // conservative span/byte estimate built from the appendix census (24
-        // intel rows over ~2.9k divisions and ~240 task forces with 439
-        // countries), so live refreshes never take the overflow fallback in
-        // steady state. The duplicated census prefix (~439 slots x 7 words
-        // plus roster headers and entry pointers) is a small fraction of the
-        // pool; the move removes the 0.386 ms walk (net-positive, see the
-        // duplication test above).
+        // Cold witness storage covers the retained campaign census; the
+        // native row pool is independent of witness retirement and growth.
         use super::IntelJob;
         let job = IntelJob::new();
         let spans = 2 + 439 * 7 + 439 * 2 + 3_200 * 2 + 500 * 4 + 24 * 4;
         assert!(
-            job.log.spans.capacity() >= spans,
+            job.source_witness.spans.capacity() >= spans,
             "span cap {} < worst case {spans}",
-            job.log.spans.capacity()
+            job.source_witness.spans.capacity()
         );
         let bytes = 439 * 64 + 3_200 * 32 + 500 * 64 + 24 * 32;
         assert!(
-            job.log.bytes.capacity() >= bytes,
+            job.source_witness.bytes.capacity() >= bytes,
             "byte cap {} < worst case {bytes}",
-            job.log.bytes.capacity()
+            job.source_witness.bytes.capacity()
         );
     }
 
@@ -3090,7 +2450,7 @@ pub(crate) mod radar_test_kit {
 
     pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
         assert_eq!(split.outcome, direct.outcome, "radar outcome");
-        assert_eq!(split.rows, direct.rows, "radar rows");
+        assert_eq!(&split.rows[..split.outcome.len()], &direct.rows[..direct.outcome.len()], "radar rows");
         assert_eq!(split.provinces, direct.provinces, "radar provinces");
     }
 }
@@ -3232,7 +2592,7 @@ pub(crate) mod intel_test_kit {
 
     pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
         assert_eq!(split.outcome, direct.outcome, "intel outcome");
-        assert_eq!(split.rows, direct.rows, "intel rows");
+        assert_eq!(&split.rows[..split.outcome.len()], &direct.rows[..direct.outcome.len()], "intel rows");
     }
 
     /// Partitioned dual-path proof: division-family and fleet-family rows
@@ -3245,12 +2605,12 @@ pub(crate) mod intel_test_kit {
         let is_fleet = |unit: u64| (unit & 0xffff_ffff) == u64::from(ctask_force::DEFAULT_HANDLE_TYPE);
         for fleet in [false, true] {
             let split_path: Vec<_> = split
-                .rows
+                .rows[..split.outcome.len()]
                 .iter()
                 .filter(|row| is_fleet(row.unit) == fleet)
                 .collect();
             let direct_path: Vec<_> = direct
-                .rows
+                .rows[..direct.outcome.len()]
                 .iter()
                 .filter(|row| is_fleet(row.unit) == fleet)
                 .collect();

@@ -63,6 +63,16 @@ pub trait MapSources {
     fn begin_air(&mut self, second: bool) -> u64;
     fn air(&mut self, second: bool, pointer: usize, pool: usize, row: &cair_wing::Row) -> u64;
     fn finish_air(&mut self, second: bool, outcome: Outcome) -> u64;
+    fn plans(
+        &mut self,
+        _second: bool,
+        _roots: &[corders_group::Root],
+        _visits: &[corder_instance::Visit],
+        _root_source: Outcome,
+        _order_source: Outcome,
+    ) -> u64 {
+        0
+    }
     fn order_groups(
         &mut self,
         second: bool,
@@ -668,6 +678,13 @@ impl MapCaptured {
             &self.order_groups[..orders.root_outcome.len()],
             orders.root_outcome,
         );
+        nested = nested.saturating_add(sources.plans(
+            false,
+            &self.order_groups[..orders.root_outcome.len()],
+            &self.order_visits,
+            orders.root_outcome,
+            orders.outcome,
+        ));
         self.army_orders.outcome = orders.outcome;
         self.order_geometry_len = orders.geometry_len;
         self.order_geometry_required = orders.required_geometry;
@@ -686,6 +703,13 @@ impl MapCaptured {
                 true,
                 &self.order_groups[..second.root_outcome.len()],
                 second.root_outcome,
+            ));
+            nested = nested.saturating_add(sources.plans(
+                true,
+                &self.order_groups[..second.root_outcome.len()],
+                &self.order_visits,
+                second.root_outcome,
+                second.outcome,
             ));
             if needed[9] {
                 self.army_orders.compare(second.outcome);
@@ -2052,6 +2076,9 @@ mod tests {
             // This test isolates the already-staged air/naval consumers. The
             // independent live combat-progress window is covered separately.
             extension_checks[replay::rows::TableId::LandCombatProgress.index()] = false;
+            for table in crate::extended::plans::TABLES {
+                extension_checks[table.index()] = false;
+            }
             let (matched, _) = actual.sample(
                 &memory,
                 0,

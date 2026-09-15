@@ -2,6 +2,7 @@
 //! allocate; the callback fills typed buffers and measures shared graph work.
 
 use crate::{
+    projection::{Projection, scalar_table},
     raw::RawLog,
     sampling::{full_match, qpc},
     spooling::{table, unavailable},
@@ -17,7 +18,7 @@ use engine::{
     manpower_value_entry, msvc_string, walk::Outcome,
 };
 use replay::{
-    frame::TableView,
+    frame::{TableInput, TableView},
     rows::{self, TableId, tables},
 };
 
@@ -481,52 +482,6 @@ impl Captured {
             ticks[12] = elapsed(begin);
         }
         (matched, ticks)
-    }
-
-    /// Decode-worker interpretation of a raw divisions-group payload, in
-    /// dependency order: equipment first, then the upgrade graph, both
-    /// against the decoded division sources. Outcomes and rows match the
-    /// typed walks exactly because the identical walks run against the
-    /// recorded spans; checked/mismatches set by the raw compare survive.
-    /// Clears `divisions_raw_mode` so the next capture starts clean.
-    pub(crate) fn decode_division_detail(
-        &mut self,
-        base: usize,
-        sources: &Sources<'_, cequipment_variant_pool::DivisionSource>,
-        recorded: &crate::raw::Recorded<'_>,
-        decode_ticks: &mut [u64; 6],
-    ) {
-        let started = qpc();
-        let first_sources = complete_source(sources.first, sources.first_outcome);
-        self.division_equipment.outcome = match first_sources {
-            Ok(source) => cequipment_variant_pool::walk_divisions(
-                recorded,
-                base,
-                source,
-                &mut self.division_equipment.rows,
-            ),
-            Err(reason) => Outcome::Unavailable { reason },
-        };
-        decode_ticks[1] += elapsed(started);
-        let started = qpc();
-        let result = match first_sources {
-            Ok(source) => carmy_upgrades_status::walk(
-                recorded,
-                base,
-                source,
-                &mut self.groups.rows,
-                &mut self.requests.rows,
-                &mut self.deliveries.rows,
-                &mut self.produced.rows,
-            ),
-            Err(reason) => carmy_upgrades_status::Outcomes::unavailable(reason),
-        };
-        self.groups.outcome = result.groups;
-        self.requests.outcome = result.requests;
-        self.deliveries.outcome = result.deliveries;
-        self.produced.outcome = result.produced;
-        decode_ticks[2] += elapsed(started);
-        self.divisions_raw_mode = false;
     }
 
     /// One shared traversal fills all four deployment buffers. The second pass
@@ -1911,7 +1866,21 @@ impl Captured {
         ]
     }
 
+    #[cfg(test)]
     pub fn tables(&self) -> [TableView; N] {
+        self.table_inputs(None).map(|input| match input {
+            TableInput::Sampled(view) => view,
+            _ => unreachable!("projection without a baseline always samples rows"),
+        })
+    }
+
+    /// Fresh owned division payloads compare directly with the encoder's exact
+    /// complete baseline before allocating replay rows. Other production tables
+    /// retain their existing arena validation and conversion paths.
+    pub(crate) fn table_inputs(
+        &self,
+        mut projection: Option<&mut Projection<'_>>,
+    ) -> [TableInput; N] {
         [
             table::<tables::ProductionLines, _>(outcome(&self.lines), &self.lines.rows, |r| {
                 rows::ProductionLineRow {
@@ -1928,7 +1897,8 @@ impl Captured {
                     priority: r.priority,
                     amount: r.amount,
                 }
-            }),
+            })
+            .into(),
             table::<tables::Stockpiles, _>(outcome(&self.stockpiles), &self.stockpiles.rows, |r| {
                 rows::StockpileRow {
                     country: r.country,
@@ -1936,10 +1906,13 @@ impl Captured {
                     variant_handle: r.variant_handle,
                     amount_raw: r.amount_raw,
                 }
-            }),
-            table::<tables::DivisionEquipment, _>(
+            })
+            .into(),
+            scalar_table::<tables::DivisionEquipment, _>(
+                projection.as_deref_mut(),
                 outcome(&self.division_equipment),
                 &self.division_equipment.rows,
+                |r| (r.division as u128) << 32 | r.ordinal as u128,
                 |r| rows::DivisionEquipmentRow {
                     division: r.division,
                     template: r.template,
@@ -1949,25 +1922,32 @@ impl Captured {
                     amount_raw: r.amount_raw,
                 },
             ),
-            definitions(&self.definitions, &self.definition_bytes),
-            modules(&self.modules, &self.module_bytes),
+            definitions(&self.definitions, &self.definition_bytes).into(),
+            modules(&self.modules, &self.module_bytes).into(),
             table::<tables::VariantStats, _>(outcome(&self.stats), &self.stats.rows, |r| {
                 rows::VariantStatsRow {
                     variant: r.variant,
                     values: r.values,
                 }
-            }),
-            upgrades(&self.upgrades, &self.upgrade_bytes),
-            table::<tables::ArmyUpgradeGroups, _>(outcome(&self.groups), &self.groups.rows, |r| {
-                rows::ArmyUpgradeGroupRow {
+            })
+            .into(),
+            upgrades(&self.upgrades, &self.upgrade_bytes).into(),
+            scalar_table::<tables::ArmyUpgradeGroups, _>(
+                projection.as_deref_mut(),
+                outcome(&self.groups),
+                &self.groups.rows,
+                |r| r.army as u128,
+                |r| rows::ArmyUpgradeGroupRow {
                     country: r.country,
                     army: r.army,
                     priority: r.priority,
-                }
-            }),
-            table::<tables::ArmyUpgradeRequests, _>(
+                },
+            ),
+            scalar_table::<tables::ArmyUpgradeRequests, _>(
+                projection.as_deref_mut(),
                 outcome(&self.requests),
                 &self.requests.rows,
+                |r| (r.army as u128) << 32 | r.ordinal as u128,
                 |r| rows::ArmyUpgradeRequestRow {
                     country: r.country,
                     army: r.army,
@@ -1977,9 +1957,11 @@ impl Captured {
                     total_raw: r.total_raw,
                 },
             ),
-            table::<tables::ArmyUpgradeDeliveries, _>(
+            scalar_table::<tables::ArmyUpgradeDeliveries, _>(
+                projection.as_deref_mut(),
                 outcome(&self.deliveries),
                 &self.deliveries.rows,
+                |r| (r.army as u128) << 32 | r.ordinal as u128,
                 |r| rows::ArmyUpgradeDeliveryRow {
                     country: r.country,
                     army: r.army,
@@ -1990,9 +1972,11 @@ impl Captured {
                     allow_zero_entries: r.allow_zero_entries,
                 },
             ),
-            table::<tables::ArmyUpgradeProduced, _>(
+            scalar_table::<tables::ArmyUpgradeProduced, _>(
+                projection,
                 outcome(&self.produced),
                 &self.produced.rows,
+                |r| (r.army as u128) << 64 | (r.delivery_ordinal as u128) << 32 | r.ordinal as u128,
                 |r| rows::ArmyUpgradeProducedRow {
                     country: r.country,
                     army: r.army,
@@ -2010,9 +1994,10 @@ impl Captured {
                     ordinal: r.ordinal,
                     variant: r.variant,
                 },
-            ),
-            conveyors(&self.conveyors, &self.conveyor_name_bytes),
-            deployment_lines(&self.deployment_lines, &self.line_custom_name_bytes),
+            )
+            .into(),
+            conveyors(&self.conveyors, &self.conveyor_name_bytes).into(),
+            deployment_lines(&self.deployment_lines, &self.line_custom_name_bytes).into(),
             table::<tables::DeploymentManpower, _>(
                 outcome(&self.deployment_manpower),
                 &self.deployment_manpower.rows,
@@ -2023,7 +2008,8 @@ impl Captured {
                     source_country: r.source_country,
                     amount: r.amount,
                 },
-            ),
+            )
+            .into(),
             table::<tables::DeploymentEquipment, _>(
                 outcome(&self.deployment_equipment),
                 &self.deployment_equipment.rows,
@@ -2033,8 +2019,9 @@ impl Captured {
                     variant_handle: r.variant_handle,
                     amount_raw: r.amount_raw,
                 },
-            ),
-            license_records(&self.license_records, &self.license_handles),
+            )
+            .into(),
+            license_records(&self.license_records, &self.license_handles).into(),
         ]
     }
 }
@@ -3273,6 +3260,43 @@ mod tests {
             (u128::from(army) << 64) | u128::from(u64::MAX)
         );
         assert_eq!(produced.amount_raw, i64::MIN);
+
+        // The projected path must use those same full-width keys when looking
+        // up an encoder baseline, including all three produced key components.
+        let mut baseline = std::array::from_fn(|_| unavailable("not part of this fixture"));
+        for (id, view) in TABLES.into_iter().zip(views) {
+            baseline[id.index()] = view;
+        }
+        let mut encoder = replay::frame::FrameEncoder::new();
+        encoder
+            .encode(
+                replay::frame::DecodedFrame {
+                    branch: 1,
+                    hour: 0,
+                    tables: baseline,
+                    metrics: replay::frame::Metrics::default(),
+                },
+                false,
+            )
+            .unwrap();
+        let mut scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+        let inputs = captured.table_inputs(Some(&mut projection));
+        for index in [2, 7, 8, 9, 10] {
+            assert!(matches!(inputs[index], TableInput::ComparedEqual(_)));
+        }
+        captured.division_equipment.rows[0].template ^= 1;
+        captured.groups.rows[0].priority ^= 1;
+        captured.requests.rows[0].total_raw ^= 1;
+        captured.deliveries.rows[0].progress_raw = None;
+        captured.produced.rows[0].amount_raw ^= 1;
+        let inputs = captured.table_inputs(Some(&mut projection));
+        for index in [2, 7, 8, 9, 10] {
+            assert!(matches!(
+                inputs[index],
+                TableInput::Sampled(TableView::Complete(_))
+            ));
+        }
     }
 
     #[test]

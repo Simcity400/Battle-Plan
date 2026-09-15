@@ -506,7 +506,7 @@ impl<const N: usize> RawLog<N> {
     /// Copy at most 64 consecutive fixed-width elements in one guard. Retain
     /// the successful prefix as one bulk span and the first failed element
     /// separately; never retry a partial copy or read beyond that failure.
-    /// The limit sizes stack scratch, not the source array: callers chunk it.
+    /// The limit bounds one guarded call; callers chunk the complete array.
     #[inline(always)]
     pub fn take_array_chunk(
         &mut self,
@@ -534,26 +534,38 @@ impl<const N: usize> RawLog<N> {
             self.overflowed = true;
             return None;
         }
-        // Only the requested prefix crosses the memory boundary. Keep one
-        // initialized address array; unused tail entries are never evaluated.
-        let mut guarded = [0; 64];
-        for (index, destination) in guarded[..count].iter_mut().enumerate() {
-            let source = address.checked_add(index * width).unwrap_or(0);
-            *destination = if is_canonical_range(source, width) {
-                source
-            } else {
-                0
-            };
-        }
+        // The ordinary contiguous range has one arithmetic/canonical gate.
+        // An invalid suffix still permits its exact earlier elements, including
+        // an actual read fault before that suffix. No pointer array is staged.
+        let admitted = if address != 0
+            && address.checked_add(size).is_some()
+            && is_canonical_range(address, size)
+        {
+            count
+        } else {
+            (0..count)
+                .take_while(|&index| {
+                    address.checked_add(index * width).is_some_and(|source| {
+                        source != 0
+                            && source.checked_add(width).is_some()
+                            && is_canonical_range(source, width)
+                    })
+                })
+                .count()
+        };
         let fields = [engine::memory::RecordField {
             source_offset: 0,
             destination_offset: 0,
             len: width,
         }];
+        let layout = engine::memory::RecordLayout::new(&fields, width)?;
         let completed = memory.copy_records(
-            &guarded[..count],
-            &fields,
-            width,
+            engine::memory::RecordSources::Strided {
+                base: address,
+                stride: width,
+                count: admitted,
+            },
+            &layout,
             &mut self.bytes.storage[start..end],
         );
         debug_assert!(completed <= count);
@@ -571,8 +583,8 @@ impl<const N: usize> RawLog<N> {
             self.raw_bytes[lowest_table(mask)] += (completed * width) as u64;
         }
         if completed != count {
-            // Fault metadata retains the original address, not its normalized
-            // null replacement passed to Memory. A failed read is not retried.
+            // Fault metadata retains the original field address after either
+            // admission failure or a live fault. A failed read is not retried.
             let failed_address = address.checked_add(completed * width).unwrap_or(0);
             self.note_fail(failed_address, width as u32, mask);
         }
@@ -1707,9 +1719,8 @@ mod tests {
             len: width,
         }];
         let completed = memory.copy_records(
-            &guarded[..count],
-            &fields,
-            width,
+            engine::memory::RecordSources::Pointers(&guarded[..count]),
+            &engine::memory::RecordLayout::new(&fields, width).unwrap(),
             &mut log.bytes.storage[start..end],
         );
         debug_assert!(completed <= count);
@@ -2062,14 +2073,12 @@ mod tests {
             }
             fn copy_records(
                 &self,
-                pointers: &[usize],
-                fields: &[engine::memory::RecordField],
-                stride: usize,
+                sources: engine::memory::RecordSources<'_>,
+                layout: &engine::memory::RecordLayout<'_>,
                 destination: &mut [u8],
             ) -> usize {
                 self.calls.set(self.calls.get() + 1);
-                self.memory
-                    .copy_records(pointers, fields, stride, destination)
+                self.memory.copy_records(sources, layout, destination)
             }
         }
         for readable in 0..=4 {

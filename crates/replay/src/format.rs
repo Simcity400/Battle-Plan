@@ -1,7 +1,8 @@
 //! Which replay format versions this build reads, and what each one recorded.
 //!
 //! Format 14 records 148 tables, format 17 records 155, and format 18 adds
-//! ProvinceVisibility at id155. These supported layouts retain the earlier
+//! ProvinceVisibility at id155. Format19 appends ArmyOrderPlans, OrdersGroupColors
+//! and Fronts (ids156..158). These supported layouts retain the earlier
 //! table encodings, container fields, keyframe rules and CRC checks.
 //!
 //! A frame body is a `table_ns` entry per recorded table followed by one update
@@ -12,7 +13,7 @@
 //!
 //! Formats 15 and 16 were written during development but are not supported by
 //! this compatibility reader. Compatibility applies to finalized replay files,
-//! not old spool segments: H4SI spool records use [`FormatVersion::CURRENT`].
+//! not old spool segments: H4SJ spool records use [`FormatVersion::CURRENT`].
 
 use crate::{FORMAT_VERSION, codec::invalid, frame::TABLE_COUNT, rows::TableId};
 use std::io;
@@ -48,8 +49,18 @@ impl FormatVersion {
         recorded_tables: TableId::DivisionEta.index() + 1,
     };
 
+    /// Last version before battle-plan operands.
+    pub const LEGACY_18: Self = Self {
+        version: 18,
+        recorded_tables: TableId::ProvinceVisibility.index() + 1,
+    };
     /// Every readable version, oldest first.
-    pub const READABLE: [Self; 3] = [Self::LEGACY_14, Self::LEGACY_17, Self::CURRENT];
+    pub const READABLE: [Self; 4] = [
+        Self::LEGACY_14,
+        Self::LEGACY_17,
+        Self::LEGACY_18,
+        Self::CURRENT,
+    ];
 
     /// Accepts a header's version word, or names every version that would work.
     pub fn read(version: u16) -> io::Result<Self> {
@@ -100,7 +111,8 @@ mod tests {
         }
         assert_eq!(FormatVersion::LEGACY_14.recorded_tables, 148);
         assert_eq!(FormatVersion::LEGACY_17.recorded_tables, 155);
-        assert_eq!(FormatVersion::CURRENT.recorded_tables, 156);
+        assert_eq!(FormatVersion::LEGACY_18.recorded_tables, 156);
+        assert_eq!(FormatVersion::CURRENT.recorded_tables, 159);
         // The writer's version must stay readable, or a file this build wrote
         // could not be reopened.
         assert_eq!(
@@ -134,7 +146,7 @@ mod tests {
     fn format_17_records_all_prior_map_tables_but_not_visibility() {
         let old = FormatVersion::LEGACY_17;
         for table in TableId::ALL {
-            assert_eq!(old.records(table), table != TableId::ProvinceVisibility);
+            assert_eq!(old.records(table), table.index() < 155);
             assert!(FormatVersion::CURRENT.records(table));
         }
         assert_eq!(old.missing_reason(), "not recorded by format 17");
@@ -143,13 +155,13 @@ mod tests {
     #[test]
     fn unsupported_versions_are_refused() {
         // Development formats15/16 existed but have no supported decoder here.
-        for version in [0, 13, 15, 16, 19, u16::MAX] {
+        for version in [0, 13, 15, 16, 20, u16::MAX] {
             let error = FormatVersion::read(version).unwrap_err().to_string();
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18 and \
-                     writes 18"
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19 and \
+                     writes 19"
                 )
             );
         }

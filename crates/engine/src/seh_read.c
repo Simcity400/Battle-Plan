@@ -104,17 +104,35 @@ typedef struct {
     size_t len;
 } RecordField;
 
+/* A null pointer vector selects strided sources. Rust admits every evaluated
+   nonempty field before entry, including checked strided arithmetic. Do not
+   call this for an empty-only partial row: its hypothetical address can be
+   invalid even though every empty field in that prefix succeeds. */
+static __forceinline uintptr_t record_pointer(const uintptr_t *pointers,
+                                               uintptr_t base, size_t stride,
+                                               size_t row) {
+    return pointers != NULL ? pointers[row] : base + row * stride;
+}
+
 /* Hints only the endpoint cache lines of already-validated exact fields.
    PREFETCHT0 observes no value and does not replace any guarded load. Pointer
    metadata is caller-owned; no source pointer is followed here. The caller
    passes only fields inside the flattened validated prefix, including a
    possible partial final row. Zero-width fields never evaluate their source. */
-static __forceinline void hint_record_fields(uintptr_t pointer,
+static __forceinline void hint_record_fields(const uintptr_t *pointers,
+                                             uintptr_t base, size_t stride,
+                                             size_t row,
                                              const RecordField *fields,
                                              size_t count) {
+    uintptr_t pointer = 0;
+    int have_pointer = 0;
     for (size_t index = 0; index < count; ++index) {
         const RecordField *field = &fields[index];
         if (field->len != 0) {
+            if (!have_pointer) {
+                pointer = record_pointer(pointers, base, stride, row);
+                have_pointer = 1;
+            }
             uintptr_t first = pointer + field->source_offset;
             uintptr_t last = first + field->len - 1;
             _mm_prefetch((const char *)first, _MM_HINT_T0);
@@ -167,6 +185,7 @@ static __forceinline int is_packed_five_layout(const RecordField *fields) {
 }
 
 static int record_copy_fault(EXCEPTION_POINTERS *ep, const uintptr_t *pointers,
+                             uintptr_t source_base, size_t source_stride,
                              size_t validated_field_count, const RecordField *fields,
                              size_t field_count, size_t row_stride,
                              unsigned char *destination, size_t completed) {
@@ -175,8 +194,11 @@ static int record_copy_fault(EXCEPTION_POINTERS *ep, const uintptr_t *pointers,
     }
     size_t row = completed / field_count;
     const RecordField *field = &fields[completed % field_count];
-    uintptr_t pointer = pointers[row];
-    if (field->len == 0 || pointer == 0 ||
+    if (field->len == 0) {
+        return 0;
+    }
+    uintptr_t pointer = record_pointer(pointers, source_base, source_stride, row);
+    if (pointer == 0 ||
         field->source_offset > UINTPTR_MAX - pointer) {
         return 0;
     }
@@ -195,7 +217,9 @@ static int record_copy_fault(EXCEPTION_POINTERS *ep, const uintptr_t *pointers,
    the middle of a row. Source validity means nonnull base, nonoverflowing
    arithmetic, and a canonical range, not readability. An earlier unreadable
    field still faults through the exact completed-field witness/filter. */
-size_t seh_guarded_copy_records(const uintptr_t *pointers, size_t validated_field_count,
+size_t seh_guarded_copy_records(const uintptr_t *pointers,
+                               uintptr_t source_base, size_t source_stride,
+                               size_t validated_field_count,
                                const RecordField *fields, size_t field_count,
                                size_t row_stride, unsigned char *destination) {
     volatile size_t completed = 0;
@@ -209,18 +233,18 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers, size_t validated_fiel
             fields[0].len == 8) {
             size_t hinted = 0;
             while (hinted < 4 && hinted < validated_field_count) {
-                hint_pointer_record(pointers[hinted]);
+                hint_pointer_record(record_pointer(pointers, source_base, source_stride, hinted));
                 ++hinted;
             }
             for (size_t index = 0; index < validated_field_count; ++index) {
                 if (hinted < validated_field_count) {
-                    hint_pointer_record(pointers[hinted]);
+                    hint_pointer_record(record_pointer(pointers, source_base, source_stride, hinted));
                     ++hinted;
                 }
                 /* One exact unaligned-safe observation per row; never widen,
                    combine duplicates, or publish a partially copied field. */
                 memcpy(destination + index * 8,
-                       (const unsigned char *)pointers[index], 8);
+                       (const unsigned char *)record_pointer(pointers, source_base, source_stride, index), 8);
                 completed = index + 1;
             }
         } else if (validated_field_count != 0 && field_count == 5 &&
@@ -239,18 +263,18 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers, size_t validated_fiel
             const size_t rows = validated_field_count / 5;
             size_t hinted = 0;
             while (hinted < 4 && hinted < rows) {
-                hint_packed_five_record(pointers[hinted], source0, source1,
+                hint_packed_five_record(record_pointer(pointers, source_base, source_stride, hinted), source0, source1,
                                        source2, source3, source4);
                 ++hinted;
             }
             size_t index = 0;
             for (size_t row = 0; row < rows; ++row) {
                 if (hinted < rows) {
-                    hint_packed_five_record(pointers[hinted], source0, source1,
+                    hint_packed_five_record(record_pointer(pointers, source_base, source_stride, hinted), source0, source1,
                                            source2, source3, source4);
                     ++hinted;
                 }
-                uintptr_t pointer = pointers[row];
+                uintptr_t pointer = record_pointer(pointers, source_base, source_stride, row);
                 unsigned char *target = destination + row * 52;
                 /* Preserve every exact observation and its completed-field
                    witness before beginning the next field. No source gap is
@@ -276,7 +300,7 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers, size_t validated_fiel
             while (hinted_rows < 4 && hinted_fields < validated_field_count) {
                 size_t remaining = validated_field_count - hinted_fields;
                 size_t count = remaining < field_count ? remaining : field_count;
-                hint_record_fields(pointers[hinted_rows], fields, count);
+                hint_record_fields(pointers, source_base, source_stride, hinted_rows, fields, count);
                 hinted_fields += count;
                 ++hinted_rows;
             }
@@ -285,17 +309,22 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers, size_t validated_fiel
                 if (hinted_fields < validated_field_count) {
                     size_t remaining = validated_field_count - hinted_fields;
                     size_t count = remaining < field_count ? remaining : field_count;
-                    hint_record_fields(pointers[hinted_rows], fields, count);
+                    hint_record_fields(pointers, source_base, source_stride, hinted_rows, fields, count);
                     hinted_fields += count;
                     ++hinted_rows;
                 }
-                uintptr_t pointer = pointers[row];
+                uintptr_t pointer = 0;
+                int have_pointer = 0;
                 unsigned char *target = destination + row * row_stride;
                 size_t remaining = validated_field_count - index;
                 size_t row_fields = remaining < field_count ? remaining : field_count;
                 for (size_t field_index = 0; field_index < row_fields; ++field_index) {
                     const RecordField *field = &fields[field_index];
                     if (field->len != 0) {
+                        if (!have_pointer) {
+                            pointer = record_pointer(pointers, source_base, source_stride, row);
+                            have_pointer = 1;
+                        }
                         uintptr_t address = pointer + field->source_offset;
                         copy_bytes(target + field->destination_offset,
                                    (const unsigned char *)address, field->len);
@@ -304,7 +333,7 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers, size_t validated_fiel
                 }
             }
         }
-    } __except (record_copy_fault(GetExceptionInformation(), pointers, validated_field_count,
+    } __except (record_copy_fault(GetExceptionInformation(), pointers, source_base, source_stride, validated_field_count,
                                   fields, field_count, row_stride, destination,
                                   completed)
                     ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {

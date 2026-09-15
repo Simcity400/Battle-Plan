@@ -13,7 +13,7 @@
 use crate::{
     Memory, ccountry,
     cpdx_array::Array,
-    memory::RecordField,
+    memory::{RecordField, RecordLayout, RecordSources},
     nproject_cprogram_status, nproject_cproject_pool,
     nproject_cproject_state_machine::{self, State},
     nproject_sproject_history as history,
@@ -74,6 +74,14 @@ const MACHINE_FIELDS: [RecordField; 1] = [RecordField {
     destination_offset: 0,
     len: nproject_cproject_state_machine::SIZE,
 }];
+const PROJECT_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&PROJECT_FIELDS, RECORD_SIZE).expect("valid record layout");
+const PROJECT_HEADER_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(std::slice::from_ref(&PROJECT_FIELDS[0]), RECORD_SIZE)
+        .expect("valid record layout");
+const MACHINE_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&MACHINE_FIELDS, nproject_cproject_state_machine::SIZE)
+        .expect("valid record layout");
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -181,11 +189,15 @@ fn walk_tables(
                         .element(index + ordinal as u32, POOL_STRIDE)
                         .ok_or("project address overflow")?;
                 }
-                let fields = &PROJECT_FIELDS[..if capture_project { 2 } else { 1 }];
+                let layout = if capture_project {
+                    &PROJECT_LAYOUT
+                } else {
+                    &PROJECT_HEADER_LAYOUT
+                };
+                let fields = layout.fields();
                 let copied = memory.copy_records(
-                    &pointers[..count],
-                    fields,
-                    RECORD_SIZE,
+                    RecordSources::Pointers(&pointers[..count]),
+                    layout,
                     &mut headers[..count * RECORD_SIZE],
                 );
                 if copied > count * fields.len() {
@@ -227,9 +239,8 @@ fn walk_tables(
                 }
                 if capture_project && project_error.is_none() {
                     let copied = memory.copy_records(
-                        &machine_pointers[..header_count],
-                        &MACHINE_FIELDS,
-                        nproject_cproject_state_machine::SIZE,
+                        RecordSources::Pointers(&machine_pointers[..header_count]),
+                        &MACHINE_LAYOUT,
                         &mut machines[..header_count * nproject_cproject_state_machine::SIZE],
                     );
                     if copied != header_count {

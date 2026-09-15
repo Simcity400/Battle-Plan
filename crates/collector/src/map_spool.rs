@@ -3,44 +3,56 @@
 
 use crate::{
     map_capture::MapCaptured,
-    spooling::{table, unavailable},
+    projection::{Projection, project_table, scalar_table},
+    spooling::unavailable,
     table_capture::CaptureRows,
 };
 use engine::{
     cair_wing, cfleet, chuman, cland_combat, cnaval_combat, cnaval_combatant, corder_instance,
     cship, ctask_force, walk::Outcome,
 };
+#[cfg(test)]
+use replay::frame::TableView;
 use replay::{
-    frame::TableView,
+    frame::TableInput,
     rows::{
         AirWingRow, ArmyOrderRow, FleetRow, HumanControllerRow, LandCombatRow,
         NavalCombatParticipantRow, NavalCombatRow, PlayerRow, ShipRow, TaskForceRow, tables,
     },
 };
 
-pub(crate) fn tables(captured: &MapCaptured) -> [TableView; 10] {
+pub(crate) fn table_inputs(
+    captured: &MapCaptured,
+    mut projection: Option<&mut Projection<'_>>,
+) -> [TableInput; 10] {
     [
         players(
             &captured.players,
             &captured.player_names,
             captured.player_names_len,
+            projection.as_deref_mut(),
         ),
-        controllers(&captured.human_controllers),
+        controllers(&captured.human_controllers, projection.as_deref_mut()),
         land_combats(
             &captured.land_combats,
             &captured.land_participants,
             captured.land_participants_len,
+            projection.as_deref_mut(),
         ),
-        fleets(&captured.fleets),
-        task_forces(&captured.task_forces),
-        ships(&captured.ships),
-        naval_combats(&captured.naval_combats),
-        naval_participants(&captured.naval_combat_participants),
-        air_wings(&captured.air_wings),
+        fleets(&captured.fleets, projection.as_deref_mut()),
+        task_forces(&captured.task_forces, projection.as_deref_mut()),
+        ships(&captured.ships, projection.as_deref_mut()),
+        naval_combats(&captured.naval_combats, projection.as_deref_mut()),
+        naval_participants(
+            &captured.naval_combat_participants,
+            projection.as_deref_mut(),
+        ),
+        air_wings(&captured.air_wings, projection.as_deref_mut()),
         army_orders(
             &captured.army_orders,
             &captured.order_geometry,
             captured.order_geometry_len,
+            projection,
         ),
     ]
 }
@@ -55,13 +67,13 @@ fn outcome<T>(captured: &CaptureRows<T>, mismatch_reason: &'static str) -> Outco
     }
 }
 
-fn source<T>(captured: &CaptureRows<T>, outcome: Outcome) -> Result<&[T], TableView> {
+fn source<T>(captured: &CaptureRows<T>, outcome: Outcome) -> Result<&[T], TableInput> {
     match outcome {
-        Outcome::Unavailable { reason } => Err(unavailable(reason)),
+        Outcome::Unavailable { reason } => Err(unavailable(reason).into()),
         Outcome::Rows { len } | Outcome::Truncated { len, .. } => captured
             .rows
             .get(..len)
-            .ok_or_else(|| unavailable("walker row count exceeds allocated buffer")),
+            .ok_or_else(|| unavailable("walker row count exceeds allocated buffer").into()),
     }
 }
 
@@ -69,34 +81,57 @@ fn range<T>(arena: &[T], start: usize, len: usize) -> Option<&[T]> {
     arena.get(start..start.checked_add(len)?)
 }
 
-fn players(captured: &CaptureRows<chuman::Row>, names: &[u8], names_len: usize) -> TableView {
+fn players(
+    captured: &CaptureRows<chuman::Row>,
+    names: &[u8],
+    names_len: usize,
+    projection: Option<&mut Projection<'_>>,
+) -> TableInput {
     let outcome = outcome(captured, "players changed during double read");
     let rows = match source(captured, outcome) {
         Ok(rows) => rows,
         Err(failure) => return failure,
     };
     let Some(names) = names.get(..names_len) else {
-        return unavailable("player bytes lie outside the captured byte arena");
+        return unavailable("player bytes lie outside the captured byte arena").into();
     };
     if rows.iter().any(|row| {
         range(names, row.user_start, row.user_len).is_none()
             || range(names, row.name_start, row.name_len).is_none()
     }) {
-        return unavailable("player bytes lie outside the captured byte arena");
+        return unavailable("player bytes lie outside the captured byte arena").into();
     }
-    table::<tables::Players, _>(outcome, rows, |row| PlayerRow {
-        id: row.id,
-        country: row.country,
-        flags: row.flags,
-        user: names[row.user_start..row.user_start + row.user_len].to_vec(),
-        name: names[row.name_start..row.name_start + row.name_len].to_vec(),
-    })
+    project_table::<tables::Players, _>(
+        projection,
+        outcome,
+        rows,
+        |row| u128::from(row.id as u32),
+        |row, previous| {
+            row.id == previous.id
+                && row.country == previous.country
+                && row.flags == previous.flags
+                && names[row.user_start..row.user_start + row.user_len] == previous.user
+                && names[row.name_start..row.name_start + row.name_len] == previous.name
+        },
+        |row| PlayerRow {
+            id: row.id,
+            country: row.country,
+            flags: row.flags,
+            user: names[row.user_start..row.user_start + row.user_len].to_vec(),
+            name: names[row.name_start..row.name_start + row.name_len].to_vec(),
+        },
+    )
 }
 
-fn controllers(captured: &CaptureRows<chuman::ControllerRow>) -> TableView {
-    table::<tables::HumanControllers, _>(
+fn controllers(
+    captured: &CaptureRows<chuman::ControllerRow>,
+    projection: Option<&mut Projection<'_>>,
+) -> TableInput {
+    scalar_table::<tables::HumanControllers, _>(
+        projection,
         outcome(captured, "human controllers changed during double read"),
         &captured.rows,
+        |row| u128::from(row.country),
         |row| HumanControllerRow {
             country: row.country,
             count: row.count,
@@ -108,14 +143,15 @@ fn land_combats(
     captured: &CaptureRows<cland_combat::Row>,
     participants: &[u64],
     participants_len: usize,
-) -> TableView {
+    projection: Option<&mut Projection<'_>>,
+) -> TableInput {
     let outcome = outcome(captured, "land combats changed during double read");
     let rows = match source(captured, outcome) {
         Ok(rows) => rows,
         Err(failure) => return failure,
     };
     let Some(participants) = participants.get(..participants_len) else {
-        return unavailable("land combat members lie outside the captured reference arena");
+        return unavailable("land combat members lie outside the captured reference arena").into();
     };
     let mut scratch = Vec::new();
     for row in rows {
@@ -124,7 +160,8 @@ fn land_combats(
             (row.defender_start, row.defender_len),
         ] {
             let Some(members) = range(participants, start, len) else {
-                return unavailable("land combat members lie outside the captured reference arena");
+                return unavailable("land combat members lie outside the captured reference arena")
+                    .into();
             };
             // 1413CC2B0 keeps each native side vector unique. Cross-side or
             // cross-combat exclusion is not established and is not imposed.
@@ -132,24 +169,47 @@ fn land_combats(
             scratch.extend_from_slice(members);
             scratch.sort_unstable();
             if scratch.windows(2).any(|pair| pair[0] == pair[1]) {
-                return unavailable("land combat side contains duplicate army references");
+                return unavailable("land combat side contains duplicate army references").into();
             }
         }
     }
-    table::<tables::LandCombats, _>(outcome, rows, |row| LandCombatRow {
-        id: row.id,
-        province: row.province,
-        duration: row.duration,
-        day: row.day,
-        attackers: participants[row.attacker_start..row.attacker_start + row.attacker_len].to_vec(),
-        defenders: participants[row.defender_start..row.defender_start + row.defender_len].to_vec(),
-    })
+    project_table::<tables::LandCombats, _>(
+        projection,
+        outcome,
+        rows,
+        |row| u128::from(row.id),
+        |row, previous| {
+            row.id == previous.id
+                && row.province == previous.province
+                && row.duration == previous.duration
+                && row.day == previous.day
+                && participants[row.attacker_start..row.attacker_start + row.attacker_len]
+                    == previous.attackers
+                && participants[row.defender_start..row.defender_start + row.defender_len]
+                    == previous.defenders
+        },
+        |row| LandCombatRow {
+            id: row.id,
+            province: row.province,
+            duration: row.duration,
+            day: row.day,
+            attackers: participants[row.attacker_start..row.attacker_start + row.attacker_len]
+                .to_vec(),
+            defenders: participants[row.defender_start..row.defender_start + row.defender_len]
+                .to_vec(),
+        },
+    )
 }
 
-fn fleets(captured: &CaptureRows<cfleet::Row>) -> TableView {
-    table::<tables::Fleets, _>(
+fn fleets(
+    captured: &CaptureRows<cfleet::Row>,
+    projection: Option<&mut Projection<'_>>,
+) -> TableInput {
+    scalar_table::<tables::Fleets, _>(
+        projection,
         outcome(captured, "fleets changed during double read"),
         &captured.rows,
+        |row| u128::from(row.id),
         |row| FleetRow {
             id: row.id,
             owner: row.owner,
@@ -158,10 +218,15 @@ fn fleets(captured: &CaptureRows<cfleet::Row>) -> TableView {
     )
 }
 
-fn task_forces(captured: &CaptureRows<ctask_force::Row>) -> TableView {
-    table::<tables::TaskForces, _>(
+fn task_forces(
+    captured: &CaptureRows<ctask_force::Row>,
+    projection: Option<&mut Projection<'_>>,
+) -> TableInput {
+    scalar_table::<tables::TaskForces, _>(
+        projection,
         outcome(captured, "task forces changed during double read"),
         &captured.rows,
+        |row| u128::from(row.id),
         |row| TaskForceRow {
             id: row.id,
             fleet: row.fleet,
@@ -174,10 +239,15 @@ fn task_forces(captured: &CaptureRows<ctask_force::Row>) -> TableView {
     )
 }
 
-fn ships(captured: &CaptureRows<cship::Row>) -> TableView {
-    table::<tables::Ships, _>(
+fn ships(
+    captured: &CaptureRows<cship::Row>,
+    projection: Option<&mut Projection<'_>>,
+) -> TableInput {
+    scalar_table::<tables::Ships, _>(
+        projection,
         outcome(captured, "ships changed during double read"),
         &captured.rows,
+        |row| u128::from(row.id),
         |row| ShipRow {
             id: row.id,
             task_force: row.task_force,
@@ -191,10 +261,15 @@ fn ships(captured: &CaptureRows<cship::Row>) -> TableView {
     )
 }
 
-fn naval_combats(captured: &CaptureRows<cnaval_combat::Row>) -> TableView {
-    table::<tables::NavalCombats, _>(
+fn naval_combats(
+    captured: &CaptureRows<cnaval_combat::Row>,
+    projection: Option<&mut Projection<'_>>,
+) -> TableInput {
+    scalar_table::<tables::NavalCombats, _>(
+        projection,
         outcome(captured, "naval combats changed during double read"),
         &captured.rows,
+        |row| u128::from(row.id),
         |row| NavalCombatRow {
             id: row.id,
             province: row.province,
@@ -206,7 +281,10 @@ fn naval_combats(captured: &CaptureRows<cnaval_combat::Row>) -> TableView {
     )
 }
 
-fn naval_participants(captured: &CaptureRows<cnaval_combatant::Row>) -> TableView {
+fn naval_participants(
+    captured: &CaptureRows<cnaval_combatant::Row>,
+    projection: Option<&mut Projection<'_>>,
+) -> TableInput {
     let outcome = outcome(
         captured,
         "naval combat participants changed during double read",
@@ -218,22 +296,37 @@ fn naval_participants(captured: &CaptureRows<cnaval_combatant::Row>) -> TableVie
     // Side is the selected native vector, not an arbitrary integer field. The
     // composite key reserves exactly one bit for this authenticated selection.
     if rows.iter().any(|row| row.side > 1) {
-        return unavailable("naval combat participant has an invalid side");
+        return unavailable("naval combat participant has an invalid side").into();
     }
-    table::<tables::NavalCombatParticipants, _>(outcome, rows, |row| NavalCombatParticipantRow {
-        combat: row.combat,
-        side: row.side,
-        battle_slot: row.battle_slot,
-        ship: row.ship,
-        owner: row.owner,
-        state: row.state,
-    })
+    scalar_table::<tables::NavalCombatParticipants, _>(
+        projection,
+        outcome,
+        rows,
+        |row| {
+            (u128::from(row.combat) << 33)
+                | (u128::from(row.side) << 32)
+                | u128::from(row.battle_slot)
+        },
+        |row| NavalCombatParticipantRow {
+            combat: row.combat,
+            side: row.side,
+            battle_slot: row.battle_slot,
+            ship: row.ship,
+            owner: row.owner,
+            state: row.state,
+        },
+    )
 }
 
-fn air_wings(captured: &CaptureRows<cair_wing::Row>) -> TableView {
-    table::<tables::AirWings, _>(
+fn air_wings(
+    captured: &CaptureRows<cair_wing::Row>,
+    projection: Option<&mut Projection<'_>>,
+) -> TableInput {
+    scalar_table::<tables::AirWings, _>(
+        projection,
         outcome(captured, "air wings changed during double read"),
         &captured.rows,
+        |row| u128::from(row.id),
         |row| AirWingRow {
             id: row.id,
             owner: row.owner,
@@ -252,37 +345,142 @@ fn army_orders(
     captured: &CaptureRows<corder_instance::Row>,
     geometry: &[u32],
     geometry_len: usize,
-) -> TableView {
+    projection: Option<&mut Projection<'_>>,
+) -> TableInput {
     let outcome = outcome(captured, "army orders changed during double read");
     let rows = match source(captured, outcome) {
         Ok(rows) => rows,
         Err(failure) => return failure,
     };
     let Some(geometry) = geometry.get(..geometry_len) else {
-        return unavailable("army order geometry lies outside the captured arena");
+        return unavailable("army order geometry lies outside the captured arena").into();
     };
     if rows.iter().any(|row| {
         range(geometry, row.path_start, row.path_len).is_none()
             || range(geometry, row.target_start, row.target_len).is_none()
     }) {
-        return unavailable("army order geometry lies outside the captured arena");
+        return unavailable("army order geometry lies outside the captured arena").into();
     }
-    table::<tables::ArmyOrders, _>(outcome, rows, |row| ArmyOrderRow {
-        owner_group: row.owner_group,
-        instance: row.instance,
-        country: row.country,
-        order_type: row.order_type,
-        active: row.active,
-        path: geometry[row.path_start..row.path_start + row.path_len].to_vec(),
-        target_states: geometry[row.target_start..row.target_start + row.target_len].to_vec(),
-        paradrop_target: row.paradrop_target,
-    })
+    project_table::<tables::ArmyOrders, _>(
+        projection,
+        outcome,
+        rows,
+        |row| (u128::from(row.owner_group) << 32) | u128::from(row.instance),
+        |row, previous| {
+            row.owner_group == previous.owner_group
+                && row.instance == previous.instance
+                && row.country == previous.country
+                && row.order_type == previous.order_type
+                && row.active == previous.active
+                && row.paradrop_target == previous.paradrop_target
+                && geometry[row.path_start..row.path_start + row.path_len] == previous.path
+                && geometry[row.target_start..row.target_start + row.target_len]
+                    == previous.target_states
+        },
+        |row| ArmyOrderRow {
+            owner_group: row.owner_group,
+            instance: row.instance,
+            country: row.country,
+            order_type: row.order_type,
+            active: row.active,
+            path: geometry[row.path_start..row.path_start + row.path_len].to_vec(),
+            target_states: geometry[row.target_start..row.target_start + row.target_len].to_vec(),
+            paradrop_target: row.paradrop_target,
+        },
+    )
+}
+
+#[cfg(test)]
+fn sampled(input: TableInput) -> TableView {
+    match input {
+        TableInput::Sampled(view) => view,
+        _ => panic!("fixture has no comparison baseline"),
+    }
+}
+
+#[cfg(test)]
+fn tables(captured: &MapCaptured) -> [TableView; 10] {
+    table_inputs(captured, None).map(sampled)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use replay::rows::TableRows;
+
+    #[test]
+    fn native_projection_preserves_all_map_fields_and_current_arena_failures() {
+        use crate::projection::ProjectionScratch;
+        use replay::{
+            frame::{FrameEncoder, FrameInput, Metrics},
+            rows::TableId,
+        };
+        let map_tables = [
+            TableId::Players,
+            TableId::HumanControllers,
+            TableId::LandCombats,
+            TableId::Fleets,
+            TableId::TaskForces,
+            TableId::Ships,
+            TableId::NavalCombats,
+            TableId::NavalCombatParticipants,
+            TableId::AirWings,
+            TableId::ArmyOrders,
+        ];
+        let frame = |hour, map: [TableInput; 10]| {
+            let mut input = FrameInput {
+                branch: 1,
+                hour,
+                metrics: Metrics::default(),
+                tables: std::array::from_fn(|_| unavailable("fixture table").into()),
+            };
+            for (id, rows) in map_tables.into_iter().zip(map) {
+                input.tables[id.index()] = rows;
+            }
+            input
+        };
+        let mut captured = fixture();
+        let mut encoder = FrameEncoder::new();
+        let mut ordinary = FrameEncoder::new();
+        let mut scratch = ProjectionScratch::default();
+        for hour in 0..3 {
+            if hour == 2 {
+                captured.player_names[0] ^= 1;
+                captured.order_geometry[0] ^= 1;
+            }
+            let current = table_inputs(
+                &captured,
+                Some(&mut Projection::new(&encoder, 1, hour, false, &mut scratch)),
+            );
+            for (index, table) in current.iter().enumerate() {
+                let reused = hour == 1 || (hour == 2 && !matches!(index, 0 | 9));
+                assert_eq!(
+                    matches!(table, TableInput::ComparedEqual(_)),
+                    reused,
+                    "map table {index} hour {hour}"
+                );
+            }
+            let expected = table_inputs(&captured, None);
+            assert_eq!(
+                encoder.encode_input(frame(hour, current), false).unwrap(),
+                ordinary.encode_input(frame(hour, expected), false).unwrap()
+            );
+        }
+        captured.player_names_len = captured.player_names.len() + 1;
+        captured.order_geometry_len = captured.order_geometry.len() + 1;
+        captured.ships.checked = true;
+        captured.ships.mismatches = 1;
+        let rejected = table_inputs(
+            &captured,
+            Some(&mut Projection::new(&encoder, 1, 3, false, &mut scratch)),
+        );
+        for index in [0, 5, 9] {
+            assert!(matches!(
+                rejected[index],
+                TableInput::Sampled(TableView::Unavailable { .. })
+            ));
+        }
+    }
 
     fn set<R>(captured: &mut CaptureRows<R>, rows: Vec<R>) {
         captured.outcome = Outcome::Rows { len: rows.len() };
@@ -509,52 +707,82 @@ mod tests {
         let mut captured = fixture();
         captured.players.rows[0].name_start = 3;
         assert!(matches!(
-            players(&captured.players, &captured.player_names, 3),
+            sampled(players(&captured.players, &captured.player_names, 3, None)),
             TableView::Unavailable { .. }
         ));
         captured.players.rows[0].name_start = usize::MAX;
         assert!(matches!(
-            players(&captured.players, &captured.player_names, 3),
+            sampled(players(&captured.players, &captured.player_names, 3, None)),
             TableView::Unavailable { .. }
         ));
         captured.players.rows[0].name_start = 3;
         captured.players.rows[0].name_len = 0;
         assert!(matches!(
-            players(&captured.players, &captured.player_names, 3),
+            sampled(players(&captured.players, &captured.player_names, 3, None)),
             TableView::Complete(_)
         ));
         assert!(matches!(
-            players(&captured.players, &captured.player_names, 5),
+            sampled(players(&captured.players, &captured.player_names, 5, None)),
             TableView::Unavailable { .. }
         ));
 
         captured.land_combats.rows[0].defender_start = usize::MAX;
         assert!(matches!(
-            land_combats(&captured.land_combats, &captured.land_participants, 3),
+            sampled(land_combats(
+                &captured.land_combats,
+                &captured.land_participants,
+                3,
+                None
+            )),
             TableView::Unavailable { .. }
         ));
         captured.land_combats.rows[0].defender_start = 2;
         assert!(matches!(
-            land_combats(&captured.land_combats, &captured.land_participants, 2),
+            sampled(land_combats(
+                &captured.land_combats,
+                &captured.land_participants,
+                2,
+                None
+            )),
             TableView::Unavailable { .. }
         ));
         assert!(matches!(
-            land_combats(&captured.land_combats, &captured.land_participants, 4),
+            sampled(land_combats(
+                &captured.land_combats,
+                &captured.land_participants,
+                4,
+                None
+            )),
             TableView::Unavailable { .. }
         ));
 
         captured.army_orders.rows[0].target_start = usize::MAX;
         assert!(matches!(
-            army_orders(&captured.army_orders, &captured.order_geometry, 5),
+            sampled(army_orders(
+                &captured.army_orders,
+                &captured.order_geometry,
+                5,
+                None
+            )),
             TableView::Unavailable { .. }
         ));
         captured.army_orders.rows[0].target_start = 3;
         assert!(matches!(
-            army_orders(&captured.army_orders, &captured.order_geometry, 4),
+            sampled(army_orders(
+                &captured.army_orders,
+                &captured.order_geometry,
+                4,
+                None
+            )),
             TableView::Unavailable { .. }
         ));
         assert!(matches!(
-            army_orders(&captured.army_orders, &captured.order_geometry, 6),
+            sampled(army_orders(
+                &captured.army_orders,
+                &captured.order_geometry,
+                6,
+                None
+            )),
             TableView::Unavailable { .. }
         ));
     }
@@ -600,7 +828,12 @@ mod tests {
         }
         captured.army_orders.outcome = Outcome::Rows { len: 3 };
         assert_eq!(
-            army_orders(&captured.army_orders, &captured.order_geometry, 5),
+            sampled(army_orders(
+                &captured.army_orders,
+                &captured.order_geometry,
+                5,
+                None
+            )),
             unavailable("walker row count exceeds allocated buffer")
         );
     }
@@ -611,19 +844,34 @@ mod tests {
         // Distinct full references with the same numeric id remain distinct.
         captured.land_participants = vec![0x100000002, 0x100000003, 0x100000002];
         assert!(matches!(
-            land_combats(&captured.land_combats, &captured.land_participants, 3),
+            sampled(land_combats(
+                &captured.land_combats,
+                &captured.land_participants,
+                3,
+                None
+            )),
             TableView::Complete(_)
         ));
         captured.land_participants[1] = captured.land_participants[0];
         assert_eq!(
-            land_combats(&captured.land_combats, &captured.land_participants, 3),
+            sampled(land_combats(
+                &captured.land_combats,
+                &captured.land_participants,
+                3,
+                None
+            )),
             unavailable("land combat side contains duplicate army references")
         );
         captured.land_combats.rows[0].attacker_len = 1;
         captured.land_combats.rows[0].defender_start = 0;
         captured.land_combats.rows[0].defender_len = 2;
         assert_eq!(
-            land_combats(&captured.land_combats, &captured.land_participants, 3),
+            sampled(land_combats(
+                &captured.land_combats,
+                &captured.land_participants,
+                3,
+                None
+            )),
             unavailable("land combat side contains duplicate army references")
         );
     }
@@ -675,8 +923,10 @@ mod tests {
                 },
             ],
         );
-        let TableView::Complete(rows) = naval_participants(&captured.naval_combat_participants)
-        else {
+        let TableView::Complete(rows) = sampled(naval_participants(
+            &captured.naval_combat_participants,
+            None,
+        )) else {
             panic!("valid composite keys rejected")
         };
         assert_eq!(rows.len(), 4);
@@ -684,12 +934,18 @@ mod tests {
         assert!(rows.windows(2).all(|pair| pair[0].key() < pair[1].key()));
         captured.naval_combat_participants.rows[1] = member;
         assert_eq!(
-            naval_participants(&captured.naval_combat_participants),
+            sampled(naval_participants(
+                &captured.naval_combat_participants,
+                None
+            )),
             unavailable("walker produced duplicate engine ids")
         );
         captured.naval_combat_participants.rows[1].side = 2;
         assert_eq!(
-            naval_participants(&captured.naval_combat_participants),
+            sampled(naval_participants(
+                &captured.naval_combat_participants,
+                None
+            )),
             unavailable("naval combat participant has an invalid side")
         );
 
@@ -705,11 +961,16 @@ mod tests {
             ],
         );
         assert!(
-            matches!(army_orders(&captured.army_orders, &captured.order_geometry, 5), TableView::Complete(rows) if rows.len() == 2)
+            matches!(sampled(army_orders(&captured.army_orders, &captured.order_geometry, 5, None)), TableView::Complete(rows) if rows.len() == 2)
         );
         captured.army_orders.rows[1] = order;
         assert_eq!(
-            army_orders(&captured.army_orders, &captured.order_geometry, 5),
+            sampled(army_orders(
+                &captured.army_orders,
+                &captured.order_geometry,
+                5,
+                None
+            )),
             unavailable("walker produced duplicate engine ids")
         );
     }

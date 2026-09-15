@@ -387,6 +387,7 @@ static DIVISIONS_DECODE_NS: [AtomicU64; 6] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
+static DIVISION_PRESENTATION_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static DIVISIONS_RAW_BYTES: [AtomicU64; 6] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -820,10 +821,9 @@ pub fn recycle_divisions_job(job: DivisionsJob) {
 }
 
 fn release_divisions_job(mut job: DivisionsJob) {
-    if job.log.spans.capacity() == 0 {
+    if !job.initialized() {
         return;
     }
-    crate::raw::note_growth("Divisions", &job.log);
     if job.grow_for_next() {
         job.grow();
     }
@@ -1311,10 +1311,10 @@ pub fn recycle_radar_job(job: RadarJob) {
 }
 
 fn release_radar_job(mut job: RadarJob) {
-    if job.log.spans.capacity() == 0 {
+    if job.allocated_bytes() == 0 {
         return;
     }
-    crate::raw::note_growth("Radar", &job.log);
+    job.note_growth();
     if job.grow_for_next() {
         job.grow();
     }
@@ -1345,10 +1345,10 @@ pub fn recycle_intel_job(job: IntelJob) {
 }
 
 fn release_intel_job(mut job: IntelJob) {
-    if job.log.spans.capacity() == 0 {
+    if job.allocated_bytes() == 0 {
         return;
     }
-    crate::raw::note_growth("Intel", &job.log);
+    job.note_growth();
     if job.grow_for_next() {
         job.grow();
     }
@@ -1710,7 +1710,7 @@ fn process_owned_job(
     air_bases_memo: &mut AirBasesMemo,
     air_stats_memo: &mut AirStatsMemo,
 ) {
-    process_job(shared, &job, air_bases_memo, air_stats_memo);
+    process_job(shared, &mut job, air_bases_memo, air_stats_memo);
 
     if let Some(payload) = job.relations_payload.take() {
         release_relations_job(payload);
@@ -1814,7 +1814,7 @@ pub fn start_worker() -> Result<(), String> {
 /// in FIFO hour order. Skip items forward without touching typed rows.
 fn process_job(
     shared: &Shared,
-    job: &DecodeJob,
+    job: &mut DecodeJob,
     air_bases_memo: &mut AirBasesMemo,
     air_stats_memo: &mut AirStatsMemo,
 ) {
@@ -1900,7 +1900,7 @@ fn process_job(
     }
 
     if job.divisions_refresh
-        && let Some(payload) = job.divisions_payload.as_ref()
+        && let Some(payload) = job.divisions_payload.as_mut()
     {
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 6];
@@ -2257,6 +2257,13 @@ fn process_job(
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
+    let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+    for (total, ticks) in DIVISION_PRESENTATION_DECODE_NS
+        .iter()
+        .zip(frame.extended.decode_division_presentation_inputs())
+    {
+        total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+    }
     // Pool invariant: this frame is owned by the worker, so it occupies no
     // ready slot and the push below always has room while the spool thread
     // lives. The worker may wait (only the game thread must never block).
@@ -2343,6 +2350,9 @@ pub fn calibration() -> Calibration {
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
         divisions_decode_ns: DIVISIONS_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        division_presentation_decode_ns: DIVISION_PRESENTATION_DECODE_NS
             .each_ref()
             .map(|cell| cell.load(Ordering::Relaxed)),
         divisions_raw_bytes: DIVISIONS_RAW_BYTES
@@ -2527,6 +2537,7 @@ pub struct Calibration {
     pub lexical_raw_bytes: [u64; 1],
     pub divisions_copy_ns: [u64; 6],
     pub divisions_decode_ns: [u64; 6],
+    pub division_presentation_decode_ns: [u64; 2],
     pub divisions_raw_bytes: [u64; 6],
     pub focus_copy_ns: [u64; 2],
     pub focus_decode_ns: [u64; 2],
@@ -2635,6 +2646,8 @@ impl Calibration {
             "lexical_tables": ["LexicalTokens"],
             "divisions_copy_ns": self.divisions_copy_ns.as_slice(),
             "divisions_decode_ns": self.divisions_decode_ns.as_slice(),
+            "division_presentation_decode_ns": self.division_presentation_decode_ns.as_slice(),
+            "division_presentation_tables": ["DivisionMovement", "DivisionStatus"],
             "divisions_raw_bytes": self.divisions_raw_bytes.as_slice(),
             "divisions_tables": ["Divisions", "DivisionEquipment", "ArmyUpgradeGroups", "ArmyUpgradeRequests", "ArmyUpgradeDeliveries", "ArmyUpgradeProduced"],
             "focus_copy_ns": self.focus_copy_ns.as_slice(),
@@ -2921,6 +2934,7 @@ pub(crate) fn reset_calibration_for_test() {
         .chain(LEXICAL_RAW_BYTES.iter())
         .chain(DIVISIONS_COPY_NS.iter())
         .chain(DIVISIONS_DECODE_NS.iter())
+        .chain(DIVISION_PRESENTATION_DECODE_NS.iter())
         .chain(DIVISIONS_RAW_BYTES.iter())
         .chain(FOCUS_COPY_NS.iter())
         .chain(FOCUS_DECODE_NS.iter())
@@ -3341,10 +3355,10 @@ mod tests {
             shared.decode_queue.push(job).unwrap();
         }
         let mut handed = Vec::new();
-        while let Some(job) = shared.decode_queue.pop() {
+        while let Some(mut job) = shared.decode_queue.pop() {
             process_job(
                 &shared,
-                &job,
+                &mut job,
                 &mut AirBasesMemo::default(),
                 &mut AirStatsMemo::default(),
             );
@@ -3491,7 +3505,7 @@ mod tests {
             relations_test_kit::split(&memory, frame.extended.relations_pilot(), true);
         assert!(report.raw_ok);
         shared.completed[index].store(0, Ordering::Relaxed);
-        let job = DecodeJob {
+        let mut job = DecodeJob {
             index,
             seq: next_seq(),
             hour: 1,
@@ -3544,7 +3558,7 @@ mod tests {
         };
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -3590,7 +3604,7 @@ mod tests {
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 6]);
         shared.completed[index].store(0, Ordering::Relaxed);
-        let job = DecodeJob {
+        let mut job = DecodeJob {
             index,
             seq: next_seq(),
             hour: 0,
@@ -3643,7 +3657,7 @@ mod tests {
         };
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -3689,7 +3703,7 @@ mod tests {
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 4]);
         shared.completed[index].store(0, Ordering::Relaxed);
-        let job = DecodeJob {
+        let mut job = DecodeJob {
             index,
             seq: next_seq(),
             hour: 3,
@@ -3742,7 +3756,7 @@ mod tests {
         };
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -3785,7 +3799,7 @@ mod tests {
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true]);
         shared.completed[index].store(0, Ordering::Relaxed);
-        let job = DecodeJob {
+        let mut job = DecodeJob {
             index,
             seq: next_seq(),
             hour: 3,
@@ -3838,7 +3852,7 @@ mod tests {
         };
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -3870,7 +3884,7 @@ mod tests {
             frame.war_matrix_ns = 602;
         }
         shared.completed[index].store(0, Ordering::Relaxed);
-        let job = DecodeJob {
+        let mut job = DecodeJob {
             index,
             seq: next_seq(),
             hour: 41,
@@ -3923,7 +3937,7 @@ mod tests {
         };
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -3956,6 +3970,9 @@ mod tests {
         let ctx = DivisionsCopyContext {
             base: divisions_test_kit::BASE,
             game_state: divisions_test_kit::GAME_STATE,
+            row_capacity: 64,
+            source_capacity: 64,
+            detail_capacities: [64; 5],
         };
         let mut first = DivisionsJob::new();
         let mut second = DivisionsJob::new();
@@ -3965,7 +3982,7 @@ mod tests {
         // The pooled frame holds more rows than the fixture needs; the
         // replay truncates identically against the real buffers.
         shared.completed[index].store(0, Ordering::Relaxed);
-        let job = DecodeJob {
+        let mut job = DecodeJob {
             index,
             seq: next_seq(),
             hour: 42,
@@ -4018,7 +4035,7 @@ mod tests {
         };
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -4105,8 +4122,7 @@ mod tests {
         assert!(lexical.capacities().0 >= 70_851 + 16);
         assert!(lexical.capacities().1 >= 70_851 * 32 * 3);
         let divisions = crate::sampling::DivisionsJob::new();
-        assert!(divisions.log.spans.capacity() >= 150_000);
-        assert!(divisions.log.bytes.capacity() >= 4 << 20);
+        assert!(divisions.initialized());
         // Hourly focus worst case is 439 countries with about 3.9k completed
         // rows plus token bytes (the appendix census proves the shape).
         let focus = FocusJob::new();
@@ -4217,7 +4233,7 @@ mod tests {
         assert_eq!(report.matched, [true, true]);
         assert_eq!(report.mismatches, [0, 0]);
         shared.completed[index].store(0, Ordering::Relaxed);
-        let job = DecodeJob {
+        let mut job = DecodeJob {
             index,
             seq: next_seq(),
             hour: 7,
@@ -4270,7 +4286,7 @@ mod tests {
         };
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -4308,7 +4324,7 @@ mod tests {
         let report = crate::extended::air::copy_air_refresh(&memory, ctx, &mut first, None);
         assert!(report.raw_ok);
         shared.completed[index].store(0, Ordering::Relaxed);
-        let job = DecodeJob {
+        let mut job = DecodeJob {
             index,
             seq: next_seq(),
             hour: 9,
@@ -4361,7 +4377,7 @@ mod tests {
         };
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -4394,7 +4410,7 @@ mod tests {
         let report = crate::extended::air::copy_air_stats_refresh(&memory, ctx, &mut first, None);
         assert!(report.raw_ok);
         shared.completed[index].store(0, Ordering::Relaxed);
-        let job = DecodeJob {
+        let mut job = DecodeJob {
             index,
             seq: next_seq(),
             hour: 9,
@@ -4447,7 +4463,7 @@ mod tests {
         };
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -4503,7 +4519,7 @@ mod tests {
             crate::extended::naval_history::copy_naval_refresh(&memory, ctx, &mut first, None);
         assert!(report.raw_ok);
         shared.completed[index].store(0, Ordering::Relaxed);
-        let job = DecodeJob {
+        let mut job = DecodeJob {
             index,
             seq: next_seq(),
             hour: 9,
@@ -4556,7 +4572,7 @@ mod tests {
         };
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -4683,7 +4699,7 @@ mod tests {
         assert_eq!(report.matched, [true; 8]);
         recycle_production_rest_job(second);
         shared.completed[index].store(0, Ordering::Relaxed);
-        let job = DecodeJob {
+        let mut job = DecodeJob {
             index,
             seq: next_seq(),
             hour: 11,
@@ -4736,7 +4752,7 @@ mod tests {
         };
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -4794,7 +4810,7 @@ mod tests {
         assert_eq!(report.matched, [true; 10]);
         recycle_construction_rest_job(second);
         shared.completed[index].store(0, Ordering::Relaxed);
-        let job = DecodeJob {
+        let mut job = DecodeJob {
             index,
             seq: next_seq(),
             hour: 12,
@@ -4847,7 +4863,7 @@ mod tests {
         };
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -4948,7 +4964,7 @@ mod tests {
         let index = shared.free.pop().expect("pooled buffer");
         shared.completed[index].store(0, Ordering::Relaxed);
         let refresh_before = REFRESH_JOBS.load(Ordering::Relaxed);
-        let job = DecodeJob {
+        let mut job = DecodeJob {
             index,
             seq: next_seq(),
             hour: 9,
@@ -5001,7 +5017,7 @@ mod tests {
         };
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -5174,7 +5190,7 @@ mod tests {
                 let mut job = bare_job(index, step, step as i32 + 100, 41);
                 job.air_stats_refresh = true;
                 job.air_stats_payload = Some(payload);
-                process_job(&shared, &job, &mut bases_memo, &mut stats_memo);
+                process_job(&shared, &mut job, &mut bases_memo, &mut stats_memo);
                 assert_eq!(shared.ready.pop(), Some(index));
                 let frame = unsafe { &*shared.frames[index].load(Ordering::Acquire) };
                 assert_eq!(frame.extended_checked, checked);
@@ -5207,7 +5223,7 @@ mod tests {
                 let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
                 job.air_stats_payload = Some(stage_stats_memo_frame(frame, &bytes));
             }
-            process_job(&shared, &job, &mut bases_memo, &mut stats_memo);
+            process_job(&shared, &mut job, &mut bases_memo, &mut stats_memo);
             assert_eq!(shared.ready.pop(), Some(index));
             assert_eq!(shared.completed[index].load(Ordering::Acquire), 41);
             assert_eq!(
@@ -5257,7 +5273,7 @@ mod tests {
                 frame.extended.radar_pilot().registrations_raw_mode = true;
                 job.air_bases_payload = Some(payload);
             }
-            process_job(&shared, &job, &mut memo, &mut AirStatsMemo::default());
+            process_job(&shared, &mut job, &mut memo, &mut AirStatsMemo::default());
             assert_eq!(shared.ready.pop(), Some(index));
             assert_eq!(shared.completed[index].load(Ordering::Acquire), 41);
             assert_eq!(
@@ -5317,7 +5333,7 @@ mod tests {
                 let mut job = bare_job(index, step, step as i32 + 100, 41);
                 job.air_bases_refresh = true;
                 job.air_bases_payload = Some(payload);
-                process_job(&shared, &job, &mut memo, &mut AirStatsMemo::default());
+                process_job(&shared, &mut job, &mut memo, &mut AirStatsMemo::default());
                 assert_eq!(shared.ready.pop(), Some(index));
                 let frame = unsafe { &*shared.frames[index].load(Ordering::Acquire) };
                 assert_eq!(frame.extended_checked, checked);
@@ -5364,7 +5380,7 @@ mod tests {
         job.air_bases_payload = Some(first);
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -5432,7 +5448,7 @@ mod tests {
         job.air_history_payload = Some(first);
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -5492,7 +5508,7 @@ mod tests {
         job.supremacy_payload = Some(first);
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -5547,7 +5563,7 @@ mod tests {
         job.sunk_payload = Some(first);
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -5608,7 +5624,7 @@ mod tests {
         job.radar_payload = Some(first);
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -5659,7 +5675,7 @@ mod tests {
         job.intel_payload = Some(first);
         process_job(
             &shared,
-            &job,
+            &mut job,
             &mut AirBasesMemo::default(),
             &mut AirStatsMemo::default(),
         );
@@ -5710,8 +5726,8 @@ mod tests {
             acquire_air_history_job().has_storage(),
             acquire_supremacy_job().log.spans.capacity() >= 1 << 12,
             acquire_sunk_job().log.spans.capacity() >= 1 << 13,
-            acquire_radar_job().log.spans.capacity() >= 1 << 12,
-            acquire_intel_job().log.spans.capacity() >= 1 << 15,
+            acquire_radar_job().allocated_bytes() > 0,
+            acquire_intel_job().allocated_bytes() > 0,
         ] {
             assert!(acquire);
         }

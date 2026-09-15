@@ -8,6 +8,7 @@ pub mod economy;
 pub mod governance;
 pub mod intel;
 pub mod naval_history;
+pub mod plans;
 pub mod production;
 pub mod projects;
 pub mod session;
@@ -512,6 +513,7 @@ pub struct Save {
     pub task_forces: BTreeMap<u64, TaskForce>,
     pub ships: BTreeMap<u64, Ship>,
     pub army_orders: BTreeMap<(u64, u32), ArmyOrder>,
+    pub plans: plans::Tables,
     pub air_wings: BTreeMap<u64, AirWing>,
     pub naval_combats: BTreeMap<u64, NavalCombat>,
     pub naval_combat_participants: BTreeMap<(u64, u8, u32), NavalCombatParticipant>,
@@ -1413,6 +1415,7 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
     let mut task_forces = BTreeMap::new();
     let mut ships = BTreeMap::new();
     let mut army_orders = BTreeMap::new();
+    let mut plans = plans::Tables::default();
     let mut war_relations = Vec::new();
     let mut war_pairs = BTreeSet::new();
     let mut relation_opinions = Vec::new();
@@ -1438,6 +1441,7 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
             }
         }
         parse_orders(tag, country_items, &mut army_orders)?;
+        plans.country(country_items)?;
         let country = parse_country(tag, country_items).map_err(|error| {
             invalid(format!("country {}: {error}", String::from_utf8_lossy(tag)))
         })?;
@@ -1704,6 +1708,7 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
         task_forces,
         ships,
         army_orders,
+        plans,
         air_wings: parse_air_wings(items)?,
         naval_combats,
         naval_combat_participants,

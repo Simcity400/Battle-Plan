@@ -8,7 +8,7 @@
 //! still use the proven stable boundary and invalidate affected tables when
 //! verification fails. This cache is not a synchronization mechanism.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, sync::Arc};
 
 use crate::{Memory, ccountry};
 
@@ -56,7 +56,8 @@ pub enum Verification {
     NotCached,
 }
 
-/// Reusable storage owned by one callback worker, never by a queued row buffer.
+/// Reusable callback-owned storage, shared read-only with acquisition workers.
+/// No lease may remain in a queued row buffer after the acquisition barrier.
 pub struct Cache {
     entries: Box<[Entry]>,
     // A negative filter only: passing still requires the exact entry lookup.
@@ -78,6 +79,32 @@ pub struct Cache {
 }
 
 impl Cache {
+    /// Prepare one owned authentication snapshot before dispatching any readers.
+    /// Every previous lease must have been returned: refusing a busy snapshot
+    /// leaves its bytes and observations unchanged. Cloning the resulting Arc
+    /// allocates nothing and does not extend any live game-pointer lifetime.
+    pub fn prepare_shared<M: Memory>(
+        storage: &mut Arc<Self>,
+        source: &M,
+        base: usize,
+        game_state: usize,
+    ) -> Result<Arc<Self>, &'static str> {
+        let cache = Arc::get_mut(storage).ok_or("country snapshot still leased by a reader")?;
+        cache.prepare(source, base, game_state);
+        Ok(Arc::clone(storage))
+    }
+
+    /// Borrow the immutable observations from the current acquisition epoch.
+    /// The owner must directly verify the snapshot after all dependent readers
+    /// finish and before publishing any rows. This view cannot verify the game
+    /// world's lifetime; all consumers must remain inside the hourly barrier.
+    pub fn view<'a, M: Memory>(&'a self, source: &'a M) -> CountryMemory<'a, M> {
+        CountryMemory {
+            source,
+            cache: self,
+        }
+    }
+
     /// Allocate off the game thread. Zero disables storage; other capacities
     /// round up to a power of two for bounded, division-free lookup.
     pub fn with_capacity(cells: usize) -> Self {
@@ -105,7 +132,8 @@ impl Cache {
         self.entries.len()
     }
 
-    /// Owned entry/filter storage plus all derived roster storage and context.
+    /// Owned entry/filter storage plus derived roster storage and context.
+    /// Excludes allocator metadata and the shared owner's Arc control block.
     pub fn allocated_bytes(&self) -> usize {
         std::mem::size_of_val(self.entries.as_ref())
             + std::mem::size_of_val(&self.filter)
@@ -414,16 +442,14 @@ impl<M: Memory> Memory for CountryMemory<'_, M> {
     #[inline(always)]
     fn copy_records(
         &self,
-        pointers: &[usize],
-        fields: &[crate::memory::RecordField],
-        row_stride: usize,
+        sources: crate::memory::RecordSources<'_>,
+        layout: &crate::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         // Fixed-layout gathers intentionally remain fresh source reads. This
         // preserves their single guarded batch; the separately seeded country
         // authentication observations are still verified after table walks.
-        self.source
-            .copy_records(pointers, fields, row_stride, destination)
+        self.source.copy_records(sources, layout, destination)
     }
 
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -488,6 +514,48 @@ mod tests {
 
     use super::*;
     use crate::{cgame_state, read, walk::Outcome};
+
+    #[test]
+    fn shared_snapshot_refuses_reseed_while_leased_without_reading_or_mutating() {
+        let source = Synthetic::countries();
+        let mut owner = Arc::new(Cache::with_capacity(64));
+        let first = Cache::prepare_shared(&mut owner, &source, 0, 0x1000).unwrap();
+        let initial = shared_walks(&first.view(&source));
+        source.observations.borrow_mut().clear();
+        let worker = Arc::clone(&first);
+        assert_eq!(
+            Cache::prepare_shared(&mut owner, &source, 0, 0x1000).err(),
+            Some("country snapshot still leased by a reader")
+        );
+        assert!(source.observations.borrow().is_empty());
+        assert_eq!(shared_walks(&worker.view(&source)), initial);
+        assert!(worker.view(&source).verify().is_ok());
+        drop(worker);
+        drop(first);
+        let next = Cache::prepare_shared(&mut owner, &source, 0, 0x1000).unwrap();
+        assert_eq!(shared_walks(&next.view(&source)), initial);
+    }
+
+    #[test]
+    fn shared_snapshot_views_do_not_reseed_and_outer_verification_rejects_mutation() {
+        let source = Synthetic::countries();
+        let mut owner = Arc::new(Cache::with_capacity(64));
+        let snapshot = Cache::prepare_shared(&mut owner, &source, 0, 0x1000).unwrap();
+        source.observations.borrow_mut().clear();
+        let first = snapshot.view(&source);
+        let second = snapshot.view(&source);
+        assert_eq!(
+            ccountry::Reader::new(&first, 0, 0x1000).unwrap().resolve(7),
+            ccountry::Reader::new(&second, 0, 0x1000)
+                .unwrap()
+                .resolve(7)
+        );
+        assert!(source.observations.borrow().is_empty());
+        source.put(0x2000 + ccountry::ID, &2_u32.to_le_bytes());
+        assert!(snapshot.view(&source).verify().is_err());
+        source.fault.set(Some(0x2000 + ccountry::ID));
+        assert!(snapshot.view(&source).verify().is_err());
+    }
 
     #[test]
     fn front_filter_keeps_every_inserted_length_and_address_class() {
@@ -1068,13 +1136,11 @@ mod tests {
 
         fn copy_records(
             &self,
-            pointers: &[usize],
-            fields: &[crate::memory::RecordField],
-            row_stride: usize,
+            sources: crate::memory::RecordSources<'_>,
+            layout: &crate::memory::RecordLayout<'_>,
             destination: &mut [u8],
         ) -> usize {
-            self.0
-                .copy_records(pointers, fields, row_stride, destination)
+            self.0.copy_records(sources, layout, destination)
         }
     }
 

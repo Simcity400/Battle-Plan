@@ -6,8 +6,12 @@
 //! display divisors do not justify narrowing or rounding the recorded value.
 
 use crate::{
-    Memory, cpdx_array::Array, cstrategic_air, loop_history_record_fields, loop_history_window,
-    memory::RecordField, read, walk::Outcome,
+    Memory,
+    cpdx_array::Array,
+    cstrategic_air, loop_history_record_fields, loop_history_window,
+    memory::{RecordField, RecordLayout, RecordSources},
+    read,
+    walk::Outcome,
 };
 
 /// One region-table slot pointer, gathered for a whole batch of slots.
@@ -16,6 +20,8 @@ const SLOT_FIELD: [RecordField; 1] = [RecordField {
     destination_offset: 0,
     len: 8,
 }];
+const SLOT_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&SLOT_FIELD, 8).expect("valid record layout");
 
 /// CLoopHistory primary vtable; a729 RTTI identity and old derive_country_row_result vtable check.
 pub const VTABLE_RVA: usize = 0x029b_be58;
@@ -87,9 +93,8 @@ fn walk_inner(
             }
             let staged = overflow.unwrap_or(count);
             let copied = memory.copy_records(
-                &slots[..staged],
-                &SLOT_FIELD,
-                8,
+                RecordSources::Pointers(&slots[..staged]),
+                &SLOT_LAYOUT,
                 &mut slot_bytes[..staged * 8],
             );
             for index in 0..count {

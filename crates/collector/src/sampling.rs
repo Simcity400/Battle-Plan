@@ -3,19 +3,17 @@
 use crate::{
     acquisition, decode, extended,
     map_capture::{MapCapacities, MapCaptured},
-    raw::{RawLog, Recorded},
     roster::Roster,
     table_capture::{comparison_rows, grow_capacity},
 };
 use crossbeam_queue::ArrayQueue;
+#[cfg(test)]
+use engine::cunit;
 use engine::{
-    army_upgrade_request_row, carmy, carmy_upgrades_requests, ccountry, cequipment_variant_pool,
-    cfaction, cfaction_system,
+    carmy, ccountry, cfaction, cfaction_system,
     cgame_state::{self, Clock},
     country_memory::{Cache, SeedStatus},
-    cpdx_array::Array,
-    cprovince, creferenced_division_template, cstate, cunit, cupgrade_delivery, cwar_relation,
-    equipment_entry,
+    cprovince, cstate, cwar_relation,
     memory::LiveMemory,
     msvc_string::Text,
     save_allocation_counters::{self, AllocationCounters},
@@ -27,7 +25,7 @@ use std::{
     mem::size_of,
     ptr,
     sync::{
-        OnceLock,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -309,7 +307,9 @@ pub struct Captured {
     pub states: Vec<cstate::Row>,
     states_second: Vec<cstate::Row>,
     pub divisions: Vec<carmy::Row>,
-    divisions_second: Vec<carmy::Row>,
+    /// Frame-owned spare inputs preserve capture when an asynchronous job is
+    /// unavailable. They grow only while this frame belongs to the spooler.
+    division_fallback: [crate::division_census::Census; 2],
     pub wars: Vec<cwar_relation::Row>,
     pub(crate) wars_snapshot: cwar_relation::OwnedSnapshotScratch,
     pub(crate) wars_snapshot_sampled: bool,
@@ -373,6 +373,11 @@ impl Captured {
         let unavailable = Outcome::Unavailable {
             reason: "clock unavailable",
         };
+        let division_fallback = std::array::from_fn(|_| {
+            let mut census = crate::division_census::Census::new();
+            census.reserve_sources(capacities[4].max(extended_capacities.division_sources));
+            census
+        });
         Self {
             capture_seq: 0,
             order_counters: OrderCounterCapture::with_capacity(capacities[0]),
@@ -415,16 +420,7 @@ impl Captured {
                 },
             ),
             divisions: vec![carmy::Row::default(); capacities[4]],
-            divisions_second: comparison_rows(
-                capacities[4],
-                if extended::Captured::needs_division_check(
-                    &extended_successful.map(|n| n < CONSISTENCY_TARGET),
-                ) {
-                    0
-                } else {
-                    successful[2]
-                },
-            ),
+            division_fallback,
             wars: vec![cwar_relation::Row::default(); capacities[5]],
             wars_snapshot: cwar_relation::OwnedSnapshotScratch::with_capacity(capacities[0]),
             wars_snapshot_sampled: false,
@@ -474,12 +470,16 @@ impl Captured {
             + self.map.allocated_bytes()
             + self.extended.allocated_bytes()
             + self.wars_snapshot.allocated_bytes()
+            + self
+                .division_fallback
+                .iter()
+                .map(|census| census.allocated_bytes() as usize)
+                .sum::<usize>()
             + self.countries.capacity() * size_of::<ccountry::Row>()
             + (self.provinces.capacity() + self.provinces_second.capacity())
                 * size_of::<cprovince::Row>()
             + (self.states.capacity() + self.states_second.capacity()) * size_of::<cstate::Row>()
-            + (self.divisions.capacity() + self.divisions_second.capacity())
-                * size_of::<carmy::Row>()
+            + self.divisions.capacity() * size_of::<carmy::Row>()
             + (self.wars.capacity() + self.wars_second.capacity() + self.wars_matrix.capacity())
                 * size_of::<cwar_relation::Row>()
             + (self.factions.capacity() + self.factions_second.capacity())
@@ -534,6 +534,17 @@ impl Captured {
             self.divisions_result,
             &mut capacities[4],
         );
+        let division_source_capacity = self.extended.division_capture_capacities().0;
+        for census in &mut self.division_fallback {
+            if census.overflowed {
+                census.grow();
+            }
+            census.reserve_sources(capacities[4].max(division_source_capacity));
+            // A later hour may use a regular job or have no readable clock.
+            // Retire this attempt's overflow request so idle spares do not
+            // repeatedly double on every frame recycle.
+            census.clear();
+        }
         if let Some(Outcome::Truncated { len, unread_rows }) = self.war_matrix_result {
             grow_capacity(&mut capacities[5], len.saturating_add(unread_rows as usize));
         }
@@ -560,17 +571,6 @@ impl Captured {
                 self.consistency_successful[1]
             },
             capacities[3],
-        );
-        comparison(
-            &mut self.divisions_second,
-            if extended::Captured::needs_division_check(
-                &self.extended_successful.map(|n| n < CONSISTENCY_TARGET),
-            ) {
-                0
-            } else {
-                self.consistency_successful[2]
-            },
-            capacities[4],
         );
         comparison(
             &mut self.wars_second,
@@ -637,7 +637,7 @@ pub struct Shared {
     extended_consistency: UnsafeCell<ConsistencyWindow<TABLE_COUNT>>,
     cadence: UnsafeCell<CadenceState>,
     /// Fresh country authentication per callback, verified directly before publication.
-    country_cache: UnsafeCell<Cache>,
+    country_cache: UnsafeCell<Arc<Cache>>,
     /// Independent matrix census supplements the owned-vector double read for 200 full walks.
     war_matrix_remaining: AtomicUsize,
 }
@@ -649,7 +649,7 @@ unsafe impl Sync for Shared {}
 impl Shared {
     pub fn new(base: usize, trampoline: usize, frequency: u64) -> Self {
         let roster = Box::new(Roster::new());
-        let country_cache = Cache::with_capacity(8192);
+        let country_cache = Arc::new(Cache::with_capacity(8192));
         let pool_bytes = roster.allocated_bytes() + country_cache.allocated_bytes();
         let shared = Self {
             acquisition: OnceLock::new(),
@@ -1011,8 +1011,21 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             if let Some(clock) = frame.clock_before {
                 let force_full = unsafe { (&mut *shared.cadence.get()).force_full(&clock) };
                 let state = clock.game_state as usize;
+                let cache_begin = qpc();
+                let country_snapshot = Cache::prepare_shared(
+                    unsafe { &mut *shared.country_cache.get() },
+                    &memory,
+                    shared.base,
+                    state,
+                )
+                .expect("every country snapshot lease returned before the next callback");
+                let cached = country_snapshot.view(&memory);
+                frame.country_cache_status = cached.seed_status();
+                frame.country_cache_entries = cached.cached_entries();
+                let cache_prepare_ticks = qpc() - cache_begin;
                 // Owned whole-family jobs may run concurrently with these main
-                // reads. No frame, cache or live-reader reference crosses threads.
+                // reads. Immutable authentication snapshots are shared; no frame
+                // or live-reader reference crosses threads.
                 // Every submitted job is recovered before its own fallback,
                 // trailing verification, publication or return to game code.
                 let acquisition = shared.acquisition.get().expect("initialized before hook");
@@ -1035,6 +1048,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     }
                     let relations = frame.extended.relations_pilot();
                     relations_request = Some(acquisition::RelationsRequest {
+                        countries: Arc::clone(&country_snapshot),
                         context: extended::intel::RelationsCopyContext {
                             base: shared.base,
                             game_state: state,
@@ -1060,6 +1074,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         first = Default::default();
                     }
                     characters_request = Some(acquisition::CharactersRequest {
+                        countries: Arc::clone(&country_snapshot),
                         context: extended::characters::CharactersCopyContext {
                             base: shared.base,
                             game_state: state,
@@ -1069,6 +1084,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     });
                 } else {
                     world_request = Some(acquire_world_request(
+                        &country_snapshot,
                         shared.base,
                         state,
                         &extended_needed,
@@ -1091,15 +1107,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 shared
                     .acquisition_dispatch_ns
                     .fetch_add(shared.ns(qpc() - dispatch_begin), Ordering::Relaxed);
-                let cache_begin = qpc();
-                let cached = unsafe { &mut *shared.country_cache.get() }.prepare(
-                    &memory,
-                    shared.base,
-                    state,
-                );
-                frame.country_cache_status = cached.seed_status();
-                frame.country_cache_entries = cached.cached_entries();
-                let cache_prepare_ticks = qpc() - cache_begin;
                 let begin = qpc();
                 frame.countries_result =
                     ccountry::walk(&cached, shared.base, state, &mut frame.countries);
@@ -1120,32 +1127,34 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     matched[0] = full_match(frame.links_result, second, frame.links_mismatches);
                 }
                 frame.table_ns[3] = shared.ns(qpc() - begin);
-                // Divisions group (copy/decode split): raw copies only on
-                // the game thread. Every hour stages the payload and hands
-                // the frame to the decode FIFO; the worker replays the
-                // divisions walk (collecting the shared sources), then
-                // equipment and upgrades against the decoded sources, before
-                // the spool ready handoff. Staging overflow falls back to
-                // the typed walk below with no payload enqueued.
+                // Shared owned division inputs feed core and detail rows.
+                // The worker installs them without an address-span index.
                 let mut divisions_first = decode::acquire_divisions_job();
-                let mut divisions_second = (needed[2]
-                    || extended::Captured::needs_division_check(&extended_needed))
-                .then(decode::acquire_divisions_job);
+                let division_second_needed = needed[2]
+                    || extended::Captured::needs_division_check(&extended_needed)
+                    || extended_needed[replay::rows::TableId::UnitIntel.index()];
+                let mut divisions_second =
+                    division_second_needed.then(decode::acquire_divisions_job);
                 // A consistency pass needs both owned buffers; otherwise use
                 // the allocation-free typed double read.
                 if divisions_second
                     .as_ref()
-                    .is_some_and(|job| job.log.spans.capacity() == 0)
+                    .is_some_and(|job| !job.initialized())
                 {
                     decode::recycle_divisions_job(divisions_first);
                     divisions_first = Default::default();
                 }
+                let (division_source_capacity, detail_capacities) =
+                    frame.extended.division_capture_capacities();
                 let divisions_ctx = DivisionsCopyContext {
                     base: shared.base,
                     game_state: state,
+                    row_capacity: frame.divisions.len(),
+                    source_capacity: division_source_capacity,
+                    detail_capacities,
                 };
                 divisions_report = copy_divisions_refresh(
-                    &memory,
+                    &cached,
                     divisions_ctx,
                     &mut divisions_first,
                     divisions_second.as_mut(),
@@ -1157,16 +1166,22 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     let source_started = qpc();
                     divisions_first.supply_sources(
                         &mut frame.extended,
-                        frame.divisions.len(),
+                        division_source_capacity,
                         false,
                     );
                     if let Some(second) = divisions_second.as_ref() {
-                        second.supply_sources(
-                            &mut frame.extended,
-                            frame.divisions_second.len(),
-                            true,
-                        );
+                        second.supply_sources(&mut frame.extended, division_source_capacity, true);
                     }
+                    frame.extended.install_unit_inputs(
+                        divisions_first.census.unit_inputs().map(Arc::clone),
+                        divisions_second
+                            .as_ref()
+                            .and_then(|second| second.census.unit_inputs())
+                            .map(Arc::clone),
+                        divisions_second.as_ref().is_none_or(|second| {
+                            divisions_first.census.unit_inputs_equal(&second.census)
+                        }),
+                    );
                     divisions_report.copy_ticks[0] += elapsed(source_started);
                     divisions_payload = Some(divisions_first);
                     matched[2] = divisions_report.matched[0];
@@ -1174,7 +1189,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         frame.consistency_checked[2] = true;
                         // Binary per refresh: tearing detected (0/1), not a
                         // row count. Spool gates test `==0`/`!=0` only.
-                        frame.divisions_mismatches = usize::from(!divisions_report.matched[0]);
+                        frame.divisions_mismatches = divisions_report.mismatches[0];
                     }
                     let divisions_ns = shared.ns(divisions_report.copy_ticks[0] as i64);
                     frame.table_ns[6] = divisions_ns;
@@ -1182,59 +1197,52 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     decode::add_divisions_raw_bytes(0, divisions_report.raw_bytes[0]);
                 } else {
                     let begin = qpc();
-                    let mut division_source_ticks = 0_u64;
                     decode::recycle_divisions_job(divisions_first);
-                    frame.extended.set_divisions_raw_mode(false);
-                    frame.divisions_result = carmy::walk_with(
-                        &cached,
-                        shared.base,
-                        state,
-                        &mut frame.divisions,
-                        |pointer, row| {
-                            division_source_ticks +=
-                                frame.extended.visit_division(pointer, row, false);
-                        },
-                    );
-                    division_source_ticks += frame
-                        .extended
-                        .finish_divisions(frame.divisions_result, false);
-                    if needed[2] || extended::Captured::needs_division_check(&extended_needed) {
-                        frame.consistency_checked[2] = needed[2];
-                        let second = carmy::walk_with(
-                            &cached,
-                            shared.base,
-                            state,
-                            &mut frame.divisions_second,
-                            |pointer, row| {
-                                division_source_ticks +=
-                                    frame.extended.visit_division(pointer, row, true);
-                            },
-                        );
-                        division_source_ticks += frame.extended.finish_divisions(second, true);
-                        frame.divisions_mismatches = mismatches(
-                            frame.divisions_result,
-                            &frame.divisions,
-                            second,
-                            &frame.divisions_second,
-                        );
-                        matched[2] = needed[2]
-                            && full_match(
-                                frame.divisions_result,
-                                second,
-                                frame.divisions_mismatches,
-                            );
+                    if let Some(second) = divisions_second.take() {
+                        decode::recycle_divisions_job(second);
                     }
-                    frame.table_ns[6] =
-                        shared.ns((qpc() - begin).saturating_sub(division_source_ticks as i64));
+                    frame.extended.set_divisions_raw_mode(false);
+                    let capacity = frame.divisions.len().max(division_source_capacity);
+                    frame.division_fallback[0].capture(&cached, shared.base, state, capacity);
+                    frame.divisions_result =
+                        frame.division_fallback[0].install_rows(&mut frame.divisions);
+                    supply_division_census_sources(
+                        &frame.division_fallback[0],
+                        &mut frame.extended,
+                        division_source_capacity,
+                        false,
+                    );
+                    if division_second_needed {
+                        frame.division_fallback[1].capture(&cached, shared.base, state, capacity);
+                        supply_division_census_sources(
+                            &frame.division_fallback[1],
+                            &mut frame.extended,
+                            division_source_capacity,
+                            true,
+                        );
+                        frame.consistency_checked[2] = needed[2];
+                        matched[2] = needed[2]
+                            && frame.division_fallback[0]
+                                .equal(&frame.division_fallback[1], frame.divisions.len());
+                        frame.divisions_mismatches = usize::from(needed[2] && !matched[2]);
+                    }
+                    frame.extended.install_unit_inputs(
+                        frame.division_fallback[0].unit_inputs().map(Arc::clone),
+                        division_second_needed
+                            .then(|| frame.division_fallback[1].unit_inputs().map(Arc::clone))
+                            .flatten(),
+                        !division_second_needed
+                            || frame.division_fallback[0]
+                                .unit_inputs_equal(&frame.division_fallback[1]),
+                    );
+                    frame.table_ns[6] = shared.ns(qpc() - begin);
                 }
-                if let Some(second) = divisions_second {
-                    decode::recycle_divisions_job(second);
-                }
-                // ETA owns copies of both authenticated source prefixes and
-                // its own output/cache buffers. The frame remains game-thread
+                // ETA leases immutable typed unit inputs and owns its output
+                // and dependency buffers. The frame remains game-thread
                 // owned; the worker must return before final verification.
                 let eta_dispatch_begin = qpc();
                 let mut eta_request = Some(frame.extended.take_eta_request(
+                    &country_snapshot,
                     shared.base,
                     state,
                     extended_needed[replay::rows::TableId::DivisionEta.index()],
@@ -1747,10 +1755,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let mut radar_second = radar_second_needed.then(decode::acquire_radar_job);
                 // A consistency pass needs both owned buffers; otherwise use
                 // the allocation-free typed double read.
-                if radar_second
-                    .as_ref()
-                    .is_some_and(|job| job.log.spans.capacity() == 0)
-                {
+                if radar_second.as_ref().is_some_and(|job| !job.initialized()) {
                     decode::recycle_radar_job(radar_first);
                     radar_first = Default::default();
                 }
@@ -1760,7 +1765,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     needed: [extended_needed[decode::RADAR[0].index()]],
                 };
                 radar_report = frame.extended.radar_pilot().copy_radar_refresh(
-                    &memory,
+                    &cached,
                     radar_ctx,
                     &mut radar_first,
                     radar_second.as_mut(),
@@ -1787,10 +1792,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 let mut intel_second = intel_second_needed.then(decode::acquire_intel_job);
                 // A consistency pass needs both owned buffers; otherwise use
                 // the allocation-free typed double read.
-                if intel_second
-                    .as_ref()
-                    .is_some_and(|job| job.log.spans.capacity() == 0)
-                {
+                if intel_second.as_ref().is_some_and(|job| !job.initialized()) {
                     decode::recycle_intel_job(intel_first);
                     intel_first = Default::default();
                 }
@@ -1799,12 +1801,28 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     game_state: state,
                     needed: [extended_needed[decode::INTEL[0].index()]],
                 };
-                intel_report = frame.extended.intel_pilot().copy_intel_refresh(
-                    &memory,
-                    intel_ctx,
-                    &mut intel_first,
-                    intel_second.as_mut(),
-                );
+                let intel_divisions =
+                    divisions_payload
+                        .as_ref()
+                        .map(|first| extended::fog::IntelDivisionSources {
+                            first: first.census.intel_sources(),
+                            second: divisions_second
+                                .as_ref()
+                                .map(|second| second.census.intel_sources()),
+                            matched: divisions_second
+                                .as_ref()
+                                .is_none_or(|second| first.census.intel_equal(&second.census)),
+                        });
+                intel_report = frame
+                    .extended
+                    .intel_pilot()
+                    .copy_intel_refresh_with_divisions(
+                        &cached,
+                        intel_ctx,
+                        &mut intel_first,
+                        intel_second.as_mut(),
+                        intel_divisions,
+                    );
                 frame.extended.intel_pilot().intel_raw_mode = intel_report.raw_ok;
                 if intel_report.raw_ok {
                     intel_payload = Some(intel_first);
@@ -1814,6 +1832,8 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 if let Some(second) = intel_second {
                     decode::recycle_intel_job(second);
                 }
+                // Both unit input passes remain owned through the final worker
+                // join and their shared-field verification below.
                 // Hourly weather (copy/decode split): raw copies only on the
                 // game thread, same FIFO and ordering guarantees. The manager
                 // header is staged once with limits, regions and provinces
@@ -2050,7 +2070,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         .acquisition_wait_ns
                         .fetch_add(shared.ns(qpc() - join_begin), Ordering::Relaxed);
                     let failure = match completed.report {
-                        Ok(report) => report.error,
+                        Ok(_) => None,
                         Err(acquisition::Failure::Panicked) => {
                             Some("World acquisition worker panicked")
                         }
@@ -2066,6 +2086,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 } else {
                     let mut request = world_request.take().unwrap_or_else(|| {
                         acquire_world_request(
+                            &country_snapshot,
                             shared.base,
                             state,
                             &extended_needed,
@@ -2077,7 +2098,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                             frame.extended.economy_rest_pilot(),
                         )
                     });
-                    let report = acquisition::run_world(&mut request, &memory);
+                    let report = acquisition::run_world(&mut request, &cached);
                     (request, report, None)
                 };
                 production_rest_report = report.production;
@@ -2178,7 +2199,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 } else {
                     relations_request.take().map(|mut request| {
                         let report = extended::intel::copy_relations_refresh(
-                            &memory,
+                            &cached,
                             request.context,
                             &mut request.first,
                             request.second.as_mut(),
@@ -2211,7 +2232,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 } else {
                     characters_request.take().map(|mut request| {
                         let report = extended::characters::copy_characters_refresh(
-                            &memory,
+                            &cached,
                             request.context,
                             &mut request.first,
                             request.second.as_mut(),
@@ -2320,6 +2341,81 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                     frame
                         .extended
                         .capture_eta(&cached, shared.base, state, extended_needed[eta]);
+                let unit_verify_started = qpc();
+                for pass in 0..=usize::from(division_second_needed) {
+                    let census = if divisions_report.raw_ok {
+                        if pass == 0 {
+                            &mut divisions_payload
+                                .as_mut()
+                                .expect("owned division packet")
+                                .census
+                        } else {
+                            &mut divisions_second
+                                .as_mut()
+                                .expect("owned division check packet")
+                                .census
+                        }
+                    } else {
+                        &mut frame.division_fallback[pass]
+                    };
+                    let bytes_before = census.payload_bytes();
+                    let consumed = frame.extended.consumed_unit_seed_masks(pass);
+                    let changed = census.verify_unit_inputs(&cached, &consumed);
+                    let valid = frame.extended.reject_changed_unit_inputs(pass, changed);
+                    for (table, valid) in [
+                        replay::rows::TableId::DivisionMovement,
+                        replay::rows::TableId::DivisionStatus,
+                        replay::rows::TableId::DivisionEta,
+                    ]
+                    .into_iter()
+                    .zip(valid)
+                    {
+                        checks[table.index()] &= valid;
+                    }
+                    let core = census.outcome(frame.divisions.len());
+                    if needed[2] && !matches!(core, Outcome::Rows { .. }) {
+                        matched[2] = false;
+                        divisions_report.matched[0] = false;
+                        divisions_report.mismatches[0] = 1;
+                        frame.divisions_mismatches = 1;
+                    }
+                    if !divisions_report.raw_ok && pass == 0 {
+                        frame.divisions_result = core;
+                    }
+                    if let Outcome::Unavailable { reason } =
+                        census.outcome(division_source_capacity)
+                    {
+                        frame.extended.reject_division_detail_source(
+                            pass,
+                            &extended_needed,
+                            reason,
+                        );
+                        for (slot, table) in decode::DIVISIONS.iter().enumerate().skip(1) {
+                            if pass == 0 || extended_needed[table.index()] {
+                                checks[table.index()] = false;
+                                divisions_report.matched[slot] = false;
+                                divisions_report.mismatches[slot] = 1;
+                            }
+                        }
+                    }
+                    if divisions_report.raw_ok && pass == 0 {
+                        decode::add_divisions_raw_bytes(
+                            0,
+                            census.payload_bytes().saturating_sub(bytes_before),
+                        );
+                    }
+                }
+                // Drop every worker/frame lease before a census can be recycled
+                // or cleared. Deferred projection owns its operands separately.
+                frame.extended.release_unit_inputs();
+                if let Some(second) = divisions_second.take() {
+                    decode::recycle_divisions_job(second);
+                }
+                let unit_verify_ns = shared.ns(qpc() - unit_verify_started);
+                frame.table_ns[6] += unit_verify_ns;
+                if divisions_report.raw_ok {
+                    decode::add_divisions_copy_ns(0, unit_verify_ns);
+                }
                 extended_matched = checks;
                 for table in extended::TABLES {
                     let index = table.index();
@@ -2392,7 +2488,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         let index = table.index();
                         extended_matched[index] = divisions_report.matched[slot];
                         frame.extended_raw_mismatches[index] =
-                            extended_needed[index] && !divisions_report.matched[slot];
+                            extended_needed[index] && divisions_report.mismatches[slot] != 0;
                         let ns = shared.ns(divisions_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_divisions_copy_ns(slot, ns);
@@ -2619,7 +2715,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         let index = table.index();
                         extended_matched[index] = radar_report.matched[slot];
                         frame.extended_raw_mismatches[index] =
-                            extended_needed[index] && !radar_report.matched[slot];
+                            extended_needed[index] && radar_report.mismatches[slot] != 0;
                         let ns = shared.ns(radar_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_radar_copy_ns(slot, ns);
@@ -2633,7 +2729,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                         let index = table.index();
                         extended_matched[index] = intel_report.matched[slot];
                         frame.extended_raw_mismatches[index] =
-                            extended_needed[index] && !intel_report.matched[slot];
+                            extended_needed[index] && intel_report.mismatches[slot] != 0;
                         let ns = shared.ns(intel_report.copy_ticks[slot] as i64);
                         frame.table_ns[index] = ns;
                         decode::add_intel_copy_ns(slot, ns);
@@ -2881,6 +2977,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
 }
 
 fn acquire_world_request(
+    countries: &Arc<Cache>,
     base: usize,
     game_state: usize,
     needed: &[bool],
@@ -2909,6 +3006,7 @@ fn acquire_world_request(
         }};
     }
     acquisition::WorldRequest {
+        countries: Arc::clone(countries),
         production: pair!(
             extended::production::ProductionRestCopyContext {
                 base,
@@ -2960,1019 +3058,193 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
-// ===========================================================================
-// Tier-H divisions-group raw-copy split (Divisions plus DivisionEquipment
-// and the four army-upgrade tables, sharing one division census).
-//
-// The game thread copies raw bytes only: one shared country/province
-// census, per-country roster arrays, division rows with location/template/
-// orders authentication, per-division equipment pools with variant
-// identities, and the army-owned upgrade graph (groups, requests,
-// deliveries, produced). No row is decoded on the game thread. The single
-// FIFO decode worker replays the existing walks in dependency order —
-// divisions first (collecting the shared sources through the same visitor),
-// then equipment and upgrades against the decoded sources — so rows,
-// ordinals, skips, truncation and failure reasons are identical by
-// construction (see `crate::raw` for the mirror rules).
-//
-// The mirror traverses structurally and records every discoverable span,
-// never aborting the whole copy except on overflow or on a census/row
-// failure the typed walk also fails entirely on: validation, precedence
-// and error scope are local parses, so the replay derives every outcome
-// from the same recorded spans and later extras are harmless. Per-table
-// sink failures (requests, deliveries, produced) only stop that table's
-// takes; the walk continues and so does the mirror.
-// ===========================================================================
-
-/// Fault-attribution bits: equipment walk and the four upgrade tables.
-/// The shared census and division rows block every slot: a fault there
-/// fails the divisions walk, which makes every dependent census incomplete.
-const EQUIPMENT_MASK: u32 = 0x02;
-const REQUESTS_MASK: u32 = 0x08;
-const DELIVERIES_MASK: u32 = 0x10;
-const PRODUCED_MASK: u32 = 0x20;
-const DIVISIONS_CENSUS_MASK: u32 = 0x3F;
-const UPGRADES_GRAPH_MASK: u32 = 0x3C;
-
-#[derive(Debug, Default, Clone, Copy)]
-struct DivisionEntry {
-    pointer: usize,
-    canonical: u32,
-}
-
-/// One hour of raw divisions payload: the shared census, the divisions
-/// walk, and the equipment/upgrade detail walks. Flat pools recycle
-/// capacities and the steady state allocates on neither thread; growth
-/// happens on the decode side only (see `crate::decode::recycle_divisions_job`).
+/// One independently bounded owned division census and its five detail tables.
+/// No address/span replay or live memory access remains on the decode worker.
 #[derive(Debug, Default)]
 pub(crate) struct DivisionsJob {
-    pub log: RawLog<6>,
-    pub game_state: usize,
-    census: Vec<DivisionEntry>,
-    sources: Vec<cequipment_variant_pool::DivisionSource>,
-    census_complete: bool,
+    pub(crate) census: crate::division_census::Census,
+    details: crate::division_detail::OwnedDetails,
+    context: DivisionsCopyContext,
+    overflowed: bool,
     capacity_charge: crate::raw_memory::Charge,
 }
-
 impl DivisionsJob {
     pub fn new() -> Self {
         let mut job = Self {
-            // Steady state is about 2.9k divisions with ~17k equipment rows
-            // plus a few thousand upgrade rows; both pools start above that
-            // so steady state never overflows.
-            log: RawLog::new(1 << 18, 8 << 20),
-            game_state: 0,
-            census: Vec::with_capacity(4096),
-            sources: Vec::with_capacity(4096),
-            census_complete: false,
-            capacity_charge: crate::raw_memory::Charge::default(),
+            census: crate::division_census::Census::new(),
+            details: crate::division_detail::OwnedDetails::new(),
+            ..Self::default()
         };
         job.update_capacity_charge();
         job
     }
-
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
     pub fn clear(&mut self) {
-        self.log.clear();
-        self.game_state = 0;
         self.census.clear();
-        self.sources.clear();
-        self.census_complete = false;
+        self.details.clear();
+        self.overflowed = false;
     }
-
+    pub fn initialized(&self) -> bool {
+        self.census.initialized()
+    }
     pub fn grow_for_next(&self) -> bool {
-        self.log.grow_for_next()
+        self.overflowed || self.census.overflowed
     }
-
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed hours fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
-        self.log.grow();
-        crate::raw::double_capacity(&mut self.census);
-        crate::raw::double_capacity(&mut self.sources);
+        self.census.grow();
+        self.details.grow();
         self.update_capacity_charge();
     }
-
     fn update_capacity_charge(&mut self) {
-        use crate::raw_memory::{Capacity, vector_bytes};
-        self.capacity_charge.set(Capacity {
-            auxiliary_vectors: vector_bytes(&self.census) + vector_bytes(&self.sources),
+        self.capacity_charge.set(crate::raw_memory::Capacity {
+            auxiliary_vectors: self.census.allocated_bytes()
+                + self.details.allocated_bytes() as u64,
             ..Default::default()
         });
     }
-
-    /// Supplies only copied/authenticated source rows while the callback still
-    /// owns live memory. No native reads or allocation. A row failure beyond
-    /// the consumer's capacity does not invalidate its earlier truncated prefix;
-    /// a failed census or a failure inside that prefix remains unavailable.
+    pub fn payload_bytes(&self) -> [u64; 6] {
+        let mut bytes = [0; 6];
+        bytes[0] = self.census.payload_bytes();
+        bytes[1..].copy_from_slice(&self.details.acquired_bytes());
+        bytes
+    }
+    #[cfg(test)]
     fn source_outcome(&self, capacity: usize) -> Outcome {
-        if self.log.overflowed || !self.census_complete {
-            return Outcome::Unavailable {
-                reason: "division copied source census incomplete",
-            };
-        }
-        let len = self.census.len().min(capacity);
-        if self.sources.len() < len {
-            return Outcome::Unavailable {
-                reason: "division copied source row invalid",
-            };
-        }
-        if len < self.census.len() {
-            match u32::try_from(self.census.len() - len) {
-                Ok(unread_rows) => Outcome::Truncated { len, unread_rows },
-                Err(_) => Outcome::Unavailable {
-                    reason: "division copied source count overflow",
-                },
-            }
-        } else {
-            Outcome::Rows { len }
-        }
+        self.census.outcome(capacity)
     }
-
     fn supply_sources(&self, captured: &mut extended::Captured, capacity: usize, second: bool) {
-        let outcome = self.source_outcome(capacity);
-        for &source in &self.sources[..outcome.len()] {
-            captured.visit_division_source(source, second);
-        }
-        captured.finish_divisions(outcome, second);
+        supply_division_census_sources(&self.census, captured, capacity, second);
     }
+}
+
+fn supply_division_census_sources(
+    census: &crate::division_census::Census,
+    captured: &mut extended::Captured,
+    capacity: usize,
+    second: bool,
+) {
+    let (sources, outcome) = census.sources(capacity);
+    for &source in sources {
+        captured.visit_division_source(source, second);
+    }
+    captured.finish_divisions(outcome, second);
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct DivisionsCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
+    /// A pooled capacity shortage uses the existing live bounded readers.
     pub raw_ok: bool,
-    /// Per-partition raw equality gated by live-fault conservatism, in
-    /// [divisions, equipment, groups, requests, deliveries, produced] order.
-    /// Shared census spans gate every dependent partition; each table's
-    /// private spans gate only their own slot, so tearing equipment private
-    /// bytes flips only equipment.
     pub matched: [bool; 6],
+    pub mismatches: [usize; 6],
     pub copy_ticks: [u64; 6],
     pub raw_bytes: [u64; 6],
 }
-
-/// Game-thread copy parameters, bundled to keep the tick entry small.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DivisionsCopyContext {
     pub base: usize,
     pub game_state: usize,
+    pub row_capacity: usize,
+    pub source_capacity: usize,
+    pub detail_capacities: [usize; 5],
 }
-
-fn divisions_pool_u64(log: &RawLog<6>, start: usize) -> u64 {
-    u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
-}
-
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
-fn dspan(
-    log: &mut RawLog<6>,
-    memory: &impl engine::Memory,
-    addr: Option<usize>,
-    len: usize,
-    mask: u32,
-) -> Option<usize> {
-    log.take(memory, addr?, len, mask)
-}
-
-/// Authenticated division census shared by the divisions walk and, through
-/// the decoded sources, the equipment/upgrade walks. Records the exact read
-/// set of the `carmy` reader: country/province/link headers, per-slot
-/// pointers, vtables, identity words, link resolutions and roster arrays
-/// with entry pointers. Returns the parsed arrays for the walk mirrors, or
-/// `None` exactly when the typed census fails (both walks then fail
-/// identically from the same recorded spans).
-fn copy_divisions_census(
-    log: &mut RawLog<6>,
-    memory: &impl engine::Memory,
-    base: usize,
-    game_state: usize,
-    census: &mut Vec<DivisionEntry>,
-) -> Option<(Array, Array, u32)> {
-    let countries_start = dspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRIES),
-        16,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    let links_start = dspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRY_LINKS),
-        16,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    let provinces_start = dspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::PROVINCES),
-        16,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
-    let countries = Array::from_header(raw, 8)?;
-    raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
-    let links = Array::from_header(raw, 4)?;
-    raw.copy_from_slice(&log.bytes[provinces_start..provinces_start + 16]);
-    let provinces = Array::from_header(raw, 8)?;
-    if countries.count < 2 || links.count == 0 || provinces.count < 2 {
-        return None;
-    }
-    let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
-    let mut found_country = false;
-    for slot in 1..countries.count {
-        let pointer_addr = (slot as usize)
-            .checked_mul(8)
-            .and_then(|offset| countries.data.checked_add(offset));
-        let pointer_start = dspan(log, memory, pointer_addr, 8, DIVISIONS_CENSUS_MASK)?;
-        let pointer = usize::try_from(divisions_pool_u64(log, pointer_start))
-            .ok()
-            .filter(|&pointer| pointer != 0);
-        let Some(pointer) = pointer else {
-            continue;
-        };
-        let country_vtable = dspan(log, memory, Some(pointer), 8, DIVISIONS_CENSUS_MASK)?;
-        let id_start = dspan(
-            log,
-            memory,
-            pointer.checked_add(ccountry::ID),
-            4,
-            DIVISIONS_CENSUS_MASK,
-        )?;
-        if divisions_pool_u64(log, country_vtable) != vtable {
-            return None;
-        }
-        let id = u32::from_le_bytes(log.bytes[id_start..id_start + 4].try_into().unwrap());
-        let canonical = divisions_link(log, memory, &links, countries.count, id)?;
-        if divisions_link(log, memory, &links, countries.count, slot)? != canonical {
-            return None;
-        }
-        let canonical_addr = (canonical as usize)
-            .checked_mul(8)
-            .and_then(|offset| countries.data.checked_add(offset));
-        let canonical_pointer = dspan(log, memory, canonical_addr, 8, DIVISIONS_CENSUS_MASK)?;
-        if divisions_pool_u64(log, canonical_pointer) != pointer as u64 {
-            return None;
-        }
-        if slot != canonical {
-            continue;
-        }
-        found_country = true;
-        let roster_start = dspan(
-            log,
-            memory,
-            pointer.checked_add(ccountry::DIVISIONS),
-            16,
-            DIVISIONS_CENSUS_MASK,
-        )?;
-        let mut header = [0u8; 16];
-        header.copy_from_slice(&log.bytes[roster_start..roster_start + 16]);
-        let roster = Array::from_header(header, 8)?;
-        for index in 0..roster.count {
-            let entry_addr = roster.data.checked_add((index as usize).saturating_mul(8));
-            // An unreadable entry fails the walk; a null slot is skipped.
-            let entry_start = dspan(log, memory, entry_addr, 8, DIVISIONS_CENSUS_MASK)?;
-            let entry = usize::try_from(divisions_pool_u64(log, entry_start))
-                .ok()
-                .filter(|&pointer| pointer != 0);
-            let Some(division) = entry else {
-                continue;
-            };
-            if census.len() == census.capacity() {
-                log.overflowed = true;
-                return None;
-            }
-            census.push(DivisionEntry {
-                pointer: division,
-                canonical,
-            });
-            if log.overflowed {
-                return None;
-            }
-        }
-    }
-    found_country.then_some((links, provinces, countries.count))
-}
-
-/// Mirror of one link-table read with local bounds checks. Returns `None`
-/// exactly when the typed resolve fails; the replay derives its own reason.
-fn divisions_link(
-    log: &mut RawLog<6>,
-    memory: &impl engine::Memory,
-    links: &Array,
-    countries: u32,
-    raw: u32,
-) -> Option<u32> {
-    if raw == 0 || raw >= links.count {
-        return None;
-    }
-    let offset = (raw as usize).checked_mul(4)?;
-    let start = dspan(
-        log,
-        memory,
-        links.data.checked_add(offset),
-        4,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    let slot = u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap());
-    if slot == 0 || slot >= countries {
-        return None;
-    }
-    Some(slot)
-}
-
-/// Parsed census arrays shared by the divisions walk mirrors.
-#[derive(Clone, Copy)]
-struct DivisionArrays<'a> {
-    links: &'a Array,
-    countries: u32,
-    provinces: &'a Array,
-}
-
-/// Mirror of one division row's read set: both vtables, native handle,
-/// roster-owner resolution, logical/expeditionary owners, location with
-/// province authentication, template with handle authentication, hit
-/// points, organisation and the orders-group identity. Returns `None`
-/// exactly when the typed row fails (the whole walk then fails identically
-/// from the same recorded spans); null location/template/orders pointers
-/// skip their authentication like the walk.
-fn copy_division_row(
-    log: &mut RawLog<6>,
-    memory: &impl engine::Memory,
-    base: usize,
-    arrays: DivisionArrays<'_>,
-    pointer: usize,
-    canonical: u32,
-) -> Option<cequipment_variant_pool::DivisionSource> {
-    let (links, countries, provinces) = (arrays.links, arrays.countries, arrays.provinces);
-    let vtable = base.checked_add(carmy::VTABLE_RVA)? as u64;
-    let secondary = base.checked_add(carmy::SECONDARY_VTABLE_RVA)? as u64;
-    let primary_start = dspan(log, memory, Some(pointer), 8, DIVISIONS_CENSUS_MASK)?;
-    let secondary_start = dspan(
-        log,
-        memory,
-        pointer.checked_add(carmy::SECONDARY_BASE),
-        8,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    if divisions_pool_u64(log, primary_start) != vtable {
-        return None;
-    }
-    if divisions_pool_u64(log, secondary_start) != secondary {
-        return None;
-    }
-    let handle_start = dspan(
-        log,
-        memory,
-        pointer.checked_add(cunit::HANDLE),
-        8,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    let division = divisions_pool_u64(log, handle_start);
-    if division == 0 {
-        return None;
-    }
-    let owner_start = dspan(
-        log,
-        memory,
-        pointer.checked_add(cunit::ROSTER_OWNER),
-        4,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    let roster_owner =
-        u32::from_le_bytes(log.bytes[owner_start..owner_start + 4].try_into().unwrap());
-    if divisions_link(log, memory, links, countries, roster_owner)? != canonical {
-        return None;
-    }
-    dspan(
-        log,
-        memory,
-        pointer.checked_add(cunit::LOGICAL_OWNER),
-        4,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    dspan(
-        log,
-        memory,
-        pointer.checked_add(cunit::EXPEDITIONARY_OWNER),
-        4,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    let location_start = dspan(
-        log,
-        memory,
-        pointer.checked_add(cunit::LOCATION),
-        8,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    let location = usize::try_from(divisions_pool_u64(log, location_start)).ok()?;
-    if location != 0 {
-        copy_division_province(log, memory, base, provinces, location)?;
-    }
-    let template_start = dspan(
-        log,
-        memory,
-        pointer.checked_add(carmy::STANDARD_TEMPLATE),
-        8,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    let template = usize::try_from(divisions_pool_u64(log, template_start)).ok()?;
-    let template = if template == 0 {
-        0
-    } else {
-        copy_division_template(log, memory, base, template)?
-    };
-    dspan(
-        log,
-        memory,
-        pointer.checked_add(carmy::STRENGTH),
-        8,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    dspan(
-        log,
-        memory,
-        pointer.checked_add(carmy::ORGANISATION),
-        8,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    let group_start = dspan(
-        log,
-        memory,
-        pointer.checked_add(carmy::ORDERS_GROUP),
-        8,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    let group = usize::try_from(divisions_pool_u64(log, group_start)).ok()?;
-    if group != 0 {
-        let start = dspan(log, memory, Some(group), 16, DIVISIONS_CENSUS_MASK)?;
-        let vtable = divisions_pool_u64(log, start);
-        if ![
-            engine::corders_group::VTABLE_RVA,
-            engine::carmy_group::VTABLE_RVA,
-        ]
-        .iter()
-        .any(|&rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
-            || divisions_pool_u64(log, start + 8) as u32 != engine::corders_group::REFERENCE_TYPE
-        {
-            return None;
-        }
-    }
-    Some(cequipment_variant_pool::DivisionSource {
-        pointer,
-        division,
-        template,
-        country: roster_owner,
-    })
-}
-
-/// Mirror of one province authentication: vtable, identity word and the
-/// registered slot pointer. Returns `None` exactly when the typed
-/// authentication fails.
-fn copy_division_province(
-    log: &mut RawLog<6>,
-    memory: &impl engine::Memory,
-    base: usize,
-    provinces: &Array,
-    pointer: usize,
-) -> Option<()> {
-    let expected = base.checked_add(cprovince::VTABLE_RVA)? as u64;
-    let vtable_start = dspan(log, memory, Some(pointer), 8, DIVISIONS_CENSUS_MASK)?;
-    if divisions_pool_u64(log, vtable_start) != expected {
-        return None;
-    }
-    let id_start = dspan(
-        log,
-        memory,
-        pointer.checked_add(cprovince::ID),
-        4,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    let id = u32::from_le_bytes(log.bytes[id_start..id_start + 4].try_into().unwrap());
-    if id == 0 || id >= provinces.count {
-        return None;
-    }
-    let slot_addr = provinces.data.checked_add((id as usize).checked_mul(8)?);
-    let slot_start = dspan(log, memory, slot_addr, 8, DIVISIONS_CENSUS_MASK)?;
-    if divisions_pool_u64(log, slot_start) != pointer as u64 {
-        return None;
-    }
-    Some(())
-}
-
-/// Mirror of one template authentication: vtable and the nonzero native
-/// handle. Returns `None` exactly when the typed authentication fails.
-fn copy_division_template(
-    log: &mut RawLog<6>,
-    memory: &impl engine::Memory,
-    base: usize,
-    pointer: usize,
-) -> Option<u64> {
-    let expected = base.checked_add(creferenced_division_template::VTABLE_RVA)? as u64;
-    let vtable_start = dspan(log, memory, Some(pointer), 8, DIVISIONS_CENSUS_MASK)?;
-    if divisions_pool_u64(log, vtable_start) != expected {
-        return None;
-    }
-    let handle_start = dspan(
-        log,
-        memory,
-        pointer.checked_add(creferenced_division_template::TYPE),
-        8,
-        DIVISIONS_CENSUS_MASK,
-    )?;
-    let handle = divisions_pool_u64(log, handle_start);
-    if handle == 0 {
-        return None;
-    }
-    Some(handle)
-}
-
-/// Mirror of one division's equipment bank: pool vtable, item array and per
-/// entry the record plus the variant identity. Stops the equipment phase
-/// (returns `false`) exactly when the typed walk fails the whole table;
-/// later divisions stay unrecorded and the replay fails at the same read.
-fn copy_division_equipment(
-    log: &mut RawLog<6>,
-    memory: &impl engine::Memory,
-    base: usize,
-    pointer: usize,
-) -> bool {
-    let pool = match pointer.checked_add(carmy::EQUIPMENT_POOL) {
-        Some(pool) => pool,
-        None => return false,
-    };
-    let expected = match base.checked_add(cequipment_variant_pool::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return false,
-    };
-    let vtable_start = match dspan(log, memory, Some(pool), 8, EQUIPMENT_MASK) {
-        Some(start) => start,
-        None => return false,
-    };
-    if divisions_pool_u64(log, vtable_start) != expected {
-        return false;
-    }
-    let header_start = match dspan(
-        log,
-        memory,
-        pool.checked_add(cequipment_variant_pool::ITEMS),
-        16,
-        EQUIPMENT_MASK,
-    ) {
-        Some(start) => start,
-        None => return false,
-    };
-    let mut header = [0u8; 16];
-    header.copy_from_slice(&log.bytes[header_start..header_start + 16]);
-    let array = match Array::from_header(header, equipment_entry::STRIDE) {
-        Some(array) => array,
-        None => return false,
-    };
-    for index in 0..array.count {
-        let entry_addr = array
-            .data
-            .checked_add((index as usize).saturating_mul(equipment_entry::STRIDE));
-        let entry_start = match dspan(
-            log,
-            memory,
-            entry_addr,
-            equipment_entry::STRIDE,
-            EQUIPMENT_MASK,
-        ) {
-            Some(start) => start,
-            None => return false,
-        };
-        let variant = match usize::try_from(u64::from_le_bytes(
-            log.bytes[entry_start..entry_start + 8].try_into().unwrap(),
-        ))
-        .ok()
-        {
-            Some(variant) => variant,
-            None => return false,
-        };
-        if dspan(log, memory, Some(variant), 16, EQUIPMENT_MASK).is_none() {
-            return false;
-        }
-        if log.overflowed {
-            return false;
-        }
-    }
-    true
-}
-
-/// Mirror of one division's army-owned upgrade graph: the requests-object
-/// pointer, the group identity pair, the request vector with variant
-/// identities, and the delivery vector with per-delivery authentication,
-/// progress rows and produced pools. Per-table sink failures only stop that
-/// table's takes; the walk continues and so does the mirror. A null or
-/// unreadable requests pointer fails the whole walk, so it stops the
-/// upgrades phase (returns `false`); the replay fails at the same read.
-fn copy_division_upgrades(
-    log: &mut RawLog<6>,
-    memory: &impl engine::Memory,
-    pointer: usize,
-) -> bool {
-    let outer_start = match dspan(
-        log,
-        memory,
-        pointer.checked_add(carmy::REQUESTS),
-        8,
-        UPGRADES_GRAPH_MASK,
-    ) {
-        Some(start) => start,
-        None => return false,
-    };
-    let outer = match usize::try_from(divisions_pool_u64(log, outer_start))
-        .ok()
-        .filter(|&outer| outer != 0)
-    {
-        Some(outer) => outer,
-        None => return false,
-    };
-    let group = match outer.checked_add(carmy_upgrades_requests::IN_ARMY_REQUESTS) {
-        Some(group) => group,
-        None => return false,
-    };
-    // Group identity pair; validation mismatches are derived by the replay,
-    // so the mirror continues past them.
-    dspan(log, memory, Some(group), 12, UPGRADES_GRAPH_MASK);
-    dspan(
-        log,
-        memory,
-        group.checked_add(carmy_upgrades_requests::PERSISTENT_SUBOBJECT),
-        16,
-        UPGRADES_GRAPH_MASK,
-    );
-    if log.overflowed {
-        return false;
-    }
-    copy_upgrade_requests(log, memory, group);
-    if log.overflowed {
-        return false;
-    }
-    copy_upgrade_deliveries(log, memory, group);
-    !log.overflowed
-}
-
-/// Mirror of one group's request vector: header plus per-entry records
-/// with variant identities. Vector failure only fails the requests table.
-fn copy_upgrade_requests(log: &mut RawLog<6>, memory: &impl engine::Memory, group: usize) {
-    let header_start = match dspan(
-        log,
-        memory,
-        group.checked_add(carmy_upgrades_requests::REQUESTS_DATA),
-        16,
-        REQUESTS_MASK,
-    ) {
-        Some(start) => start,
-        None => return,
-    };
-    let mut header = [0u8; 16];
-    header.copy_from_slice(&log.bytes[header_start..header_start + 16]);
-    let array = match Array::from_header(header, army_upgrade_request_row::STRIDE) {
-        Some(array) => array,
-        None => return,
-    };
-    for index in 0..array.count {
-        let entry_addr = array
-            .data
-            .checked_add((index as usize).saturating_mul(army_upgrade_request_row::STRIDE));
-        let entry_start = match dspan(
-            log,
-            memory,
-            entry_addr,
-            army_upgrade_request_row::STRIDE,
-            REQUESTS_MASK,
-        ) {
-            Some(start) => start,
-            None => return,
-        };
-        let variant = match usize::try_from(u64::from_le_bytes(
-            log.bytes[entry_start..entry_start + 8].try_into().unwrap(),
-        ))
-        .ok()
-        {
-            Some(variant) => variant,
-            None => return,
-        };
-        // A null variant fails the row like the typed identity read; the
-        // take records the failure and the replay derives the same reason.
-        dspan(log, memory, Some(variant), 16, REQUESTS_MASK);
-        if log.overflowed {
-            return;
+impl Default for DivisionsCopyContext {
+    fn default() -> Self {
+        let c = extended::production::Capacities::default().rows;
+        Self {
+            base: 0,
+            game_state: 0,
+            row_capacity: INITIAL_CAPACITIES[4],
+            source_capacity: 8192,
+            detail_capacities: [c[2], c[7], c[8], c[9], c[10]],
         }
     }
 }
-
-/// Mirror of one group's delivery vector: header plus per-delivery entry
-/// pointers, authentication triples, progress rows and produced pools.
-/// The header feeds both deliveries and produced (both fail without it);
-/// entry pointers fail the whole walk. Vector failure fails deliveries and
-/// produced for this group; the walk continues with the next source and so
-/// does the mirror.
-fn copy_upgrade_deliveries(log: &mut RawLog<6>, memory: &impl engine::Memory, group: usize) {
-    let header_start = match dspan(
-        log,
-        memory,
-        group.checked_add(carmy_upgrades_requests::DELIVERIES_DATA),
-        16,
-        DELIVERIES_MASK | PRODUCED_MASK,
-    ) {
-        Some(start) => start,
-        None => return,
-    };
-    let mut header = [0u8; 16];
-    header.copy_from_slice(&log.bytes[header_start..header_start + 16]);
-    let array = match Array::from_header(header, carmy_upgrades_requests::DELIVERY_ENTRY_STRIDE) {
-        Some(array) => array,
-        None => return,
-    };
-    for index in 0..array.count {
-        let entry_addr = array.data.checked_add(
-            (index as usize).saturating_mul(carmy_upgrades_requests::DELIVERY_ENTRY_STRIDE),
-        );
-        let pointer_start = match dspan(log, memory, entry_addr, 8, UPGRADES_GRAPH_MASK) {
-            Some(start) => start,
-            None => return,
-        };
-        // A null entry pointer fails the whole walk; stop the phase so the
-        // replay fails at the same read.
-        let delivery = match usize::try_from(divisions_pool_u64(log, pointer_start))
-            .ok()
-            .filter(|&delivery| delivery != 0)
-        {
-            Some(delivery) => delivery,
-            None => return,
-        };
-        copy_upgrade_delivery(log, memory, delivery);
-        if log.overflowed {
-            return;
-        }
-    }
-}
-
-/// Mirror of one delivery: authentication triple, progress row and produced
-/// pool with variant identities. A failed authentication stops this
-/// delivery's takes (the walk breaks to the next source); a failed status
-/// field only fails the deliveries row while the produced pool is still
-/// read, exactly like the typed walk.
-fn copy_upgrade_delivery(log: &mut RawLog<6>, memory: &impl engine::Memory, delivery: usize) {
-    let pool = match delivery.checked_add(cupgrade_delivery::PRODUCED_EQUIPMENT_POOL) {
-        Some(pool) => pool,
-        None => return,
-    };
-    let identity_start = dspan(
-        log,
-        memory,
-        Some(delivery),
-        8,
-        DELIVERIES_MASK | PRODUCED_MASK,
-    );
-    let pool_start = dspan(log, memory, Some(pool), 8, DELIVERIES_MASK | PRODUCED_MASK);
-    let status_start = dspan(
-        log,
-        memory,
-        delivery.checked_add(cupgrade_delivery::STATUS),
-        4,
-        DELIVERIES_MASK | PRODUCED_MASK,
-    );
-    let (Some(_), Some(_)) = (identity_start, pool_start) else {
-        return;
-    };
-    if log.overflowed {
-        return;
-    }
-    let status = status_start
-        .map(|start| u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap()));
-    if let Some(status) = status {
-        // Progress is read only for the progress-available status; the
-        // scatter shape matches the typed row read exactly.
-        if status == cupgrade_delivery::PROGRESS_AVAILABLE_STATUS {
-            dspan(
-                log,
-                memory,
-                delivery.checked_add(cupgrade_delivery::PROGRESS),
-                8,
-                DELIVERIES_MASK,
-            );
-        }
-        dspan(
-            log,
-            memory,
-            delivery.checked_add(cupgrade_delivery::TOTAL_PROGRESS),
-            8,
-            DELIVERIES_MASK,
-        );
-        dspan(
-            log,
-            memory,
-            pool.checked_add(cequipment_variant_pool::ALLOW_ZERO),
-            1,
-            DELIVERIES_MASK,
-        );
-    }
-    if log.overflowed {
-        return;
-    }
-    let header_start = match dspan(
-        log,
-        memory,
-        pool.checked_add(cequipment_variant_pool::ITEMS),
-        16,
-        PRODUCED_MASK,
-    ) {
-        Some(start) => start,
-        None => return,
-    };
-    let mut header = [0u8; 16];
-    header.copy_from_slice(&log.bytes[header_start..header_start + 16]);
-    let array = match Array::from_header(header, equipment_entry::STRIDE) {
-        Some(array) => array,
-        None => return,
-    };
-    for index in 0..array.count {
-        let entry_addr = array
-            .data
-            .checked_add((index as usize).saturating_mul(equipment_entry::STRIDE));
-        let entry_start = match dspan(
-            log,
-            memory,
-            entry_addr,
-            equipment_entry::STRIDE,
-            PRODUCED_MASK,
-        ) {
-            Some(start) => start,
-            None => return,
-        };
-        let variant = match usize::try_from(u64::from_le_bytes(
-            log.bytes[entry_start..entry_start + 8].try_into().unwrap(),
-        ))
-        .ok()
-        {
-            Some(variant) => variant,
-            None => return,
-        };
-        dspan(log, memory, Some(variant), 16, PRODUCED_MASK);
-        if log.overflowed {
-            return;
-        }
-    }
-}
-
-/// One structural copy pass: shared census, divisions walk, equipment
-/// phase and upgrades phase. Copy ticks split into [divisions, equipment,
-/// upgrades]; the upgrades phase cost is anchor-charged to the groups slot
-/// (matching the read-group convention), with the other three upgrade
-/// slots carrying zero. The job is cleared on entry so pooled hours never
-/// accumulate spans.
 fn copy_divisions_pass(
     job: &mut DivisionsJob,
     memory: &impl engine::Memory,
-    base: usize,
-    game_state: usize,
+    context: DivisionsCopyContext,
     ticks: &mut [u64; 6],
 ) {
     job.clear();
-    job.game_state = game_state;
+    job.context = context;
     let started = qpc();
-    let census = copy_divisions_census(&mut job.log, memory, base, game_state, &mut job.census);
-    let Some((links, provinces, countries)) = census else {
-        ticks[0] += elapsed(started);
-        return;
-    };
-    job.census_complete = true;
-    for &entry in &job.census {
-        let Some(source) = copy_division_row(
-            &mut job.log,
-            memory,
-            base,
-            DivisionArrays {
-                links: &links,
-                countries,
-                provinces: &provinces,
-            },
-            entry.pointer,
-            entry.canonical,
-        ) else {
-            ticks[0] += elapsed(started);
-            return;
-        };
-        if job.sources.len() == job.sources.capacity() {
-            job.log.overflowed = true;
-        } else {
-            job.sources.push(source);
-        }
-        if job.log.overflowed {
-            ticks[0] += elapsed(started);
-            return;
-        }
-    }
+    job.census.capture(
+        memory,
+        context.base,
+        context.game_state,
+        context.row_capacity.max(context.source_capacity),
+    );
     ticks[0] += elapsed(started);
-    if job.log.overflowed {
+    job.overflowed = !job.details.ready_for(context.detail_capacities) || job.census.overflowed;
+    if job.overflowed {
         return;
     }
-    let equipment_started = qpc();
-    for &entry in &job.census {
-        if !copy_division_equipment(&mut job.log, memory, base, entry.pointer) {
-            break;
-        }
+    let (sources, outcome) = job.census.sources(context.source_capacity);
+    let detail_ticks = job.details.capture(
+        memory,
+        context.base,
+        sources,
+        outcome,
+        context.detail_capacities,
+    );
+    for (total, extra) in ticks[1..].iter_mut().zip(detail_ticks) {
+        *total += extra;
     }
-    ticks[1] += elapsed(equipment_started);
-    if job.log.overflowed {
-        return;
-    }
-    let upgrades_started = qpc();
-    for &entry in &job.census {
-        if !copy_division_upgrades(&mut job.log, memory, entry.pointer) {
-            break;
-        }
-    }
-    ticks[2] += elapsed(upgrades_started);
 }
-
-/// Game-thread raw copy for one hour: shared census, divisions walk, and
-/// the equipment/upgrade detail walks. Compares raw logs while any group
-/// window needs checks.
+/// Independent live passes capture native fields and compare each table's own
+/// complete result. Warm acquisition performs one pass only.
 pub(crate) fn copy_divisions_refresh(
     memory: &impl engine::Memory,
     ctx: DivisionsCopyContext,
     first: &mut DivisionsJob,
-    mut second: Option<&mut DivisionsJob>,
+    second: Option<&mut DivisionsJob>,
 ) -> DivisionsCopyReport {
-    let mut ticks = [0u64; 6];
-    copy_divisions_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
+    let mut ticks = [0; 6];
+    copy_divisions_pass(first, memory, ctx, &mut ticks);
     let mut matched = [true; 6];
-    if let Some(second_job) = second.as_deref_mut() {
-        let mut second_ticks = [0u64; 6];
-        copy_divisions_pass(
-            second_job,
-            memory,
-            ctx.base,
-            ctx.game_state,
-            &mut second_ticks,
-        );
-        for (total, extra) in ticks.iter_mut().zip(second_ticks) {
-            *total += extra;
+    let mut mismatches = [0; 6];
+    let mut raw_ok = !first.overflowed;
+    if let Some(second) = second {
+        copy_divisions_pass(second, memory, ctx, &mut ticks);
+        raw_ok &= !second.overflowed;
+        matched[0] = raw_ok && first.census.equal(&second.census, ctx.row_capacity);
+        mismatches[0] = usize::from(!first.census.same(&second.census, ctx.row_capacity));
+        let source_match = first.census.equal(&second.census, ctx.source_capacity);
+        let source_same = first.census.same(&second.census, ctx.source_capacity);
+        mismatches[1..].copy_from_slice(&first.details.differences(&second.details));
+        for mismatch in &mut mismatches[1..] {
+            *mismatch += usize::from(!source_same);
         }
-        // Per-slot partitions: shared census spans gate every dependent
-        // slot, private spans only their own. Each slot keeps the
-        // conservative live-fault gate.
-        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-        for (slot, matched) in matched.iter_mut().enumerate() {
-            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+        for (slot, equal) in matched[1..]
+            .iter_mut()
+            .zip(first.details.equal(&second.details))
+        {
+            *slot = raw_ok && source_match && equal;
         }
     }
-    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
     DivisionsCopyReport {
         raw_ok,
         matched,
+        mismatches,
         copy_ticks: ticks,
-        raw_bytes: first.log.raw_bytes,
+        raw_bytes: first.payload_bytes(),
     }
 }
-
-/// Decode-worker interpretation of a raw divisions payload, in dependency
-/// order: the divisions walk first (collecting the shared sources through
-/// the same visitor the game thread uses), then equipment and upgrades
-/// against the decoded sources. Installs identical rows, truncation counts
-/// and failure reasons into the frame's pooled buffers.
+/// Worker installation copies compact core rows and transfers owned detail
+/// buffers. Callback presentation rows and its independent source passes survive.
 pub(crate) fn decode_divisions_payload(
     frame: &mut Captured,
-    base: usize,
-    job: &DivisionsJob,
+    _base: usize,
+    job: &mut DivisionsJob,
     decode_ticks: &mut [u64; 6],
 ) {
-    let recorded = Recorded::build(&job.log);
     let started = qpc();
-    // Live presentation already consumed these shared sources in the callback.
-    // Replace only the source scratch for worker-owned interpretation; preserve
-    // the acquired presentation tables, their costs and consistency results.
-    frame.extended.reset_division_sources();
-    let outcome = carmy::walk_with(
-        &recorded,
-        base,
-        job.game_state,
-        &mut frame.divisions,
-        |pointer, row| {
-            frame.extended.visit_division(pointer, row, false);
-        },
-    );
-    frame.extended.finish_divisions(outcome, false);
-    frame.divisions_result = outcome;
+    frame.divisions_result = job.census.install_rows(&mut frame.divisions);
     decode_ticks[0] += elapsed(started);
-    // The detail walk needs fresh observation cursors, not a second live
-    // index. Return this index before its independent reader is constructed.
-    drop(recorded);
-    frame
-        .extended
-        .decode_divisions_payload(base, &job.log, decode_ticks);
+    let started = qpc();
+    frame.extended.install_division_detail(&mut job.details);
+    job.update_capacity_charge();
+    decode_ticks[1] += elapsed(started);
 }
-
 /// Shared synthetic address space for the typed Wars capture and FIFO tests:
 /// three countries plus one alias slot, two wars with signed-extreme rows,
 /// one foreign-type relation, one retired war, and matrix slots with an
@@ -4568,8 +3840,8 @@ pub(crate) mod divisions_test_kit {
         }
     }
 
-    /// Raw-copy split: two raw passes compared, then the first payload
-    /// decoded into a pooled frame with the same buffer lengths.
+    /// Owned capture: independent passes compared, then the first payload
+    /// installed into a pooled frame with the same buffer lengths.
     pub(crate) fn split(
         memory: &impl Memory,
         lens: [usize; 6],
@@ -4577,6 +3849,9 @@ pub(crate) mod divisions_test_kit {
         let ctx = DivisionsCopyContext {
             base: BASE,
             game_state: GAME_STATE,
+            row_capacity: lens[0],
+            source_capacity: lens[0],
+            detail_capacities: lens[1..].try_into().unwrap(),
         };
         let mut first = DivisionsJob::new();
         let mut second = DivisionsJob::new();
@@ -4586,7 +3861,7 @@ pub(crate) mod divisions_test_kit {
         frame.divisions = vec![carmy::Row::default(); lens[0]];
         frame.extended.test_resize_division_buffers(lens);
         let mut ticks = [0u64; 6];
-        super::decode_divisions_payload(&mut frame, BASE, &first, &mut ticks);
+        super::decode_divisions_payload(&mut frame, BASE, &mut first, &mut ticks);
         let detail = frame.extended.test_division_detail();
         // The worker clears the raw-mode gate it consumed.
         assert!(!detail.divisions_raw_mode);
@@ -4740,14 +4015,16 @@ mod tests {
 
     #[test]
     fn divisions_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
-        use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
+        use crate::raw_memory::{Capacity, Charge, Tracker};
         static LOCAL: Tracker = Tracker::new();
-        let mut job = DivisionsJob::default();
-        job.census.reserve_exact(3);
-        job.sources.reserve_exact(3);
-        job.capacity_charge = Charge::empty_on(&LOCAL);
+        let mut job = DivisionsJob {
+            capacity_charge: Charge::empty_on(&LOCAL),
+            ..Default::default()
+        };
         job.update_capacity_charge();
-        let expected = |job: &DivisionsJob| vector_bytes(&job.census) + vector_bytes(&job.sources);
+        let expected = |job: &DivisionsJob| {
+            job.census.allocated_bytes() + job.details.allocated_bytes() as u64
+        };
         let initial = LOCAL.snapshot().current.auxiliary_vectors;
         assert_eq!(initial, expected(&job));
         job.grow();
@@ -4999,11 +4276,11 @@ mod tests {
                     let frame = unsafe { &*pointer };
                     assert_eq!(frame.countries.len(), capacities[0]);
                     assert_eq!(frame.divisions.len(), capacities[4]);
-                    assert_eq!(frame.divisions_second.len(), capacities[4]);
+                    assert_eq!(frame.divisions.len(), capacities[4]);
                     assert_eq!(frame.faction_names.len(), capacities[8]);
                     assert_eq!(frame.consistency_successful, successful);
                     let second = comparison_capacities(frame);
-                    assert_eq!(second, [0, 0, capacities[4], 0, 0, 0, 0]);
+                    assert_eq!(second, [0; 7]);
                     slots.push((index, frame.allocated_bytes()));
                 }
                 assert_eq!(slots.len(), GROW_BUFFERS);
@@ -5218,12 +4495,49 @@ mod tests {
         [
             frame.links_second.capacity(),
             frame.states_second.capacity(),
-            frame.divisions_second.capacity(),
+            0, // Core division comparison rows now live in the owned census.
             frame.wars_second.capacity(),
             frame.factions_second.capacity(),
             frame.faction_members_second.capacity(),
             frame.faction_names_second.capacity(),
         ]
+    }
+
+    #[test]
+    fn fallback_census_growth_consumes_the_failed_attempt_once() {
+        use super::divisions_test_kit as kit;
+        let bytes = kit::fixture();
+        let mut frame = Captured::new();
+        frame.division_fallback[0] = crate::division_census::Census::default();
+        frame.division_fallback[0].capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
+        assert!(frame.division_fallback[0].overflowed);
+        let mut capacities = INITIAL_CAPACITIES;
+        frame.grow(&mut capacities);
+        assert!(frame.division_fallback[0].initialized());
+        assert!(!frame.division_fallback[0].overflowed);
+        let grown = frame.division_fallback[0].allocated_bytes();
+        assert!(grown > 0);
+
+        // A subsequent frame that never used the fallback carries no new
+        // overflow request and must retain, rather than double, its storage.
+        frame.grow(&mut capacities);
+        assert_eq!(frame.division_fallback[0].allocated_bytes(), grown);
+
+        frame.division_fallback[0].capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
+        assert_eq!(
+            frame.division_fallback[0].outcome(64),
+            Outcome::Rows { len: 3 },
+        );
+        let lease = Arc::clone(frame.division_fallback[0].unit_inputs().unwrap());
+        frame
+            .extended
+            .install_unit_inputs(Some(Arc::clone(&lease)), None, true);
+        assert_eq!(Arc::strong_count(&lease), 3);
+        frame.extended.release_unit_inputs();
+        assert_eq!(Arc::strong_count(&lease), 2);
+        drop(lease);
+        frame.grow(&mut capacities);
+        assert_eq!(frame.division_fallback[0].allocated_bytes(), grown);
     }
 
     #[test]
@@ -5281,7 +4595,12 @@ mod tests {
                 expected[6] = 0;
             }
             assert_eq!(comparison_capacities(&frame), expected);
-            assert!(frame.allocated_bytes() < before);
+            if index == 2 {
+                // Fallback census storage is retained independently of the core window.
+                assert_eq!(frame.allocated_bytes(), before);
+            } else {
+                assert!(frame.allocated_bytes() < before);
+            }
         }
         assert_eq!(
             [
@@ -5341,14 +4660,15 @@ mod tests {
         pending.consistency_successful = [CONSISTENCY_TARGET - 1; CONSISTENCY_TABLES.len()];
         pending.grow(&mut capacities);
         assert_eq!(pending.provinces_second.len(), capacities[1]);
-        assert_eq!(pending.divisions_second.len(), 8192);
+        assert_eq!(pending.divisions.len(), 8192);
         assert_eq!(pending.wars_second.len(), 2048);
         assert_eq!(pending.factions_second.len(), 128);
         assert_eq!(pending.faction_names_second.len(), 32768);
         assert!(
             comparison_capacities(&pending)
                 .into_iter()
-                .all(|capacity| capacity != 0)
+                .enumerate()
+                .all(|(index, capacity)| index == 2 || capacity != 0)
         );
     }
 
@@ -5587,38 +4907,6 @@ mod tests {
     }
 
     #[test]
-    fn divisions_sequential_readers_reset_recycled_duplicate_cursors() {
-        use engine::{Memory, memory::SliceMemory};
-
-        let mut log = RawLog::<6>::new(3, 16);
-        let address = 0x1000;
-        for (value, readable) in [(11, 8), (0, 0), (29, 8)] {
-            let bytes = [value; 8];
-            let memory = SliceMemory {
-                base: address,
-                bytes: &bytes[..readable],
-            };
-            assert_eq!(log.take(&memory, address, 8, 1).is_some(), readable != 0);
-        }
-        // The census and detail stages each start at the first observation,
-        // even when the prior reader consumed a fault and the terminal repeat.
-        // Dropping each reader makes its index available to the next stage.
-        for stage in ["census", "detail"] {
-            let recorded = Recorded::build(&log);
-            let mut output = [0; 8];
-            assert!(recorded.copy(address, &mut output), "{stage}");
-            assert_eq!(output, [11; 8], "{stage}");
-            assert!(!recorded.copy(address, &mut output), "{stage}");
-            assert_eq!(output, [11; 8], "failed read leaves output unchanged");
-            assert!(recorded.copy(address, &mut output), "{stage}");
-            assert_eq!(output, [29; 8], "{stage}");
-            assert!(recorded.copy(address, &mut output), "{stage}");
-            assert_eq!(output, [29; 8], "terminal repeat");
-            drop(recorded);
-        }
-    }
-
-    #[test]
     fn divisions_split_copy_matches_direct_walk() {
         use super::divisions_test_kit as kit;
         let bytes = kit::fixture();
@@ -5654,7 +4942,7 @@ mod tests {
         let direct = kit::direct(&memory, [1; 6]);
         let (split, report, _) = kit::split(&memory, [1; 6]);
         assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 6]);
+        assert_eq!(report.matched, [false; 6]);
         kit::assert_matches_direct(&split, &direct);
         // A truncated divisions walk makes every dependent census
         // incomplete on both paths with the identical reason.
@@ -5703,10 +4991,10 @@ mod tests {
                 self.memory.copy(address, output)
             }
         }
-        // (fault address, expected raw-compare verdicts in group order).
+        // (fault address, expected independent table verdicts in group order).
         // Outcomes including reason strings must match the typed walks
-        // exactly; verdicts follow the fault-attribution masks, with the
-        // shared census blocking every slot.
+        // exactly; only equal complete tables can advance their cold windows.
+        // Shared census failures block every dependent table.
         let group = 0x60070usize;
         for (fault, matched) in [
             (kit::GAME_STATE + cgame_state::COUNTRIES, [false; 6]),
@@ -5755,11 +5043,13 @@ mod tests {
                 group + carmy_upgrades_requests::DELIVERIES_DATA,
                 [true, true, true, true, false, false],
             ),
-            (group + 0x300, [true, true, false, false, false, false]),
+            (group + 0x300, [true, true, true, true, false, false]),
             (0x64000, [true, true, true, true, false, false]),
             (
                 0x64000 + cupgrade_delivery::STATUS,
-                [true, true, true, true, false, false],
+                // The native delivery header independently authenticates its
+                // produced pool before attempting this optional status read.
+                [true, true, true, true, false, true],
             ),
             (
                 0x64000 + cupgrade_delivery::PROGRESS,
@@ -5803,13 +5093,14 @@ mod tests {
         let ctx = DivisionsCopyContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
+            ..Default::default()
         };
         let mut first = DivisionsJob::new();
         let mut second = DivisionsJob::new();
         let report = copy_divisions_refresh(&memory, ctx, &mut first, Some(&mut second));
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 6]);
-        // Same-hour tearing between the passes changes the log.
+        // Same-hour tearing between independent passes changes the owned rows.
         let mut torn = bytes.clone();
         torn[kit::A1 + engine::carmy::STRENGTH] ^= 0xff;
         let torn_memory = kit::memory(&torn);
@@ -5820,7 +5111,7 @@ mod tests {
         assert!(clean_report.raw_ok);
         let torn_report = copy_divisions_refresh(&torn_memory, ctx, &mut after_torn, None);
         assert!(torn_report.raw_ok);
-        assert!(!after.log.logs_equal(&after_torn.log));
+        assert!(!after.census.equal(&after_torn.census, ctx.row_capacity));
     }
 
     fn divisions_presentation_memory() -> impl engine::Memory {
@@ -5853,7 +5144,7 @@ mod tests {
     }
 
     #[test]
-    fn divisions_raw_success_supplies_both_live_companions_before_decode_without_erasing_them() {
+    fn divisions_owned_success_supplies_both_live_companions_before_decode_without_erasing_them() {
         use super::divisions_test_kit as kit;
         use replay::frame::TableView;
         use replay::rows::{TableId, TableRows};
@@ -5861,19 +5152,26 @@ mod tests {
         let ctx = DivisionsCopyContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
+            ..Default::default()
         };
         let mut first = DivisionsJob::new();
         let mut second = DivisionsJob::new();
         let report = copy_divisions_refresh(&memory, ctx, &mut first, Some(&mut second));
         assert!(report.raw_ok);
         assert_eq!(first.source_outcome(64), Outcome::Rows { len: 3 });
-        assert_eq!(first.sources, second.sources);
-        assert_eq!(first.sources[0].division, 101);
-        assert_eq!(first.sources[0].template, 0x3455_0000_0034);
-        assert_eq!(first.sources[0].country, 1);
+        let (first_sources, _) = first.census.sources(64);
+        assert_eq!(first_sources, second.census.sources(64).0);
+        assert_eq!(first_sources[0].division, 101);
+        assert_eq!(first_sources[0].template, 0x3455_0000_0034);
+        assert_eq!(first_sources[0].country, 1);
         let mut frame = Captured::new();
         first.supply_sources(&mut frame.extended, frame.divisions.len(), false);
-        second.supply_sources(&mut frame.extended, frame.divisions_second.len(), true);
+        second.supply_sources(&mut frame.extended, frame.divisions.len(), true);
+        frame.extended.install_unit_inputs(
+            first.census.unit_inputs().map(Arc::clone),
+            second.census.unit_inputs().map(Arc::clone),
+            first.census.unit_inputs_equal(&second.census),
+        );
         frame.extended.set_divisions_raw_mode(true);
         let mut needed = [false; TABLE_COUNT];
         needed[TableId::DivisionMovement.index()] = true;
@@ -5894,6 +5192,16 @@ mod tests {
                 Outcome::Rows { len: 3 }
             );
         }
+        for (pass, job) in [&mut first, &mut second].into_iter().enumerate() {
+            let consumed = frame.extended.consumed_unit_seed_masks(pass);
+            let changed = job.census.verify_unit_inputs(&memory, &consumed);
+            assert_eq!(
+                frame.extended.reject_changed_unit_inputs(pass, changed),
+                [true; 3]
+            );
+        }
+        frame.extended.release_unit_inputs();
+        frame.extended.decode_division_presentation_inputs();
         let before = frame.extended.test_division_presentation_tables();
         let [
             TableView::Complete(TableRows::DivisionMovement(movement)),
@@ -5911,10 +5219,10 @@ mod tests {
                 .iter()
                 .all(|r| r.maximum_hit_points == 500_000 && r.maximum_organisation == 700_000)
         );
-        // This is the actual worker path. Sources must reset before the worker
-        // visitor, but these previously acquired live tables must survive.
+        // The actual worker installation preserves acquired live tables and
+        // installs the independently captured native detail rows.
         frame.extended.set_divisions_raw_mode(true);
-        decode_divisions_payload(&mut frame, 0, &first, &mut [0; 6]);
+        decode_divisions_payload(&mut frame, 0, &mut first, &mut [0; 6]);
         assert_eq!(frame.divisions_result, Outcome::Rows { len: 3 });
         assert_eq!(
             frame
@@ -5933,6 +5241,7 @@ mod tests {
         let ctx = DivisionsCopyContext {
             base: 0,
             game_state: kit::GAME_STATE,
+            ..Default::default()
         };
         for fault in [
             kit::A2,
@@ -5970,22 +5279,143 @@ mod tests {
             first.source_outcome(0),
             Outcome::Unavailable { .. }
         ));
-        assert!(!first.census_complete);
+        // The pointer census is empty and complete for independent consumers;
+        // core division sources still refuse the missing-country world above.
+        assert_eq!(first.census.census_outcome(), Outcome::Rows { len: 0 });
         let mut bytes = kit::fixture();
         for country in [kit::C0, kit::C1] {
             bytes[country + ccountry::DIVISIONS..country + ccountry::DIVISIONS + 16].fill(0);
         }
         copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first, None);
         assert_eq!(first.source_outcome(0), Outcome::Rows { len: 0 });
-        assert!(first.sources.is_empty()); // Recycled rows were cleared.
-        first.sources = Vec::new();
+        assert!(first.census.sources(64).0.is_empty()); // Recycled rows were cleared.
+        first.census = crate::division_census::Census::default();
         let bytes = kit::fixture();
         let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first, None);
-        assert!(!report.raw_ok && first.log.overflowed);
+        assert!(!report.raw_ok && first.census.overflowed);
         assert!(matches!(
             first.source_outcome(64),
             Outcome::Unavailable { .. }
         ));
+    }
+
+    #[test]
+    fn divisions_owned_census_survives_a_private_core_field_fault() {
+        use super::divisions_test_kit as kit;
+        struct Fault<'a>(&'a [u8]);
+        impl engine::Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let fault = kit::A1 + carmy::STRENGTH;
+                if address <= fault && address.saturating_add(output.len()) > fault {
+                    return false;
+                }
+                kit::memory(self.0).copy(address, output)
+            }
+        }
+        let bytes = kit::fixture();
+        let mut census = crate::division_census::Census::new();
+        census.capture(&Fault(&bytes), kit::BASE, kit::GAME_STATE, 64);
+        assert_eq!(census.census_outcome(), Outcome::Rows { len: 3 });
+        assert_eq!(
+            census
+                .entries()
+                .iter()
+                .map(|entry| entry.pointer)
+                .collect::<Vec<_>>(),
+            [kit::A1, kit::A2, kit::A3]
+        );
+        assert_eq!(
+            census.rows(64).1,
+            Outcome::Unavailable {
+                reason: "division hit points unreadable"
+            }
+        );
+        assert!(!census.equal(&census, 64));
+    }
+
+    #[test]
+    fn divisions_shared_empty_country_census_preserves_independent_fog_success() {
+        use super::divisions_test_kit as kit;
+        let mut bytes = kit::fixture();
+        for address in [kit::CTAB + 8, kit::CTAB + 16, kit::CTAB + 24] {
+            bytes[address..address + 8].fill(0);
+        }
+        let memory = kit::memory(&bytes);
+        let mut census = crate::division_census::Census::new();
+        census.capture(&memory, kit::BASE, kit::GAME_STATE, 64);
+        let direct = engine::unit_viewer_entry::walk(&memory, kit::BASE, kit::GAME_STATE, &mut []);
+        assert_eq!(direct, Outcome::Rows { len: 0 });
+        let shared = engine::unit_viewer_entry::walk_with_divisions(
+            &memory,
+            kit::BASE,
+            kit::GAME_STATE,
+            &mut [],
+            Some(census.intel_sources()),
+        );
+        assert_eq!(shared, direct);
+        assert!(census.intel_equal(&census));
+        assert_eq!(
+            census.rows(0).1,
+            Outcome::Unavailable {
+                reason: "country table has no readable countries"
+            }
+        );
+    }
+
+    #[test]
+    fn divisions_owned_batch_does_not_retry_a_failed_field_into_success() {
+        use super::divisions_test_kit as kit;
+        struct OnceFault<'a> {
+            bytes: &'a [u8],
+            pending: std::cell::Cell<bool>,
+        }
+        impl engine::Memory for OnceFault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let fault = kit::A1 + carmy::STRENGTH;
+                if address <= fault
+                    && address.saturating_add(output.len()) > fault
+                    && self.pending.replace(false)
+                {
+                    return false;
+                }
+                kit::memory(self.bytes).copy(address, output)
+            }
+        }
+        let bytes = kit::fixture();
+        let memory = OnceFault {
+            bytes: &bytes,
+            pending: std::cell::Cell::new(true),
+        };
+        let direct = kit::direct(&memory, [64; 6]);
+        assert_eq!(
+            direct.divisions_outcome,
+            Outcome::Unavailable {
+                reason: "division hit points unreadable"
+            }
+        );
+        memory.pending.set(true);
+        let mut census = crate::division_census::Census::new();
+        census.capture(&memory, kit::BASE, kit::GAME_STATE, 64);
+        assert_eq!(census.rows(64).1, direct.divisions_outcome);
+        assert!(!census.equal(&census, 64));
+    }
+
+    #[test]
+    fn divisions_owned_consistency_rejects_replaced_source_with_equal_rows() {
+        use super::divisions_test_kit as kit;
+        let bytes = kit::fixture();
+        let mut replaced = bytes.clone();
+        let pointer = 0x66000_usize;
+        replaced[pointer..pointer + 0x1000].copy_from_slice(&bytes[kit::A1..kit::A1 + 0x1000]);
+        replaced[0x23000..0x23008].copy_from_slice(&(pointer as u64).to_le_bytes());
+        let mut first = crate::division_census::Census::new();
+        let mut second = crate::division_census::Census::new();
+        first.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
+        second.capture(&kit::memory(&replaced), kit::BASE, kit::GAME_STATE, 64);
+        assert_eq!(first.rows(64), second.rows(64));
+        assert_eq!(first.rows(64).1, Outcome::Rows { len: 3 });
+        assert_ne!(first.entries(), second.entries());
+        assert!(!first.equal(&second, 64));
     }
 
     #[test]
@@ -5996,6 +5426,7 @@ mod tests {
         let ctx = DivisionsCopyContext {
             base: 0,
             game_state: kit::GAME_STATE,
+            ..Default::default()
         };
         let mut first = DivisionsJob::new();
         copy_divisions_refresh(&memory, ctx, &mut first, None);
@@ -6008,10 +5439,22 @@ mod tests {
             if failed {
                 DivisionsJob::default().supply_sources(
                     &mut frame.extended,
-                    frame.divisions_second.len(),
+                    frame.divisions.len(),
                     true,
                 );
             }
+            frame.extended.install_unit_inputs(
+                first.census.unit_inputs().map(Arc::clone),
+                failed.then(|| {
+                    Arc::new(crate::division_census::UnitInputs::fixture(
+                        Vec::new(),
+                        Outcome::Unavailable {
+                            reason: "synthetic failed second census",
+                        },
+                    ))
+                }),
+                false,
+            );
             let (matched, _) =
                 frame
                     .extended
@@ -6024,7 +5467,7 @@ mod tests {
                 ));
             }
         }
-        // A retired parent window still has a second raw job when only a new
+        // A retired parent window still has a second owned job when only a new
         // companion needs its independent check; no core check is fabricated.
         for table in [TableId::DivisionMovement, TableId::DivisionStatus] {
             let mut child_only = [false; TABLE_COUNT];
@@ -6034,71 +5477,66 @@ mod tests {
             copy_divisions_refresh(&memory, ctx, &mut first, Some(&mut second));
             let mut frame = Captured::new();
             first.supply_sources(&mut frame.extended, frame.divisions.len(), false);
-            second.supply_sources(&mut frame.extended, frame.divisions_second.len(), true);
+            second.supply_sources(&mut frame.extended, frame.divisions.len(), true);
+            frame.extended.install_unit_inputs(
+                first.census.unit_inputs().map(Arc::clone),
+                second.census.unit_inputs().map(Arc::clone),
+                first.census.unit_inputs_equal(&second.census),
+            );
             let (matched, _) =
                 frame
                     .extended
                     .capture(&memory, 0, kit::GAME_STATE, 0, &child_only, false);
             assert!(matched[table.index()]);
+            frame.extended.release_unit_inputs();
         }
     }
 
     #[test]
-    fn divisions_partition_equal_isolates_equipment_private_bytes() {
+    fn divisions_owned_comparison_isolates_equipment_private_values() {
         use super::divisions_test_kit as kit;
-        // Tear exactly one table's private bytes: equipment spans carry
-        // EQUIPMENT_MASK (0x02) only, so only slot 1 flips.
+        // Change one bank amount while keeping its shared variant identity and
+        // the entire division census stable. Only equipment must differ.
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
         let ctx = DivisionsCopyContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
+            ..Default::default()
         };
         let mut first = DivisionsJob::new();
         let mut second = DivisionsJob::new();
         let report = copy_divisions_refresh(&memory, ctx, &mut first, Some(&mut second));
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 6]);
-        let equip_idx = second
-            .log
-            .spans
-            .iter()
-            .position(|span| span.ok && span.mask == 0x02)
-            .expect("equipment-private span");
-        let start = second.log.spans[equip_idx].start as usize;
-        second.log.bytes[start] ^= 0xff;
-        for slot in 0..6 {
-            let equal = first.log.partition_equal(&second.log, slot);
-            if slot == 1 {
-                assert!(!equal, "equipment partition must flip");
-            } else {
-                // Shared census/row spans (0x3F) still agree; other
-                // private tables (groups/requests/deliveries/produced)
-                // do not include equipment bytes.
-                // Note: divisions slot 0 includes census+rows only, so it
-                // stays true when only equipment private tears.
-                assert!(equal, "slot {slot} must stay true");
-            }
-        }
+        let mut changed = bytes.clone();
+        changed[0x42008] ^= 0xff;
+        copy_divisions_refresh(&kit::memory(&changed), ctx, &mut second, None);
+        assert!(first.census.equal(&second.census, ctx.row_capacity));
+        assert!(first.census.equal(&second.census, ctx.source_capacity));
+        assert_eq!(
+            first.details.equal(&second.details),
+            [false, true, true, true, true]
+        );
     }
 
     #[test]
     fn divisions_staging_overflow_falls_back_to_typed_walk() {
         use super::divisions_test_kit as kit;
-        use crate::raw::RawLog;
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
         let ctx = DivisionsCopyContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
+            ..Default::default()
         };
         let mut first = DivisionsJob::new();
-        first.log = RawLog::new(4, 32);
+        first.census = crate::division_census::Census::default();
         let mut second = DivisionsJob::new();
-        second.log = RawLog::new(4, 32);
+        second.census = crate::division_census::Census::default();
         let report = copy_divisions_refresh(&memory, ctx, &mut first, Some(&mut second));
         assert!(!report.raw_ok);
-        assert!(first.log.grow_for_next());
+        assert!(first.grow_for_next());
         // The typed walk still produces the identical rows through the
         // existing path, so the fallback keeps every row.
         let direct = kit::direct(&memory, [64; 6]);
@@ -6115,6 +5553,7 @@ mod tests {
         let ctx = DivisionsCopyContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
+            ..Default::default()
         };
         let mut first = DivisionsJob::new();
         let report = copy_divisions_refresh(&memory, ctx, &mut first, None);
@@ -6124,7 +5563,7 @@ mod tests {
         frame.table_ns[6] = report.copy_ticks[0];
         let before = frame.table_ns;
         let mut ticks = [0; 6];
-        super::decode_divisions_payload(&mut frame, kit::BASE, &first, &mut ticks);
+        super::decode_divisions_payload(&mut frame, kit::BASE, &mut first, &mut ticks);
         assert_eq!(frame.table_ns, before);
         assert!(ticks[0] > 0);
         assert_eq!(frame.divisions_result, Outcome::Rows { len: 3 });
@@ -6146,7 +5585,7 @@ mod tests {
             let direct = kit::direct(&memory, caps);
             let (split, report, _) = kit::split(&memory, caps);
             assert!(report.raw_ok, "cap={cap}");
-            assert_eq!(report.matched, [true; 6], "cap={cap}");
+            assert_eq!(report.matched, [cap >= 3; 6], "cap={cap}");
             kit::assert_matches_direct(&split, &direct);
         }
         let (exact, _, _) = kit::split(&memory, [3; 6]);

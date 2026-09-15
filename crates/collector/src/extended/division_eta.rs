@@ -1,14 +1,14 @@
-//! Hourly native ETA operands from the shared division census. Route duration
-//! arithmetic and row conversion consume owned scalars on the spool thread.
+//! Hourly native ETA operands from the shared division census. Normal speed
+//! composition and route duration consume owned inputs on the spool thread.
 use super::production::Sources;
 use crate::{
     sampling::qpc,
-    spooling::{table_iter, unavailable},
+    spooling::unavailable,
     table_capture::{Arena, CaptureRows},
 };
-use engine::{Memory, cequipment_variant_pool::DivisionSource, cunit, walk::Outcome};
+use engine::{Memory, carmy::DivisionSeed, cprovince, cunit, walk::Outcome};
 use replay::{
-    frame::TableView,
+    frame::TableInput,
     rows::{DivisionEtaRow, TableId, tables},
 };
 use std::{cell::RefCell, mem::size_of};
@@ -18,7 +18,7 @@ pub const TABLES: [TableId; N] = [TableId::DivisionEta];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 /// Callback-local counts, accumulated across the one or two acquisition passes.
-/// Journal sizes are peak per-pass demand, not an allocation or timing claim.
+/// Journal sizes are peak bounded army-scope demand, not allocated pool bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CacheDiagnostics {
     pub hits: u64,
@@ -30,6 +30,82 @@ pub(crate) struct CacheDiagnostics {
     pub witness_bytes_peak: usize,
     pub witness_entries_required: usize,
     pub witness_bytes_required: usize,
+    pub stages: StageDiagnostics,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct StageCost {
+    pub calls: u64,
+    pub ticks: u64,
+}
+impl StageCost {
+    fn record(&mut self, started: i64) {
+        self.calls = self.calls.saturating_add(1);
+        self.ticks = self
+            .ticks
+            .saturating_add(qpc().saturating_sub(started).max(0) as u64);
+    }
+    fn absorb(&mut self, next: Self) {
+        self.calls = self.calls.saturating_add(next.calls);
+        self.ticks = self.ticks.saturating_add(next.ticks);
+    }
+}
+
+/// Nested acquisition service spans, plus disjoint pass-final verification.
+/// No QPC call or trace is added to the scalar-memory read path. Capability
+/// fallbacks execute in the engine outside the corresponding resolver span.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct StageDiagnostics {
+    pub walk: StageCost,
+    pub supply_acquire: StageCost,
+    pub supply_verify: StageCost,
+    pub transport_acquire: StageCost,
+    pub transport_verify: StageCost,
+    pub modifiers_acquire: StageCost,
+    pub modifiers_verify: StageCost,
+    pub primary_acquire: StageCost,
+    pub primary_verify: StageCost,
+    pub cache_verify: StageCost,
+    pub scope_verify: StageCost,
+    pub supply_builds: u64,
+    pub transport_builds: u64,
+    pub supply_fallbacks: u64,
+    pub modifier_fallbacks: u64,
+}
+impl StageDiagnostics {
+    pub(crate) fn absorb(&mut self, next: Self) {
+        macro_rules! spans { ($($field:ident),+ $(,)?) => { $(self.$field.absorb(next.$field);)+ }; }
+        spans!(
+            walk,
+            supply_acquire,
+            supply_verify,
+            transport_acquire,
+            transport_verify,
+            modifiers_acquire,
+            modifiers_verify,
+            primary_acquire,
+            primary_verify,
+            cache_verify,
+            scope_verify
+        );
+        self.supply_builds = self.supply_builds.saturating_add(next.supply_builds);
+        self.transport_builds = self.transport_builds.saturating_add(next.transport_builds);
+        self.supply_fallbacks = self.supply_fallbacks.saturating_add(next.supply_fallbacks);
+        self.modifier_fallbacks = self
+            .modifier_fallbacks
+            .saturating_add(next.modifier_fallbacks);
+    }
+}
+
+fn measure_stage<T>(
+    cache: &RefCell<SmallReadCache>,
+    stage: impl FnOnce(&mut StageDiagnostics) -> &mut StageCost,
+    work: impl FnOnce() -> T,
+) -> T {
+    let started = qpc();
+    let result = work();
+    stage(&mut cache.borrow_mut().diagnostics.stages).record(started);
+    result
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -53,8 +129,8 @@ impl Default for Capacities {
             rows: 8192,
             legs: 32 * 1024,
             cache_entries: 128 * 1024,
-            witness_entries: 0,
-            witness_bytes: 0,
+            witness_entries: 1024,
+            witness_bytes: 64 * 1024,
             transport_entries: 1024,
             modifier_accumulators: 1024,
             modifier_bytes: 32 * 1024 * 16,
@@ -75,8 +151,59 @@ pub struct Captured {
     supply: RefCell<SupplyMemo>,
     air_defense: RefCell<AirDefenseMemo>,
     primary: RefCell<engine::carmy_leader::PrimaryRootCache>,
+    completed: RefCell<Vec<DivisionEtaRow>>,
+    seed_masks: [Vec<u64>; 2],
+    seed_required: usize,
+    geometry: cprovince::GeometryPacket,
+    geometry_second: Option<cprovince::GeometryPacket>,
+    geometry_required: cprovince::GeometryCapacities,
 }
 impl Captured {
+    /// Off-thread mask storage follows the full shared census independently of
+    /// ETA row and leg admission. Private row limits must remain truncation.
+    pub(crate) fn reserve_sources(&mut self, capacity: usize) {
+        crate::table_capture::grow_vec(&mut self.seed_masks[0], capacity);
+        if self.geometry_second.is_some() {
+            crate::table_capture::grow_vec(&mut self.seed_masks[1], capacity);
+        }
+    }
+
+    pub(crate) fn reject_source_census(&mut self) -> bool {
+        if !self.rows.checked {
+            return true;
+        }
+        self.rows.outcome = Outcome::Unavailable {
+            reason: "division ETA source census changed during double read",
+        };
+        self.rows.mismatches = self.rows.mismatches.saturating_add(1);
+        false
+    }
+
+    pub(crate) fn consumed_seed_masks(&self, pass: usize) -> &[u64] {
+        &self.seed_masks[pass]
+    }
+
+    /// The callback union verifier supplies fresh changed bits after every
+    /// acquisition worker joins. Only fields consumed by ETA can reject ETA.
+    pub(crate) fn reject_changed_seeds(&mut self, pass: usize, changed: &[u64]) -> bool {
+        let masks = &self.seed_masks[pass];
+        let valid = masks.iter().enumerate().all(|(index, &mask)| {
+            mask == 0
+                || changed
+                    .get(index)
+                    .is_some_and(|changed| changed & mask == 0)
+        });
+        if !valid {
+            self.rows.outcome = Outcome::Unavailable {
+                reason: "division ETA shared seed changed or unreadable",
+            };
+            if self.rows.checked {
+                self.rows.mismatches = self.rows.mismatches.saturating_add(1);
+            }
+        }
+        valid
+    }
+
     pub(crate) fn cache_diagnostics(&self) -> CacheDiagnostics {
         self.cache.borrow().diagnostics
     }
@@ -125,6 +252,33 @@ impl Captured {
                 c.primary_roots,
                 c.primary_chunks,
             )),
+            completed: RefCell::new(Vec::with_capacity(c.rows)),
+            seed_masks: [
+                vec![0; c.rows],
+                vec![
+                    0;
+                    if successful[0] < crate::sampling::CONSISTENCY_TARGET {
+                        c.rows
+                    } else {
+                        0
+                    }
+                ],
+            ],
+            seed_required: 0,
+            geometry: cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
+                provinces: c.rows.saturating_mul(2),
+                neighbour_entries: c.legs.saturating_mul(4),
+            }),
+            geometry_second: (successful[0] < crate::sampling::CONSISTENCY_TARGET).then(|| {
+                cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
+                    provinces: c.rows.saturating_mul(2),
+                    neighbour_entries: c.legs.saturating_mul(4),
+                })
+            }),
+            geometry_required: cprovince::GeometryCapacities {
+                provinces: 0,
+                neighbour_entries: 0,
+            },
         }
     }
     pub fn reset(&mut self) {
@@ -136,6 +290,17 @@ impl Captured {
         self.supply.get_mut().clear();
         self.air_defense.get_mut().clear();
         self.primary.get_mut().clear();
+        self.completed.get_mut().clear();
+        self.seed_masks.iter_mut().for_each(|masks| masks.fill(0));
+        self.seed_required = 0;
+        self.geometry.clear();
+        if let Some(geometry) = &mut self.geometry_second {
+            geometry.clear();
+        }
+        self.geometry_required = cprovince::GeometryCapacities {
+            provinces: 0,
+            neighbour_entries: 0,
+        };
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
@@ -146,6 +311,17 @@ impl Captured {
             + self.supply.borrow().allocated_bytes()
             + self.air_defense.borrow().allocated_bytes()
             + self.primary.borrow().allocated_bytes()
+            + self.completed.borrow().capacity() * size_of::<DivisionEtaRow>()
+            + self
+                .seed_masks
+                .iter()
+                .map(|masks| masks.capacity() * size_of::<u64>())
+                .sum::<usize>()
+            + self.geometry.allocated_bytes()
+            + self
+                .geometry_second
+                .as_ref()
+                .map_or(0, cprovince::GeometryPacket::allocated_bytes)
     }
     pub fn grow(&mut self, c: &mut Capacities, successful: &[u16]) {
         assert_eq!(successful.len(), N);
@@ -165,6 +341,38 @@ impl Captured {
         self.primary
             .get_mut()
             .grow(c.primary_roots, c.primary_chunks);
+        let completed = self.completed.get_mut();
+        completed.clear();
+        completed.reserve(c.rows);
+        let seed_capacity = self.seed_required.max(c.rows);
+        crate::table_capture::grow_vec(&mut self.seed_masks[0], seed_capacity);
+        crate::table_capture::comparison(&mut self.seed_masks[1], seed_capacity, successful[0]);
+        let geometry_capacities = cprovince::GeometryCapacities {
+            provinces: self
+                .geometry_required
+                .provinces
+                .checked_next_power_of_two()
+                .unwrap_or(self.geometry_required.provinces)
+                .max(c.rows.saturating_mul(2)),
+            neighbour_entries: self
+                .geometry_required
+                .neighbour_entries
+                .checked_next_power_of_two()
+                .unwrap_or(self.geometry_required.neighbour_entries)
+                .max(c.legs.saturating_mul(4)),
+        };
+        self.geometry.grow(geometry_capacities);
+        if successful[0] < crate::sampling::CONSISTENCY_TARGET {
+            if let Some(geometry) = &mut self.geometry_second {
+                geometry.grow(geometry_capacities);
+            } else {
+                self.geometry_second = Some(cprovince::GeometryPacket::with_capacities(
+                    geometry_capacities,
+                ));
+            }
+        } else {
+            self.geometry_second = None;
+        }
     }
     pub fn capture(
         &mut self,
@@ -172,10 +380,15 @@ impl Captured {
         base: usize,
         state: usize,
         needed: &[bool],
-        sources: Sources<'_, DivisionSource>,
+        sources: Sources<'_, DivisionSeed>,
     ) -> ([bool; N], [u64; N]) {
         assert_eq!(needed.len(), N);
         self.reset();
+        self.seed_required = sources.first_outcome.len().max(if needed[0] {
+            sources.second_outcome.len()
+        } else {
+            0
+        });
         let started = qpc();
         let cached = CacheRef {
             source: memory,
@@ -185,52 +398,123 @@ impl Captured {
             air_defense: Some(&self.air_defense),
             primary: Some(&self.primary),
         };
-        let mut first = cunit::walk_eta_with_transport(
-            &cached,
-            base,
-            state,
-            sources.first,
-            sources.first_outcome,
-            &mut self.rows.rows,
-            &mut self.legs.first,
-            |owner, region| {
-                self.transport.resolve(owner, region, || {
-                    engine::cnaval_unit_transfer::movement_speed(
-                        &cached, base, state, owner, region,
-                    )
-                })
+        let geometry_active = !matches!(sources.first_outcome, Outcome::Unavailable { .. })
+            && sources.first_outcome.len() <= sources.first.len()
+            && sources.first_outcome.len() <= self.seed_masks[0].len();
+        let geometry_ready = if geometry_active {
+            self.geometry.begin(memory, base, state)
+        } else {
+            match sources.first_outcome {
+                Outcome::Unavailable { reason } => Err(reason),
+                _ => Err("ETA division seed storage invalid"),
+            }
+        };
+        let mut first = measure_stage(
+            &self.cache,
+            |stage| &mut stage.walk,
+            || {
+                geometry_ready.map_or_else(
+                    |reason| cunit::EtaWalk {
+                        outcome: Outcome::Unavailable { reason },
+                        legs_len: 0,
+                        required_legs: 0,
+                    },
+                    |()| {
+                        cunit::walk_eta_with_transport(
+                            &cached,
+                            memory,
+                            base,
+                            state,
+                            sources.first,
+                            sources.first_outcome,
+                            &mut self.rows.rows,
+                            &mut self.legs.first,
+                            &mut self.seed_masks[0],
+                            &mut self.geometry,
+                            |owner, region| {
+                                measure_stage(
+                                    &self.cache,
+                                    |stage| &mut stage.transport_acquire,
+                                    || {
+                                        self.transport.resolve(owner, region, || {
+                                            let mut diagnostics = self.cache.borrow_mut();
+                                            diagnostics.diagnostics.stages.transport_builds =
+                                                diagnostics
+                                                    .diagnostics
+                                                    .stages
+                                                    .transport_builds
+                                                    .saturating_add(1);
+                                            drop(diagnostics);
+                                            engine::cnaval_unit_transfer::movement_speed(
+                                                &cached, base, state, owner, region,
+                                            )
+                                        })
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
             },
         );
-        if !self.transport.verify_and_clear(|owner, region| {
-            engine::cnaval_unit_transfer::movement_speed(memory, base, state, owner, region)
-        }) {
+        if geometry_active && let Err(reason) = self.geometry.verify(memory) {
+            first.outcome = Outcome::Unavailable { reason };
+        }
+        self.geometry_required = self.geometry.required_capacities();
+        if !measure_stage(
+            &self.cache,
+            |stage| &mut stage.transport_verify,
+            || {
+                self.transport.verify_and_clear(|owner, region| {
+                    engine::cnaval_unit_transfer::movement_speed(memory, base, state, owner, region)
+                })
+            },
+        ) {
             first.outcome = Outcome::Unavailable {
                 reason: "division ETA transport speed changed or unreadable",
             };
         }
-        if !self
-            .supply
-            .borrow_mut()
-            .verify_and_clear(|base, state, owner, area| {
-                engine::ccountry::has_core_supply_access_direct(memory, base, state, owner, area)
-            })
-        {
+        if !measure_stage(
+            &self.cache,
+            |stage| &mut stage.supply_verify,
+            || {
+                self.supply
+                    .borrow_mut()
+                    .verify_and_clear(|base, state, owner, area| {
+                        engine::ccountry::has_core_supply_access_direct(
+                            memory, base, state, owner, area,
+                        )
+                    })
+            },
+        ) {
             first.outcome = Outcome::Unavailable {
                 reason: "division ETA core supply access changed or unreadable",
             };
         }
-        if !self.modifiers.borrow_mut().verify_and_clear(memory) {
+        if !measure_stage(
+            &self.cache,
+            |stage| &mut stage.modifiers_verify,
+            || self.modifiers.borrow_mut().verify_and_clear(memory),
+        ) {
             first.outcome = Outcome::Unavailable {
                 reason: "division ETA modifier snapshot changed or unreadable",
             };
         }
         self.air_defense.borrow_mut().clear();
-        if !self.primary.borrow_mut().verify_and_clear(memory) {
+        if !measure_stage(
+            &self.cache,
+            |stage| &mut stage.primary_verify,
+            || self.primary.borrow_mut().verify_and_clear(memory),
+        ) {
             first.outcome = Outcome::Unavailable {
                 reason: "division ETA primary order dependencies changed or unreadable",
             };
         }
-        if !self.cache.borrow_mut().verify_and_clear(memory) {
+        if !measure_stage(
+            &self.cache,
+            |stage| &mut stage.cache_verify,
+            || self.cache.borrow_mut().verify_and_clear(memory),
+        ) {
             first.outcome = Outcome::Unavailable {
                 reason: "division ETA cached operands changed or unreadable",
             };
@@ -241,54 +525,136 @@ impl Captured {
         let mut pass = false;
         if needed[0] {
             self.rows.checked = true;
-            let mut second = cunit::walk_eta_with_transport(
-                &cached,
-                base,
-                state,
-                sources.second,
-                sources.second_outcome,
-                &mut self.rows.second,
-                &mut self.legs.second,
-                |owner, region| {
-                    self.transport.resolve(owner, region, || {
+            let Some(geometry) = &mut self.geometry_second else {
+                self.rows.mismatches = self.rows.mismatches.saturating_add(1);
+                return ([false], [qpc().saturating_sub(started).max(0) as u64]);
+            };
+            let geometry_active = !matches!(sources.second_outcome, Outcome::Unavailable { .. })
+                && sources.second_outcome.len() <= sources.second.len()
+                && sources.second_outcome.len() <= self.seed_masks[1].len();
+            let geometry_ready = if geometry_active {
+                geometry.begin(memory, base, state)
+            } else {
+                match sources.second_outcome {
+                    Outcome::Unavailable { reason } => Err(reason),
+                    _ => Err("ETA division seed storage invalid"),
+                }
+            };
+            let mut second = measure_stage(
+                &self.cache,
+                |stage| &mut stage.walk,
+                || {
+                    geometry_ready.map_or_else(
+                        |reason| cunit::EtaWalk {
+                            outcome: Outcome::Unavailable { reason },
+                            legs_len: 0,
+                            required_legs: 0,
+                        },
+                        |()| {
+                            cunit::walk_eta_with_transport(
+                                &cached,
+                                memory,
+                                base,
+                                state,
+                                sources.second,
+                                sources.second_outcome,
+                                &mut self.rows.second,
+                                &mut self.legs.second,
+                                &mut self.seed_masks[1],
+                                geometry,
+                                |owner, region| {
+                                    measure_stage(
+                                        &self.cache,
+                                        |stage| &mut stage.transport_acquire,
+                                        || {
+                                            self.transport.resolve(owner, region, || {
+                                                let mut diagnostics = self.cache.borrow_mut();
+                                                diagnostics.diagnostics.stages.transport_builds =
+                                                    diagnostics
+                                                        .diagnostics
+                                                        .stages
+                                                        .transport_builds
+                                                        .saturating_add(1);
+                                                drop(diagnostics);
+                                                engine::cnaval_unit_transfer::movement_speed(
+                                                    &cached, base, state, owner, region,
+                                                )
+                                            })
+                                        },
+                                    )
+                                },
+                            )
+                        },
+                    )
+                },
+            );
+            if geometry_active && let Err(reason) = geometry.verify(memory) {
+                second.outcome = Outcome::Unavailable { reason };
+            }
+            let geometry_same = self.geometry.same_observation(geometry);
+            let required = geometry.required_capacities();
+            self.geometry_required.provinces =
+                self.geometry_required.provinces.max(required.provinces);
+            self.geometry_required.neighbour_entries = self
+                .geometry_required
+                .neighbour_entries
+                .max(required.neighbour_entries);
+            if !measure_stage(
+                &self.cache,
+                |stage| &mut stage.transport_verify,
+                || {
+                    self.transport.verify_and_clear(|owner, region| {
                         engine::cnaval_unit_transfer::movement_speed(
-                            &cached, base, state, owner, region,
+                            memory, base, state, owner, region,
                         )
                     })
                 },
-            );
-            if !self.transport.verify_and_clear(|owner, region| {
-                engine::cnaval_unit_transfer::movement_speed(memory, base, state, owner, region)
-            }) {
+            ) {
                 second.outcome = Outcome::Unavailable {
                     reason: "division ETA transport speed changed or unreadable",
                 };
             }
-            if !self
-                .supply
-                .borrow_mut()
-                .verify_and_clear(|base, state, owner, area| {
-                    engine::ccountry::has_core_supply_access_direct(
-                        memory, base, state, owner, area,
-                    )
-                })
-            {
+            if !measure_stage(
+                &self.cache,
+                |stage| &mut stage.supply_verify,
+                || {
+                    self.supply
+                        .borrow_mut()
+                        .verify_and_clear(|base, state, owner, area| {
+                            engine::ccountry::has_core_supply_access_direct(
+                                memory, base, state, owner, area,
+                            )
+                        })
+                },
+            ) {
                 second.outcome = Outcome::Unavailable {
                     reason: "division ETA core supply access changed or unreadable",
                 };
             }
-            if !self.modifiers.borrow_mut().verify_and_clear(memory) {
+            if !measure_stage(
+                &self.cache,
+                |stage| &mut stage.modifiers_verify,
+                || self.modifiers.borrow_mut().verify_and_clear(memory),
+            ) {
                 second.outcome = Outcome::Unavailable {
                     reason: "division ETA modifier snapshot changed or unreadable",
                 };
             }
             self.air_defense.borrow_mut().clear();
-            if !self.primary.borrow_mut().verify_and_clear(memory) {
+            if !measure_stage(
+                &self.cache,
+                |stage| &mut stage.primary_verify,
+                || self.primary.borrow_mut().verify_and_clear(memory),
+            ) {
                 second.outcome = Outcome::Unavailable {
                     reason: "division ETA primary order dependencies changed or unreadable",
                 };
             }
-            if !self.cache.borrow_mut().verify_and_clear(memory) {
+            if !measure_stage(
+                &self.cache,
+                |stage| &mut stage.cache_verify,
+                || self.cache.borrow_mut().verify_and_clear(memory),
+            ) {
                 second.outcome = Outcome::Unavailable {
                     reason: "division ETA cached operands changed or unreadable",
                 };
@@ -296,7 +662,8 @@ impl Captured {
             let rows = self.rows.compare(second.outcome);
             let legs = self.legs.compare(second.legs_len, second.required_legs);
             self.rows.mismatches += usize::from(!legs);
-            pass = rows && legs;
+            self.rows.mismatches += usize::from(!geometry_same);
+            pass = rows && legs && geometry_same;
         }
         ([pass], [qpc().saturating_sub(started).max(0) as u64])
     }
@@ -312,133 +679,50 @@ impl Captured {
     pub fn checked_mismatches(&self) -> [usize; N] {
         [self.rows.mismatches]
     }
-    pub fn tables(&self) -> [TableView; N] {
+    pub(crate) fn table_inputs(
+        &self,
+        projection: Option<&mut crate::projection::Projection<'_>>,
+    ) -> [TableInput; N] {
         let outcome = self.outcomes()[0];
         if let Outcome::Unavailable { reason } = outcome {
-            return [unavailable(reason)];
+            return [unavailable(reason).into()];
         }
         let Some(inputs) = self.rows.rows.get(..outcome.len()) else {
-            return [unavailable("division ETA row span invalid")];
+            return [unavailable("division ETA row span invalid").into()];
         };
         let Some(legs) = self.legs.first.get(..self.legs.len) else {
-            return [unavailable("division ETA leg arena invalid")];
+            return [unavailable("division ETA leg arena invalid").into()];
         };
-        let rows: Result<Vec<_>, _> = inputs
-            .iter()
-            .map(|input| {
-                let (next_remaining, destination_remaining) = cunit::eta_remaining(input, legs)?;
-                Ok(DivisionEtaRow {
-                    division: input.division,
-                    next: input.next,
-                    destination: input.destination,
-                    path_total: input.path_total,
-                    next_remaining,
-                    destination_remaining,
-                })
-            })
-            .collect();
-        let rows = match rows {
-            Ok(rows) => rows,
-            Err(reason) => return [unavailable(reason)],
-        };
-        [table_iter::<tables::DivisionEta, _>(
+        let mut rows = self.completed.borrow_mut();
+        rows.clear();
+        for input in inputs {
+            let (next_remaining, destination_remaining) = match cunit::eta_remaining(input, legs) {
+                Ok(value) => value,
+                Err(reason) => return [unavailable(reason).into()],
+            };
+            rows.push(DivisionEtaRow {
+                division: input.division,
+                next: input.next,
+                destination: input.destination,
+                path_total: input.path_total,
+                next_remaining,
+                destination_remaining,
+            });
+        }
+        [crate::projection::scalar_table::<tables::DivisionEta, _>(
+            projection,
             outcome,
-            rows.into_iter(),
-            std::convert::identity,
+            &rows,
+            |row| u128::from(row.division),
+            |row| row.clone(),
         )]
     }
-}
-
-/// Owned copies of the existing authenticated division census. Allocation and
-/// growth are off-thread; omitted source rows remain explicit truncation.
-pub(crate) struct OwnedSources {
-    first: Vec<DivisionSource>,
-    second: Vec<DivisionSource>,
-    outcomes: [Outcome; 2],
-}
-impl OwnedSources {
-    pub(crate) fn new(capacity: usize, checked: bool) -> Self {
-        Self {
-            first: vec![DivisionSource::default(); capacity],
-            second: vec![DivisionSource::default(); if checked { capacity } else { 0 }],
-            outcomes: [super::MISSING; 2],
-        }
-    }
-    pub(crate) fn copy_from(&mut self, source: Sources<'_, DivisionSource>, checked: bool) {
-        self.clear();
-        for (pass, (input, outcome)) in [
-            (source.first, source.first_outcome),
-            (source.second, source.second_outcome),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if pass == 1 && !checked {
-                break;
-            }
-            let output = if pass == 0 {
-                &mut self.first
-            } else {
-                &mut self.second
-            };
-            self.outcomes[pass] = match outcome {
-                Outcome::Unavailable { .. } => outcome,
-                Outcome::Truncated { unread_rows: 0, .. } => Outcome::Unavailable {
-                    reason: "ETA parent truncation has no omitted rows",
-                },
-                _ if outcome.len() > input.len() => Outcome::Unavailable {
-                    reason: "ETA source count exceeds parent storage",
-                },
-                _ => {
-                    let len = outcome.len().min(output.len());
-                    output[..len].copy_from_slice(&input[..len]);
-                    let missing = match outcome {
-                        Outcome::Truncated { unread_rows, .. } => unread_rows as usize,
-                        _ => 0,
-                    };
-                    let omitted = outcome.len().saturating_sub(len).saturating_add(missing);
-                    if omitted == 0 {
-                        Outcome::Rows { len }
-                    } else {
-                        super::truncated_source(len, omitted)
-                    }
-                }
-            };
-        }
-    }
-    pub(crate) fn view(&self) -> Sources<'_, DivisionSource> {
-        Sources {
-            first: &self.first,
-            first_outcome: self.outcomes[0],
-            second: &self.second,
-            second_outcome: self.outcomes[1],
-        }
-    }
-    pub(crate) fn clear(&mut self) {
-        for (rows, outcome) in [
-            (&mut self.first, self.outcomes[0]),
-            (&mut self.second, self.outcomes[1]),
-        ] {
-            let len = rows.len().min(outcome.len());
-            rows[..len].fill(DivisionSource::default());
-        }
-        self.outcomes = [super::MISSING; 2];
-    }
-    pub(crate) fn grow(&mut self, capacity: usize, checked: bool) {
-        self.clear();
-        crate::table_capture::grow_vec(&mut self.first, capacity);
-        crate::table_capture::comparison(
-            &mut self.second,
-            capacity,
-            if checked {
-                0
-            } else {
-                crate::sampling::CONSISTENCY_TARGET
-            },
-        );
-    }
-    pub(crate) fn allocated_bytes(&self) -> usize {
-        (self.first.capacity() + self.second.capacity()) * size_of::<DivisionSource>()
+    #[cfg(test)]
+    pub fn tables(&self) -> [replay::frame::TableView; N] {
+        self.table_inputs(None).map(|input| match input {
+            TableInput::Sampled(view) => view,
+            _ => unreachable!("unprojected ETA always returns a sample"),
+        })
     }
 }
 
@@ -1049,7 +1333,7 @@ impl SmallReadCache {
             + self.used.capacity() * size_of::<usize>()
             + self.witness.allocated_bytes()
     }
-    fn verify_and_clear(&mut self, memory: &impl Memory) -> bool {
+    fn observe_witness(&mut self) {
         self.diagnostics.witness_entries_peak =
             self.diagnostics.witness_entries_peak.max(self.witness.len);
         self.diagnostics.witness_bytes_peak = self
@@ -1064,6 +1348,9 @@ impl SmallReadCache {
             .diagnostics
             .witness_bytes_required
             .max(self.witness.required_bytes);
+    }
+    fn verify_and_clear(&mut self, memory: &impl Memory) -> bool {
+        self.observe_witness();
         let mut matched = self.witness.verify_and_clear(memory);
         let mut fresh = [0; SMALL_READ_BYTES];
         for &slot in &self.used[..self.used_len] {
@@ -1089,12 +1376,47 @@ struct CacheRef<'a, M> {
     primary: Option<&'a RefCell<engine::carmy_leader::PrimaryRootCache>>,
 }
 impl<M: Memory> Memory for CacheRef<'_, M> {
+    fn finish_read_witness(
+        &self,
+        witness: engine::memory::ReadWitness,
+    ) -> Option<Result<(), &'static str>> {
+        let mut cache = self.cache.borrow_mut();
+        if !cache.witness.enabled()
+            || witness.owner != self.cache as *const RefCell<SmallReadCache> as usize
+            || witness.generation != cache.witness.generation
+        {
+            return None;
+        }
+        let complete = witness.uncovered == cache.witness.uncovered;
+        cache.observe_witness();
+        // Only uncached collision/bulk observations are scoped. Exact scalar
+        // cache entries and typed shared dependencies retain their independent
+        // terminal checks; this never evicts or restages them for every army.
+        let started = qpc();
+        let matched = cache.witness.verify_and_clear(self.source);
+        cache.diagnostics.stages.scope_verify.record(started);
+        if !matched {
+            return Some(Err("division ETA owned dependencies changed or unreadable"));
+        }
+        if complete {
+            cache.diagnostics.witness_skips = cache.diagnostics.witness_skips.saturating_add(1);
+            Some(Ok(()))
+        } else {
+            // The original complete-check path records this fallback once.
+            None
+        }
+    }
     fn movement_primary_root(
         &self,
         base: usize,
         member: usize,
     ) -> Option<Result<usize, &'static str>> {
-        Some(self.primary?.borrow_mut().resolve(self, base, member))
+        let primary = self.primary?;
+        Some(measure_stage(
+            self.cache,
+            |stage| &mut stage.primary_acquire,
+            || primary.borrow_mut().resolve(self, base, member),
+        ))
     }
     fn read_witness(&self) -> Option<engine::memory::ReadWitness> {
         let cache = self.cache.borrow();
@@ -1144,20 +1466,47 @@ impl<M: Memory> Memory for CacheRef<'_, M> {
         owner: u32,
         area: usize,
     ) -> Option<Result<bool, &'static str>> {
-        self.supply?
-            .borrow_mut()
-            .resolve(base, state, owner, area, || {
-                engine::ccountry::has_core_supply_access_direct(self, base, state, owner, area)
-            })
+        let supply = self.supply?;
+        let result = measure_stage(
+            self.cache,
+            |stage| &mut stage.supply_acquire,
+            || {
+                supply.borrow_mut().resolve(base, state, owner, area, || {
+                    let mut cache = self.cache.borrow_mut();
+                    cache.diagnostics.stages.supply_builds =
+                        cache.diagnostics.stages.supply_builds.saturating_add(1);
+                    drop(cache);
+                    engine::ccountry::has_core_supply_access_direct(self, base, state, owner, area)
+                })
+            },
+        );
+        if result.is_none() {
+            let mut cache = self.cache.borrow_mut();
+            cache.diagnostics.stages.supply_fallbacks =
+                cache.diagnostics.stages.supply_fallbacks.saturating_add(1);
+        }
+        result
     }
     fn modifier_accumulator_value(
         &self,
         address: usize,
         key: u32,
     ) -> Option<Result<engine::modifier_accumulator::Value, &'static str>> {
-        self.modifiers?
-            .borrow_mut()
-            .lookup(self.source, address, key)
+        let modifiers = self.modifiers?;
+        let result = measure_stage(
+            self.cache,
+            |stage| &mut stage.modifiers_acquire,
+            || modifiers.borrow_mut().lookup(self.source, address, key),
+        );
+        if result.is_none() {
+            let mut cache = self.cache.borrow_mut();
+            cache.diagnostics.stages.modifier_fallbacks = cache
+                .diagnostics
+                .stages
+                .modifier_fallbacks
+                .saturating_add(1);
+        }
+        result
     }
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         let slot = {
@@ -1239,6 +1588,7 @@ impl<M: Memory> Memory for CacheRef<'_, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay::frame::TableView;
     use replay::rows::TableRows;
 
     #[test]
@@ -1297,86 +1647,49 @@ mod tests {
     use std::cell::Cell;
 
     #[test]
-    fn owned_eta_sources_preserve_both_passes_capacity_faults_and_release_pointers() {
-        let first = [
-            DivisionSource {
-                pointer: 0x1000,
-                division: 1,
-                ..Default::default()
-            },
-            DivisionSource {
-                pointer: 0x2000,
-                division: 2,
-                ..Default::default()
-            },
-        ];
-        let second = [DivisionSource {
-            pointer: 0x3000,
-            division: 3,
-            ..Default::default()
-        }];
-        let mut owned = OwnedSources::new(1, true);
-        owned.copy_from(
+    fn shared_seed_terminal_changes_reject_only_eta_consumed_fields() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0]);
+        captured.rows.outcome = Outcome::Rows { len: 1 };
+        captured.rows.checked = true;
+        captured.seed_masks[0][0] = DivisionSeed::CLASS | DivisionSeed::ORDINARY_ROUTE;
+        assert!(captured.reject_changed_seeds(0, &[DivisionSeed::ORGANISATION]));
+        assert_eq!(captured.rows.outcome, Outcome::Rows { len: 1 });
+        assert!(!captured.reject_changed_seeds(0, &[DivisionSeed::CLASS]));
+        assert!(matches!(captured.rows.outcome, Outcome::Unavailable { .. }));
+        assert_eq!(captured.rows.mismatches, 1);
+    }
+
+    #[test]
+    fn eta_source_masks_are_independent_of_private_row_capacity() {
+        let mut captured = Captured::empty();
+        captured.reserve_sources(3);
+        assert_eq!(captured.rows.rows.len(), 0);
+        assert_eq!(captured.rows.second.len(), 0);
+        assert_eq!(captured.consumed_seed_masks(0).len(), 3);
+        assert_eq!(captured.consumed_seed_masks(1).len(), 3);
+    }
+
+    #[test]
+    fn missing_eta_seed_source_does_not_acquire_geometry() {
+        let source = Observed::new();
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0]);
+        let missing = Outcome::Unavailable {
+            reason: "missing authenticated seeds",
+        };
+        captured.capture(
+            &source,
+            0,
+            usize::MAX,
+            &[true],
             Sources {
-                first: &first,
-                first_outcome: Outcome::Truncated {
-                    len: 2,
-                    unread_rows: 3,
-                },
-                second: &second,
-                second_outcome: Outcome::Rows { len: 1 },
+                first: &[],
+                first_outcome: missing,
+                second: &[],
+                second_outcome: missing,
             },
-            true,
         );
-        assert_eq!(
-            owned.outcomes,
-            [
-                Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 4
-                },
-                Outcome::Rows { len: 1 }
-            ]
-        );
-        assert_eq!(owned.first[0], first[0]);
-        assert_eq!(owned.second[0], second[0]);
-        owned.clear();
-        assert_eq!(owned.first[0].pointer, 0);
-        assert_eq!(owned.second[0].pointer, 0);
-        owned.copy_from(
-            Sources {
-                first: &first,
-                first_outcome: Outcome::Unavailable {
-                    reason: "parent fault",
-                },
-                second: &second,
-                second_outcome: Outcome::Rows { len: 2 },
-            },
-            true,
-        );
-        assert_eq!(
-            owned.outcomes[0],
-            Outcome::Unavailable {
-                reason: "parent fault"
-            }
-        );
-        assert!(matches!(owned.outcomes[1], Outcome::Unavailable { .. }));
-        let bytes = owned.allocated_bytes();
-        owned.grow(2, false);
-        assert_eq!(owned.first.len(), 2);
-        assert!(owned.second.is_empty());
-        assert!(owned.allocated_bytes() >= bytes);
-        owned.copy_from(
-            Sources {
-                first: &first,
-                first_outcome: Outcome::Rows { len: 2 },
-                second: &second,
-                second_outcome: Outcome::Rows { len: 1 },
-            },
-            false,
-        );
-        assert_eq!(owned.outcomes[0], Outcome::Rows { len: 2 });
-        assert_eq!(owned.outcomes[1], super::super::MISSING);
+        assert_eq!(captured.rows.outcome, missing);
+        assert!(source.calls.borrow().is_empty());
     }
 
     struct Observed {
@@ -1422,6 +1735,93 @@ mod tests {
             };
             destination.copy_from_slice(source);
             true
+        }
+    }
+
+    #[test]
+    fn scoped_dependency_witness_reuses_bounded_storage_without_replaying_graphs() {
+        let source = Observed::new();
+        let cache = RefCell::new(SmallReadCache::with_witness(0, 1, 8));
+        let memory = CacheRef {
+            source: &source,
+            cache: &cache,
+            modifiers: None,
+            supply: None,
+            air_defense: None,
+            primary: None,
+        };
+        let allocated = cache.borrow().allocated_bytes();
+        let mut previous = None;
+        for address in [8, 16, 24, 32] {
+            let mark = memory.read_witness().unwrap();
+            assert!(memory.copy(address, &mut [0; 8]));
+            if let Some(stale) = previous {
+                assert_eq!(memory.finish_read_witness(stale), None);
+                assert_eq!(cache.borrow().witness.len, 1);
+            }
+            assert_eq!(memory.finish_read_witness(mark), Some(Ok(())));
+            assert_eq!(cache.borrow().witness.len, 0);
+            previous = Some(mark);
+        }
+        assert_eq!(
+            &*source.calls.borrow(),
+            &[
+                (8, 8),
+                (8, 8),
+                (16, 8),
+                (16, 8),
+                (24, 8),
+                (24, 8),
+                (32, 8),
+                (32, 8)
+            ]
+        );
+        assert_eq!(cache.borrow().allocated_bytes(), allocated);
+        assert_eq!(cache.borrow().diagnostics.witness_skips, 4);
+        assert_eq!(cache.borrow().diagnostics.witness_entries_peak, 1);
+        assert!(cache.borrow_mut().verify_and_clear(&source));
+    }
+
+    #[test]
+    fn scoped_dependency_witness_preserves_incomplete_and_failed_observations() {
+        for fault in [false, true] {
+            let source = Observed::new();
+            let cache = RefCell::new(SmallReadCache::with_witness(0, 1, 8));
+            let memory = CacheRef {
+                source: &source,
+                cache: &cache,
+                modifiers: None,
+                supply: None,
+                air_defense: None,
+                primary: None,
+            };
+            let mark = memory.read_witness().unwrap();
+            assert!(memory.copy(8, &mut [0; 8]));
+            assert!(memory.copy(16, &mut [0; 8]));
+            let mut foreign = mark;
+            foreign.owner ^= 1;
+            assert_eq!(memory.finish_read_witness(foreign), None);
+            assert_eq!(cache.borrow().witness.len, 1);
+            if fault {
+                source.fault.set(Some(8));
+            }
+            assert_eq!(
+                memory.finish_read_witness(mark),
+                if fault {
+                    Some(Err("division ETA owned dependencies changed or unreadable"))
+                } else {
+                    None
+                }
+            );
+            assert_eq!(cache.borrow().witness.len, 0);
+            let mark = memory.read_witness().unwrap();
+            assert!(memory.copy(24, &mut [0; 8]));
+            source.bytes.borrow_mut()[24] ^= 1;
+            assert_eq!(
+                memory.finish_read_witness(mark),
+                Some(Err("division ETA owned dependencies changed or unreadable"))
+            );
+            assert_eq!(cache.borrow().witness.len, 0);
         }
     }
 
@@ -3064,16 +3464,17 @@ mod tests {
             leg_len: 2,
             next_leg_count: 1,
             numerator: 1,
-            current_speed: 3,
+            current_speed: (3_i64).into(),
+            normal: None,
         };
         capture.legs.first[..2].copy_from_slice(&[
             cunit::EtaLeg {
                 distance: 2,
-                speed: 3,
+                speed: (3_i64).into(),
             },
             cunit::EtaLeg {
                 distance: 2,
-                speed: 3,
+                speed: (3_i64).into(),
             },
         ]);
         capture.legs.len = 2;

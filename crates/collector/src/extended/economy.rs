@@ -1,9 +1,10 @@
 //! Economy acquisition buffers. Growth and replay conversion run off-thread.
 
 use crate::{
+    projection::{Projection, project_table, scalar_table},
     raw::RawLog,
     sampling::{full_match, qpc},
-    spooling::{table, unavailable},
+    spooling::unavailable,
     table_capture::{Arena, CaptureRows, grow_vec},
 };
 use engine::{
@@ -13,7 +14,7 @@ use engine::{
     market_contract_manager, msvc_string, sprovince_supply_data, supply_node_record, walk::Outcome,
 };
 use replay::{
-    frame::TableView,
+    frame::TableInput,
     rows::{self, TableId, tables},
 };
 use std::mem::size_of;
@@ -324,20 +325,31 @@ impl Captured {
         ]
     }
 
-    pub fn tables(&self) -> [TableView; N] {
+    pub(crate) fn table_inputs(
+        &self,
+        mut projection: Option<&mut Projection<'_>>,
+    ) -> [TableInput; N] {
         let outcomes = self.outcomes();
         [
-            table::<tables::CountryFuel, _>(outcomes[0], &self.fuel.rows, |r| {
-                rows::CountryFuelRow {
+            scalar_table::<tables::CountryFuel, _>(
+                projection.as_deref_mut(),
+                outcomes[0],
+                &self.fuel.rows,
+                |r| r.country as u128,
+                |r| rows::CountryFuelRow {
                     country: r.country,
                     current_raw: r.current_raw,
                     maximum_raw: r.maximum_raw,
                     gain_raw: r.gain_raw,
                     cost_raw: r.cost_raw,
-                }
-            }),
-            table::<tables::CountryExperience, _>(outcomes[1], &self.experience.rows, |r| {
-                rows::CountryExperienceRow {
+                },
+            ),
+            scalar_table::<tables::CountryExperience, _>(
+                projection.as_deref_mut(),
+                outcomes[1],
+                &self.experience.rows,
+                |r| r.country as u128,
+                |r| rows::CountryExperienceRow {
                     country: r.country,
                     army_raw: r.army_raw,
                     army_daily_raw: r.army_daily_raw,
@@ -348,10 +360,14 @@ impl Captured {
                     air_raw: r.air_raw,
                     air_daily_raw: r.air_daily_raw,
                     armies_for_training_raw: r.armies_for_training_raw,
-                }
-            }),
-            table::<tables::ProvinceSupply, _>(outcomes[2], &self.supply.rows, |r| {
-                rows::ProvinceSupplyRow {
+                },
+            ),
+            scalar_table::<tables::ProvinceSupply, _>(
+                projection.as_deref_mut(),
+                outcomes[2],
+                &self.supply.rows,
+                |r| r.province as u128,
+                |r| rows::ProvinceSupplyRow {
                     province: r.province,
                     supply_factor_raw: r.supply_factor_raw,
                     railway_health_raw: r.railway_health_raw,
@@ -362,10 +378,19 @@ impl Captured {
                     non_damaged_infra_level: r.non_damaged_infra_level,
                     infra_level: r.infra_level,
                     flags: r.flags,
-                }
-            }),
-            table::<tables::HubMotorization, _>(outcomes[3], &self.hubs.rows, |r| {
-                rows::HubMotorizationRow {
+                },
+            ),
+            scalar_table::<tables::HubMotorization, _>(
+                projection.as_deref_mut(),
+                outcomes[3],
+                &self.hubs.rows,
+                |r| {
+                    (r.owner as u128) << 96
+                        | (r.province as u32 as u128) << 64
+                        | (r.node_type as u32 as u128) << 32
+                        | r.actor as u128
+                },
+                |r| rows::HubMotorizationRow {
                     owner: r.owner,
                     actor: r.actor,
                     node_index: r.node_index,
@@ -373,27 +398,39 @@ impl Captured {
                     province: r.province,
                     node_type: r.node_type,
                     level: r.level,
-                }
-            }),
-            table::<tables::DisruptedSupply, _>(outcomes[4], &self.disrupted.rows, |r| {
-                rows::DisruptedSupplyRow {
+                },
+            ),
+            scalar_table::<tables::DisruptedSupply, _>(
+                projection.as_deref_mut(),
+                outcomes[4],
+                &self.disrupted.rows,
+                |r| (r.country as u128) << 64 | (r.province as u128) << 32 | r.node_type as u128,
+                |r| rows::DisruptedSupplyRow {
                     country: r.country,
                     province: r.province,
                     node_type: r.node_type,
                     value: r.value,
-                }
-            }),
-            self.foreign_table(outcomes[5]),
-            table::<tables::ResourceDefinitions, _>(outcomes[6], &self.definitions.rows, |r| {
-                rows::ResourceDefinitionRow {
+                },
+            ),
+            self.foreign_table(projection.as_deref_mut(), outcomes[5]),
+            scalar_table::<tables::ResourceDefinitions, _>(
+                projection.as_deref_mut(),
+                outcomes[6],
+                &self.definitions.rows,
+                |r| r.id as u128,
+                |r| rows::ResourceDefinitionRow {
                     id: r.id,
                     token: r.token,
                     active: r.active,
                     factory_cost: r.factory_cost,
-                }
-            }),
-            table::<tables::CountryResources, _>(outcomes[7], &self.resources.rows, |r| {
-                rows::CountryResourceRow {
+                },
+            ),
+            scalar_table::<tables::CountryResources, _>(
+                projection.as_deref_mut(),
+                outcomes[7],
+                &self.resources.rows,
+                |r| (r.country as u128) << 32 | r.resource as u128,
+                |r| rows::CountryResourceRow {
                     country: r.country,
                     resource: r.resource,
                     produced: r.produced,
@@ -405,10 +442,14 @@ impl Captured {
                     to_export: r.to_export,
                     base_export: r.base_export,
                     exported: r.exported,
-                }
-            }),
-            table::<tables::ResourceExchanges, _>(outcomes[8], &self.exchanges.rows, |r| {
-                rows::ResourceExchangeRow {
+                },
+            ),
+            scalar_table::<tables::ResourceExchanges, _>(
+                projection.as_deref_mut(),
+                outcomes[8],
+                &self.exchanges.rows,
+                |r| r.id as u128,
+                |r| rows::ResourceExchangeRow {
                     id: r.id,
                     exporter: r.exporter,
                     importer: r.importer,
@@ -424,10 +465,14 @@ impl Captured {
                     assigned_factories: r.assigned_factories,
                     no_trade_influence: r.no_trade_influence,
                     no_resources: r.no_resources,
-                }
-            }),
-            table::<tables::PurchaseContracts, _>(outcomes[9], &self.purchases.rows, |r| {
-                rows::PurchaseContractRow {
+                },
+            ),
+            scalar_table::<tables::PurchaseContracts, _>(
+                projection,
+                outcomes[9],
+                &self.purchases.rows,
+                |r| r.id as u128,
+                |r| rows::PurchaseContractRow {
                     id: r.id,
                     seller: r.seller,
                     buyer: r.buyer,
@@ -440,12 +485,24 @@ impl Captured {
                     equipment_transfer_progress_raw: r.equipment_transfer_progress_raw,
                     collected_raw: r.collected_raw,
                     completed_deliveries: r.completed_deliveries,
-                }
-            }),
+                },
+            ),
         ]
     }
 
-    fn foreign_table(&self, outcome: Outcome) -> TableView {
+    #[cfg(test)]
+    pub fn tables(&self) -> [replay::frame::TableView; N] {
+        self.table_inputs(None).map(|input| match input {
+            TableInput::Sampled(view) => view,
+            _ => unreachable!("projection disabled"),
+        })
+    }
+
+    fn foreign_table(
+        &self,
+        projection: Option<&mut Projection<'_>>,
+        outcome: Outcome,
+    ) -> TableInput {
         if self.sources.required < self.sources.len
             || !valid_sources(
                 outcome,
@@ -454,10 +511,29 @@ impl Captured {
                 self.sources.len,
             )
         {
-            return unavailable("foreign homebase source range exceeds captured arena");
+            return unavailable("foreign homebase source range exceeds captured arena").into();
         }
-        table::<tables::ForeignHomebases, _>(outcome, &self.foreign.rows, |r| {
-            rows::ForeignHomebaseRow {
+        project_table::<tables::ForeignHomebases, _>(
+            projection,
+            outcome,
+            &self.foreign.rows,
+            |r| (r.country as u128) << 32 | r.ordinal as u128,
+            |r, previous| {
+                r.country == previous.country
+                    && r.ordinal == previous.ordinal
+                    && r.province == previous.province
+                    && r.supply == previous.supply
+                    && r.start == previous.start
+                    && r.penalty == previous.penalty
+                    && r.added_penalty == previous.added_penalty
+                    && r.duration == previous.duration
+                    && r.hours == previous.hours
+                    && r.decay == previous.decay
+                    && r.base == previous.base
+                    && self.sources.first[r.source_start..r.source_start + r.source_len]
+                        == previous.source
+            },
+            |r| rows::ForeignHomebaseRow {
                 country: r.country,
                 ordinal: r.ordinal,
                 province: r.province,
@@ -470,8 +546,8 @@ impl Captured {
                 decay: r.decay,
                 base: r.base,
                 source: self.sources.first[r.source_start..r.source_start + r.source_len].to_vec(),
-            }
-        })
+            },
+        )
     }
 }
 
@@ -1837,6 +1913,7 @@ fn copy_economy_market_contracts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay::frame::TableView;
     mod resource_fixture {
         use super::*;
         use engine::ccountry_resources::*;
@@ -2451,6 +2528,213 @@ mod tests {
     }
 
     #[test]
+    fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
+        use crate::projection::ProjectionScratch;
+        use replay::frame::{FrameEncoder, FrameInput, Metrics};
+
+        let (_, mut captured) = small();
+        macro_rules! sampled {
+            ($field:ident, $row:expr) => {
+                captured.$field.outcome = Outcome::Rows { len: 1 };
+                captured.$field.rows[0] = $row;
+            };
+        }
+        sampled!(
+            fuel,
+            ccountry_fuel_status::Row {
+                country: u32::MAX,
+                current_raw: i64::MIN,
+                ..Default::default()
+            }
+        );
+        sampled!(
+            experience,
+            ccountry_experience_status::Row {
+                country: u32::MAX,
+                armies_for_training_raw: i64::MAX,
+                ..Default::default()
+            }
+        );
+        sampled!(
+            supply,
+            sprovince_supply_data::Row {
+                province: u32::MAX,
+                flags: u8::MAX,
+                ..Default::default()
+            }
+        );
+        sampled!(
+            hubs,
+            ccountry_supply_system::Row {
+                owner: u32::MAX,
+                actor: u32::MAX - 1,
+                province: i32::MIN,
+                node_type: -1,
+                map_entry_index: 19,
+                ..Default::default()
+            }
+        );
+        captured.hubs.outcome = Outcome::Rows { len: 2 };
+        captured.hubs.rows[1] = ccountry_supply_system::Row {
+            province: i32::MAX,
+            ..captured.hubs.rows[0]
+        };
+        sampled!(
+            disrupted,
+            disrupted_supply_bucket::Row {
+                country: u32::MAX,
+                bucket_index: u32::MAX - 3,
+                province: u32::MAX - 1,
+                node_type: u32::MAX - 2,
+                value: i64::MIN,
+            }
+        );
+        sampled!(
+            foreign,
+            foreign_homebase_node::Row {
+                country: u32::MAX,
+                ordinal: u32::MAX - 1,
+                source_start: 1,
+                source_len: 3,
+                ..Default::default()
+            }
+        );
+        captured.sources.first.copy_from_slice(&[0, 0xff, 0, b'a']);
+        captured.sources.len = 4;
+        captured.sources.required = 4;
+        let mut definition = cstrategic_resource::Row::default();
+        definition.id = u32::MAX;
+        definition.factory_cost = i64::MAX;
+        sampled!(definitions, definition);
+        sampled!(
+            resources,
+            ccountry_resources::Row {
+                country: u32::MAX,
+                resource: u32::MAX - 1,
+                exported: i64::MIN,
+                ..Default::default()
+            }
+        );
+        sampled!(
+            exchanges,
+            cresource_exchange::Row {
+                id: u64::MAX,
+                delivered: i64::MAX,
+                ..Default::default()
+            }
+        );
+        sampled!(
+            purchases,
+            cpurchase_contract::Row {
+                id: u64::MAX,
+                completed_deliveries: i32::MAX,
+                ..Default::default()
+            }
+        );
+
+        let mut baseline = FrameInput {
+            branch: 1,
+            hour: 100,
+            tables: std::array::from_fn(|_| unavailable("outside economy fixture").into()),
+            metrics: Metrics::default(),
+        };
+        for (table, input) in TABLES.into_iter().zip(captured.table_inputs(None)) {
+            baseline.tables[table.index()] = input;
+        }
+        let mut encoder = FrameEncoder::new();
+        encoder.encode_input(baseline, false).unwrap();
+        let mut scratch = ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 101, false, &mut scratch);
+        assert!(
+            captured
+                .table_inputs(Some(&mut projection))
+                .iter()
+                .all(|input| { matches!(input, TableInput::ComparedEqual(_)) })
+        );
+        // A native census permutation keeps the same replay keys and payloads,
+        // including unsigned replay ordering of signed province/node fields.
+        captured.hubs.rows.swap(0, 1);
+        assert!(
+            captured
+                .table_inputs(Some(&mut projection))
+                .iter()
+                .all(|input| { matches!(input, TableInput::ComparedEqual(_)) })
+        );
+
+        captured.supply.rows[0].flags -= 1;
+        captured.resources.rows[0].exported += 1;
+        let changed = captured.table_inputs(Some(&mut projection));
+        let converted = captured.table_inputs(None);
+        for index in [2, 7] {
+            assert_eq!(changed[index], converted[index]);
+            assert!(matches!(changed[index], TableInput::Sampled(_)));
+        }
+
+        // Every field in the only nested economy row must participate in the
+        // exact comparison, including embedded zero/non-UTF8 source bytes.
+        let original = captured.foreign.rows[0];
+        for field in 0..13 {
+            captured.foreign.rows[0] = original;
+            captured.sources.first[2] = 0;
+            let row = &mut captured.foreign.rows[0];
+            match field {
+                0 => row.country -= 1,
+                1 => row.ordinal -= 1,
+                2 => row.province = 1,
+                3 => row.supply = i64::MIN,
+                4 => row.start = i64::MAX,
+                5 => row.penalty = -1,
+                6 => row.added_penalty = 1,
+                7 => row.duration = 2,
+                8 => row.hours = 3,
+                9 => row.decay = 4,
+                10 => row.base = u8::MAX,
+                11 => row.source_len -= 1,
+                _ => captured.sources.first[2] = b'b',
+            }
+            let input = captured.foreign_table(Some(&mut projection), captured.foreign.outcome);
+            assert_eq!(
+                input,
+                captured.foreign_table(None, captured.foreign.outcome)
+            );
+            assert!(matches!(input, TableInput::Sampled(_)), "field {field}");
+        }
+        captured.foreign.rows[0] = original;
+        captured.sources.first[2] = 0;
+        // Identical bytes in a different arena position are still equal.
+        captured.sources.first.copy_within(1..4, 0);
+        captured.foreign.rows[0].source_start = 0;
+        assert!(matches!(
+            captured.foreign_table(Some(&mut projection), captured.foreign.outcome),
+            TableInput::ComparedEqual(_)
+        ));
+        captured.foreign.rows[0].source_start = usize::MAX;
+        assert!(matches!(
+            captured.foreign_table(Some(&mut projection), captured.foreign.outcome),
+            TableInput::Sampled(TableView::Unavailable { .. })
+        ));
+        captured.fuel.checked = true;
+        captured.fuel.mismatches = 1;
+        captured.hubs.outcome = Outcome::Truncated {
+            len: 2,
+            unread_rows: 1,
+        };
+        let faulted = captured.table_inputs(Some(&mut projection));
+        let converted = captured.table_inputs(None);
+        for index in [0, 3, 5] {
+            assert_eq!(faulted[index], converted[index]);
+        }
+        assert!(matches!(
+            faulted[0],
+            TableInput::Sampled(TableView::Unavailable { .. })
+        ));
+        assert!(matches!(
+            faulted[3],
+            TableInput::Sampled(TableView::Truncated { missing: 1, .. })
+        ));
+    }
+
+    #[test]
     fn conversion_preserves_raw_quantities_full_hub_identity_and_literal_source_bytes() {
         let (_, mut captured) = small();
         captured.fuel.outcome = Outcome::Rows { len: 1 };
@@ -2524,8 +2808,8 @@ mod tests {
             captured.foreign.rows[0].source_start = start;
             captured.foreign.rows[0].source_len = len;
             assert!(matches!(
-                captured.foreign_table(captured.foreign.outcome),
-                TableView::Unavailable { .. }
+                captured.foreign_table(None, captured.foreign.outcome),
+                TableInput::Sampled(TableView::Unavailable { .. })
             ));
         }
         assert!(matches!(

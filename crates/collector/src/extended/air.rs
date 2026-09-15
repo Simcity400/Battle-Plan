@@ -14,7 +14,9 @@ use crate::{
 use engine::{
     Memory, cace, cair_base, cair_region_combat_data, cair_wing, cair_wing_pool, ccountry,
     ccountry_air_container, cgame_state, cloop_history, cpdx_array::Array, cprovince, cstate,
-    cstrategic_air_manager, equipment_entry, msvc_string, sair_wing_combat_data, sdamage_entry,
+    cstrategic_air_manager, equipment_entry,
+    memory::{RecordLayout, RecordSources},
+    msvc_string, sair_wing_combat_data, sdamage_entry,
     walk::Outcome,
 };
 use replay::{
@@ -4013,48 +4015,38 @@ impl<M: Memory> Memory for AirHistoryMemory<'_, M> {
 
     fn copy_records(
         &self,
-        pointers: &[usize],
-        fields: &[engine::memory::RecordField],
-        row_stride: usize,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         // Only country/region structural gathers use this operation. Forward
         // one native gather and keep its exact completed prefix, without retry.
         self.record.set(None);
-        let completed = self
-            .inner
-            .copy_records(pointers, fields, row_stride, destination);
+        let completed = self.inner.copy_records(sources, layout, destination);
         if !self.checking {
-            if !fields.is_empty() {
-                let row_bytes = fields.iter().map(|field| field.len).sum::<usize>();
-                let count = completed.min(pointers.len().saturating_mul(fields.len()));
-                let bytes = (count / fields.len())
-                    .saturating_mul(row_bytes)
-                    .saturating_add(
-                        fields[..count % fields.len()]
-                            .iter()
-                            .map(|field| field.len)
-                            .sum(),
-                    );
-                self.count(AIR_HISTORY_CENSUS_MASK, bytes);
-            }
+            let count = completed.min(sources.len().saturating_mul(layout.field_count()));
+            self.count(AIR_HISTORY_CENSUS_MASK, layout.completed_bytes(count));
             return completed;
         }
-        for (ordinal, (row, pointer, field)) in pointers
-            .iter()
-            .enumerate()
-            .flat_map(|(row, pointer)| fields.iter().map(move |field| (row, pointer, field)))
+        for (ordinal, (row, pointer, field)) in (0..sources.len())
+            .flat_map(|row| {
+                layout
+                    .fields()
+                    .iter()
+                    .map(move |field| (row, sources.pointer(row), field))
+            })
             .enumerate()
         {
             if ordinal > completed {
                 break;
             }
-            let Some(address) = pointer.checked_add(field.source_offset) else {
+            let Some(address) = pointer.and_then(|pointer| pointer.checked_add(field.source_offset))
+            else {
                 self.overflowed.set(true);
                 break;
             };
             let Some(start) = row
-                .checked_mul(row_stride)
+                .checked_mul(layout.stride())
                 .and_then(|v| v.checked_add(field.destination_offset))
             else {
                 self.overflowed.set(true);

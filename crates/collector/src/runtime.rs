@@ -597,18 +597,18 @@ fn add_decode_status(status: &mut Value) {
             status["acquisition_work"] = json!({
                 "workers": calibration,
                 "eta_read_witness": calibration.eta_country_cache.read_witness,
-                "eta_read_witness_scope": "cumulative returned worker captures, including both cold passes and later country-verification failures; excludes panics, cancelled requests and synchronous fallback; journal sizes are maximum per-pass observations, not total allocated pool bytes",
+                "eta_read_witness_scope": "cumulative returned worker captures, including both cold passes and later country-verification failures; excludes panics, cancelled requests and synchronous fallback; journal sizes are maximum bounded army-scope observations, not total allocated pool bytes",
+                "eta_stage_qpc_frequency": shared.frequency,
+                "eta_stage_scope": "cumulative QPC ticks and call counts; walk includes resolver and scope-verification spans; transport may include modifier spans; pass-final supply, transport, modifier, primary and cache verification spans are disjoint from walk and one another; supply/modifier fallbacks are counted but execute outside resolver spans",
                 "dispatch_ns": shared.acquisition_dispatch_ns.load(Ordering::Relaxed),
                 "join_wait_ns": shared.acquisition_wait_ns.load(Ordering::Relaxed),
                 "table_costs_overlap": true,
-                "eta_country_cache_bytes": acquisition.eta_country_cache_bytes(),
-                "eta_cost_scope": "worker acquisition, own country preparation/verification and source-copy overhead; overlaps callback work; failed worker cost is unavailable",
-                "world_country_cache_bytes": acquisition.world_country_cache_bytes(),
+                "country_snapshot_scope": "one immutable callback-owned country authentication snapshot shared with all acquisition workers; payload counted once in pool_bytes; preparation and final verification charged once to Countries after all joins; worker calibration reports the borrowed snapshot status",
+                "eta_cost_scope": "worker acquisition and request/lease handoff overhead; shared country preparation/verification charged to Countries; overlaps callback work; failed worker cost is unavailable",
                 "world_country_cache": world.country_cache,
                 "world_acquisition_ns": shared.ns(i64::try_from(world.acquisition_ticks).unwrap_or(i64::MAX)),
-                "world_verification_failures": world.verification_failures,
                 "world_last_error": world.last_error,
-                "world_cost_scope": "non-Characters hours on the same worker; whole-worker total includes country preparation/verification and staging attempts; accepted economy raw copies charge authentication once to CountryFuel, typed fallback table costs exclude the discarded staging attempt; overlaps callback work; panicked/stopped worker cost is unavailable",
+                "world_cost_scope": "non-Characters hours on the same worker; whole-worker total includes staging attempts; shared country preparation/verification charged once to Countries; typed fallback table costs exclude the discarded staging attempt; overlaps callback work; panicked/stopped worker cost is unavailable",
             });
         }
     }

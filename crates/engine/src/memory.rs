@@ -10,25 +10,135 @@ pub struct RecordField {
     pub len: usize,
 }
 
-#[inline]
-fn record_count(
-    pointers: &[usize],
-    fields: &[RecordField],
-    row_stride: usize,
-    destination_len: usize,
-) -> Option<usize> {
-    let count = pointers.len().checked_mul(fields.len())?;
-    if pointers.len().checked_mul(row_stride)? > destination_len
-        || fields.iter().any(|field| {
-            field
-                .destination_offset
-                .checked_add(field.len)
-                .is_none_or(|end| end > row_stride)
+/// Immutable exact-field layout, prepared once before gathering records.
+/// Only destination geometry is validated here. Invalid source arithmetic is
+/// still reported at its ordered field, after any earlier successful reads.
+#[derive(Debug, Clone, Copy)]
+pub struct RecordLayout<'a> {
+    fields: &'a [RecordField],
+    stride: usize,
+    envelope: Option<(usize, usize)>,
+    nonempty: usize,
+    row_bytes: usize,
+}
+
+impl<'a> RecordLayout<'a> {
+    pub const fn new(fields: &'a [RecordField], stride: usize) -> Option<Self> {
+        let mut first = usize::MAX;
+        let mut end = 0;
+        let mut source_overflow = false;
+        let mut nonempty = 0;
+        let mut row_bytes = 0_usize;
+        let mut index = 0;
+        while index < fields.len() {
+            let field = &fields[index];
+            match field.destination_offset.checked_add(field.len) {
+                Some(end) if end <= stride => {}
+                _ => return None,
+            }
+            if field.len != 0 {
+                nonempty += 1;
+                row_bytes = row_bytes.saturating_add(field.len);
+                if field.source_offset < first {
+                    first = field.source_offset;
+                }
+                match field.source_offset.checked_add(field.len) {
+                    Some(field_end) => {
+                        if field_end > end {
+                            end = field_end;
+                        }
+                    }
+                    None => source_overflow = true,
+                }
+            }
+            index += 1;
+        }
+        Some(Self {
+            fields,
+            stride,
+            envelope: if nonempty != 0 && !source_overflow {
+                Some((first, end))
+            } else {
+                None
+            },
+            nonempty,
+            row_bytes,
         })
-    {
-        return None;
     }
-    Some(count)
+
+    pub const fn fields(&self) -> &'a [RecordField] {
+        self.fields
+    }
+
+    pub const fn stride(&self) -> usize {
+        self.stride
+    }
+
+    pub const fn field_count(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Successful payload bytes for accounting, saturated if the sum overflows.
+    /// The ordinary complete-row case does not scan the layout again.
+    pub fn completed_bytes(&self, completed: usize) -> usize {
+        if self.fields.is_empty() {
+            return 0;
+        }
+        let full = completed / self.fields.len();
+        let tail = completed % self.fields.len();
+        self.fields[..tail]
+            .iter()
+            .fold(full.saturating_mul(self.row_bytes), |bytes, field| {
+                bytes.saturating_add(field.len)
+            })
+    }
+
+    #[inline]
+    fn count(&self, sources: RecordSources<'_>, destination_len: usize) -> Option<usize> {
+        let count = sources.len().checked_mul(self.fields.len())?;
+        if sources.len().checked_mul(self.stride)? > destination_len {
+            return None;
+        }
+        Some(count)
+    }
+}
+
+/// Current source addresses, either explicit pointers or an exact strided array.
+/// Strided addresses are evaluated only when a nonempty field requires them.
+#[derive(Debug, Clone, Copy)]
+pub enum RecordSources<'a> {
+    Pointers(&'a [usize]),
+    Strided {
+        base: usize,
+        stride: usize,
+        count: usize,
+    },
+}
+
+impl RecordSources<'_> {
+    pub const fn len(self) -> usize {
+        match self {
+            Self::Pointers(pointers) => pointers.len(),
+            Self::Strided { count, .. } => count,
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
+    pub fn pointer(self, row: usize) -> Option<usize> {
+        match self {
+            Self::Pointers(pointers) => pointers.get(row).copied(),
+            Self::Strided {
+                base,
+                stride,
+                count,
+            } if row < count => base.checked_add(row.checked_mul(stride)?),
+            Self::Strided { .. } => None,
+        }
+    }
 }
 
 /// x86-64 canonical range check for a guarded source span.
@@ -60,52 +170,48 @@ fn is_canonical_range(addr: usize, len: usize) -> bool {
     matches!(high, 0 | 0x1FFFF) && end >> 47 == high
 }
 
-/// A conservative envelope of nonempty fields, useful only when it replaces
-/// at least two per-field source checks. Overflow disables the fast path;
-/// empty fields never contribute their otherwise irrelevant source offsets.
-#[inline(always)]
-fn record_source_envelope(fields: &[RecordField]) -> Option<(usize, usize)> {
-    if fields.len() < 2 {
-        return None;
-    }
-    let mut first = usize::MAX;
-    let mut end = 0;
-    let mut nonempty = 0;
-    for field in fields {
-        if field.len != 0 {
-            first = first.min(field.source_offset);
-            end = end.max(field.source_offset.checked_add(field.len)?);
-            nonempty += 1;
-        }
-    }
-    (nonempty > 1).then_some((first, end))
-}
-
 /// Return the row-major prefix whose nonempty source spans have valid address
-/// arithmetic and are canonical. `record_count` must validate the complete
+/// arithmetic and are canonical. `RecordLayout::count` validates the complete
 /// count first. This reads immutable metadata only, never any source bytes.
 #[inline(always)]
-fn record_source_prefix(pointers: &[usize], fields: &[RecordField]) -> usize {
-    let envelope = record_source_envelope(fields);
+fn record_source_prefix(sources: RecordSources<'_>, layout: &RecordLayout<'_>) -> usize {
+    if layout.nonempty == 0 || sources.is_empty() {
+        return sources.len() * layout.fields.len();
+    }
+    // A valid union envelope proves every address in a strided batch at once.
+    // It does not read source gaps or prove readability. Failed envelopes fall
+    // back to field order, preserving partial rows and earlier actual faults.
+    if matches!(sources, RecordSources::Strided { .. })
+        && let Some((first, end)) = layout.envelope
+        && let Some(base) = sources.pointer(0).filter(|&pointer| pointer != 0)
+        && let Some(last) = sources.pointer(sources.len() - 1)
+        && let Some(last_end) = last.checked_add(end)
+        && let Some(first_start) = base.checked_add(first)
+        && is_canonical_range(first_start, last_end - first_start)
+    {
+        return sources.len() * layout.fields.len();
+    }
     let mut completed = 0;
-    for &pointer in pointers {
-        if pointer != 0
-            && envelope.is_some_and(|(first, end)| {
-                pointer.checked_add(end).is_some()
-                    && is_canonical_range(pointer + first, end - first)
-            })
-        {
+    for row in 0..sources.len() {
+        let pointer = sources.pointer(row);
+        if pointer.is_some_and(|pointer| {
+            pointer != 0
+                && layout.envelope.is_some_and(|(first, end)| {
+                    pointer.checked_add(end).is_some()
+                        && is_canonical_range(pointer + first, end - first)
+                })
+        }) {
             // Every nonempty field is inside this canonical, nonoverflowing
             // range. Holes are not read; readability is still decided by SEH
             // in field order. A failed envelope proves nothing about a prefix.
-            completed += fields.len();
+            completed += layout.fields.len();
             continue;
         }
-        for field in fields {
+        for field in layout.fields {
             if field.len != 0 {
                 let Some(address) = pointer
-                    .checked_add(field.source_offset)
-                    .filter(|_| pointer != 0)
+                    .filter(|&pointer| pointer != 0)
+                    .and_then(|pointer| pointer.checked_add(field.source_offset))
                     .filter(|&address| address.checked_add(field.len).is_some())
                 else {
                     return completed;
@@ -151,6 +257,18 @@ pub trait Memory {
     /// false, preserving the caller's original graph-verification fallback.
     fn read_witness_complete(&self, _witness: ReadWitness) -> bool {
         false
+    }
+
+    /// Finish a bounded owned-dependency scope. `Some(Ok(()))` means every
+    /// observation is either directly compared and released here or remains
+    /// covered by the adapter's mandatory independent pass verification.
+    /// A mismatch/read fault must return `Some(Err(..))`, never a fallback.
+    /// Unsupported, foreign, stale or incomplete checkpoints return `None`
+    /// and require the original derived-graph verifier. A scope may release
+    /// observations only after comparing them, including on incomplete paths.
+    /// Observation-recording wrappers must not forward this capability.
+    fn finish_read_witness(&self, _witness: ReadWitness) -> Option<Result<(), &'static str>> {
+        None
     }
 
     /// Optional immutable, already-owned bytes for this exact address range.
@@ -270,26 +388,29 @@ pub trait Memory {
     /// allocation, source padding read, retry or observation cache is involved.
     fn copy_records(
         &self,
-        pointers: &[usize],
-        fields: &[RecordField],
-        row_stride: usize,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
-        if record_count(pointers, fields, row_stride, destination.len()).is_none() {
+        let Some(count) = layout.count(sources, destination.len()) else {
             return 0;
+        };
+        if count == 0 || layout.nonempty == 0 {
+            return count;
         }
         let mut completed = 0;
-        for (row, &pointer) in pointers.iter().enumerate() {
-            for field in fields {
+        for row in 0..sources.len() {
+            for field in layout.fields {
                 if field.len != 0 {
-                    let Some(address) = pointer
-                        .checked_add(field.source_offset)
-                        .filter(|_| pointer != 0)
+                    let Some(address) = sources
+                        .pointer(row)
+                        .filter(|&pointer| pointer != 0)
+                        .and_then(|pointer| pointer.checked_add(field.source_offset))
                         .filter(|&address| address.checked_add(field.len).is_some())
                     else {
                         return completed;
                     };
-                    let start = row * row_stride + field.destination_offset;
+                    let start = row * layout.stride + field.destination_offset;
                     if !self.copy(address, &mut destination[start..start + field.len]) {
                         return completed;
                     }
@@ -477,14 +598,15 @@ impl Memory for LiveMemory {
     #[inline(always)]
     fn copy_records(
         &self,
-        pointers: &[usize],
-        fields: &[RecordField],
-        row_stride: usize,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         unsafe extern "C" {
             fn seh_guarded_copy_records(
                 pointers: *const usize,
+                source_base: usize,
+                source_stride: usize,
                 validated_field_count: usize,
                 fields: *const RecordField,
                 field_count: usize,
@@ -492,13 +614,13 @@ impl Memory for LiveMemory {
                 destination: *mut u8,
             ) -> usize;
         }
-        let Some(count) = record_count(pointers, fields, row_stride, destination.len()) else {
+        let Some(count) = layout.count(sources, destination.len()) else {
             return 0;
         };
-        if count == 0 || fields.iter().all(|field| field.len == 0) {
+        if count == 0 || layout.nonempty == 0 {
             return count;
         }
-        let validated_field_count = record_source_prefix(pointers, fields);
+        let validated_field_count = record_source_prefix(sources, layout);
         if validated_field_count == 0 {
             return 0;
         }
@@ -511,13 +633,19 @@ impl Memory for LiveMemory {
         // never reach a guarded instruction. SEH still decides readability in
         // order, so an earlier unreadable field wins over a later invalid one.
         // C preserves its completed-field witness and exact fault-range filter.
+        let (pointers, source_base, source_stride) = match sources {
+            RecordSources::Pointers(pointers) => (pointers.as_ptr(), 0, 0),
+            RecordSources::Strided { base, stride, .. } => (std::ptr::null(), base, stride),
+        };
         unsafe {
             seh_guarded_copy_records(
-                pointers.as_ptr(),
+                pointers,
+                source_base,
+                source_stride,
                 validated_field_count,
-                fields.as_ptr(),
-                fields.len(),
-                row_stride,
+                layout.fields.as_ptr(),
+                layout.fields.len(),
+                layout.stride,
                 destination.as_mut_ptr(),
             )
         }
@@ -567,19 +695,48 @@ mod tests {
                 len: 0,
             },
         ];
-        let (first, end) = record_source_envelope(&fields).unwrap();
+        let (first, end) = RecordLayout::new(&fields, 8).unwrap().envelope.unwrap();
         assert!(!is_canonical_range(1 + first, end - first));
         // No reads occur here. Both nonempty fields are canonical even though
         // the conservative envelope crosses the noncanonical gap between them.
-        assert_eq!(record_source_prefix(&[1], &fields), 3);
         assert_eq!(
-            record_source_prefix(&[1], &[fields[1], fields[0], fields[2]]),
+            record_source_prefix(
+                RecordSources::Pointers(&[1]),
+                &RecordLayout::new(&fields, usize::MAX).unwrap()
+            ),
             3
         );
-        assert_eq!(record_source_envelope(&fields[..1]), None);
-        assert_eq!(record_source_envelope(&[fields[0], fields[2]]), None);
-        assert_eq!(record_source_prefix(&[0, usize::MAX], &fields[2..]), 2);
-        assert_eq!(record_source_prefix(&[], &fields), 0);
+        assert_eq!(
+            record_source_prefix(
+                RecordSources::Pointers(&[1]),
+                &RecordLayout::new(&[fields[1], fields[0], fields[2]], usize::MAX).unwrap()
+            ),
+            3
+        );
+        assert_eq!(
+            RecordLayout::new(&fields[..1], 8).unwrap().envelope,
+            Some((0, 4))
+        );
+        assert_eq!(
+            RecordLayout::new(&[fields[0], fields[2]], 8)
+                .unwrap()
+                .envelope,
+            Some((0, 4))
+        );
+        assert_eq!(
+            record_source_prefix(
+                RecordSources::Pointers(&[0, usize::MAX]),
+                &RecordLayout::new(&fields[2..], usize::MAX).unwrap()
+            ),
+            2
+        );
+        assert_eq!(
+            record_source_prefix(
+                RecordSources::Pointers(&[]),
+                &RecordLayout::new(&fields, usize::MAX).unwrap()
+            ),
+            0
+        );
     }
 
     #[test]
@@ -640,15 +797,129 @@ mod tests {
                         for pointer in addresses {
                             let pointers = [0x1000, pointer, 0x1000];
                             assert_eq!(
-                                record_source_prefix(&pointers, &fields),
+                                record_source_prefix(
+                                    RecordSources::Pointers(&pointers),
+                                    &RecordLayout::new(&fields, usize::MAX).unwrap()
+                                ),
                                 ordered(&pointers, &fields),
                                 "pointers={pointers:?}, fields={fields:?}"
                             );
+                            for stride in [0, 8, 0x0000_8000_0000_0000, usize::MAX] {
+                                let sources = RecordSources::Strided {
+                                    base: pointer,
+                                    stride,
+                                    count: 3,
+                                };
+                                let pointers = std::array::from_fn::<_, 3, _>(|row| {
+                                    sources.pointer(row).unwrap_or(0)
+                                });
+                                assert_eq!(
+                                    record_source_prefix(
+                                        sources,
+                                        &RecordLayout::new(&fields, 64).unwrap()
+                                    ),
+                                    ordered(&pointers, &fields),
+                                    "base={pointer:x}, stride={stride:x}, fields={fields:?}"
+                                );
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn strided_records_keep_empty_overflow_and_repeated_observations() {
+        const FIELDS: [RecordField; 3] = [
+            RecordField {
+                source_offset: usize::MAX,
+                destination_offset: 0,
+                len: 0,
+            },
+            RecordField {
+                source_offset: 0,
+                destination_offset: 0,
+                len: 4,
+            },
+            RecordField {
+                source_offset: usize::MAX,
+                destination_offset: 4,
+                len: 0,
+            },
+        ];
+        const LAYOUT: RecordLayout<'static> = RecordLayout::new(&FIELDS, 4).unwrap();
+        let overflow = RecordSources::Strided {
+            base: 0x1000,
+            stride: usize::MAX - 0xfff,
+            count: 2,
+        };
+        for fail_at in [0, 0x1000] {
+            let memory = TracedMemory {
+                calls: RefCell::new(Vec::new()),
+                fail_at,
+            };
+            let mut output = [0xa5; 8];
+            let copied = memory.copy_records(overflow, &LAYOUT, &mut output);
+            assert_eq!(copied, if fail_at == 0 { 4 } else { 1 });
+            assert_eq!(*memory.calls.borrow(), [0x1000]);
+            assert_eq!(&output[4..], &[0xa5; 4]);
+            assert_eq!(
+                LAYOUT.completed_bytes(copied),
+                if fail_at == 0 { 4 } else { 0 }
+            );
+        }
+        let memory = TracedMemory {
+            calls: RefCell::new(Vec::new()),
+            fail_at: 0,
+        };
+        assert_eq!(
+            memory.copy_records(
+                RecordSources::Strided {
+                    base: 0x1000,
+                    stride: 0,
+                    count: 2
+                },
+                &LAYOUT,
+                &mut [0; 8]
+            ),
+            6
+        );
+        assert_eq!(*memory.calls.borrow(), [0x1000, 0x1000]);
+
+        // A synthetic Memory retains its own numeric-address space. Only the
+        // LiveMemory implementation imposes host canonical-address checks.
+        memory.calls.borrow_mut().clear();
+        assert_eq!(
+            memory.copy_records(
+                RecordSources::Strided {
+                    base: 0x0000_8000_0000_0000,
+                    stride: 0,
+                    count: 1
+                },
+                &LAYOUT,
+                &mut [0; 4]
+            ),
+            3
+        );
+        assert_eq!(*memory.calls.borrow(), [0x0000_8000_0000_0000]);
+
+        let empty = [FIELDS[0]];
+        let empty_layout = RecordLayout::new(&empty, 0).unwrap();
+        memory.calls.borrow_mut().clear();
+        assert_eq!(
+            memory.copy_records(
+                RecordSources::Strided {
+                    base: 0,
+                    stride: usize::MAX,
+                    count: usize::MAX
+                },
+                &empty_layout,
+                &mut []
+            ),
+            usize::MAX
+        );
+        assert!(memory.calls.borrow().is_empty());
     }
 
     #[test]
@@ -681,7 +952,11 @@ mod tests {
         };
         let mut bytes = [0xa5; 48];
         assert_eq!(
-            memory.copy_records(&[0x1000, 0x1100], &fields, 20, &mut bytes),
+            memory.copy_records(
+                RecordSources::Pointers(&[0x1000, 0x1100]),
+                &RecordLayout::new(&fields, 20).expect("valid record layout"),
+                &mut bytes
+            ),
             5
         );
         assert_eq!(
@@ -730,8 +1005,14 @@ mod tests {
             ),
         ] {
             let mut bytes = [0xa5; 16];
+            let fields = [field];
+            let layout = RecordLayout::new(&fields, stride);
             assert_eq!(
-                memory.copy_records(&[0x1000, 0x1100], &[field], stride, &mut bytes),
+                layout.as_ref().map_or(0, |layout| memory.copy_records(
+                    RecordSources::Pointers(&[0x1000, 0x1100]),
+                    layout,
+                    &mut bytes
+                )),
                 0
             );
             assert_eq!(bytes, [0xa5; 16]);
@@ -742,7 +1023,11 @@ mod tests {
                 // destination geometry must be rejected before native entry.
                 let live = unsafe { LiveMemory::new() };
                 assert_eq!(
-                    live.copy_records(&[source.as_ptr() as usize; 2], &[field], stride, &mut bytes),
+                    layout.as_ref().map_or(0, |layout| live.copy_records(
+                        RecordSources::Pointers(&[source.as_ptr() as usize; 2]),
+                        layout,
+                        &mut bytes
+                    )),
                     0
                 );
                 assert_eq!(bytes, [0xa5; 16]);
@@ -767,20 +1052,42 @@ mod tests {
             },
         ];
         let mut bytes = [0xa5; 4];
-        assert_eq!(memory.copy_records(&[0], &fields, 4, &mut bytes), 1);
+        assert_eq!(
+            memory.copy_records(
+                RecordSources::Pointers(&[0]),
+                &RecordLayout::new(&fields, 4).expect("valid record layout"),
+                &mut bytes
+            ),
+            1
+        );
         assert!(memory.calls.borrow().is_empty());
         assert_eq!(bytes, [0xa5; 4]);
         assert_eq!(
-            memory.copy_records(&[usize::MAX - 3], &fields, 4, &mut bytes),
+            memory.copy_records(
+                RecordSources::Pointers(&[usize::MAX - 3]),
+                &RecordLayout::new(&fields, 4).expect("valid record layout"),
+                &mut bytes
+            ),
             2
         );
         assert_eq!(*memory.calls.borrow(), [usize::MAX - 3]);
         assert_eq!(bytes, [0xfc, 0xfc, 0xa5, 0xa5]);
         assert_eq!(
-            memory.copy_records(&[0, usize::MAX], &fields[..1], 0, &mut []),
+            memory.copy_records(
+                RecordSources::Pointers(&[0, usize::MAX]),
+                &RecordLayout::new(&fields[..1], 0).expect("valid record layout"),
+                &mut []
+            ),
             2
         );
-        assert_eq!(memory.copy_records(&[], &fields, 4, &mut []), 0);
+        assert_eq!(
+            memory.copy_records(
+                RecordSources::Pointers(&[]),
+                &RecordLayout::new(&fields, 4).expect("valid record layout"),
+                &mut []
+            ),
+            0
+        );
     }
 
     #[test]
@@ -834,9 +1141,8 @@ mod tests {
             let mut bytes = [0xa5; 96];
             assert_eq!(
                 memory.copy_records(
-                    &[source.as_ptr() as usize, bad_pointer],
-                    &fields,
-                    48,
+                    RecordSources::Pointers(&[source.as_ptr() as usize, bad_pointer]),
+                    &RecordLayout::new(&fields, 48).expect("valid record layout"),
                     &mut bytes
                 ),
                 7
@@ -855,11 +1161,19 @@ mod tests {
         }
         let mut bytes = [0xa5; 48];
         assert_eq!(
-            memory.copy_records(&[source.as_ptr() as usize], &fields, 48, &mut bytes),
+            memory.copy_records(
+                RecordSources::Pointers(&[source.as_ptr() as usize]),
+                &RecordLayout::new(&fields, 48).expect("valid record layout"),
+                &mut bytes
+            ),
             fields.len()
         );
         assert_eq!(
-            memory.copy_records(&[0, usize::MAX], &fields[..1], 0, &mut []),
+            memory.copy_records(
+                RecordSources::Pointers(&[0, usize::MAX]),
+                &RecordLayout::new(&fields[..1], 0).expect("valid record layout"),
+                &mut []
+            ),
             2
         );
     }
@@ -870,6 +1184,8 @@ mod tests {
         unsafe extern "C" {
             fn seh_guarded_copy_records(
                 pointers: *const usize,
+                source_base: usize,
+                source_stride: usize,
                 validated_field_count: usize,
                 fields: *const RecordField,
                 field_count: usize,
@@ -905,6 +1221,8 @@ mod tests {
                 unsafe {
                     seh_guarded_copy_records(
                         pointers.as_ptr(),
+                        0,
+                        0,
                         prefix,
                         fields.as_ptr(),
                         fields.len(),
@@ -957,9 +1275,22 @@ mod tests {
                     len: 8,
                 },
             ];
-            assert_eq!(record_source_prefix(&[1], &fields), 2);
+            assert_eq!(
+                record_source_prefix(
+                    RecordSources::Pointers(&[1]),
+                    &RecordLayout::new(&fields, usize::MAX).unwrap()
+                ),
+                2
+            );
             let mut bytes = [0xa5; 24];
-            assert_eq!(memory.copy_records(&[1], &fields, 24, &mut bytes), 1);
+            assert_eq!(
+                memory.copy_records(
+                    RecordSources::Pointers(&[1]),
+                    &RecordLayout::new(&fields, 24).expect("valid record layout"),
+                    &mut bytes
+                ),
+                1
+            );
             assert_eq!(bytes, [0xa5; 24]);
         }
     }
@@ -1213,7 +1544,11 @@ mod tests {
             }];
             let mut records = [0xa5; 192];
             assert_eq!(
-                memory.copy_records(&[valid, crossing, valid], &field, width, &mut records),
+                memory.copy_records(
+                    RecordSources::Pointers(&[valid, crossing, valid]),
+                    &RecordLayout::new(&field, width).expect("valid record layout"),
+                    &mut records
+                ),
                 1
             );
             assert_eq!(records[..width], [0x6d; 64][..width]);
@@ -1274,13 +1609,27 @@ mod tests {
         // The gather rejects the derived noncanonical address before reading it.
         let memory = unsafe { LiveMemory::new() };
         let mut bytes = [0xa5; 24];
-        assert_eq!(memory.copy_records(&[pointer], &fields, 24, &mut bytes), 3);
+        assert_eq!(
+            memory.copy_records(
+                RecordSources::Pointers(&[pointer]),
+                &RecordLayout::new(&fields, 24).expect("valid record layout"),
+                &mut bytes
+            ),
+            3
+        );
         assert_eq!(bytes[..8], source);
         assert_eq!(bytes[8..], [0xa5; 16]);
         // An earlier unreadable canonical field wins over the later invalid
         // derived field. Empty fields count but do not inspect their source.
         bytes.fill(0xa5);
-        assert_eq!(memory.copy_records(&[1], &fields, 24, &mut bytes), 1);
+        assert_eq!(
+            memory.copy_records(
+                RecordSources::Pointers(&[1]),
+                &RecordLayout::new(&fields, 24).expect("valid record layout"),
+                &mut bytes
+            ),
+            1
+        );
         assert_eq!(bytes, [0xa5; 24]);
         // A range crossing the canonical gap must fail before copying any of
         // it, even though its starting address is itself canonical.
@@ -1290,7 +1639,11 @@ mod tests {
             len: 24,
         }];
         assert_eq!(
-            memory.copy_records(&[0x0000_7fff_ffff_fff0], &crossing, 24, &mut bytes),
+            memory.copy_records(
+                RecordSources::Pointers(&[0x0000_7fff_ffff_fff0]),
+                &RecordLayout::new(&crossing, 24).expect("valid record layout"),
+                &mut bytes
+            ),
             0
         );
         assert_eq!(bytes, [0xa5; 24]);
@@ -1341,9 +1694,8 @@ mod tests {
         let mut bytes = [0xa5; 16];
         assert_eq!(
             memory.copy_records(
-                &[source.as_ptr() as usize, 0x0072_6f74_6361_665f],
-                &fields[..1],
-                8,
+                RecordSources::Pointers(&[source.as_ptr() as usize, 0x0072_6f74_6361_665f]),
+                &RecordLayout::new(&fields[..1], 8).expect("valid record layout"),
                 &mut bytes
             ),
             1
@@ -1403,6 +1755,8 @@ mod tests {
         unsafe extern "C" {
             fn seh_guarded_copy_records(
                 pointers: *const usize,
+                source_base: usize,
+                source_stride: usize,
                 validated_field_count: usize,
                 fields: *const RecordField,
                 field_count: usize,
@@ -1462,6 +1816,104 @@ mod tests {
             }
         }
 
+        #[test]
+        fn strided_native_faults_keep_exact_fields_and_overflow_prefixes() {
+            const FIELDS: [RecordField; 3] = [
+                RecordField {
+                    source_offset: usize::MAX,
+                    destination_offset: 0,
+                    len: 0,
+                },
+                RecordField {
+                    source_offset: PAGE - 4,
+                    destination_offset: 1,
+                    len: 8,
+                },
+                RecordField {
+                    source_offset: 2 * PAGE,
+                    destination_offset: 12,
+                    len: 4,
+                },
+            ];
+            const LAYOUT: RecordLayout<'static> = RecordLayout::new(&FIELDS, 16).unwrap();
+            let pages = Pages::new(9);
+            // SAFETY: this fixture owns every source page and destination.
+            let memory = unsafe { LiveMemory::new() };
+            for failed_row in 0..3 {
+                for (failed_field, failed) in FIELDS.iter().enumerate().skip(1) {
+                    for protection in [NOACCESS, READWRITE | GUARD] {
+                        let failed_page = failed_row * 3 + failed_field;
+                        pages.protect(failed_page, protection);
+                        let mut output = [0xa5; 48];
+                        let copied = memory.copy_records(
+                            RecordSources::Strided {
+                                base: pages.at(0),
+                                stride: 3 * PAGE,
+                                count: 3,
+                            },
+                            &LAYOUT,
+                            &mut output,
+                        );
+                        assert_eq!(copied, failed_row * 3 + failed_field);
+                        let mut expected = [0xa5; 48];
+                        for index in 0..copied {
+                            let row = index / FIELDS.len();
+                            let field = FIELDS[index % FIELDS.len()];
+                            for offset in 0..field.len {
+                                expected[row * 16 + field.destination_offset + offset] =
+                                    0x20 + (row * 3 + (field.source_offset + offset) / PAGE) as u8;
+                            }
+                        }
+                        // The failed field may be partially written. Its exact
+                        // completed prefix and every later field remain fixed.
+                        let start = failed_row * 16 + failed.destination_offset;
+                        output[start..start + failed.len].fill(0xa5);
+                        assert_eq!(output, expected);
+                        pages.protect(failed_page, READWRITE);
+                    }
+                }
+            }
+            const EMPTY_FIRST: [RecordField; 3] = [
+                RecordField {
+                    source_offset: usize::MAX,
+                    destination_offset: 0,
+                    len: 0,
+                },
+                RecordField {
+                    source_offset: 0,
+                    destination_offset: 0,
+                    len: 8,
+                },
+                RecordField {
+                    source_offset: usize::MAX,
+                    destination_offset: 8,
+                    len: 0,
+                },
+            ];
+            const OVERFLOW_LAYOUT: RecordLayout<'static> =
+                RecordLayout::new(&EMPTY_FIRST, 8).unwrap();
+            let sources = RecordSources::Strided {
+                base: pages.at(0),
+                stride: usize::MAX - pages.at(0) + 1,
+                count: 2,
+            };
+            let mut output = [0xa5; 16];
+            assert_eq!(record_source_prefix(sources, &OVERFLOW_LAYOUT), 4);
+            assert_eq!(
+                memory.copy_records(sources, &OVERFLOW_LAYOUT, &mut output),
+                4
+            );
+            assert_eq!(&output[..8], &[0x20; 8]);
+            assert_eq!(&output[8..], &[0xa5; 8]);
+            pages.protect(0, NOACCESS);
+            output.fill(0xa5);
+            assert_eq!(
+                memory.copy_records(sources, &OVERFLOW_LAYOUT, &mut output),
+                1
+            );
+            assert_eq!(output, [0xa5; 16]);
+        }
+
         fn gather(
             pointers: &[usize],
             fields: &[RecordField],
@@ -1469,14 +1921,28 @@ mod tests {
             stride: usize,
             destination: &mut [u8],
         ) -> usize {
-            assert!(prefix <= record_count(pointers, fields, stride, destination.len()).unwrap());
-            assert!(prefix <= record_source_prefix(pointers, fields));
+            assert!(
+                prefix
+                    <= RecordLayout::new(fields, stride)
+                        .and_then(|layout| layout
+                            .count(RecordSources::Pointers(pointers), destination.len()))
+                        .unwrap()
+            );
+            assert!(
+                prefix
+                    <= record_source_prefix(
+                        RecordSources::Pointers(pointers),
+                        &RecordLayout::new(fields, usize::MAX).unwrap()
+                    )
+            );
             // SAFETY: the checks above establish the production native metadata
             // contract. Sources are owned readable or deliberately protected
             // test pages, which only the native guard may actually read.
             unsafe {
                 seh_guarded_copy_records(
                     pointers.as_ptr(),
+                    0,
+                    0,
                     prefix,
                     fields.as_ptr(),
                     fields.len(),
@@ -1730,6 +2196,8 @@ mod tests {
                     seh_guarded_copy_records(
                         metadata.at(1) as *const usize,
                         0,
+                        0,
+                        0,
                         layout_metadata.at(1) as *const RecordField,
                         1,
                         8,
@@ -1785,7 +2253,11 @@ mod tests {
                 let fields = &layout[..field_count];
                 let mut output = [0xa5; 32];
                 assert_eq!(
-                    memory.copy_records(&pointers, fields, stride, &mut output),
+                    memory.copy_records(
+                        RecordSources::Pointers(&pointers),
+                        &RecordLayout::new(fields, stride).expect("valid record layout"),
+                        &mut output
+                    ),
                     2 * field_count
                 );
                 let mut expected = [0xa5; 32];
@@ -1875,6 +2347,8 @@ mod tests {
                 unsafe {
                     seh_guarded_copy_records(
                         metadata.at(1) as *const usize,
+                        0,
+                        0,
                         0,
                         layouts.at(1) as *const RecordField,
                         5,
@@ -2056,7 +2530,11 @@ mod tests {
             for (fields, stride) in layouts {
                 let mut output = [0xa5; 110];
                 assert_eq!(
-                    memory.copy_records(&pointers, &fields, stride, &mut output[1..109]),
+                    memory.copy_records(
+                        RecordSources::Pointers(&pointers),
+                        &RecordLayout::new(&fields, stride).expect("valid record layout"),
+                        &mut output[1..109]
+                    ),
                     2 * fields.len()
                 );
                 let mut expected = [0xa5; 110];
@@ -2086,8 +2564,21 @@ mod tests {
             for invalid in [0, NONCANONICAL, usize::MAX] {
                 let pointers = [valid, invalid, valid];
                 let mut output = [0xa5; 3 * 52];
-                assert_eq!(record_source_prefix(&pointers, &fields), 5);
-                assert_eq!(memory.copy_records(&pointers, &fields, 52, &mut output), 5);
+                assert_eq!(
+                    record_source_prefix(
+                        RecordSources::Pointers(&pointers),
+                        &RecordLayout::new(&fields, usize::MAX).unwrap()
+                    ),
+                    5
+                );
+                assert_eq!(
+                    memory.copy_records(
+                        RecordSources::Pointers(&pointers),
+                        &RecordLayout::new(&fields, 52).expect("valid record layout"),
+                        &mut output
+                    ),
+                    5
+                );
                 let mut expected = [0xa5; 3 * 52];
                 for field in fields {
                     expected[field.destination_offset..field.destination_offset + field.len]
@@ -2101,9 +2592,19 @@ mod tests {
                 let mut layout = fields;
                 layout[invalid_field].source_offset = usize::MAX;
                 let mut output = [0xa5; 52];
-                assert_eq!(record_source_prefix(&[valid], &layout), invalid_field);
                 assert_eq!(
-                    memory.copy_records(&[valid], &layout, 52, &mut output),
+                    record_source_prefix(
+                        RecordSources::Pointers(&[valid]),
+                        &RecordLayout::new(&layout, usize::MAX).unwrap()
+                    ),
+                    invalid_field
+                );
+                assert_eq!(
+                    memory.copy_records(
+                        RecordSources::Pointers(&[valid]),
+                        &RecordLayout::new(&layout, 52).expect("valid record layout"),
+                        &mut output
+                    ),
                     invalid_field
                 );
                 let mut expected = [0xa5; 52];
@@ -2120,9 +2621,19 @@ mod tests {
             let mut layout = fields;
             layout[4].source_offset = NONCANONICAL.checked_sub(pages.at(0)).unwrap();
             let mut output = [0xa5; 52];
-            assert_eq!(record_source_prefix(&[pages.at(0)], &layout), 4);
             assert_eq!(
-                memory.copy_records(&[pages.at(0)], &layout, 52, &mut output),
+                record_source_prefix(
+                    RecordSources::Pointers(&[pages.at(0)]),
+                    &RecordLayout::new(&layout, usize::MAX).unwrap()
+                ),
+                4
+            );
+            assert_eq!(
+                memory.copy_records(
+                    RecordSources::Pointers(&[pages.at(0)]),
+                    &RecordLayout::new(&layout, 52).expect("valid record layout"),
+                    &mut output
+                ),
                 0,
                 "earlier owned unreadable field beats a later noncanonical field"
             );
@@ -2136,6 +2647,8 @@ mod tests {
                 unsafe {
                     seh_guarded_copy_records(
                         bad.as_ptr(),
+                        0,
+                        0,
                         5,
                         fields.as_ptr(),
                         5,
@@ -2171,6 +2684,8 @@ mod tests {
                         let completed = unsafe {
                             seh_guarded_copy_records(
                                 pointers.as_ptr(),
+                                0,
+                                0,
                                 5,
                                 fields.as_ptr(),
                                 5,

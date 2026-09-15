@@ -16,7 +16,7 @@ pub type SessionId = u64;
 pub type BranchId = u64;
 /// The only version the writer emits. [`format::FormatVersion::READABLE`]
 /// lists every version the reader still accepts.
-pub const FORMAT_VERSION: u16 = 18;
+pub const FORMAT_VERSION: u16 = 19;
 pub const KEYFRAME_INTERVAL: u32 = 720;
 
 #[cfg(test)]

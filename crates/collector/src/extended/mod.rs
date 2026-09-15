@@ -4,6 +4,7 @@
 #[cfg(test)]
 use crate::sampling::CONSISTENCY_TARGET;
 use crate::{
+    division_census::UnitInputs,
     map_capture::{MapSources, SourceChecks},
     sampling::qpc,
     table_capture::{CaptureRows, comparison, comparison_rows, grow_capacity, grow_vec},
@@ -16,7 +17,7 @@ use replay::{
     frame::{BaselineToken, TABLE_COUNT, TableInput},
     rows::{ScriptVariablesRow, TableId},
 };
-use std::mem::size_of;
+use std::{mem::size_of, sync::Arc};
 
 const MISSING: Outcome = Outcome::Unavailable {
     reason: "acquisition source not supplied",
@@ -41,19 +42,34 @@ pub type ReadGroup = (&'static str, TableId, Vec<TableId>);
 
 // Native conversion reuse stays within its pack's existing timing scope.
 macro_rules! spool_inputs {
-    (lexical, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr) => {
+    (lexical, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($lexical)
     };
-    (characters, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr) => {
+    (characters, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($characters)
     };
-    (intel, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr) => {
+    (intel, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($baseline, $scratch, $intel)
     };
-    (governance, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr) => {
+    (governance, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.table_inputs($research)
     };
-    ($pack:ident, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr) => {
+    (division_presentation, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+        $captured.table_inputs($projection.as_deref_mut())
+    };
+    (division_eta, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+        $captured.table_inputs($projection.as_deref_mut())
+    };
+    (production, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+        $captured.table_inputs($projection.as_deref_mut())
+    };
+    (economy, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+        $captured.table_inputs($projection.as_deref_mut())
+    };
+    (fog, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
+        $captured.table_inputs($projection.as_deref_mut())
+    };
+    ($pack:ident, $captured:expr, $baseline:expr, $scratch:expr, $research:expr, $characters:expr, $lexical:expr, $intel:expr, $projection:expr) => {
         $captured.tables().map(TableInput::Sampled)
     };
 }
@@ -87,7 +103,9 @@ macro_rules! packs {
         pub struct Captured {
             $($pack: $pack::Captured,)+
             divisions: Divisions,
-            eta_sources: division_eta::OwnedSources,
+            unit_inputs: [Option<Arc<UnitInputs>>; 2],
+            unit_inputs_match: bool,
+            division_detail_source_faults: [Option<&'static str>; 5],
             eta_report: Option<division_eta::AcquisitionReport>,
             registry: Registry,
             air_roots: [Option<Outcome>; 2],
@@ -101,25 +119,31 @@ macro_rules! packs {
 
             pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
                 assert_eq!(successful.len(), TABLE_COUNT);
-                Self {
+                let mut captured = Self {
                     $($pack: $pack::Captured::with_capacities(&capacity.$pack, &local(&$pack::TABLES, successful)),)+
                     divisions: Divisions::new(capacity.division_sources, division_successful(successful)),
-                    eta_sources: division_eta::OwnedSources::new(capacity.division_sources, successful[TableId::DivisionEta.index()] < crate::sampling::CONSISTENCY_TARGET),
+                    unit_inputs: [None, None],
+                    unit_inputs_match: false,
+                    division_detail_source_faults: [None; 5],
                     eta_report: None,
                     registry: Registry::new(capacity.variant_registry, variant_successful(successful)),
                     air_roots: [None; 2], overhead: [0; TABLE_COUNT],
-                }
+                };
+                captured.division_presentation.reserve_sources(capacity.division_sources);
+                captured.division_eta.reserve_sources(capacity.division_sources);
+                captured
             }
             /// Reset before the shared division and map walks, not between
             /// source visitation and capture().
             pub fn reset(&mut self) {
                 $(self.$pack.reset();)+
                 self.divisions.reset(); self.registry.reset();
-                self.eta_sources.clear(); self.eta_report = None;
+                self.release_unit_inputs(); self.unit_inputs_match = false; self.eta_report = None;
+                self.division_detail_source_faults = [None; 5];
                 self.air_roots = [None; 2]; self.overhead = [0; TABLE_COUNT];
             }
             pub fn allocated_bytes(&self) -> usize {
-                0 $(+ self.$pack.allocated_bytes())+ + self.divisions.allocated_bytes() + self.registry.allocated_bytes() + self.eta_sources.allocated_bytes()
+                0 $(+ self.$pack.allocated_bytes())+ + self.divisions.allocated_bytes() + self.registry.allocated_bytes()
             }
             /// Spool-thread metadata for this buffer's native row and scratch
             /// allocations. Excludes core tables, encoded frames and queues.
@@ -127,7 +151,6 @@ macro_rules! packs {
                 vec![
                     $((stringify!($pack), self.$pack.allocated_bytes()),)+
                     ("division_sources", self.divisions.allocated_bytes()),
-                    ("eta_owned_sources", self.eta_sources.allocated_bytes()),
                     ("variant_registry", self.registry.allocated_bytes()),
                 ]
             }
@@ -135,7 +158,8 @@ macro_rules! packs {
                 assert_eq!(successful.len(), TABLE_COUNT);
                 $(self.$pack.grow(&mut capacity.$pack, &local(&$pack::TABLES, successful));)+
                 self.divisions.grow(&mut capacity.division_sources, division_successful(successful));
-                self.eta_sources.grow(capacity.division_sources, successful[TableId::DivisionEta.index()] < crate::sampling::CONSISTENCY_TARGET);
+                self.division_presentation.reserve_sources(capacity.division_sources);
+                self.division_eta.reserve_sources(capacity.division_sources);
                 self.registry.grow(&mut capacity.variant_registry, variant_successful(successful));
             }
             /// Spool-thread conversion only. Existing core slots survive.
@@ -149,11 +173,12 @@ macro_rules! packs {
                 characters: Option<&mut characters::CharacterConversion<'_>>,
                 lexical: Option<&mut lexical::LexicalConversion<'_>>,
                 intel: Option<&mut intel::IntelConversion<'_>>,
+                mut projection: Option<&mut crate::projection::Projection<'_>>,
             ) -> [i64; PACK_NAMES.len()] {
                 let mut costs = [0; PACK_NAMES.len()];
                 let mut slots = costs.iter_mut();
                 $(let started = qpc();
-                for (id, view) in $pack::TABLES.into_iter().zip(spool_inputs!($pack, self.$pack, variables_baseline, variables_scratch, research, characters, lexical, intel)) { destination[id.index()] = view; }
+                for (id, view) in $pack::TABLES.into_iter().zip(spool_inputs!($pack, self.$pack, variables_baseline, variables_scratch, research, characters, lexical, intel, projection)) { destination[id.index()] = view; }
                 *slots.next().unwrap() = qpc() - started;)+
                 costs
             }
@@ -187,6 +212,8 @@ macro_rules! packs {
                 vec![TableId::States, TableId::StateFlags]));
             groups.push(("province identity and stored client visibility", TableId::Provinces,
                 vec![TableId::Provinces, TableId::ProvinceVisibility]));
+            groups.push(("army order census, plan operands, colors and front sections", TableId::ArmyOrders,
+                vec![TableId::ArmyOrders, TableId::ArmyOrderPlans, TableId::OrdersGroupColors, TableId::Fronts]));
             groups
         }
     };
@@ -209,6 +236,7 @@ packs!(
     production,
     projects,
     province_visibility,
+    plans,
     session,
     state_flags,
     weather
@@ -228,26 +256,76 @@ impl Captured {
             .capture(memory, base, state, provinces, source, needed)
     }
 
-    /// Move only ETA-owned buffers plus copied source identities into the
+    /// Leases the same immutable native input packet to movement, status and
+    /// ETA. The owning census accounts for its allocation exactly once.
+    pub(crate) fn install_unit_inputs(
+        &mut self,
+        first: Option<Arc<UnitInputs>>,
+        second: Option<Arc<UnitInputs>>,
+        source_checks_match: bool,
+    ) {
+        self.unit_inputs = [first, second];
+        self.unit_inputs_match = source_checks_match;
+    }
+
+    /// Call after all consumers join and their union of consumed fields is
+    /// verified, before either census packet is cleared or returned to its pool.
+    pub(crate) fn release_unit_inputs(&mut self) {
+        self.unit_inputs = [None, None];
+    }
+
+    /// Movement, status and ETA masks use the same full census indices. A row
+    /// excluded by one consumer's capacity remains addressable by the others.
+    pub(crate) fn consumed_unit_seed_masks(&self, pass: usize) -> [&[u64]; 3] {
+        let [movement, status] = self.division_presentation.consumed_seed_masks(pass != 0);
+        [
+            movement,
+            status,
+            self.division_eta.consumed_seed_masks(pass),
+        ]
+    }
+
+    /// Caller must also AND these verdicts into any already-returned movement,
+    /// status and ETA consistency credits before publishing the check windows.
+    pub(crate) fn reject_changed_unit_inputs(&mut self, pass: usize, changed: &[u64]) -> [bool; 3] {
+        let [movement, status] = self
+            .division_presentation
+            .reject_changed_seeds(pass != 0, changed);
+        let eta = self.division_eta.reject_changed_seeds(pass, changed);
+        if let Some(report) = &mut self.eta_report {
+            report.matched &= eta;
+        }
+        [movement, status, eta]
+    }
+
+    /// Only owned native operands are projected here. All live reads and the
+    /// terminal consumed-field checks have already finished on acquisition.
+    pub(crate) fn decode_division_presentation_inputs(&mut self) -> [u64; 2] {
+        self.division_presentation.decode_inputs()
+    }
+
+    /// Move ETA-owned buffers and borrow the shared source packet for the
     /// callback-bounded worker. Empty placeholders allocate nothing.
     pub(crate) fn take_eta_request(
         &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
         base: usize,
         state: usize,
         checked: bool,
     ) -> crate::acquisition::EtaRequest {
         let started = qpc();
-        self.eta_sources
-            .copy_from(self.divisions.sources(), checked);
         let request = crate::acquisition::EtaRequest {
+            countries: Arc::clone(countries),
             base,
             state,
             checked,
             captured: std::mem::replace(&mut self.division_eta, division_eta::Captured::empty()),
-            sources: std::mem::replace(
-                &mut self.eta_sources,
-                division_eta::OwnedSources::new(0, false),
-            ),
+            first: self.unit_inputs[0].as_ref().map(Arc::clone),
+            second: if checked {
+                self.unit_inputs[1].as_ref().map(Arc::clone)
+            } else {
+                None
+            },
         };
         self.overhead[TableId::DivisionEta.index()] += elapsed(started);
         request
@@ -275,9 +353,7 @@ impl Captured {
                 division_eta::AcquisitionReport::default()
             }
         });
-        request.sources.clear();
         self.division_eta = request.captured;
-        self.eta_sources = request.sources;
     }
     fn acquire_eta(
         &mut self,
@@ -289,8 +365,13 @@ impl Captured {
         if let Some(report) = self.eta_report.take() {
             ([report.matched], [report.ticks])
         } else {
-            self.division_eta
-                .capture(memory, base, state, &[needed], self.divisions.sources())
+            self.division_eta.capture(
+                memory,
+                base,
+                state,
+                &[needed],
+                unit_sources(&self.unit_inputs),
+            )
         }
     }
     /// Decode-worker handoff for the hourly focus pair (copy/decode split).
@@ -519,21 +600,68 @@ impl Captured {
         self.production.divisions_raw_mode = raw;
     }
 
-    /// Decode-worker interpretation of a raw divisions-group payload, in
-    /// dependency order: equipment first, then the upgrade graph, both
-    /// against the frame's decoded division sources (replayed by the caller
-    /// through the division visitor just before). Disjoint borrows keep the
-    /// sources and the production buffers alive at once.
-    pub(crate) fn decode_divisions_payload(
+    /// The worker installs owned native rows without replaying pointer reads.
+    pub(crate) fn install_division_detail(
         &mut self,
-        base: usize,
-        log: &crate::raw::RawLog<6>,
-        decode_ticks: &mut [u64; 6],
+        details: &mut crate::division_detail::OwnedDetails,
     ) {
-        let recorded = crate::raw::Recorded::build(log);
-        let sources = self.divisions.sources();
-        self.production
-            .decode_division_detail(base, &sources, &recorded, decode_ticks);
+        details.install(&mut self.production);
+        self.apply_division_detail_source_faults();
+    }
+
+    /// Terminal shared-source verification can finish after typed detail
+    /// acquisition. Retain its independent table failures through the owned-row
+    /// handoff, including when only some second-pass checks remain active.
+    pub(crate) fn reject_division_detail_source(
+        &mut self,
+        pass: usize,
+        needed: &[bool],
+        reason: &'static str,
+    ) {
+        assert!(pass < 2);
+        assert_eq!(needed.len(), TABLE_COUNT);
+        for (fault, table) in self.division_detail_source_faults.iter_mut().zip([
+            TableId::DivisionEquipment,
+            TableId::ArmyUpgradeGroups,
+            TableId::ArmyUpgradeRequests,
+            TableId::ArmyUpgradeDeliveries,
+            TableId::ArmyUpgradeProduced,
+        ]) {
+            if pass == 0 || needed[table.index()] {
+                fault.get_or_insert(reason);
+            }
+        }
+        self.apply_division_detail_source_faults();
+    }
+
+    fn apply_division_detail_source_faults(&mut self) {
+        for (outcome, reason) in [
+            &mut self.production.division_equipment.outcome,
+            &mut self.production.groups.outcome,
+            &mut self.production.requests.outcome,
+            &mut self.production.deliveries.outcome,
+            &mut self.production.produced.outcome,
+        ]
+        .into_iter()
+        .zip(self.division_detail_source_faults)
+        {
+            if let Some(reason) = reason {
+                *outcome = Outcome::Unavailable { reason };
+            }
+        }
+    }
+
+    pub(crate) fn division_capture_capacities(&self) -> (usize, [usize; 5]) {
+        (
+            self.divisions.first.len(),
+            [
+                self.production.division_equipment.rows.len(),
+                self.production.groups.rows.len(),
+                self.production.requests.rows.len(),
+                self.production.deliveries.rows.len(),
+                self.production.produced.rows.len(),
+            ],
+        )
     }
 
     /// Test-only buffer resize for the divisions-group decode harness:
@@ -564,7 +692,8 @@ impl Captured {
             land_combats: needed[TableId::LandCombatProgress.index()],
             ships: false,
             air_wings: air[0] || air[2] || naval_history::needs_wing_sources(&naval),
-            order_groups: naval_history::needs_order_sources(&naval),
+            order_groups: naval_history::needs_order_sources(&naval)
+                || plans::TABLES.iter().any(|t| needed[t.index()]),
         }
     }
     pub fn needs_division_check(needed: &[bool]) -> bool {
@@ -586,15 +715,8 @@ impl Captured {
     /// Source copies remain inside the enclosing Divisions measurement. The
     /// shared read group includes equipment and upgrade tables without per-row
     /// timers or repeated source censuses for individual tables.
-    pub fn visit_division(&mut self, pointer: usize, row: &carmy::Row, second: bool) -> u64 {
-        self.divisions.visit(pointer, row, second);
-        0
-    }
     pub(crate) fn visit_division_source(&mut self, source: DivisionSource, second: bool) {
         self.divisions.visit_source(source, second);
-    }
-    pub(crate) fn reset_division_sources(&mut self) {
-        self.divisions.reset();
     }
     #[cfg(test)]
     pub(crate) fn test_division_presentation_tables(&self) -> [replay::frame::TableView; 2] {
@@ -626,8 +748,10 @@ impl Captured {
                 ships: false,
                 air_wings: (!air_raw && (air_needed[0] || air_needed[2]))
                     || (!naval_raw && naval_history::needs_wing_sources(&naval)),
-                order_groups: !naval_raw && naval_history::needs_order_sources(&naval),
+                order_groups: (!naval_raw && naval_history::needs_order_sources(&naval))
+                    || plans::TABLES.iter().any(|t| needed[t.index()]),
             },
+            plans_needed: local(&plans::TABLES, needed),
             air_needed,
             air_raw,
             naval_raw,
@@ -652,6 +776,7 @@ impl Captured {
             self.capture_before_eta(memory, base, game_state, current_hour, needed, force_full);
         let eta = TableId::DivisionEta.index();
         (matched[eta], ticks[eta]) = self.capture_eta(memory, base, game_state, needed[eta]);
+        self.decode_division_presentation_inputs();
         (matched, ticks)
     }
 
@@ -684,7 +809,15 @@ impl Captured {
                 scatter(&$pack::TABLES, cost, &mut ticks);
             )+};
         }
-        ordinary!(economy, fog, session, weather, combat_progress, state_flags);
+        ordinary!(
+            economy,
+            fog,
+            session,
+            weather,
+            combat_progress,
+            state_flags,
+            plans
+        );
         staggered!(
             characters,
             construction,
@@ -725,13 +858,19 @@ impl Captured {
         );
         scatter(&production::TABLES, pass, &mut matched);
         scatter(&production::TABLES, cost, &mut ticks);
-        let (pass, cost) = self.division_presentation.capture(
+        let (mut pass, cost) = self.division_presentation.capture(
             memory,
             base,
             game_state,
             &local(&division_presentation::TABLES, needed),
-            self.divisions.sources(),
+            unit_sources(&self.unit_inputs),
         );
+        if !self.unit_inputs_match {
+            let source_match = self.division_presentation.reject_source_census();
+            for (matched, source_match) in pass.iter_mut().zip(source_match) {
+                *matched &= source_match;
+            }
+        }
         scatter(&division_presentation::TABLES, pass, &mut matched);
         scatter(&division_presentation::TABLES, cost, &mut ticks);
         // The saved campaign registry is authoritative. It includes variants
@@ -782,7 +921,10 @@ impl Captured {
         game_state: usize,
         needed: bool,
     ) -> (bool, u64) {
-        let (pass, cost) = self.acquire_eta(memory, base, game_state, needed);
+        let (mut pass, cost) = self.acquire_eta(memory, base, game_state, needed);
+        if !self.unit_inputs_match {
+            pass[0] &= self.division_eta.reject_source_census();
+        }
         (
             pass[0] && needed,
             cost[0].saturating_add(self.overhead[TableId::DivisionEta.index()]),
@@ -795,6 +937,7 @@ pub struct Sources<'a, M: Memory> {
     memory: &'a M,
     base: usize,
     checks: SourceChecks,
+    plans_needed: [bool; plans::N],
     air_needed: [bool; air::N],
     air_raw: bool,
     naval_raw: bool,
@@ -903,6 +1046,30 @@ impl<M: Memory> MapSources for Sources<'_, M> {
         let charged = self.wing_ticks().saturating_sub(before);
         self.attribute_overhead(TableId::WingEquipment, begin, charged)
     }
+    fn plans(
+        &mut self,
+        second: bool,
+        roots: &[corders_group::Root],
+        visits: &[engine::corder_instance::Visit],
+        root_source: Outcome,
+        order_source: Outcome,
+    ) -> u64 {
+        if second && !self.plans_needed.iter().any(|v| *v) {
+            return 0;
+        }
+        let begin = qpc();
+        let charged = self.captured.plans.visit(
+            self.memory,
+            self.base,
+            roots,
+            visits,
+            root_source,
+            order_source,
+            second,
+            &self.plans_needed,
+        );
+        self.attribute_overhead(TableId::ArmyOrderPlans, begin, charged)
+    }
     fn order_groups(
         &mut self,
         second: bool,
@@ -925,6 +1092,19 @@ impl<M: Memory> MapSources for Sources<'_, M> {
         let ticks = self.captured.naval_history.source_ticks();
         let charged = (ticks[0] + ticks[2]).saturating_sub(before);
         self.attribute_overhead(TableId::LandTheatres, begin, charged)
+    }
+}
+
+fn unit_sources(
+    inputs: &[Option<Arc<UnitInputs>>; 2],
+) -> production::Sources<'_, carmy::DivisionSeed> {
+    let first = inputs[0].as_deref();
+    let second = inputs[1].as_deref();
+    production::Sources {
+        first: first.map_or(&[], UnitInputs::seeds),
+        first_outcome: first.map_or(MISSING, UnitInputs::outcome),
+        second: second.map_or(&[], UnitInputs::seeds),
+        second_outcome: second.map_or(MISSING, UnitInputs::outcome),
     }
 }
 
@@ -982,17 +1162,6 @@ impl Divisions {
         self.seen = [0; 2];
         self.outcomes = [MISSING; 2];
         self.required = 0;
-    }
-    fn visit(&mut self, pointer: usize, row: &carmy::Row, second: bool) {
-        self.visit_source(
-            DivisionSource {
-                pointer,
-                division: row.id,
-                template: row.template,
-                country: row.roster_owner,
-            },
-            second,
-        );
     }
     fn visit_source(&mut self, source: DivisionSource, second: bool) {
         let pass = usize::from(second);
@@ -1154,8 +1323,20 @@ mod tests {
             Some(crate::acquisition::Failure::Stopped),
         ] {
             let mut captured = Captured::with_capacities(&Capacities::default(), &[0; TABLE_COUNT]);
+            captured.install_unit_inputs(
+                Some(Arc::new(UnitInputs::fixture(
+                    Vec::new(),
+                    Outcome::Rows { len: 0 },
+                ))),
+                Some(Arc::new(UnitInputs::fixture(
+                    Vec::new(),
+                    Outcome::Rows { len: 0 },
+                ))),
+                true,
+            );
             let eta = TableId::DivisionEta.index();
-            let request = captured.take_eta_request(0, 0x1000, true);
+            let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+            let request = captured.take_eta_request(&countries, 0, 0x1000, true);
             let overhead = captured.overhead[eta];
             let memory = FailedReads(std::cell::Cell::new(0));
             let (checks, ticks) =
@@ -1201,7 +1382,19 @@ mod tests {
         let mut captured = Captured::with_capacities(&Capacities::default(), &[0; TABLE_COUNT]);
         captured.divisions.finish(Outcome::Rows { len: 0 }, false);
         captured.divisions.finish(Outcome::Rows { len: 0 }, true);
-        let request = captured.take_eta_request(0, 0x1000, true);
+        captured.install_unit_inputs(
+            Some(Arc::new(UnitInputs::fixture(
+                Vec::new(),
+                Outcome::Rows { len: 0 },
+            ))),
+            Some(Arc::new(UnitInputs::fixture(
+                Vec::new(),
+                Outcome::Rows { len: 0 },
+            ))),
+            true,
+        );
+        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        let request = captured.take_eta_request(&countries, 0, 0x1000, true);
         captured.restore_eta_request(request, None);
         let memory = FailedReads(std::cell::Cell::new(0));
         captured.capture_before_eta(&memory, 0, 0x1000, 0, &[true; TABLE_COUNT], true);
@@ -1233,21 +1426,53 @@ mod tests {
         };
         let mut captured = Captured::with_capacities(&capacity, &[0; TABLE_COUNT]);
         let bytes = captured.allocated_bytes();
-        let row = carmy::Row {
-            id: 7,
+        let source = DivisionSource {
+            pointer: 0x1234,
+            division: 7,
             ..Default::default()
         };
-        captured.divisions.visit(0x1234, &row, false);
+        captured.visit_division_source(source, false);
         captured.divisions.finish(Outcome::Rows { len: 1 }, false);
-        captured.divisions.visit(0x5678, &row, true);
+        captured.visit_division_source(
+            DivisionSource {
+                pointer: 0x5678,
+                ..source
+            },
+            true,
+        );
         captured.divisions.finish(Outcome::Rows { len: 1 }, true);
-        let mut request = captured.take_eta_request(11, 22, true);
+        let first = Arc::new(UnitInputs::fixture(
+            vec![carmy::DivisionSeed {
+                pointer: 0x1234,
+                handle: Some(source.division),
+                ..Default::default()
+            }],
+            Outcome::Rows { len: 1 },
+        ));
+        let second = Arc::new(UnitInputs::fixture(
+            vec![carmy::DivisionSeed {
+                pointer: 0x5678,
+                handle: Some(source.division),
+                ..Default::default()
+            }],
+            Outcome::Rows { len: 1 },
+        ));
+        captured.install_unit_inputs(Some(Arc::clone(&first)), Some(Arc::clone(&second)), true);
+        assert_eq!(Arc::strong_count(&first), 2);
+        assert_eq!(Arc::strong_count(&second), 2);
+        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        let mut request = captured.take_eta_request(&countries, 11, 22, true);
+        assert!(Arc::ptr_eq(&request.countries, &countries));
         assert_eq!(
             (request.base, request.state, request.checked),
             (11, 22, true)
         );
-        assert_eq!(request.sources.view().first[0].pointer, 0x1234);
-        assert_eq!(request.sources.view().second[0].pointer, 0x5678);
+        assert!(Arc::ptr_eq(request.first.as_ref().unwrap(), &first));
+        assert!(Arc::ptr_eq(request.second.as_ref().unwrap(), &second));
+        assert_eq!(request.first.as_ref().unwrap().seeds()[0].pointer, 0x1234);
+        assert_eq!(request.second.as_ref().unwrap().seeds()[0].pointer, 0x5678);
+        assert_eq!(Arc::strong_count(&first), 3);
+        assert_eq!(Arc::strong_count(&second), 3);
         assert!(captured.allocated_bytes() < bytes);
         request.captured.fail("synthetic terminal ETA", true);
         captured.restore_eta_request(
@@ -1257,6 +1482,8 @@ mod tests {
                 ticks: 123,
             })),
         );
+        assert_eq!(Arc::strong_count(&first), 2);
+        assert_eq!(Arc::strong_count(&second), 2);
         assert_eq!(captured.allocated_bytes(), bytes);
         assert_eq!(
             captured.acquire_eta(&NoRead, 11, 22, true),
@@ -1273,7 +1500,7 @@ mod tests {
             crate::acquisition::Failure::Panicked,
             crate::acquisition::Failure::Stopped,
         ] {
-            let request = captured.take_eta_request(11, 22, true);
+            let request = captured.take_eta_request(&countries, 11, 22, true);
             captured.restore_eta_request(request, Some(Err(failure)));
             assert_eq!(captured.acquire_eta(&NoRead, 11, 22, true), ([false], [0]));
             assert!(matches!(
@@ -1282,7 +1509,7 @@ mod tests {
             ));
             assert_eq!(captured.allocated_bytes(), bytes);
         }
-        let request = captured.take_eta_request(11, 22, true);
+        let request = captured.take_eta_request(&countries, 11, 22, true);
         captured.restore_eta_request(request, None);
         assert!(captured.eta_report.is_none());
         assert_eq!(captured.allocated_bytes(), bytes);
@@ -1290,13 +1517,67 @@ mod tests {
         // the existing synchronous path and the other division consumers.
         assert_eq!(captured.divisions.first[0].pointer, 0x1234);
         assert_eq!(captured.divisions.second[0].pointer, 0x5678);
+        assert_eq!(unit_sources(&captured.unit_inputs).first[0].pointer, 0x1234);
+        assert_eq!(
+            unit_sources(&captured.unit_inputs).second[0].pointer,
+            0x5678
+        );
+        let request = captured.take_eta_request(&countries, 11, 22, false);
+        assert!(request.second.is_none());
+        assert_eq!(Arc::strong_count(&second), 2);
+        captured.restore_eta_request(request, None);
+        captured.release_unit_inputs();
+        assert_eq!(Arc::strong_count(&first), 1);
+        assert_eq!(Arc::strong_count(&second), 1);
         captured.reset();
         assert!(captured.eta_report.is_none());
     }
 
     #[test]
+    fn shared_unit_sources_keep_independent_census_failures_and_release_on_reset() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0; TABLE_COUNT]);
+        assert_eq!(unit_sources(&captured.unit_inputs).first_outcome, MISSING);
+        let first = Arc::new(UnitInputs::fixture(
+            vec![carmy::DivisionSeed {
+                pointer: 0x1234,
+                ..Default::default()
+            }],
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 7,
+            },
+        ));
+        let second = Arc::new(UnitInputs::fixture(
+            Vec::new(),
+            Outcome::Unavailable {
+                reason: "second census failed",
+            },
+        ));
+        captured.install_unit_inputs(Some(Arc::clone(&first)), Some(Arc::clone(&second)), false);
+        let sources = unit_sources(&captured.unit_inputs);
+        assert_eq!(sources.first.len(), 1);
+        assert_eq!(
+            sources.first_outcome,
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 7
+            }
+        );
+        assert_eq!(
+            sources.second_outcome,
+            Outcome::Unavailable {
+                reason: "second census failed"
+            }
+        );
+        captured.reset();
+        assert_eq!(Arc::strong_count(&first), 1);
+        assert_eq!(Arc::strong_count(&second), 1);
+        assert_eq!(unit_sources(&captured.unit_inputs).first_outcome, MISSING);
+    }
+
+    #[test]
     fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership() {
-        assert_eq!(N, 136);
+        assert_eq!(N, 139);
         let actual: BTreeSet<_> = TABLES.into_iter().collect();
         assert_eq!(actual.len(), N);
         let expected: BTreeSet<_> = TableId::ALL
@@ -1313,6 +1594,16 @@ mod tests {
                     std::iter::once(TableId::Divisions)
                         .chain(DIVISION_SOURCE_TABLES)
                         .collect::<Vec<_>>()
+                );
+            } else if anchor == TableId::ArmyOrders {
+                assert_eq!(
+                    members,
+                    vec![
+                        TableId::ArmyOrders,
+                        TableId::ArmyOrderPlans,
+                        TableId::OrdersGroupColors,
+                        TableId::Fronts
+                    ]
                 );
             } else if anchor == TableId::States {
                 assert_eq!(members, vec![TableId::States, TableId::StateFlags]);
@@ -1393,28 +1684,33 @@ mod tests {
         }
     }
     #[test]
-    fn division_sources_preserve_roster_owner_and_reject_an_incomplete_parent() {
+    fn division_sources_preserve_census_identity_and_reject_an_incomplete_parent() {
         let mut sources = Divisions::new(1, 0);
-        let row = carmy::Row {
-            id: (1_u64 << 48) | 14,
-            roster_owner: 17,
-            logical_owner: 23,
+        let source = DivisionSource {
+            pointer: 0x1234,
+            division: (1_u64 << 48) | 14,
+            country: 17,
             template: u64::MAX,
-            ..Default::default()
         };
-        sources.visit(0x1234, &row, false);
+        sources.visit_source(source, false);
         sources.finish(Outcome::Rows { len: 1 }, false);
         assert_eq!(sources.outcomes[0], Outcome::Rows { len: 1 });
         assert_eq!(
             sources.first[0],
             DivisionSource {
                 pointer: 0x1234,
-                division: row.id,
+                division: (1_u64 << 48) | 14,
                 template: u64::MAX,
                 country: 17
             }
         );
-        sources.visit(0x5678, &row, false);
+        sources.visit_source(
+            DivisionSource {
+                pointer: 0x5678,
+                ..source
+            },
+            false,
+        );
         sources.finish(
             Outcome::Truncated {
                 len: 2,
@@ -1700,6 +1996,7 @@ mod tests {
                 captured.sources(&memory, 0, &needed, true, true).checks(),
                 SourceChecks {
                     land_combats: needed[TableId::LandCombatProgress.index()],
+                    order_groups: plans::TABLES.iter().any(|t| needed[t.index()]),
                     ..SourceChecks::default()
                 }
             );
@@ -1712,7 +2009,7 @@ mod tests {
                     .sources(&memory, 0, &needed, air_raw, naval_raw)
                     .checks();
                 assert_eq!(checks.air_wings, !air_raw || !naval_raw);
-                assert_eq!(checks.order_groups, !naval_raw);
+                assert!(checks.order_groups);
             }
         }
     }

@@ -508,9 +508,9 @@ impl FrameEncoder {
         hour: Hour,
         force: bool,
     ) -> Option<(BaselineToken, &[T::Row])> {
-        // This bounded producer-comparison pilot is intentionally unavailable to
-        // every other table (especially enclosing-hour-dependent Clock rows).
-        if T::ID != TableId::ScriptVariables
+        // Clock payloads depend on the enclosing hour and therefore cannot be
+        // reused through a comparison with the preceding hour's complete rows.
+        if T::ID == TableId::Clock
             || self.needs_keyframe(branch, hour, force)
             || self
                 .state
@@ -613,7 +613,7 @@ impl FrameEncoder {
                     if keyframe
                         || token.encoder != self.identity
                         || token.revision != self.revision
-                        || table != TableId::ScriptVariables
+                        || table == TableId::Clock
                         || token.table != table
                         || token.branch != source.branch
                         || token.hour != source.hour

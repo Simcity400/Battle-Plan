@@ -5,7 +5,7 @@ use crate::{
     cequipment_variant::{self, Literal, TextOutcome, TextSpan, complete, text_failure},
     cpdx_array::Array,
     equipment_upgrade_entry,
-    memory::RecordField,
+    memory::{RecordField, RecordLayout, RecordSources},
 };
 
 /// CEquipmentUpgradesInstance primary vtable; executable RTTI confirms old AIR_VARIANT_UPGRADE_CONTAINER identity.
@@ -54,7 +54,7 @@ pub fn walk(
             destination_offset: 0,
             len: 24,
         }];
-        const ENTRIES_LAYOUT: [RecordField; 1] = [RecordField {
+        const ENTRIES_FIELDS: [RecordField; 1] = [RecordField {
             source_offset: 0,
             destination_offset: 0,
             len: 9,
@@ -71,6 +71,12 @@ pub fn walk(
                 len: 32,
             },
         ];
+        const HEADERS_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&HEADERS, 24).expect("valid record layout");
+        const ENTRIES_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&ENTRIES_FIELDS, 9).expect("valid record layout");
+        const DEFINITIONS_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&DEFINITIONS, 44).expect("valid record layout");
         let mut pointers = [0; BATCH];
         let mut headers = [0; BATCH * 24];
         let mut entries = [0; BATCH * 9];
@@ -81,8 +87,11 @@ pub fn walk(
             for (pointer, source) in pointers.iter_mut().zip(sources) {
                 *pointer = source.pointer();
             }
-            let copied =
-                memory.copy_records(&pointers[..sources.len()], &HEADERS, 24, &mut headers);
+            let copied = memory.copy_records(
+                RecordSources::Pointers(&pointers[..sources.len()]),
+                &HEADERS_LAYOUT,
+                &mut headers,
+            );
             for (index, source) in sources.iter().enumerate() {
                 if index >= copied {
                     return Err("variant upgrade instance header unreadable");
@@ -105,9 +114,8 @@ pub fn walk(
                             .ok_or("upgrade entry address overflow")?;
                     }
                     let entry_copied = memory.copy_records(
-                        &entry_pointers[..count],
+                        RecordSources::Pointers(&entry_pointers[..count]),
                         &ENTRIES_LAYOUT,
-                        9,
                         &mut entries,
                     );
                     for (pointer, entry) in definitions
@@ -120,9 +128,8 @@ pub fn walk(
                                 .unwrap_or(0);
                     }
                     let definition_copied = memory.copy_records(
-                        &definitions[..entry_copied],
-                        &DEFINITIONS,
-                        44,
+                        RecordSources::Pointers(&definitions[..entry_copied]),
+                        &DEFINITIONS_LAYOUT,
                         &mut definition_fields,
                     );
                     for slot in 0..count {

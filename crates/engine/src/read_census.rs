@@ -9,7 +9,10 @@
 
 use std::cell::Cell;
 
-use crate::{Memory, memory::RecordField};
+use crate::{
+    Memory,
+    memory::{RecordLayout, RecordSources},
+};
 
 /// Counts boundary crossings, copied spans and copied bytes for one walk.
 pub struct ReadCensus<'a, M> {
@@ -86,14 +89,12 @@ impl<M: Memory> Memory for ReadCensus<'_, M> {
 
     fn copy_records(
         &self,
-        pointers: &[usize],
-        fields: &[RecordField],
-        row_stride: usize,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
-        let completed = self
-            .source
-            .copy_records(pointers, fields, row_stride, destination);
+        let completed = self.source.copy_records(sources, layout, destination);
+        let fields = layout.fields();
         let mut spans = 0;
         let mut bytes = 0;
         for index in 0..completed {
@@ -109,7 +110,7 @@ impl<M: Memory> Memory for ReadCensus<'_, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use crate::memory::{RecordField, SliceMemory};
 
     fn source() -> SliceMemory<'static> {
         static BYTES: [u8; 64] = [7; 64];
@@ -143,7 +144,7 @@ mod tests {
         assert_eq!((census.calls(), census.spans(), census.bytes()), (1, 1, 4));
 
         census.reset();
-        let fields = [
+        const FIELDS: [RecordField; 3] = [
             RecordField {
                 source_offset: 0,
                 destination_offset: 0,
@@ -160,9 +161,15 @@ mod tests {
                 len: 2,
             },
         ];
+        const LAYOUT: RecordLayout<'_> =
+            RecordLayout::new(&FIELDS, 8).expect("valid record layout");
         let mut rows = [0; 16];
         assert_eq!(
-            census.copy_records(&[0x1000, 0x9000], &fields, 8, &mut rows),
+            census.copy_records(
+                RecordSources::Pointers(&[0x1000, 0x9000]),
+                &LAYOUT,
+                &mut rows
+            ),
             3
         );
         assert_eq!((census.calls(), census.spans(), census.bytes()), (1, 2, 6));

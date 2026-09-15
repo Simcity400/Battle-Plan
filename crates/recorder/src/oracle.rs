@@ -28,6 +28,7 @@ mod fog;
 mod governance;
 mod intel;
 mod naval_history;
+mod plans;
 mod production;
 mod projects;
 mod session;
@@ -1054,6 +1055,7 @@ fn compare_extended(
     railway_adjacency: ContentRead<'_, save::naval_history::RailwayAdjacency>,
     report: &mut Report,
 ) {
+    plans::compare(frame, save, report);
     report.attempt_table(TableId::StateFlags, |report| {
         compare_state_flags(frame, save, report)
     });
@@ -3383,7 +3385,7 @@ mod tests {
         }
     }
 
-    fn fixture() -> (
+    pub(super) fn fixture() -> (
         DecodedFrame,
         Save,
         save::MapMembership,

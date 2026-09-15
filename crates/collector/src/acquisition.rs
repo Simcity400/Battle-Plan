@@ -4,7 +4,8 @@
 //! foreign world's lifetime or consistency boundary. The sole hourly callback
 //! must finish every accepted request before its live-read lease ends. Workers
 //! receive neither the enclosing captured frame nor Shared, and construct their
-//! own !Send live reader. ETA owns only its isolated table buffers and sources.
+//! own !Send live reader. Immutable country authentication is acquired once by
+//! the callback, owned through Arc leases, and verified after all worker joins.
 
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -27,6 +28,7 @@ use crate::extended::{
 };
 
 pub(crate) struct CharactersRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
     pub context: CharactersCopyContext,
     pub first: CharactersJob,
     pub second: Option<CharactersJob>,
@@ -40,6 +42,7 @@ pub(crate) struct WorldPair<J, C> {
 
 /// Thirty hourly tables, using only their existing owned raw-copy buffers.
 pub(crate) struct WorldRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
     pub economy: WorldPair<economy::EconomyRestJob, economy::EconomyRestCopyContext>,
     pub construction:
         WorldPair<construction::ConstructionRestJob, construction::ConstructionRestCopyContext>,
@@ -53,7 +56,6 @@ pub(crate) struct WorldReport {
     pub construction: construction::ConstructionRestCopyReport,
     pub production: production::ProductionRestCopyReport,
     pub focus: governance::FocusCopyReport,
-    pub error: Option<&'static str>,
     pub ticks: u64,
 }
 
@@ -71,17 +73,20 @@ struct CharactersTaskReport {
 pub(crate) type WorldCompletion = Completion<WorldRequest, WorldReport>;
 
 pub(crate) struct RelationsRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
     pub context: RelationsCopyContext,
     pub first: RelationsJob,
     pub second: Option<RelationsJob>,
 }
 
 pub(crate) struct EtaRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
     pub base: usize,
     pub state: usize,
     pub checked: bool,
     pub captured: division_eta::Captured,
-    pub sources: division_eta::OwnedSources,
+    pub first: Option<Arc<crate::division_census::UnitInputs>>,
+    pub second: Option<Arc<crate::division_census::UnitInputs>>,
 }
 pub(crate) type EtaCompletion = Completion<EtaRequest, division_eta::AcquisitionReport>;
 
@@ -144,6 +149,7 @@ pub(crate) struct EtaCountryCacheCalibration {
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub(crate) struct EtaReadCalibration {
     pub captures: u64,
+    pub stages: division_eta::StageDiagnostics,
     pub hits: u64,
     pub retained_misses: u64,
     pub direct_reads: u64,
@@ -157,6 +163,7 @@ pub(crate) struct EtaReadCalibration {
 impl EtaReadCalibration {
     fn observe(&mut self, next: division_eta::CacheDiagnostics) {
         self.captures = self.captures.saturating_add(1);
+        self.stages.absorb(next.stages);
         self.hits = self.hits.saturating_add(next.hits);
         self.retained_misses = self.retained_misses.saturating_add(next.retained_misses);
         self.direct_reads = self.direct_reads.saturating_add(next.direct_reads);
@@ -195,7 +202,6 @@ impl EtaCountryCacheCalibration {
 pub(crate) struct WorldCalibration {
     pub country_cache: EtaCountryCacheCalibration,
     pub acquisition_ticks: u64,
-    pub verification_failures: u64,
     pub last_error: Option<&'static str>,
 }
 
@@ -432,8 +438,9 @@ fn run_characters(request: &mut CharactersRequest) -> CharactersCopyReport {
     // SAFETY: accepted dispatch retains the caller's foreign-memory lease
     // until finish. This reader never crosses threads or escapes this call.
     let memory = unsafe { LiveMemory::new() };
+    let cached = request.countries.view(&memory);
     characters::copy_characters_refresh(
-        &memory,
+        &cached,
         request.context,
         &mut request.first,
         request.second.as_mut(),
@@ -443,8 +450,9 @@ fn run_characters(request: &mut CharactersRequest) -> CharactersCopyReport {
 fn run_relations(request: &mut RelationsRequest) -> RelationsCopyReport {
     // SAFETY: same callback-bounded contract as run_characters.
     let memory = unsafe { LiveMemory::new() };
+    let cached = request.countries.view(&memory);
     intel::copy_relations_refresh(
-        &memory,
+        &cached,
         request.context,
         &mut request.first,
         request.second.as_mut(),
@@ -484,56 +492,39 @@ pub(crate) fn run_world(request: &mut WorldRequest, memory: &impl engine::Memory
         construction,
         production,
         focus,
-        error: None,
         ticks: crate::sampling::qpc().saturating_sub(started).max(0) as u64,
     }
 }
 
-fn run_world_cached(
+fn run_world_shared(
     request: &mut WorldRequest,
     memory: &impl engine::Memory,
-    country_cache: &mut engine::country_memory::Cache,
     calibration: &Mutex<WorldCalibration>,
 ) -> WorldReport {
     let started = crate::sampling::qpc();
-    let cached = country_cache.prepare(
-        memory,
-        request.economy.context.base,
-        request.economy.context.game_state,
-    );
+    let snapshot = Arc::clone(&request.countries);
+    let cached = snapshot.view(memory);
     let seed = cached.seed_status();
     let entries = cached.cached_entries();
-    let prepare_ticks = crate::sampling::qpc().saturating_sub(started).max(0) as u64;
     let mut report = run_world(request, &cached);
-    let verify_started = crate::sampling::qpc();
-    report.error = cached.verify().err();
-    let verify_ticks = crate::sampling::qpc().saturating_sub(verify_started).max(0) as u64;
-    // Shared country authentication is charged once to the World economy
-    // anchor, not once per table. The worker total also includes this work.
-    report.economy.copy_ticks[0] = report.economy.copy_ticks[0]
-        .saturating_add(prepare_ticks)
-        .saturating_add(verify_ticks);
+    // The callback's Countries anchor owns preparation and terminal checking.
+    // No worker may publish or credit checks before that shared verdict.
     report.ticks = crate::sampling::qpc().saturating_sub(started).max(0) as u64;
     let mut counters = calibration
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     counters.country_cache.observe(seed, entries);
     counters.acquisition_ticks = counters.acquisition_ticks.saturating_add(report.ticks);
-    counters.verification_failures = counters
-        .verification_failures
-        .saturating_add(u64::from(report.error.is_some()));
-    counters.last_error = report.error;
     report
 }
 
 fn run_eta_with_memory(
     request: &mut EtaRequest,
     memory: &impl engine::Memory,
-    country_cache: &mut engine::country_memory::Cache,
     seed_calibration: &Mutex<EtaCountryCacheCalibration>,
 ) -> division_eta::AcquisitionReport {
     let started = crate::sampling::qpc();
-    let cached = country_cache.prepare(memory, request.base, request.state);
+    let cached = request.countries.view(memory);
     seed_calibration
         .lock()
         .unwrap_or_else(|error| error.into_inner())
@@ -543,21 +534,35 @@ fn run_eta_with_memory(
         request.base,
         request.state,
         &[request.checked],
-        request.sources.view(),
+        production::Sources {
+            first: request.first.as_ref().map_or(&[], |inputs| inputs.seeds()),
+            first_outcome: request.first.as_ref().map_or(
+                engine::walk::Outcome::Unavailable {
+                    reason: "division inputs unavailable",
+                },
+                |inputs| inputs.outcome(),
+            ),
+            second: request.second.as_ref().map_or(&[], |inputs| inputs.seeds()),
+            second_outcome: request.second.as_ref().map_or(
+                engine::walk::Outcome::Unavailable {
+                    reason: "division check inputs unavailable",
+                },
+                |inputs| inputs.outcome(),
+            ),
+        },
     );
-    let mut matched = matched[0];
     seed_calibration
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .read_witness
         .observe(request.captured.cache_diagnostics());
-    if let Err(reason) = cached.verify() {
-        request.captured.fail(reason, request.checked);
-        matched = false;
-    }
-    request.sources.clear();
+    // The outer callback joins every reader and then verifies these shared
+    // country observations. Its existing dependent-table verdict applies to
+    // ETA too; this worker's result cannot be published independently.
+    request.first = None;
+    request.second = None;
     division_eta::AcquisitionReport {
-        matched,
+        matched: matched[0],
         ticks: crate::sampling::qpc().saturating_sub(started).max(0) as u64,
     }
 }
@@ -568,9 +573,7 @@ pub(crate) struct Pool {
     world_requests: Counters,
     relations: Worker<RelationsRequest, RelationsCopyReport>,
     eta: Worker<EtaRequest, division_eta::AcquisitionReport>,
-    eta_country_cache_bytes: usize,
     eta_country_cache: Arc<Mutex<EtaCountryCacheCalibration>>,
-    world_country_cache_bytes: usize,
     world_calibration: Arc<Mutex<WorldCalibration>>,
 }
 
@@ -578,12 +581,8 @@ impl Pool {
     /// Startup only: allocates fixed slots and registered threads. Partial
     /// startup failure drops and joins every worker already created.
     pub(crate) fn start() -> Result<Self, String> {
-        let mut eta_cache = engine::country_memory::Cache::with_capacity(8192);
-        let eta_country_cache_bytes = eta_cache.allocated_bytes();
         let eta_country_cache = Arc::new(Mutex::new(EtaCountryCacheCalibration::default()));
         let eta_worker_calibration = Arc::clone(&eta_country_cache);
-        let mut world_cache = engine::country_memory::Cache::with_capacity(8192);
-        let world_country_cache_bytes = world_cache.allocated_bytes();
         let world_calibration = Arc::new(Mutex::new(WorldCalibration::default()));
         let world_worker_calibration = Arc::clone(&world_calibration);
         Ok(Self {
@@ -600,10 +599,9 @@ impl Pool {
                             let memory = unsafe { LiveMemory::new() };
                             CharactersTaskReport {
                                 characters: None,
-                                world: Some(run_world_cached(
+                                world: Some(run_world_shared(
                                     world,
                                     &memory,
-                                    &mut world_cache,
                                     &world_worker_calibration,
                                 )),
                             }
@@ -617,13 +615,11 @@ impl Pool {
             relations: Worker::start("hoi4-acquire-relations", run_relations)?,
             eta: Worker::start("hoi4-acquire-eta", move |request| {
                 // SAFETY: dispatch retains the hourly lease until finish_eta;
-                // neither this reader nor the worker-local country cache escapes.
+                // neither this reader nor its immutable country view escapes.
                 let memory = unsafe { LiveMemory::new() };
-                run_eta_with_memory(request, &memory, &mut eta_cache, &eta_worker_calibration)
+                run_eta_with_memory(request, &memory, &eta_worker_calibration)
             })?,
-            eta_country_cache_bytes,
             eta_country_cache,
-            world_country_cache_bytes,
             world_calibration,
         })
     }
@@ -729,13 +725,9 @@ impl Pool {
         self.eta.finish()
     }
     pub(crate) fn allocated_bytes(&self) -> usize {
-        self.eta_country_cache_bytes + self.world_country_cache_bytes
-    }
-    pub(crate) fn eta_country_cache_bytes(&self) -> usize {
-        self.eta_country_cache_bytes
-    }
-    pub(crate) fn world_country_cache_bytes(&self) -> usize {
-        self.world_country_cache_bytes
+        // Snapshot payload belongs to Shared, counted once there. These
+        // workers retain no separate country-cache payload allocation.
+        0
     }
     pub(crate) fn world_calibration(&self) -> WorldCalibration {
         *self
@@ -786,23 +778,84 @@ impl Drop for Pool {
 mod tests {
     use super::*;
 
-    fn empty_eta_request(checked: bool) -> EtaRequest {
-        let mut sources = division_eta::OwnedSources::new(0, checked);
-        sources.copy_from(
-            crate::extended::production::Sources {
-                first: &[],
-                first_outcome: engine::walk::Outcome::Rows { len: 0 },
-                second: &[],
-                second_outcome: engine::walk::Outcome::Rows { len: 0 },
+    fn country_snapshot(
+        memory: &impl engine::Memory,
+        cells: usize,
+    ) -> Arc<engine::country_memory::Cache> {
+        let mut storage = Arc::new(engine::country_memory::Cache::with_capacity(cells));
+        engine::country_memory::Cache::prepare_shared(&mut storage, memory, 0, 0x1000).unwrap()
+    }
+
+    fn empty_country_snapshot() -> Arc<engine::country_memory::Cache> {
+        country_snapshot(
+            &engine::memory::SliceMemory {
+                base: 0,
+                bytes: &empty_eta_memory(),
             },
-            checked,
-        );
+            64,
+        )
+    }
+
+    #[test]
+    fn country_snapshot_leases_return_after_success_panic_and_rejected_dispatch() {
+        for panics in [false, true] {
+            let bytes = empty_eta_memory();
+            let memory = engine::memory::SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            let mut owner = Arc::new(engine::country_memory::Cache::with_capacity(64));
+            let snapshot =
+                engine::country_memory::Cache::prepare_shared(&mut owner, &memory, 0, 0x1000)
+                    .unwrap();
+            let mut request = empty_eta_request(false);
+            request.countries = snapshot;
+            let worker = Worker::start("shared-country-lease-test", move |_: &mut EtaRequest| {
+                assert!(!panics, "synthetic acquisition failure");
+            })
+            .unwrap();
+            let mut pending = Some(request);
+            assert!(worker.begin(&mut pending));
+            let completed = worker.finish().unwrap();
+            assert_eq!(completed.report.is_err(), panics);
+            assert!(
+                engine::country_memory::Cache::prepare_shared(&mut owner, &memory, 0, 0x1000,)
+                    .is_err(),
+                "completion retains the snapshot until its request is restored"
+            );
+            worker.stop();
+            assert!(worker.join());
+            let mut rejected = Some(completed.request);
+            assert!(!worker.begin(&mut rejected));
+            assert!(Arc::get_mut(&mut owner).is_none());
+            assert!(
+                rejected
+                    .as_ref()
+                    .unwrap()
+                    .countries
+                    .view(&memory)
+                    .verify()
+                    .is_ok()
+            );
+            drop(rejected);
+            assert!(
+                engine::country_memory::Cache::prepare_shared(&mut owner, &memory, 0, 0x1000,)
+                    .is_ok(),
+                "all completed/rejected request leases are gone"
+            );
+        }
+    }
+
+    fn empty_eta_request(checked: bool) -> EtaRequest {
+        let first = Arc::new(crate::division_census::UnitInputs::empty_rows());
         EtaRequest {
+            countries: empty_country_snapshot(),
             base: 0,
             state: 0x1000,
             checked,
             captured: division_eta::Captured::empty(),
-            sources,
+            second: checked.then(|| Arc::clone(&first)),
+            first: Some(first),
         }
     }
     fn empty_eta_memory() -> Vec<u8> {
@@ -822,6 +875,7 @@ mod tests {
 
     fn world_request(checked: bool) -> WorldRequest {
         let mut request = WorldRequest {
+            countries: empty_country_snapshot(),
             economy: WorldPair {
                 context: economy::EconomyRestCopyContext {
                     base: 0,
@@ -890,17 +944,15 @@ mod tests {
                     bytes: &bytes,
                 },
             );
-            let mut countries = engine::country_memory::Cache::with_capacity(64);
             let calibration = Arc::new(Mutex::new(WorldCalibration::default()));
             let worker_calibration = Arc::clone(&calibration);
             let worker = Worker::start("world-owned-test", move |request| {
-                run_world_cached(
+                run_world_shared(
                     request,
                     &engine::memory::SliceMemory {
                         base: 0,
                         bytes: &bytes,
                     },
-                    &mut countries,
                     &worker_calibration,
                 )
             })
@@ -911,7 +963,6 @@ mod tests {
             assert!(request.is_none());
             let completed = worker.finish().unwrap();
             let report = completed.report.unwrap();
-            assert!(report.error.is_none());
             assert_eq!(calibration.lock().unwrap().country_cache.ready, 1);
             assert_eq!(
                 completed.request.economy.first.log.spans.capacity(),
@@ -978,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn world_country_verification_fault_is_terminal_and_capacity_fallback_is_observable() {
+    fn world_shared_country_fault_is_detected_at_outer_barrier_and_capacity_is_observable() {
         struct Changed {
             bytes: Vec<u8>,
             reads: std::cell::Cell<usize>,
@@ -1009,27 +1060,27 @@ mod tests {
             reads: std::cell::Cell::new(0),
         };
         let calibration = Mutex::new(WorldCalibration::default());
-        let report = run_world_cached(
-            &mut world_request(true),
-            &changed,
-            &mut engine::country_memory::Cache::with_capacity(64),
-            &calibration,
+        let mut request = world_request(true);
+        request.countries = country_snapshot(&changed, 64);
+        run_world_shared(&mut request, &changed, &calibration);
+        assert_eq!(
+            changed.reads.get(),
+            1,
+            "worker must use the shared authentication"
         );
-        assert!(report.error.is_some());
-        assert_eq!(calibration.lock().unwrap().verification_failures, 1);
-        assert_eq!(calibration.lock().unwrap().last_error, report.error);
+        assert!(
+            request.countries.view(&changed).verify().is_err(),
+            "the outer barrier must reject shared source mutation before publishing rows"
+        );
+        assert_eq!(calibration.lock().unwrap().last_error, None);
         let bytes = empty_eta_memory();
         let memory = engine::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };
-        let report = run_world_cached(
-            &mut world_request(false),
-            &memory,
-            &mut engine::country_memory::Cache::with_capacity(0),
-            &calibration,
-        );
-        assert!(report.error.is_none());
+        let mut request = world_request(false);
+        request.countries = country_snapshot(&memory, 0);
+        run_world_shared(&mut request, &memory, &calibration);
         assert_eq!(
             calibration.lock().unwrap().country_cache.capacity_fallbacks,
             1
@@ -1038,10 +1089,6 @@ mod tests {
         overflow.economy.first.log = Default::default();
         let report = run_world(&mut overflow, &memory);
         assert!(!report.economy.raw_ok);
-        assert!(
-            report.error.is_none(),
-            "ordinary staging overflow is not a terminal worker fault"
-        );
         assert!(report.focus.raw_ok);
     }
 
@@ -1071,6 +1118,7 @@ mod tests {
         assert!(completed.report.unwrap().characters.is_none());
         let mut characters = Some(CharactersTask {
             characters: Some(CharactersRequest {
+                countries: empty_country_snapshot(),
                 context: CharactersCopyContext {
                     base: 0,
                     game_state: 0x1000,
@@ -1126,9 +1174,8 @@ mod tests {
     }
 
     #[test]
-    fn eta_owned_worker_returns_verified_both_passes_before_completion_and_can_be_reused() {
+    fn eta_owned_worker_returns_both_passes_for_outer_verification_and_can_be_reused() {
         let bytes = empty_eta_memory();
-        let mut countries = engine::country_memory::Cache::with_capacity(64);
         let calibration = Arc::new(Mutex::new(EtaCountryCacheCalibration::default()));
         let worker_calibration = Arc::clone(&calibration);
         let worker = Worker::start("eta-owned-test", move |request| {
@@ -1136,7 +1183,7 @@ mod tests {
                 base: 0,
                 bytes: &bytes,
             };
-            run_eta_with_memory(request, &memory, &mut countries, &worker_calibration)
+            run_eta_with_memory(request, &memory, &worker_calibration)
         })
         .unwrap();
         for checked in [false, true] {
@@ -1149,10 +1196,8 @@ mod tests {
                 completed.request.captured.outcomes(),
                 [engine::walk::Outcome::Rows { len: 0 }]
             );
-            assert!(matches!(
-                completed.request.sources.view().first_outcome,
-                engine::walk::Outcome::Unavailable { .. }
-            ));
+            assert!(completed.request.first.is_none());
+            assert!(completed.request.second.is_none());
         }
         worker.stop();
         assert!(worker.join());
@@ -1169,7 +1214,6 @@ mod tests {
                 base: 0,
                 bytes: &bytes,
             },
-            &mut engine::country_memory::Cache::with_capacity(64),
             &calibration,
         );
         assert!(report.matched);
@@ -1177,7 +1221,7 @@ mod tests {
     }
 
     #[test]
-    fn eta_worker_country_authentication_verification_failure_invalidates_rows() {
+    fn eta_shared_country_mutation_is_rejected_by_outer_verification() {
         use std::cell::Cell;
         struct Changed {
             bytes: Vec<u8>,
@@ -1209,21 +1253,23 @@ mod tests {
             root_reads: Cell::new(0),
         };
         let mut request = empty_eta_request(true);
+        request.countries = country_snapshot(&memory, 64);
         let report = run_eta_with_memory(
             &mut request,
             &memory,
-            &mut engine::country_memory::Cache::with_capacity(64),
             &Mutex::new(EtaCountryCacheCalibration::default()),
         );
-        assert!(!report.matched);
-        assert!(matches!(
-            request.captured.outcomes()[0],
-            engine::walk::Outcome::Unavailable { .. }
-        ));
-        assert!(matches!(
-            request.sources.view().first_outcome,
-            engine::walk::Outcome::Unavailable { .. }
-        ));
+        assert!(
+            report.matched,
+            "table checks await the shared outer verdict"
+        );
+        assert_eq!(memory.root_reads.get(), 1, "ETA must not reseed countries");
+        assert!(
+            request.countries.view(&memory).verify().is_err(),
+            "outer country verdict must reject these otherwise consistent rows"
+        );
+        assert!(request.first.is_none());
+        assert!(request.second.is_none());
     }
 
     #[test]
@@ -1277,6 +1323,14 @@ mod tests {
                 witness_bytes_peak: 100,
                 witness_entries_required: 10,
                 witness_bytes_required: 140,
+                stages: division_eta::StageDiagnostics {
+                    walk: division_eta::StageCost {
+                        calls: 1,
+                        ticks: 11,
+                    },
+                    supply_builds: 2,
+                    ..Default::default()
+                },
             });
         calibration
             .read_witness
@@ -1290,6 +1344,14 @@ mod tests {
                 witness_bytes_peak: 120,
                 witness_entries_required: 12,
                 witness_bytes_required: 130,
+                stages: division_eta::StageDiagnostics {
+                    walk: division_eta::StageCost {
+                        calls: 2,
+                        ticks: 17,
+                    },
+                    supply_builds: 3,
+                    ..Default::default()
+                },
             });
         assert_eq!(
             serde_json::to_value(calibration.read_witness).unwrap(),
@@ -1298,6 +1360,11 @@ mod tests {
                 "direct_reads": 5, "witness_skips": 7, "witness_fallbacks": 3,
                 "witness_entries_peak": 8, "witness_bytes_peak": 120,
                 "witness_entries_required": 12, "witness_bytes_required": 140,
+                "stages": division_eta::StageDiagnostics {
+                    walk: division_eta::StageCost { calls: 3, ticks: 28 },
+                    supply_builds: 5,
+                    ..Default::default()
+                },
             })
         );
         // Worker read diagnostics are not mislabeled as country authentication.

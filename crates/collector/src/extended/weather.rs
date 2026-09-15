@@ -7,7 +7,12 @@
 //! survive without retaining unused dense-array padding or rendering bytes.
 
 use crate::{raw::RawLog, sampling::qpc, spooling::table, table_capture::CaptureRows};
-use engine::{Memory, cweather_manager, sweather_per_province, sweather_per_region, walk::Outcome};
+use engine::{
+    Memory, cweather_manager,
+    memory::{RecordLayout, RecordSources},
+    sweather_per_province, sweather_per_region,
+    walk::Outcome,
+};
 use replay::{
     frame::TableView,
     rows::{self, TableId, tables},
@@ -378,9 +383,9 @@ impl DensePayload {
         memory: &impl Memory,
         array: Option<engine::cpdx_array::Array>,
         stride: usize,
-        fields: &[engine::memory::RecordField],
-        record_bytes: usize,
+        layout: &RecordLayout<'_>,
     ) -> bool {
+        let record_bytes = layout.stride();
         self.prepare(array, record_bytes);
         let Some(array) = array else {
             return true;
@@ -389,28 +394,24 @@ impl DensePayload {
             return false;
         }
         let mut first = 0;
-        let mut pointers = [0; 64];
         while first < array.count as usize {
-            let count = (array.count as usize - first).min(pointers.len());
-            for (index, pointer) in pointers[..count].iter_mut().enumerate() {
-                // Array validated the complete native extent before this loop.
-                *pointer = array.element((first + index) as u32, stride).unwrap_or(0);
-            }
+            let count = (array.count as usize - first).min(64);
+            // Array validated the complete native extent before this loop.
+            let sources = RecordSources::Strided {
+                base: array.element(first as u32, stride).unwrap_or(0),
+                stride,
+                count,
+            };
             let begin = first * record_bytes;
             let completed = memory.copy_records(
-                &pointers[..count],
-                fields,
-                record_bytes,
+                sources,
+                layout,
                 &mut self.bytes[begin..begin + count * record_bytes],
             );
-            debug_assert!(completed <= count * fields.len());
+            debug_assert!(completed <= count * layout.field_count());
             self.copied_fields += completed;
-            self.copied_bytes += completed / fields.len() * record_bytes
-                + fields[..completed % fields.len()]
-                    .iter()
-                    .map(|field| field.len)
-                    .sum::<usize>();
-            if completed != count * fields.len() {
+            self.copied_bytes += layout.completed_bytes(completed);
+            if completed != count * layout.field_count() {
                 break;
             }
             first += count;
@@ -571,6 +572,16 @@ fn preflight_weather(job: &mut WeatherJob) {
 }
 
 fn copy_weather_dense(memory: &impl Memory, job: &mut WeatherJob) {
+    const REGIONS_LAYOUT: RecordLayout<'static> = RecordLayout::new(
+        &sweather_per_region::FIELDS,
+        sweather_per_region::RECORD_BYTES,
+    )
+    .expect("valid record layout");
+    const PROVINCES_LAYOUT: RecordLayout<'static> = RecordLayout::new(
+        &sweather_per_province::FIELDS,
+        sweather_per_province::RECORD_BYTES,
+    )
+    .expect("valid record layout");
     debug_assert!(!job.log.overflowed);
     let log = &mut job.log;
     // A bad array header is table-local. Capacity was checked for every
@@ -580,15 +591,13 @@ fn copy_weather_dense(memory: &impl Memory, job: &mut WeatherJob) {
         memory,
         job.regions.array,
         sweather_per_region::STRIDE,
-        &sweather_per_region::FIELDS,
-        sweather_per_region::RECORD_BYTES,
+        &REGIONS_LAYOUT,
     );
     log.overflowed |= !job.provinces.capture(
         memory,
         job.provinces.array,
         sweather_per_province::STRIDE,
-        &sweather_per_province::FIELDS,
-        sweather_per_province::RECORD_BYTES,
+        &PROVINCES_LAYOUT,
     );
     log.raw_bytes[1] = job.regions.copied_bytes as u64;
     log.raw_bytes[2] = job.provinces.copied_bytes as u64;

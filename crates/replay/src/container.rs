@@ -1723,7 +1723,11 @@ mod tests {
             records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
         }
         let current = Replay::from_records(CAMPAIGN.into(), &[records]).unwrap();
-        for format in [FormatVersion::LEGACY_14, FormatVersion::LEGACY_17] {
+        for format in [
+            FormatVersion::LEGACY_14,
+            FormatVersion::LEGACY_17,
+            FormatVersion::LEGACY_18,
+        ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             assert_eq!(old.format, format);
             assert_eq!(old.campaign_id, current.campaign_id);
@@ -1779,7 +1783,11 @@ mod tests {
     #[test]
     fn older_replays_may_be_read_but_never_appended_to() {
         let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
-        for format in [FormatVersion::LEGACY_14, FormatVersion::LEGACY_17] {
+        for format in [
+            FormatVersion::LEGACY_14,
+            FormatVersion::LEGACY_17,
+            FormatVersion::LEGACY_18,
+        ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             let error = old
                 .append(&[records(2, &[3, 4])])
@@ -1801,7 +1809,11 @@ mod tests {
     #[test]
     fn older_replays_keep_every_crc_and_trailer_check() {
         let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
-        for format in [FormatVersion::LEGACY_14, FormatVersion::LEGACY_17] {
+        for format in [
+            FormatVersion::LEGACY_14,
+            FormatVersion::LEGACY_17,
+            FormatVersion::LEGACY_18,
+        ] {
             let bytes = downgrade(&current, format);
             assert!(Replay::open(bytes.clone()).is_ok());
             let footer_start = bytes.len() - FOOTER_SIZE;
@@ -1835,7 +1847,7 @@ mod tests {
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18 and \
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19 and \
                      writes {FORMAT_VERSION}"
                 )
             );
