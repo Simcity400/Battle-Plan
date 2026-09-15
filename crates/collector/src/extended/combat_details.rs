@@ -1535,6 +1535,72 @@ mod tests {
         }
     }
 
+    /// The viewer builds the land window's lists straight from these spans, so
+    /// each combat's committed and reserve arrays keep their native index
+    /// order (1415CA230/1415CA460) after the arena offset is applied.
+    #[test]
+    fn roster_spans_project_committed_and_reserve_lists_in_arena_order() {
+        let c = Capacities {
+            combats: 2,
+            census_participants: 1,
+            details: 2,
+            divisions: 1,
+            sides: 1,
+            rosters: 6,
+            modifier_members: 1,
+            modifiers: 1,
+            width_terms: 1,
+            manpower: 1,
+            reinforcement_modifiers: 1,
+            supply_terms: 1,
+            acclimatization: 1,
+            transport_terms: 1,
+            tactic_candidates: 1,
+            tactic_weights: 1,
+            tactic_unlocks: 1,
+            division_commanders: 1,
+            commander_keys: 2,
+        };
+        let mut captured = Captured::with_capacities(&c, &[200; N]);
+        captured.details.outcome = Outcome::Rows { len: 2 };
+        captured.rosters.len = 6;
+        captured.rosters.first.copy_from_slice(&[13, 6, 11, 4, 1, 9]);
+        for (row, id, spans) in [
+            (0, 0x1000_0000_003e, [(0, 2, 2, 1), (3, 0, 3, 0)]),
+            (1, 0x2000_0000_003e, [(3, 0, 3, 0), (3, 1, 4, 2)]),
+        ] {
+            let detail = &mut captured.details.rows[row].row;
+            detail.id = id;
+            for (side, (committed_start, committed_len, reserve_start, reserve_len)) in
+                detail.sides.iter_mut().zip(spans)
+            {
+                side.committed_start = committed_start;
+                side.committed_len = committed_len;
+                side.reserve_start = reserve_start;
+                side.reserve_len = reserve_len;
+            }
+        }
+        let [
+            TableView::Complete(replay::rows::TableRows::LandCombatDetails(details)),
+            _,
+            _,
+        ] = captured.tables()
+        else {
+            panic!("complete land details were not projected")
+        };
+        let lists: Vec<_> = details
+            .iter()
+            .map(|row| row.sides.clone().map(|side| [side.committed, side.reserves]))
+            .collect();
+        assert_eq!(
+            lists,
+            [
+                [[vec![13, 6], vec![11]], [vec![], vec![]]],
+                [[vec![], vec![]], [vec![4], vec![1, 9]]],
+            ]
+        );
+    }
+
     #[test]
     fn source_failures_and_independent_window_retirement_are_explicit() {
         for successes in [0, 200] {
