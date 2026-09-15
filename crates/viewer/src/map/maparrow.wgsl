@@ -1,5 +1,5 @@
 // `gfx/FX/maparrow.shader`, the `MapArrowDefault` and `MapArrowNoHead`
-// effects, ported literally. One pipeline carries both: `has_head` picks which
+// effects. One pipeline carries both: `has_head` picks which
 // of the two shipped pixel shaders' bodies runs, and `uv_head_variant.z` picks
 // the head quad inside the first of them.
 //
@@ -12,11 +12,8 @@
 //
 // Dropped, with the reason:
 //
-// * `GetShadowScaled( ..., ShadowMap, ... )`: `shadows=no` on the reference
-//   profile, so the shadow term is 1; `map::terrain` drops it the same way.
-// * `CalculatePointLights`: the city-light grid is a night terrain effect and
-//   its two maps are declared by this effect but supply nothing a flat ribbon
-//   shows.
+// * CalculatePointLights and generated mip levels: not verified on pair H.
+//   Authored texture mip levels are retained.
 // * The `#ifndef NO_SHADER_TEXTURE_LOD` half of `CalculateTerrainNormal`, the
 //   terrain-atlas and water normals. The shipped shader has an explicit
 //   `#ifdef NO_SHADER_TEXTURE_LOD return normal;` early out that returns the
@@ -42,6 +39,7 @@ const MAP_ARROW_SEL_BLINK_RANGE: f32 = 0.7;
 @group(1) @binding(2) var height_normal_texture: texture_2d<f32>;
 @group(1) @binding(3) var linear_wrap: sampler;
 @group(1) @binding(4) var linear_clamp: sampler;
+@group(1) @binding(5) var point_wrap: sampler;
 
 /// `ConstantBuffer(3, 32)` reduced to what the port reads, plus the viewer's own
 /// world-wrap offset in the slot the engine already keeps it in:
@@ -146,8 +144,9 @@ fn arrow_terrain_normal(uv_terrain: vec2<f32>) -> vec3<f32> {
     return normalize(sampled.rbg - 0.5);
 }
 
-/// `CalculateLighting`, with the shadow term at 1 and the point lights dropped.
-fn arrow_lighting(prepos: vec3<f32>, normal: vec3<f32>, color: vec4<f32>) -> vec3<f32> {
+/// Plain Phong: maparrow declares no PDX_IMPROVED_BLINN_PHONG.
+/// It shares the terrain shadow weight; point lights remain unavailable.
+fn arrow_lighting(prepos: vec3<f32>, normal: vec3<f32>, color: vec4<f32>, shadow_term: f32) -> vec3<f32> {
     var properties: LightingProperties;
     properties.world_space_pos = prepos;
     properties.to_camera_dir = normalize(cam_pos() - prepos);
@@ -156,7 +155,7 @@ fn arrow_lighting(prepos: vec3<f32>, normal: vec3<f32>, color: vec4<f32>) -> vec
     properties.glossiness = 0.05;
     properties.specular_color = vec3<f32>(color.a);
     properties.non_linear_glossiness = get_non_linear_glossiness(color.a);
-    let light = calculate_sun_light(properties, 1.0, calculate_sun_direction(prepos));
+    let light = calculate_sun_light_phong(properties, shadow_term, calculate_sun_direction(prepos));
     return compose_light(properties, light.diffuse, light.specular);
 }
 
@@ -190,13 +189,13 @@ fn arrow_fragment(input: ArrowOut) -> @location(0) vec4<f32> {
 
     let normal = arrow.normal_map_factor * arrow_terrain_normal(input.uv_terrain);
     let water_value = 0.0;
-    uv += normal.xz * MAP_ARROW_NORMALS_STR_TERR;
+    uv += normal.xz * MAP_ARROW_NORMALS_STR_TERR * select(normal.y, 1.0, heads);
     uv -= normal.xz * (water_value * MAP_ARROW_NORMALS_STR_WATER);
     if heads {
         uv = clamp(uv, vec2<f32>(0.001), vec2<f32>(0.998));
     }
 
-    var mask = textureSample(arrow_mask_texture, linear_wrap, uv);
+    var mask = textureSample(arrow_mask_texture, point_wrap, uv);
     // The selection blink, at `vTime_IsSelected_FadeInOut.y = 0` in a replay.
     mask -= vec4<f32>(
         (sin(arrow.time_selected_fade.x * MAP_ARROW_SEL_BLINK_SPEED) * MAP_ARROW_SEL_BLINK_RANGE
@@ -242,7 +241,7 @@ fn arrow_fragment(input: ArrowOut) -> @location(0) vec4<f32> {
         discard;
     }
 
-    let pattern = textureSample(arrow_pattern_texture, linear_wrap, uv);
+    let pattern = textureSampleBias(arrow_pattern_texture, linear_wrap, uv, -0.5);
     var tint = mix(arrow.arrow_color, arrow.arrow_secondary_color, variant);
     // The shipped `#if 1` branch of both pixel shaders.
     var hsv = arrow_rgb_to_hsv(tint.rgb);
@@ -252,7 +251,7 @@ fn arrow_fragment(input: ArrowOut) -> @location(0) vec4<f32> {
     tint = vec4<f32>(arrow_hsv_to_rgb(hsv), tint.a);
 
     var color = saturate(pattern * tint);
-    let lit = arrow_lighting(input.prepos, normal, color);
+    let lit = arrow_lighting(input.prepos, normal, color, get_shadow_scaled(0.7, input.clip));
     var rgb = mix(color.rgb, lit, 0.5);
     rgb = apply_distance_fog(rgb, input.prepos);
     rgb = day_night_with_blend(rgb, calc_globe_normal(input.prepos.xz), 0.2);

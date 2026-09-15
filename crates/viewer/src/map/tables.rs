@@ -161,36 +161,8 @@ impl Limitations {
         if drawn == 0 {
             return;
         }
-        self.note_field(
-            "ArmyOrders (front binding)",
-            "which line orders are front lines is derived, not read: the engine draws a line \
-             bound to a CFront as the front and every other as an offensive line, and the binding \
-             and the front's own province pairs are not recorded. The line that is the only one of \
-             its group to carry its path is taken as the front, which is the line every recorded \
-             move order departs from. A front is therefore drawn through its own path provinces \
-             rather than hugging the border between them and the provinces facing them, offset \
-             ROOT_FRONT_OFFSET per overlapping line, which is the engine's own fallback when it \
-             cannot pair a line against a front",
-        );
-        self.note_field(
-            "ArmyOrders (style bytes)",
-            "the blitz, withdraw, fallback and virtual bytes of an order are not recorded, so a \
-             blitz arrow, a withdrawal, a fallback line and a virtual line are all drawn as the \
-             plain move arrow or offensive line of their group, in that group's own colour",
-        );
-        self.note_field(
-            "OrdersGroups (colour)",
-            "the army and army-group colour is the group's own CColor, which no table records; the \
-             palette is the game's own leader_group list and the entry is a fixed hash of the \
-             group handle, so two armies keep distinct stable colours but neither is the colour \
-             the game drew",
-        );
-        self.note_field(
-            "ArmyOrders (assigned divisions)",
-            "an order's assigned-division list is not recorded, so every ribbon draws the arrow \
-             type's assigned mask and none draws its unassigned one; an army group's child order \
-             is not recorded either, so an army group's front line never takes the no-child variant",
-        );
+        self.note_field("ArmyOrderPlans (geometry)", "unbound snapped province-pair caches and graph traversal priority are not recorded; unbound lines use province-centroid/crossing curves. Child-count front offsets and overlap ordering outside the captured single-army plan remain unverified");
+        self.note_field("ArmyOrderPlans (presentation)", "deselected, unexecuted presentation; order text, execution animation, selection and terrain-detail normal distortion are not drawn");
     }
 
     /// Records that this frame sits between two recorded hours.
@@ -421,19 +393,22 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
         "a naval counter's ship count covers only the recorded ships, where the game counts every          ship in the task force's own array",
     );
     // orders: the recorded player's battle plan
+    out.note::<tables::ArmyOrderPlans>(
+        frame,
+        "battle-plan binding, style and assignment; absent plans are not drawn",
+    );
+    out.note::<tables::OrdersGroupColors>(
+        frame,
+        "battle-plan colour; absent colours are not guessed",
+    );
+    out.note::<tables::Fronts>(frame, "bound-front geometry; absent fronts are not drawn");
     out.note::<tables::ArmyOrders>(
         frame,
-        "the battle plan covers only the recorded orders: a front line, offensive line, offensive \
-         arrow or invasion arrow among the missing rows is not drawn at all, and a line whose \
-         virtual twin is among them is drawn as its group's front line instead of as an offensive \
-         line, because a line is identified as the front by being the only one of its group to \
-         carry its path",
+        "the battle plan covers only recorded orders; missing orders are not drawn",
     );
     out.note::<tables::OrdersGroups>(
         frame,
-        "an order whose owning group is among the missing rows is drawn with the army arrow types \
-         rather than the army-group ones, because the is_army_group byte the engine picks the ag_ \
-         prefix on is this table's",
+        "an order whose owning group is missing is not drawn; the army-group style is not guessed",
     );
     out.note::<tables::LandCombats>(
         frame,
