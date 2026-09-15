@@ -714,6 +714,21 @@ struct LightingProperties {
     non_linear_glossiness: f32,
 }
 
+/// `AmbientLight`, and the whole of it is the six `static const` triples below
+/// rather than `cb0`'s `AmbientPos*`/`AmbientNeg*`. The capture settles that:
+/// `hoi4_frame33840.rdc`'s terrain pixel shader loads the basis into its two
+/// indexable temporaries as literals (`x0[0..5]` day, `x1[0..5]` night,
+/// instructions 530-541, values identical to [`DAY_AMBIENT`] and
+/// [`NIGHT_AMBIENT`]) and never reads the constant buffer's own ambient fields,
+/// whose day values in that frame are a different set entirely
+/// (`AmbientPosY` and `AmbientNegY` are `(0, 0, 0)` there, where this basis
+/// weights an upward normal at `(0.03, 0.03, 0.06)`).
+///
+/// The night blend is `lerp(day, 3 * night, dayFactor)` with no clamp
+/// (instructions 557-558, 562-563 and 569-570: `night * 3 - day`, then
+/// `t * that + day`). The `saturate` this port used to wrap around the night
+/// term is gone; it never bound, since the largest night value times three is
+/// 0.6, but the capture shows the engine does not write it.
 fn ambient_light(world_normal: vec3<f32>, day_factor: f32) -> vec3<f32> {
     // The `NegFogMultiplier` normal bend is a no-op while that constant is 0
     // (R1 section 3.3), so the lerp at the head of `AmbientLight` is dropped.
@@ -723,9 +738,9 @@ fn ambient_light(world_normal: vec3<f32>, day_factor: f32) -> vec3<f32> {
     let iz = select(4u, 5u, world_normal.z < 0.0);
     let day = DAY_AMBIENT;
     let night = NIGHT_AMBIENT;
-    return squared.x * mix(day[ix], saturate(NIGHT_AMBIENT_BOOST * night[ix]), day_factor)
-        + squared.y * mix(day[iy], saturate(NIGHT_AMBIENT_BOOST * night[iy]), day_factor)
-        + squared.z * mix(day[iz], saturate(NIGHT_AMBIENT_BOOST * night[iz]), day_factor);
+    return squared.x * mix(day[ix], NIGHT_AMBIENT_BOOST * night[ix], day_factor)
+        + squared.y * mix(day[iy], NIGHT_AMBIENT_BOOST * night[iy], day_factor)
+        + squared.z * mix(day[iz], NIGHT_AMBIENT_BOOST * night[iz], day_factor);
 }
 
 fn fresnel_schlick(specular_color: vec3<f32>, e: vec3<f32>, h: vec3<f32>) -> vec3<f32> {

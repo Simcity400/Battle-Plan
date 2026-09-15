@@ -227,6 +227,34 @@
 // own whole-file mean of 0.1781 0.2171 0.2434. That texture's spatial standard
 // deviation is only 0.013, so the flat sea bed the probe reads is the file.
 //
+// ### The 1.064 red is the coast, not the open sea (2026-09-15)
+//
+// That row is a ratio of medians over a mask whose two distributions do not
+// line up pixel for pixel, and per pixel the sea is exact: over the same 554 k
+// pixels the median of `game / ours` is **1.007 1.004 1.003**, and the
+// shader-debugger trace of the engine's own water pixel shader at screen
+// (1100, 397) — event 10338 of `hoi4_frame33840.rdc`, world
+// (3026.02, 9.50, 1603.81) — reads 0.0635 0.0777 0.1080 against this viewer's
+// 0.0627 0.0784 0.1059, that is 1.012 0.991 1.020.
+//
+// What is left is at the edges. Splitting the sea by this viewer's own green:
+//
+// | our green | px | game / ours |
+// |---|---|---|
+// | below 0.08 | 47 k | 1.602 1.405 1.261 |
+// | 0.08 to 0.12 | 271 k | 1.036 1.012 0.999 |
+// | 0.12 to 0.20 | 233 k | 1.009 0.995 1.002 |
+// | above 0.20 | 2 k | 0.38 0.40 0.45 |
+//
+// The dark band is a one-pixel outline: masking it and looking at the mask
+// shows the coastline and the sea-province border lines, nothing in open water.
+// The bright band is the sun glint, which this viewer places a little
+// differently. The mean ratio the first table's row is close to — 1.051 1.032
+// 1.016 over the whole mask — is those two tails and the smaller red
+// denominator, not a red-specific error in this pass: the mean signed
+// difference is 0.0045 0.0038 0.0027, near flat in colour, against channel
+// means of 0.094 0.119 0.174.
+//
 // ## What that pins, and what it rules out
 //
 // With the cube and the fresnel fixed, this shader's output has a floor. The

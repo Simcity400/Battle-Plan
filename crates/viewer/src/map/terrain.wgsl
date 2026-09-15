@@ -37,16 +37,114 @@
 // | `desert_mountain` hills (tile 3) | 1.6 k | 0.306 0.285 0.437 | 1.310 1.166 1.392 |
 // | `forest_13` urban (tile 10) | 11 k | 0.335 0.272 0.357 | 1.109 0.903 0.982 |
 //
-// So the sea is exact, the bare land is about 1.2 times too dark in red and
-// blue and right in green, and what is left of the per-tile spread the sections
-// below chased sits on the two tiles the canopy covers: the mask can only
-// remove *this viewer's* trees, so a pixel the game's canopy covers and ours
-// does not reads game-dark, and the canopy row moves the same way. The 8-bit
-// `--postfx off` dump quantises these medians at about 4 % a level, which is
-// most of the width of what is left.
+// Those are ratios of medians over masks whose two distributions do not line up
+// pixel for pixel, and per pixel the two surface rows read differently: medians
+// of `game / ours` are **1.007 1.004 1.003** on the open water and
+// **1.187 1.055 1.201** on the bare land. So the sea is exact and the land's
+// factor of 1.2 is real. What is left of the per-tile spread sits on the two
+// tiles the canopy covers: the mask can only remove *this viewer's* trees, so a
+// pixel the game's canopy covers and ours does not reads game-dark, and the
+// canopy row moves the same way. The 8-bit `--postfx off` dump quantises these
+// medians at about 4 % a level, which is most of the width of what is left.
 //
 // `SCENE_BRIGHTNESS` in `map::post`, the single fitted gain this file used to
 // point at, is deleted: the scene it graded is now the scene the game grades.
+//
+// # The land's remaining 1.2 is the gradient-border fill, and this pass is exact (2026-09-15)
+//
+// The 1.2 was chased into the capture itself rather than fitted: RenderDoc's
+// shader debugger was run on the engine's own `PixelShaderTerrain` at chosen
+// pixels, stepping all 550 instructions and recording every register, and a
+// scratch build of this viewer wrote the matching intermediates to the frame at
+// the same camera. The terrain draws of `hoi4_frame33840.rdc` run from event
+// 2777 to 2861; `PixelHistory` names event **2819** as the one that shades all
+// three land pixels below. Scripts: `C:\hoi4_scratch\replay_map\rdc\py\
+// debug_pixel.py` traces, `C:\hoi4_scratch\replay_map\psdebug\` annotates
+// the trace against the disassembly, picks the pixels and measures.
+//
+// **A bare plains pixel, screen (917, 246), world (2991.61, 9.70, 1632.94)**,
+// the game's terrain id bytes `(1, 1, 101, 1)` so one tile and no blend. Term
+// for term, the game's registers against this viewer's probes, in trace order:
+//
+// | term | game | ours |
+// |---|---|---|
+// | atlas sample, after the `_SRGB` view | 0.3433 0.3638 0.2240 | 0.3412 0.3647 0.2235 |
+// | `_Glossiness` = its alpha | 0.2573 | 0.2549 |
+// | terrain-normal alpha (`vSpec`) | 0.3962 | 0.3961 |
+// | colormap tint, after its `_SRGB` view | 0.0265 0.0537 0.0072 | 0.0265 0.0539 0.0069 |
+// | `GetOverlay` before the `lerp` | 0.0437 0.0933 0.0079 | - |
+// | colour after the overlay | 0.1186 0.1609 0.0619 | 0.1186 0.1618 0.0618 |
+// | snow and mud | unchanged | unchanged |
+// | normal after the tile rotate | -0.0873 0.9962 0.0001 | -0.0902 0.9922 0.0039 |
+// | **gradient-border alpha, 9 taps** | **0.9106** | **0.7098** |
+// | gradient-border colour | 0.1943 0.1387 0.1094 | 0.1961 0.1412 0.1137 |
+// | **colour after the fill** | **0.1817 0.1424 0.1015** | **0.1647 0.1490 0.0941** |
+// | **`vBloomAlpha`** | **0.0759** | **0.3176** |
+// | `GetShadowScaled` | 1.0000 | 1.0000 |
+// | `N.L` | 0.5486 | 0.5451 |
+// | `AmbientLight` | 0.0309 0.0309 0.0607 | 0.0314 0.0314 0.0608 |
+// | specular | 0.0063 | 0.0059 |
+// | `ComposeLightSnow` | 0.1116 0.0888 0.0681 | 0.1010 0.0922 0.0627 |
+// | border light-removal factor | 0.7393 | 0.5459 |
+// | after the light removal | 0.1634 0.1284 0.0928 | 0.1363 0.1235 0.0784 |
+// | `(FogColorFactor, FogAlphaFactor)` | 0.2118, 0.1137 | 0, 0 |
+// | after `ApplyFOW` | 0.1666 0.1323 0.0982 | 0.1363 0.1235 0.0784 |
+// | distance-fog factor | 0.02214 | 0.02255 |
+// | output | 0.1656 0.1356 0.1093 | 0.1373 0.1255 0.0902 |
+//
+// Every term this pass owns agrees to the 8-bit probe's own step, the overlay
+// and the atlas decode included. The two that do not are the gradient-border
+// layer's alpha and, through it, `vBloomAlpha` — and `vBloomAlpha` is the
+// larger lever of the two, because `BORDER_LIGHT_REMOVAL_FACTOR * (1 - alpha)`
+// mixes that fraction of the *unlit* albedo back over the lit colour, and the
+// unlit albedo is about twice the lit one when `ambient + N.L` is 0.58.
+//
+// **Two pixels the game fills and this viewer does not.** Screen (993, 436),
+// world (3006.07, 9.70, 1596.35), and (704, 531), world
+// (2952.83, 9.70, 1578.50). At both the game's layer-2 nine-tap alpha is about
+// 0.62 and this viewer's is **0.0000**, so the game blends its fill at
+// `0.567 * 0.902` and 0.571 * 0.902 and this viewer blends none, and this
+// viewer's `vBloomAlpha` is 1 where the game's is 0.433, so this viewer removes
+// no light at all. The fill *colour* matches at both (game 0.0825 0.0762 0.0684
+// against ours 0.0863 0.0784 0.0667); only the field does not. At (993, 436)
+// the game reads 0.0758 0.0865 0.0542 and this viewer 0.0627 0.0824 0.0392, and
+// feeding the game's post-fill albedo and `vBloomAlpha` into *this viewer's*
+// lighting reproduces the game to **1.004 1.005 1.010**.
+//
+// **The same split over the whole frame.** Over the 286 k bare-land pixels of
+// the capture's framing, medians of `game / ours`:
+//
+// | bare-land subset | px | game / ours |
+// |---|---|---|
+// | this viewer's fill at full strength (`vBloomAlpha` 0) | 7.1 k | 1.007 1.008 1.013 |
+// | both fields at full strength | 9.2 k | 0.990 0.987 0.990 |
+// | `vBloomAlpha` 0.1 to 0.3 | 42 k | 0.993 0.912 1.015 |
+// | this viewer's field absent (`vBloomAlpha` above 0.3) | 210 k | 1.234 1.095 1.267 |
+//
+// Where the two fills agree the frame agrees; where this viewer has no fill the
+// whole 1.2 appears. The scene path this file and [`super::common`] carry —
+// the atlas decode, `GetOverlay`, the snow and mud, the normals, `AmbientLight`,
+// `CalculateSunLight`, the specular, `ComposeLightSnow`, `ApplyFOW`, the
+// distance fog and `DayNightWithBlend` — has no residual left in it.
+//
+// **What the fix is, and whose.** It is [`super::gradient`]'s distance field:
+// the engine's layer-2 alpha is about 0.62 over the German interior at this
+// camera where this viewer's is 0, so the game's country fill covers the
+// interior and this viewer's is a rim at the border. The capture adds two
+// constants for the same owner, both already recorded in [`super::frame`]:
+// `vGBCamDistOverride_GBOutlineCutoff` is `(1, 0, 0.98, 0.973)` in `cb0`, not
+// this viewer's `(0, 0, 0.973, 0.973)`, and the engine's channel 1 is the
+// strategic-region field (a flat `(8, 13, 26)` at alpha 1 over all three pixels,
+// which the `floor(vOutline)` gate then discards) while channel 2 is the country
+// fill — the reverse of this viewer's layer order.
+//
+// The fog of war is the one remaining difference this pass can see and it is a
+// recording gap, not a port one: the game's pre-pass buffer carries
+// `FogAlphaFactor` 0.1137 at (917, 246) and 0 at the other two, and the
+// reference recording is format 14, which has no `ProvinceVisibility` table, so
+// `map::scene` binds an empty intel map and every `ApplyFOW` here is the
+// identity. On the one pixel where the game fogs, that is 2 % of red and 5 % of
+// blue.
 //
 // ## Which effect and which defines the engine actually binds
 //
