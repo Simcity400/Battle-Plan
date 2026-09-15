@@ -109,7 +109,15 @@ fn colors(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
 }
 fn fronts(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::Fronts>()?;
-    let required: BTreeSet<_> = save.plans.orders.values().filter_map(|r| r.front).collect();
+    // whose CFront was destroyed before its order; only live theatre fronts
+    // have sections, so only those bindings require a Fronts row.
+    let required: BTreeSet<_> = save
+        .plans
+        .orders
+        .values()
+        .filter_map(|r| r.front)
+        .filter(|front| save.plans.fronts.contains_key(front))
+        .collect();
     let actual: BTreeSet<_> = rows.iter().map(|r| r.front).collect();
     eq(report, "Fronts.bound front census", &actual, &required);
     for row in rows {
@@ -138,7 +146,7 @@ fn fronts(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
         );
         report.compared("Fronts", 1);
     }
-    report.limitation("records all sections of fronts bound by the complete ArmyOrders census; unbound theatre fronts, per-country section metadata and unbound order cached sorted_pairs are outside this table's contract", "Fronts scope");
+    report.limitation("records all sections of fronts bound by the complete ArmyOrders census; unbound theatre fronts, per-country section metadata and unbound order cached sorted_pairs are outside this table's contract. A binding to a destroyed front is saved as root_front but has no live front or row; the save cannot show whether it resolved in the registry", "Fronts scope");
     Ok(())
 }
 
@@ -220,6 +228,19 @@ mod tests {
         let mut report = Report::default();
         compare(&frame, &saved, &mut report);
         assert_eq!(report.differences.len(), 3);
+        // A saved binding to a front absent from the theatres requires no row.
+        let stale = (10_u64 << 32) | 66;
+        saved.plans.orders.insert(
+            (group, 2),
+            save::plans::Order {
+                front: Some(stale),
+                ..Default::default()
+            },
+        );
+        let mut report = Report::default();
+        fronts(&frame, &saved, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        saved.plans.orders.remove(&(group, 2));
         let mut legacy = Report::default();
         legacy.record_tables(&frame, FormatVersion::LEGACY_18);
         compare(&frame, &saved, &mut legacy);
