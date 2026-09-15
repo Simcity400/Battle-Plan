@@ -158,13 +158,34 @@ fn skill_text(template: &str, skill: i32) -> String {
     format!("{}{value}{}", &template[..start], &rest[end + 1..])
 }
 
+/// The side whose `*_leader_initiative_overlay_glow` 1415C8950 shows. 1412990E0
+/// scores each side by its selected commander's skill (140C0A4A0, zero without
+/// one) and adds the `RECON_SKILL_IMPACT` define to the side whose largest
+/// reconnaissance (1413CCA80: stat +0xD0 over the full +0x20 roster, from zero)
+/// is strictly greater. The higher score glows; a tie shows neither.
+/// pairL_land_danzig.png: Popov 4 against Leese 5, reconnaissance 0 against
+/// 2.0, so the defender glows.
+fn initiative_side(skills: [i32; 2], reconnaissance: [i64; 2], impact: i32) -> Option<usize> {
+    let mut scores = skills;
+    match reconnaissance[0].cmp(&reconnaissance[1]) {
+        std::cmp::Ordering::Greater => scores[0] = scores[0].wrapping_add(impact),
+        std::cmp::Ordering::Less => scores[1] = scores[1].wrapping_add(impact),
+        std::cmp::Ordering::Equal => (),
+    }
+    match scores[0].cmp(&scores[1]) {
+        std::cmp::Ordering::Greater => Some(0),
+        std::cmp::Ordering::Less => Some(1),
+        std::cmp::Ordering::Equal => None,
+    }
+}
+
 /// Frame 12 of `GFX_battle_div_modifier_strip`, the general. 1415CA660 adds it
 /// after the recorded kinds and the armour frames 8 to 11, and before frames
-/// 16, 13, 14 and 15, when the unit's direct formation leader (140C5F0E0, `+0xC0` then
-/// `+0x88`, recorded as `LandCombatDivisions.commander`) is set and is not the
-/// commander its own side selected (CLandCombatant vtable `+0xE8`, 14129E190,
-/// recorded as `LandCombatDetails` side `commander`). The other derived frames
-/// are not ported, so this one is appended after the recorded kinds.
+/// 16, 13, 14 and 15, when the unit's direct formation leader (140C5F0E0,
+/// `+0xC0` then `+0x88`, recorded as `LandCombatDivisions.commander`) is set
+/// and is not the commander its own side selected (CLandCombatant vtable
+/// `+0xE8`, 14129E190, recorded as `LandCombatDetails` side `commander`). The
+/// other derived frames are not ported, so this one follows the recorded kinds.
 fn separate_leader(division: u64, side: u64) -> Option<u32> {
     (division != 0 && division != side).then_some(12)
 }
@@ -477,10 +498,37 @@ fn land(
             );
         }
     }
+    if let (Some(detail), Some(combat)) = (detail, combat) {
+        let reconnaissance = |side: u8, roster: &[u64]| {
+            roster.iter().try_fold(0_i64, |best, unit| {
+                Some(best.max(divisions.get(&(side, *unit))?.reconnaissance))
+            })
+        };
+        match (
+            reconnaissance(0, &combat.attackers),
+            reconnaissance(1, &combat.defenders),
+        ) {
+            (Some(attacker), Some(defender)) => {
+                let skills = detail.sides.each_ref().map(|side| side.commander_skill);
+                if let Some(side) =
+                    initiative_side(skills, [attacker, defender], detail.recon_skill_impact)
+                {
+                    show(
+                        &mut out.values,
+                        &format!(
+                            "{}_leader_initiative_overlay_glow",
+                            ["attacker", "defender"][side]
+                        ),
+                    );
+                }
+            }
+            _ => out.warnings.push("Land initiative glow: a participant's LandCombatDivisions reconnaissance is missing; neither glow is drawn rather than guessed.".into()),
+        }
+    }
     if detail.is_none() {
         out.warnings.push("LandCombatDetails unavailable: recorded LandCombatDivisions names, HP/org bars, commitment roles and defence/breakthrough remain bound independently, as do LandCombatModifiers icons. Side attack bonuses, selected commanders, tactics, CAS, maximum width and heading remain unknown; division commanders do not substitute for selected-side commanders.".into());
     }
-    out.warnings.push("Format-22 land: available row-level names, bars, roles and modifier kinds are independent of the parent-detail table. Defence/breakthrough uses recorded scales and truncates to whole units, as observed in reference07. Side-dependent attack, selected commander skill, CAS, the committed/reserve array order and the separate-leader icon require LandCombatDetails. Derived armour/fuel/multiple-direction modifier icons, initiative/HQ markers, reinforcement and modifier tooltips, learning traits and possible-tactics menus remain unported; unsupported widgets stay empty/dash.".into());
+    out.warnings.push("Format-22 land: available row-level names, bars, roles and modifier kinds are independent of the parent-detail table. Defence/breakthrough uses recorded scales and truncates to whole units, as observed in reference07. Side-dependent attack, selected commander skill, CAS, the committed/reserve array order and the separate-leader icon require LandCombatDetails. Derived armour, air and fuel division icons, the HQ marker, reinforcement and modifier tooltips, learning traits and possible-tactics menus remain unported; unsupported widgets stay empty/dash.".into());
     Ok(())
 }
 
@@ -660,6 +708,17 @@ mod tests {
         assert_eq!(separate_leader(1_254_130_455_145, 1_254_130_455_145), None);
         assert_eq!(separate_leader(0, 1_254_130_455_145), None);
         assert_eq!(separate_leader(4_140_348_478_057, 0), Some(12));
+    }
+
+    #[test]
+    fn initiative_adds_the_reconnaissance_define_before_comparing_skills() {
+        // pairL_land_danzig.png at 60828493: the defender glows.
+        assert_eq!(initiative_side([4, 5], [0, 200_000], 5), Some(1));
+        // Reconnaissance can carry the lower skill past the higher one.
+        assert_eq!(initiative_side([4, 5], [200_000, 0], 5), Some(0));
+        // A tie in the score shows neither glow; equal reconnaissance adds nothing.
+        assert_eq!(initiative_side([3, 3], [100_000, 100_000], 5), None);
+        assert_eq!(initiative_side([0, 0], [0, 1], 0), None);
     }
 
     #[test]
