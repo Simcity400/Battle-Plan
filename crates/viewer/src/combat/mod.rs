@@ -217,9 +217,14 @@ impl Window {
             };
             painter.drawn.lists[side] = Some(clip);
             let count = (height / step).ceil() as usize * columns;
-            let start = self.scroll[side]
-                .saturating_mul(columns)
-                .min(rows.len().saturating_sub(count));
+            // A list scrolls once its rows overflow the box. pairJ_land_6.png
+            // shows the attacker's slider for five 40-high committed rows in
+            // the 165-high list, though a fifth row is partly drawn without it.
+            let hidden_rows = rows
+                .len()
+                .div_ceil(columns)
+                .saturating_sub((height / step).floor() as usize);
+            let start = self.scroll[side].min(hidden_rows) * columns;
             for (index, row) in rows.iter().skip(start).take(count).enumerate() {
                 let entry_node = &assets.windows[entry];
                 let size = entry_node.size([grid_rect[2], step])?;
@@ -235,7 +240,7 @@ impl Window {
                 painter.node(entry_node, at, "", row)?;
                 clip_quads(&mut painter.drawn.batch, first, clip);
             }
-            if rows.len() > count {
+            if hidden_rows > 0 {
                 let slider = &assets.windows[if side % 2 == 0 {
                     "left_vertical_slider"
                 } else {
@@ -274,8 +279,8 @@ impl Window {
                     Widget {
                         offset: [
                             0.0,
-                            20.0 + (slider_rect[3] - 50.0).max(0.0) * start as f32
-                                / (rows.len() - count) as f32,
+                            20.0 + (slider_rect[3] - 50.0).max(0.0) * (start / columns) as f32
+                                / hidden_rows as f32,
                         ],
                         ..Widget::default()
                     },
