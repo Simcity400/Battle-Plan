@@ -569,9 +569,12 @@ impl Viewer {
         document: &Document,
     ) -> Result<(), std::io::Error> {
         let mode = political::Mode::from_control(self.control);
-        let rebuilt = self
-            .political
-            .ensure(&document.map, document.frame()?, mode)?;
+        let rebuilt = self.political.ensure(
+            &document.map,
+            &document.strategic_regions,
+            document.frame()?,
+            mode,
+        )?;
         let scene = self
             .scene
             .as_mut()

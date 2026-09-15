@@ -1,26 +1,30 @@
 //! The political fill: the two gradient-border layers for one recorded hour.
 //!
 //! [`super::gradient`] is the field generator; this module is what feeds it from the replay. It
-//! turns one [`DecodedFrame`] into the two region tables the generator wants — layer 1 keyed by the
-//! province's controller (or owner, in the viewer's owner mode) and layer 2 keyed by the province's
-//! state — and caches the result so an hour that did not change the Provinces table does not pay
-//! for a rebuild.
+//! turns one [`DecodedFrame`] into the country layer the game puts in **layer 2**, and builds the
+//! **layer 1** the game puts under it — the strategic regions over the sea — from static content
+//! once. The result is cached so an hour that did not change the Provinces table does not pay for a
+//! rebuild.
 //!
-//! The specification is `C:\hoi4_scratch\replay_map\research\r2\R2-borders-names-icons.md`
-//! sections 1.3, 1.7, 1.8 and 1.9 with its "Algorithms for implementers" A; section numbers below
-//! refer to it. Readings the report could not close are marked UNVERIFIED.
-//!
-//! What the two layers hold (section 1.3):
+//! What the two layers hold, read off the RenderDoc capture's own `GradientBorderChannel1` and
+//! `GradientBorderChannel2` (the module header of [`super::gradient`] has the measurement):
 //!
 //! | | layer 1 | layer 2 |
 //! |---|---|---|
-//! | region key | the controller's canonical country slot plus one | the province's state id |
-//! | colour | [`gradient::country_map_color`] of the authored `colors.txt` colour (section 1.8) | the same colour, for the state's controller (UNVERIFIED) |
-//! | thickness | [`gradient::country_thickness`] of the region's area | [`gradient::THICKNESS_STATE`] |
+//! | region key | the province's strategic region, sea provinces only | the controller's canonical country slot plus one |
+//! | colour | [`gradient::NAVY_NEUTRAL_COLOR`], one flat colour for every region | [`gradient::country_map_color`] of the authored `colors.txt` colour |
+//! | thickness | [`gradient::THICKNESS_STRATEGIC_REGIONS`] | [`gradient::country_thickness`] of the region's area |
+//! | opacity | 0, so the layer draws nothing in this map mode | [`gradient::DEFAULT_REGION_OPACITY`] |
+//!
+//! Layer 1 is built because it is what the engine's texture holds, not because it shows: its
+//! channel 2 green is zero over every texel of the game's own capture, and that green is the factor
+//! `gradient_border_apply` mixes the whole channel in by. It is static — the strategic regions never
+//! move — so [`PoliticalCache`] builds it once and keeps it across hours.
 //!
 //! Sea and lake provinces, and land provinces whose owner or controller reference is zero, are
-//! [`gradient::NO_REGION`] in both layers: nothing paints them and the water shader draws the sea
-//! on its own (section 1.9).
+//! [`gradient::NO_REGION`] in layer 2; a land province is [`gradient::NO_REGION`] in layer 1. A
+//! pixel in no region of a layer carries [`gradient::NO_REGION_ALPHA`] there, which is the alpha the
+//! shader draws nothing at.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -28,7 +32,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use installed_content::map::{MapData, ProvinceKind};
+use installed_content::{
+    map::{MapData, ProvinceKind},
+    regions::StrategicRegion,
+};
 use replay::{
     BranchId, Hour,
     frame::DecodedFrame,
@@ -36,7 +43,7 @@ use replay::{
 };
 
 use super::{
-    gradient::{self, GradientTextures, Layer, LayerKind, NO_REGION, ProvinceMap},
+    gradient::{self, GradientTextures, Layer, LayerKind, LayerPlane, NO_REGION, ProvinceMap},
     tables::core,
 };
 
@@ -96,11 +103,6 @@ impl Regions {
     /// Colour of a layer-1 region, black for a key no country claims.
     fn country_color(&self, key: u32) -> [u8; 3] {
         self.country_colors.get(&key).copied().unwrap_or([0, 0, 0])
-    }
-
-    /// Colour of a layer-2 region.
-    fn state_color(&self, key: u32) -> [u8; 3] {
-        self.state_colors.get(&key).copied().unwrap_or([0, 0, 0])
     }
 }
 
@@ -174,6 +176,8 @@ pub struct PoliticalCache {
     at: Option<(BranchId, Hour, Mode)>,
     key: Option<FrameKey>,
     layers: Option<PoliticalLayers>,
+    /// Layer 1, which no hour changes; see [`strategic_layer`].
+    strategic: Option<LayerPlane>,
 }
 
 impl PoliticalCache {
@@ -184,7 +188,13 @@ impl PoliticalCache {
     /// Rebuilds the layers unless the frame and mode match the cached ones.
     ///
     /// Returns whether a rebuild happened, which is what the caller uploads on.
-    pub fn ensure(&mut self, map: &MapData, frame: &DecodedFrame, mode: Mode) -> io::Result<bool> {
+    pub fn ensure(
+        &mut self,
+        map: &MapData,
+        strategic_regions: &BTreeMap<u32, StrategicRegion>,
+        frame: &DecodedFrame,
+        mode: Mode,
+    ) -> io::Result<bool> {
         let at = (frame.branch, frame.hour, mode);
         if self.at == Some(at) && self.layers.is_some() {
             return Ok(false);
@@ -199,7 +209,11 @@ impl PoliticalCache {
         self.at = None;
         self.key = None;
         self.layers = None;
-        let layers = build(map, frame, mode)?;
+        if self.strategic.is_none() {
+            self.strategic = Some(strategic_layer(map, strategic_regions)?);
+        }
+        let strategic = self.strategic.as_ref().expect("just built");
+        let layers = build(map, frame, mode, strategic)?;
         self.at = Some(at);
         self.key = Some(key);
         self.layers = Some(layers);
@@ -365,24 +379,65 @@ fn province_table_len(map: &MapData, provinces: &[ProvinceRow]) -> io::Result<us
         .ok_or_else(|| invalid("province ids exceed address space"))
 }
 
+/// Builds layer 1, the strategic regions over the sea, from static content.
+///
+/// Every sea province of `map/strategicregions/*.txt` is a member of its region; land and lake
+/// provinces are [`gradient::NO_REGION`], which is what the capture's layer 1 holds — its alpha is
+/// [`gradient::NO_REGION_ALPHA`] over every land texel and a 150-pixel field over the sea. The
+/// colour is one flat [`gradient::NAVY_NEUTRAL_COLOR`] for every region and the opacity is zero, so
+/// the layer contributes no pixel in this map mode.
+///
+/// A region naming a province the map does not define is ignored rather than refused, for the
+/// reason [`super::border_pass::Topology`] gives: `map/strategicregions` is authored by hand.
+pub fn strategic_layer(
+    map: &MapData,
+    strategic_regions: &BTreeMap<u32, StrategicRegion>,
+) -> io::Result<LayerPlane> {
+    let count = province_table_len(map, &[])?;
+    let mut region_of = vec![NO_REGION; count];
+    for (&id, region) in strategic_regions {
+        // `NO_REGION` is zero, so a region key is the region id plus one.
+        let key = id
+            .checked_add(1)
+            .ok_or_else(|| invalid("strategic region id exceeds the region key range"))?;
+        for province in &region.provinces {
+            let Some(definition) = map.definitions.get(province) else {
+                continue;
+            };
+            if definition.kind == ProvinceKind::Sea
+                && let Some(slot) = region_of.get_mut(*province as usize)
+            {
+                *slot = key;
+            }
+        }
+    }
+    let color = |_: u32| gradient::NAVY_NEUTRAL_COLOR;
+    let mut layer = Layer::new(LayerKind::StrategicRegion, &region_of, &color);
+    layer.region_opacity = 0;
+    layer.no_region_color = gradient::NAVY_NEUTRAL_COLOR;
+    gradient::build_layer(
+        &ProvinceMap {
+            width: map.width,
+            height: map.height,
+            ids: &map.province_ids,
+        },
+        &layer,
+    )
+}
+
 /// Builds both gradient-border textures for one recorded hour.
 ///
-/// Layer 1 is the country layer. **Layer 2 is empty**: the political map mode paints no state
-/// bands. R2 section 1.3 called layer 2 the state layer on the strength of the `..._STATE` defines,
-/// but those suffixes name *map modes* — `00_graphics.lua:890-902` has eleven of them, including
-/// TERRAIN and FACTIONS, for a two-slot vector — so `GRADIENT_BORDERS_THICKNESS_STATE` and
-/// `..._CAMERA_DISTANCE_OVERRIDE_STATE` belong to the state map mode and say nothing about this
-/// one. `array_loaded.png` settles it: the game draws no band inside a country at its state
-/// boundaries, and painting one costs 0.8 mae and 0.023 ssim against that screenshot.
+/// `strategic` is [`strategic_layer`]'s static plane; it becomes layer 1 unchanged, and layer 2 is
+/// the country field this hour's Provinces table implies.
 ///
-/// The layer 2 code path stays whole for the state map mode: the region keys are still derived into
-/// [`Regions::state_of`] — the border classifier reads them to tell a state border from a province
-/// border — the colour rule is still [`Regions::state_color`], and the only thing this mode changes
-/// is that no province is a member, which leaves both textures' bottom half zero.
-///
-/// The generator takes about a quarter of a second on the shipped 5632 x 2048 map, which is why
+/// The country layer takes about a quarter of a second on the shipped 5632 x 2048 map, which is why
 /// [`PoliticalCache`] exists; the headless dump blocks on it once per frame.
-pub fn build(map: &MapData, frame: &DecodedFrame, mode: Mode) -> io::Result<PoliticalLayers> {
+pub fn build(
+    map: &MapData,
+    frame: &DecodedFrame,
+    mode: Mode,
+    strategic: &LayerPlane,
+) -> io::Result<PoliticalLayers> {
     let regions = regions(map, frame, mode)?;
     let province_map = ProvinceMap {
         width: map.width,
@@ -390,14 +445,12 @@ pub fn build(map: &MapData, frame: &DecodedFrame, mode: Mode) -> io::Result<Poli
         ids: &map.province_ids,
     };
     let country_color = |key: u32| regions.country_color(key);
-    let state_color = |key: u32| regions.state_color(key);
-    let unpainted = vec![NO_REGION; regions.state_of.len()];
     let start = Instant::now();
-    let textures = gradient::build(
+    let country = gradient::build_layer(
         &province_map,
         &Layer::new(LayerKind::Country, &regions.country_of, &country_color),
-        &Layer::new(LayerKind::State, &unpainted, &state_color),
     )?;
+    let textures = gradient::stack(strategic, &country)?;
     let build = start.elapsed();
     Ok(PoliticalLayers {
         textures,
@@ -414,6 +467,24 @@ mod tests {
         frame::{Metrics, TableView},
         rows::{CountryLinkRow, TableId, TableRows},
     };
+
+    /// The strategic regions of the fixture map: the one sea province is region 4.
+    fn strategic_regions() -> BTreeMap<u32, StrategicRegion> {
+        BTreeMap::from([(
+            4,
+            StrategicRegion {
+                id: 4,
+                name_key: "STRATEGICREGION_4".into(),
+                provinces: vec![5],
+                naval_terrain: None,
+            },
+        )])
+    }
+
+    /// Layer 1 for the fixture map, which no hour changes.
+    fn strategic() -> LayerPlane {
+        strategic_layer(&map(), &strategic_regions()).unwrap()
+    }
 
     /// Four land provinces in two states plus one sea province, in a 6 x 2 image.
     fn map() -> MapData {
@@ -599,8 +670,8 @@ mod tests {
         };
         // The layer is built, and it is the same one the complete hour builds:
         // no non-core table reaches the fill at all.
-        let degraded = build(&map(), &frame, Mode::Controller).unwrap();
-        let whole = build(&map(), &occupied(), Mode::Controller).unwrap();
+        let degraded = build(&map(), &frame, Mode::Controller, &strategic()).unwrap();
+        let whole = build(&map(), &occupied(), Mode::Controller, &strategic()).unwrap();
         assert_eq!(degraded.textures.channel1, whole.textures.channel1);
         assert_eq!(degraded.textures.channel2, whole.textures.channel2);
         assert_eq!(degraded.regions.country_of, whole.regions.country_of);
@@ -708,18 +779,35 @@ mod tests {
     #[test]
     fn the_cache_rebuilds_on_a_changed_table_or_mode_and_not_otherwise() {
         let map = map();
+        let regions = strategic_regions();
         let mut cache = PoliticalCache::new();
-        assert!(cache.ensure(&map, &occupied(), Mode::Controller).unwrap());
+        assert!(
+            cache
+                .ensure(&map, &regions, &occupied(), Mode::Controller)
+                .unwrap()
+        );
         assert!(cache.layers().is_some());
         // The very same frame costs nothing at all, not even the row fingerprint.
-        assert!(!cache.ensure(&map, &occupied(), Mode::Controller).unwrap());
+        assert!(
+            !cache
+                .ensure(&map, &regions, &occupied(), Mode::Controller)
+                .unwrap()
+        );
         // The same rows at a different hour are the same political frame.
         let mut later = occupied();
         later.hour += 1;
-        assert!(!cache.ensure(&map, &later, Mode::Controller).unwrap());
+        assert!(
+            !cache
+                .ensure(&map, &regions, &later, Mode::Controller)
+                .unwrap()
+        );
         // The mode is part of the key.
-        assert!(cache.ensure(&map, &later, Mode::Owner).unwrap());
-        assert!(!cache.ensure(&map, &occupied(), Mode::Owner).unwrap());
+        assert!(cache.ensure(&map, &regions, &later, Mode::Owner).unwrap());
+        assert!(
+            !cache
+                .ensure(&map, &regions, &occupied(), Mode::Owner)
+                .unwrap()
+        );
         // A changed controller at the next hour is a rebuild.
         let mut liberated = frame(vec![
             province(1, 10, 100, 100),
@@ -729,52 +817,89 @@ mod tests {
             province(5, 0, 0, 0),
         ]);
         liberated.hour = occupied().hour + 2;
-        assert!(cache.ensure(&map, &liberated, Mode::Owner).unwrap());
+        assert!(
+            cache
+                .ensure(&map, &regions, &liberated, Mode::Owner)
+                .unwrap()
+        );
         // A different branch is a different frame even at the same hour.
         let mut forked = occupied();
         forked.branch += 1;
         forked.hour = liberated.hour;
-        assert!(cache.ensure(&map, &forked, Mode::Owner).unwrap());
+        assert!(cache.ensure(&map, &regions, &forked, Mode::Owner).unwrap());
     }
 
     #[test]
     fn a_failed_rebuild_does_not_leave_a_stale_frame_looking_current() {
         let map = map();
+        let regions = strategic_regions();
         let mut cache = PoliticalCache::new();
-        cache.ensure(&map, &occupied(), Mode::Controller).unwrap();
+        cache
+            .ensure(&map, &regions, &occupied(), Mode::Controller)
+            .unwrap();
         let mut broken = frame(vec![province(99, 10, 100, 100)]);
         broken.hour = occupied().hour + 1;
-        assert!(cache.ensure(&map, &broken, Mode::Controller).is_err());
+        assert!(
+            cache
+                .ensure(&map, &regions, &broken, Mode::Controller)
+                .is_err()
+        );
         assert!(cache.layers().is_none());
         // The next good frame is built again rather than served from the cache.
-        assert!(cache.ensure(&map, &occupied(), Mode::Controller).unwrap());
+        assert!(
+            cache
+                .ensure(&map, &regions, &occupied(), Mode::Controller)
+                .unwrap()
+        );
     }
 
     #[test]
-    fn the_built_textures_paint_the_country_layer_and_leave_the_state_layer_empty() {
-        let layers = build(&map(), &occupied(), Mode::Controller).unwrap();
+    fn the_built_textures_paint_the_country_layer_second_and_the_strategic_one_first() {
+        let layers = build(&map(), &occupied(), Mode::Controller, &strategic()).unwrap();
         let textures = &layers.textures;
         assert_eq!(textures.width, 3);
         assert_eq!(textures.layer_rows(), 1);
         assert_eq!(textures.height, 4);
-        // Layer 1 paints the two controllers.
+        // Layer 2 paints the two controllers, which is where the game puts the country field.
         assert!(
             (0..textures.width)
-                .filter_map(|x| textures.channel1_texel(0, x, 0))
+                .filter_map(|x| textures.channel1_texel(1, x, 0))
                 .any(|texel| texel[3] > 0 && texel[..3] != [0, 0, 0])
         );
-        // Layer 2 is untouched, so the whole bottom half of both textures is zero.
+        // Layer 1 is the strategic regions over the one sea province, at the navy colour, and its
+        // opacity is zero, so it draws nothing however wide its field is.
+        // The texel covers map columns 4 and 5, land and sea. Layer 1 is the navy colour over
+        // both, because that is its colour where it has no region too, and the alpha is the box
+        // average of the land's no-region 255 and the sea boundary's 247.
+        let sea = textures.channel1_texel(0, 2, 0).unwrap();
+        assert_eq!(sea, [51, 63, 89, 251]);
         for x in 0..textures.width {
-            assert_eq!(textures.channel1_texel(1, x, 0), Some([0; 4]));
-            assert_eq!(textures.channel2_texel(1, x, 0), Some([0; 4]));
+            assert_eq!(textures.channel2_texel(0, x, 0).unwrap()[1], 0);
         }
-        // The state keys the border classifier reads survive the empty layer.
+        // Land is in no region of layer 1 and sea is in no region of layer 2; both hold the alpha
+        // the shader draws nothing at, with no colour and no opacity.
+        assert_eq!(
+            textures.channel1_texel(0, 0, 0),
+            Some([51, 63, 89, gradient::NO_REGION_ALPHA]),
+            "land is in no region of layer 1 and still carries its colour"
+        );
+        // The same texel in layer 2 is the country field at map column 4 boxed with the sea's
+        // no-region alpha at column 5: (247 + 247 + 255 + 255) / 4 and half the opacity.
+        assert_eq!(textures.channel1_texel(1, 2, 0), Some([77, 72, 33, 251]));
+        assert_eq!(textures.channel2_texel(1, 2, 0), Some([0, 128, 0, 0]));
+        // The state keys the border classifier reads survive; no layer is built from them.
         assert_eq!(layers.regions.state_of[1], 10);
         assert_eq!(layers.regions.state_of[3], 11);
-        // Channel 2's green is the region opacity wherever the layer has a member.
-        for (index, texel) in textures.channel2.iter().enumerate() {
-            assert_eq!(texel[1] > 0, textures.channel1[index][3] > 0);
-            assert_eq!(texel[2], 0, "political mode never pulses a layer");
+        // Channel 2's green is the region opacity wherever layer 2 has a member.
+        for x in 0..textures.width {
+            let member = textures.channel1_texel(1, x, 0).unwrap()[3] != gradient::NO_REGION_ALPHA;
+            let green = textures.channel2_texel(1, x, 0).unwrap()[1];
+            assert_eq!(member, green > 0, "column {x}");
+            assert_eq!(
+                textures.channel2_texel(1, x, 0).unwrap()[2],
+                0,
+                "political mode never pulses a layer"
+            );
         }
     }
 }

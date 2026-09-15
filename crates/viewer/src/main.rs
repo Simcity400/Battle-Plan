@@ -658,7 +658,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // political fill
         let mode = political::Mode::from_control(options.control);
-        let mut layers = political::build(&document.map, document.frame()?, mode)?;
+        // Layer 1, the strategic regions, is static content; the dump builds it once here.
+        let strategic = political::strategic_layer(&document.map, &document.strategic_regions)?;
+        let mut layers = political::build(&document.map, document.frame()?, mode, &strategic)?;
         if options.debug_borders {
             // The engine's `debug_borders` removes both the gradient fill and the border strips.
             // Channel 2's green is each layer's transparency, the factor the whole
