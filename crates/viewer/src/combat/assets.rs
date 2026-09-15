@@ -18,6 +18,9 @@ pub struct Sprite {
     pub progress: bool,
     /// `effectFile = gfx/FX/progress_startend.lua`: three stacked bands.
     pub start_end: bool,
+    /// `corneredTileSpriteType` `borderSize` in texels, and `tilingCenter`.
+    pub border: Option<[f32; 2]>,
+    pub tiling_center: bool,
 }
 pub struct Assets {
     pub windows: BTreeMap<String, Node>,
@@ -369,6 +372,13 @@ impl Assets {
                     progress,
                     start_end: string(&declaration.items, "effectFile")
                         .is_some_and(|file| file.ends_with("progress_startend.lua")),
+                    border: (declaration
+                        .kind
+                        .eq_ignore_ascii_case("corneredTileSpriteType"))
+                    .then(|| value(&declaration.items, "borderSize").and_then(|v| v.items()))
+                    .flatten()
+                    .map(|items| [number(items, "x", 0.0), number(items, "y", 0.0)]),
+                    tiling_center: string(&declaration.items, "tilingCenter") == Some("yes"),
                 },
             );
         }

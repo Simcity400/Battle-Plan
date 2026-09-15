@@ -137,9 +137,43 @@ fn icons(values: &mut Values, key: &str, template: &str, frames: impl Iterator<I
     );
 }
 
+/// 1415C5F10 formats the selected commander's skill through the
+/// `UNIT_LEADER_SKILL` key (`$SKILL|Y$` in the pinned English files), so the
+/// digit carries the key's colour code rather than the font's colour.
+fn skill_text(template: &str, skill: i32) -> String {
+    let Some(start) = template.find("$SKILL") else {
+        return template.to_owned();
+    };
+    let rest = &template[start + "$SKILL".len()..];
+    let Some(end) = rest.find('$') else {
+        return template.to_owned();
+    };
+    let value = match rest[..end]
+        .strip_prefix('|')
+        .and_then(|format| format.chars().find(char::is_ascii_alphabetic))
+    {
+        Some(colour) => format!("§{colour}{skill}§!"),
+        None => skill.to_string(),
+    };
+    format!("{}{value}{}", &template[..start], &rest[end + 1..])
+}
+
+/// Frame 12 of `GFX_battle_div_modifier_strip`, the general. 1415CA660 adds it
+/// after the recorded kinds and the armour frames 8 to 11, and before frames
+/// 16, 13, 14 and 15, when the unit's direct formation leader (140C5F0E0, `+0xC0` then
+/// `+0x88`, recorded as `LandCombatDivisions.commander`) is set and is not the
+/// commander its own side selected (CLandCombatant vtable `+0xE8`, 14129E190,
+/// recorded as `LandCombatDetails` side `commander`). The other derived frames
+/// are not ported, so this one is appended after the recorded kinds.
+fn separate_leader(division: u64, side: u64) -> Option<u32> {
+    (division != 0 && division != side).then_some(12)
+}
+
 // A recorded role identifies the section independently of LandCombatDetails.
-// The full-side ordinal is NOT the committed/reserve GUI order. Preserve it
-// only as the explicitly unverified fallback when those ordered lists failed.
+// The full-side ordinal is NOT the committed/reserve GUI order, which is the
+// CLandCombatant +0xC8/+0xE0 array order LandCombatDetails copies. The ordinal
+// order is only the fallback the limitation registry states when that table
+// is missing (formats 14 and 22).
 fn role_rosters<'a>(
     divisions: impl IntoIterator<Item = &'a LandCombatDivisionRow>,
     side: u8,
@@ -247,12 +281,7 @@ fn land(
                 &c.defenders
             }
         });
-        let old: BTreeMap<_, _> = old_ids
-            .into_iter()
-            .flatten()
-            .copied()
-            .zip(std::mem::take(&mut out.entries[side]))
-            .collect();
+        let old: BTreeMap<_, _> = std::mem::take(&mut out.entries[side]).into_iter().collect();
         let modifier = modifiers
             .rows()
             .iter()
@@ -295,19 +324,29 @@ fn land(
                     && let Some(modifier) =
                         modifier.and_then(|m| m.divisions.iter().find(|m| m.division == *unit))
                 {
+                    // 1415CA660: recorded modifier kinds first, then derived frames.
+                    let led_apart = detail.zip(divisions.get(&(side as u8, *unit))).and_then(
+                        |(detail, row)| {
+                            separate_leader(row.commander, detail.sides[side].commander)
+                        },
+                    );
                     icons(
                         &mut widgets,
                         "modifier_icons_container/list",
                         "modifier_icon_entry",
-                        modifier.entries.iter().filter_map(|m| {
-                            [2, 7, 10, 13, 27, 8, 17, 16]
-                                .iter()
-                                .position(|id| *id == m.id)
-                                .map(|n| n as u32)
-                        }),
+                        modifier
+                            .entries
+                            .iter()
+                            .filter_map(|m| {
+                                [2, 7, 10, 13, 27, 8, 17, 16]
+                                    .iter()
+                                    .position(|id| *id == m.id)
+                                    .map(|n| n as u32)
+                            })
+                            .chain(led_apart),
                     );
                 }
-                out.entries[target].push(widgets);
+                out.entries[target].push((*unit, widgets));
             }
             let (kind, label) = if committed {
                 ("committed", "COMBAT_COMMITED_LABEL")
@@ -358,7 +397,14 @@ fn land(
                 text(
                     &mut out.values,
                     &format!("{prefix}_leader_skill"),
-                    value.commander_skill.to_string(),
+                    skill_text(
+                        document
+                            .names
+                            .localisation
+                            .get("UNIT_LEADER_SKILL")
+                            .unwrap_or("$SKILL$"),
+                        value.commander_skill,
+                    ),
                 );
                 flag(
                     &mut out.values,
@@ -367,6 +413,8 @@ fn land(
                     flags,
                 );
             } else {
+                // 1415C5F10 writes an empty skill beside UNIT_LEADER_NO_LEADER.
+                text(&mut out.values, &format!("{prefix}_leader_skill"), "");
                 sprite(
                     &mut out.values,
                     &format!("{prefix}_leader"),
@@ -430,9 +478,9 @@ fn land(
         }
     }
     if detail.is_none() {
-        out.warnings.push("LandCombatDetails unavailable: recorded LandCombatDivisions names, HP/org bars, commitment roles and defence/breakthrough remain bound independently, as do LandCombatModifiers icons. UNVERIFIED: rows follow full-side ordinal within each role; exact GUI ordering requires the missing committed/reserve lists. Side attack bonuses, selected commanders, tactics, CAS, maximum width and heading remain unknown; division commanders do not substitute for selected-side commanders.".into());
+        out.warnings.push("LandCombatDetails unavailable: recorded LandCombatDivisions names, HP/org bars, commitment roles and defence/breakthrough remain bound independently, as do LandCombatModifiers icons. Side attack bonuses, selected commanders, tactics, CAS, maximum width and heading remain unknown; division commanders do not substitute for selected-side commanders.".into());
     }
-    out.warnings.push("Format-22 land: available row-level names, bars, roles and modifier kinds are independent of the parent-detail table. Defence/breakthrough uses recorded scales and truncates to whole units, as observed in reference07. Side-dependent attack, selected commander skill, CAS and exact ordered lists require LandCombatDetails. Derived armour/fuel/multiple-direction modifier icons, initiative/HQ markers, reinforcement and modifier tooltips, learning traits and possible-tactics menus remain unported; unsupported widgets stay empty/dash.".into());
+    out.warnings.push("Format-22 land: available row-level names, bars, roles and modifier kinds are independent of the parent-detail table. Defence/breakthrough uses recorded scales and truncates to whole units, as observed in reference07. Side-dependent attack, selected commander skill, CAS, the committed/reserve array order and the separate-leader icon require LandCombatDetails. Derived armour/fuel/multiple-direction modifier icons, initiative/HQ markers, reinforcement and modifier tooltips, learning traits and possible-tactics menus remain unported; unsupported widgets stay empty/dash.".into());
     Ok(())
 }
 
@@ -595,6 +643,23 @@ mod tests {
             format!("{INLINE_FLAG}SOV_communism 144ya Strelkovaya Diviziya")
         );
         assert_eq!(entry_name(&row, true, None), "144ya Strelkovaya Diviziya");
+    }
+
+    #[test]
+    fn skill_uses_the_localised_colour_and_the_general_marks_a_separate_leader() {
+        // pairL_land_danzig.png: yellow 4 and 5 from UNIT_LEADER_SKILL.
+        assert_eq!(skill_text("$SKILL|Y$", 5), "§Y5§!");
+        assert_eq!(skill_text("Skill $SKILL$", 4), "Skill 4");
+        // Hour 60828493: 169th (leader 4140348478057) under Oliver Leese shows
+        // the general; 900 Infantry, led by Leese himself, and the leaderless
+        // 70th do not.
+        assert_eq!(
+            separate_leader(4_140_348_478_057, 1_254_130_455_145),
+            Some(12)
+        );
+        assert_eq!(separate_leader(1_254_130_455_145, 1_254_130_455_145), None);
+        assert_eq!(separate_leader(0, 1_254_130_455_145), None);
+        assert_eq!(separate_leader(4_140_348_478_057, 0), Some(12));
     }
 
     #[test]

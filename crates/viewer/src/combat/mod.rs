@@ -99,6 +99,32 @@ impl Hit {
     }
 }
 
+/// An open land window refills its lists only when they change membership.
+/// 1415CA230 (committed) and 1415CA460 (reserves) first walk the grid's
+/// existing entries: when the grid holds as many entries as the side's
+/// `CLandCombatant+0xC8`/`+0xE0` array, and each entry's unit still belongs to
+/// this combat and is found anywhere in that array, the entries are only
+/// refreshed (1415C7E00/1415C8570) and keep their order. Otherwise the grid is
+/// cleared and rebuilt in array index order. The window's `+0xAF4` flag forces
+/// a rebuild on construction and when the `+0x2AC` interface setting changes;
+/// neither is a recorded input, and a newly opened window starts empty.
+fn keep_list_order(next: &mut [(u64, Values)], shown: &[(u64, Values)]) {
+    let members = |list: &[(u64, Values)]| {
+        let mut units: Vec<u64> = list.iter().map(|(unit, _)| *unit).collect();
+        units.sort_unstable();
+        units
+    };
+    if members(next) != members(shown) {
+        return;
+    }
+    let rank: BTreeMap<u64, usize> = shown
+        .iter()
+        .enumerate()
+        .map(|(index, (unit, _))| (*unit, index))
+        .collect();
+    next.sort_by_key(|(unit, _)| rank[unit]);
+}
+
 #[derive(Default)]
 pub struct Window {
     pub selection: Option<Selection>,
@@ -143,13 +169,15 @@ impl Window {
         if !self.cached.as_ref().is_some_and(|(b, h, s, p, _)| {
             (*b, *h, *s) == (branch, hour, selection) && p == perspective
         }) {
-            self.cached = Some((
-                branch,
-                hour,
-                selection,
-                perspective.clone(),
-                Bindings::read(document, selection, &document.vision(perspective)?)?,
-            ));
+            let mut bindings = Bindings::read(document, selection, &document.vision(perspective)?)?;
+            if let Some((_, _, previous, _, shown)) = &self.cached
+                && *previous == selection
+            {
+                for (next, shown) in bindings.entries.iter_mut().zip(&shown.entries) {
+                    keep_list_order(next, shown);
+                }
+            }
+            self.cached = Some((branch, hour, selection, perspective.clone(), bindings));
         }
         let bindings = &self.cached.as_ref().expect("bound above").4;
         let assets = &document.icons.combat;
@@ -225,7 +253,7 @@ impl Window {
                 .div_ceil(columns)
                 .saturating_sub((height / step).floor() as usize);
             let start = self.scroll[side].min(hidden_rows) * columns;
-            for (index, row) in rows.iter().skip(start).take(count).enumerate() {
+            for (index, (_, row)) in rows.iter().skip(start).take(count).enumerate() {
                 let entry_node = &assets.windows[entry];
                 let size = entry_node.size([grid_rect[2], step])?;
                 let at = [
@@ -250,7 +278,48 @@ impl Window {
                 if side % 2 == 1 {
                     slider_rect[0] -= slider_rect[2];
                 }
-                slider_rect[3] = parent_rect[3];
+                // pairL_land_danzig.png: the committed slider starts below the
+                // container's `margin = { top = 10 }`, level with the list.
+                slider_rect[1] += grid_rect[1] - parent_rect[1];
+                slider_rect[3] = height;
+                // pairL_land_danzig.png, device pixels of the defender committed
+                // slider at (1054,649,18,165): the up button ends 19 px down,
+                // the 12-wide track glow spans from there to the down button
+                // at H - 19, and the 16 px thumb sits at the track origin plus
+                // the authored (-2,-2), drawn over the track. UNVERIFIED: the
+                // thumb's travel for a scrolled list, which no capture shows.
+                let button = |name: &str| -> io::Result<([f32; 2], [f32; 2])> {
+                    let node = slider.child(name).expect("authored scrollbar button");
+                    let origin = node.origin([0.0, 0.0, 0.0, 0.0])?;
+                    let size = installed_content::gui::sprite(&node.items)
+                        .and_then(|key| assets.sprites.get(key))
+                        .map_or([0.0; 2], |sprite| sprite.size);
+                    Ok((origin, size))
+                };
+                let (decrease, decrease_size) = button("Decrease")?;
+                let (increase, _) = button("Increase")?;
+                let track_top = decrease[1] + decrease_size[1];
+                let track_height = (slider_rect[3] + increase[1] - track_top).max(0.0);
+                let track_width = installed_content::gui::sprite(
+                    &slider
+                        .child("Track")
+                        .expect("authored scrollbar track")
+                        .items,
+                )
+                .and_then(|key| assets.sprites.get(key))
+                .map_or(0.0, |sprite| sprite.size[0]);
+                let track_x = slider
+                    .child("Track")
+                    .expect("authored scrollbar track")
+                    .origin([0.0, 0.0, 0.0, 0.0])?[0];
+                let thumb = installed_content::gui::sprite(
+                    &slider
+                        .child("Slider")
+                        .expect("authored scrollbar thumb")
+                        .items,
+                )
+                .and_then(|key| assets.sprites.get(key))
+                .map_or(0.0, |sprite| sprite.size[1]);
                 let mut values = Values::new();
                 values.insert(
                     "Background".into(),
@@ -262,8 +331,8 @@ impl Window {
                 values.insert(
                     "Track".into(),
                     Widget {
-                        size: Some([6.0, (slider_rect[3] - 32.0).max(0.0)]),
-                        offset: [0.0, 16.0],
+                        size: Some([track_width, track_height]),
+                        offset: [0.0, track_top],
                         ..Widget::default()
                     },
                 );
@@ -277,15 +346,37 @@ impl Window {
                 values.insert(
                     "Slider".into(),
                     Widget {
-                        offset: [
-                            0.0,
-                            20.0 + (slider_rect[3] - 50.0).max(0.0) * (start / columns) as f32
-                                / hidden_rows as f32,
-                        ],
+                        hidden: true,
                         ..Widget::default()
                     },
                 );
                 painter.node(slider, slider_rect, "", &values)?;
+                let thumb_only: Values = slider
+                    .children
+                    .iter()
+                    .map(|child| {
+                        let shown = child.name == "Slider";
+                        (
+                            child.name.clone(),
+                            Widget {
+                                hidden: !shown,
+                                offset: if shown {
+                                    [
+                                        track_x,
+                                        track_top
+                                            + (track_height - thumb).max(0.0)
+                                                * (start / columns) as f32
+                                                / hidden_rows as f32,
+                                    ]
+                                } else {
+                                    [0.0; 2]
+                                },
+                                ..Widget::default()
+                            },
+                        )
+                    })
+                    .collect();
+                painter.node(slider, slider_rect, "", &thumb_only)?;
                 for (name, direction) in [("Decrease", -1), ("Increase", 1)] {
                     let node = slider.child(name).expect("authored scrollbar button");
                     let mut at = node.origin(slider_rect)?;
@@ -543,14 +634,20 @@ impl Painter<'_> {
                     let frame = data
                         .and_then(|d| d.frame)
                         .unwrap_or(number(&child.items, "frame", 1.0).max(1.0) as u32 - 1);
-                    self.drawn.batch.rotated(
-                        &sprite.sheet,
-                        frame,
-                        at,
-                        size,
-                        rotation,
-                        [1.0, 1.0, 1.0, data.and_then(|d| d.opacity).unwrap_or(1.0)],
-                    );
+                    let color = [1.0, 1.0, 1.0, data.and_then(|d| d.opacity).unwrap_or(1.0)];
+                    match sprite.border {
+                        Some(border) if size != sprite.size && rotation == 0.0 => {
+                            self.cornered(sprite, frame, at, size, border, color)
+                        }
+                        _ => self.drawn.batch.rotated(
+                            &sprite.sheet,
+                            frame,
+                            at,
+                            size,
+                            rotation,
+                            color,
+                        ),
+                    }
                 }
                 if child.name == "close" || child.name == "close_button" {
                     self.drawn.close = Some([at[0], at[1], size[0], size[1]]);
@@ -588,6 +685,44 @@ impl Painter<'_> {
         }
         Ok(())
     }
+    /// A `corneredTileSpriteType` drawn at another size keeps its `borderSize`
+    /// corners and edges at texel size; the centre repeats when `tilingCenter`
+    /// is set and stretches otherwise. pairL_land_danzig.png shows both list
+    /// scrollbars built this way (`GFX_scrollbar_vertical_bg`, 52-texel ends;
+    /// `GFX_scroll_track`, 4-texel glow). UNVERIFIED: whether edges also tile;
+    /// every cornered sprite these windows resize is uniform along its edges.
+    fn cornered(
+        &mut self,
+        sprite: &assets::Sprite,
+        frame: u32,
+        at: [f32; 2],
+        size: [f32; 2],
+        border: [f32; 2],
+        color: [f32; 4],
+    ) {
+        let texels = sprite.sheet.frame_size();
+        let [u0, v0, u1, v1] = sprite.sheet.frame_uv(frame);
+        let spans = |axis: usize| {
+            cornered_spans(border[axis], texels[axis], size[axis], sprite.tiling_center)
+        };
+        let (columns, rows) = (spans(0), spans(1));
+        for &[y, height, ty, theight] in &rows {
+            for &[x, width, tx, twidth] in &columns {
+                if width <= 0.0 || height <= 0.0 {
+                    continue;
+                }
+                let u = |t: f32| u0 + (u1 - u0) * t / texels[0].max(1.0);
+                let v = |t: f32| v0 + (v1 - v0) * t / texels[1].max(1.0);
+                self.drawn.batch.cell(
+                    sprite.sheet.texture,
+                    [at[0] + x, at[1] + y],
+                    [width, height],
+                    [u(tx), v(ty), u(tx + twidth), v(ty + theight)],
+                    color,
+                );
+            }
+        }
+    }
     fn grid(&mut self, node: &Node, rect: [f32; 4], data: &Widget) -> io::Result<()> {
         let Some(entry) = data
             .entry_template
@@ -622,8 +757,10 @@ impl Painter<'_> {
         };
         for (index, values) in data.entries.iter().enumerate() {
             let column = if traits { index } else { index % columns };
+            // 1422CA030 places an UPPER_RIGHT slot at grid width - slot width
+            // - slot width * column: the slot, not the entry, meets the edge.
             let x = if right {
-                rect[2] - size[0] - column as f32 * pitch
+                rect[2] - slot[0] - column as f32 * pitch
             } else {
                 column as f32 * pitch
             };
@@ -1110,6 +1247,27 @@ fn progress_turn(at: [f32; 2], size: [f32; 2], rotation: f32) -> ([f32; 2], f32)
     ([centre[0] - w * 0.5, centre[1] - h * 0.5], -rotation)
 }
 
+/// One axis of a cornered tile: (destination start, length, texel start,
+/// texel length) for the leading edge, the centre pieces and the trailing edge.
+fn cornered_spans(border: f32, texels: f32, size: f32, tiling: bool) -> Vec<[f32; 4]> {
+    let edge = border.min(texels * 0.5).min(size * 0.5);
+    let middle = (size - 2.0 * edge).max(0.0);
+    let texel_middle = (texels - 2.0 * edge).max(0.0);
+    let mut out = vec![[0.0, edge, 0.0, edge]];
+    if tiling && texel_middle > 0.0 {
+        let mut offset = 0.0;
+        while offset < middle {
+            let length = texel_middle.min(middle - offset);
+            out.push([edge + offset, length, edge, length]);
+            offset += length;
+        }
+    } else {
+        out.push([edge, middle, edge, texel_middle]);
+    }
+    out.push([edge + middle, edge, texels - edge, edge]);
+    out
+}
+
 fn clip_quads(batch: &mut Batch, first: usize, clip: [f32; 4]) {
     for quad in &mut batch.quads[first..] {
         let [x, y, w, h] = quad.rect;
@@ -1134,6 +1292,78 @@ fn clip_quads(batch: &mut Batch, first: usize, clip: [f32; 4]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_open_list_keeps_its_order_until_its_membership_changes() {
+        let entry = |unit: u64, name: &str| {
+            let mut values = Values::new();
+            values.insert(
+                "name".into(),
+                Widget {
+                    text: Some(name.into()),
+                    ..Widget::default()
+                },
+            );
+            (unit, values)
+        };
+        let shown = [entry(13, "old"), entry(6, "old"), entry(11, "old")];
+        // Same members in a new array order: shown order, refreshed values.
+        let mut next = vec![entry(11, "new"), entry(13, "new"), entry(6, "new")];
+        keep_list_order(&mut next, &shown);
+        assert_eq!(
+            next.iter().map(|(unit, _)| *unit).collect::<Vec<_>>(),
+            [13, 6, 11]
+        );
+        assert!(
+            next.iter()
+                .all(|(_, values)| values["name"].text.as_deref() == Some("new"))
+        );
+        // A replaced member, or a different count, rebuilds in array order.
+        for mut next in [
+            vec![entry(11, "new"), entry(13, "new"), entry(9, "new")],
+            vec![entry(11, "new"), entry(13, "new")],
+        ] {
+            let order: Vec<_> = next.iter().map(|(unit, _)| *unit).collect();
+            keep_list_order(&mut next, &shown);
+            assert_eq!(
+                next.iter().map(|(unit, _)| *unit).collect::<Vec<_>>(),
+                order
+            );
+        }
+    }
+
+    #[test]
+    fn cornered_tiles_keep_their_borders_and_repeat_a_tiling_centre() {
+        // GFX_scrollbar_vertical_bg, 156 texels with 52-texel ends, at the
+        // committed list's 165 px: one whole centre tile and 9 more texels.
+        assert_eq!(
+            cornered_spans(52.0, 156.0, 165.0, true),
+            [
+                [0.0, 52.0, 0.0, 52.0],
+                [52.0, 52.0, 52.0, 52.0],
+                [104.0, 9.0, 52.0, 9.0],
+                [113.0, 52.0, 104.0, 52.0],
+            ]
+        );
+        // GFX_scroll_track, 12 texels with 4-texel glow, stretched to 127 px.
+        assert_eq!(
+            cornered_spans(4.0, 12.0, 127.0, false),
+            [
+                [0.0, 4.0, 0.0, 4.0],
+                [4.0, 119.0, 4.0, 4.0],
+                [123.0, 4.0, 8.0, 4.0]
+            ]
+        );
+        // A zero border leaves the whole texture as the centre.
+        assert_eq!(
+            cornered_spans(0.0, 18.0, 18.0, true),
+            [
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 18.0, 0.0, 18.0],
+                [18.0, 0.0, 18.0, 0.0]
+            ]
+        );
+    }
 
     #[test]
     fn a_quarter_turned_bar_ends_at_its_declared_x_and_fills_upwards() {
