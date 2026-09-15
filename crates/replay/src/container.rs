@@ -1675,6 +1675,13 @@ mod tests {
                 let sizes = frame.encode_with_sizes(&mut payload).unwrap();
                 let trailing: usize = sizes[recorded..].iter().sum();
                 payload.truncate(payload.len() - trailing);
+                if format.records(TableId::ShipModels) {
+                    let index = TableId::ShipModels.index();
+                    let start =
+                        8 + 4 + 1 + 8 + TABLE_COUNT * 8 + 16 + sizes[..index].iter().sum::<usize>();
+                    let legacy = crate::rows::encode_legacy_ship_update(&frame.tables[index]);
+                    payload.splice(start..start + sizes[index], legacy);
+                }
                 // branch, hour, keyframe flag and total time precede the array.
                 let timings = 8 + 4 + 1 + 8 + recorded * 8;
                 payload.drain(timings..timings + (TABLE_COUNT - recorded) * 8);
@@ -1713,6 +1720,15 @@ mod tests {
                 if let Some(rows) = crate::rows::sample_extended_table(table, hour as usize) {
                     frame.tables[table.index()] = TableView::Complete(rows);
                 }
+                if table == TableId::ShipModels
+                    && let TableView::Complete(TableRows::ShipModels(rows)) =
+                        &mut frame.tables[table.index()]
+                {
+                    for row in rows {
+                        row.formation_flags &= (1 << 7) | (1 << 8) | (1 << 39);
+                        row.counter = None;
+                    }
+                }
                 frame.metrics.table_ns[table.index()] = (hour as u64) * 1000 + table.index() as u64;
             }
             if hour == 2 {
@@ -1730,6 +1746,7 @@ mod tests {
             FormatVersion::LEGACY_19,
             FormatVersion::LEGACY_20,
             FormatVersion::LEGACY_21,
+            FormatVersion::LEGACY_22,
         ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             assert_eq!(old.format, format);
@@ -1740,7 +1757,11 @@ mod tests {
             let recorded = format.recorded_tables();
             for hour in hours {
                 let SeekResult::Frame(frame) = old.seek(1, hour).unwrap() else {
-                    panic!("hour {hour} did not decode at format {}", format.version());
+                    panic!(
+                        "hour {hour} did not decode at format {}: {:?}",
+                        format.version(),
+                        old.seek(1, hour).unwrap()
+                    );
                 };
                 let SeekResult::Frame(expected) = current.seek(1, hour).unwrap() else {
                     panic!("hour {hour} did not decode at the current version");
@@ -1793,6 +1814,7 @@ mod tests {
             FormatVersion::LEGACY_19,
             FormatVersion::LEGACY_20,
             FormatVersion::LEGACY_21,
+            FormatVersion::LEGACY_22,
         ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             let error = old
@@ -1822,6 +1844,7 @@ mod tests {
             FormatVersion::LEGACY_19,
             FormatVersion::LEGACY_20,
             FormatVersion::LEGACY_21,
+            FormatVersion::LEGACY_22,
         ] {
             let bytes = downgrade(&current, format);
             assert!(Replay::open(bytes.clone()).is_ok());
@@ -1856,7 +1879,7 @@ mod tests {
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22 and \
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23 and \
                      writes {FORMAT_VERSION}"
                 )
             );

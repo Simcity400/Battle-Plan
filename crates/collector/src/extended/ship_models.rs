@@ -1,6 +1,26 @@
 //! Hourly ship model operands, sharing the authenticated Ships census.
 use crate::{sampling::qpc, spooling::table, table_capture::CaptureRows};
 use engine::{Memory, cship, walk::Outcome};
+use std::cell::Cell;
+
+// Aggregate copy ceiling applies across the entire ship census, including modifier lookups.
+const COPY_LIMIT: usize = 128 * 1024 * 1024;
+const READ_LIMIT: usize = 4_000_000;
+struct BoundedMemory<'a, M> {
+    inner: &'a M,
+    used: &'a Cell<(usize, usize)>,
+}
+impl<M: Memory> Memory for BoundedMemory<'_, M> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        let (calls, bytes) = self.used.get();
+        if calls >= READ_LIMIT || output.len() > COPY_LIMIT.saturating_sub(bytes) {
+            self.used.set((READ_LIMIT, COPY_LIMIT));
+            return false;
+        }
+        self.used.set((calls + 1, bytes + output.len()));
+        self.inner.copy(address, output)
+    }
+}
 use replay::{
     frame::TableView,
     rows::{ShipModelRow, TableId, tables},
@@ -22,6 +42,7 @@ impl Default for Capacities {
 }
 
 pub struct Captured {
+    copied: [Cell<(usize, usize)>; 2],
     rows: CaptureRows<cship::ModelRow>,
     len: [usize; 2],
     missing: [u32; 2],
@@ -33,6 +54,7 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
         assert_eq!(successful.len(), N);
         Self {
+            copied: [Cell::new((0, 0)), Cell::new((0, 0))],
             rows: CaptureRows::new(capacity.rows, successful[0]),
             len: [0; 2],
             missing: [0; 2],
@@ -59,6 +81,7 @@ impl Captured {
         self.len[pass] = 0;
         self.missing[pass] = 0;
         self.failure[pass] = None;
+        self.copied[pass].set((0, 0));
     }
     pub fn visit(
         &mut self,
@@ -81,12 +104,26 @@ impl Captured {
             self.missing[pass] = self.missing[pass].saturating_add(1);
             return;
         }
-        match cship::read_model(memory, base, pointer, source) {
+        let bounded = BoundedMemory {
+            inner: memory,
+            used: &self.copied[pass],
+        };
+        let memory = &bounded;
+        match cship::read_model(memory, base, pointer, source).and_then(|mut row| {
+            row.maximum_organisation = cship::read_maximum_organisation(memory, base, pointer)?;
+            Ok(row)
+        }) {
             Ok(row) => {
                 output[self.len[pass]] = row;
                 self.len[pass] += 1;
             }
-            Err(reason) => self.failure[pass] = Some(reason),
+            Err(reason) => {
+                self.failure[pass] = Some(if self.copied[pass].get() == (READ_LIMIT, COPY_LIMIT) {
+                    "ShipModels aggregate read budget exceeded"
+                } else {
+                    reason
+                })
+            }
         }
     }
     pub fn finish(&mut self, second: bool, parent: Outcome) {
@@ -154,6 +191,14 @@ impl Captured {
                 fallback_sprite: r.fallback_sprite.as_bytes().to_vec(),
                 model_number: r.model_number,
                 formation_flags: r.formation_flags,
+                counter: Some(replay::rows::ShipCounterInputs {
+                    roster_ordinal: r.roster_ordinal,
+                    definition_valid: r.definition_valid,
+                    carrier_air_base: r.carrier_air_base,
+                    maximum_strength: r.maximum_strength,
+                    maximum_organisation: r.maximum_organisation,
+                    positive_equipment_flags: r.positive_equipment_flags,
+                }),
             },
         )]
     }
@@ -241,6 +286,29 @@ mod tests {
             }
             assert!(!capture.capture(&memory, 0, 0, &[true]).0[0]);
             assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
+        }
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    struct NoReads;
+    impl Memory for NoReads {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            panic!("copy budget must stop before inner memory access")
+        }
+    }
+    #[test]
+    fn whole_census_budget_refuses_bytes_and_calls_before_memory_access() {
+        for value in [(READ_LIMIT, 0), (0, COPY_LIMIT)] {
+            let used = Cell::new(value);
+            let memory = BoundedMemory {
+                inner: &NoReads,
+                used: &used,
+            };
+            assert!(!memory.copy(1, &mut [0]));
+            assert_eq!(used.get(), (READ_LIMIT, COPY_LIMIT));
         }
     }
 }

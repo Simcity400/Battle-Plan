@@ -43,3 +43,6 @@ pub const SPECIAL_STACK_SLOT: usize = 0x26;
 pub const LAND_ICON_PRODUCER_RVA: usize = 0x0127_bfc0;
 /// CProvinceGraphics supply-icon update; exact 20260719T223856Z-wave2-r10-sup-02-d1-p1-ea60087c/evidence/func_14127dac0.decompile.c:72 follows this+0x11b8 to its province definition before applying hub cutoff predicates.
 pub const UPDATE_SUPPLY_ICONS_RVA: usize = 0x0127_dac0;
+
+///14127EBF0 walks38 source stack-icon pointers, skipping slot19 for ordinary counters.
+pub const STACK_ICONS: usize = 0x1560;

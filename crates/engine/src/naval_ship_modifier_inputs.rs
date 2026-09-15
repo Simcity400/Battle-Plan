@@ -240,7 +240,7 @@ impl<M: Memory> Capture<'_, '_, M> {
 
 /// Native terrain selector14142AF80/14142C0E0; selecting a source is not
 /// composition. Both selected and default records preserve their raw values.
-fn terrain_class(
+pub(crate) fn terrain_class(
     memory: &impl Memory,
     terrain: usize,
     class: u32,
@@ -324,7 +324,7 @@ pub(crate) fn terrain(
     found.ok_or("naval terrain fallback absent")
 }
 
-fn selected_class(
+pub(crate) fn selected_class(
     memory: &impl Memory,
     leader: usize,
     subunit: u32,
@@ -359,7 +359,7 @@ fn selected_class(
 ///141471D80 constructs prefix+lexer(type)+suffix and maps its lexer id through
 /// the immutable modifier-key dictionary. We compare the raw string segments
 /// while walking that bounded dictionary; no engine lexer method or lock runs.
-fn doctrine_keys(
+pub(crate) fn doctrine_keys(
     memory: &impl Memory,
     base: usize,
     selector: u32,

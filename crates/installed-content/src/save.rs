@@ -432,6 +432,8 @@ pub struct TaskForce {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ship {
+    /// Position in the task force serializer's ordered ship list.
+    pub roster_ordinal: u32,
     pub id: u64,
     pub task_force: u64,
     pub strength: Decimal,
@@ -1233,6 +1235,7 @@ fn parse_task_force(owner: &[u8], fleet: u64, items: &[Item]) -> io::Result<Task
 
 fn parse_ship(task_force: u64, items: &[Item]) -> io::Result<Ship> {
     Ok(Ship {
+        roster_ordinal: 0,
         id: object_id(items)?,
         task_force,
         strength: decimal(items, b"strength")?.ok_or_else(|| invalid("ship lacks strength"))?,
@@ -1500,11 +1503,14 @@ pub fn parse(input: &[u8]) -> io::Result<Save> {
                 {
                     let fields = block(&item.value)?;
                     let task_force = parse_task_force(tag, fleet.id, fields)?;
-                    for item in fields
+                    for (ordinal, item) in fields
                         .iter()
                         .filter(|item| item.key.as_deref() == Some(b"ship"))
+                        .enumerate()
                     {
-                        let ship = parse_ship(task_force.id, block(&item.value)?)?;
+                        let mut ship = parse_ship(task_force.id, block(&item.value)?)?;
+                        ship.roster_ordinal = u32::try_from(ordinal)
+                            .map_err(|_| invalid("ship roster exceeds u32"))?;
                         if ships.insert(ship.id, ship).is_some() {
                             return Err(invalid("duplicate full ship handle in save"));
                         }

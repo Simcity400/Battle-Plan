@@ -24,6 +24,7 @@ mod air;
 mod characters;
 mod combat_details;
 mod construction;
+mod counters;
 mod economy;
 mod fog;
 mod governance;
@@ -1060,6 +1061,7 @@ fn compare_extended(
 ) {
     plans::compare(frame, save, report);
     map_inputs::compare(frame, save, report);
+    counters::compare(frame, save, report);
     supply_trains::compare(frame, save, report);
     combat_details::compare(frame, save, report);
     report.attempt_table(TableId::StateFlags, |report| {
@@ -5509,6 +5511,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         saved.ships.insert(
             ship,
             save::Ship {
+                roster_ordinal: 0,
                 id: ship,
                 task_force: force,
                 strength: Decimal::parse(b"90071992547.40993").unwrap(),

@@ -20,3 +20,34 @@ pub const KIND_FILE_PATH: u32 = 1;
 pub const ROLE_TOKEN_IDS: [u32; 6] = [0x4b26, 0x289d, 0x289e, 0x2e96, 0x3d13, 0x4005];
 /// Portrait size enum to lexer tokens; extractor.rs:60 and the engine size parser inverse establish these IDs.
 pub const SIZE_TOKEN_IDS: [u32; 2] = [0x30d7, 0x4c28];
+
+/// Owned portrait descriptor, with no native pointer or texture-resource cache.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub category: u32,
+    pub size: u32,
+    pub is_set: u8,
+    pub kind: u32,
+    pub identity: crate::msvc_string::Text<256>,
+}
+pub fn read(memory: &impl crate::Memory, pointer: usize) -> Result<Row, &'static str> {
+    use crate::cnaval_combatant::field;
+    let header = field::<[u8; 16]>(memory, pointer, 0)?;
+    let identity = crate::msvc_string::read_text(
+        memory,
+        pointer
+            .checked_add(IDENTITY)
+            .ok_or("portrait identity address overflow")?,
+    )
+    .ok_or("portrait identity invalid or exceeds256 bytes")?;
+    if field::<[u8; 16]>(memory, pointer, 0)? != header {
+        return Err("portrait descriptor changed");
+    }
+    Ok(Row {
+        category: u32::from_le_bytes(header[..4].try_into().unwrap()),
+        size: u32::from_le_bytes(header[4..8].try_into().unwrap()),
+        is_set: header[8],
+        kind: u32::from_le_bytes(header[12..16].try_into().unwrap()),
+        identity,
+    })
+}

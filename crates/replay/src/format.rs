@@ -6,17 +6,18 @@
 //! and ShipModels (ids159..161).
 //! Format21 appends SupplyNodes and TrainInventory (ids162..163).
 //! Format22 appends land and naval combat-window operands (ids164..169).
-//! All retain earlier table encodings, container fields, keyframe rules and CRC checks.
+//! Format23 appends counter ordering and portraits (ids170..173), extending ShipModels
+//! with an optional counter payload and full flag word. Earlier ShipModels codecs
+//! decode with an explicit absent counter payload; old flags remain only bits7/8/39.
 //!
 //! A frame body is a `table_ns` entry per recorded table followed by one update
 //! per recorded table in `TableId` order. The timing and table arrays each use
 //! the version's prefix of TableId::ALL; the entire frame is not a byte prefix.
-//! Reading a supported old file needs no per-table decoding differences, only
-//! its table count. Absent tables use [`FormatVersion::missing_reason`].
+//! Versioned ShipModels decoding accompanies the table count. Absent tables use [`FormatVersion::missing_reason`].
 //!
 //! Formats 15 and 16 were written during development but are not supported by
 //! this compatibility reader. Compatibility applies to finalized replay files,
-//! not old spool segments: H4SM spool records use [`FormatVersion::CURRENT`].
+//! not old spool segments: H4SN spool records use [`FormatVersion::CURRENT`].
 
 use crate::{FORMAT_VERSION, codec::invalid, frame::TABLE_COUNT, rows::TableId};
 use std::io;
@@ -73,13 +74,18 @@ impl FormatVersion {
         recorded_tables: TableId::TrainInventory.index() + 1,
     };
     /// Every readable version, oldest first.
-    pub const READABLE: [Self; 7] = [
+    pub const LEGACY_22: Self = Self {
+        version: 22,
+        recorded_tables: 170,
+    };
+    pub const READABLE: [Self; 8] = [
         Self::LEGACY_14,
         Self::LEGACY_17,
         Self::LEGACY_18,
         Self::LEGACY_19,
         Self::LEGACY_20,
         Self::LEGACY_21,
+        Self::LEGACY_22,
         Self::CURRENT,
     ];
 
@@ -136,7 +142,7 @@ mod tests {
         assert_eq!(FormatVersion::LEGACY_19.recorded_tables, 159);
         assert_eq!(FormatVersion::LEGACY_20.recorded_tables, 162);
         assert_eq!(FormatVersion::LEGACY_21.recorded_tables, 164);
-        assert_eq!(FormatVersion::CURRENT.recorded_tables, 170);
+        assert_eq!(FormatVersion::CURRENT.recorded_tables, 174);
         // The writer's version must stay readable, or a file this build wrote
         // could not be reopened.
         assert_eq!(
@@ -179,13 +185,13 @@ mod tests {
     #[test]
     fn unsupported_versions_are_refused() {
         // Development formats15/16 existed but have no supported decoder here.
-        for version in [0, 13, 15, 16, 23, u16::MAX] {
+        for version in [0, 13, 15, 16, 24, u16::MAX] {
             let error = FormatVersion::read(version).unwrap_err().to_string();
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22 and \
-                     writes 22"
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23 and \
+                     writes 23"
                 )
             );
         }

@@ -228,6 +228,10 @@ packs!(
     army_icon_inputs,
     country_appearance,
     ship_models,
+    province_unit_order,
+    counter_layers,
+    character_portraits,
+    leader_portraits,
     supply_trains,
     characters,
     combat_progress,
@@ -833,6 +837,10 @@ impl Captured {
             state_flags,
             country_appearance,
             ship_models,
+            province_unit_order,
+            counter_layers,
+            character_portraits,
+            leader_portraits,
             supply_trains,
             plans
         );
@@ -1346,6 +1354,38 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
+    fn counter_input_owned_capacity_costs_include_comparison_storage() {
+        macro_rules! cost {
+            ($pack:ident) => {{
+                let capacities = $pack::Capacities::default();
+                let cold = $pack::Captured::with_capacities(&capacities, &[0]).allocated_bytes();
+                let warm = $pack::Captured::with_capacities(
+                    &capacities,
+                    &[crate::sampling::CONSISTENCY_TARGET],
+                )
+                .allocated_bytes();
+                assert!(cold >= warm);
+                assert!(warm > 0);
+                println!(
+                    "{} owned bytes per pool slot: cold={} warm={}",
+                    stringify!($pack),
+                    cold,
+                    warm
+                );
+            }};
+        }
+        cost!(province_unit_order);
+        cost!(counter_layers);
+        cost!(character_portraits);
+        cost!(leader_portraits);
+        cost!(ship_models);
+        println!(
+            "native ShipModels row={} bytes",
+            std::mem::size_of::<engine::cship::ModelRow>()
+        );
+    }
+
+    #[test]
     fn independent_capture_leaves_eta_owned_until_terminal_join_and_charges_it_once() {
         struct FailedReads(std::cell::Cell<usize>);
         impl Memory for FailedReads {
@@ -1620,7 +1660,7 @@ mod tests {
 
     #[test]
     fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership() {
-        assert_eq!(N, 150);
+        assert_eq!(N, 154);
         let actual: BTreeSet<_> = TABLES.into_iter().collect();
         assert_eq!(actual.len(), N);
         let expected: BTreeSet<_> = TableId::ALL

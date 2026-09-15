@@ -144,6 +144,16 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
             continue;
         };
         remaining.remove(&row.ship);
+        if let Some(counter) = &row.counter {
+            eq(
+                report,
+                &format!("{label}.roster_ordinal"),
+                counter.roster_ordinal,
+                saved.roster_ordinal,
+            );
+        } else if report.recorded_format.is_some_and(|f| f.version() >= 23) {
+            return Err(invalid("format23 ShipModels counter payload absent"));
+        }
         let pool = saved
             .equipment
             .as_ref()
@@ -165,7 +175,7 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
     eq(report, "ShipModels Ships key census", seen, parents);
     report.compared("ShipModels", rows.len());
     report.limitation("selected variant identity is independently derived from the saved equipment pool; saved registry definition keys and variant names are compared by VariantDefinitions on its refresh hours, not inferred from hull sprite bytes", "ShipModels.variant names");
-    report.limitation("ship hull/fallback sprite keys, model number, and formation-selection bits 8, 7 and 39 have no direct counterpart in the inspected ship serializer; they cannot be independently checked against this text save", "ShipModels hull_sprite, fallback_sprite, model_number, formation_flags");
+    report.limitation("ship hull/fallback sprite keys, model number, and full formation-selection flags, positive-equipment flag union, definition-valid byte, carrier airbase reference, strength maximum and derived organisation maximum have no direct counterpart in the inspected ship serializer; they cannot be independently checked against this text save", "ShipModels hull_sprite, fallback_sprite, model_number, formation_flags");
     Ok(())
 }
 
@@ -226,6 +236,7 @@ mod tests {
         saved.ships.insert(
             ship,
             save::Ship {
+                roster_ordinal: 0,
                 id: ship,
                 task_force: 9,
                 strength: Decimal::parse(b"1").unwrap(),
@@ -262,6 +273,7 @@ mod tests {
             TableView::Complete(TableRows::ShipModels(vec![ShipModelRow {
                 ship,
                 variant: (3_u64 << 32) | 70,
+                counter: Some(Default::default()),
                 ..Default::default()
             }]));
         let mut report = Report::default();
@@ -285,6 +297,15 @@ mod tests {
         let mut report = Report::default();
         compare(&frame, &saved, &mut report);
         assert_eq!(report.differences.len(), 4);
+        saved.ships.get_mut(&ship).unwrap().roster_ordinal = 1;
+        let mut roster = Report::default();
+        ships(&frame, &saved, &mut roster).unwrap();
+        assert!(
+            roster
+                .differences
+                .iter()
+                .any(|d| d.contains("roster_ordinal"))
+        );
         for format in [
             FormatVersion::LEGACY_14,
             FormatVersion::LEGACY_17,

@@ -548,6 +548,7 @@ mod tests {
         set(
             &mut captured.ships,
             vec![cship::Row {
+                roster_ordinal: 0,
                 id: u64::MAX,
                 task_force: u64::MAX - 1,
                 strength: i64::MIN,

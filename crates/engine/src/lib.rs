@@ -322,6 +322,7 @@ pub mod craid_instance;
 pub mod craid_source;
 pub mod craid_system;
 pub mod crailway_gfx;
+pub mod crailway_gun;
 pub mod crailway_gun_production_line;
 pub mod crailway_manager;
 pub mod crailway_map_icon;

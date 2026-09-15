@@ -301,14 +301,14 @@ impl Frame {
         let mut tables = Vec::with_capacity(TABLE_COUNT);
         for table in TableId::ALL.into_iter().take(format.recorded_tables()) {
             let update = match input.u8()? {
-                0 => TableUpdate::Snapshot(decode_rows(table, input)?),
+                0 => TableUpdate::Snapshot(decode_rows(table, input, format)?),
                 1 => {
                     let baseline = input.i32()?;
                     let count = decode_row_count(table, input, table.minimum_delta_bytes())?;
                     let mut changed = Vec::with_capacity(count);
                     let mut previous_key = 0;
                     for _ in 0..count {
-                        let row = rows::decode_delta(table, previous_key, input)?;
+                        let row = rows::decode_delta_version(table, previous_key, input, format)?;
                         previous_key = row.key;
                         changed.push(row);
                     }
@@ -336,7 +336,7 @@ impl Frame {
                         return Err(invalid("truncated table has no missing rows"));
                     }
                     TableUpdate::Truncated {
-                        rows: decode_rows(table, input)?,
+                        rows: decode_rows(table, input, format)?,
                         missing,
                     }
                 }
@@ -383,9 +383,23 @@ fn encode_rows(table: TableId, values: &TableRows, out: &mut Vec<u8>) -> io::Res
     put_count(out, values.len())?;
     values.encode_rows(out)
 }
-fn decode_rows(table: TableId, input: &mut Decoder<'_>) -> io::Result<TableRows> {
-    let count = decode_row_count(table, input, table.minimum_row_bytes())?;
-    let values = table.decode_rows(count, input)?;
+fn decode_rows(
+    table: TableId,
+    input: &mut Decoder<'_>,
+    format: FormatVersion,
+) -> io::Result<TableRows> {
+    let legacy = table == TableId::ShipModels && format.version() < 23;
+    let minimum = if legacy {
+        table.minimum_row_bytes() - 4
+    } else {
+        table.minimum_row_bytes()
+    };
+    let count = decode_row_count(table, input, minimum)?;
+    let values = if legacy {
+        rows::decode_legacy_ship_models(count, input)?
+    } else {
+        table.decode_rows(count, input)?
+    };
     validate_rows(table, &values)?;
     Ok(values)
 }
@@ -1605,7 +1619,7 @@ mod tests {
             // A key-only bound accepts this count before reserving all rows.
             assert_eq!(Decoder::new(&bytes).count(1).unwrap(), claimed as usize);
             let mut input = Decoder::new(&bytes);
-            let error = decode_rows(table, &mut input).unwrap_err();
+            let error = decode_rows(table, &mut input, FormatVersion::CURRENT).unwrap_err();
             assert_eq!(
                 error.to_string(),
                 "collection length exceeds remaining payload"
@@ -1646,7 +1660,7 @@ mod tests {
             let mut bytes = 2_u32.to_le_bytes().to_vec();
             bytes.resize(4 + payload, 0);
             let mut input = Decoder::new(&bytes);
-            let error = decode_rows(table, &mut input).unwrap_err();
+            let error = decode_rows(table, &mut input, FormatVersion::CURRENT).unwrap_err();
             assert_eq!(
                 error.to_string(),
                 "singleton table cannot contain multiple rows"
@@ -2360,7 +2374,7 @@ mod tests {
         rows::encode_row(&division(u64::MAX, 1, 2), 0, &mut bytes).unwrap();
         // This independently encoded +1 follows u64::MAX in the snapshot list.
         rows::encode_row(&division(1, 3, 4), 0, &mut bytes).unwrap();
-        assert!(decode_rows(table, &mut Decoder::new(&bytes)).is_err());
+        assert!(decode_rows(table, &mut Decoder::new(&bytes), FormatVersion::CURRENT).is_err());
 
         let mut encoder = FrameEncoder::new();
         encoder.encode(source(1, 0).clone(), false).unwrap();

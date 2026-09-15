@@ -737,10 +737,12 @@ mod tests {
                 },
             ]));
         let pack = saved::Pack {
+            portraits: Default::default(),
             manager: Some(saved::Manager {
                 characters: BTreeMap::from([(
                     character,
                     saved::Character {
+                        portraits: None,
                         id: character,
                         country: Some(b"GER".to_vec()),
                         roster: 1,
