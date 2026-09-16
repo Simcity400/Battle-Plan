@@ -16,7 +16,7 @@ use crate::{
     identity::SessionStart,
 };
 
-pub const RECORD_MAGIC: [u8; 4] = *b"H4SO";
+pub const RECORD_MAGIC: [u8; 4] = *b"H4SP";
 pub const RECORD_HEADER_BYTES: usize = 12;
 pub const MAX_RECORD_BYTES: usize = 128 * 1024 * 1024;
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
@@ -178,7 +178,7 @@ impl Record {
         Ok(match input.u8()? {
             0 => Self::SessionStart(SessionStart::decode(input)?),
             1 => Self::BranchStart(BranchStart::decode(input)?),
-            // A spool segment carries the `H4SO` record magic this build
+            // A spool segment carries the `H4SP` record magic this build
             // writes, so its frames are always the current layout; older
             // segments are refused whole at the magic.
             2 => Self::Frame(Frame::decode(input, FormatVersion::CURRENT)?),
@@ -649,13 +649,13 @@ mod tests {
     #[test]
     fn old_spool_magic_is_refused_before_decoding_any_records() {
         let mut bytes = valid_segment();
-        bytes[..4].copy_from_slice(b"H4SN");
+        bytes[..4].copy_from_slice(b"H4SO");
         let recovered = recover_prefix(&bytes);
         assert_eq!(recovered.valid_bytes, 0);
         assert!(recovered.records.is_empty());
         let reason = recovered.damage.unwrap();
-        assert!(reason.contains("unsupported spool record magic \"H4SN\""));
-        assert!(reason.contains("expected \"H4SO\""));
+        assert!(reason.contains("unsupported spool record magic \"H4SO\""));
+        assert!(reason.contains("expected \"H4SP\""));
     }
 
     #[test]

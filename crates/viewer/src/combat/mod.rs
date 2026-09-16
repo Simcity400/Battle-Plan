@@ -2,6 +2,7 @@
 mod assets;
 mod binding;
 mod details;
+mod division_icons;
 pub(crate) mod land_details;
 mod layout;
 mod naval_details;

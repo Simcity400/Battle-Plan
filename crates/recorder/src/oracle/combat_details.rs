@@ -153,8 +153,62 @@ fn naval_commander_values(
     }
     Ok(())
 }
+/// Each saved formation's resolved HQ unit, keyed by its leader handle.
+///
+/// 140BDFD90 accessor the recorder resolves live) and omits it exactly when
+/// the provider is null. Army groups carry no leader and never match a side
+/// commander, so only leader-bearing definitions join.
+fn hq_formations(save: &Save) -> io::Result<BTreeMap<u64, Option<u64>>> {
+    let mut formations = BTreeMap::new();
+    let countries = save
+        .naval_history
+        .theatre_countries
+        .as_ref()
+        .ok_or_else(|| invalid("HQ comparison requires saved theatre country roster"))?;
+    for rows in countries.values() {
+        for theatre in &rows.land {
+            for definition in &theatre.definitions {
+                if let Some(leader) = definition.leader
+                    && formations.insert(leader, definition.leader_unit).is_some()
+                {
+                    return Err(invalid("saved leader commands more than one formation"));
+                }
+            }
+        }
+    }
+    Ok(formations)
+}
+
+/// 1415C5F10's badge decision as a unit handle: the recorded 140BDFD90 unit
+/// against the save's `leader_unit` of the commander's formation. Without a
+/// selected commander the native never shows the badge, so zero is expected.
+/// A commander with no saved formation (same-hour reorganisation between the
+/// sampled tick and the save) is a stated coverage gap, not a waived
+/// difference: the commander's own skill/category comparison above still
+/// covers the leader itself.
+fn hq_unit(
+    r: &mut Report,
+    label: &str,
+    commander: u64,
+    actual: u64,
+    formations: &BTreeMap<u64, Option<u64>>,
+) {
+    if commander == 0 {
+        equal(r, format!("{label} hq_unit"), actual, 0);
+        return;
+    }
+    match formations.get(&commander) {
+        Some(saved) => equal(r, format!("{label} hq_unit"), actual, saved.unwrap_or(0)),
+        None => r.limitation(
+            "side commander has no saved formation; a same-hour reorganisation after the sampled tick moves leaders between groups, so the HQ handle is not comparable this hour",
+            label,
+        ),
+    }
+}
+
 fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatDetails>()?;
+    let formations = hq_formations(save)?;
     let mut seen = BTreeSet::new();
     for row in rows {
         if !seen.insert(row.combat) {
@@ -215,6 +269,7 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 (actual.tactic_kind == 2).then_some(actual.tactic_id),
                 side.tactic,
             );
+            hq_unit(r, &label, actual.commander, actual.hq_unit, &formations);
             positive_decimal(
                 r,
                 &format!("{label} anti_air_attack"),
@@ -392,7 +447,7 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
         }
     }
     r.compared("LandCombatDivisions", rows.len());
-    r.limitation("Only participant order/full handles, current HP/organisation, province, template, committed/reserve role and serialized entrenchment operands are compared. Current combat stat block, raw maximum caches, attack/defense composition operands, initiative/reconnaissance and commander selection are not established by those matches. Current division names and combat commander names/skills/traits are hourly inputs; remaining template/icon dictionary joins retain their existing cadence. This table is an hourly input sample, not a per-attack damage event stream", "LandCombatDivisions");
+    r.limitation("Only participant order/full handles, current HP/organisation, province, template, committed/reserve role and serialized entrenchment operands are compared. Direction keys, direction latch words and template-frame bits are live 141298E00/1415CA660 presentation operands with no text-save counterpart and are never compared here; their viewer replay is verified by render parity instead. Current combat stat block, raw maximum caches, attack/defense composition operands, initiative/reconnaissance and commander selection are not established by those matches. Current division names and combat commander names/skills/traits are hourly inputs; remaining template/icon dictionary joins retain their existing cadence. This table is an hourly input sample, not a per-attack damage event stream", "LandCombatDivisions");
     Ok(())
 }
 
@@ -1202,5 +1257,24 @@ mod tests {
         assert!(report.differences.is_empty());
         optional_text_value(&mut report, "missing field", b"\0retained suffix", None);
         assert_eq!(report.differences.len(), 1);
+    }
+    #[test]
+    fn hq_badge_handle_matches_saved_leader_unit_or_fails_exact() {
+        let formations = BTreeMap::from([(7_u64, Some(11_u64)), (9, None)]);
+        let mut report = Report::default();
+        hq_unit(&mut report, "shown", 7, 11, &formations);
+        hq_unit(&mut report, "hidden provider", 9, 0, &formations);
+        hq_unit(&mut report, "no commander", 0, 0, &formations);
+        assert!(report.differences.is_empty());
+        hq_unit(&mut report, "shown", 7, 0, &formations);
+        hq_unit(&mut report, "hidden provider", 9, 11, &formations);
+        hq_unit(&mut report, "no commander", 0, 11, &formations);
+        assert_eq!(report.differences.len(), 3);
+        // A commander with no saved formation is a stated coverage gap (a
+        // same-hour reorganisation after the sampled tick), never a waived
+        // difference and never a failure.
+        hq_unit(&mut report, "reorganised", 13, 0, &formations);
+        assert_eq!(report.differences.len(), 3);
+        assert!(!report.limitations.is_empty());
     }
 }

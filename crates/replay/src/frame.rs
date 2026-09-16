@@ -388,6 +388,21 @@ fn decode_rows(
     input: &mut Decoder<'_>,
     format: FormatVersion,
 ) -> io::Result<TableRows> {
+    // Format25 extends the land combat-window operand rows in place: details
+    // rows gain a per-side HQ unit inside the nested sides blob, and division
+    // rows gain three trailing scalars (U32, I32, U8) under a 5-byte mask.
+    if table == TableId::LandCombatDetails && format.version() < 25 {
+        let count = decode_row_count(table, input, table.minimum_row_bytes())?;
+        let values = rows::decode_legacy_land_combat_details(count, input)?;
+        validate_rows(table, &values)?;
+        return Ok(values);
+    }
+    if table == TableId::LandCombatDivisions && format.version() < 25 {
+        let count = decode_row_count(table, input, table.minimum_row_bytes() - 9)?;
+        let values = rows::decode_legacy_land_combat_divisions(count, input)?;
+        validate_rows(table, &values)?;
+        return Ok(values);
+    }
     let legacy = table == TableId::ShipModels && format.version() < 23;
     let minimum = if legacy {
         table.minimum_row_bytes() - 4

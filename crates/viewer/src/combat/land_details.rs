@@ -303,6 +303,47 @@ fn division_width(row: &LandCombatDivisionRow) -> Option<i64> {
     Some(base.wrapping_mul(factor) / 100_000)
 }
 
+/// 141298E00's direction count over the attacker committed divisions in
+/// recorded order: one direction per fresh province key, except positive
+/// direction-group units after the first, which fold into its direction.
+/// A missing division row leaves the count unknown rather than guessed.
+fn direction_count(committed: &[u64], divisions: &Divisions<'_>) -> Option<usize> {
+    let mut seen: Vec<u32> = Vec::new();
+    let mut grouped = false;
+    for unit in committed {
+        let row = divisions.get(&(0, *unit))?;
+        if row.direction_group > 0 && grouped {
+            continue;
+        }
+        if seen.contains(&row.direction) {
+            continue;
+        }
+        if row.direction_group > 0 {
+            grouped = true;
+        }
+        seen.push(row.direction);
+    }
+    Some(seen.len())
+}
+
+/// 141298D50's total from the recorded width operands: the width-factor term
+/// plus one additional-width term per direction beyond the first, all fixed5
+/// with native truncation.
+fn total_width(detail: &LandCombatDetailsRow, directions: usize) -> i64 {
+    let extra = directions.saturating_sub(1) as i64;
+    let width = detail
+        .width_factor
+        .wrapping_add(100_000)
+        .wrapping_mul(detail.terrain_width)
+        / 100_000;
+    width.wrapping_add(
+        extra
+            .wrapping_mul(100_000)
+            .wrapping_mul(detail.terrain_additional_width)
+            / 100_000,
+    )
+}
+
 /// Native 1412A2AA0 survival estimates, in fixed5, for the two complete sides.
 /// `participants` is the ordered full LandCombats census (not committed only).
 /// Early battles use 1412A26B0 and the verified content definition context.
@@ -422,45 +463,28 @@ pub(super) fn bind(
     }
     let combats = rows::<tables::LandCombats>(frame)?;
     if let Some(combat) = combats.rows().iter().find(|row| row.id == id) {
-        // Native 141298E00's special direction grouping reads unit+4A8, which
-        // is not a format22 field. Only zero/one distinct direction is proven
-        // without it. Source is 1F8; current target is 1F0 (DivisionMovement).
-        let movement = rows::<tables::DivisionMovement>(frame)?;
-        let movement: BTreeMap<_, _> = movement
-            .rows()
-            .iter()
-            .map(|row| (row.division, row))
-            .collect();
-        let provinces: Option<Vec<_>> = combat
-            .attackers
-            .iter()
-            .map(|unit| {
-                let row = divisions.get(&(0, *unit))?;
-                Some(if row.province == detail.province {
-                    let source = movement.get(unit)?.source;
-                    if source != 0 { source } else { row.province }
-                } else {
-                    row.province
-                })
-            })
-            .collect();
-        if detail.terrain_additional_width == 0
-            || provinces
-                .as_ref()
-                .is_some_and(|values| values.iter().all(|v| Some(v) == values.first()))
-        {
-            let width = detail
-                .width_factor
-                .wrapping_add(100_000)
-                .wrapping_mul(detail.terrain_width)
-                / 100_000;
+        let directions = direction_count(&detail.sides[0].committed, &divisions);
+        // Direction 0 is unrecordable live (province ids start at 1), so an
+        // all-zero committed vector is a pre-25 file, not a one-direction
+        // battle; replaying it would print a confident wrong base total where
+        // the old viewer left an honest dash. An empty committed list counts
+        // zero natively and needs no operands.
+        let live = detail.sides[0].committed.is_empty()
+            || detail.sides[0].committed.iter().any(|unit| {
+                divisions
+                    .get(&(0, *unit))
+                    .is_some_and(|row| row.direction != 0)
+            });
+        if detail.terrain_additional_width == 0 || directions.is_some_and(|_| live) {
+            // 141298D50: the width-factor term plus one additional-width term
+            // per direction beyond the first, all fixed5 with native truncation.
             text(
                 &mut out.values,
                 "combat_width",
-                (width / 100_000).to_string(),
+                (total_width(detail, directions.unwrap_or(0)) / 100_000).to_string(),
             );
         } else {
-            out.warnings.push("Land combat total width: multi-direction census needs uncaptured unit+4A8 grouping; left unknown rather than counting provinces as independent directions.".into());
+            out.warnings.push("Land combat total width: an attacker committed LandCombatDivisions row is missing, so the 141298E00 direction count is unknown and the total stays dash rather than guessing.".into());
         }
         if let Some(scores) = side_scores(
             detail,
@@ -677,5 +701,54 @@ mod tests {
             side_scores(&detail, &divisions, [&[1], &[2]], None),
             Some([3_000_000_000, 6_000_000])
         );
+    }
+
+    #[test]
+    fn width_replays_direction_grouping_and_totals() {
+        fn row(division: u64, direction: u32, group: i32) -> LandCombatDivisionRow {
+            LandCombatDivisionRow {
+                combat: 9,
+                side: 0,
+                division,
+                direction,
+                direction_group: group,
+                ..Default::default()
+            }
+        }
+        // Danzig proves the latch reading: the game shows 120, and the base
+        // term alone is 80, so the count is 2 with one additional-width term
+        // of 40. Distinct provinces without latched grouping count twice.
+        let rows = [row(1, 9263, 0), row(2, 389, 0)];
+        let divisions: Divisions<'_> = rows.iter().map(|row| ((0, row.division), row)).collect();
+        assert_eq!(direction_count(&[1, 2], &divisions), Some(2));
+        // Two positive latch words group into one direction: the first arms
+        // the latch, the second folds into its direction.
+        let rows = [row(1, 9263, 5), row(2, 389, 7)];
+        let divisions: Divisions<'_> = rows.iter().map(|row| ((0, row.division), row)).collect();
+        assert_eq!(direction_count(&[1, 2], &divisions), Some(1));
+        // A latched unit on an already-seen key does not arm the latch: the
+        // next fresh latched key still opens its own direction.
+        let rows = [row(1, 9263, 0), row(2, 9263, 5), row(3, 389, 7)];
+        let divisions: Divisions<'_> = rows.iter().map(|row| ((0, row.division), row)).collect();
+        assert_eq!(direction_count(&[1, 2, 3], &divisions), Some(2));
+        // Missing rows leave the count unknown; empty lists count zero.
+        assert_eq!(direction_count(&[1, 9], &divisions), None);
+        assert_eq!(direction_count(&[], &divisions), Some(0));
+        // Legacy zeros are not a direction: pre-25 files decode every operand
+        // as zero, which the binder must gate back to dash (see bind()).
+        let legacy = [row(1, 0, 0), row(2, 0, 0)];
+        let divisions: Divisions<'_> = legacy.iter().map(|row| ((0, row.division), row)).collect();
+        assert_eq!(direction_count(&[1, 2], &divisions), Some(1));
+        // Danzig totals: (0 + 100000) * 8000000 / 100000 = 80 base, plus one
+        // 40 additional-width term for the second direction = 120.
+        let detail = LandCombatDetailsRow {
+            width_factor: 0,
+            terrain_width: 8_000_000,
+            terrain_additional_width: 4_000_000,
+            ..Default::default()
+        };
+        assert_eq!(total_width(&detail, 1), 8_000_000);
+        assert_eq!(total_width(&detail, 2), 12_000_000);
+        assert_eq!(total_width(&detail, 0), 8_000_000);
     }
 }

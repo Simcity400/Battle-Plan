@@ -1695,6 +1695,28 @@ mod tests {
                 let sizes = frame.encode_with_sizes(&mut payload).unwrap();
                 let trailing: usize = sizes[recorded..].iter().sum();
                 payload.truncate(payload.len() - trailing);
+                // Format25 extends the land combat-window operand rows in place
+                // without adding tables. Older formats decode the same tables
+                // with zeroed new fields. Later tables are rewritten first, and
+                // before the earlier ShipModels rewrite, so earlier byte
+                // offsets stay valid.
+                if format.records(TableId::LandCombatDivisions) && format.version() < 25 {
+                    for table in [TableId::LandCombatDivisions, TableId::LandCombatDetails] {
+                        let index = table.index();
+                        let start = 8
+                            + 4
+                            + 1
+                            + 8
+                            + TABLE_COUNT * 8
+                            + 16
+                            + sizes[..index].iter().sum::<usize>();
+                        let legacy = crate::rows::encode_legacy_land_combat_update(
+                            table,
+                            &frame.tables[index],
+                        );
+                        payload.splice(start..start + sizes[index], legacy);
+                    }
+                }
                 if format.records(TableId::ShipModels) && format.version() < 23 {
                     let index = TableId::ShipModels.index();
                     let start =
@@ -1762,6 +1784,29 @@ mod tests {
                         row.counter = None;
                     }
                 }
+                // Formats before 25 decode these tables with zeroed new fields,
+                // so the shared source carries zeros like the ShipModels source
+                // above; nonzero operands are covered by the row round trips.
+                if table == TableId::LandCombatDetails
+                    && let TableView::Complete(TableRows::LandCombatDetails(rows)) =
+                        &mut frame.tables[table.index()]
+                {
+                    for row in rows {
+                        for side in &mut row.sides {
+                            side.hq_unit = 0;
+                        }
+                    }
+                }
+                if table == TableId::LandCombatDivisions
+                    && let TableView::Complete(TableRows::LandCombatDivisions(rows)) =
+                        &mut frame.tables[table.index()]
+                {
+                    for row in rows {
+                        row.direction = 0;
+                        row.direction_group = 0;
+                        row.template_frames = 0;
+                    }
+                }
                 frame.metrics.table_ns[table.index()] = (hour as u64) * 1000 + table.index() as u64;
             }
             if hour == 2 {
@@ -1781,21 +1826,25 @@ mod tests {
             FormatVersion::LEGACY_21,
             FormatVersion::LEGACY_22,
             FormatVersion::LEGACY_23,
+            FormatVersion::LEGACY_24,
         ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             assert_eq!(old.format, format);
             assert_eq!(old.campaign_id, current.campaign_id);
             assert_eq!(old.identity, current.identity);
-            // The only session difference is the boundary older formats imply.
+            // The only session difference is the boundary formats before 24
+            // imply; format 24 already stores it.
             assert_eq!(
                 current.sessions[0].sample_boundary,
                 crate::identity::SampleBoundary::EndOfHour
             );
-            assert!(old.sessions.iter().all(|session| session.sample_boundary
-                == crate::identity::SampleBoundary::AfterHourlyUpdate));
             let mut implied = current.sessions.clone();
-            for session in &mut implied {
-                session.sample_boundary = crate::identity::SampleBoundary::AfterHourlyUpdate;
+            if !format.records_sample_boundary() {
+                assert!(old.sessions.iter().all(|session| session.sample_boundary
+                    == crate::identity::SampleBoundary::AfterHourlyUpdate));
+                for session in &mut implied {
+                    session.sample_boundary = crate::identity::SampleBoundary::AfterHourlyUpdate;
+                }
             }
             assert_eq!(old.sessions, implied);
             assert_eq!(old.branches, current.branches);
@@ -1861,6 +1910,7 @@ mod tests {
             FormatVersion::LEGACY_21,
             FormatVersion::LEGACY_22,
             FormatVersion::LEGACY_23,
+            FormatVersion::LEGACY_24,
         ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             let error = old
@@ -1881,6 +1931,110 @@ mod tests {
     }
 
     #[test]
+    fn combat_window_operands_downgrade_to_zeroed_legacy_fields() {
+        use crate::rows::{LandCombatDetailsRow, LandCombatDivisionRow, LandCombatSideDetails};
+        fn details(hour: i32, hq_unit: u64) -> TableView {
+            let mut sides = [
+                LandCombatSideDetails::default(),
+                LandCombatSideDetails::default(),
+            ];
+            sides[0].hq_unit = hq_unit;
+            sides[0].commander = 0x8000_0041_0000_0035;
+            TableView::Complete(TableRows::LandCombatDetails(vec![LandCombatDetailsRow {
+                combat: 1,
+                province: 10 + hour as u32,
+                sides,
+                ..LandCombatDetailsRow::default()
+            }]))
+        }
+        fn divisions(direction_a: u32, province_a: u32, direction_b: u32) -> TableView {
+            TableView::Complete(TableRows::LandCombatDivisions(vec![
+                LandCombatDivisionRow {
+                    combat: 1,
+                    side: 0,
+                    ordinal: 0,
+                    province: province_a,
+                    direction: direction_a,
+                    direction_group: -7,
+                    template_frames: 0b11,
+                    ..LandCombatDivisionRow::default()
+                },
+                LandCombatDivisionRow {
+                    combat: 1,
+                    side: 0,
+                    ordinal: 1,
+                    province: 11,
+                    direction: direction_b,
+                    ..LandCombatDivisionRow::default()
+                },
+            ]))
+        }
+        let mut encoder = FrameEncoder::new();
+        let mut records = vec![
+            Record::SessionStart(session(1)),
+            Record::BranchStart(branch(1, 1)),
+        ];
+        for (hour, hq_unit, direction_a, province_a, direction_b) in
+            [(1, 5, 7, 10, 0), (2, 9, 8, 12, 1)]
+        {
+            let mut frame = source(1, hour);
+            frame.tables[TableId::LandCombatDetails.index()] = details(hour, hq_unit);
+            frame.tables[TableId::LandCombatDivisions.index()] =
+                divisions(direction_a, province_a, direction_b);
+            records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
+        }
+        let current = Replay::from_records(CAMPAIGN.into(), &[records]).unwrap();
+        // The writer's own layout keeps every operand, including a delta that
+        // touches only the new division scalars on the second row.
+        let SeekResult::Frame(frame) = current.seek(1, 2).unwrap() else {
+            panic!()
+        };
+        let TableView::Complete(TableRows::LandCombatDetails(rows)) =
+            &frame.tables[TableId::LandCombatDetails.index()]
+        else {
+            panic!()
+        };
+        assert_eq!(rows[0].sides[0].hq_unit, 9);
+        let TableView::Complete(TableRows::LandCombatDivisions(rows)) =
+            &frame.tables[TableId::LandCombatDivisions.index()]
+        else {
+            panic!()
+        };
+        assert_eq!(rows[0].direction, 8);
+        assert_eq!(rows[1].direction, 1);
+        // The downgraded file reopens with the same old operands and zeroed
+        // new ones; the new-only division change was dropped from its delta.
+        let old = Replay::open(downgrade(&current, FormatVersion::LEGACY_24)).unwrap();
+        assert_eq!(old.format, FormatVersion::LEGACY_24);
+        for hour in [1, 2] {
+            let SeekResult::Frame(frame) = old.seek(1, hour).unwrap() else {
+                panic!("hour {hour} did not decode at format 24")
+            };
+            let TableView::Complete(TableRows::LandCombatDetails(rows)) =
+                &frame.tables[TableId::LandCombatDetails.index()]
+            else {
+                panic!()
+            };
+            assert_eq!(rows[0].province, 10 + hour as u32);
+            assert!(rows[0].sides.iter().all(|side| side.hq_unit == 0));
+            assert_eq!(rows[0].sides[0].commander, 0x8000_0041_0000_0035);
+            let TableView::Complete(TableRows::LandCombatDivisions(rows)) =
+                &frame.tables[TableId::LandCombatDivisions.index()]
+            else {
+                panic!()
+            };
+            assert_eq!(rows[0].direction, 0);
+            assert_eq!(rows[0].direction_group, 0);
+            assert_eq!(rows[0].template_frames, 0);
+            assert_eq!(rows[1].direction, 0);
+            // Old operands still advance through the downgraded delta.
+            assert_eq!(rows[0].province, if hour == 1 { 10 } else { 12 });
+            assert_eq!(rows[1].province, 11);
+        }
+        old.into_history().unwrap();
+    }
+
+    #[test]
     fn older_replays_keep_every_crc_and_trailer_check() {
         let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
         for format in [
@@ -1892,6 +2046,7 @@ mod tests {
             FormatVersion::LEGACY_21,
             FormatVersion::LEGACY_22,
             FormatVersion::LEGACY_23,
+            FormatVersion::LEGACY_24,
         ] {
             let bytes = downgrade(&current, format);
             assert!(Replay::open(bytes.clone()).is_ok());
@@ -1926,7 +2081,7 @@ mod tests {
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24 and \
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24, 25 and \
                      writes {FORMAT_VERSION}"
                 )
             );
