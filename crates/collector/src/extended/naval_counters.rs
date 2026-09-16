@@ -174,13 +174,13 @@ fn task(r: &ctask_force::CounterRow) -> TaskForceCounterInputRow {
     TaskForceCounterInputRow {
         task_force: r.id,
         is_in_regions: r.is_in_regions,
-        mission_byte_391: r.mission_byte_391,
+        running_away: r.running_away,
         engagement_rule: r.engagement_rule,
         mission_region_count: r.mission_region_count,
         bombardment_region: r.bombardment_region,
         repair_parent: r.repair_parent,
         detached_activity: r.detached_activity,
-        detached_mission: r.detached_mission,
+        repair_last_mission: r.repair_last_mission,
     }
 }
 
