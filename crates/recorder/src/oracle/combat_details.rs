@@ -179,26 +179,41 @@ fn hq_formations(save: &Save) -> io::Result<BTreeMap<u64, Option<u64>>> {
     Ok(formations)
 }
 
-/// 1415C5F10's badge decision as a unit handle: the recorded 140BDFD90 unit
-/// against the save's `leader_unit` of the commander's formation. Without a
-/// selected commander the native never shows the badge, so zero is expected.
-/// A commander with no saved formation (same-hour reorganisation between the
-/// sampled tick and the save) is a stated coverage gap, not a waived
-/// difference: the commander's own skill/category comparison above still
-/// covers the leader itself.
+/// The badge records a gated provider handle. The save contains the provider,
+/// but omits the runtime DLC/formation gates that can hide it.
 fn hq_unit(
     r: &mut Report,
     label: &str,
-    commander: u64,
-    actual: u64,
+    side: &replay::rows::LandCombatSideDetails,
     formations: &BTreeMap<u64, Option<u64>>,
 ) {
-    if commander == 0 {
+    let actual = side.hq_unit;
+    if side.commander == 0 || (side.commander_category as u32) >= 2 {
         equal(r, format!("{label} hq_unit"), actual, 0);
         return;
     }
-    match formations.get(&commander) {
-        Some(saved) => equal(r, format!("{label} hq_unit"), actual, saved.unwrap_or(0)),
+    if actual != 0 {
+        equal(
+            r,
+            format!("{label} hq_unit committed membership"),
+            side.committed.contains(&actual),
+            true,
+        );
+    }
+    match formations.get(&side.commander) {
+        Some(saved) => {
+            let expected = saved.unwrap_or(0);
+            if expected == 0 || !side.committed.contains(&expected) {
+                equal(r, format!("{label} hq_unit"), actual, 0);
+            } else if actual != 0 {
+                equal(r, format!("{label} hq_unit"), actual, expected);
+            } else {
+                r.limitation(
+                    "a saved committed HQ provider does not prove badge visibility: runtime DLC and formation gates are not serialized; a hidden badge is not exactly comparable",
+                    label,
+                );
+            }
+        }
         None => r.limitation(
             "side commander has no saved formation; a same-hour reorganisation after the sampled tick moves leaders between groups, so the HQ handle is not comparable this hour",
             label,
@@ -208,7 +223,18 @@ fn hq_unit(
 
 fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatDetails>()?;
-    let formations = hq_formations(save)?;
+    let formations = if r
+        .recorded_format
+        .is_some_and(|format| format.version() < 25)
+    {
+        r.limitation(
+            "HQ badge operands were not recorded before format 25",
+            "LandCombatDetails",
+        );
+        None
+    } else {
+        Some(hq_formations(save)?)
+    };
     let mut seen = BTreeSet::new();
     for row in rows {
         if !seen.insert(row.combat) {
@@ -269,7 +295,9 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 (actual.tactic_kind == 2).then_some(actual.tactic_id),
                 side.tactic,
             );
-            hq_unit(r, &label, actual.commander, actual.hq_unit, &formations);
+            if let Some(formations) = &formations {
+                hq_unit(r, &label, actual, formations);
+            }
             positive_decimal(
                 r,
                 &format!("{label} anti_air_attack"),
@@ -1259,22 +1287,39 @@ mod tests {
         assert_eq!(report.differences.len(), 1);
     }
     #[test]
-    fn hq_badge_handle_matches_saved_leader_unit_or_fails_exact() {
+    fn hq_badge_checks_comparable_handles_and_reports_unsaved_visibility() {
         let formations = BTreeMap::from([(7_u64, Some(11_u64)), (9, None)]);
+        let side = |commander, hq_unit| replay::rows::LandCombatSideDetails {
+            commander,
+            hq_unit,
+            commander_category: 0,
+            committed: vec![11, 12],
+            ..Default::default()
+        };
         let mut report = Report::default();
-        hq_unit(&mut report, "shown", 7, 11, &formations);
-        hq_unit(&mut report, "hidden provider", 9, 0, &formations);
-        hq_unit(&mut report, "no commander", 0, 0, &formations);
+        hq_unit(&mut report, "shown", &side(7, 11), &formations);
+        hq_unit(&mut report, "no provider", &side(9, 0), &formations);
+        hq_unit(&mut report, "no commander", &side(0, 0), &formations);
+        hq_unit(&mut report, "runtime hidden", &side(7, 0), &formations);
+        hq_unit(&mut report, "reorganised", &side(13, 0), &formations);
         assert!(report.differences.is_empty());
-        hq_unit(&mut report, "shown", 7, 0, &formations);
-        hq_unit(&mut report, "hidden provider", 9, 11, &formations);
-        hq_unit(&mut report, "no commander", 0, 11, &formations);
-        assert_eq!(report.differences.len(), 3);
-        // A commander with no saved formation is a stated coverage gap (a
-        // same-hour reorganisation after the sampled tick), never a waived
-        // difference and never a failure.
-        hq_unit(&mut report, "reorganised", 13, 0, &formations);
-        assert_eq!(report.differences.len(), 3);
         assert!(!report.limitations.is_empty());
+        hq_unit(&mut report, "wrong provider", &side(7, 12), &formations);
+        hq_unit(&mut report, "no provider", &side(9, 11), &formations);
+        hq_unit(&mut report, "no commander", &side(0, 11), &formations);
+        assert_eq!(report.differences.len(), 3);
+        let mut uncommitted = side(7, 11);
+        uncommitted.committed.clear();
+        hq_unit(&mut report, "not committed", &uncommitted, &formations);
+        assert_eq!(report.differences.len(), 5);
+        let mut ineligible = side(7, 11);
+        ineligible.commander_category = 2;
+        hq_unit(
+            &mut report,
+            "ineligible commander",
+            &ineligible,
+            &formations,
+        );
+        assert_eq!(report.differences.len(), 6);
     }
 }

@@ -18,6 +18,8 @@ const FLAG_IMPROVED_BLINN_PHONG: u32 = 1u;
 const FLAG_EMISSIVE: u32 = 2u;
 const FLAG_SNOW: u32 = 4u;
 const FLAG_ALPHA_TEST: u32 = 8u;
+/// The `TRAIN` mesh flag (`pdxmesh.shader` TRAIN branch).
+const FLAG_TRAIN: u32 = 16u;
 
 @group(1) @binding(0) var diffuse_map: texture_2d<f32>;
 /// `SpecularMap`, which the engine calls the properties map under
@@ -83,12 +85,12 @@ fn mesh_skin(vector: vec4<f32>, joints: vec4<u32>, weights: vec4<f32>) -> vec3<f
 fn mesh_animated(vector: vec4<f32>, bind: vec4<f32>, joints: vec4<u32>, weights: vec4<f32>, rigid: u32, offset: u32) -> vec3<f32> {
     if offset == 0u {
         if (rigid & 0x80000000u) != 0u { return vector.xyz; }
-        return mesh_skin(vector,joints,weights);
+        return mesh_skin(vector, joints, weights);
     }
-    if dot(weights,vec4<f32>(1.0)) == 0.0 {
-        return mesh_skin(bind,vec4<u32>((rigid & 0x7fffffffu)+offset),vec4<f32>(1.0,0.0,0.0,0.0));
+    if dot(weights, vec4<f32>(1.0)) == 0.0 {
+        return mesh_skin(bind, vec4<u32>((rigid & 0x7fffffffu) + offset), vec4<f32>(1.0, 0.0, 0.0, 0.0));
     }
-    return mesh_skin(bind,joints+vec4<u32>(offset),weights);
+    return mesh_skin(bind, joints + vec4<u32>(offset), weights);
 }
 
 fn mesh_rotation(instance_rotation: f32, pitch: f32, roll: f32) -> mat3x3<f32> {
@@ -353,9 +355,18 @@ fn mesh_fragment(input: MeshOut) -> @location(0) vec4<f32> {
         alpha = emissive;
     }
 
-    // `ApplyFOW( vColor, FogColorFactor, min( FogAlphaFactor, NegFogMultiplier ) )`
-    // is the identity while both factors are zero, as with fog of war off. It is not
-    // called yet, so with fog of war on a map object is drawn unfogged; `map::tables` says so.
+    // `GetFogFactors( FogColorFactor, FogAlphaFactor, vPos, 0.0, FOWNoise, FOWHeight, IntelMap );`
+    // `vColor = ApplyFOW( vColor, FogColorFactor, min( FogAlphaFactor, NegFogMultiplier ) );`
+    // `PixelPdxMeshStandard` computes the factors per pixel at the mesh's own world
+    // position with no extra height (the `In.vPos_Height.w` term is commented out in the
+    // shader cache's preprocessed source; UNVERIFIED by a committed source, so a tall
+    // mesh under height fog is the residual risk). This differs from the lit terrain
+    // passes, which read the screen-space buffer the unlit pre-pass filled. With fog
+    // of war off the intel map is zero and this is the identity. `NegFogMultiplier`
+    // is the constant 1.0 below, so the `min` is dead code that keeps the engine's
+    // call shape for the day the multiplier is animated per frame.
+    let fog = get_fog_factors(pos, 0.0);
+    color = apply_fow(color, fog.x, min(fog.y, globals.frame.ambient_neg_y_neg_fog.w));
     color = apply_distance_fog(color, pos);
     // `DayNight` is `DayNightWithBlend` at a blend of 1
     // (`standardfuncsgfx.fxh:397-400`).
@@ -365,7 +376,9 @@ fn mesh_fragment(input: MeshOut) -> @location(0) vec4<f32> {
     // target, but the value is kept as the shader computes it.
     // pdxmesh.shader TRAIN: white RGB, independent of diffuse alpha.
     // Zero-alpha cars outside the route are omitted by TrainPlan::field.
-    if has(16u) {
+    // Whether the engine fogs a train before this branch is UNVERIFIED; the
+    // port keeps the FOW above, so a fogged train keeps its white under fog.
+    if has(FLAG_TRAIN) {
         let delta = input.world.xz - input.train_clip.xy;
         let clip_alpha = select(0.0, 1.0, dot(delta, input.train_clip.zw) >= 0.0);
         return vec4<f32>(color, clip_alpha * smoothstep(0.0, 2.5, length(delta)) * slot.alpha);

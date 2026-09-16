@@ -4,13 +4,13 @@
 // snow and carries the country borders and occupation stripes the same way the
 // terrain does. It is not a lit surface: there is no normal, no light and no
 // `ComposeLight*` anywhere in the shader. The colour is the texture, snowed,
-// bordered, then faded by `vRailwayAlpha`.
+// bordered, then faded by `vRailwayAlpha`. Distance fog and day-night grading
+// appear in none of the effect's code either, so the strip skips them the same
+// way the terrain does not: rails stay full-bright at distance and at night,
+// as the game draws them.
 //
-// Dropped, with the reason:
+ // Dropped, with the reason:
 //
-// * `ApplyFOW( Color.rgb, ShadowMap, Input.vScreenCoord )`, the screen-space
-//   fog-of-war read, is not ported here yet: with fog of war on a railway is
-//   drawn unfogged, which `map::tables`' fog-of-war line states.
 // * `LeanTexture1/2`, `RiverData`, `HeightNormal`, `CityLightsAndSnowNoise`,
 //   `LightIndexMap` and `LightDataMap` are declared as samplers by the effect
 //   and are read by none of its code.
@@ -27,8 +27,9 @@ const RAIL_LEVELS: f32 = 5.0;
 @group(1) @binding(6) var linear_clamp: sampler;
 
 /// `ConstantBuffer(1, 32)` reduced to the one value the ported code reads, plus
-/// the viewer's own world-wrap offset. `ShadowMapTextureMatrix` belongs to the
-/// dropped fog-of-war read and `vTimeGlobal` is read by nothing.
+/// the viewer's own world-wrap offset. `ShadowMapTextureMatrix` is still
+/// unused: the ported screen-space fog read below takes `shadow_map` and the
+/// fragment position directly. `vTimeGlobal` is read by nothing.
 struct RailSlot {
     world_offset_x: f32,
     railway_alpha: f32,
@@ -123,5 +124,8 @@ fn rail_fragment(input: RailOut) -> @location(0) vec4<f32> {
     color = secondary.color;
 
     // `Color.a *= vRailwayAlpha;`
+    // `float3 FOWColor = ApplyFOW( Color.rgb, ShadowMap, Input.vScreenCoord );`
+    // the screen-space fog buffer the unlit pre-pass filled, as the borders read it.
+    color = apply_fow_buffer(color, input.clip);
     return vec4<f32>(color, sampled.a * rail.railway_alpha);
 }

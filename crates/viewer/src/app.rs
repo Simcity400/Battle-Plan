@@ -1027,7 +1027,12 @@ impl Viewer {
         } else {
             0.0
         };
-        if let Some(error) = self.shown.as_ref().and_then(|shown| shown.error.clone()) {
+        if let Some(error) = self
+            .shown
+            .as_ref()
+            .filter(|shown| shown.epoch == epoch)
+            .and_then(|shown| shown.error.clone())
+        {
             return Err(std::io::Error::other(error));
         }
         Ok(())
@@ -1371,13 +1376,25 @@ impl Viewer {
             .refresh_hour(state, document, &mut laps)
             .err()
             .map(|error| error.to_string());
+        // An error view otherwise stops repainting; a paused seek away from it
+        // still needs to poll the asynchronous builders until its hour arrives.
+        if self
+            .playhead
+            .is_some_and(|head| !self.hour_ready(head.branch, head.hour))
+        {
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
+        }
         if let Some(error) = &self.map_error {
             ui.centered_and_justified(|ui| {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
             });
             return Ok(());
         }
-        let Some(shown) = &self.shown else {
+        let Some(shown) = self
+            .shown
+            .as_ref()
+            .filter(|shown| shown.epoch == self.epoch)
+        else {
             // The first hour is still being built; keep polling for it.
             ui.ctx().request_repaint();
             ui.centered_and_justified(|ui| {

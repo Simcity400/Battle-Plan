@@ -290,15 +290,15 @@ impl Destination<'_> {
                     }
                 }
             } else {
-                // Capacity grows off-thread; skip this combat rather than
-                // failing the hour or inventing operands. The bound above
-                // already raised the growth requirement.
-                if self.active[1] {
-                    self.ticks[1] += elapsed(started);
-                } else {
-                    self.ticks[0] += elapsed(started);
+                // Keep the dependent tables explicitly unavailable until the
+                // arena grows off-thread. Modifiers remain independent and
+                // must still visit this combat below.
+                for index in 0..2 {
+                    if self.active[index] && self.progress[index].failure.is_none() {
+                        self.progress[index].failure =
+                            Some("land window operands exceed capture capacity");
+                    }
                 }
-                return;
             }
             if self.active[1] {
                 self.ticks[1] += elapsed(started);
@@ -354,11 +354,14 @@ impl Destination<'_> {
                         // fails the table closed rather than zero-filling
                         // operands the viewer would draw as absent icons.
                         let operand = match self.current_window {
-                            Some((combat, start, len, _)) if combat == source.id => self
-                                .window[start..start + len]
-                                .iter()
-                                .find(|row| row.handle == handle)
-                                .copied(),
+                            Some((combat, start, len, _)) if combat == source.id => {
+                                let index = ordinal as usize
+                                    + if side == 0 { 0 } else { source.attackers.count as usize };
+                                self.window[start..start + len]
+                                    .get(index)
+                                    .filter(|row| row.handle == handle)
+                                    .copied()
+                            }
                             _ => None,
                         };
                         if operand.is_none() && self.progress[1].failure.is_none() {
@@ -721,7 +724,7 @@ impl Captured {
             supply_terms: Arena::new(c.supply_terms, successful[1]),
             acclimatization: Arena::new(c.acclimatization, successful[1]),
             transport_terms: Arena::new(c.transport_terms, successful[1]),
-            window: Arena::new(c.window_divisions, successful[1]),
+            window: Arena::new(c.window_divisions, successful[0].min(successful[1])),
             census: vec![cland_combat::Row::default(); c.combats],
             census_participants: vec![0; c.census_participants],
             required_census: 0,
@@ -798,7 +801,8 @@ impl Captured {
             .grow(&mut c.acclimatization, successful[1]);
         self.transport_terms
             .grow(&mut c.transport_terms, successful[1]);
-        self.window.grow(&mut c.window_divisions, successful[1]);
+        self.window
+            .grow(&mut c.window_divisions, successful[0].min(successful[1]));
         grow_capacity(&mut c.combats, self.required_census);
         grow_capacity(
             &mut c.census_participants,
@@ -1603,6 +1607,31 @@ mod tests {
         );
         assert_eq!(destination.sides[0].side, 1);
         assert_eq!(destination.sides[0].len, 0);
+
+        // Window pressure must fail its consumers visibly and still attempt
+        // the independent modifiers census, even with no operand slots.
+        destination.progress = [Progress::default(); N];
+        destination.active = [true; N];
+        destination.visit(
+            &memory,
+            0,
+            0,
+            cland_combat::Source {
+                pointer: 0,
+                id: 62,
+                attackers: engine::cpdx_array::Array { data: 0, count: 1 },
+                defenders: engine::cpdx_array::Array { data: 0, count: 0 },
+                provinces: engine::cpdx_array::Array { data: 0, count: 0 },
+            },
+        );
+        assert_eq!(destination.window_progress.required, 1);
+        for progress in &destination.progress[..2] {
+            assert!(matches!(
+                progress.outcome(Outcome::Rows { len: 1 }),
+                Outcome::Unavailable { .. }
+            ));
+        }
+        assert_eq!(destination.progress[2].required, 2);
     }
 
     #[test]
@@ -1841,6 +1870,13 @@ mod tests {
         assert_eq!(captured.divisions.second.len(), 2);
         assert_eq!(captured.division_commanders.second.len(), 2);
         assert_eq!(captured.width_terms.second.len(), 2);
+        assert_eq!(captured.window.second.len(), 2);
+        let mut details_pending = Captured::with_capacities(&c, &[0, 200, 200]);
+        assert_eq!(details_pending.window.second.len(), 2);
+        details_pending.grow(&mut c, &[199, 200, 200]);
+        assert!(!details_pending.window.second.is_empty());
+        details_pending.grow(&mut c, &[200; N]);
+        assert!(details_pending.window.second.is_empty());
         let memory = engine::memory::SliceMemory {
             base: 0,
             bytes: &[],

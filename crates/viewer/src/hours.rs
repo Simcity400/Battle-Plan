@@ -123,6 +123,15 @@ impl Want {
     fn invalidates(&self, next: &Want) -> bool {
         self.perspective != next.perspective || self.mode != next.mode
     }
+
+    /// Old-generation hours cannot satisfy a changed perspective or fill mode.
+    fn discard_stale_have(&mut self, previous: Option<&Self>) -> bool {
+        let invalidates = previous.is_some_and(|old| old.invalidates(self));
+        if invalidates {
+            self.have.clear();
+        }
+        invalidates
+    }
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -235,10 +244,9 @@ struct Movers {
 impl Part {
     /// The error an hour carries when its builder panicked.
     ///
-    /// Any variant carries the hour: [`Pending::take`] records the first error
-    /// it sees, so the window shows the hour's error rather than waiting for a
-    /// part that never arrives, and the dead part's slots are already filled by
-    /// its dropped [`Fill`].
+    /// The failed part still arrives, so [`Pending::take`] can finish the hour
+    /// and choose the highest-priority error after all parts report. Its shared
+    /// slots are already filled by the dropped [`Fill`].
     fn failed(name: &'static str) -> Self {
         let error = || io::Error::other(format!("{name}: the hour builder panicked"));
         match name {
@@ -339,8 +347,10 @@ impl Slots {
 }
 
 enum Event {
+    Shutdown,
     Want(Box<Want>),
     Part {
+        ticket: u64,
         epoch: u64,
         branch: BranchId,
         hour: Hour,
@@ -409,6 +419,7 @@ impl Drop for Pool {
 
 /// An hour dispatched and not yet assembled.
 struct Pending {
+    ticket: u64,
     current: Current,
     alive: Arc<AtomicBool>,
     started: Instant,
@@ -472,7 +483,12 @@ impl Pending {
         }
     }
 
-    fn take(&mut self, name: &'static str, ms: f64, part: Part) {
+    fn take(&mut self, ticket: u64, name: &'static str, ms: f64, part: Part) -> bool {
+        // A seek may cancel and then request the same hour within one epoch.
+        // Results from the cancelled dispatch must not fill its replacement.
+        if ticket != self.ticket {
+            return false;
+        }
         self.received += 1;
         self.laps.push((name, ms));
         let rank = part_rank(&part);
@@ -510,6 +526,8 @@ impl Pending {
                 Err(error) => self.fail_part(name, rank, error),
             },
         }
+        // Wait for every part so error priority is independent of arrival order.
+        self.received == PARTS
     }
 
     fn layers(self) -> Result<Layers, String> {
@@ -586,8 +604,13 @@ impl Coordinator {
                 }
             };
             match event {
+                Some(Event::Shutdown) => {
+                    self.invalidate();
+                    return;
+                }
                 Some(Event::Want(want)) => self.set_want(*want),
                 Some(Event::Part {
+                    ticket,
                     epoch,
                     branch,
                     hour,
@@ -597,28 +620,26 @@ impl Coordinator {
                 }) => {
                     if epoch == self.epoch
                         && let Some(pending) = self.pending.get_mut(&(branch, hour))
+                        && pending.take(ticket, name, ms, *part)
                     {
-                        pending.take(name, ms, *part);
-                        if pending.received == PARTS || pending.error.is_some() {
-                            let pending = self.pending.remove(&(branch, hour)).expect("present");
-                            pending.alive.store(false, Ordering::Relaxed);
-                            // Laps arrive in pool order; report them in fixed
-                            // part order so the profile reads the same.
-                            let mut laps = pending.laps.clone();
-                            laps.sort_by_key(|(name, _)| lap_rank(name));
-                            let built = Built {
-                                epoch,
-                                branch,
-                                hour,
-                                view: pending.view,
-                                current: pending.current.clone(),
-                                wall: pending.started.elapsed().as_secs_f64() * 1000.0,
-                                laps,
-                                layers: pending.layers(),
-                            };
-                            if !self.send(built) {
-                                return;
-                            }
+                        let pending = self.pending.remove(&(branch, hour)).expect("present");
+                        pending.alive.store(false, Ordering::Relaxed);
+                        // Laps arrive in pool order; report them in fixed
+                        // part order so the profile reads the same.
+                        let mut laps = pending.laps.clone();
+                        laps.sort_by_key(|(name, _)| lap_rank(name));
+                        let built = Built {
+                            epoch,
+                            branch,
+                            hour,
+                            view: pending.view,
+                            current: pending.current.clone(),
+                            wall: pending.started.elapsed().as_secs_f64() * 1000.0,
+                            laps,
+                            layers: pending.layers(),
+                        };
+                        if !self.send(built) {
+                            return;
                         }
                     }
                 }
@@ -642,10 +663,11 @@ impl Coordinator {
         }
         self.pending.clear();
         self.sent.clear();
+        self.slots.clear();
     }
 
-    fn set_want(&mut self, want: Want) {
-        if self.want.as_ref().is_some_and(|old| old.invalidates(&want)) {
+    fn set_want(&mut self, mut want: Want) {
+        if want.discard_stale_have(self.want.as_ref()) {
             self.invalidate();
         }
         let range = self
@@ -760,7 +782,9 @@ impl Coordinator {
         };
         let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         let alive = Arc::new(AtomicBool::new(true));
+        let ticket = next_id();
         let mut pending = Pending {
+            ticket,
             current: current.clone(),
             alive: Arc::clone(&alive),
             started,
@@ -853,6 +877,7 @@ impl Coordinator {
                         Err(_) => Part::failed(name),
                     };
                 let _ = events.send(Event::Part {
+                    ticket,
                     epoch,
                     branch,
                     hour,
@@ -967,14 +992,17 @@ impl Coordinator {
         {
             let fill = Fill(Arc::clone(&slots.buildings));
             let near = slots_of(&neighbours, |slots| &slots.buildings);
+            let building_perspective = want.perspective.clone();
             submit(
                 "buildings",
                 Box::new(move |view| {
-                    Part::Buildings(view.map_building_field().map(|(field, _)| {
-                        let buildings = Shared::share(wait_all(near), field);
-                        fill.set(Some(Arc::clone(&buildings)));
-                        buildings
-                    }))
+                    Part::Buildings(view.map_building_field(&building_perspective).map(
+                        |(field, _)| {
+                            let buildings = Shared::share(wait_all(near), field);
+                            fill.set(Some(Arc::clone(&buildings)));
+                            buildings
+                        },
+                    ))
                 }),
             );
         }
@@ -1022,11 +1050,21 @@ impl Coordinator {
     }
 }
 
+/// The client owns shutdown; internal result senders cannot keep an idle
+/// coordinator alive after the last window handle has gone.
+struct Requests(Sender<Event>);
+
+impl Drop for Requests {
+    fn drop(&mut self) {
+        let _ = self.0.send(Event::Shutdown);
+    }
+}
+
 /// The window's handle on its hour builders.
 pub struct Pipeline {
     content: Arc<Content>,
     replay: Arc<Replay>,
-    events: Sender<Event>,
+    events: Requests,
     results: Receiver<Built>,
     want: Option<Want>,
     epoch: u64,
@@ -1075,7 +1113,7 @@ impl Pipeline {
         Ok(Self {
             content,
             replay,
-            events,
+            events: Requests(events),
             results,
             want: None,
             epoch: 0,
@@ -1092,11 +1130,13 @@ impl Pipeline {
     /// window must keep built hours of: a new perspective or mode begins one.
     pub fn want(&mut self, mut want: Want) -> io::Result<u64> {
         want.received = self.received.get();
+        let invalidates = want.discard_stale_have(self.want.as_ref());
         if self.want.as_ref() != Some(&want) {
-            if self.want.as_ref().is_some_and(|old| old.invalidates(&want)) {
+            if invalidates {
                 self.epoch += 1;
             }
             self.events
+                .0
                 .send(Event::Want(Box::new(want.clone())))
                 .map_err(|_| stopped())?;
             self.want = Some(want);
@@ -1188,6 +1228,115 @@ impl Dropper {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_view() -> View {
+        View {
+            camera: Camera::fit([100.0, 100.0], [100, 100]),
+            viewport: [100, 100],
+            states: false,
+        }
+    }
+
+    fn pending(ticket: u64) -> Pending {
+        Pending {
+            ticket,
+            current: Current::Gap {
+                branch: 1,
+                hour: 10,
+                reason: String::new(),
+            },
+            alive: Arc::new(AtomicBool::new(true)),
+            started: Instant::now(),
+            political: None,
+            names: None,
+            overlay: None,
+            rails: None,
+            buildings: None,
+            movers: None,
+            fog: None,
+            snow: None,
+            received: 0,
+            error: None,
+            error_rank: None,
+            laps: Vec::new(),
+            view: test_view(),
+        }
+    }
+
+    #[test]
+    fn concurrent_errors_wait_for_all_parts_and_choose_fixed_priority() {
+        let names = [
+            "political",
+            "names",
+            "overlay",
+            "rails",
+            "buildings",
+            "movers",
+            "fog",
+            "snow",
+        ];
+        for shift in 0..PARTS {
+            let mut pending = pending(7);
+            for index in 0..PARTS {
+                let name = names[(index + shift) % PARTS];
+                let done = pending.take(7, name, 0.0, Part::failed(name));
+                assert_eq!(
+                    done,
+                    index + 1 == PARTS,
+                    "arrival {index}, rotation {shift}"
+                );
+            }
+            assert_eq!(pending.error_rank, Some(0));
+            assert!(pending.layers().err().unwrap().starts_with("political:"));
+        }
+    }
+
+    #[test]
+    fn a_cancelled_dispatch_cannot_fill_a_rerequested_hour() {
+        let mut replacement = pending(8);
+        assert!(!replacement.take(7, "snow", 0.0, Part::failed("snow")));
+        assert_eq!(replacement.received, 0);
+        assert!(replacement.error.is_none());
+        assert!(replacement.laps.is_empty());
+        assert!(!replacement.take(8, "snow", 0.0, Part::failed("snow")));
+        assert_eq!(replacement.received, 1);
+    }
+
+    #[test]
+    fn dropping_requests_stops_a_coordinator_that_keeps_an_internal_sender() {
+        let (events, inbox) = mpsc::channel();
+        let internal = events.clone();
+        drop(Requests(events));
+        assert!(matches!(inbox.try_recv(), Ok(Event::Shutdown)));
+        drop(internal);
+    }
+
+    #[test]
+    fn perspective_and_mode_changes_discard_old_hour_acknowledgements() {
+        let old = Want {
+            branch: 1,
+            hour: 10,
+            ahead: 2,
+            behind: 2,
+            perspective: Default::default(),
+            mode: political::Mode::from_control(true),
+            view: test_view(),
+            have: vec![10, 11],
+            received: 2,
+        };
+        let mut next = old.clone();
+        next.perspective.fog = !next.perspective.fog;
+        assert!(next.discard_stale_have(Some(&old)));
+        assert!(next.have.is_empty());
+        let mut next = old.clone();
+        next.mode = political::Mode::from_control(false);
+        assert!(next.discard_stale_have(Some(&old)));
+        assert!(next.have.is_empty());
+        let mut next = old.clone();
+        next.view.camera.height += 1.0;
+        assert!(!next.discard_stale_have(Some(&old)));
+        assert_eq!(next.have, old.have);
+    }
 
     #[test]
     fn a_filled_slot_answers_every_waiter() {

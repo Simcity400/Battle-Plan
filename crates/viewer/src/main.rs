@@ -762,7 +762,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // weather
         let snow_mud = document.snow_mud()?;
         // close zoom
-        let (map_building_field, building_summary) = document.map_building_field()?;
+        let (map_building_field, building_summary) =
+            document.map_building_field(&options.perspective)?;
         let aircraft_plan = document.aircraft_plan(&options.perspective)?;
         for line in aircraft_plan.report(&document.aircraft) {
             println!("{line}");
@@ -1091,13 +1092,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         println!(
             "Map buildings: {} authored slots, {} built rows, {} entities placed, {} drawn; \
-             {} rows with an unnamed type token, {} with no slot at their location",
+             {} rows with an unnamed type token, {} with no slot at their location; \
+             {} slots hidden by fog of war, {} need_detection slots placed with detection unrecorded",
             building_summary.slots,
             building_summary.built,
             building_summary.placed,
             report.map_buildings_drawn,
             building_summary.unnamed_tokens,
-            building_summary.missing_slots
+            building_summary.missing_slots,
+            building_summary.fogged,
+            building_summary.undetected_candidates
         );
         for (name, count) in &building_summary.missing_by_type {
             println!("  no authored slot: {name} x{count}");
@@ -1203,12 +1207,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         // counters
         println!(
-            "Counters: {} land ({} between provinces), {} naval; {} air bases ({} showing their plane count), {} naval bases; {} land combats, {} naval combats; {} stacks with no anchor",
+            "Counters: {} land ({} between provinces), {} naval; {} air bases ({} showing their plane count, {} hidden by fog of war), {} naval bases; {} land combats, {} naval combats; {} stacks with no anchor",
             counter_report.land_counters,
             counter_report.moving,
             counter_report.naval_counters,
             counter_report.air_bases,
             counter_report.air_base_counts,
+            counter_report.hidden_air_bases,
             counter_report.naval_bases,
             counter_report.land_combats,
             counter_report.naval_combats,
