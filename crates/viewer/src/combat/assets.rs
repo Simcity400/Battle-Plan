@@ -3,13 +3,29 @@ use super::layout::{Node, number, string, value};
 use crate::map::{sprites::SpriteSheet, text};
 use installed_content::{
     ResolvedLayers, fonts, gfx, gui,
-    image::{dds, tga},
+    image::{Rgba8Image, dds, tga},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
 
+/// One wanted sprite's file reads, resolved up front so the merge below
+/// keeps the warning order and texture ids of the serial load.
+enum WantedSprite {
+    Skip,
+    Warn(String),
+    Load {
+        progress: bool,
+        first: String,
+        second: Option<String>,
+    },
+}
+
+/// Portraits and inline icons resolve outside the verified layers.
+fn is_uncovered(path: &str) -> bool {
+    path.starts_with("gfx/leaders/") || path.starts_with("gfx/texticons/")
+}
 pub struct Sprite {
     pub sheet: SpriteSheet,
     pub second: Option<SpriteSheet>,
@@ -44,12 +60,7 @@ fn path(raw: &str) -> String {
         .collect::<Vec<_>>()
         .join("/")
 }
-fn load_image(
-    layers: &ResolvedLayers,
-    path: &str,
-    images: &mut Vec<dds::Texture>,
-    uncovered: bool,
-) -> io::Result<SpriteSheet> {
+fn decode_image(layers: &ResolvedLayers, path: &str, uncovered: bool) -> io::Result<dds::Texture> {
     // Shipped declarations retain .tga names after their textures were converted to DDS.
     // Resolve only a declared asset's same-stem replacement, through the verified layer index.
     let replacement = path.rsplit_once('.').map(|(stem, _)| format!("{stem}.dds"));
@@ -66,13 +77,21 @@ fn load_image(
         }
         result => result?,
     };
-    let texture = if bytes.starts_with(b"DDS ") {
-        super::texture::uploadable(dds::decode(&bytes)?)?
+    if bytes.starts_with(b"DDS ") {
+        Ok(super::texture::uploadable(dds::decode(&bytes)?)?)
     } else {
-        dds::Texture::from_rgba8(tga::decode(&bytes).map_err(|error| {
-            io::Error::new(error.kind(), format!("combat texture {path}: {error}"))
-        })?)
-    };
+        Ok(dds::Texture::from_rgba8(tga::decode(&bytes).map_err(
+            |error| io::Error::new(error.kind(), format!("combat texture {path}: {error}")),
+        )?))
+    }
+}
+fn load_image(
+    layers: &ResolvedLayers,
+    path: &str,
+    images: &mut Vec<dds::Texture>,
+    uncovered: bool,
+) -> io::Result<SpriteSheet> {
+    let texture = decode_image(layers, path, uncovered)?;
     let sheet = SpriteSheet {
         name: path.into(),
         texture: images.len(),
@@ -307,14 +326,20 @@ impl Assets {
         let mut warnings = Vec::new();
         let mut decoded = BTreeMap::new();
         let mut uncovered_portraits = false;
+        // Resolve every wanted sprite's reads up front; the first textures
+        // decode on scoped threads below and the merge keeps the serial
+        // warning order and texture ids.
+        let mut planned = Vec::new();
+        let mut first_paths = Vec::new();
         for name in wanted {
             if name == "GFX_tiled_window_transparent" || name == "GFX_flag_small2" {
+                planned.push((name, WantedSprite::Skip));
                 continue;
             }
             let Some(declaration) = declarations.get(&name) else {
-                warnings.push(format!(
-                    "Combat UI: sprite {name} is not declared; its widget stays empty."
-                ));
+                let warning =
+                    format!("Combat UI: sprite {name} is not declared; its widget stays empty.");
+                planned.push((name, WantedSprite::Warn(warning)));
                 continue;
             };
             let progress = declaration.kind.eq_ignore_ascii_case("progressbartype");
@@ -323,31 +348,83 @@ impl Assets {
                 .as_deref()
                 .or_else(|| string(&declaration.items, "textureFile1"));
             let Some(first) = first else {
-                warnings.push(format!(
-                    "Combat UI: {name} has no texture; widget stays empty."
-                ));
+                let warning = format!("Combat UI: {name} has no texture; widget stays empty.");
+                planned.push((name, WantedSprite::Warn(warning)));
                 continue;
             };
             let first = path(first);
-            let uncovered =
-                first.starts_with("gfx/leaders/") || first.starts_with("gfx/texticons/");
-            if uncovered {
+            if is_uncovered(&first) {
                 uncovered_portraits = true;
             }
-            let mut sheet = match decoded
-                .get(&first)
-                .cloned()
-                .map(Ok)
-                .unwrap_or_else(|| load_image(layers, &first, images, uncovered))
-            {
-                Ok(sheet) => sheet,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    warnings.push(format!("Combat UI: declared sprite {name} has no texture {first}; widget stays empty."));
+            if !first_paths.contains(&first) {
+                first_paths.push(first.clone());
+            }
+            planned.push((
+                name,
+                WantedSprite::Load {
+                    progress,
+                    first,
+                    second: string(&declaration.items, "textureFile2").map(path),
+                },
+            ));
+        }
+        // First textures decode on scoped threads; the merge keeps the
+        // serial warning order and texture ids.
+        let mut firsts: BTreeMap<String, io::Result<dds::Texture>> = std::thread::scope(|scope| {
+            first_paths
+                .iter()
+                .map(|path| {
+                    scope.spawn(move || {
+                        (path.clone(), decode_image(layers, path, is_uncovered(path)))
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|handle| handle.join().expect("combat sprite decoder panicked"))
+                .collect()
+        });
+        for (name, sprite) in planned {
+            let (progress, first, second) = match sprite {
+                WantedSprite::Skip => continue,
+                WantedSprite::Warn(warning) => {
+                    warnings.push(warning);
                     continue;
                 }
-                Err(error) => return Err(error),
+                WantedSprite::Load {
+                    progress,
+                    first,
+                    second,
+                } => (progress, first, second),
             };
-            decoded.insert(first.clone(), sheet.clone());
+            let declaration = declarations
+                .get(&name)
+                .expect("wanted sprite declared up front");
+            let mut sheet = match decoded.get(&first).cloned() {
+                Some(sheet) => sheet,
+                None => {
+                    match firsts
+                        .remove(&first)
+                        .expect("combat sprite decoded up front")
+                    {
+                        Ok(texture) => {
+                            let sheet = SpriteSheet {
+                                name: first.clone(),
+                                texture: images.len(),
+                                frames: 1,
+                                size: [texture.width, texture.height],
+                            };
+                            images.push(texture);
+                            decoded.insert(first.clone(), sheet.clone());
+                            sheet
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                            warnings.push(format!("Combat UI: declared sprite {name} has no texture {first}; widget stays empty."));
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+            };
             sheet.frames = declaration.frames;
             sheet.name = name.clone();
             let size = value(&declaration.items, "size")
@@ -359,8 +436,8 @@ impl Assets {
                     ]
                 })
                 .unwrap_or(sheet.frame_size());
-            let second = string(&declaration.items, "textureFile2")
-                .map(|p| load_image(layers, &path(p), images, false))
+            let second = second
+                .map(|p| load_image(layers, &p, images, false))
                 .transpose()?;
             sprites.insert(
                 name,
@@ -459,8 +536,19 @@ fn flag_atlas(
     let texture = images.len();
     let mut pixels = vec![0; (width * height * 4) as usize];
     let mut flags = BTreeMap::new();
-    for (index, file) in files.into_iter().enumerate() {
-        let image = tga::decode(&layers.read(file)?)?;
+    // Flag files read and decode on scoped threads; the pack below runs in
+    // file order, so grid positions and warnings match the serial load.
+    let decoded: Vec<io::Result<Rgba8Image>> = std::thread::scope(|scope| {
+        files
+            .iter()
+            .map(|file| scope.spawn(move || tga::decode(&layers.read(file)?)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().expect("combat flag decoder panicked"))
+            .collect()
+    });
+    for (index, (file, image)) in files.into_iter().zip(decoded).enumerate() {
+        let image = image?;
         if [image.width, image.height] != cell {
             warnings.push(format!(
                 "Combat UI: {file} is not the native{}x{} flag size; omitted.",

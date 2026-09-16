@@ -113,6 +113,24 @@ pub fn load_sheet(
     name: &str,
     images: &mut Vec<dds::Texture>,
 ) -> io::Result<SpriteSheet> {
+    let (texture, frames, size) = decode_sheet(layers, sprites, name)?;
+    let id = images.len();
+    images.push(texture);
+    Ok(SpriteSheet {
+        name: name.to_owned(),
+        texture: id,
+        frames,
+        size,
+    })
+}
+
+/// Reads and decodes one declared sprite without appending it anywhere, so
+/// callers can decode sheets on scoped threads and append in a fixed order.
+pub fn decode_sheet(
+    layers: &ResolvedLayers,
+    sprites: &std::collections::BTreeMap<String, gfx::SpriteType>,
+    name: &str,
+) -> io::Result<(dds::Texture, u32, [u32; 2])> {
     let sprite = sprites
         .get(name)
         .ok_or_else(|| invalid(format!("interface/*.gfx declares no sprite {name}")))?;
@@ -120,8 +138,8 @@ pub fn load_sheet(
         .texture
         .as_deref()
         .ok_or_else(|| invalid(format!("sprite {name} names no texturefile")))?;
-    let texture =
-        dds::decode(&layers.read(path)?).map_err(|error| invalid(format!("{path}: {error}")))?;
+    let bytes = layers.read(path)?;
+    let texture = dds::decode(&bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
     if sprite.frames == 0 || texture.width < sprite.frames {
         return Err(invalid(format!(
             "sprite {name} declares {} frames for a {} texel wide strip",
@@ -129,14 +147,7 @@ pub fn load_sheet(
         )));
     }
     let size = [texture.width, texture.height];
-    let id = images.len();
-    images.push(texture);
-    Ok(SpriteSheet {
-        name: name.to_owned(),
-        texture: id,
-        frames: sprite.frames,
-        size,
-    })
+    Ok((texture, sprite.frames, size))
 }
 
 /// One textured quad in device pixels.

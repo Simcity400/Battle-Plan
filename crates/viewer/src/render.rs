@@ -302,6 +302,8 @@ pub struct DumpReport {
     pub adapter: String,
     /// Wall time of the render call alone, excluding device and texture setup.
     pub render_seconds: f64,
+    /// CPU seconds of the render call before the GPU drain wait.
+    pub cpu_seconds: f64,
     /// Quads the visible grid held.
     pub quads: u32,
     /// Grid step in map pixels.
@@ -426,7 +428,12 @@ pub fn dump_png(
                 layers.trains.clone(),
                 layers.train_plan.clone(),
             )?;
-            scene.set_bridges(&device, &queue, layers.bridges, layers.rail_mesh)?;
+            scene.set_bridges(
+                &device,
+                &queue,
+                layers.bridges,
+                layers.bridges.field(layers.rail_mesh),
+            )?;
         }
         if !layers.omitted.models {
             scene.set_aircraft(
@@ -435,11 +442,14 @@ pub fn dump_png(
                 layers.aircraft.clone(),
                 layers.aircraft_plan.clone(),
             )?;
+            let unit_field = layers.unit_model_field.clone();
+            let min_capacity = unit_field.byte_len() as u64;
             scene.set_unit_models(
                 &device,
                 &queue,
                 layers.unit_models,
-                layers.unit_model_field.clone(),
+                unit_field,
+                min_capacity,
             )?;
         }
         // orders: the recorded player's battle plan
@@ -475,10 +485,19 @@ pub fn dump_png(
                 timeout: None,
             })
             .map_err(io::Error::other)?;
+        // The first render queues new weather simulations' warm-ups within its
+        // frame budget; draining finishes them, so the timed render below draws
+        // exactly the fully warmed weather the synchronous path drew.
+        scene.finish_weather();
         let start = std::time::Instant::now();
         // The animation time is 0 and the overlay is the same one, so a
         // headless dump is deterministic.
         scene.render(&device, &queue, request)?;
+        let cpu_seconds = start.elapsed().as_secs_f64();
+        // `Wait` blocks until the GPU drains the submission, so this is the
+        // frame's GPU execution time plus driver sync, the part no CPU lap
+        // sees. There is no swap chain headlessly, so present/vsync needs the
+        // interactive window.
         device
             .poll(wgpu::PollType::Wait {
                 submission_index: None,
@@ -494,6 +513,7 @@ pub fn dump_png(
         Ok(DumpReport {
             adapter: format!("{} ({:?})", info.name, info.backend),
             render_seconds,
+            cpu_seconds,
             quads: grid.quads(),
             step: grid.step,
             // names

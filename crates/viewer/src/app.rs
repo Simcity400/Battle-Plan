@@ -1,13 +1,13 @@
 use crate::{
     Config,
     Options,
-    choose_initial,
-    document::Document,
+    document::{Document, InitialHour},
+    hours,
     map::{
         camera::Camera,
         frame::DayNight,
         // political fill
-        political::{self, PoliticalCache},
+        political,
         scene::Scene,
     },
     // capture
@@ -22,16 +22,119 @@ use crate::map::{
     name_pass::{LayerFade, Placements},
     scene::{Overlay, Request},
     sprites::Batch,
-    // weather
-    weather::WeatherCache,
 };
 use eframe::{egui, wgpu};
-use replay::{branches::Parentage, container::SeekResult, frame::TableView, rows::TableId};
+use replay::{branches::Parentage, frame::TableView, rows::TableId};
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
+
+/// Per-rebuild CPU laps of one window frame, printed with `BATTLE_PLAN_VIEWER_PROFILE`.
+struct Laps {
+    enabled: bool,
+    start: Instant,
+    last: Instant,
+    laps: Vec<(&'static str, f64)>,
+}
+
+impl Laps {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            enabled: map::counter_move::profiling(),
+            start: now,
+            last: now,
+            laps: Vec::new(),
+        }
+    }
+
+    /// Records the time since the previous lap under `name`.
+    fn lap(&mut self, name: &'static str) {
+        if self.enabled {
+            let now = Instant::now();
+            self.laps
+                .push((name, now.duration_since(self.last).as_secs_f64() * 1000.0));
+            self.last = now;
+        }
+    }
+
+    fn total(&self) -> f64 {
+        self.start.elapsed().as_secs_f64() * 1000.0
+    }
+
+    fn line(&self) -> String {
+        self.laps
+            .iter()
+            .filter(|(_, ms)| *ms >= 0.05)
+            .map(|(name, ms)| format!("{name}={ms:.2}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// Holds a profiled capture's frames to a 60 Hz display's pace.
+///
+/// A `--window-dump` frame does not wait for a display, so unpaced it runs at
+/// hundreds of frames a second and a sweep that advances the playhead by
+/// `speed / 60` hours a frame outruns the builders, which work in wall time.
+/// The wait falls before the frame's laps start, so it is not a frame's cost.
+fn pace_profiled_frame() {
+    const PERIOD: Duration = Duration::from_micros(16_667);
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else {
+        return;
+    };
+    if let Some(previous) = *last {
+        let due = previous + PERIOD;
+        while let Some(left) = due.checked_duration_since(Instant::now()) {
+            if left > Duration::from_millis(2) {
+                std::thread::sleep(left - Duration::from_millis(2));
+            } else {
+                std::hint::spin_loop();
+            }
+        }
+    }
+    *last = Some(Instant::now());
+}
+
+/// Where the timeline is: the recorded hour the clock is in and how far past it.
+///
+/// The map draws the last hour the builders finished (`crate::hours`), which
+/// is this one unless a seek or fast playback outran them; the playhead never
+/// waits for the map.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Playhead {
+    branch: replay::BranchId,
+    hour: i32,
+    fraction: f32,
+}
+
+/// What the frame path keeps of the hour on screen once its layers are uploaded.
+struct ShownHour {
+    epoch: u64,
+    branch: replay::BranchId,
+    hour: i32,
+    /// Why the hour draws nothing: a recorded gap or a failed builder part.
+    error: Option<String>,
+    political_warnings: Vec<String>,
+    political_summary: (usize, usize),
+    political_build: Duration,
+    limitations: map::tables::Limitations,
+    snow_line: String,
+}
+
+/// The ids of the shared hour layers the scene holds (`hours::Shared`), so an
+/// hour that shares one with the hour on screen uploads nothing for it.
+#[derive(Clone, Copy, Debug, Default)]
+struct Uploaded {
+    political: Option<u64>,
+    borders: Option<u64>,
+    rails: Option<u64>,
+    buildings: Option<u64>,
+}
 
 /// The largest share of the central panel the warning area may take before it
 /// scrolls instead of growing.
@@ -86,7 +189,7 @@ pub struct Viewer {
     user_text: String,
     settings: bool,
     document: Option<Document>,
-    loading: Option<mpsc::Receiver<Result<Document, String>>>,
+    loading: Option<mpsc::Receiver<Result<(Document, Scene), String>>>,
     error: Option<String>,
     scene: Option<Scene>,
     texture: Option<egui::TextureId>,
@@ -102,19 +205,29 @@ pub struct Viewer {
     // colour
     /// Whether the map is graded through the engine's post chain.
     postfx: bool,
-    // political fill
-    political: PoliticalCache,
-    /// Cleared with the scene: the border, river and tree geometry, and the
-    /// close-zoom sprawl, rails and bridges, have to be uploaded into a new one.
-    geometry_uploaded: bool,
+    // hours
+    /// The timeline's position; the map follows it as hours are built.
+    playhead: Option<Playhead>,
+    /// The worker threads that build every hour's layers off the frame path.
+    hours: Option<hours::Pipeline>,
+    /// The builders' generation the window keeps hours of.
+    epoch: u64,
+    /// Built hours not yet shown.
+    ready: BTreeMap<(replay::BranchId, i32), hours::Built>,
+    /// The hour whose layers are in the scene.
+    shown: Option<ShownHour>,
+    /// The camera the last frame drew, which the next hours' icons are built for.
+    last_view: Option<hours::View>,
+    /// Which shared layers the scene holds.
+    uploaded: Uploaded,
+    /// Frees the hours the window let go of off the frame path.
+    dropper: Option<hours::Dropper>,
     // close zoom
-    /// The hour and perspective whose map buildings and unit models are in the
-    /// scene; both come from recorded tables and are rewritten when either
-    /// changes. The perspective is in the key because it decides which
-    /// divisions have a model at all.
-    close_zoom_hour: Option<(replay::BranchId, i32, map::perspective::Choice)>,
     unit_models: Option<map::unit_models::PreparedModels>,
     unit_fraction: Option<(f32, bool, bool)>,
+    /// Instance-buffer bytes sized for every height band this hour (see the
+    /// units upload), so zooming never reallocates mid-gesture.
+    unit_capacity: Option<(replay::BranchId, i32, u64)>,
     // names
     placements: Option<Placements>,
     placements_at: Option<(replay::BranchId, i32, bool)>,
@@ -145,15 +258,20 @@ pub struct Viewer {
         [u32; 2],
         map::perspective::Choice,
     )>,
+    /// The hour's camera-independent icon tables, parsed once per (branch,
+    /// hour, perspective) and reused by every frame's icon rebuild while the
+    /// camera moves. A still camera never rebuilds at all (`overlay_at`), so
+    /// this only pays on pans and zooms; without it each of those frames
+    /// re-parsed every table the layout reads.
+    overlay_tables: Option<(
+        replay::BranchId,
+        i32,
+        map::perspective::Choice,
+        map::counters::HourTables,
+    )>,
     /// Which country the counters are drawn for; the header's own control sets
     /// it and [`Document::perspective`] is kept in step with it.
     perspective: map::perspective::Choice,
-    // weather
-    weather: WeatherCache,
-    // fog of war: the hour and perspective whose `IntelMap` is uploaded. The
-    // grid is a 6x6 box filter over the whole province image, so it is rebuilt
-    // on a change rather than every frame, like the weather grid beside it.
-    fog_hour: Option<(replay::BranchId, i32, map::perspective::Choice)>,
     // capture
     /// The readback to run once the next frame is drawn; F12 and
     /// `--window-dump` both arm it.
@@ -164,7 +282,53 @@ pub struct Viewer {
     failure: Arc<Mutex<Option<String>>>,
     /// Names the F12 captures of one session apart when `--out` did not.
     captures: u32,
+    /// Device and queue clones for the loading thread's GPU init. The loader
+    /// builds the whole scene (static passes, textures and per-hour pass
+    /// creation) while the builders build the first hour, so no frame ever
+    /// pays first-time GPU creation. App-lifetime handles; eframe owns them.
+    gpu: Option<(wgpu::Device, wgpu::Queue)>,
     profile_frame: u32,
+    /// This frame's laps, started when the frame begins.
+    laps: Option<Laps>,
+}
+
+/// Builds the whole hour-independent scene on the loading thread: the static
+/// passes and textures plus every per-hour pass's creation. The builders need
+/// seconds for the first hour and the UI thread idles on the spinner
+/// meanwhile; paying the ~500 ms of pipeline and static-texture creation here
+/// leaves the frames data uploads only. Hour data still uploads per hour
+/// through the matching `set_*` as before, so pixels cannot change.
+fn load_scene(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    document: &Document,
+) -> std::io::Result<Scene> {
+    let mut scene = Scene::new(device, queue, &document.assets, &document.icons)?;
+    scene.set_borders(
+        device,
+        queue,
+        &document.border_assets,
+        &document.border_meshes,
+        &document.straits,
+    )?;
+    scene.set_rivers(device, queue, &document.river_assets, &document.river_mesh)?;
+    scene.set_trees(
+        device,
+        queue,
+        &document.tree_assets,
+        document.tree_geometry.clone(),
+        &document.tree_field,
+    )?;
+    scene.set_sprawl(device, queue, &document.sprawl)?;
+    scene.warm_trains(device, queue, &document.trains)?;
+    scene.warm_aircraft(device, queue, &document.aircraft)?;
+    scene.warm_unit_models(device, queue, &document.unit_models)?;
+    scene.warm_map_buildings(device, queue, &document.map_buildings)?;
+    scene.warm_bridges(device, queue, &document.bridges)?;
+    scene.warm_railways(device, queue, &document.rail_assets)?;
+    scene.warm_orders(device, queue, &document.orders)?;
+    scene.warm_weather(device, queue, document.weather_effects.clone())?;
+    Ok(scene)
 }
 
 impl Viewer {
@@ -183,7 +347,13 @@ impl Viewer {
         let capture = options.window_dump.then(|| Capture {
             path: options.out.clone().unwrap_or_default(),
             remaining: if map::counter_move::profiling() {
-                241
+                // A cold seek is followed for ten seconds past it, long
+                // enough to see the frame that shows the hour it lands on.
+                if std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).is_ok_and(|mode| mode == "seek_end") {
+                    721
+                } else {
+                    241
+                }
             } else {
                 1
             },
@@ -221,13 +391,19 @@ impl Viewer {
             speed: 24,
             last_step: Instant::now(),
             started: Instant::now(),
-            // political fill
-            political: PoliticalCache::new(),
-            geometry_uploaded: false,
+            // hours
+            playhead: None,
+            hours: None,
+            epoch: 0,
+            ready: BTreeMap::new(),
+            shown: None,
+            last_view: None,
+            uploaded: Uploaded::default(),
+            dropper: None,
             // close zoom
-            close_zoom_hour: None,
             unit_models: None,
             unit_fraction: None,
+            unit_capacity: None,
             // names
             placements: None,
             placements_at: None,
@@ -240,17 +416,19 @@ impl Viewer {
             prepared_overlay: None,
             overlay_fraction: None,
             overlay_at: None,
+            overlay_tables: None,
             perspective,
-            // weather
-            weather: WeatherCache::new(),
-            // fog of war
-            fog_hour: None,
             // capture
             capture,
             capture_note: None,
             failure,
             captures: 0,
+            gpu: cc
+                .wgpu_render_state
+                .as_ref()
+                .map(|state| (state.device.clone(), state.queue.clone())),
             profile_frame: 0,
+            laps: None,
         };
         if !viewer.settings
             && let Some(path) = viewer.options.replay.clone()
@@ -269,15 +447,26 @@ impl Viewer {
                 return;
             }
         };
+        let Some((device, queue)) = self.gpu.clone() else {
+            self.error = Some("WGPU renderer is unavailable".to_owned());
+            return;
+        };
         self.options.replay = Some(path.clone());
         let options = self.options.clone();
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let result = Document::load(&path, &resolve, options.allow_unverified)
-                .and_then(|mut document| {
-                    choose_initial(&mut document, &options)?;
-                    Ok(document)
+            let initial = InitialHour {
+                branch: options.branch,
+                hour: options.hour,
+                hour_fraction: options.hour_fraction,
+            };
+            let result = Document::load(&path, &resolve, options.allow_unverified, &initial)
+                .and_then(|document| {
+                    // The builders need seconds for the first hour and the UI
+                    // thread idles on the spinner meanwhile; the whole
+                    // hour-independent scene is cheaper here than on any frame.
+                    load_scene(&device, &queue, &document).map(|scene| (document, scene))
                 })
                 .map_err(|error| error.to_string());
             let _ = sender.send(result);
@@ -287,16 +476,17 @@ impl Viewer {
         self.combat.close();
         self.document = None;
         self.scene = None;
-        // political fill
-        self.political = PoliticalCache::new();
-        self.geometry_uploaded = false;
+        // hours
+        self.playhead = None;
+        self.hours = None;
+        self.ready.clear();
+        self.shown = None;
+        self.last_view = None;
         // close zoom
-        self.close_zoom_hour = None;
         self.unit_models = None;
         self.unit_fraction = None;
+        self.unit_capacity = None;
         self.profile_frame = 0;
-        // weather
-        self.weather = WeatherCache::new();
         self.generation = 0;
         self.error = None;
         self.map_error = None;
@@ -312,19 +502,29 @@ impl Viewer {
         self.prepared_overlay = None;
         self.overlay_fraction = None;
         self.overlay_at = None;
+        self.overlay_tables = None;
     }
 
     fn poll(&mut self) {
         let result = self.loading.as_ref().map(|receiver| receiver.try_recv());
         match result {
-            Some(Ok(Ok(document))) => {
+            Some(Ok(Ok((document, scene)))) => {
                 if let Some(selector) = self.options.combat {
                     match selector.resolve(&document) {
                         Ok(selection) => self.combat.open(selection),
                         Err(error) => self.error = Some(error.to_string()),
                     }
                 }
+                self.playhead = Some(Playhead {
+                    branch: document.playback.branch(),
+                    hour: document.playback.hour(),
+                    fraction: document.hour_fraction,
+                });
                 self.document = Some(document);
+                // The loader built the whole hour-independent scene; the
+                // frames only upload hour data into it from here.
+                self.scene = Some(scene);
+                self.uploaded = Uploaded::default();
                 self.loading = None;
             }
             Some(Ok(Err(error))) => {
@@ -379,8 +579,20 @@ impl Viewer {
     }
 
     fn timeline(&mut self, ui: &mut egui::Ui, document: &mut Document) {
-        let mut selected_session = document.playback.session();
-        let mut selected_branch = document.playback.branch();
+        let mut playhead = self.playhead.unwrap_or(Playhead {
+            branch: document.playback.branch(),
+            hour: document.playback.hour(),
+            fraction: document.hour_fraction,
+        });
+        let playhead_session = document
+            .playback
+            .replay()
+            .branches
+            .iter()
+            .find(|branch| branch.id == playhead.branch)
+            .map_or(document.playback.session(), |branch| branch.session);
+        let mut selected_session = playhead_session;
+        let mut selected_branch = playhead.branch;
         ui.horizontal(|ui| {
             let session_number = document
                 .playback
@@ -406,7 +618,7 @@ impl Viewer {
                         );
                     }
                 });
-            if selected_session != document.playback.session()
+            if selected_session != playhead_session
                 && let Some(branch) = document
                     .playback
                     .replay()
@@ -433,10 +645,17 @@ impl Viewer {
                         );
                     }
                 });
-            if selected_branch != document.playback.branch() {
+            if selected_branch != playhead.branch {
                 self.playing = false;
-                if let Err(error) = document.playback.select_branch(selected_branch) {
-                    self.error = Some(error.to_string());
+                match document.playback.range(selected_branch) {
+                    Some((first, _)) => {
+                        playhead = Playhead {
+                            branch: selected_branch,
+                            hour: first,
+                            fraction: 0.0,
+                        };
+                    }
+                    None => self.error = Some(format!("unknown branch {selected_branch}")),
                 }
             }
             if let Some(branch) = document
@@ -444,7 +663,7 @@ impl Viewer {
                 .replay()
                 .branches
                 .iter()
-                .find(|branch| branch.id == document.playback.branch())
+                .find(|branch| branch.id == playhead.branch)
             {
                 match branch.parent {
                     Parentage::Unknown => {
@@ -455,7 +674,7 @@ impl Viewer {
                     }
                 }
             }
-            match document.playback.parent_support(document.playback.branch()) {
+            match document.playback.parent_support(playhead.branch) {
                 Ok(Some(true)) => {
                     ui.weak("Supporting hour present");
                 }
@@ -471,11 +690,12 @@ impl Viewer {
                 }
             }
         });
-        let branch = document.playback.branch();
+        let branch = playhead.branch;
         let Some((first, last)) = document.playback.range(branch) else {
+            self.playhead = Some(playhead);
             return;
         };
-        let mut hour = document.playback.hour();
+        let mut hour = playhead.hour;
         ui.horizontal(|ui| {
             if ui.button("|<").on_hover_text("First hour").clicked() {
                 hour = first;
@@ -518,7 +738,7 @@ impl Viewer {
         if response.changed() {
             self.playing = false;
             // A scrub lands on a recorded hour, not between two.
-            document.hour_fraction = 0.0;
+            playhead.fraction = 0.0;
         }
         let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 4.0), egui::Sense::hover());
         ui.painter()
@@ -545,50 +765,38 @@ impl Viewer {
                 egui::Color32::LIGHT_RED,
             );
         }
-        if hour != document.playback.hour() {
+        if hour != playhead.hour {
             // Every button and the scrub land on a recorded hour.
-            document.hour_fraction = 0.0;
-            if let Err(error) = document.playback.seek(branch, hour) {
-                self.error = Some(error.to_string());
-            }
+            playhead.hour = hour;
+            playhead.fraction = 0.0;
         }
         // Playback is continuous, not one recorded hour at a time: the speed
         // control is recorded hours a second and the wall clock between two
         // repaints is a fraction of an hour, which `Document::hour_fraction`
         // carries into the division positions. A pause leaves the fraction
         // where it is, so the frame does not jump when it stops.
-        if self.playing {
+        // A profiled capture's sweep moves the playhead itself, at its paced 60 Hz.
+        if self.playing && !(map::counter_move::profiling() && self.capture.is_some()) {
             let elapsed = self.last_step.elapsed().as_secs_f64();
             self.last_step = Instant::now();
-            let mut fraction = f64::from(document.hour_fraction) + elapsed * f64::from(self.speed);
-            while fraction >= 1.0 {
-                fraction -= 1.0;
-                match document.playback.step() {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        self.playing = false;
-                        fraction = 0.0;
-                        break;
-                    }
-                    Err(error) => {
-                        self.error = Some(error.to_string());
-                        self.playing = false;
-                        fraction = 0.0;
-                        break;
-                    }
-                }
+            let fraction = f64::from(playhead.fraction) + elapsed * f64::from(self.speed);
+            if !self.advance_playhead(&mut playhead, fraction, last) {
+                self.playing = false;
             }
-            document.hour_fraction = fraction as f32;
             ui.ctx().request_repaint();
         }
+        self.playhead = Some(playhead);
         ui.horizontal(|ui| {
-            let displayed = document.playback.hour();
-            let fraction = document.hour_fraction;
+            let displayed = playhead.hour;
+            let fraction = playhead.fraction;
             ui.strong(date(displayed));
             if fraction > 0.0 {
                 ui.weak(format!("Hour {displayed} + {fraction:.2} h"));
             } else {
                 ui.weak(format!("Hour {displayed}"));
+            }
+            if document.playback.hour() != displayed || document.playback.branch() != branch {
+                ui.weak(format!("drawing hour {}", document.playback.hour()));
             }
             // colour
             ui.checkbox(&mut self.postfx, "Colour grading")
@@ -596,178 +804,428 @@ impl Viewer {
         });
     }
 
-    // political fill
-    /// Rebuilds and uploads the political layers, and re-buckets the land borders with them.
+    // hours
+    /// Whether the map can show `hour` of `branch` on the next frame: it is on
+    /// screen or built and waiting.
+    fn hour_ready(&self, branch: replay::BranchId, hour: i32) -> bool {
+        self.ready.contains_key(&(branch, hour))
+            || self.shown.as_ref().is_some_and(|shown| {
+                shown.epoch == self.epoch && (shown.branch, shown.hour) == (branch, hour)
+            })
+    }
+
+    /// Moves a playing playhead to `fraction` hours past its hour.
     ///
-    /// Both are keyed on the Provinces rows and the mode, so a step to an hour that changed neither
-    /// costs nothing (`map::political::PoliticalCache`).
-    fn refresh_layers(
+    /// The clock enters an hour only once that hour is built, so playback never
+    /// runs ahead of what the map shows: when the builders fall behind the
+    /// speed, the clock waits at the end of the hour on screen and the replay
+    /// plays at the builders' pace instead. When one slow frame owes more than
+    /// one hour, the clock steps through every ready hour but the map draws
+    /// only the latest, so a sped-up hour may never be drawn. Returns false at
+    /// the branch's last hour.
+    fn advance_playhead(&self, playhead: &mut Playhead, mut fraction: f64, last: i32) -> bool {
+        while fraction >= 1.0 {
+            if playhead.hour >= last {
+                playhead.fraction = 0.0;
+                return false;
+            }
+            if !self.hour_ready(playhead.branch, playhead.hour + 1) {
+                // Just short of the boundary, where the divisions have arrived.
+                fraction = f64::from(1.0_f32.next_down());
+                break;
+            }
+            fraction -= 1.0;
+            playhead.hour += 1;
+        }
+        playhead.fraction = fraction as f32;
+        true
+    }
+
+    /// Keeps the hour builders told where the playhead is and uploads the
+    /// newest hour they finished that the window should show.
+    ///
+    /// Nothing here builds an hour: the political fill, railways, buildings,
+    /// trains, aircraft, unit models, battle plan, weather effects, snow and
+    /// mud, fog, limitations, names and icons all arrive built
+    /// (`crate::hours`), and the frame that shows an hour only uploads it, all
+    /// of its layers at once so no frame mixes two hours. Until the playhead's
+    /// hour is built the scene keeps the hour it has; during playback it takes
+    /// the newest built hour on the way. A capture waits for the hour it names.
+    fn refresh_hour(
         &mut self,
         state: &eframe::egui_wgpu::RenderState,
-        document: &Document,
+        document: &mut Document,
+        laps: &mut Laps,
     ) -> Result<(), std::io::Error> {
-        let timer = Instant::now();
-        let mode = political::Mode::from_control(self.control);
-        let rebuilt = self.political.ensure(
-            &document.map,
-            &document.strategic_regions,
-            document.frame()?,
-            mode,
-        )?;
-        if map::counter_move::profiling() {
-            eprintln!(
-                "PROFILE political {:.6}",
-                timer.elapsed().as_secs_f64() * 1000.0
-            );
+        laps.lap("before_hour");
+        if self.scene.is_none() {
+            return Err(std::io::Error::other("the map scene was not created"));
         }
+        // Static geometry arrives with the scene from the loading thread
+        // (`load_scene`); only hour data uploads per frame from here.
+        laps.lap("static_geometry");
+        let replay = document.playback.replay_handle();
+        if self
+            .hours
+            .as_ref()
+            .is_none_or(|hours| !hours.serves(&document.content, &replay))
+        {
+            self.hours = Some(hours::Pipeline::new(
+                std::sync::Arc::clone(&document.content),
+                replay,
+            )?);
+            self.epoch = 0;
+            self.ready.clear();
+            self.shown = None;
+        }
+        let playhead = self.playhead.unwrap_or(Playhead {
+            branch: document.playback.branch(),
+            hour: document.playback.hour(),
+            fraction: document.hour_fraction,
+        });
+        let view = self.last_view.unwrap_or_else(|| {
+            let map_size = [document.map.width as f32, document.map.height as f32];
+            let (viewport, camera) = match self.capture.as_ref().and_then(|capture| capture.pinned)
+            {
+                Some((size, camera)) => {
+                    (size, camera.unwrap_or_else(|| Camera::fit(map_size, size)))
+                }
+                None => {
+                    let size = [1280, 720];
+                    (
+                        size,
+                        self.camera.unwrap_or_else(|| Camera::fit(map_size, size)),
+                    )
+                }
+            };
+            hours::View {
+                camera,
+                viewport,
+                states: LayerFade::wants_states(camera.height),
+            }
+        });
+        // Playing, the builders reach far enough ahead to stay in front of the
+        // clock; paused, a step either way is already built.
+        let (ahead, behind) = if self.playing {
+            ((self.speed as i32 * 3 / 4 + 2).min(96), 0)
+        } else {
+            (2, 2)
+        };
+        let want = hours::Want {
+            branch: playhead.branch,
+            hour: playhead.hour,
+            ahead,
+            behind,
+            perspective: self.perspective.clone(),
+            mode: political::Mode::from_control(self.control),
+            view,
+            have: self
+                .ready
+                .keys()
+                .chain(
+                    self.shown
+                        .as_ref()
+                        .filter(|shown| shown.epoch == self.epoch)
+                        .map(|shown| (shown.branch, shown.hour))
+                        .iter(),
+                )
+                .filter(|(branch, _)| *branch == playhead.branch)
+                .map(|(_, hour)| *hour)
+                .collect(),
+            received: 0,
+        };
+        let pipeline = self.hours.as_mut().expect("started above");
+        let epoch = pipeline.want(want)?;
+        if epoch != self.epoch {
+            self.epoch = epoch;
+            self.ready.clear();
+        }
+        if self.dropper.is_none() {
+            self.dropper = Some(hours::Dropper::new()?);
+        }
+        let dropper = self.dropper.as_ref().expect("started above");
+        for built in pipeline.take()? {
+            if built.epoch == epoch {
+                if let Some(old) = self.ready.insert((built.branch, built.hour), built) {
+                    dropper.drop_later(old);
+                }
+            } else {
+                dropper.drop_later(built);
+            }
+        }
+        let (keep, gone): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.ready)
+            .into_iter()
+            .partition(|((branch, hour), _)| {
+                *branch == playhead.branch
+                    && (playhead.hour - behind..=playhead.hour + ahead).contains(hour)
+            });
+        self.ready = keep;
+        if !gone.is_empty() {
+            dropper.drop_later(gone);
+        }
+        laps.lap("hours_poll");
+        let target = (playhead.branch, playhead.hour);
+        let shown_at = self
+            .shown
+            .as_ref()
+            .filter(|shown| shown.epoch == epoch)
+            .map(|shown| (shown.branch, shown.hour));
+        let mut next = None;
+        if shown_at != Some(target) {
+            next = self.ready.remove(&target);
+            // A capture names its hour, and waits for it.
+            let wait = self
+                .capture
+                .as_ref()
+                .is_some_and(|capture| !map::counter_move::profiling() || capture.remaining == 0);
+            if next.is_none() && wait {
+                let pipeline = self.hours.as_ref().expect("started above");
+                while next.is_none() {
+                    let built = pipeline.wait()?;
+                    if built.epoch != epoch {
+                        if let Some(dropper) = &self.dropper {
+                            dropper.drop_later(built);
+                        }
+                        continue;
+                    }
+                    if (built.branch, built.hour) == target {
+                        next = Some(built);
+                    } else {
+                        self.ready.insert((built.branch, built.hour), built);
+                    }
+                }
+            }
+            if next.is_none() && self.playing {
+                // The newest hour on the way from the one on screen.
+                let on_the_way = self
+                    .ready
+                    .range(..target)
+                    .next_back()
+                    .map(|(key, _)| *key)
+                    .filter(|key| {
+                        key.0 == target.0
+                            && shown_at.is_none_or(|shown| shown.0 != key.0 || shown.1 < key.1)
+                    });
+                if let Some(key) = on_the_way {
+                    next = self.ready.remove(&key);
+                    let later = self.ready.split_off(&key);
+                    let passed = std::mem::replace(&mut self.ready, later);
+                    if let Some(dropper) = &self.dropper {
+                        dropper.drop_later(passed);
+                    }
+                }
+            }
+        }
+        if let Some(built) = next {
+            self.apply_hour(state, document, built, laps)?;
+        }
+        // The divisions glide past the playhead's hour only when it is the
+        // hour on screen.
+        document.hour_fraction = if (document.playback.branch(), document.playback.hour()) == target
+        {
+            playhead.fraction
+        } else {
+            0.0
+        };
+        if let Some(error) = self.shown.as_ref().and_then(|shown| shown.error.clone()) {
+            return Err(std::io::Error::other(error));
+        }
+        Ok(())
+    }
+
+    /// Uploads one built hour and makes it the hour on screen.
+    fn apply_hour(
+        &mut self,
+        state: &eframe::egui_wgpu::RenderState,
+        document: &mut Document,
+        built: hours::Built,
+        laps: &mut Laps,
+    ) -> Result<(), std::io::Error> {
+        let hours::Built {
+            epoch,
+            branch,
+            hour,
+            view,
+            current,
+            layers,
+            laps: built_laps,
+            wall,
+        } = built;
+        let passed = document.playback.present(branch, hour, current);
+        let dropper = self
+            .dropper
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("the hour dropper was not started"))?;
+        dropper.drop_later(passed);
+        laps.lap("present");
+        if map::counter_move::profiling() {
+            map::counter_move::profile_print(format!(
+                "PROFILE built frame {} hour {hour} wall {wall:.3} parts {}",
+                self.profile_frame,
+                built_laps
+                    .iter()
+                    .map(|(name, ms)| format!("{name}={ms:.2}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ));
+        }
+        laps.lap("built_print");
+        let layers = match layers {
+            Ok(layers) => layers,
+            Err(error) => {
+                self.shown = Some(ShownHour {
+                    epoch,
+                    branch,
+                    hour,
+                    error: Some(error),
+                    political_warnings: Vec::new(),
+                    political_summary: (0, 0),
+                    political_build: Duration::ZERO,
+                    limitations: Default::default(),
+                    snow_line: String::new(),
+                });
+                return Ok(());
+            }
+        };
+        let hours::Layers {
+            political,
+            borders,
+            rails,
+            buildings,
+            trains,
+            aircraft,
+            units,
+            orders,
+            effects,
+            intel,
+            snow_mud,
+            limitations,
+            names,
+            overlay,
+        } = layers;
         let scene = self
             .scene
             .as_mut()
             .ok_or_else(|| std::io::Error::other("the map scene was not created"))?;
-        if !self.geometry_uploaded {
-            scene.set_borders(
+        laps.lap("apply_start");
+        let uploaded = &mut self.uploaded;
+        if uploaded.rails != Some(rails.id) {
+            let (mesh, bridges) = &rails.value;
+            scene.set_railways(&state.device, &state.queue, &document.rail_assets, mesh)?;
+            scene.set_bridges(
                 &state.device,
                 &state.queue,
-                &document.border_assets,
-                &document.border_meshes,
-                &document.straits,
+                &document.bridges,
+                bridges.clone(),
             )?;
-            // rivers and trees: both are traced from static content, so like the
-            // border meshes they are uploaded once into a new scene and never
-            // rebuilt. Without this the window's `Scene` keeps `rivers` and
-            // `trees` at `None` and `Scene::render` skips both passes, which is
-            // two whole map layers the window did not draw and `--dump` did.
-            scene.set_rivers(
-                &state.device,
-                &state.queue,
-                &document.river_assets,
-                &document.river_mesh,
-            )?;
-            scene.set_trees(
-                &state.device,
-                &state.queue,
-                &document.tree_assets,
-                document.tree_geometry.clone(),
-                &document.tree_field,
-            )?;
-            scene.set_sprawl(&state.device, &state.queue, &document.sprawl)?;
-            self.geometry_uploaded = true;
+            uploaded.rails = Some(rails.id);
         }
-        let hour = (
-            document.playback.branch(),
-            document.playback.hour(),
-            self.perspective.clone(),
-        );
-        if self.close_zoom_hour.as_ref() != Some(&hour) {
-            let rail_mesh = document.rail_mesh()?;
-            scene.set_railways(
-                &state.device,
-                &state.queue,
-                &document.rail_assets,
-                &rail_mesh,
-            )?;
-            scene.set_bridges(&state.device, &state.queue, &document.bridges, &rail_mesh)?;
-
-            let (buildings, _) = document.map_building_field()?;
+        laps.lap("rails_upload");
+        if uploaded.buildings != Some(buildings.id) {
             scene.set_map_buildings(
                 &state.device,
                 &state.queue,
                 &document.map_buildings,
-                buildings,
+                buildings.value.clone(),
             )?;
-            // Train routes depend on the recorded hour and the perspective, which
-            // is this block's own key; the moving fraction is applied per frame.
-            scene.set_trains(
-                &state.device,
-                &state.queue,
-                document.trains.clone(),
-                document.train_plan(&self.perspective)?,
-            )?;
-            scene.set_aircraft(
-                &state.device,
-                &state.queue,
-                document.aircraft.clone(),
-                document.aircraft_plan(&self.perspective)?,
-            )?;
-            self.unit_models = Some(document.prepare_unit_models(&self.perspective)?);
-            self.unit_fraction = None;
-            // orders: the battle plan follows the hour and the perspective, on
-            // the same key as the unit models.
-            let orders = document.order_field(&self.perspective)?;
-            scene.set_orders(&state.device, &state.queue, &document.orders, &orders)?;
-            scene.set_weather_effects(
-                &state.device,
-                &state.queue,
-                document.weather_effects.clone(),
-                crate::map::weather_effects::field(document.frame()?)?,
-            )?;
-            self.close_zoom_hour = Some(hour);
+            uploaded.buildings = Some(buildings.id);
         }
-        if let (true, Some(layers)) = (rebuilt, self.political.layers()) {
-            let textures = &layers.textures;
-            scene.set_gradient_textures(
-                &state.device,
-                &state.queue,
-                &textures.channel1,
-                &textures.channel2,
-                textures.width,
-                textures.height,
-            )?;
-            // borders: the window has no demilitarised-zone override, so the zone is the
-            // recorded one, which is empty until the recorder carries the flag.
-            let zone = document.demilitarized_zone(&layers.regions)?;
-            scene.set_classes(
-                &state.device,
-                &document.border_meshes,
-                &layers.regions,
-                &zone,
-            )?;
+        laps.lap("buildings_upload");
+        scene.set_trains(&state.device, &state.queue, document.trains.clone(), trains)?;
+        laps.lap("trains_upload");
+        scene.set_aircraft(
+            &state.device,
+            &state.queue,
+            document.aircraft.clone(),
+            aircraft,
+        )?;
+        laps.lap("aircraft_upload");
+        dropper.drop_later(self.unit_models.replace(units));
+        self.unit_fraction = None;
+        scene.set_orders(&state.device, &state.queue, &document.orders, &orders)?;
+        dropper.drop_later(orders);
+        laps.lap("orders_upload");
+        scene.set_warmed_weather_effects(
+            &state.device,
+            &state.queue,
+            document.weather_effects.clone(),
+            effects,
+        )?;
+        laps.lap("effects_upload");
+        if uploaded.political != Some(political.id) {
+            let textures = &political.layers.textures;
+            let rows = political
+                .rows_from
+                .iter()
+                .find(|(base, _)| uploaded.political == Some(*base));
+            match rows {
+                Some((_, rows)) => scene.write_gradient_rows(
+                    &state.queue,
+                    &textures.channel1,
+                    &textures.channel2,
+                    [textures.width, textures.height],
+                    rows,
+                )?,
+                _ => scene.set_gradient_textures(
+                    &state.device,
+                    &state.queue,
+                    &textures.channel1,
+                    &textures.channel2,
+                    textures.width,
+                    textures.height,
+                )?,
+            }
+            uploaded.political = Some(political.id);
         }
-        // weather: the snow and mud grid is built on a worker thread, because a
-        // cold branch walks every hour from its start; it is uploaded when it
-        // arrives. A capture waits for the hour it names, except during the
-        // profiling sweep, whose frames measure the window without waiting.
-        let sources = map::weather::Sources {
-            map: document.map.clone(),
-            perm_snow: document.assets.perm_snow.clone(),
-            regions: document.strategic_regions.clone(),
-            replay: document.playback.replay_handle(),
-        };
-        let wait = self
-            .capture
-            .as_ref()
-            .is_some_and(|capture| !map::counter_move::profiling() || capture.remaining == 0);
-        if self.weather.ensure(&sources, document.frame()?, wait)?
-            && let Some(snow_mud) = self.weather.data()
-        {
-            scene.set_snow_mud(
-                &state.device,
-                &state.queue,
-                &snow_mud.texels,
+        laps.lap("gradient_upload");
+        // borders: the window has no demilitarised-zone override, so the zone is the
+        // recorded one.
+        if uploaded.borders != Some(borders.id) {
+            scene.set_border_plans(&state.device, &borders.classes, &borders.highlighted)?;
+            uploaded.borders = Some(borders.id);
+        }
+        laps.lap("border_classes");
+        scene.set_snow_mud(
+            &state.device,
+            &state.queue,
+            &snow_mud.texels,
+            snow_mud.width,
+            snow_mud.height,
+            &snow_mud.province_snow,
+        )?;
+        laps.lap("snow_upload");
+        scene.set_fog_of_war(&state.queue, &intel.texels, intel.fog)?;
+        laps.lap("fog_upload");
+        dropper.drop_later(self.placements.replace(names));
+        self.placements_at = Some((branch, hour, view.states));
+        dropper.drop_later(self.prepared_overlay.replace(overlay));
+        self.overlay_at = Some((
+            branch,
+            hour,
+            view.camera,
+            view.viewport,
+            self.perspective.clone(),
+        ));
+        self.overlay_fraction = None;
+        self.shown = Some(ShownHour {
+            epoch,
+            branch,
+            hour,
+            error: None,
+            political_warnings: political.layers.warnings().to_vec(),
+            political_summary: political.layers.summary(),
+            political_build: political.layers.build,
+            limitations,
+            snow_line: format!(
+                "Snow and mud: {}; {}x{} grid rasterised in {:.0} ms",
+                snow_mud.summary.line(),
                 snow_mud.width,
                 snow_mud.height,
-                &snow_mud.province_snow,
-            )?;
-            if map::counter_move::profiling() {
-                eprintln!(
-                    "PROFILE weather frame {} hour {}",
-                    self.profile_frame,
-                    document.playback.hour()
-                );
-            }
-        }
-        // fog of war: the intel map follows the hour and the perspective, the
-        // same key the unit models and the battle plan take.
-        let fog_hour = (
-            document.playback.branch(),
-            document.playback.hour(),
-            self.perspective.clone(),
-        );
-        if self.fog_hour.as_ref() != Some(&fog_hour) {
-            let intel = document.intel_map(&self.perspective)?;
-            scene.set_fog_of_war(&state.queue, &intel.texels, intel.fog)?;
-            self.fog_hour = Some(fog_hour);
-        }
+                snow_mud.build.as_secs_f64() * 1000.0
+            ),
+        });
+        dropper.drop_later((political, borders, rails, buildings, snow_mud, intel));
+        laps.lap("apply_end");
         Ok(())
     }
 
@@ -888,63 +1346,58 @@ impl Viewer {
         &mut self,
         ui: &mut egui::Ui,
         frame: &eframe::Frame,
-        document: &Document,
+        document: &mut Document,
     ) -> Result<(), String> {
         let map_timer = Instant::now();
+        let mut laps = self.laps.take().unwrap_or_else(Laps::new);
+        laps.lap("before_map");
         map::counter_move::take_profile();
         let state = frame
             .wgpu_render_state()
             .ok_or("WGPU renderer is unavailable")?;
-        if self.scene.is_none() {
-            self.scene = Some(
-                Scene::new(
-                    &state.device,
-                    &state.queue,
-                    &document.assets,
-                    // names
-                    &document.icons,
-                )
-                .map_err(|error| error.to_string())?,
-            );
-            // political fill: a fresh scene holds no uploaded layers or geometry.
-            self.political = PoliticalCache::new();
-            self.geometry_uploaded = false;
-            // close zoom
-            self.close_zoom_hour = None;
-            // weather
-            self.weather = WeatherCache::new();
+        if map::counter_move::profiling() {
+            static ADAPTER_ONCE: std::sync::Once = std::sync::Once::new();
+            let info = state.adapter.get_info();
+            ADAPTER_ONCE.call_once(|| {
+                map::counter_move::profile_print(format!(
+                    "PROFILE adapter {} {:?}",
+                    info.name, info.backend
+                ));
+            });
         }
-        // political fill
+        // The scene arrives with the document from the loading thread
+        // (`load_scene`); only hour data uploads per frame from here.
         self.map_error = self
-            .refresh_layers(state, document)
+            .refresh_hour(state, document, &mut laps)
             .err()
             .map(|error| error.to_string());
-        // weather: keep polling while the worker builds the hour on screen.
-        if self.weather.pending() {
-            ui.ctx().request_repaint();
-        }
         if let Some(error) = &self.map_error {
             ui.centered_and_justified(|ui| {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
             });
             return Ok(());
         }
-        let layers = self
-            .political
-            .layers()
-            .ok_or("The political layers are unavailable")?;
+        let Some(shown) = &self.shown else {
+            // The first hour is still being built; keep polling for it.
+            ui.ctx().request_repaint();
+            ui.centered_and_justified(|ui| {
+                ui.spinner();
+            });
+            return Ok(());
+        };
+        laps.lap("hour_misc");
         // The hour on screen may be one the collector had not finished filling;
         // what that costs the render leads the warning area, because it is the
         // part that changes with the hour. The persistent content limitations
         // and the political layer's follow, in the order `--dump` prints them,
         // so a capture beside a dump lists the same lines in the same order.
-        let limitations = document
-            .limitations(&self.perspective)
-            .map_err(|error| error.to_string())?;
-        let mut warnings = limitations.lines().to_vec();
+        let mut limitations = shown.limitations.clone();
+        limitations.set_fraction(document.hour_fraction);
+        let mut warnings = limitations.lines();
+        laps.lap("limitations");
         warnings.extend(document.warnings.iter().cloned());
         warnings.extend(self.combat.warnings());
-        warnings.extend(layers.warnings().iter().cloned());
+        warnings.extend(shown.political_warnings.iter().cloned());
         egui::ScrollArea::vertical()
             .id_salt("warnings")
             .max_height(ui.available_height() * WARNING_SHARE)
@@ -954,21 +1407,13 @@ impl Viewer {
                     ui.colored_label(egui::Color32::YELLOW, warning);
                 }
             });
-        let (filled, distinct) = layers.summary();
+        let (filled, distinct) = shown.political_summary;
         ui.weak(format!(
             "Political layer: {filled} provinces filled in {distinct} country colors, rebuilt in {:.0} ms",
-            layers.build.as_secs_f64() * 1000.0
+            shown.political_build.as_secs_f64() * 1000.0
         ));
         // weather
-        if let Some(snow_mud) = self.weather.data() {
-            ui.weak(format!(
-                "Snow and mud: {}; {}x{} grid rasterised in {:.0} ms",
-                snow_mud.summary.line(),
-                snow_mud.width,
-                snow_mud.height,
-                snow_mud.build.as_secs_f64() * 1000.0
-            ));
-        }
+        ui.weak(&shown.snow_line);
         let size = ui.available_size().max(egui::vec2(1.0, 1.0));
         // capture: `--window-dump` renders at the size it was asked for rather
         // than at the size the panels left over, so the frame it writes does not
@@ -1115,19 +1560,48 @@ impl Viewer {
                 document.hour_fraction,
                 camera.height,
             );
+            // Size the buffer for every height band: height 0 draws all land
+            // units and ships, so zooming between bands rewrites the same
+            // buffer instead of reallocating mid-gesture. Built once per hour;
+            // the build itself is sub-millisecond beside the upload.
+            let hour_key = (document.playback.branch(), document.playback.hour());
+            let fresh_hour = self
+                .unit_capacity
+                .as_ref()
+                .is_none_or(|(branch, hour, _)| (*branch, *hour) != hour_key);
+            let min_capacity = if fresh_hour {
+                let full = self.unit_models.as_ref().expect("prepared above").field(
+                    &document.unit_models,
+                    document.hour_fraction,
+                    0.0,
+                );
+                let capacity = (full.byte_len() as u64).max(units.byte_len() as u64);
+                self.unit_capacity = Some((hour_key.0, hour_key.1, capacity));
+                capacity
+            } else {
+                let (_, _, capacity) = self.unit_capacity.as_ref().expect("checked above");
+                (*capacity).max(units.byte_len() as u64)
+            };
             scene
-                .set_unit_models(&state.device, &state.queue, &document.unit_models, units)
+                .set_unit_models(
+                    &state.device,
+                    &state.queue,
+                    &document.unit_models,
+                    units,
+                    min_capacity,
+                )
                 .map_err(|error| error.to_string())?;
+            laps.lap("units_upload");
             self.unit_fraction = Some((
                 document.hour_fraction,
                 map::unit_models::draws(camera.height),
                 camera.height < map::unit_models::SHIPS_DISTANCE_CUTOFF,
             ));
             if map::counter_move::profiling() {
-                eprintln!(
+                map::counter_move::profile_print(format!(
                     "PROFILE models {:.6}",
                     timer.elapsed().as_secs_f64() * 1000.0
-                );
+                ));
             }
         }
         // names: the engine integrates the layer cross-fade by the frame delta
@@ -1144,9 +1618,16 @@ impl Viewer {
             .step(camera.height, delta);
         self.fade = Some(fade);
         let states = LayerFade::wants_states(camera.height) || fade.state > 0.0;
+        laps.lap("panel_camera_units");
+        let now = document.hour().map_err(|error| error.to_string())?;
+        self.last_view = Some(hours::View {
+            camera,
+            viewport: pixels,
+            states,
+        });
         let names_key = (document.playback.branch(), document.playback.hour(), states);
         if self.placements_at != Some(names_key) {
-            match document.place_names(states) {
+            match now.place_names(states) {
                 Ok(placements) => {
                     self.placements = Some(placements);
                     self.placements_at = Some(names_key);
@@ -1154,6 +1635,7 @@ impl Viewer {
                 Err(error) => return Err(error.to_string()),
             }
         }
+        laps.lap("names");
         // counters: one batch carries the bases, the labels, the counters and
         // the combat icons in `DEFAULT_PRIORITY_*` order.
         let overlay_key = (
@@ -1165,26 +1647,38 @@ impl Viewer {
         );
         let overlay_timer = Instant::now();
         if self.overlay_at.as_ref() != Some(&overlay_key) {
+            let tables_key = (
+                document.playback.branch(),
+                document.playback.hour(),
+                self.perspective.clone(),
+            );
+            if self
+                .overlay_tables
+                .as_ref()
+                .is_none_or(|(branch, hour, perspective, _)| {
+                    (*branch, *hour, perspective) != (tables_key.0, tables_key.1, &tables_key.2)
+                })
+            {
+                let tables = now
+                    .hour_tables(&self.perspective)
+                    .map_err(|error| error.to_string())?;
+                self.overlay_tables = Some((tables_key.0, tables_key.1, tables_key.2, tables));
+            }
+            let tables = &self.overlay_tables.as_ref().expect("parsed above").3;
             self.prepared_overlay = Some(
-                document
-                    .prepare_overlay(camera, pixels, &self.perspective)
+                now.prepare_overlay_cached(camera, pixels, tables)
                     .map_err(|error| error.to_string())?,
             );
             self.overlay_at = Some(overlay_key);
             self.overlay_fraction = None;
         }
+        laps.lap("overlay_prepare");
         if self.overlay_fraction != Some(document.hour_fraction) {
             let (batch, label_report, counter_report) = self
                 .prepared_overlay
                 .as_mut()
                 .expect("prepared above")
-                .draw(
-                    document,
-                    camera,
-                    pixels,
-                    &self.perspective,
-                    Default::default(),
-                )
+                .draw(&now, camera, pixels, Default::default())
                 .map_err(|error| error.to_string())?;
             self.label_report = label_report;
             self.counter_report = counter_report;
@@ -1205,6 +1699,7 @@ impl Viewer {
             self.combat.open(hit.selection);
         }
         let overlay_ms = overlay_timer.elapsed().as_secs_f64() * 1000.0;
+        laps.lap("overlay_draw");
         let mut combat_batch;
         let label_batch = if let Some(drawn) = self
             .combat
@@ -1251,7 +1746,7 @@ impl Viewer {
                         sprites: Some(label_batch),
                     },
                     // trees
-                    season: document.tree_season(),
+                    season: now.tree_season(),
                     no_trees: false,
                 },
             )
@@ -1277,16 +1772,20 @@ impl Viewer {
         }
         // capture: the frame is drawn and the scene still holds it, so the
         // readback is the dump's own.
+        laps.lap("render");
         if map::counter_move::profiling() {
-            eprintln!(
-                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6}",
+            map::counter_move::profile_print(format!(
+                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} laps {}",
                 self.profile_frame,
                 document.hour_fraction,
                 camera.height,
                 map_timer.elapsed().as_secs_f64() * 1000.0,
                 overlay_ms,
-                map::counter_move::take_profile()
-            );
+                map::counter_move::take_profile(),
+                document.playback.hour(),
+                laps.total(),
+                laps.line()
+            ));
         }
         self.save_capture(state, document, camera, pixels, &warnings, ui.ctx());
         self.profile_frame += 1;
@@ -1305,6 +1804,10 @@ impl Viewer {
 
 impl eframe::App for Viewer {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if map::counter_move::profiling() && self.capture.is_some() {
+            pace_profiled_frame();
+        }
+        self.laps = Some(Laps::new());
         self.poll();
         // capture: F12 writes the map target as it stands, at its own pixel
         // size, through the readback `--dump` uses. It is the only way to score
@@ -1445,10 +1948,10 @@ impl eframe::App for Viewer {
                 self.timeline(ui, &mut document);
                 ui.add_space(4.0);
                 match document.playback.current() {
-                    SeekResult::Gap { reason, .. } => {
+                    crate::playback::Current::Gap { reason, .. } => {
                         ui.colored_label(egui::Color32::LIGHT_RED, format!("Gap: {reason}"));
                     }
-                    SeekResult::Frame(frame) => {
+                    crate::playback::Current::Frame(frame) => {
                         egui::ScrollArea::vertical()
                             .id_salt("tables")
                             .max_height(TABLE_LIST_HEIGHT)
@@ -1488,34 +1991,87 @@ impl eframe::App for Viewer {
             if map::counter_move::profiling() && self.capture.is_some() {
                 // Deterministic diagnostic sweep, including at a replay's final
                 // hour. Ordinary playback continues to use the timeline clock.
-                if (self.profile_frame == 121 || self.profile_frame == 181)
-                    && std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).as_deref() == Ok("hours")
-                {
-                    let delta = if self.profile_frame == 121 { 1 } else { -1 };
-                    if let Err(error) = document
-                        .playback
-                        .seek(document.playback.branch(), document.playback.hour() + delta)
+                let mode = std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).unwrap_or_default();
+                if let Some(playhead) = &mut self.playhead {
+                    if (self.profile_frame == 121 || self.profile_frame == 181) && mode == "hours" {
+                        playhead.hour += if self.profile_frame == 121 { 1 } else { -1 };
+                        playhead.fraction = 0.0;
+                    }
+                    // A cold seek: jump to the branch's last hour, whose
+                    // per-branch caches (the snow and mud display cache) start
+                    // empty.
+                    if self.profile_frame == 121
+                        && mode == "seek_end"
+                        && let Some((_, last)) = document.playback.range(playhead.branch)
                     {
-                        self.error = Some(error.to_string());
+                        playhead.hour = last;
+                        playhead.fraction = 0.0;
                     }
                 }
-                // A cold seek: jump to the branch's last hour, whose per-branch
-                // caches (the snow and mud display cache) start empty.
-                if self.profile_frame == 121
-                    && std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).as_deref() == Ok("seek_end")
-                    && let Some((_, last)) = document.playback.range(document.playback.branch())
-                    && let Err(error) = document.playback.seek(document.playback.branch(), last)
-                {
-                    self.error = Some(error.to_string());
+                // Steady playback at `play:<hours per second>`, sampled as a
+                // 60 Hz clock over frames 121..240, as the timeline would run.
+                let playing = std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE"))
+                    .ok()
+                    .and_then(|mode| mode.strip_prefix("play:")?.parse::<f32>().ok());
+                self.playing = playing.is_some() && (121..241).contains(&self.profile_frame);
+                if let Some(speed) = playing {
+                    // The builders reach as far ahead as the timeline at this speed.
+                    self.speed = speed as u32;
                 }
-                document.hour_fraction = if self.profile_frame < 121 || self.profile_frame >= 241 {
-                    self.options.hour_fraction
-                } else {
-                    ((self.profile_frame - 121) % 120) as f32 / 120.0
-                };
+                if let Some(speed) = playing
+                    && (121..241).contains(&self.profile_frame)
+                    && let Some(mut moved) = self.playhead
+                {
+                    let last = document
+                        .playback
+                        .range(moved.branch)
+                        .map_or(moved.hour, |(_, last)| last);
+                    let fraction = f64::from(moved.fraction) + f64::from(speed) / 60.0;
+                    self.advance_playhead(&mut moved, fraction, last);
+                    self.playhead = Some(moved);
+                }
+                if playing.is_none()
+                    && !mode.starts_with("pan:")
+                    && !mode.starts_with("zoom:")
+                    && let Some(playhead) = &mut self.playhead
+                {
+                    playhead.fraction = if self.profile_frame < 121 || self.profile_frame >= 241 {
+                        self.options.hour_fraction
+                    } else {
+                        ((self.profile_frame - 121) % 120) as f32 / 120.0
+                    };
+                }
+                // A camera sweep: `pan:<world units per second>` drifts the
+                // pinned camera east, `zoom:<height factor per second>`
+                // compounds its height, over frames 121..240 with the hour
+                // held. Every frame rebuilds the overlay synchronously for
+                // its camera, which is the interactive-pan cost being
+                // measured; the hour builders chase the moving view behind
+                // it. Needs the pinned `--camera` the harness passes.
+                let sweep = mode
+                    .strip_prefix("pan:")
+                    .and_then(|rate| rate.parse::<f32>().ok().map(|rate| (rate / 60.0, 1.0)))
+                    .or_else(|| {
+                        mode.strip_prefix("zoom:").and_then(|factor| {
+                            factor
+                                .parse::<f32>()
+                                .ok()
+                                .filter(|factor| *factor > 0.0)
+                                .map(|factor| (0.0, factor.powf(1.0 / 60.0)))
+                        })
+                    });
+                if let Some((dx, zoom)) = sweep
+                    && (121..241).contains(&self.profile_frame)
+                    && let Some(capture) = self.capture.as_mut()
+                    && let Some((_, camera)) = capture.pinned.as_mut()
+                    && let Some(camera) = camera.as_mut()
+                {
+                    camera.center[0] += dx;
+                    camera.height = (camera.height * zoom).clamp(40.0, 900.0);
+                }
             }
             egui::CentralPanel::default().show(ui, |ui| {
-                if let Err(error) = self.map(ui, frame, &document) {
+                if let Err(error) = self.map(ui, frame, &mut document) {
                     self.error = Some(error);
                 }
             });

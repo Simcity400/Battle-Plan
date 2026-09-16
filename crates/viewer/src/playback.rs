@@ -10,6 +10,18 @@ use replay::{
     rows::{TableId, tables},
 };
 
+/// What a playback holds for its hour: the decoded frame, shared so the
+/// window can hand it between threads without a copy, or the gap it falls in.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Current {
+    Frame(Arc<DecodedFrame>),
+    Gap {
+        branch: BranchId,
+        hour: Hour,
+        reason: String,
+    },
+}
+
 struct CachedBlock {
     index: usize,
     frames: Result<Vec<Frame>, String>,
@@ -33,27 +45,36 @@ pub struct Playback {
     replay: Arc<Replay>,
     branch: BranchId,
     hour: Hour,
-    current: SeekResult,
+    current: Current,
     cache: Option<CachedBlock>,
     parent_support: BTreeMap<BranchId, Option<bool>>,
+    /// Seconds each table took to copy last time, which [`copy_frame`] shares
+    /// the tables out by.
+    copy_costs: Vec<f64>,
     #[cfg(test)]
     block_loads: usize,
 }
 
 impl Playback {
     pub fn new(replay: Replay) -> io::Result<Self> {
+        Self::shared(Arc::new(replay))
+    }
+
+    /// A playback of its own over a replay another playback already holds.
+    pub fn shared(replay: Arc<Replay>) -> io::Result<Self> {
         let first = replay.branches.first().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "replay contains no branches")
         })?;
         let branch = first.id;
         let hour = first.first_hour;
         let mut playback = Self {
-            replay: Arc::new(replay),
+            replay,
             branch,
             hour,
             current: gap(branch, hour, "hour has not been decoded".into()),
             cache: None,
             parent_support: BTreeMap::new(),
+            copy_costs: Vec::new(),
             #[cfg(test)]
             block_loads: 0,
         };
@@ -87,15 +108,27 @@ impl Playback {
         self.hour
     }
 
-    pub fn current(&self) -> &SeekResult {
+    pub fn current(&self) -> &Current {
         &self.current
     }
 
     pub fn frame(&self) -> Option<&DecodedFrame> {
         match &self.current {
-            SeekResult::Frame(frame) => Some(frame),
-            SeekResult::Gap { .. } => None,
+            Current::Frame(frame) => Some(frame),
+            Current::Gap { .. } => None,
         }
+    }
+
+    /// Shows an hour another playback decoded, without decoding anything.
+    ///
+    /// The window's hour builders decode ahead of the playhead on their own
+    /// thread (`crate::hours`); this moves the position the rest of the window
+    /// reads to the hour they built, in the frame that draws it.
+    /// Returns the hour it replaces, for the caller to free where it likes.
+    pub fn present(&mut self, branch: BranchId, hour: Hour, current: Current) -> Current {
+        self.branch = branch;
+        self.hour = hour;
+        std::mem::replace(&mut self.current, current)
     }
 
     /// The timeline includes explicitly lost hours at either end of a branch.
@@ -132,6 +165,18 @@ impl Playback {
     /// Only the target block may be decompressed; backward seeks reuse its frames.
     /// Intermediate hours advance the baseline without copying their decoded rows.
     pub fn seek(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
+        self.seek_with(branch, hour, |_| {})
+    }
+
+    /// [`Playback::seek`], handing `passed` every earlier hour of the block it
+    /// decodes on the way, so a caller that also wants those hours need not
+    /// seek back and decode the block again.
+    pub fn seek_with(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        mut passed: impl FnMut(&DecodedFrame),
+    ) -> io::Result<()> {
         if !self.replay.branches.iter().any(|entry| entry.id == branch) {
             return Err(unknown_branch(branch));
         }
@@ -211,15 +256,20 @@ impl Playback {
             cache.next += 1;
             cache.applied_hour = Some(frame.hour);
             if frame.hour == hour {
-                self.current = SeekResult::Frame(Box::new(decoded.clone()));
+                self.current = Current::Frame(Arc::new(copy_frame(decoded, &mut self.copy_costs)));
                 return Ok(());
             }
+            passed(decoded);
         }
         self.current = gap(branch, hour, self.gap_reason(branch, hour));
         Ok(())
     }
 
     /// Advance one absolute game hour, including a gap. Stop at this branch's end.
+    ///
+    /// The window advances through the hours its builders finish now
+    /// (`crate::hours`); this survives for the tests that pin the stepping rule.
+    #[cfg(test)]
     pub fn step(&mut self) -> io::Result<bool> {
         let (_, last) = self.range(self.branch).expect("selected branch exists");
         let Some(next) = self.hour.checked_add(1).filter(|next| *next <= last) else {
@@ -270,11 +320,79 @@ impl Playback {
     }
 }
 
-fn gap(branch: BranchId, hour: Hour, reason: String) -> SeekResult {
-    SeekResult::Gap {
+fn gap(branch: BranchId, hour: Hour, reason: String) -> Current {
+    Current::Gap {
         branch,
         hour,
         reason,
+    }
+}
+
+/// Threads a decoded hour is copied on.
+const COPY_THREADS: usize = 4;
+
+/// An owned copy of a decoded hour, its tables copied on several threads.
+///
+/// The copy is most of what decoding an hour costs: 15 to 17 ms for the
+/// recorded campaign against 2 to 3 ms for the update itself, the largest
+/// table 3.5 ms and a long tail after it. The builders decode hours one after
+/// another, so the copy bounds how many hours a second they can build.
+/// `costs` is how long each table took last time; tables are dealt out
+/// largest first to whichever thread has the least so far.
+fn copy_frame(decoded: &DecodedFrame, costs: &mut Vec<f64>) -> DecodedFrame {
+    let count = decoded.tables.len();
+    costs.resize(count, 0.0);
+    let mut order: Vec<usize> = (0..count).collect();
+    order.sort_by(|a, b| costs[*b].total_cmp(&costs[*a]));
+    let mut shares: Vec<(f64, Vec<usize>)> = vec![(0.0, Vec::new()); COPY_THREADS];
+    for index in order {
+        let least = shares
+            .iter_mut()
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .expect("at least one thread");
+        // A table not yet timed counts as one, so they spread out too.
+        least.0 += costs[index].max(1e-6);
+        least.1.push(index);
+    }
+    let copied: Vec<Vec<(usize, TableView, f64)>> = std::thread::scope(|scope| {
+        let copy = |indices: &[usize]| {
+            indices
+                .iter()
+                .map(|&index| {
+                    let started = std::time::Instant::now();
+                    let table = decoded.tables[index].clone();
+                    (index, table, started.elapsed().as_secs_f64())
+                })
+                .collect::<Vec<_>>()
+        };
+        let (first, rest) = shares.split_first().expect("at least one thread");
+        let handles: Vec<_> = rest
+            .iter()
+            .map(|(_, indices)| {
+                scope.spawn(move || {
+                    crate::hours::background_priority();
+                    copy(indices)
+                })
+            })
+            .collect();
+        let mut copied = vec![copy(&first.1)];
+        copied.extend(handles.into_iter().map(|handle| {
+            handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        }));
+        copied
+    });
+    let mut tables: Vec<Option<TableView>> = (0..count).map(|_| None).collect();
+    for (index, table, seconds) in copied.into_iter().flatten() {
+        costs[index] = seconds;
+        tables[index] = Some(table);
+    }
+    DecodedFrame {
+        branch: decoded.branch,
+        hour: decoded.hour,
+        tables: std::array::from_fn(|index| tables[index].take().expect("every table copied")),
+        metrics: decoded.metrics.clone(),
     }
 }
 
@@ -530,8 +648,8 @@ mod tests {
         let expected = playback.replay().seek(branch, hour).unwrap();
         playback.seek(branch, hour).unwrap();
         match (&expected, playback.current()) {
-            (SeekResult::Frame(expected), SeekResult::Frame(actual)) => {
-                assert_eq!(expected, actual);
+            (SeekResult::Frame(expected), Current::Frame(actual)) => {
+                assert_eq!(**expected, **actual);
             }
             (
                 SeekResult::Gap {
@@ -539,7 +657,7 @@ mod tests {
                     hour: eh,
                     reason: er,
                 },
-                SeekResult::Gap {
+                Current::Gap {
                     branch: ab,
                     hour: ah,
                     reason: ar,
@@ -591,7 +709,7 @@ mod tests {
             assert!(playback.frame().is_none());
             assert!(matches!(
                 playback.current(),
-                SeekResult::Gap { reason, .. } if reason == "flush failed"
+                Current::Gap { reason, .. } if reason == "flush failed"
             ));
         }
         assert!(playback.step().unwrap());
@@ -610,7 +728,7 @@ mod tests {
             assert_seek_matches_shared(&mut playback, 1, hour);
             assert!(matches!(
                 playback.current(),
-                SeekResult::Gap { reason, .. } if reason.starts_with("unreadable block:")
+                Current::Gap { reason, .. } if reason.starts_with("unreadable block:")
             ));
             assert_eq!(playback.block_loads, 1);
         }
@@ -636,7 +754,7 @@ mod tests {
             playback.seek(1, hour).unwrap();
             assert!(matches!(
                 playback.current(),
-                SeekResult::Gap { reason, .. } if reason == "frame campaign identity differs from replay header"
+                Current::Gap { reason, .. } if reason == "frame campaign identity differs from replay header"
             ));
         }
         playback.seek(1, 100).unwrap();

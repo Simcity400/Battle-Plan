@@ -2,6 +2,7 @@ mod app;
 mod combat;
 mod compare;
 mod document;
+mod hours;
 mod map;
 mod playback;
 mod render;
@@ -13,7 +14,7 @@ use map::{
     name_pass::LayerFade,
     scene::{Overlay, Request},
 };
-use replay::{BranchId, Hour, container::SeekResult};
+use replay::{BranchId, Hour};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -668,44 +669,6 @@ impl Config {
     }
 }
 
-fn choose_initial(document: &mut document::Document, options: &Options) -> io::Result<()> {
-    if let Some(hour) = options.hour {
-        let branch = if let Some(branch) = options.branch {
-            branch
-        } else {
-            let mut candidates = Vec::new();
-            for branch in &document.playback.replay().branches {
-                if matches!(
-                    document.playback.replay().seek(branch.id, hour)?,
-                    SeekResult::Frame(_)
-                ) {
-                    candidates.push(branch.id);
-                }
-            }
-            match candidates.as_slice() {
-                [branch] => *branch,
-                [] => {
-                    return Err(invalid(format!(
-                        "no recorded frame at hour {hour}; pass --branch to inspect a gap"
-                    )));
-                }
-                _ => {
-                    return Err(invalid(format!(
-                        "hour {hour} occurs on branches {candidates:?}; pass --branch"
-                    )));
-                }
-            }
-        };
-        document.playback.seek(branch, hour)?;
-    } else if let Some(branch) = options.branch {
-        document.playback.select_branch(branch)?;
-    }
-    // counters: the recorded hour is chosen above; this is how far past it the
-    // frame sits, which only the moving divisions read.
-    document.hour_fraction = options.hour_fraction;
-    Ok(())
-}
-
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
@@ -735,8 +698,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             options.replay.as_ref().unwrap(),
             &config.resolve_options()?,
             options.allow_unverified,
+            &document::InitialHour {
+                branch: options.branch,
+                hour: options.hour,
+                hour_fraction: options.hour_fraction,
+            },
         )?;
-        choose_initial(&mut document, &options)?;
         let session = document.playback.session();
         if let Some(session) = document
             .playback
@@ -969,10 +936,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             camera.center[0], camera.center[1], camera.height
         );
         println!(
-            "Terrain grid: {} quads at step {}; render {:.1} ms",
+            "Terrain grid: {} quads at step {}; render {:.1} ms (cpu {:.1}, gpu {:.1})",
             report.quads,
             report.step,
-            report.render_seconds * 1000.0
+            report.render_seconds * 1000.0,
+            report.cpu_seconds * 1000.0,
+            (report.render_seconds - report.cpu_seconds) * 1000.0
         );
         // borders
         if !demilitarized.is_empty() {
@@ -1335,6 +1304,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )))
         }),
     )?;
+    map::counter_move::profile_flush();
     let failure = failure.lock().map_err(|error| error.to_string())?.take();
     match failure {
         Some(error) => Err(invalid(error).into()),

@@ -98,6 +98,28 @@ struct Member {
 pub struct ResolvedLayers {
     pub layers: Vec<ResolvedLayer>,
     effective: BTreeMap<String, EffectiveFile>,
+    /// Where uncovered paths resolved, so repeats skip the layer scan and its
+    /// failed filesystem probes. Each entry records the layer roster it was
+    /// resolved against, so layer push/pop (as in the fallback tests) misses
+    /// instead of answering stale. Files are assumed stable during one load;
+    /// a hit the filesystem no longer reproduces falls back to a fresh scan
+    /// rather than failing. The covered path never consults this (it verifies
+    /// per read).
+    uncovered_memo: std::sync::Arc<std::sync::Mutex<UncoveredMemo>>,
+}
+
+/// Memoized uncovered resolutions with the roster they were resolved against.
+#[derive(Debug, Default)]
+struct UncoveredMemo {
+    layers: Vec<String>,
+    hits: BTreeMap<String, Option<UncoveredHit>>,
+}
+
+/// Where one uncovered path resolved.
+#[derive(Clone, Debug)]
+enum UncoveredHit {
+    Folder(PathBuf),
+    Archive { layer: usize, member: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -572,17 +594,60 @@ impl ResolvedLayers {
         if covered(&relative) {
             return self.read(&relative);
         }
+        let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
+        if let Some(memo) = self
+            .uncovered_memo
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&roster, &relative)
+        {
+            match memo {
+                // A stale hit falls back to a fresh scan below, which
+                // refreshes the memo; only a hit the scan reproduces silences
+                // it.
+                Some(hit) => match self.read_hit(&hit) {
+                    Ok(Some(bytes)) => return Ok(bytes),
+                    Ok(None) => {}
+                    Err(error) => return Err(error),
+                },
+                None => return Err(io::Error::new(io::ErrorKind::NotFound, relative)),
+            }
+        }
+        let found = self.scan_uncovered(&relative)?;
+        self.uncovered_memo
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                roster,
+                relative.clone(),
+                found.as_ref().map(|(hit, _)| hit.clone()),
+            );
+        match found {
+            Some((_, bytes)) => Ok(bytes),
+            None => Err(io::Error::new(io::ErrorKind::NotFound, relative)),
+        }
+    }
+
+    /// The layer scan behind [`ResolvedLayers::read_uncovered`], returning the
+    /// hit alongside its bytes. Semantics match the previous inline scan
+    /// exactly: folder misses fall through with a case-insensitive retry,
+    /// archive lookup is exact, hard errors abort, and `replace_path` stops
+    /// the scan.
+    fn scan_uncovered(&self, relative: &str) -> io::Result<Option<(UncoveredHit, Vec<u8>)>> {
         let lower = relative.to_ascii_lowercase();
-        for layer in self.layers.iter().rev() {
+        for (index, layer) in self.layers.iter().enumerate().rev() {
             match &layer.source {
-                LayerSource::Folder(root) => match fs::read(root.join(&relative)) {
-                    Ok(bytes) => return Ok(bytes),
+                LayerSource::Folder(root) => match fs::read(root.join(relative)) {
+                    Ok(bytes) => {
+                        return Ok(Some((UncoveredHit::Folder(root.join(relative)), bytes)));
+                    }
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {
                         // Native Windows folder lookup ignores case; keep that
                         // behaviour explicit so a layer resolves the same way
                         // whatever case the calling parser carries.
-                        if let Some(path) = folded_path(root, &relative)? {
-                            return fs::read(path);
+                        if let Some(path) = folded_path(root, relative)? {
+                            let bytes = fs::read(&path)?;
+                            return Ok(Some((UncoveredHit::Folder(path), bytes)));
                         }
                     }
                     Err(error) => return Err(error),
@@ -590,10 +655,16 @@ impl ResolvedLayers {
                 LayerSource::Archive(path) => {
                     // ZIP lookup is exact, as it is for covered paths.
                     let mut archive = zip::ZipArchive::new(File::open(path)?)?;
-                    if let Ok(mut entry) = archive.by_name(&relative) {
+                    if let Ok(mut entry) = archive.by_name(relative) {
                         let mut bytes = Vec::new();
                         entry.read_to_end(&mut bytes)?;
-                        return Ok(bytes);
+                        return Ok(Some((
+                            UncoveredHit::Archive {
+                                layer: index,
+                                member: relative.to_owned(),
+                            },
+                            bytes,
+                        )));
                     }
                 }
             }
@@ -605,7 +676,53 @@ impl ResolvedLayers {
                 break;
             }
         }
-        Err(io::Error::new(io::ErrorKind::NotFound, relative))
+        Ok(None)
+    }
+
+    /// Reads a memoized hit. `Ok(None)` means the hit is stale and the caller
+    /// rescans; `Err` is a hard error, which aborts exactly like the scan.
+    fn read_hit(&self, hit: &UncoveredHit) -> io::Result<Option<Vec<u8>>> {
+        match hit {
+            UncoveredHit::Folder(path) => match fs::read(path) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error),
+            },
+            UncoveredHit::Archive { layer, member } => {
+                let path = match self.layers.get(*layer).map(|layer| &layer.source) {
+                    Some(LayerSource::Archive(path)) => path,
+                    // The layer at this index is no longer an archive: stale.
+                    _ => return Ok(None),
+                };
+                let mut archive = zip::ZipArchive::new(File::open(path)?)?;
+                // The serial scan continues past an archive miss, so any
+                // lookup failure rescans rather than failing here.
+                match archive.by_name(member) {
+                    Ok(mut entry) => {
+                        let mut bytes = Vec::new();
+                        entry.read_to_end(&mut bytes)?;
+                        Ok(Some(bytes))
+                    }
+                    Err(_) => Ok(None),
+                }
+            }
+        }
+    }
+}
+
+impl UncoveredMemo {
+    fn get(&self, roster: &[String], relative: &str) -> Option<Option<UncoveredHit>> {
+        (self.layers == roster)
+            .then(|| self.hits.get(relative).cloned())
+            .flatten()
+    }
+
+    fn insert(&mut self, roster: Vec<String>, relative: String, hit: Option<UncoveredHit>) {
+        if self.layers != roster {
+            self.layers = roster;
+            self.hits.clear();
+        }
+        self.hits.insert(relative, hit);
     }
 }
 
@@ -1066,6 +1183,7 @@ fn gather_selected(
         let mut layers = ResolvedLayers {
             layers: vec![vanilla],
             effective: BTreeMap::new(),
+            uncovered_memo: Default::default(),
         };
         let mut order_notes = Vec::new();
         if recorded.is_none() {
@@ -1555,6 +1673,7 @@ mod tests {
                 folder_layer("over", &over, Vec::new()),
             ],
             effective: BTreeMap::new(),
+            uncovered_memo: Default::default(),
         };
         assert_eq!(layers.read_uncovered("gfx/fonts/hoi.fnt").unwrap(), b"over");
         layers.layers.pop();
@@ -1567,6 +1686,7 @@ mod tests {
                 folder_layer("over", &root.join("empty"), vec!["gfx/fonts".into()]),
             ],
             effective: BTreeMap::new(),
+            uncovered_memo: Default::default(),
         };
         assert_eq!(
             replacing
