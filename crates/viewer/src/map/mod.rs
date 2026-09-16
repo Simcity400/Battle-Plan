@@ -10,6 +10,7 @@ pub mod borders;
 pub mod camera;
 // counters
 pub mod counter_groups;
+pub mod counter_inputs;
 pub mod counter_move;
 pub mod counter_order;
 pub mod counter_portraits;

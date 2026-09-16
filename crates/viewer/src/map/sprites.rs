@@ -688,13 +688,24 @@ fn vertex_main(
 }
 
 // The atlases are authored straight, not premultiplied (R2 5.3), so the colour
-// multiplies both parts and the blend state does the compositing.
+// multiplies both parts and the blend state does the compositing. A negative
+// alpha selects `buttonstate.shader`'s `PixelShaderDisable`: the texel's
+// luminance grey, then the colour with its alpha negated back.
 @fragment
 fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     let sample = textureSample(page, page_sampler, in.uv);
+    if (in.color.a < 0.0) {
+        let grey = dot(sample.rgb, vec3<f32>(0.212671, 0.715160, 0.072169));
+        return vec4<f32>(grey, grey, grey, sample.a) * vec4<f32>(in.color.rgb, -in.color.a);
+    }
     return sample * in.color;
 }
 "#;
+
+/// The quad colour that draws a sprite in the GUI's disabled state (`buttonstate.shader`'s
+/// `PixelShaderDisable`, luminance weights `0.212671, 0.715160, 0.072169`); the negative alpha is
+/// the flag and its magnitude the multiplier.
+pub const DISABLED: [f32; 4] = [1.0, 1.0, 1.0, -1.0];
 
 #[cfg(test)]
 mod tests {
