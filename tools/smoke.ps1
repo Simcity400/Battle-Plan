@@ -1,9 +1,10 @@
 <#
 .SYNOPSIS
-Milestone 1.3 game input, screenshots, and passive free-run clock measurement.
+Full live recording/save/oracle/render smoke and guarded game-driving actions.
 .DESCRIPTION
-The full product smoke check is not implemented yet. Run explicit actions to
-drive the game during local validation. Baseline verifies the pinned game build,
+Smoke runs the complete local test with an explicit save, calibrated UiConfig, and
+a new Out directory. It preserves the input save and restores the isolated user
+profile selection/settings after normal exit. Explicit actions remain available. Baseline verifies the pinned game build,
 then reads only its clock; it sends no input and does not inject.
 The script does not modify settings or certify that a save finished loading.
 
@@ -17,6 +18,23 @@ handoff and restore the previous foreground window afterward. They never stop
 or minimize that application, including when it is TeamViewer.
 Console opens the console with the supplied key, types one line, presses Enter,
 and closes it. Use Text for an already-open console or a save-name field.
+.PARAMETER UiConfig
+JSON containing width/height, expected_hour/expected_seed and calibrated two-element
+pixel coordinates for menu, speed_up, speed_down, pause, save_menu, save_name,
+save_confirm, save_back, menu_close, exit_game, exit_confirm, map_center and
+capture_cursor. The capture cursor must lie over inert UI chrome without a tooltip.
+.PARAMETER WaitForUiReview
+Before saving, pause for a visual review of dynamic informational notifications.
+The guarded driving actions can dismiss them. A ui-review-approved.json file in Out
+must then contain the exact hour and unobscured=true. Timeout is ten minutes.
+This is a graphical pre-save checkpoint, not a waiver of any correctness check.
+.PARAMETER MapMode
+The renderer map mode matching the game screenshot, controller by default.
+.PARAMETER RecordHours
+Minimum live advance. The run extends to a 720-hour full-refresh boundary and
+requires all 183 native consistency windows plus the war matrix to reach 200/0.
+.EXAMPLE
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/smoke.ps1 -Action Smoke -ExpectedSave save.hoi4 -UiConfig C:\hoi4_scratch\ui.json -Out captures\smoke_new -WaitForUiReview
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Launch -ContinueLastSave
 .EXAMPLE
@@ -34,7 +52,7 @@ powershell -File tools/smoke.ps1 -Action Baseline -Seconds 120 -Out captures\bas
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Smoke', 'Launch', 'Screenshot', 'Key', 'Click', 'Move', 'Wheel', 'Text', 'Console', 'Baseline')]
+    [ValidateSet('Smoke', 'Launch', 'Screenshot', 'Key', 'Click', 'Move', 'Wheel', 'Text', 'Console', 'Baseline', 'Clock')]
     [string]$Action = 'Smoke',
     [string]$GameExe = 'X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe',
     [string]$UserDirectory = 'C:\Users\Example\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV',
@@ -45,20 +63,507 @@ param(
     [ValidateRange(1, 2147483647)][int]$Seconds = 120,
     [ValidateSet('Space', 'Escape', 'Enter', 'Grave', 'Tab', 'Backspace', 'Delete',
         'Left', 'Right', 'Up', 'Down', 'Home', 'End', '1', '2', '3', '4', '5',
-        'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12')]
+        'CtrlA', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12')]
     [string]$Key,
     [ValidateRange(-1, 32767)][int]$X = -1,
     [ValidateRange(-1, 32767)][int]$Y = -1,
     [ValidateRange(-50, 50)][int]$Delta = 0,
     [ValidateLength(1, 512)][string]$Text,
+    [string]$UiConfig,
+    [switch]$WaitForUiReview,
+    [ValidateSet('owner', 'controller')][string]$MapMode = 'controller',
+    [string]$Perspective = 'recorded',
+    [ValidateRange(120, 10000)][int]$RecordHours = 120,
+    [ValidateRange(300, 14400)][int]$TimeoutSeconds = 3600,
     [ValidateRange(1, 254)][int]$ConsoleKey = 0xC0
 )
 
+function Initialize-SmokeClock {
+    if (-not ('Hoi4ClockBaseline' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public sealed class Hoi4ClockBaseline : IDisposable {
+    public sealed class Clock {
+        public ulong game_state, play_time;
+        public long play_session_started_at;
+        public int hour, seed, speed;
+        public byte tick_busy;
+        public byte paused = 255;
+        public bool presentation_valid;
+        public float[] eye, look_at;
+        public int[] viewport;
+        public bool Same(Clock other) {
+            return other != null && game_state == other.game_state && hour == other.hour &&
+                play_time == other.play_time && play_session_started_at == other.play_session_started_at && seed == other.seed && speed == other.speed && tick_busy == other.tick_busy && paused == other.paused;
+        }
+    }
+    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint process);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] bytes, UIntPtr size, out UIntPtr read);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")] static extern bool QueryPerformanceCounter(out long value);
+    [DllImport("kernel32.dll")] static extern bool QueryPerformanceFrequency(out long value);
+    readonly ulong image;
+    readonly byte[] bytes = new byte[32];
+    IntPtr process;
+    public readonly long Frequency;
+    public Hoi4ClockBaseline(uint processId, ulong imageBase) {
+        if (!QueryPerformanceFrequency(out Frequency) || Frequency <= 0)
+            throw new InvalidOperationException("QueryPerformanceFrequency failed.");
+        image = imageBase;
+        process = OpenProcess(0x10, false, processId); // PROCESS_VM_READ only; this helper never writes or injects.
+        if (process == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    public static long Qpc() {
+        long value;
+        if (!QueryPerformanceCounter(out value)) throw new InvalidOperationException("QueryPerformanceCounter failed.");
+        return value;
+    }
+    bool Read(ulong address, uint size) {
+        UIntPtr read;
+        return address > 0 && address <= long.MaxValue &&
+            ReadProcessMemory(process, new IntPtr((long)address), bytes, new UIntPtr(size), out read) && read.ToUInt64() == size;
+    }
+    bool Presentation(Clock clock) {
+        // engine::cin_game_idler and camera_root_layout: read only, never call engine code.
+        if (!Read(image + 0x33172e0, 8)) return false;
+        ulong idler = BitConverter.ToUInt64(bytes, 0);
+        if (idler == 0 || idler > long.MaxValue - 0x1000) return false;
+        if (!Read(image + 0x33172e8, 8) || BitConverter.ToUInt64(bytes, 0) != idler) return false;
+        if (!Read(idler, 8) || BitConverter.ToUInt64(bytes, 0) != image + 0x2952510) return false;
+        if (!Read(idler + 0x6c1, 1) || bytes[0] > 1) return false;
+        clock.paused = bytes[0];
+        // The live +0x750 member is a pointer, not the historically assumed inline root.
+        if (!Read(idler + 0x750, 8)) return false;
+        ulong camera = BitConverter.ToUInt64(bytes, 0);
+        if (camera == 0 || camera > long.MaxValue - 0x740) return false;
+        if (!Read(camera + 8, 8) || BitConverter.ToUInt64(bytes, 0) != idler) return false;
+        if (!Read(camera + 0x680, 24)) return false;
+        clock.eye = new float[3]; clock.look_at = new float[3];
+        for (int n = 0; n < 3; n++) {
+            clock.eye[n] = BitConverter.ToSingle(bytes, n * 4);
+            clock.look_at[n] = BitConverter.ToSingle(bytes, 12 + n * 4);
+        }
+        // Compare the canonical embedded render view with its camera root.
+        if (!Read(camera + 0x10 + 0x180, 24)) return false;
+        for (int n = 0; n < 3; n++) {
+            if (clock.eye[n] != BitConverter.ToSingle(bytes, n * 4) ||
+                clock.look_at[n] != BitConverter.ToSingle(bytes, 12 + n * 4)) return false;
+        }
+        if (!Read(camera + 0x6c0, 16)) return false;
+        clock.viewport = new int[4];
+        for (int n = 0; n < 4; n++) clock.viewport[n] = BitConverter.ToInt32(bytes, n * 4);
+
+        if (!Read(image + 0x3317048, 8)) return false;
+        clock.play_session_started_at = BitConverter.ToInt64(bytes, 0);
+        return true;
+    }
+    Clock Once() {
+        // engine::cgame_state: confirmed CGameState singleton, native-width clock fields and load witness.
+        if (!Read(image + 0x3316e90, 8)) return null;
+        ulong state = BitConverter.ToUInt64(bytes, 0);
+        if (state == 0 || state > long.MaxValue - 0x800) return null;
+        var clock = new Clock();
+        clock.game_state = state;
+        if (!Read(state + 0x468, 4)) return null;
+        clock.hour = BitConverter.ToInt32(bytes, 0);
+        if (!Read(state + 0x490, 8)) return null;
+        clock.play_time = BitConverter.ToUInt64(bytes, 0);
+        if (!Read(state + 0x720, 4)) return null;
+        clock.seed = BitConverter.ToInt32(bytes, 0);
+        if (!Read(state + 0x4bc, 4)) return null;
+        clock.speed = BitConverter.ToInt32(bytes, 0);
+        if (!Read(state + 0x4c0, 1)) return null;
+        clock.tick_busy = bytes[0];
+        clock.presentation_valid = Presentation(clock);
+        if (!clock.presentation_valid) { clock.eye = null; clock.look_at = null; clock.viewport = null; }
+        if (!Read(image + 0x3316e90, 8) || BitConverter.ToUInt64(bytes, 0) != state) return null;
+        return clock;
+    }
+    public Clock Sample() {
+        Clock first = Once(), second = Once();
+        return first != null && first.Same(second) ? second : null;
+    }
+    public void Dispose() {
+        if (process != IntPtr.Zero) { CloseHandle(process); process = IntPtr.Zero; }
+    }
+}
+'@
+    }
+}
+
+function Invoke-FullSmoke {
+    if (-not $UiConfig -or -not $ExpectedSave -or -not $Out) {
+        throw 'Smoke requires -UiConfig (calibrated screenshot pixels), -ExpectedSave and a new -Out directory.'
+    }
+    $captureRoot = 'captures\'
+    $output = [IO.Path]::GetFullPath($Out)
+    if (-not $output.StartsWith($captureRoot, [StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $output)) {
+        throw 'Smoke output must be a NEW directory under captures.'
+    }
+    $repo = Split-Path -Parent $PSScriptRoot
+    $driver = $PSCommandPath
+    $userPath = (Resolve-Path -LiteralPath $UserDirectory).ProviderPath
+    $gamePath = (Resolve-Path -LiteralPath $GameExe).ProviderPath
+    if ($ExpectedSave.IndexOfAny([char[]]'\/:"') -ge 0 -or $ExpectedSave -notlike '*.hoi4') { throw 'ExpectedSave must be a local save filename.' }
+    $sourceSave = Join-Path (Join-Path $userPath 'save games') $ExpectedSave
+    $selectionPath = Join-Path $userPath 'continue_game.json'
+    $settingsPath = Join-Path $userPath 'settings.txt'
+    $settingsBytes = [IO.File]::ReadAllBytes($settingsPath)
+    $settings = [IO.File]::ReadAllText($settingsPath)
+    if ($settings -notmatch '(?m)^\s*save_as_binary\s*=\s*no\s*$') { throw 'Smoke requires save_as_binary=no; settings were not changed.' }
+    $selection = [IO.File]::ReadAllBytes($selectionPath)
+    $selected = [Text.Encoding]::UTF8.GetString($selection) | ConvertFrom-Json
+    if ($selected.filename -cne $ExpectedSave -or $selected.is_remote) { throw 'The existing local continue selection must match ExpectedSave.' }
+    if (-not (Test-Path -LiteralPath $sourceSave -PathType Leaf)) { throw 'Expected save is missing.' }
+    if (@(Get-Process -Name the game,recorder -ErrorAction SilentlyContinue).Count) { throw 'Smoke will not take over another running game or recorder.' }
+    if ((Get-Item -LiteralPath $gamePath).Length -ne 55680632 -or
+        (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash -ine '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad') { throw 'Unsupported game build.' }
+    $ui = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $UiConfig)) | ConvertFrom-Json
+    foreach ($name in @('menu','speed_up','speed_down','pause','save_menu','save_name','save_confirm','save_back','menu_close','exit_game','exit_confirm','map_center','capture_cursor')) {
+        $point = $ui.$name
+        if ($point.Count -ne 2 -or $point[0] -lt 0 -or $point[1] -lt 0 -or $point[0] -ge $ui.width -or $point[1] -ge $ui.height) { throw "Invalid calibrated point: $name" }
+    }
+    $lock = Join-Path $env:TEMP 'claude\hoi4_game.lock'
+    if (Test-Path -LiteralPath $lock) { throw "Shared game lock is held: $lock" }
+    $null = New-Item -ItemType Directory -Path $lock -ErrorAction Stop
+    $ownerToken = 'full-smoke-' + [Guid]::NewGuid().ToString()
+    [IO.File]::WriteAllText((Join-Path $lock 'owner'), $ownerToken)
+    $null = New-Item -ItemType Directory -Path $output
+    $utf8 = New-Object Text.UTF8Encoding $false
+    $recordRoot = Join-Path $output 'recording'
+    $bin = Join-Path $output 'bin'
+    $null = New-Item -ItemType Directory -Path $bin
+    $started = [Diagnostics.Stopwatch]::StartNew()
+    $report = [ordered]@{ passed=$false; phase='preflight'; checks=@(); source_save=$sourceSave; source_save_sha256=(Get-FileHash $sourceSave -Algorithm SHA256).Hash; started_utc=[DateTime]::UtcNow.ToString('o'); full_smoke=$true }
+    $game = $null; $reader = $null; $recorderRun = $null; $previousForeground = [IntPtr]::Zero
+    $statusPath = $null; $failure = $null; $cleaned = $false
+    function Write-Report { [IO.File]::WriteAllText((Join-Path $output 'smoke-result.json'), ($report | ConvertTo-Json -Depth 14), $utf8) }
+    function Stage([string]$name) { $report.phase=$name; Write-Report; Write-Host ("SMOKE {0}: {1:n1}s" -f $name,$started.Elapsed.TotalSeconds) }
+    function Launch-Tool([string]$exe, [string[]]$arguments, [string]$name) {
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName=$exe; $info.WorkingDirectory=$repo; $info.UseShellExecute=$false; $info.CreateNoWindow=$true
+        $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
+        $info.StandardOutputEncoding=$utf8; $info.StandardErrorEncoding=$utf8
+        $info.Arguments = ($arguments | ForEach-Object {
+            if ($_ -match '"') { throw 'Native argument contains a quote.' }
+            '"' + ($_ -replace '(\\+)$','$1$1') + '"'
+        }) -join ' '
+        $process = New-Object Diagnostics.Process; $process.StartInfo=$info; $null=$process.Start()
+        [pscustomobject]@{ Process=$process; Stdout=$process.StandardOutput.ReadToEndAsync(); Stderr=$process.StandardError.ReadToEndAsync(); Name=$name; Started=[DateTime]::UtcNow; Command=@($exe)+$arguments }
+    }
+    function Finish-Tool($run,[int]$seconds=240) {
+        if (-not $run.Process.WaitForExit($seconds*1000)) { throw "Timed out: $($run.Name); process $($run.Process.Id) retained for safe cleanup." }
+        $text=$run.Stdout.GetAwaiter().GetResult(); $errors=$run.Stderr.GetAwaiter().GetResult()
+        [IO.File]::WriteAllText((Join-Path $output ($run.Name+'.log')), $text + "`n" + $errors, $utf8)
+        $report.checks += [pscustomobject]@{name=$run.Name;exit=$run.Process.ExitCode;seconds=([DateTime]::UtcNow-$run.Started).TotalSeconds;command=$run.Command}
+        Write-Report
+        if ($run.Process.ExitCode -ne 0) { throw "$($run.Name) failed with exit $($run.Process.ExitCode). See $($run.Name).log" }
+        return $text
+    }
+    function Run-Tool([string]$exe,[string[]]$arguments,[string]$name,[int]$seconds=240) {
+        Finish-Tool (Launch-Tool $exe $arguments $name) $seconds
+    }
+    function Drive([string]$action,[hashtable]$extra=@{}) { & $driver -Action $action -GameId $game.Id -GameExe $gamePath -UserDirectory $userPath @extra }
+    function Click-Point([string]$name) { $point=$ui.$name; $null=Drive 'Click' @{X=[int]$point[0];Y=[int]$point[1]} }
+    function Clock {
+        $limit=[DateTime]::UtcNow.AddSeconds(10)
+        do {
+            $game.Refresh(); if ($game.HasExited) { throw 'Game exited during smoke.' }
+            $clock=$reader.Sample()
+            if ($null -ne $clock -and $clock.paused -le 1 -and $clock.tick_busy -eq 0) { return $clock }
+            Start-Sleep -Milliseconds 10
+        } while ([DateTime]::UtcNow -lt $limit)
+        throw 'No stable, authenticated game clock.'
+    }
+    function Pause-Game([bool]$paused) {
+        if ((Clock).paused -ne [int]$paused) {
+            [Hoi4ProbeInput]::KeyPress($game.MainWindowHandle,[uint32]$game.Id,0x20)
+        }
+        $limit=[DateTime]::UtcNow.AddSeconds(10)
+        while ((Clock).paused -ne [int]$paused) {
+            if ([DateTime]::UtcNow -gt $limit) { throw 'Pause input was not accepted.' }
+            Start-Sleep -Milliseconds 20
+        }
+    }
+    function Speed-Game([int]$speed) {
+        for ($tries=0; $tries -lt 10; $tries++) {
+            $actual=(Clock).speed
+            if ($actual -eq $speed) { return }
+            if ($actual -lt $speed) { Click-Point 'speed_up' } else { Click-Point 'speed_down' }
+        }
+        throw 'Speed input was not accepted.'
+    }
+    function Status {
+        if (-not $script:smokeStatusPath) {
+            $found=@(Get-ChildItem -LiteralPath $recordRoot -Filter status.json -Recurse -ErrorAction SilentlyContinue)
+            if ($found.Count -eq 1) { $script:smokeStatusPath=$found[0].FullName }
+        }
+        $path=$script:smokeStatusPath
+        if (-not $path) { return $null }
+        try { [IO.File]::ReadAllText($path) | ConvertFrom-Json } catch { return $null }
+    }
+    function Stop-OwnedGame {
+        $game.Refresh(); if ($game.HasExited) { return }
+        Pause-Game $true
+        Click-Point 'menu'; Click-Point 'exit_game'; Click-Point 'exit_confirm'
+        if (-not $game.WaitForExit(60000)) { throw 'The game did not exit through its confirmation dialog.' }
+    }
+    try {
+        [IO.File]::WriteAllBytes((Join-Path $output 'continue-before.json'),$selection)
+        [IO.File]::WriteAllBytes((Join-Path $output 'settings-before.txt'),$settingsBytes)
+        Copy-Item -LiteralPath $UiConfig -Destination (Join-Path $output 'ui.json')
+        Copy-Item -LiteralPath $driver -Destination (Join-Path $output 'smoke-driver.ps1')
+        Stage 'static-checks'
+        $git=(Get-Command git -ErrorAction Stop).Source
+        $report.source_commit=(Run-Tool $git @('rev-parse','HEAD') 'source-commit' 30).Trim()
+        $dirty=Run-Tool $git @('status','--porcelain','--untracked-files=no') 'source-status' 30
+        if (-not [string]::IsNullOrWhiteSpace($dirty)) { throw 'Commit the smoke candidate before running the full check.' }
+        $report.source_clean=$true
+        $cargo=(Get-Command cargo -ErrorAction Stop).Source
+        $null=Run-Tool $cargo @('build','--workspace') 'build' 600
+        $tests=Run-Tool $cargo @('test','--workspace') 'test' 600
+        $report.tests_passed=([regex]::Matches($tests,'test result: ok\. (\d+) passed') | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
+        $null=Run-Tool $cargo @('clippy','--workspace','--all-targets','--','-D','warnings') 'clippy' 600
+        $null=Run-Tool $cargo @('fmt','--all','--','--check') 'fmt' 120
+        $null=Run-Tool $cargo @('build','--workspace','--release') 'release' 600
+        foreach ($file in @('recorder.exe','collector.dll','viewer.exe')) { Copy-Item (Join-Path (Join-Path $repo '.cargo-target\release') $file) (Join-Path $bin $file) }
+        $report.map_mode=$MapMode; $report.perspective=$Perspective
+        $report.binaries=@(Get-ChildItem $bin -File | ForEach-Object { @{name=$_.Name;sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash;bytes=$_.Length} })
+        $recorder=Join-Path $bin 'recorder.exe'; $viewer=Join-Path $bin 'viewer.exe'
+        Stage 'launch-and-attach'
+        $script:smokeStatusPath=$null
+        $recorderRun=Launch-Tool $recorder @('record','--once','--out',$recordRoot,'--user-dir',$userPath) 'record'
+        $launch=& $driver -Action Launch -GameExe $gamePath -UserDirectory $userPath -ContinueLastSave -ExpectedSave $ExpectedSave
+        $game=Get-Process -Id $launch.GameId
+        Initialize-SmokeClock
+        $limit=[DateTime]::UtcNow.AddSeconds(300)
+        do {
+            $game.Refresh(); if ($game.HasExited) { throw 'Game exited before loading.' }
+            if ($null -eq $reader) { try { $reader=[Hoi4ClockBaseline]::new([uint32]$game.Id,[uint64]$game.MainModule.BaseAddress.ToInt64()) } catch {} }
+            $clock=if ($reader) { $reader.Sample() } else { $null }
+            if ($clock -and $clock.hour -eq $ui.expected_hour -and $clock.seed -eq $ui.expected_seed -and $clock.paused -le 1 -and $game.MainWindowHandle -ne [IntPtr]::Zero) { break }
+            if ([DateTime]::UtcNow -gt $limit) { throw 'Expected save did not finish loading.' }
+            Start-Sleep -Milliseconds 100
+        } while ($true)
+        $shot=Drive 'Screenshot' @{Out=(Join-Path $output 'loaded.png')}
+        if ($shot.Width -ne $ui.width -or $shot.Height -ne $ui.height) { throw 'Window dimensions differ from calibrated UI.' }
+        $previousForeground=[Hoi4ProbeInput]::AcquireTargetFocus($game.MainWindowHandle,[uint32]$game.Id)
+        Pause-Game $true
+        $null=Drive 'Move' @{X=[int]$ui.map_center[0];Y=[int]$ui.map_center[1]}
+        $limit=[DateTime]::UtcNow.AddSeconds(120)
+        while (@($game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 1) {
+            if ($recorderRun.Process.HasExited) { $null=Finish-Tool $recorderRun; throw 'Recorder exited before attaching.' }
+            if ([DateTime]::UtcNow -gt $limit) { throw 'Collector did not attach.' }
+            Start-Sleep -Milliseconds 200; $game.Refresh()
+        }
+        $clock=Clock; $report.initial_clock=$clock; $report.game_pid=$game.Id
+        $first=[int]$clock.hour; $target=$first + 720*[int][Math]::Ceiling($RecordHours/720.0)
+        $load=$clock.play_session_started_at; $seed=$clock.seed
+        $live=[Diagnostics.Stopwatch]::StartNew(); $progressAt=0.0; $slow=$false; $allChecked=$false
+        Stage 'recording'
+        Speed-Game 4; Pause-Game $false
+        while ($true) {
+            $clock=Clock
+            if ($clock.play_session_started_at -ne $load -or $clock.seed -ne $seed -or $clock.hour -lt $first) { throw 'Unexpected load or campaign change.' }
+            if ($live.Elapsed.TotalSeconds -gt $TimeoutSeconds) { throw 'Live recording timed out.' }
+            $status=Status
+            if ($status) {
+                if ($status.sample_boundary -ne 'end_of_hour') { throw 'Unexpected sample boundary.' }
+                if ($status.hours -gt 0 -and $status.last_hour-$status.hours+1 -ne $first) { throw 'Unexpected first recorded hour or discontinuity.' }
+                if ($status.dropped_frames -ne 0 -or $status.write_errors -ne 0 -or $status.war_matrix_failures -ne 0) { throw 'Recording reported drops, write errors or a failed war-matrix check.' }
+                $mismatches=@($status.consistency.mismatches.PSObject.Properties | Where-Object { $_.Value -ne 0 })
+                if ($mismatches.Count) { [IO.File]::WriteAllText((Join-Path $output 'failed-consistency.json'),($status | ConvertTo-Json -Depth 30),$utf8); throw ('Consistency mismatches: '+(($mismatches.Name) -join ', ')) }
+                $checks=@($status.consistency.successful_checks.PSObject.Properties)
+                $ready=@($checks | Where-Object { $_.Value -ge 200 }).Count
+                $allChecked=$checks.Count -eq 183 -and $ready -eq $checks.Count -and $status.war_matrix_checks -ge 200
+                if ($live.Elapsed.TotalSeconds -ge $progressAt) {
+                    Write-Host "H=$($clock.hour) target=$target checked=$ready/$($checks.Count) samples=$($status.hours)"
+                    $progressAt=$live.Elapsed.TotalSeconds+15
+                    $report.live_progress=@{hour=$clock.hour;target=$target;ready=$ready;windows=$checks.Count;samples=$status.hours}; Write-Report
+                }
+            }
+            if (-not $slow -and $clock.hour -ge $target-40) {
+                if (-not $allChecked) { $target+=720; continue }
+                Speed-Game 0; $slow=$true
+            }
+            if ($clock.hour -ge $target) {
+                Pause-Game $true; $clock=Clock
+                if ($clock.hour -ne $target) { throw "Missed exact full-refresh save hour: target=$target actual=$($clock.hour)" }
+                break
+            }
+            Start-Sleep -Milliseconds 20
+        }
+        $live.Stop(); $report.advance_seconds=$live.Elapsed.TotalSeconds; $report.save_hour=$target
+        $status=Status
+        [IO.File]::WriteAllText((Join-Path $output 'before-save-status.json'),($status | ConvertTo-Json -Depth 30),$utf8)
+        if ($WaitForUiReview) {
+            Stage 'awaiting-ui-review'
+            $reviewShot=Join-Path $output 'before-save-ui-review.png'
+            $null=Drive 'Screenshot' @{Out=$reviewShot}
+            [IO.File]::WriteAllText((Join-Path $output 'ui-review-required.json'), (@{hour=$target;game_pid=$game.Id;screenshot=$reviewShot;requirement='Dismiss informational notifications through guarded driver actions, leave the map unobscured and paused; then write ui-review-approved.json with this hour.'} | ConvertTo-Json),$utf8)
+            $ack=Join-Path $output 'ui-review-approved.json'; $limit=[DateTime]::UtcNow.AddSeconds(600)
+            while (-not (Test-Path -LiteralPath $ack)) {
+                if ((Clock).hour -ne $target -or (Clock).paused -ne 1) { throw 'Game advanced or unpaused during UI review.' }
+                if ([DateTime]::UtcNow -gt $limit) { throw 'Unobscured-map review was not completed.' }
+                Start-Sleep -Milliseconds 200
+            }
+            $approval=[IO.File]::ReadAllText($ack) | ConvertFrom-Json
+            if ($approval.hour -ne $target -or $approval.unobscured -ne $true) { throw 'Invalid UI review acknowledgement.' }
+            $report.ui_review=$approval
+            $null=Drive 'Screenshot' @{Out=(Join-Path $output 'before-save-map.png')}
+        }
+        Stage 'save-through-game-ui'
+        Start-Sleep -Seconds 2
+        $before=Clock; if ($before.hour -ne $target -or $before.paused -ne 1) { throw 'Pause did not hold before save.' }
+        $saveName='SMOKE_'+[DateTime]::Now.ToString('yyyyMMdd_HHmmss')+'_H'+$target
+        $save=Join-Path (Join-Path $userPath 'save games') ($saveName+'.hoi4')
+        if (Test-Path -LiteralPath $save) { throw 'Smoke save already exists; refusing to overwrite.' }
+        Click-Point 'menu'; Click-Point 'save_menu'; Click-Point 'save_name'
+        $null=Drive 'Key' @{Key='CtrlA'}; $null=Drive 'Text' @{Text=$saveName}; Click-Point 'save_confirm'
+        $limit=[DateTime]::UtcNow.AddSeconds(120); $saved=$false
+        do {
+            if (Test-Path -LiteralPath $save) {
+                try {
+                    $stream=[IO.File]::Open($save,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+                    try { $header=New-Object byte[] 8; $n=$stream.Read($header,0,8); $saved=$n -eq 8 -and [Text.Encoding]::ASCII.GetString($header).StartsWith('HOI4txt') -and $stream.Length -gt 10000 } finally { $stream.Dispose() }
+                } catch { $saved=$false }
+            }
+            if (-not $saved) { Start-Sleep -Milliseconds 250 }
+            if ([DateTime]::UtcNow -gt $limit) { throw 'The UI did not produce a complete text save.' }
+        } until ($saved)
+        Start-Sleep -Seconds 2
+        if ((Clock).hour -ne $target) { throw 'Game advanced during the save.' }
+        $report.save=$save; $report.save_sha256=(Get-FileHash $save -Algorithm SHA256).Hash
+        $null=Drive 'Screenshot' @{Out=(Join-Path $output 'after-save-ui.png')}
+        # Saving closes the game's menu itself; another close-position click
+        # would select the province behind it and open a state panel.
+        $null=Drive 'Move' @{X=[int]$ui.map_center[0];Y=[int]$ui.map_center[1]}
+        Stage 'same-hour-reference-captures'
+        $references=@(); $steps=@(0,-3,6,6,-9)
+        for ($i=0; $i -lt $steps.Count; $i++) {
+            if ($steps[$i] -ne 0) { $null=Drive 'Wheel' @{X=[int]$ui.map_center[0];Y=[int]$ui.map_center[1];Delta=$steps[$i]} }
+            # Keep the pointer over calibrated inert UI chrome, not the map,
+            # so a hover tooltip does not cover the scored land.
+            $null=Drive 'Move' @{X=[int]$ui.capture_cursor[0];Y=[int]$ui.capture_cursor[1]}
+            Start-Sleep -Seconds 2
+            $camera=Clock
+            if ($camera.hour -ne $target -or $camera.paused -ne 1 -or -not $camera.eye) { throw 'Reference capture lacks an authenticated paused camera.' }
+            $image=Join-Path $output ("reference-{0}-game.png" -f $i)
+            $null=Drive 'Screenshot' @{Out=$image}
+            $references += @{index=$i;game_image=$image;clock=$camera;camera=@($camera.look_at[0],$camera.look_at[2],$camera.eye[1]);width=$camera.viewport[2];height=$camera.viewport[3]}
+        }
+        $report.references=$references
+        $statusBeforeStep=Status
+        $report.paused_observation=@{hour_before=$before.hour;hour_after=(Clock).hour;samples_before=$status.hours;samples_after=$statusBeforeStep.hours;scope='Observed save/camera interval only; not a universal paused-command proof.'}
+        Stage 'end-of-hour-boundary'
+        Pause-Game $false
+        $limit=[DateTime]::UtcNow.AddSeconds(30)
+        while ((Clock).hour -lt $target+1) { if ([DateTime]::UtcNow -gt $limit) { throw 'The H+1 sampling step did not advance.' }; Start-Sleep -Milliseconds 5 }
+        Pause-Game $true
+        $report.after_sampling_clock=Clock
+        $limit=[DateTime]::UtcNow.AddSeconds(30)
+        do { $status=Status; if ($status -and $status.last_hour -ge $target) { break }; if ([DateTime]::UtcNow -gt $limit) { throw 'Saved hour was not posted by the collector.' }; Start-Sleep -Milliseconds 100 } while ($true)
+        [IO.File]::WriteAllText((Join-Path $output 'boundary-status.json'),($status | ConvertTo-Json -Depth 30),$utf8)
+        Stage 'detach-drain-finalize'
+        $finalize=[Diagnostics.Stopwatch]::StartNew()
+        $null=Run-Tool $recorder @('detach','--out',$recordRoot) 'detach' 120
+        $null=Finish-Tool $recorderRun 180
+        $finalize.Stop(); $report.finalize_seconds=$finalize.Elapsed.TotalSeconds
+        $game.Refresh()
+        if (@($game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) { throw 'Collector remains loaded after detach.' }
+        $completionFiles=@(Get-ChildItem -LiteralPath $recordRoot -Filter completed.json -Recurse)
+        if ($completionFiles.Count -ne 1) { throw 'Expected one completed recording session.' }
+        $completed=[IO.File]::ReadAllText($completionFiles[0].FullName) | ConvertFrom-Json
+        if (-not $completed.detached -or -not $completed.drain_complete -or $completed.partial -or $completed.issues.Count -ne 0 -or $completed.warnings.Count -ne 0) { throw 'Recording did not finalize cleanly.' }
+        $report.completion=$completed; $report.collector_absence_confirmed=$true
+        Stage 'normal-game-exit'
+        Stop-OwnedGame
+        $replays=@(Get-ChildItem -LiteralPath $recordRoot -Filter '*.battleplan' -File)
+        if ($replays.Count -ne 1) { throw 'Expected exactly one finalized replay.' }
+        $replay=$replays[0].FullName; $report.replay=$replay; $report.replay_bytes=$replays[0].Length
+        $stream=[IO.File]::OpenRead($replay)
+        try { $header=New-Object byte[] 6; $n=$stream.Read($header,0,6); if ($n -ne 6 -or [Text.Encoding]::ASCII.GetString($header,0,4) -cne 'H4RP' -or [BitConverter]::ToUInt16($header,4) -ne 25) { throw 'Smoke did not produce the expected format-25 replay.' } } finally { $stream.Dispose() }
+        Stage 'fresh-save-oracle'
+        $inspection=Run-Tool $recorder @('inspect',$replay) 'inspect' 180
+        if ($inspection -notmatch 'content_verified=true sessions=1 branches=1 blocks=\d+') { throw 'Replay identity/session/branch inspection failed.' }
+        $oracle=Run-Tool $recorder @('oracle',$replay,$save,'--hour',[string]$target,'--branch','1','--game-dir',(Split-Path -Parent $gamePath),'--user-dir',$userPath) 'oracle' 240
+        if ($oracle -notmatch '(?m)^Differences: 0\s*$' -or $oracle -notmatch 'coverage: complete; 0 table availability issues; 0 failed or skipped comparison groups') { throw 'Fresh-save oracle did not establish complete matching coverage.' }
+        $report.oracle_comparisons=[int]([regex]::Match($oracle,'(\d+) exact field comparisons').Groups[1].Value)
+        $report.oracle_differences=0; $report.recorded_format=25
+        Copy-Item -LiteralPath $save -Destination (Join-Path $output 'boundary-save.hoi4')
+        Stage 'render-and-score-five-reference-pairs'
+        $culture=[Globalization.CultureInfo]::InvariantCulture
+        foreach ($reference in $references) {
+            $cameraText=($reference.camera | ForEach-Object { ([double]$_).ToString('R',$culture) }) -join ','
+            $common=@($replay,'--hour',[string]$target,'--branch','1','--camera',$cameraText,'--width',[string]$reference.width,'--height',[string]$reference.height,'--perspective',$Perspective,'--mode',$MapMode,'--fog','on','--game-dir',(Split-Path -Parent $gamePath),'--user-dir',$userPath)
+            $image=Join-Path $output ("reference-{0}-viewer.png" -f $reference.index)
+            $null=Run-Tool $viewer (@('--dump')+$common+@('--out',$image)) ("render-{0}" -f $reference.index) 240
+            $score=Join-Path $output ("reference-{0}-score.json" -f $reference.index)
+            $scale=([double]$ui.width/$reference.width).ToString('R',$culture)
+            $null=Run-Tool $viewer @('--compare',$reference.game_image,$image,'--upscale',$scale,'--exclude-game-ui','--json',$score) ("compare-{0}" -f $reference.index) 120
+            $reference.viewer_image=$image; $reference.scores=[IO.File]::ReadAllText($score) | ConvertFrom-Json
+            if ($reference.index -eq 0) {
+                $windowImage=Join-Path $output 'window-parity.png'
+                $null=Run-Tool $viewer (@('--window-dump')+$common+@('--out',$windowImage)) 'window-render' 240
+                $headlessHash=(Get-FileHash $image -Algorithm SHA256).Hash
+                $windowHash=(Get-FileHash $windowImage -Algorithm SHA256).Hash
+                $report.window_headless_identical=$headlessHash -eq $windowHash
+                $report.window_headless_sha256=$headlessHash
+                if (-not $report.window_headless_identical) { throw 'Headless and window render outputs differ.' }
+            }
+            Write-Report
+        }
+        $finalStatus=Status
+        [IO.File]::WriteAllText((Join-Path $output 'final-status.json'),($finalStatus | ConvertTo-Json -Depth 30),$utf8)
+        if ($finalStatus.hours -lt $RecordHours -or $finalStatus.dropped_frames -ne 0 -or $finalStatus.write_errors -ne 0) { throw 'Final transport counters failed.' }
+        $report.performance=@{recorded_hours=$finalStatus.hours;advancing_game_hours=$target-$first;advance_seconds=$live.Elapsed.TotalSeconds;advancing_hours_per_second=($target-$first)/$live.Elapsed.TotalSeconds;callback_p50_ms=$finalStatus.callback_work.p50_ns/1e6;callback_p95_ms=$finalStatus.callback_work.p95_ns/1e6;callback_max_ms=$finalStatus.callback_work.max_ns/1e6;pool_bytes=$finalStatus.pool_bytes;spool_bytes=$finalStatus.spool_bytes;scope='One live smoke including consistency-check warmup and slow boundary approach. Not a paired baseline or performance acceptance.'}
+        if ((Get-FileHash $sourceSave -Algorithm SHA256).Hash -cne $report.source_save_sha256) { throw 'Original input save changed.' }
+        $report.source_save_unchanged=$true
+        $report.passed=$true; Stage 'validations-passed'
+    } catch {
+        $failure=$_; $report.passed=$false; $report.error=$_.Exception.Message
+        Stage 'failed'
+        # Stop acquisition before attempting any other cleanup. A failed game
+        # remains paused for diagnosis rather than being killed with a live DLL.
+        if ($game -and -not $game.HasExited -and $reader) {
+            try { $null=Drive 'Key' @{Key='Escape'}; Pause-Game $true } catch { $report.pause_cleanup_error=$_.Exception.Message }
+        }
+        if ($recorderRun -and -not $recorderRun.Process.HasExited) {
+            try { $null=Run-Tool $recorder @('detach','--out',$recordRoot) 'failure-detach' 120; $null=Finish-Tool $recorderRun 180 } catch { $report.recorder_cleanup_error=$_.Exception.Message }
+        }
+    } finally {
+        if ($reader) { $reader.Dispose() }
+        if ($game) {
+            $game.Refresh()
+            if ($previousForeground -ne [IntPtr]::Zero -and ('Hoi4ProbeInput' -as [type])) {
+                try { [Hoi4ProbeInput]::RestoreForeground($previousForeground,[IntPtr]::Zero) }
+                catch { $report.foreground_cleanup_error=$_.Exception.Message }
+            }
+        }
+        $ownedGameStopped=$null -eq $game -or $game.HasExited
+        $ownedRecorderStopped=$null -eq $recorderRun -or $recorderRun.Process.HasExited
+        if ($ownedGameStopped -and $ownedRecorderStopped) {
+            try {
+                [IO.File]::WriteAllBytes($selectionPath,$selection)
+                [IO.File]::WriteAllBytes($settingsPath,$settingsBytes)
+                if ([IO.File]::ReadAllText((Join-Path $lock 'owner')) -ceq $ownerToken) { Remove-Item -LiteralPath (Join-Path $lock 'owner'); Remove-Item -LiteralPath $lock }
+                $report.cleanup_complete=$true
+            } catch { $report.passed=$false; $report.cleanup_error=$_.Exception.Message; if (-not $failure) { $failure=$_ } }
+        } else {
+            $report.cleanup_complete=$false; $report.retained_game_pid=if ($game) { $game.Id } else { $null }; $report.retained_lock=$lock
+        }
+        $report.elapsed_seconds=$started.Elapsed.TotalSeconds; $report.finished_utc=[DateTime]::UtcNow.ToString('o'); Write-Report
+    }
+    if ($failure) { throw $failure }
+    Write-Host 'FULL SMOKE PASSED, INCLUDING CLEANUP'
+    $report | ConvertTo-Json -Depth 8
+}
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ($Action -eq 'Smoke') {
-    throw 'The full product smoke check awaits Milestone 2.4. Milestone 1.3 supports explicit Launch, Screenshot, Key, Click, Move, Text, Console, and Baseline actions only.'
-}
+if ($Action -eq 'Smoke') { Invoke-FullSmoke; return }
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw 'The game driver requires Windows and an interactive desktop.'
 }
@@ -110,6 +615,16 @@ if ($gameProcesses.Count -ne 1) { throw 'Exactly one running hoi4.exe is require
 $game = $gameProcesses[0]
 if ($GameId -ne 0 -and $game.Id -ne $GameId) { throw "The running game has PID $($game.Id), not $GameId." }
 if ($game.Path -ine $gamePath) { throw "The running game executable differs from GameExe: $($game.Path)" }
+if ($Action -eq 'Clock') {
+    if ((Get-Item -LiteralPath $gamePath).Length -ne 55680632 -or
+        (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash -ine '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad') {
+        throw 'Unsupported game build for clock reading.'
+    }
+    Initialize-SmokeClock
+    $reader = [Hoi4ClockBaseline]::new([uint32]$game.Id, [uint64]$game.MainModule.BaseAddress.ToInt64())
+    try { $reader.Sample() } finally { $reader.Dispose() }
+    return
+}
 if ($Action -eq 'Baseline') {
     if (-not [Environment]::Is64BitProcess) { throw 'Baseline requires 64-bit PowerShell.' }
     $captureRoot = 'captures'
@@ -137,75 +652,7 @@ if ($Action -eq 'Baseline') {
     if (@($game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) {
         throw 'The free-run baseline requires collector.dll to be detached first.'
     }
-    if (-not ('Hoi4ClockBaseline' -as [type])) {
-        Add-Type -TypeDefinition @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-public sealed class Hoi4ClockBaseline : IDisposable {
-    public sealed class Clock {
-        public ulong game_state, play_time;
-        public long play_session_started_at;
-        public int hour, seed;
-        public bool Same(Clock other) {
-            return other != null && game_state == other.game_state && hour == other.hour &&
-                play_time == other.play_time && play_session_started_at == other.play_session_started_at && seed == other.seed;
-        }
-    }
-    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint process);
-    [DllImport("kernel32.dll", SetLastError=true)] static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] bytes, UIntPtr size, out UIntPtr read);
-    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
-    [DllImport("kernel32.dll")] static extern bool QueryPerformanceCounter(out long value);
-    [DllImport("kernel32.dll")] static extern bool QueryPerformanceFrequency(out long value);
-    readonly ulong image;
-    readonly byte[] bytes = new byte[8];
-    IntPtr process;
-    public readonly long Frequency;
-    public Hoi4ClockBaseline(uint processId, ulong imageBase) {
-        if (!QueryPerformanceFrequency(out Frequency) || Frequency <= 0)
-            throw new InvalidOperationException("QueryPerformanceFrequency failed.");
-        image = imageBase;
-        process = OpenProcess(0x10, false, processId); // PROCESS_VM_READ only; this helper never writes or injects.
-        if (process == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
-    }
-    public static long Qpc() {
-        long value;
-        if (!QueryPerformanceCounter(out value)) throw new InvalidOperationException("QueryPerformanceCounter failed.");
-        return value;
-    }
-    bool Read(ulong address, uint size) {
-        UIntPtr read;
-        return address > 0 && address <= long.MaxValue &&
-            ReadProcessMemory(process, new IntPtr((long)address), bytes, new UIntPtr(size), out read) && read.ToUInt64() == size;
-    }
-    Clock Once() {
-        // engine::cgame_state: confirmed CGameState singleton, native-width clock fields and load witness.
-        if (!Read(image + 0x3316e90, 8)) return null;
-        ulong state = BitConverter.ToUInt64(bytes, 0);
-        if (state == 0 || state > long.MaxValue - 0x800) return null;
-        var clock = new Clock();
-        clock.game_state = state;
-        if (!Read(state + 0x468, 4)) return null;
-        clock.hour = BitConverter.ToInt32(bytes, 0);
-        if (!Read(state + 0x490, 8)) return null;
-        clock.play_time = BitConverter.ToUInt64(bytes, 0);
-        if (!Read(state + 0x720, 4)) return null;
-        clock.seed = BitConverter.ToInt32(bytes, 0);
-        if (!Read(image + 0x3317048, 8)) return null;
-        clock.play_session_started_at = BitConverter.ToInt64(bytes, 0);
-        if (!Read(image + 0x3316e90, 8) || BitConverter.ToUInt64(bytes, 0) != state) return null;
-        return clock;
-    }
-    public Clock Sample() {
-        Clock first = Once(), second = Once();
-        return first != null && first.Same(second) ? second : null;
-    }
-    public void Dispose() {
-        if (process != IntPtr.Zero) { CloseHandle(process); process = IntPtr.Zero; }
-    }
-}
-'@
-    }
+    Initialize-SmokeClock
     $reader = $null
     $stream = $null
     $writer = $null
@@ -415,6 +862,14 @@ public static class Hoi4ProbeInput {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows did not release the game key.");
         }
     }
+    public static void SelectAll(IntPtr window, uint process) {
+        var down = new Input[1]; down[0].Type = 1;
+        down[0].Data.Keyboard.Scan = 0x1d; down[0].Data.Keyboard.Flags = 8;
+        var up = (Input[])down.Clone(); up[0].Data.Keyboard.Flags |= 2;
+        Send(window, process, down);
+        try { KeyPress(window, process, 0x41); }
+        finally { if (SendInput(1, up, Marshal.SizeOf(typeof(Input))) != 1) throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows did not release Control."); }
+    }
     public static void TypeText(IntPtr window, uint process, string text) {
         foreach (char character in text) {
             var input = new Input[2];
@@ -510,7 +965,8 @@ try {
             Left=0x25; Right=0x27; Up=0x26; Down=0x28; Home=0x24; End=0x23 }
         for ($index = 1; $index -le 12; $index++) { $keys["F$index"] = 0x6F + $index }
         for ($index = 1; $index -le 5; $index++) { $keys[[string]$index] = 0x30 + $index }
-        [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$keys[$Key])
+        if ($Key -eq 'CtrlA') { [Hoi4ProbeInput]::SelectAll($window, [uint32]$game.Id) }
+        else { [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$keys[$Key]) }
         [pscustomobject]@{ Action = $Action; GameId = $game.Id; Key = $Key }
     }
     { $_ -eq 'Click' -or $_ -eq 'Move' -or $_ -eq 'Wheel' } {

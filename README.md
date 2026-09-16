@@ -70,4 +70,16 @@ cargo fmt --all -- --check
 .\.cargo-target\release\recorder.exe oracle <campaign.battleplan> <save.hoi4> --hour <n> --branch <id>
 ```
 
-`tools/smoke.ps1` drives the game for local tests (launch, keys, clicks, screenshots, free-run baseline); its complete end-to-end action is pending. [reference/01.md](reference/01.md) holds the first game/viewer screenshot pair.
+`tools/smoke.ps1 -Action Smoke` builds and tests the workspace, freezes release binaries, records the explicitly selected local save through all 183 consistency windows, saves a new text file through the game UI at a full-refresh hour, samples that hour at H+1, detaches and verifies collector absence, exits the game normally, runs the fresh-save oracle, and renders/scores five camera views plus a headless/window parity pair. Any failed command or incomplete oracle fails the run. It reports measured costs, not acceptance of the separate performance targets.
+
+The run requires an isolated user directory with `save_as_binary=no`, a matching existing `continue_game.json` selection, a calibrated UI JSON file (schema in the script's help), no competing game/recorder or game lock, and a **new** output directory. It preserves the input save and restores the original settings/continue-selection bytes after exit. `-WaitForUiReview` provides a bounded pre-save checkpoint for dismissing dynamic informational notifications through the same guarded driver; it never waives validation. `-MapMode controller` and `-Perspective recorded` select the matching political view. The `Bypass` below applies only to this PowerShell process, not a persistent security-policy change.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/smoke.ps1 -Action Smoke `
+  -UserDirectory captures\m11_20260909\userdir `
+  -ExpectedSave GER_1944_07_20_121_record23_20260915.hoi4 `
+  -UiConfig captures\pr_full_smoke_20260916\ui2560.json `
+  -Out captures\my_new_smoke_run -WaitForUiReview
+```
+
+The separate Launch, Screenshot, Key, Click, Move, Wheel, Text, Console, Clock and Baseline actions remain available. Captures, logs, the frozen driver and `smoke-result.json` stay in the output directory, never in source control. [reference/01.md](reference/01.md) holds the first historical game/viewer screenshot pair.
