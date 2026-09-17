@@ -7,21 +7,20 @@ Run it from any shell as `python tools/re/hoi4re.py <command>` or `hoi4re <comma
 ## Data
 
 Everything lives in `tools/re/data/` of the main checkout (``). It is git-ignored: it holds decompiled
-game code and multi-GB databases. The tool finds it from a worktree too. Back up `knowledge.sqlite3` and its journal;
-the rest can be rebuilt.
+game code and multi-GB databases. The tool finds it from a worktree too. Only `knowledge.sqlite3` and its journal hold
+work that cannot be rebuilt: run `backup` (copies them to `L:/hoi4re_backups/<date>`) after any large batch of work.
 
 | Path | What |
 |---|---|
 | `knowledge.sqlite3`, `knowledge.journal.jsonl` | What agents and scripts learned: `symbols` (names), `notes`, `fields`, `classes` and `vslots` (RTTI), `mentions`, `sources`, `accessors`, `queue`. Every agent write is also appended to the journal. |
 | `function_index.sqlite3` | Decompile, call graph and full-text search for hoi4.exe 1.19.2.0.a729 (read-only). |
-| `builds/a729/` | Functions the first index missed (`index.sqlite3`) and their raw export. New builds go in `builds/<id>/`. |
+| `builds/a729/` | `index.sqlite3`: functions the first index missed, plus every function's byte and shape fingerprint for patch-day matching. `instructions.sqlite3`: compressed instruction listings for `asm`. New builds go in `builds/<id>/`. |
 | `ghidra/a729/` | The Ghidra project of the a729 exe, for re-exports. |
-| `ghidra_exports/` | Raw per-function Ghidra artifacts; `asm` reads instruction listings from here. |
-| `hoi4_re_server/` | State of the older `hoi4_re` MCP server (live memory observation): registry, jobs, receipts. `migrate` reads its build fingerprints. |
 | `fleet/` | Batch files and the orchestrator log of the naming fleet. |
+| `backups/` | Local safety copies from maintenance. |
 
-The old locations (`<local-path>`, `<local-path>`, `<local-path>`)
-are junctions into this directory. Known names replace `FUN_`/`DAT_` labels everywhere they are shown, as `Name@address`.
+Known names replace `FUN_`/`DAT_` labels everywhere they are shown, as `Name@address`. `<local-path>` is a
+junction to `fleet/`.
 
 ## Read
 
@@ -51,13 +50,15 @@ Struct layouts used by the recorder stay authoritative in `crates/engine/src`; `
 
 ## Maintain
 
-- `seed [rtti] [engine] [docs] [registry]`: rebuild the imported layers (RTTI from the exe, the engine crate, reports
-  and docs, the old registry). Re-runnable; agent-written rows are untouched. Run `seed engine` after engine changes.
+- `seed [rtti] [engine] [docs] [sources]`: rebuild the imported layers (RTTI from the exe, the engine crate, reports
+  and docs, source files named in assert strings). Re-runnable; agent-written rows are untouched. Run `seed engine`
+  after engine changes. Names and notes imported once from the retired `hoi4_re` server's registry stay as they are.
 - `derive [defines] [plumbing] [accessors] [ctors] [virtuals]`: names a script can prove alone, at confidence `derived`:
   define globals (with the value and comment from `00_defines.lua`), compiler plumbing (unwind funclets, adjustor thunks,
   static destructors), one-line accessors, constructors and destructors, and overrides of any named virtual. Naming a
   virtual re-runs `virtuals` automatically. Re-run the rest after `seed`.
-- `export`: agent-written knowledge as JSONL (`batch` reads it back).
+- `export`: agent-written knowledge as JSONL (`batch` reads it back). `backup [--dest D]`: dated copy of the knowledge
+  database and journal on another drive (`HOI4RE_BACKUP` changes the default).
 - Patch day: `migrate export`, `migrate index`, `migrate names` (see `migrate.py`), then `HOI4RE_BUILD=<id>`.
   Matching order: RTTI slot, identical bytes, unique instruction shape, call-graph neighbours.
 

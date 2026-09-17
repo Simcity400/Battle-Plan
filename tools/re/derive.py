@@ -78,7 +78,10 @@ PLUMBING = [  # compiler-generated bodies that are not game logic
 def plumbing(R):
     """Label unwind funclets, adjustor thunks and static destructors so nobody spends time on them."""
     rows = []
+    virtual = {x for (x,) in R.kb.execute("SELECT DISTINCT address FROM vslots WHERE build=?", (H.BUILD,))}
     for a, _element, body in bodies(R):
+        if a in virtual:  # reached through a vtable, so "no callers" proves nothing
+            continue
         for name, what, pat in PLUMBING:
             m = pat.match(body)
             if m and (name == "adjustor_thunk" or not R.ix.execute("SELECT 1 FROM call_edges WHERE callee=? LIMIT 1", (a,)).fetchone()):
@@ -201,5 +204,8 @@ def virtuals(R):
 
 
 def main(R, argv):
-    for w in argv or ["defines", "plumbing", "accessors", "ctors", "virtuals"]:
-        print({"defines": defines, "plumbing": plumbing, "accessors": accessors, "ctors": ctors, "virtuals": virtuals}[w](R))
+    passes = {"defines": defines, "plumbing": plumbing, "accessors": accessors, "ctors": ctors, "virtuals": virtuals}
+    if any(w not in passes for w in argv):
+        return print("usage: hoi4re derive [%s]  (no argument runs all)" % "] [".join(passes))
+    for w in argv or list(passes):
+        print(passes[w](R))

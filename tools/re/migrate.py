@@ -56,6 +56,8 @@ def export(exe, build, shards):
 def index(build):
     d = build_dir(build)
     path = os.path.join(d, "index.sqlite3")
+    if not glob.glob(os.path.join(d, "functions-*.jsonl")):
+        raise ValueError("no export in %s; run `migrate export` first (the a729 index is already built)" % d)
     if os.path.exists(path):
         os.remove(path)
     db = sqlite3.connect(path)
@@ -80,21 +82,15 @@ def index(build):
 
 
 def fingerprints(build):
-    """{address: (byte_sha, shape_sha)} and {caller: set(callees)} for a build."""
+    """{address: (byte_sha, shape_sha)} and {caller: set(callees)} for a build. a729 keeps most edges in the main index."""
+    ro = lambda p: sqlite3.connect("file:" + p.replace(chr(92), "/") + "?mode=ro", uri=True)
+    sup = ro(os.path.join(build_dir(build), "index.sqlite3"))
+    fp = {a: (b, s) for a, b, s in sup.execute("SELECT address, byte_sha256, shape_sha256 FROM fingerprints")}
+    pairs = sup.execute("SELECT caller, callee FROM call_edges").fetchall()
     if build == "a729":
-        reg = sqlite3.connect("file:" + H.REGISTRY.replace(chr(92), "/") + "?mode=ro", uri=True)
-        fp = {H.BASE + rva: (b, s) for rva, b, s in reg.execute("SELECT rva, byte_sha256, shape_sha256 FROM functions")}
-        ix = sqlite3.connect("file:" + H.INDEX.replace(chr(92), "/") + "?mode=ro", uri=True)
-        extra = os.path.join(build_dir(build), "index.sqlite3")
-        if os.path.exists(extra):  # functions the first index missed
-            sup = sqlite3.connect(extra)
-            fp.update({a: (b, s) for a, b, s in sup.execute("SELECT address, byte_sha256, shape_sha256 FROM fingerprints")})
-            more = sup.execute("SELECT caller, callee FROM call_edges").fetchall()
-    else:
-        ix = sqlite3.connect(os.path.join(build_dir(build), "index.sqlite3"))
-        fp = {a: (b, s) for a, b, s in ix.execute("SELECT address, byte_sha256, shape_sha256 FROM fingerprints")}
+        pairs += ro(os.path.join(H.DATA, "function_index.sqlite3")).execute("SELECT caller, callee FROM call_edges").fetchall()
     edges = collections.defaultdict(set)
-    for c, e in list(ix.execute("SELECT caller, callee FROM call_edges")) + (more if build == "a729" and os.path.exists(os.path.join(build_dir(build), "index.sqlite3")) else []):
+    for c, e in pairs:
         edges[c].add(e)
     return fp, edges
 

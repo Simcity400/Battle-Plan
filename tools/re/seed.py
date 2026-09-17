@@ -1,4 +1,4 @@
-"""Seed the knowledge layer from what already exists: RTTI, the engine crate, docs and the old registry.
+"""Seed the knowledge layer from what already exists: RTTI, the engine crate, docs and assert strings.
 
 Every seeder is re-runnable: it deletes its own rows (by source) and re-inserts. Agent-written rows are never touched,
 and a seeded name never replaces a name of higher confidence.
@@ -152,39 +152,6 @@ def seed_docs(R, files=None):
     return "docs: %d names, %d mentions" % (n, kb.execute("SELECT count(*) FROM mentions WHERE build=? AND source NOT LIKE 'crates/engine/%'", (H.BUILD,)).fetchone()[0])
 
 
-def seed_registry(R, path=None):
-    path = path or H.REGISTRY
-    reg = sqlite3.connect("file:" + path.replace("\\", "/") + "?mode=ro", uri=True)
-    kb = R.kb
-    kb.execute("DELETE FROM notes WHERE build=? AND source='registry'", (H.BUILD,))
-    names, notes = [], []
-    for subject, pred, value, status in reg.execute("SELECT subject, predicate, value_json, status FROM claims WHERE predicate<>'rtti_vtable_slot' AND status<>'superseded'"):
-        try:
-            v = json.loads(value)
-            v = json.loads(v) if isinstance(v, str) else v
-        except ValueError:
-            continue
-        if not isinstance(v, dict):
-            continue
-        m = re.search(r"0x0*([0-9a-f]{6,9})", str(v.get("address") or subject))
-        if not m:
-            continue
-        a = int(m.group(1), 16)
-        a = a if a >= H.BASE else a + H.BASE
-        if pred == "annotation":
-            if re.fullmatch(r"[A-Za-z_~][\w:~<>]*", v["proposed_name"]):
-                names.append((a, "function", v["proposed_name"], v["note"][:400], "low", "registry annotation"))
-            notes.append((a, "%s: %s" % (v["proposed_name"], v["note"])))
-        else:
-            notes.append((a, "%s (%s): %s" % (pred, status, json.dumps({k: x for k, x in v.items() if "sha256" not in k})[:1500])))
-    for pid, rva, offs, vt, desc in reg.execute("SELECT path_id, base_rva, offsets_json, value_type, description FROM memory_paths"):
-        notes.append((H.BASE + rva, "memory path %s: offsets %s as %s. %s" % (pid, offs, vt, desc)))
-    for a, t in dict.fromkeys(notes):
-        kb.execute("INSERT INTO notes(build,address,text,evidence,source,author,created_utc) VALUES(?,?,?,?,?,?,?)", (H.BUILD, a, t, "", "registry", "seed", H.now()))
-    n = put_names(R, "registry", names)
-    return "registry: %d names, %d notes" % (n, len(set(notes)))
-
-
 def seed_sources(R):
     """Source file paths that the game's assert strings leave in each function."""
     pat = re.compile(r"hoi4_merged((?:\\\\[\w.\-]+)+\.(?:cpp|h|hpp|inl|c))\b", re.I)  # paths appear C-escaped
@@ -203,7 +170,10 @@ def seed_sources(R):
 
 
 def main(R, argv):
-    which = argv or ["rtti", "engine", "docs", "registry", "sources"]
+    seeders = {"rtti": seed_rtti, "engine": seed_engine, "docs": seed_docs, "sources": seed_sources}
+    which = argv or list(seeders)
+    if any(w not in seeders for w in which):
+        return print("usage: hoi4re seed [%s]  (no argument runs all)" % "] [".join(seeders))
     for w in which:
-        print({"rtti": seed_rtti, "engine": seed_engine, "docs": seed_docs, "registry": seed_registry, "sources": seed_sources}[w](R))
+        print(seeders[w](R))
     print(H.cmd_status())

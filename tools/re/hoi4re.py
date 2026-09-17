@@ -26,12 +26,11 @@ def main_checkout():
 REPO = env("HOI4RE_REPO", main_checkout())
 DATA = env("HOI4RE_DATA", os.path.join(REPO, "tools", "re", "data"))
 KNOWLEDGE = os.path.join(DATA, "knowledge.sqlite3")
-EXPORTS = os.path.join(DATA, "ghidra_exports")
-REGISTRY = os.path.join(DATA, "hoi4_re_server", "registry.sqlite3")
 EXE = env("HOI4RE_EXE", r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe")
 BUILD = env("HOI4RE_BUILD", "a729")
 SUPPLEMENT = os.path.join(DATA, "builds", BUILD, "index.sqlite3")
 INDEX = os.path.join(DATA, "function_index.sqlite3") if BUILD == "a729" else SUPPLEMENT
+LISTINGS = os.path.join(DATA, "builds", BUILD, "instructions.sqlite3")
 BASE = 0x140000000
 RANK = {"auto": 0, "derived": 1, "low": 2, "medium": 3, "high": 4, "verified": 5}
 LABEL = re.compile(r"\b((?:thunk_|PTR_)?(?:FUN|DAT|LAB|PTR|s|u)_(?:\w*?_)?)(1[0-9a-f]{8})\b")
@@ -336,10 +335,14 @@ def cmd_fn(target, raw=False, body=True, max_lines=0):
 
 def cmd_asm(target):
     a = R.resolve(target)
-    r = R.ix.execute("SELECT canonical_relpath FROM artifacts WHERE address=? AND kind='instructions'", (a,)).fetchone()
+    import zlib
+    r = None
+    if os.path.exists(LISTINGS):
+        r = sqlite3.connect("file:" + LISTINGS.replace("\\", "/") + "?mode=ro", uri=True).execute(
+            "SELECT listing FROM instructions WHERE address=?", (a,)).fetchone()
     if not r:
-        return "no instruction listing for 0x%x" % a
-    return R.rewrite(open(os.path.join(EXPORTS, r[0].replace("/", os.sep)), encoding="utf-8", errors="replace").read())
+        return "no instruction listing for 0x%x (functions added after the first export have none)" % a
+    return R.rewrite(zlib.decompress(r[0]).decode("utf-8", "replace"))
 
 
 def cmd_search(query, limit=30):
@@ -571,6 +574,21 @@ def cmd_export(path=""):
     return "%d rows -> %s" % (n, path)
 
 
+def cmd_backup(dest=""):
+    """Copy the knowledge database and journal to another drive (default HOI4RE_BACKUP or L:/hoi4re_backups), one dated folder per run."""
+    import shutil
+    folder = os.path.join(dest or env("HOI4RE_BACKUP", r"L:\hoi4re_backups"), datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    os.makedirs(folder)
+    target = sqlite3.connect(os.path.join(folder, "knowledge.sqlite3"))
+    R.kb.backup(target)
+    check = target.execute("PRAGMA quick_check").fetchone()[0]
+    target.close()
+    journal = os.path.splitext(KNOWLEDGE)[0] + ".journal.jsonl"
+    shutil.copy2(journal, folder)
+    sizes = ", ".join("%s %.1f MB" % (f, os.path.getsize(os.path.join(folder, f)) / 1e6) for f in sorted(os.listdir(folder)))
+    return "backup %s: %s; integrity %s" % (folder, sizes, check)
+
+
 # name, function, [(param, type, required, help)]
 COMMANDS = [
     ("status", cmd_status, [], "Index and knowledge counts."),
@@ -599,6 +617,7 @@ COMMANDS = [
                           ("meaning", str, False, ""), ("evidence", str, False, ""), ("author", str, False, "")], cmd_field.__doc__),
     ("batch", cmd_batch, [("items", str, True, "JSON list or JSONL; CLI also accepts @file or - for stdin")], cmd_batch.__doc__),
     ("export", cmd_export, [("path", str, False, "output file")], cmd_export.__doc__),
+    ("backup", cmd_backup, [("dest", str, False, "backup root")], cmd_backup.__doc__),
 ]
 
 
