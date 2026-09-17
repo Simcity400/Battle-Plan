@@ -11,3 +11,5 @@ certain addresses are. Your job is transcription with a check, not new analysis.
    `evidence` is always `<file path>:<line>`.
 4. If the file says a finding was refuted or superseded, save that as a note instead of a name.
 5. Close the item: `hoi4re todo done docs "<path>" --note "N names, M notes, K fields"`.
+6. Transcribe findings, not listings. Never save a note per instruction or per decompiled line; one note per address
+   that states what the report concluded about it.
