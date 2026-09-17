@@ -2,7 +2,7 @@
 //!
 //! The name structurally matches SDL release-2.0.22
 //! `src/video/windows/SDL_windowsmodes.c`; this does not identify the shipped
-//! SDL minor version. Decompiles are under `C:/hoi4_evidence/ghidra_agent_exports/`.
+//! SDL minor version. Read a `func_<va>.decompile.c:N` citation as line N of `hoi4re fn <va> --raw`.
 
 /// WIN_AddDisplaysData video_device pointer; func_142107fb0.decompile.c:17 supplies the receiver and func_1421076f0.decompile.c:46 reads it.
 pub const VIDEO_DEVICE: usize = 0;

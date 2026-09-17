@@ -3,7 +3,7 @@
 //! The one-member wrapper structurally matches SDL release-2.0.22
 //! `src/video/windows/SDL_windowsmodes.h`. Its payload is the Win32 DEVMODEW
 //! layout, not a game simulation struct; the shipped SDL version is unproven.
-//! Decompiles are archived under `C:/hoi4_evidence/ghidra_agent_exports/`.
+//! Read a `func_<va>.decompile.c:N` citation as line N of `hoi4re fn <va> --raw`.
 
 /// SDL_DisplayModeData allocation size; func_142107bb0.decompile.c:54 allocates 0xdc bytes, the observed Win32 DEVMODEW size.
 pub const SIZE: usize = 0xdc;

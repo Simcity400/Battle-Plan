@@ -19,7 +19,8 @@ work that cannot be rebuilt: run `backup` (copies them to `L:/hoi4re_backups/<da
 | `fleet/` | Batch files and the orchestrator log of the naming fleet. |
 | `backups/` | Local safety copies from maintenance. |
 
-Known names replace `FUN_`/`DAT_` labels everywhere they are shown, as `Name@address`. `<local-path>` is a
+Known names replace `FUN_`/`DAT_` labels everywhere they are shown, as `Name@address`. Older documents cite exported files
+as `func_<va>.decompile.c:N`; that is line N of `hoi4re fn <va> --raw`. `<local-path>` is a
 junction to `fleet/`.
 
 ## Read

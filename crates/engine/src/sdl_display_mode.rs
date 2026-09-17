@@ -1,8 +1,7 @@
 //! SDL_DisplayMode value record in the pinned a729 image.
 //!
 //! Names structurally match SDL release-2.0.22 `include/SDL_video.h`;
-//! no exact shipped SDL minor version is asserted. Decompiles are archived
-//! under `C:/hoi4_evidence/ghidra_agent_exports/`.
+//! no exact shipped SDL minor version is asserted. Read a `func_<va>.decompile.c:N` citation as line N of `hoi4re fn <va> --raw`.
 
 /// SDL_DisplayMode stride; func_1420d8170.decompile.c:10 copies 0x18 bytes and func_1420d7ff0.decompile.c:22-25 iterates the same stride.
 pub const STRIDE: usize = 0x18;

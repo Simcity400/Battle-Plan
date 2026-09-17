@@ -2,7 +2,7 @@
 //!
 //! Names structurally match SDL release-2.0.22
 //! `src/video/windows/SDL_windowsmodes.h`; no shipped minor version is asserted.
-//! Decompiles are archived under `C:/hoi4_evidence/ghidra_agent_exports/`.
+//! Read a `func_<va>.decompile.c:N` citation as line N of `hoi4re fn <va> --raw`.
 
 /// SDL_DisplayData allocation size; func_1421076f0.decompile.c:72 allocates 0x50 bytes for each new monitor's driverdata.
 pub const SIZE: usize = 0x50;

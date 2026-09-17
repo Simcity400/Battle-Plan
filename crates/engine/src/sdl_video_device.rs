@@ -3,7 +3,7 @@
 //! Ownership is identified by the structural match to SDL release-2.0.22's
 //! `src/video/windows/SDL_windowsmodes.c` and `src/video/SDL_sysvideo.h`;
 //! this does not establish the exact SDL version shipped by the game.
-//! Decompile references are archived under `C:/hoi4_evidence/ghidra_agent_exports/`.
+//! Read a `func_<va>.decompile.c:N` citation as line N of `hoi4re fn <va> --raw`.
 
 pub const CURRENT_VIDEO_DEVICE_RVA: usize = 0x0343_7c68;
 /// SDL_VideoDevice num_displays, native i32; func_142107fb0.decompile.c:21 and func_1421076f0.decompile.c:50-70 read this bound.

@@ -275,6 +275,8 @@ def cmd_status():
 def cmd_fn(target, raw=False, body=True, max_lines=0):
     a = R.resolve(target)
     f = R.ix.execute("SELECT name, body_min, body_max FROM functions WHERE address=?", (a,)).fetchone()
+    if raw and f:  # the decompile file exactly as exported: a citation func_<va>.decompile.c:N is line N of this
+        return R.body(a) or "(no decompile body in the index)"
     if not f:
         c = R.containing(a)
         if c is None:
@@ -323,8 +325,7 @@ def cmd_fn(target, raw=False, body=True, max_lines=0):
         if text is None:
             out.append("(no decompile body in the index)")
         else:
-            text = text if raw else R.rewrite(text)
-            lines = text.splitlines()
+            lines = R.rewrite(text).splitlines()
             while lines and (not lines[0].strip() or lines[0].startswith("// ")):  # export header, already shown above
                 lines.pop(0)
             if max_lines and len(lines) > max_lines:
@@ -592,7 +593,7 @@ def cmd_backup(dest=""):
 # name, function, [(param, type, required, help)]
 COMMANDS = [
     ("status", cmd_status, [], "Index and knowledge counts."),
-    ("fn", cmd_fn, [("target", str, True, "address (VA, FUN_x, rva:x) or name"), ("raw", bool, False, "leave FUN_/DAT_ labels unrewritten"),
+    ("fn", cmd_fn, [("target", str, True, "address (VA, FUN_x, rva:x) or name"), ("raw", bool, False, "print only the decompile exactly as exported; `func_<va>.decompile.c:N` citations are line N of it"),
                     ("body", bool, False, "include the decompile (default true)"), ("max_lines", int, False, "truncate the body")],
      "Everything known about a function: name, summary, class, notes, mentions, callers, callees, matching fields, decompile."),
     ("asm", cmd_asm, [("target", str, True, "address or name")], "Instruction listing with cross references."),

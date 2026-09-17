@@ -2,7 +2,7 @@
 //!
 //! Field names match SDL release-2.0.22 `src/video/SDL_sysvideo.h` and the
 //! observed operations below; the shipped SDL minor version is not established.
-//! Decompiles are archived under `C:/hoi4_evidence/ghidra_agent_exports/`.
+//! Read a `func_<va>.decompile.c:N` citation as line N of `hoi4re fn <va> --raw`.
 
 /// SDL_VideoDisplay array stride; func_1420d34b0.decompile.c:23-28 grows the allocation by 0x68 bytes per display.
 pub const STRIDE: usize = 0x68;
