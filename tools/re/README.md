@@ -1,8 +1,7 @@
 # hoi4re
 
 One tool for reading the decompiled game and saving what you learn. Python 3.11, standard library only.
-Every agent uses the same install: `hoi4re <command>` on the command line, or the
-`hoi4re` MCP server (`hoi4re.py mcp`, stdio) whose tools are the same commands prefixed `re_`.
+Every agent runs the same install from its shell: `hoi4re <command>` (`--help` lists them).
 
 ## Data
 

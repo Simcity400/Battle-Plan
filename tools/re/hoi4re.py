@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """hoi4re: query the game decompile index and the shared knowledge layer (names, notes, classes, fields).
 
-One file, stdlib only. `hoi4re.py <command> ...` is the CLI; `hoi4re.py mcp` is the same commands over stdio MCP.
+Stdlib only. Usage: `hoi4re.py <command> ...`; see README.md.
 """
 import argparse, collections, datetime, json, os, re, sqlite3, sys
 
@@ -562,8 +562,6 @@ def install(dest=r"C:\Tools\hoi4_mcp\hoi4re"):
     main = os.path.join(dest, "hoi4re.py")
     with open(os.path.join(os.path.dirname(dest), "hoi4re.cmd"), "w") as f:
         f.write('@"%s" "%s" %%*\n' % (sys.executable, main))
-    with open(os.path.join(os.path.dirname(dest), "hoi4re-launch.json"), "w") as f:
-        json.dump({"command": sys.executable, "args": [main, "mcp"], "env": {}}, f, indent=2)
     return "installed to %s; CLI: %s" % (dest, os.path.join(os.path.dirname(dest), "hoi4re.cmd"))
 
 
@@ -579,7 +577,6 @@ def run_cli(argv):
                 p.add_argument("--" + pn.replace("_", "-"), dest=pn, action=argparse.BooleanOptionalAction, default=None, help=ph)
             else:
                 p.add_argument("--" + pn.replace("_", "-"), dest=pn, type=pt, default=None, help=ph)
-    sub.add_parser("mcp", help="serve these commands as MCP tools over stdio")
     for extra in ("seed", "migrate", "install"):
         sub.add_parser(extra, help="see tools/re/README.md", add_help=False)
     if argv and argv[0] == "install":
@@ -589,57 +586,12 @@ def run_cli(argv):
         return mod.main(R, argv[1:])
     args = vars(ap.parse_args(argv))
     cmd = args.pop("cmd")
-    if cmd == "mcp":
-        return serve()
     if cmd == "batch":
         s = args["items"]
         args["items"] = sys.stdin.read() if s == "-" else open(s[1:], encoding="utf-8").read() if s.startswith("@") else s
     fn = {n: f for n, f, _p, _h in COMMANDS}[cmd]
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print(fn(**{k: v for k, v in args.items() if v is not None}))
-
-
-def serve():
-    """Newline-delimited JSON-RPC 2.0 (MCP stdio transport)."""
-    types = {str: "string", int: "integer", bool: "boolean"}
-    tools = [{"name": "re_" + n.replace("-", "_"), "description": (h or "").strip(),
-              "inputSchema": {"type": "object", "properties": {pn: {"type": types[pt], "description": ph} for pn, pt, _r, ph in ps},
-                              "required": [pn for pn, _t, r, _h in ps if r]}} for n, _f, ps, h in COMMANDS]
-    funcs = {"re_" + n.replace("-", "_"): f for n, f, _p, _h in COMMANDS}
-    stdin = open(sys.stdin.fileno(), encoding="utf-8", newline="\n")
-    out = open(sys.stdout.fileno(), "w", encoding="utf-8", newline="\n")
-    for line in stdin:
-        if not line.strip():
-            continue
-        try:
-            req = json.loads(line)
-        except ValueError:
-            continue
-        rid, method, params = req.get("id"), req.get("method"), req.get("params") or {}
-        if rid is None:
-            continue
-        if method == "initialize":
-            res = {"protocolVersion": params.get("protocolVersion", "2024-11-05"), "capabilities": {"tools": {}},
-                   "serverInfo": {"name": "hoi4re", "version": "1"},
-                   "instructions": "Start with re_fn or re_search. Save every finding with re_name, re_note, re_field or re_batch before you finish."}
-        elif method == "tools/list":
-            res = {"tools": tools}
-        elif method == "tools/call":
-            try:
-                text = funcs[params["name"]](**(params.get("arguments") or {}))
-                if len(text) > 120000:
-                    text = text[:120000] + "\n... truncated; narrow the request (max_lines, limit)"
-                res = {"content": [{"type": "text", "text": text}]}
-            except Exception as e:
-                res = {"content": [{"type": "text", "text": "error: %s" % e}], "isError": True}
-        elif method == "ping":
-            res = {}
-        else:
-            out.write(json.dumps({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(method)}}) + "\n")
-            out.flush()
-            continue
-        out.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": res}) + "\n")
-        out.flush()
 
 
 if __name__ == "__main__":
