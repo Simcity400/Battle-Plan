@@ -1010,7 +1010,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // trees
         let season = document.tree_season();
         println!(
-            "Trees: {} instances in {} buckets over {} kinds, {} canopy vertices;              fade {:.4} at height {:.3}, season column {} lerp {:.2}; {} instances drawn;              generated in {:.0} ms",
+            "Trees: {} instances in {} buckets over {} kinds, {} canopy vertices;              fade {:.4} at height {:.3}, season column {} lerp {:.2}; {} instances drawn in {} draw calls;              generated in {:.0} ms",
             document.tree_field.instances.len(),
             document.tree_field.buckets.len(),
             document.tree_assets.meshes.len(),
@@ -1020,6 +1020,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             season.column,
             season.lerp,
             report.tree_instances,
+            report.tree_draw_calls,
             document.tree_build.as_secs_f64() * 1000.0
         );
         for (palette, tree) in &document.tree_assets.meshes {

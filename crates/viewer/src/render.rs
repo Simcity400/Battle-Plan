@@ -316,6 +316,8 @@ pub struct DumpReport {
     // trees
     /// Canopy instances the frame drew, over every wrap copy.
     pub tree_instances: u32,
+    /// Canopy draw calls, one per visible tile.
+    pub tree_draw_calls: u32,
     // close zoom
     /// City-sprawl houses the frame drew, over every wrap copy.
     pub sprawl_drawn: u32,
@@ -521,6 +523,7 @@ pub fn dump_png(
             icon_pages: scene.icon_page_count(),
             // trees
             tree_instances: scene.tree_instances(),
+            tree_draw_calls: scene.tree_draw_calls(),
             // close zoom
             sprawl_drawn: scene.sprawl_drawn(),
             map_buildings_drawn: scene.map_buildings_drawn(),
