@@ -28,6 +28,15 @@ Before saving, pause for a visual review of dynamic informational notifications.
 The guarded driving actions can dismiss them. A ui-review-approved.json file in Out
 must then contain the exact hour and unobscured=true. Timeout is ten minutes.
 This is a graphical pre-save checkpoint, not a waiver of any correctness check.
+.PARAMETER InputShimDir
+Directory holding inputshim.dll and inputshim-inject.exe (scratch workspace
+C:\hoi4_scratch\input_shim_20260917). In background mode Launch attaches the shim, and Click
+and Wheel then work with no foreground change at all: while the messages are posted the shim
+answers the game's user32 GetCursorPos, GetAsyncKeyState, GetKeyState, GetKeyboardState,
+GetForegroundWindow, GetActiveWindow and GetFocus imports from a shared control block.
+Missing binaries are not an error; the driver falls back to the brief foreground borrow.
+ShimStatus prints the per-hook call counters and their one-second deltas. ShimMask -Mask <n>
+sets hook_mask (bit per hook, 0x7f enables all) to bisect what the click path depends on.
 .PARAMETER MapMode
 The renderer map mode matching the game screenshot, controller by default.
 .PARAMETER RecordHours
@@ -49,10 +58,15 @@ powershell -File tools/smoke.ps1 -Action Move -GameId 1234 -X 1280 -Y 720
 powershell -File tools/smoke.ps1 -Action Wheel -X 1280 -Y 720 -Delta -3
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Baseline -Seconds 120 -Out captures\baseline
+.EXAMPLE
+powershell -File tools/smoke.ps1 -Action ShimStatus
+.EXAMPLE
+powershell -File tools/smoke.ps1 -Action ShimMask -Mask 127
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Smoke', 'Launch', 'Screenshot', 'Key', 'Click', 'Move', 'Wheel', 'Text', 'Console', 'Baseline', 'Clock')]
+    [ValidateSet('Smoke', 'Launch', 'Screenshot', 'Key', 'Click', 'Move', 'Wheel', 'Text', 'Console', 'Baseline', 'Clock',
+        'ShimStatus', 'ShimMask')]
     [string]$Action = 'Smoke',
     [string]$GameExe = 'X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe',
     [string]$UserDirectory = 'C:\Users\Example\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV',
@@ -75,8 +89,90 @@ param(
     [string]$Perspective = 'recorded',
     [ValidateRange(120, 10000)][int]$RecordHours = 120,
     [ValidateRange(300, 14400)][int]$TimeoutSeconds = 3600,
-    [ValidateRange(1, 254)][int]$ConsoleKey = 0xC0
+    [ValidateRange(1, 254)][int]$ConsoleKey = 0xC0,
+    # Background is the default: input is posted to the game window, screenshots use
+    # PrintWindow, and Launch keeps the game behind the previously active window, so the
+    # game is never brought to the foreground. -Foreground restores the legacy behaviour
+    # (foreground SendInput and screen capture) for cases where posted input is not enough.
+    [switch]$Foreground,
+    [switch]$Posted,   # experimental: post mouse messages instead of borrowing the foreground
+    # Directory holding inputshim.dll and inputshim-inject.exe. Launch attaches the shim in
+    # background mode, and background clicks then need no foreground borrow at all.
+    [string]$InputShimDir = 'captures\perf_bench_20260917\builds\inputshim',
+    [ValidateRange(-1, 255)][int]$Mask = -1,   # ShimMask: new hook_mask
+    [string[]]$ExtraArgs = @()
 )
+
+# --- input shim (scratch tool, see C:\hoi4_scratch\input_shim_20260917\README.md) ---
+# While the shim is attached, hoi4.exe's user32 import thunks answer from this 4096-byte
+# mapping, so a posted click lands with the cursor, button state and focus the UI expects.
+$script:ShimMapping = 'Local\hoi4_inputshim_v1'
+$script:ShimMagic = [uint32]0x4D485348   # 'HSHM'
+$script:ShimHooks = @('GetCursorPos', 'GetAsyncKeyState', 'GetKeyState', 'GetKeyboardState',
+    'GetForegroundWindow', 'GetActiveWindow', 'GetFocus')
+# Control-block offsets.
+$script:ShimMaskOffset = 8
+$script:ShimFlagsOffset = 12
+$script:ShimCursorOffset = 16
+$script:ShimWindowOffset = 24
+$script:ShimCallsOffset = 32
+# flags bits: cursor override, focus override, left button down.
+$script:ShimCursorFlag = 1
+$script:ShimFocusFlag = 2
+$script:ShimLeftFlag = 4
+
+function Open-InputShim {
+    # The open control block, or $null when the shim is not attached.
+    try { $map = [IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting($script:ShimMapping) } catch { return $null }
+    $view = $map.CreateViewAccessor(0, 4096)
+    if ($view.ReadUInt32(0) -ne $script:ShimMagic) { $view.Dispose(); $map.Dispose(); return $null }
+    [pscustomobject]@{ Map = $map; View = $view }
+}
+
+function Close-InputShim($shim) {
+    if ($shim) { $shim.View.Dispose(); $shim.Map.Dispose() }
+}
+
+function Read-ShimCounters($shim) {
+    $counters = [ordered]@{}
+    for ($index = 0; $index -lt $script:ShimHooks.Count; $index++) {
+        $counters[$script:ShimHooks[$index]] = $shim.View.ReadUInt32($script:ShimCallsOffset + 4 * $index)
+    }
+    $counters
+}
+
+function Install-InputShim([int]$processId) {
+    # Attach once per launch. Absent binaries are not an error: the driver falls back
+    # to the foreground borrow, which is what every earlier run used.
+    $injector = Join-Path $InputShimDir 'inputshim-inject.exe'
+    $dll = Join-Path $InputShimDir 'inputshim.dll'
+    if (-not (Test-Path -LiteralPath $injector) -or -not (Test-Path -LiteralPath $dll)) { return 'absent' }
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $output = (& $injector attach $processId $dll 2>&1 | Out-String).Trim() }
+    finally { $ErrorActionPreference = $previous }
+    if ($LASTEXITCODE -ne 0) { return "failed: $output" }
+    'attached'
+}
+
+function Set-ShimFlags($shim, [int]$flags) { $shim.View.Write($script:ShimFlagsOffset, [uint32]$flags) }
+
+function Invoke-ShimPointer($shim, $window, [int]$logicalX, [int]$logicalY, [int]$virtualX, [int]$virtualY, [scriptblock]$press) {
+    # Present the cursor and the game's own window as focused, then run the posted
+    # press. Overrides are always cleared, so a failure cannot leave the game blind.
+    $view = $shim.View
+    $view.Write($script:ShimWindowOffset, [uint64]$window.ToInt64())
+    $view.Write($script:ShimCursorOffset, [int]$virtualX)
+    $view.Write($script:ShimCursorOffset + 4, [int]$virtualY)
+    Set-ShimFlags $shim ($script:ShimCursorFlag -bor $script:ShimFocusFlag)
+    try {
+        [Hoi4ProbeInput]::PostMove($window, $logicalX, $logicalY)
+        Start-Sleep -Milliseconds 60
+        & $press
+    } finally {
+        Set-ShimFlags $shim 0
+    }
+}
 
 function Initialize-SmokeClock {
     if (-not ('Hoi4ClockBaseline' -as [type])) {
@@ -265,7 +361,7 @@ function Invoke-FullSmoke {
     function Run-Tool([string]$exe,[string[]]$arguments,[string]$name,[int]$seconds=240) {
         Finish-Tool (Launch-Tool $exe $arguments $name) $seconds
     }
-    function Drive([string]$action,[hashtable]$extra=@{}) { & $driver -Action $action -GameId $game.Id -GameExe $gamePath -UserDirectory $userPath @extra }
+    function Drive([string]$action,[hashtable]$extra=@{}) { & $driver -Action $action -GameId $game.Id -GameExe $gamePath -UserDirectory $userPath -Foreground:$Foreground @extra }
     function Click-Point([string]$name) { $point=$ui.$name; $null=Drive 'Click' @{X=[int]$point[0];Y=[int]$point[1]} }
     function Clock {
         $limit=[DateTime]::UtcNow.AddSeconds(10)
@@ -278,9 +374,7 @@ function Invoke-FullSmoke {
         throw 'No stable, authenticated game clock.'
     }
     function Pause-Game([bool]$paused) {
-        if ((Clock).paused -ne [int]$paused) {
-            [Hoi4ProbeInput]::KeyPress($game.MainWindowHandle,[uint32]$game.Id,0x20)
-        }
+        if ((Clock).paused -ne [int]$paused) { $null=Drive 'Key' @{Key='Space'} }
         $limit=[DateTime]::UtcNow.AddSeconds(10)
         while ((Clock).paused -ne [int]$paused) {
             if ([DateTime]::UtcNow -gt $limit) { throw 'Pause input was not accepted.' }
@@ -335,7 +429,7 @@ function Invoke-FullSmoke {
         Stage 'launch-and-attach'
         $script:smokeStatusPath=$null
         $recorderRun=Launch-Tool $recorder @('record','--once','--out',$recordRoot,'--user-dir',$userPath) 'record'
-        $launch=& $driver -Action Launch -GameExe $gamePath -UserDirectory $userPath -ContinueLastSave -ExpectedSave $ExpectedSave
+        $launch=& $driver -Action Launch -GameExe $gamePath -UserDirectory $userPath -ContinueLastSave -ExpectedSave $ExpectedSave -Foreground:$Foreground
         $game=Get-Process -Id $launch.GameId
         Initialize-SmokeClock
         $limit=[DateTime]::UtcNow.AddSeconds(300)
@@ -349,7 +443,7 @@ function Invoke-FullSmoke {
         } while ($true)
         $shot=Drive 'Screenshot' @{Out=(Join-Path $output 'loaded.png')}
         if ($shot.Width -ne $ui.width -or $shot.Height -ne $ui.height) { throw 'Window dimensions differ from calibrated UI.' }
-        $previousForeground=[Hoi4ProbeInput]::AcquireTargetFocus($game.MainWindowHandle,[uint32]$game.Id)
+        if ($Foreground) { $previousForeground=[Hoi4ProbeInput]::AcquireTargetFocus($game.MainWindowHandle,[uint32]$game.Id) }
         Pause-Game $true
         $null=Drive 'Move' @{X=[int]$ui.map_center[0];Y=[int]$ui.map_center[1]}
         $limit=[DateTime]::UtcNow.AddSeconds(120)
@@ -605,8 +699,42 @@ if ($Action -eq 'Launch') {
         $arguments += '--continuelastsave'
         Write-Host "Launching the existing continue selection: $saveName"
     }
+    foreach ($extra in $ExtraArgs) { if ($extra -match '["\s]') { throw 'ExtraArgs entries must be single tokens without quotes.' }; $arguments += $extra }
+    if (-not ('Hoi4ProbeInput' -as [type])) {
+        $self = Get-Content -LiteralPath $PSCommandPath -Encoding UTF8 -Raw
+        foreach ($definition in [regex]::Matches($self, "(?s)Add-Type -TypeDefinition @'\r?\n(.*?)\r?\n'@")) {
+            if ($definition.Groups[1].Value -match 'class Hoi4ProbeInput') { Add-Type -TypeDefinition $definition.Groups[1].Value }
+        }
+    }
+    $previousForeground = [Hoi4ProbeInput]::GetForegroundWindow()
     # The game is the interactive application being tested, so its window is visible.
     $started = Start-Process -FilePath $gamePath -WorkingDirectory (Split-Path -Parent $gamePath) -ArgumentList $arguments -PassThru
+    if (-not $Foreground) {
+        # Keep the game behind whatever was active: it takes focus when its window appears and again when the map
+        # loads. Watch until the map is up and the window has stayed in the background for a few seconds.
+        Initialize-SmokeClock
+        $reader = $null; $quietSince = $null; $pushes = 0; $loaded = $false
+        $deadline = [DateTime]::UtcNow.AddSeconds(240)
+        do {
+            Start-Sleep -Milliseconds 100
+            $started.Refresh()
+            if ($started.HasExited) { throw 'The game exited during launch.' }
+            $handle = $started.MainWindowHandle
+            if ($handle -ne [IntPtr]::Zero) {
+                if ([Hoi4ProbeInput]::GetForegroundWindow() -eq $handle) {
+                    [void][Hoi4ProbeInput]::PushBehind($handle, $previousForeground); $pushes++; $quietSince = $null
+                } elseif ($null -eq $quietSince) { $quietSince = [DateTime]::UtcNow }
+                if ($null -eq $reader) { try { $reader = [Hoi4ClockBaseline]::new([uint32]$started.Id, [uint64]$started.MainModule.BaseAddress.ToInt64()) } catch { $reader = $null } }
+            }
+            $clock = if ($reader) { $reader.Sample() } else { $null }
+            $loaded = [bool]($clock -and $clock.presentation_valid -and $null -ne $quietSince -and ([DateTime]::UtcNow - $quietSince).TotalSeconds -ge 5)
+        } while (-not $loaded -and [DateTime]::UtcNow -lt $deadline)
+        if ($reader) { $reader.Dispose() }
+        # Background clicks need the shim; it is attached once, after the window exists.
+        $shim = if ($started.MainWindowHandle -ne [IntPtr]::Zero) { Install-InputShim $started.Id } else { 'no window' }
+        [pscustomobject]@{ Action = 'Launch'; GameId = $started.Id; GameExe = $gamePath; RequestedUserDirectory = $userPath; Background = $true; ForegroundPushes = $pushes; LoadedBeforeReturn = $loaded; InputShim = $shim }
+        return
+    }
     [pscustomobject]@{ Action = 'Launch'; GameId = $started.Id; GameExe = $gamePath; RequestedUserDirectory = $userPath }
     return
 }
@@ -793,6 +921,63 @@ public static class Hoi4ProbeInput {
     [DllImport("user32.dll", SetLastError=true)] public static extern bool ClientToScreen(IntPtr window, ref Point point);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+    [DllImport("user32.dll", SetLastError=true)] static extern bool PostMessageW(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll", SetLastError=true)] static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr window, IntPtr hdc, uint flags);
+    // Background-mode primitives: nothing here activates a window or moves the real cursor.
+    static void Post(IntPtr window, uint message, UIntPtr w, IntPtr l) {
+        if (!PostMessageW(window, message, w, l)) throw new Win32Exception(Marshal.GetLastWin32Error(), "PostMessage failed.");
+    }
+    static IntPtr PackPoint(int x, int y) { return (IntPtr)unchecked((long)((((uint)y & 0xFFFFu) << 16) | ((uint)x & 0xFFFFu))); }
+    public static void PostKey(IntPtr window, ushort key) {
+        uint scan = MapVirtualKeyW(key, 0);
+        long down = 1 | ((long)(scan & 0xFF) << 16);
+        long up = down | (1L << 30) | (1L << 31);
+        Post(window, 0x0100, (UIntPtr)key, (IntPtr)down);
+        System.Threading.Thread.Sleep(60);
+        Post(window, 0x0101, (UIntPtr)key, (IntPtr)up);
+    }
+    public static void PostChar(IntPtr window, char character) { Post(window, 0x0102, (UIntPtr)character, (IntPtr)1); }
+    public static void PostMove(IntPtr window, int clientX, int clientY) { Post(window, 0x0200, UIntPtr.Zero, PackPoint(clientX, clientY)); }
+    public static void PostClick(IntPtr window, int clientX, int clientY) {
+        Post(window, 0x0200, UIntPtr.Zero, PackPoint(clientX, clientY));
+        System.Threading.Thread.Sleep(80);
+        Post(window, 0x0201, (UIntPtr)1, PackPoint(clientX, clientY));
+        System.Threading.Thread.Sleep(70);
+        Post(window, 0x0202, UIntPtr.Zero, PackPoint(clientX, clientY));
+    }
+    // One posted mouse-button message, so the caller can hold the shim's button flag across it.
+    public static void PostButton(IntPtr window, uint message, uint wParam, int clientX, int clientY) {
+        Post(window, message, (UIntPtr)wParam, PackPoint(clientX, clientY));
+    }
+    public static void PostWheel(IntPtr window, int screenX, int screenY, int notches) {
+        int step = notches < 0 ? -1 : 1;
+        for (int sent = 0; sent != notches; sent += step) {
+            Post(window, 0x020A, (UIntPtr)unchecked((uint)((step * 120) << 16)), PackPoint(screenX, screenY));
+            System.Threading.Thread.Sleep(60);
+        }
+    }
+    public static bool PushBehind(IntPtr gameWindow, IntPtr previous) {
+        // HWND_BOTTOM without activation, then give the previously active window its focus back.
+        bool ok = SetWindowPos(gameWindow, (IntPtr)1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);
+        if (previous != IntPtr.Zero && previous != gameWindow && IsWindow(previous)) FocusWindow(previous);
+        return ok;
+    }
+    public static bool CaptureWindow(IntPtr window, IntPtr hdc) { return PrintWindow(window, hdc, 2); } // PW_RENDERFULLCONTENT
+    [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
+    [DllImport("user32.dll")] static extern uint GetDpiForSystem();
+    // Size at which a DPI-unaware (virtualised) window renders itself; equals the physical size for aware windows.
+    // Posted mouse messages carry client coordinates in the window's own (virtualised) space.
+    public static int[] LogicalPoint(IntPtr window, int clientX, int clientY) {
+        uint windowDpi = GetDpiForWindow(window), systemDpi = GetDpiForSystem();
+        if (windowDpi == 0 || systemDpi == 0 || windowDpi >= systemDpi) return new int[] { clientX, clientY };
+        return new int[] { (int)Math.Round(clientX * (double)windowDpi / systemDpi), (int)Math.Round(clientY * (double)windowDpi / systemDpi) };
+    }
+    public static int[] LogicalSize(IntPtr window, int physicalWidth, int physicalHeight) {
+        uint windowDpi = GetDpiForWindow(window), systemDpi = GetDpiForSystem();
+        if (windowDpi == 0 || systemDpi == 0 || windowDpi >= systemDpi) return new int[] { physicalWidth, physicalHeight };
+        return new int[] { (int)Math.Round(physicalWidth * (double)windowDpi / systemDpi), (int)Math.Round(physicalHeight * (double)windowDpi / systemDpi) };
+    }
     static bool AttachIfDifferent(uint current, uint other) {
         return other != 0 && other != current && AttachThreadInput(current, other, true);
     }
@@ -919,11 +1104,17 @@ public static class Hoi4ProbeInput {
 '@
 }
 [void][Hoi4ProbeInput]::SetProcessDPIAware()
-if ([Hoi4ProbeInput]::IsIconic($window)) { [void][Hoi4ProbeInput]::ShowWindow($window, 9) }
-$previousForeground = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
+$previousForeground = [IntPtr]::Zero
+if ($Foreground) {
+    if ([Hoi4ProbeInput]::IsIconic($window)) { [void][Hoi4ProbeInput]::ShowWindow($window, 9) }
+    $previousForeground = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
+} elseif ([Hoi4ProbeInput]::IsIconic($window)) {
+    [void][Hoi4ProbeInput]::ShowWindow($window, 4)   # SW_SHOWNOACTIVATE: restore without taking focus
+    [void][Hoi4ProbeInput]::PushBehind($window, [Hoi4ProbeInput]::GetForegroundWindow())
+}
 try {
     Start-Sleep -Milliseconds 200
-    [Hoi4ProbeInput]::CheckTarget($window, [uint32]$game.Id)
+    if ($Foreground) { [Hoi4ProbeInput]::CheckTarget($window, [uint32]$game.Id) }
     if (-not [Hoi4ProbeInput]::IsWindowVisible($window)) { throw 'The game window is not visible.' }
     $rect = New-Object Hoi4ProbeInput+Rect
     if (-not [Hoi4ProbeInput]::GetWindowRect($window, [ref]$rect)) { throw 'Cannot read the game window rectangle.' }
@@ -942,16 +1133,34 @@ try {
         if (Test-Path -LiteralPath $capturePath) { throw "Screenshot already exists: $capturePath" }
         Add-Type -AssemblyName System.Drawing
         Add-Type -AssemblyName System.Windows.Forms
-        $desktop = [Windows.Forms.SystemInformation]::VirtualScreen
-        if ($rect.Left -lt $desktop.Left -or $rect.Top -lt $desktop.Top -or $rect.Right -gt $desktop.Right -or $rect.Bottom -gt $desktop.Bottom) {
-            throw 'The game window must fit entirely on the desktop for a screenshot.'
+        if ($Foreground) {
+            $desktop = [Windows.Forms.SystemInformation]::VirtualScreen
+            if ($rect.Left -lt $desktop.Left -or $rect.Top -lt $desktop.Top -or $rect.Right -gt $desktop.Right -or $rect.Bottom -gt $desktop.Bottom) {
+                throw 'The game window must fit entirely on the desktop for a screenshot.'
+            }
         }
         [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($capturePath))
         $bitmap = New-Object Drawing.Bitmap $width, $height
         $graphics = [Drawing.Graphics]::FromImage($bitmap)
         try {
-            [Hoi4ProbeInput]::CheckTarget($window, [uint32]$game.Id)
-            $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
+            if ($Foreground) {
+                [Hoi4ProbeInput]::CheckTarget($window, [uint32]$game.Id)
+                $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
+            } else {
+                # PrintWindow with PW_RENDERFULLCONTENT captures the composed window even when other windows cover
+                # it, but at the window's own (DPI-virtualised) size. Capture at that size, then upscale to the
+                # physical window size so coordinates match the foreground-mode screenshots.
+                $logical = [Hoi4ProbeInput]::LogicalSize($window, $width, $height)
+                $raw = New-Object Drawing.Bitmap ([int]$logical[0]), ([int]$logical[1])
+                $rawGraphics = [Drawing.Graphics]::FromImage($raw)
+                try {
+                    $hdc = $rawGraphics.GetHdc()
+                    try { if (-not [Hoi4ProbeInput]::CaptureWindow($window, $hdc)) { throw 'PrintWindow failed; the game window did not render into the capture.' } }
+                    finally { $rawGraphics.ReleaseHdc($hdc) }
+                    $graphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBilinear
+                    $graphics.DrawImage($raw, 0, 0, $width, $height)
+                } finally { $rawGraphics.Dispose(); $raw.Dispose() }
+            }
             $bitmap.Save($capturePath, [Drawing.Imaging.ImageFormat]::Png)
         } finally {
             $graphics.Dispose()
@@ -965,8 +1174,14 @@ try {
             Left=0x25; Right=0x27; Up=0x26; Down=0x28; Home=0x24; End=0x23 }
         for ($index = 1; $index -le 12; $index++) { $keys["F$index"] = 0x6F + $index }
         for ($index = 1; $index -le 5; $index++) { $keys[[string]$index] = 0x30 + $index }
-        if ($Key -eq 'CtrlA') { [Hoi4ProbeInput]::SelectAll($window, [uint32]$game.Id) }
-        else { [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$keys[$Key]) }
+        if ($Foreground) {
+            if ($Key -eq 'CtrlA') { [Hoi4ProbeInput]::SelectAll($window, [uint32]$game.Id) }
+            else { [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$keys[$Key]) }
+        } elseif ($Key -eq 'CtrlA') {
+            # Posted messages carry no modifier state; clear a text field with End + Backspaces instead.
+            [Hoi4ProbeInput]::PostKey($window, 0x23)
+            for ($n = 0; $n -lt 64; $n++) { [Hoi4ProbeInput]::PostKey($window, 8) }
+        } else { [Hoi4ProbeInput]::PostKey($window, [uint16]$keys[$Key]) }
         [pscustomobject]@{ Action = $Action; GameId = $game.Id; Key = $Key }
     }
     { $_ -eq 'Click' -or $_ -eq 'Move' -or $_ -eq 'Wheel' } {
@@ -982,31 +1197,106 @@ try {
             if ($Action -ne 'Click') { throw "$Action coordinates must be inside the game client area, not the window frame." }
             throw 'Clicks must be inside the game client area, not the window frame.'
         }
-        if ($Action -eq 'Move') {
-            [Hoi4ProbeInput]::Move($window, [uint32]$game.Id, $screenX, $screenY)
-        } elseif ($Action -eq 'Wheel') {
-            if ($Delta -eq 0) { throw 'Wheel requires a nonzero -Delta.' }
-            [Hoi4ProbeInput]::Wheel($window, [uint32]$game.Id, $screenX, $screenY, $Delta)
+        if ($Action -eq 'Wheel' -and $Delta -eq 0) { throw 'Wheel requires a nonzero -Delta.' }
+        if ($Foreground) {
+            if ($Action -eq 'Move') { [Hoi4ProbeInput]::Move($window, [uint32]$game.Id, $screenX, $screenY) }
+            elseif ($Action -eq 'Wheel') { [Hoi4ProbeInput]::Wheel($window, [uint32]$game.Id, $screenX, $screenY, $Delta) }
+            else { [Hoi4ProbeInput]::Click($window, [uint32]$game.Id, $screenX, $screenY) }
+        } elseif ($Posted -or $Action -eq 'Move') {
+            # Posted mouse messages reach the game's SDL window procedure (coordinates in its DPI-virtualised
+            # space), but on their own the UI ignores button messages: it reads physical button state or the
+            # foreground window (measured 2026-09-17). Kept for the map and for experiments.
+            $logical = [Hoi4ProbeInput]::LogicalPoint($window, $screenX - $origin.X, $screenY - $origin.Y)
+            if ($Action -eq 'Move') { [Hoi4ProbeInput]::PostMove($window, [int]$logical[0], [int]$logical[1]) }
+            elseif ($Action -eq 'Wheel') { [Hoi4ProbeInput]::PostWheel($window, $screenX, $screenY, $Delta) }
+            else { [Hoi4ProbeInput]::PostClick($window, [int]$logical[0], [int]$logical[1]) }
         } else {
-            [Hoi4ProbeInput]::Click($window, [uint32]$game.Id, $screenX, $screenY)
+            $shim = Open-InputShim
+            if ($shim) {
+                # With the shim attached, posted messages are enough: it supplies the cursor position,
+                # the held button and the focused window that the UI reads. The foreground never changes.
+                try {
+                    $logical = [Hoi4ProbeInput]::LogicalPoint($window, $screenX - $origin.X, $screenY - $origin.Y)
+                    # The game window sits at (0,0), so the virtualised screen point is the scaled screen point.
+                    $virtual = [Hoi4ProbeInput]::LogicalPoint($window, $screenX, $screenY)
+                    Invoke-ShimPointer $shim $window ([int]$logical[0]) ([int]$logical[1]) ([int]$virtual[0]) ([int]$virtual[1]) {
+                        if ($Action -eq 'Wheel') { [Hoi4ProbeInput]::PostWheel($window, [int]$virtual[0], [int]$virtual[1], $Delta) }
+                        else {
+                            Set-ShimFlags $shim ($script:ShimCursorFlag -bor $script:ShimFocusFlag -bor $script:ShimLeftFlag)
+                            [Hoi4ProbeInput]::PostButton($window, 0x0201, 1, [int]$logical[0], [int]$logical[1])   # WM_LBUTTONDOWN, MK_LBUTTON
+                            Start-Sleep -Milliseconds 60
+                            Set-ShimFlags $shim ($script:ShimCursorFlag -bor $script:ShimFocusFlag)
+                            [Hoi4ProbeInput]::PostButton($window, 0x0202, 0, [int]$logical[0], [int]$logical[1])   # WM_LBUTTONUP
+                            Start-Sleep -Milliseconds 60
+                        }
+                    }
+                } finally { Close-InputShim $shim }
+            } else {
+                # No shim: UI buttons need real input, which only reaches the foreground window. Borrow it
+                # for the click, restore the previous window and push the game behind again (~250 ms in front).
+                $flash = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
+                try {
+                    Start-Sleep -Milliseconds 120
+                    if ($Action -eq 'Wheel') { [Hoi4ProbeInput]::Wheel($window, [uint32]$game.Id, $screenX, $screenY, $Delta) }
+                    else { [Hoi4ProbeInput]::Click($window, [uint32]$game.Id, $screenX, $screenY) }
+                } finally {
+                    [Hoi4ProbeInput]::RestoreForeground($flash, $window)
+                    [void][Hoi4ProbeInput]::PushBehind($window, $flash)
+                }
+            }
         }
         [pscustomobject]@{ Action = $Action; GameId = $game.Id; X = $X; Y = $Y; Delta = $Delta }
     }
+    'ShimStatus' {
+        # What the game actually polls per frame, for bisecting the click path.
+        $shim = Open-InputShim
+        if (-not $shim) { throw 'The input shim is not attached; no control block exists.' }
+        try {
+            $first = Read-ShimCounters $shim
+            Start-Sleep -Seconds 1
+            $second = Read-ShimCounters $shim
+            $calls = [ordered]@{}
+            foreach ($hook in $script:ShimHooks) { $calls[$hook] = [pscustomobject]@{ Calls = $second[$hook]; PerSecond = $second[$hook] - $first[$hook] } }
+            [pscustomobject]@{ Action = $Action; GameId = $game.Id; HookMask = $shim.View.ReadUInt32($script:ShimMaskOffset);
+                Flags = $shim.View.ReadUInt32($script:ShimFlagsOffset);
+                Cursor = @($shim.View.ReadInt32($script:ShimCursorOffset), $shim.View.ReadInt32($script:ShimCursorOffset + 4));
+                Window = '0x{0:x}' -f $shim.View.ReadUInt64($script:ShimWindowOffset);
+                LastVkAsync = $shim.View.ReadUInt32(64); LastVkState = $shim.View.ReadUInt32(68); Hooks = [pscustomobject]$calls }
+        } finally { Close-InputShim $shim }
+    }
+    'ShimMask' {
+        if ($Mask -lt 0) { throw 'ShimMask requires -Mask, a value from 0 to 127 (bit per hook, 0x7f enables all).' }
+        $shim = Open-InputShim
+        if (-not $shim) { throw 'The input shim is not attached; no control block exists.' }
+        try {
+            $shim.View.Write($script:ShimMaskOffset, [uint32]$Mask)
+            $enabled = @(for ($index = 0; $index -lt $script:ShimHooks.Count; $index++) { if ($Mask -band (1 -shl $index)) { $script:ShimHooks[$index] } })
+            [pscustomobject]@{ Action = $Action; GameId = $game.Id; HookMask = $shim.View.ReadUInt32($script:ShimMaskOffset); Enabled = $enabled }
+        } finally { Close-InputShim $shim }
+    }
     { $_ -eq 'Text' -or $_ -eq 'Console' } {
         if (-not $Text -or $Text -match '[\r\n\x00-\x1F]') { throw 'Text and Console require one nonempty line without control characters.' }
-        if ($Action -eq 'Console') {
-            [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$ConsoleKey)
-            Start-Sleep -Milliseconds 200
-        }
-        [Hoi4ProbeInput]::TypeText($window, [uint32]$game.Id, $Text)
-        if ($Action -eq 'Console') {
-            [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, 0x0D)
-            Start-Sleep -Milliseconds 200
-            [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$ConsoleKey)
+        if ($Foreground) {
+            if ($Action -eq 'Console') { [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$ConsoleKey); Start-Sleep -Milliseconds 200 }
+            [Hoi4ProbeInput]::TypeText($window, [uint32]$game.Id, $Text)
+            if ($Action -eq 'Console') {
+                [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, 0x0D)
+                Start-Sleep -Milliseconds 200
+                [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$ConsoleKey)
+            }
+        } else {
+            if ($Action -eq 'Console') { [Hoi4ProbeInput]::PostKey($window, [uint16]$ConsoleKey); Start-Sleep -Milliseconds 200 }
+            foreach ($character in $Text.ToCharArray()) { [Hoi4ProbeInput]::PostChar($window, $character); Start-Sleep -Milliseconds 15 }
+            if ($Action -eq 'Console') {
+                Start-Sleep -Milliseconds 100
+                [Hoi4ProbeInput]::PostKey($window, 0x0D)
+                Start-Sleep -Milliseconds 200
+                [Hoi4ProbeInput]::PostKey($window, [uint16]$ConsoleKey)
+            }
         }
         [pscustomobject]@{ Action = $Action; GameId = $game.Id; Text = $Text }
     }
     }
 } finally {
-    [Hoi4ProbeInput]::RestoreForeground($previousForeground, $window)
+    if ($previousForeground -ne [IntPtr]::Zero) { [Hoi4ProbeInput]::RestoreForeground($previousForeground, $window) }
 }

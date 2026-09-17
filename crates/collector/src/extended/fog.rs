@@ -426,6 +426,16 @@ impl Captured {
         self.registrations.mismatches = usize::from(needed && !matched);
     }
 
+    /// Complete an accepted shared-bases failure after the reserved generic
+    /// capture has skipped this table. Other fog tables keep their own result.
+    pub(crate) fn fail_registrations_capture(&mut self, needed: bool, reason: &'static str) {
+        self.registrations.outcome = Outcome::Unavailable { reason };
+        self.registrations.checked = needed;
+        self.registrations.mismatches = usize::from(needed);
+        self.wings.reset();
+        self.registrations_raw_mode = false;
+    }
+
     /// Decode-worker interpretation of the shared bases payload's
     /// registrations half: replays `cair_base::walk_registrations` against
     /// the same recorded spans the bases and aces decodes read (see
@@ -1119,6 +1129,8 @@ pub(crate) struct RadarCopyContext {
     pub base: usize,
     pub game_state: usize,
     pub needed: [bool; RADAR_N],
+    pub row_limit: usize,
+    pub province_limit: usize,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -1136,6 +1148,7 @@ pub(crate) struct IntelCopyContext {
     pub base: usize,
     pub game_state: usize,
     pub needed: [bool; INTEL_N],
+    pub row_limit: usize,
 }
 
 fn acquire_radar(job: &mut RadarJob, memory: &impl Memory, ctx: RadarCopyContext) {
@@ -1173,12 +1186,13 @@ fn acquire_intel(job: &mut IntelJob, memory: &impl Memory, ctx: IntelCopyContext
     job.acquired = true;
 }
 
-impl Captured {
-    pub(crate) fn copy_radar_refresh(&mut self, memory: &impl Memory, ctx: RadarCopyContext,
+/// Acquire and compare owned radar inputs without borrowing a captured frame.
+/// Both destination grants are checked before the first native observation.
+pub(crate) fn copy_radar_refresh(memory: &impl Memory, ctx: RadarCopyContext,
         first: &mut RadarJob, mut second: Option<&mut RadarJob>) -> RadarCopyReport {
         let started = qpc();
-        let row_limit = self.radar.rows.len();
-        let province_limit = self.radar_provinces.first.len();
+        let row_limit = ctx.row_limit;
+        let province_limit = ctx.province_limit;
         let fits = first.fits(row_limit, province_limit) && second.as_deref().is_none_or(|job| job.fits(row_limit, province_limit));
         first.prepare(row_limit, province_limit, ctx.needed[0]);
         if fits { acquire_radar(first, memory, ctx); }
@@ -1188,14 +1202,78 @@ impl Captured {
             if fits { acquire_radar(second, memory, ctx); }
             matched = first.matches(second);
         }
-        self.radar.checked = ctx.needed[0];
-        self.radar.mismatches = usize::from(ctx.needed[0] && !matched);
+        let mismatches = usize::from(ctx.needed[0] && !matched);
         RadarCopyReport {
             raw_ok: first.acquired && !first.source_witness.overflowed && second.is_none_or(|job| job.acquired && !job.source_witness.overflowed),
             matched: [matched && matches!(first.outcome, Outcome::Rows { .. })],
-            mismatches: [self.radar.mismatches], copy_ticks: [elapsed(started)], raw_bytes: [first.raw_bytes],
+            mismatches: [mismatches], copy_ticks: [elapsed(started)], raw_bytes: [first.raw_bytes],
         }
     }
+
+/// Acquire UnitIntel from the independently owned pointer-census passes. The
+/// caller keeps their immutable owner alive until this function has returned.
+pub(crate) fn copy_intel_refresh_with_divisions(memory: &impl Memory, ctx: IntelCopyContext,
+        first: &mut IntelJob, mut second: Option<&mut IntelJob>, divisions: Option<IntelDivisionSources<'_>>) -> IntelCopyReport {
+        let started = qpc();
+        let row_limit = ctx.row_limit;
+        let fits = first.fits(row_limit, 0) && second.as_deref().is_none_or(|job| job.fits(row_limit, 0));
+        first.prepare(row_limit, 0, ctx.needed[0]);
+        if fits { acquire_intel(first, memory, ctx, divisions.map(|sources| sources.first)); }
+        let mut matched = !ctx.needed[0];
+        if let Some(second) = second.as_deref_mut() {
+            second.prepare(row_limit, 0, ctx.needed[0]);
+            if fits { acquire_intel(second, memory, ctx, divisions.map(|sources| sources.second.unwrap_or(unit_viewer_entry::DivisionSources {
+                entries: &[], outcome: Outcome::Unavailable { reason: "independent division census not supplied" },
+            }))); }
+            matched = first.matches(second)
+                && divisions.is_none_or(|sources| sources.second.is_some() && sources.matched);
+        }
+        let mismatches = usize::from(ctx.needed[0] && !matched);
+        IntelCopyReport {
+            raw_ok: first.acquired && !first.source_witness.overflowed && second.is_none_or(|job| job.acquired && !job.source_witness.overflowed),
+            matched: [matched && matches!(first.outcome, Outcome::Rows { .. })],
+            mismatches: [mismatches], copy_ticks: [elapsed(started)], raw_bytes: [first.raw_bytes],
+        }
+    }
+
+impl Captured {
+    pub(crate) fn radar_copy_context(&self, base: usize, game_state: usize, needed: [bool; RADAR_N]) -> RadarCopyContext {
+        RadarCopyContext { base, game_state, needed, row_limit: self.radar.rows.len(), province_limit: self.radar_provinces.first.len() }
+    }
+
+    pub(crate) fn intel_copy_context(&self, base: usize, game_state: usize, needed: [bool; INTEL_N]) -> IntelCopyContext {
+        IntelCopyContext { base, game_state, needed, row_limit: self.intel.rows.len() }
+    }
+
+    /// Apply a completed worker report on the exclusive frame owner.
+    pub(crate) fn apply_radar_report(&mut self, needed: [bool; RADAR_N], report: &RadarCopyReport) {
+        self.radar.checked = needed[0];
+        self.radar.mismatches = if needed[0] { report.mismatches[0] } else { 0 };
+    }
+
+    pub(crate) fn apply_intel_report(&mut self, needed: [bool; INTEL_N], report: &IntelCopyReport) {
+        self.intel.checked = needed[0];
+        self.intel.mismatches = if needed[0] { report.mismatches[0] } else { 0 };
+    }
+
+    /// Complete an accepted worker failure after the sibling capture has
+    /// finished. The reservation gate prevented any synchronous retry; no
+    /// owned payload from this failed acquisition may subsequently be decoded.
+    pub(crate) fn fail_radar_capture(&mut self, needed: [bool; RADAR_N], reason: &'static str) {
+        self.radar.outcome = Outcome::Unavailable { reason };
+        self.radar.checked = needed[0];
+        self.radar.mismatches = usize::from(needed[0]);
+        self.radar_provinces.reset();
+        self.radar_raw_mode = false;
+    }
+
+    pub(crate) fn fail_intel_capture(&mut self, needed: [bool; INTEL_N], reason: &'static str) {
+        self.intel.outcome = Outcome::Unavailable { reason };
+        self.intel.checked = needed[0];
+        self.intel.mismatches = usize::from(needed[0]);
+        self.intel_raw_mode = false;
+    }
+
 
     pub(crate) fn decode_radar_payload(&mut self, _base: usize, job: &RadarJob, decode_ticks: &mut [u64; RADAR_N]) {
         let started = qpc();
@@ -1216,36 +1294,6 @@ impl Captured {
         self.radar_raw_mode = false;
     }
 
-    #[cfg(test)]
-    pub(crate) fn copy_intel_refresh(&mut self, memory: &impl Memory, ctx: IntelCopyContext,
-        first: &mut IntelJob, second: Option<&mut IntelJob>) -> IntelCopyReport {
-        self.copy_intel_refresh_with_divisions(memory, ctx, first, second, None)
-    }
-
-    pub(crate) fn copy_intel_refresh_with_divisions(&mut self, memory: &impl Memory, ctx: IntelCopyContext,
-        first: &mut IntelJob, mut second: Option<&mut IntelJob>, divisions: Option<IntelDivisionSources<'_>>) -> IntelCopyReport {
-        let started = qpc();
-        let row_limit = self.intel.rows.len();
-        let fits = first.fits(row_limit, 0) && second.as_deref().is_none_or(|job| job.fits(row_limit, 0));
-        first.prepare(row_limit, 0, ctx.needed[0]);
-        if fits { acquire_intel(first, memory, ctx, divisions.map(|sources| sources.first)); }
-        let mut matched = !ctx.needed[0];
-        if let Some(second) = second.as_deref_mut() {
-            second.prepare(row_limit, 0, ctx.needed[0]);
-            if fits { acquire_intel(second, memory, ctx, divisions.map(|sources| sources.second.unwrap_or(unit_viewer_entry::DivisionSources {
-                entries: &[], outcome: Outcome::Unavailable { reason: "independent division census not supplied" },
-            }))); }
-            matched = first.matches(second)
-                && divisions.is_none_or(|sources| sources.second.is_some() && sources.matched);
-        }
-        self.intel.checked = ctx.needed[0];
-        self.intel.mismatches = usize::from(ctx.needed[0] && !matched);
-        IntelCopyReport {
-            raw_ok: first.acquired && !first.source_witness.overflowed && second.is_none_or(|job| job.acquired && !job.source_witness.overflowed),
-            matched: [matched && matches!(first.outcome, Outcome::Rows { .. })],
-            mismatches: [self.intel.mismatches], copy_ticks: [elapsed(started)], raw_bytes: [first.raw_bytes],
-        }
-    }
 
     pub(crate) fn decode_intel_payload(&mut self, _base: usize, job: &IntelJob, decode_ticks: &mut [u64; INTEL_N]) {
         let started = qpc();
@@ -1781,6 +1829,119 @@ mod tests {
     }
 
     #[test]
+    fn free_fog_acquisition_preserves_frame_state_until_report_application() {
+        let (_, mut captured) = small();
+        let bytes = fixture();
+        let memory = SliceMemory { base: BASE, bytes: &bytes };
+        let before = captured.outcomes();
+        let radar_ctx = captured.radar_copy_context(0, BASE, [true]);
+        let intel_ctx = captured.intel_copy_context(0, BASE, [true]);
+        assert_eq!((radar_ctx.row_limit, radar_ctx.province_limit, intel_ctx.row_limit), (4, 8, 4));
+        let mut radar_first = RadarJob::new();
+        let mut radar_second = RadarJob::new();
+        let mut intel_first = IntelJob::new();
+        let mut intel_second = IntelJob::new();
+        let radar = copy_radar_refresh(&memory, radar_ctx, &mut radar_first, Some(&mut radar_second));
+        let intel = copy_intel_refresh_with_divisions(&memory, intel_ctx, &mut intel_first, Some(&mut intel_second), None);
+        assert!(radar.raw_ok && radar.matched[0]);
+        assert!(intel.raw_ok && intel.matched[0]);
+        assert_eq!(captured.outcomes(), before);
+        assert!(!captured.radar.checked && !captured.intel.checked);
+        captured.apply_radar_report(radar_ctx.needed, &radar);
+        assert!(captured.radar.checked && !captured.intel.checked);
+        captured.apply_intel_report(intel_ctx.needed, &intel);
+        assert!(captured.radar.checked && captured.intel.checked);
+        assert_eq!(captured.checked_mismatches(), [0; N]);
+        captured.decode_radar_payload(0, &radar_first, &mut [0]);
+        captured.decode_intel_payload(0, &intel_first, &mut [0]);
+        assert!(matches!(captured.outcomes()[0], Outcome::Rows { len: 1 }));
+        assert!(matches!(captured.outcomes()[4], Outcome::Rows { len: 2 }));
+        captured.apply_radar_report([true], &RadarCopyReport { mismatches: [1], ..radar });
+        assert_eq!(captured.radar.mismatches, 1);
+        assert_eq!(captured.intel.mismatches, 0);
+        captured.apply_radar_report([false], &RadarCopyReport { mismatches: [1], ..radar });
+        assert!(!captured.radar.checked);
+        assert_eq!(captured.radar.mismatches, 0);
+        assert!(captured.intel.checked);
+    }
+
+    #[test]
+    fn free_fog_capture_checks_both_grants_before_any_live_observation() {
+        struct NoReads;
+        impl Memory for NoReads {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool { panic!("native read before both grants were checked") }
+        }
+        let (_, captured) = small();
+        let mut radar_first = RadarJob::new();
+        let mut radar_second = RadarJob::default();
+        let radar_ctx = captured.radar_copy_context(0, BASE, [true]);
+        let report = copy_radar_refresh(&NoReads, radar_ctx, &mut radar_first, Some(&mut radar_second));
+        assert!(!report.raw_ok && !report.matched[0]);
+        assert_eq!(report.raw_bytes, [0]);
+        assert!(!radar_first.acquired && !radar_second.acquired);
+        assert!(radar_second.grow_for_next());
+        let mut intel_first = IntelJob::new();
+        let mut intel_second = IntelJob::default();
+        let intel_ctx = captured.intel_copy_context(0, BASE, [true]);
+        let report = copy_intel_refresh_with_divisions(&NoReads, intel_ctx, &mut intel_first, Some(&mut intel_second), None);
+        assert!(!report.raw_ok && !report.matched[0]);
+        assert_eq!(report.raw_bytes, [0]);
+        assert!(!intel_first.acquired && !intel_second.acquired);
+        assert!(intel_second.grow_for_next());
+    }
+
+    #[test]
+    fn accepted_fog_failures_are_terminal_and_leave_other_tables_independent() {
+        struct Reserved<'a>(SliceMemory<'a>);
+        impl Memory for Reserved<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                assert_ne!(address, COUNTRY + ccountry::RADARS_POOL, "reserved radar retried");
+                assert_ne!(address, DIVISION + cunit::VIEWER_DATA, "reserved division intel retried");
+                assert_ne!(address, TASK_FORCE + cunit::VIEWER_DATA, "reserved naval intel retried");
+                assert_ne!(address, BASE + cgame_state::STRATEGIC_AIR_MANAGER, "reserved registrations retried");
+                self.0.copy(address, output)
+            }
+        }
+        let (_, mut captured) = small();
+        let bytes = fixture();
+        let memory = Reserved(SliceMemory { base: BASE, bytes: &bytes });
+        captured.radar_raw_mode = true;
+        captured.intel_raw_mode = true;
+        captured.registrations_raw_mode = true;
+        let (matched, ticks) = captured.capture(&memory, 0, BASE, &[true; N]);
+        assert_eq!(matched, [false, true, true, true, false, false]);
+        assert_eq!((ticks[0], ticks[4], ticks[5]), (0, 0, 0));
+        let before = captured.outcomes();
+        captured.fail_radar_capture([true], "radar worker panicked");
+        assert_eq!(captured.radar.outcome, Outcome::Unavailable { reason: "radar worker panicked" });
+        assert_eq!(captured.radar.mismatches, 1);
+        assert_eq!(captured.intel.outcome, before[4]);
+        assert!(!captured.radar_raw_mode && captured.intel_raw_mode);
+        assert_eq!((captured.radar_provinces.len, captured.radar_provinces.required), (0, 0));
+        captured.fail_intel_capture([false], "intel worker stopped");
+        assert_eq!(captured.intel.outcome, Outcome::Unavailable { reason: "intel worker stopped" });
+        assert!(!captured.intel.checked && !captured.intel_raw_mode);
+        assert_eq!(captured.intel.mismatches, 0);
+        let after = captured.outcomes();
+        for index in [1, 2, 3, 5] { assert_eq!(after[index], before[index]); }
+        assert!(matches!(captured.tables()[0], TableView::Unavailable { .. }));
+        assert!(matches!(captured.tables()[4], TableView::Unavailable { .. }));
+        assert!(captured.registrations_raw_mode);
+        captured.fail_registrations_capture(true, "shared bases worker panicked");
+        assert_eq!(captured.registrations.outcome, Outcome::Unavailable { reason: "shared bases worker panicked" });
+        assert!(captured.registrations.checked);
+        assert_eq!(captured.registrations.mismatches, 1);
+        assert!(!captured.registrations_raw_mode);
+        assert_eq!((captured.wings.len, captured.wings.required), (0, 0));
+        assert_eq!(&captured.outcomes()[..5], &after[..5]);
+        assert!(matches!(captured.tables()[5], TableView::Unavailable { .. }));
+        captured.fail_registrations_capture(false, "shared bases worker stopped");
+        assert!(!captured.registrations.checked);
+        assert_eq!(captured.registrations.mismatches, 0);
+        assert!(matches!(captured.tables()[5], TableView::Unavailable { .. }));
+    }
+
+    #[test]
     fn newly_prepared_fog_jobs_keep_cold_witnesses_until_a_warm_capture() {
         let mut radar = RadarJob::new();
         let mut intel = IntelJob::new();
@@ -1809,32 +1970,36 @@ mod tests {
         let mut captured = Captured::with_capacities(&Capacities::default(), &[0; N]);
         let mut first = IntelJob::default();
         let mut second = IntelJob::new();
-        let mut ctx = IntelCopyContext { base: kit::BASE, game_state: kit::GAME_STATE, needed: [true] };
-        let report = captured.copy_intel_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let mut ctx = IntelCopyContext { base: kit::BASE, game_state: kit::GAME_STATE, needed: [true], row_limit: 32_768, };
+        let report = copy_intel_refresh_with_divisions(&memory, ctx, &mut first, Some(&mut second), None);
+        captured.apply_intel_report(ctx.needed, &report);
         assert!(!report.raw_ok);
         assert!(first.grow_for_next());
         first.grow();
         first.clear();
-        let report = captured.copy_intel_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = copy_intel_refresh_with_divisions(&memory, ctx, &mut first, Some(&mut second), None);
+        captured.apply_intel_report(ctx.needed, &report);
         assert!(report.raw_ok && report.matched[0]);
         let before = first.allocated_bytes();
         ctx.needed = [false];
-        assert!(captured.copy_intel_refresh(&memory, ctx, &mut first, None).raw_ok);
+        assert!(copy_intel_refresh_with_divisions(&memory, ctx, &mut first, None, None).raw_ok);
         assert!(first.grow_for_next());
         first.grow();
         first.clear();
         assert!(first.allocated_bytes() < before);
         assert_eq!(first.source_witness.bytes.capacity(), 0);
         let warm_capacity = first.allocated_bytes();
-        assert!(captured.copy_intel_refresh(&memory, ctx, &mut first, None).raw_ok);
+        assert!(copy_intel_refresh_with_divisions(&memory, ctx, &mut first, None, None).raw_ok);
         assert_eq!(first.allocated_bytes(), warm_capacity);
         ctx.needed = [true];
-        assert!(!captured.copy_intel_refresh(&memory, ctx, &mut first, Some(&mut second)).raw_ok);
+        assert!(!copy_intel_refresh_with_divisions(&memory, ctx, &mut first, Some(&mut second), None).raw_ok);
         first.grow();
         first.clear();
-        let report = captured.copy_intel_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = copy_intel_refresh_with_divisions(&memory, ctx, &mut first, Some(&mut second), None);
+        captured.apply_intel_report(ctx.needed, &report);
         assert!(report.raw_ok && report.matched[0]);
-        let report = captured.copy_intel_refresh(&memory, ctx, &mut first, None);
+        let report = copy_intel_refresh_with_divisions(&memory, ctx, &mut first, None, None);
+        captured.apply_intel_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert!(!report.matched[0]);
         assert_eq!(captured.intel.mismatches, 1);
@@ -1857,18 +2022,20 @@ mod tests {
         let bytes = kit::fixture();
         let memory = ChangingTimer { bytes: &bytes, calls: Cell::new(0) };
         let mut captured = Captured::with_capacities(&Capacities::default(), &[0; N]);
-        let ctx = IntelCopyContext { base: kit::BASE, game_state: kit::GAME_STATE, needed: [true] };
+        let ctx = IntelCopyContext { base: kit::BASE, game_state: kit::GAME_STATE, needed: [true], row_limit: 32_768, };
         let mut first = IntelJob::new();
         let mut second = IntelJob::new();
-        let report = captured.copy_intel_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = copy_intel_refresh_with_divisions(&memory, ctx, &mut first, Some(&mut second), None);
+        captured.apply_intel_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert_eq!(&first.rows[..first.outcome.len()], &second.rows[..second.outcome.len()]);
         assert!(!report.matched[0]);
         let entries = [unit_viewer_entry::DivisionSource { pointer: kit::DIVISION, canonical: 1 }];
         let pass = unit_viewer_entry::DivisionSources { entries: &entries, outcome: Outcome::Rows { len: 1 } };
         for (second_source, matched) in [(Some(pass), false), (None, true)] {
-            let report = captured.copy_intel_refresh_with_divisions(&kit::memory(&bytes), ctx, &mut first, Some(&mut second),
+            let report = copy_intel_refresh_with_divisions(&kit::memory(&bytes), ctx, &mut first, Some(&mut second),
                 Some(IntelDivisionSources { first: pass, second: second_source, matched }));
+        captured.apply_intel_report(ctx.needed, &report);
             assert!(report.raw_ok);
             assert!(!report.matched[0]);
         }
@@ -1968,7 +2135,7 @@ mod tests {
         let ctx = RadarCopyContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
-            needed: [true; 1],
+            needed: [true; 1], row_limit: 1024, province_limit: 65_536,
         };
         let capacities = super::Capacities {
             rows: [1024, 4, 4, 4, 4, 4],
@@ -1978,14 +2145,16 @@ mod tests {
         };
         let mut captured = super::Captured::with_capacities(&capacities, &[0; 6]);
         let mut first = RadarJob::new();
-        let report = captured.copy_radar_refresh(&memory, ctx, &mut first, None);
+        let report = copy_radar_refresh(&memory, ctx, &mut first, None);
+        captured.apply_radar_report(ctx.needed, &report);
         assert!(report.raw_ok);
         let mut torn = bytes.clone();
         torn[kit::GROUP + engine::radar_group::STATE + 2] ^= 0xff;
         let torn_memory = kit::memory(&torn);
         let mut second = RadarJob::new();
         let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 6]);
-        let torn_report = captured2.copy_radar_refresh(&torn_memory, ctx, &mut second, None);
+        let torn_report = copy_radar_refresh(&torn_memory, ctx, &mut second, None);
+        captured2.apply_radar_report(ctx.needed, &torn_report);
         assert!(torn_report.raw_ok);
         assert!(!first.matches(&second));
     }
@@ -1999,7 +2168,7 @@ mod tests {
         let ctx = RadarCopyContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
-            needed: [true; 1],
+            needed: [true; 1], row_limit: 1024, province_limit: 65_536,
         };
         let mut tiny = RadarJob::default();
         let capacities = super::Capacities {
@@ -2009,7 +2178,8 @@ mod tests {
             wings: 8,
         };
         let mut captured = super::Captured::with_capacities(&capacities, &[0; 6]);
-        let report = captured.copy_radar_refresh(&memory, ctx, &mut tiny, None);
+        let report = copy_radar_refresh(&memory, ctx, &mut tiny, None);
+        captured.apply_radar_report(ctx.needed, &report);
         assert!(!report.raw_ok);
     }
 
@@ -2165,7 +2335,7 @@ mod tests {
         let ctx = IntelCopyContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
-            needed: [true; 1],
+            needed: [true; 1], row_limit: 32_768,
         };
         let capacities = super::Capacities {
             rows: [4, 4, 4, 4, 32_768, 4],
@@ -2175,14 +2345,16 @@ mod tests {
         };
         let mut captured = super::Captured::with_capacities(&capacities, &[0; 6]);
         let mut first = IntelJob::new();
-        let report = captured.copy_intel_refresh(&memory, ctx, &mut first, None);
+        let report = copy_intel_refresh_with_divisions(&memory, ctx, &mut first, None, None);
+        captured.apply_intel_report(ctx.needed, &report);
         assert!(report.raw_ok);
         let mut torn = bytes.clone();
         torn[kit::VIEWERS + engine::unit_viewer_entry::LEVEL] ^= 0xff;
         let torn_memory = kit::memory(&torn);
         let mut second = IntelJob::new();
         let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 6]);
-        let torn_report = captured2.copy_intel_refresh(&torn_memory, ctx, &mut second, None);
+        let torn_report = copy_intel_refresh_with_divisions(&torn_memory, ctx, &mut second, None, None);
+        captured2.apply_intel_report(ctx.needed, &torn_report);
         assert!(torn_report.raw_ok);
         assert!(!first.matches(&second));
     }
@@ -2230,7 +2402,7 @@ mod tests {
         let ctx = IntelCopyContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
-            needed: [true; 1],
+            needed: [true; 1], row_limit: 32_768,
         };
         let mut tiny = IntelJob::default();
         let capacities = super::Capacities {
@@ -2240,7 +2412,8 @@ mod tests {
             wings: 8,
         };
         let mut captured = super::Captured::with_capacities(&capacities, &[0; 6]);
-        let report = captured.copy_intel_refresh(&memory, ctx, &mut tiny, None);
+        let report = copy_intel_refresh_with_divisions(&memory, ctx, &mut tiny, None, None);
+        captured.apply_intel_report(ctx.needed, &report);
         assert!(!report.raw_ok);
     }
 
@@ -2301,7 +2474,7 @@ mod tests {
 /// radar fixture shapes.
 #[cfg(test)]
 pub(crate) mod radar_test_kit {
-    use super::{Capacities, Captured, RadarCopyContext, RadarCopyReport, RadarJob};
+    use super::{Capacities, Captured, RadarCopyContext, RadarCopyReport, RadarJob, copy_radar_refresh};
     use engine::{memory::SliceMemory, walk::Outcome, Memory};
 
     pub(crate) const BASE: usize = 0;
@@ -2402,7 +2575,7 @@ pub(crate) mod radar_test_kit {
         let ctx = RadarCopyContext {
             base: BASE,
             game_state: GAME_STATE,
-            needed: [true; 1],
+            needed: [true; 1], row_limit: rows_cap, province_limit: provinces_cap,
         };
         let capacities = Capacities {
             rows: [rows_cap, 4, 4, 4, 4, 4],
@@ -2413,7 +2586,8 @@ pub(crate) mod radar_test_kit {
         let mut captured = Captured::with_capacities(&capacities, &[0; 6]);
         let mut first = RadarJob::new();
         let mut second = RadarJob::new();
-        let report = captured.copy_radar_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = copy_radar_refresh(memory, ctx, &mut first, Some(&mut second));
+        captured.apply_radar_report(ctx.needed, &report);
         assert!(report.raw_ok);
         let mut ticks = [0u64; 1];
         captured.decode_radar_payload(BASE, &first, &mut ticks);
@@ -2460,7 +2634,7 @@ pub(crate) mod radar_test_kit {
 /// entries). Mirrors the engine viewer-entry fixture shapes.
 #[cfg(test)]
 pub(crate) mod intel_test_kit {
-    use super::{Capacities, Captured, IntelCopyContext, IntelCopyReport, IntelJob};
+    use super::{Capacities, Captured, IntelCopyContext, IntelCopyReport, IntelJob, copy_intel_refresh_with_divisions};
     use engine::{memory::SliceMemory, walk::Outcome, Memory};
 
     pub(crate) const BASE: usize = 0;
@@ -2549,7 +2723,7 @@ pub(crate) mod intel_test_kit {
         let ctx = IntelCopyContext {
             base: BASE,
             game_state: GAME_STATE,
-            needed: [true; 1],
+            needed: [true; 1], row_limit: cap,
         };
         let capacities = Capacities {
             rows: [4, 4, 4, 4, cap, 4],
@@ -2560,7 +2734,8 @@ pub(crate) mod intel_test_kit {
         let mut captured = Captured::with_capacities(&capacities, &[0; 6]);
         let mut first = IntelJob::new();
         let mut second = IntelJob::new();
-        let report = captured.copy_intel_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = copy_intel_refresh_with_divisions(memory, ctx, &mut first, Some(&mut second), None);
+        captured.apply_intel_report(ctx.needed, &report);
         assert!(report.raw_ok);
         let mut ticks = [0u64; 1];
         captured.decode_intel_payload(BASE, &first, &mut ticks);

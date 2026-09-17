@@ -1,7 +1,7 @@
 //! Retour owns instruction relocation. The five-byte patch is published while
 //! existing process threads are suspended, without heap use in that interval.
-//! The accepted full-tick site belongs to the engine main thread, confirmed by
-//! call-order inspection and thread-id witnesses in the sampling proof.
+//! The hooked site is CGameState::HourlyUpdate, the once-per-hour full tick,
+//! confirmed the only statically hookable per-hour boundary on the main thread.
 
 use retour::RawDetour;
 use std::{ffi::c_void, io, mem::size_of, ops::Range, ptr};

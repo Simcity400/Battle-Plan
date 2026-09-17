@@ -1,0 +1,13 @@
+{
+  "width": 2560,
+  "height": 1440,
+  "load_game": [1280, 470],
+  "load_row": [1280, 599],
+  "load_button": [1385, 1034],
+  "load_back": [1200, 1034],
+  "menu_close": [1280, 871],
+  "speed_up": [2398, 25],
+  "speed_down": [2177, 25],
+  "cursor_park": [1280, 220],
+  "note": "Outer-window coordinates at 2560x1440, calibrated 2026-09-17 from perf_bench_20260917/calib/03_escape_menu.png and 04_load_dialog.png. load_row is the TOP row of the Local list; bench.ps1 touches the benchmark save's mtime so it always sorts first."
+}

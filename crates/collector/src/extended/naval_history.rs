@@ -2306,6 +2306,40 @@ pub(crate) fn copy_naval_refresh(
     }
 }
 
+impl Captured {
+    /// Finish an accepted theatre/OOB acquisition failure after independent
+    /// capture. The separately acquired wing census and other naval families
+    /// retain their outcomes; no raw payload or typed retry may follow this.
+    pub(crate) fn fail_naval_capture(
+        &mut self,
+        needed: [bool; NAVAL_PACK_N],
+        reason: &'static str,
+    ) {
+        macro_rules! reject {
+            ($($field:ident = $slot:literal),+ $(,)?) => {
+                $({
+                    self.$field.outcome = Outcome::Unavailable { reason };
+                    self.$field.checked = needed[$slot];
+                    self.$field.mismatches = usize::from(needed[$slot]);
+                })+
+            };
+        }
+        reject!(
+            land = 0,
+            land_groups = 1,
+            land_members = 2,
+            air = 3,
+            air_groups = 4,
+            air_members = 5,
+            groups = 6,
+            group_members = 7,
+            group_children = 8,
+        );
+        self.theatre_names.reset();
+        self.raw_mode = false;
+    }
+}
+
 pub(crate) fn decode_naval_payload(
     captured: &mut Captured,
     base: usize,
@@ -2675,51 +2709,65 @@ fn copy_supremacy_tables(
     }
 }
 
+/// Acquire an owned hourly supremacy payload and independent cold observation.
+/// The caller installs the report after joining; overflow retains typed fallback.
+pub(crate) fn copy_supremacy_refresh(
+    memory: &impl Memory,
+    ctx: SupremacyCopyContext,
+    first: &mut SupremacyJob,
+    mut second: Option<&mut SupremacyJob>,
+) -> SupremacyCopyReport {
+    let mut ticks = [0u64; SUPREMACY_N];
+    copy_supremacy_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
+    let mut matched = [true; SUPREMACY_N];
+    if let Some(second_job) = second.as_deref_mut() {
+        let mut second_ticks = [0u64; SUPREMACY_N];
+        copy_supremacy_pass(
+            second_job,
+            memory,
+            ctx.base,
+            ctx.game_state,
+            &mut second_ticks,
+        );
+        for (total, extra) in ticks.iter_mut().zip(second_ticks) {
+            *total += extra;
+        }
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+        for (slot, matched) in matched.iter_mut().enumerate() {
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+        }
+    }
+    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    SupremacyCopyReport {
+        raw_ok,
+        matched,
+        copy_ticks: ticks,
+        raw_bytes: first.log.raw_bytes,
+    }
+}
+
 impl Captured {
-    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
-    /// `second` while the supremacy table still needs double-read checks,
-    /// compares the raw logs, and records copy-only costs plus the existing
-    /// checked/mismatches bookkeeping. Returns whether the payload is
-    /// complete (`raw_ok`); on staging overflow the caller falls back to the
-    /// typed walk and enqueues nothing.
-    pub(crate) fn copy_supremacy_refresh(
+    /// Install checked bookkeeping without changing acquired rows or outcomes.
+    pub(crate) fn apply_supremacy_report(
         &mut self,
-        memory: &impl Memory,
-        ctx: SupremacyCopyContext,
-        first: &mut SupremacyJob,
-        mut second: Option<&mut SupremacyJob>,
-    ) -> SupremacyCopyReport {
-        let mut ticks = [0u64; SUPREMACY_N];
-        copy_supremacy_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
-        let mut matched = [true; SUPREMACY_N];
-        if let Some(second_job) = second.as_deref_mut() {
-            let mut second_ticks = [0u64; SUPREMACY_N];
-            copy_supremacy_pass(
-                second_job,
-                memory,
-                ctx.base,
-                ctx.game_state,
-                &mut second_ticks,
-            );
-            for (total, extra) in ticks.iter_mut().zip(second_ticks) {
-                *total += extra;
-            }
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-            }
-        }
-        // Conservative checked bookkeeping mirroring the typed path.
-        self.supremacy.checked = ctx.needed[0];
-        self.supremacy.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
-        SupremacyCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
-        }
+        needed: [bool; SUPREMACY_N],
+        report: &SupremacyCopyReport,
+    ) {
+        self.supremacy.checked = needed[0];
+        self.supremacy.mismatches = usize::from(needed[0] && !report.matched[0]);
+    }
+
+    /// Finish an accepted failure after independent capture without live retry.
+    pub(crate) fn fail_supremacy_capture(
+        &mut self,
+        needed: [bool; SUPREMACY_N],
+        reason: &'static str,
+    ) {
+        self.supremacy.outcome = Outcome::Unavailable { reason };
+        self.supremacy.checked = needed[0];
+        self.supremacy.mismatches = usize::from(needed[0]);
+        self.supremacy_raw_mode = false;
     }
 
     /// Decode-worker interpretation of a raw supremacy payload: replays the
@@ -3113,59 +3161,66 @@ fn copy_sunk_tables(
     }
 }
 
-impl Captured {
-    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
-    /// `second` while the sunk-ships table still needs double-read checks,
-    /// compares the raw logs, and records copy-only costs plus the existing
-    /// checked/mismatches bookkeeping. Returns whether the payload is
-    /// complete (`raw_ok`); on staging overflow the caller falls back to the
-    /// typed walk and enqueues nothing.
-    pub(crate) fn copy_sunk_refresh(
-        &mut self,
-        memory: &impl Memory,
-        ctx: SunkCopyContext,
-        first: &mut SunkJob,
-        mut second: Option<&mut SunkJob>,
-    ) -> SunkCopyReport {
-        let mut ticks = [0u64; SUNK_N];
+/// Acquire an owned hourly sunk-ships payload and independent cold observation.
+/// The caller installs the report after joining; overflow retains typed fallback.
+pub(crate) fn copy_sunk_refresh(
+    memory: &impl Memory,
+    ctx: SunkCopyContext,
+    first: &mut SunkJob,
+    mut second: Option<&mut SunkJob>,
+) -> SunkCopyReport {
+    let mut ticks = [0u64; SUNK_N];
+    copy_sunk_pass(
+        first,
+        memory,
+        ctx.base,
+        ctx.game_state,
+        ctx.hour,
+        &mut ticks,
+    );
+    let mut matched = [true; SUNK_N];
+    if let Some(second_job) = second.as_deref_mut() {
+        let mut second_ticks = [0u64; SUNK_N];
         copy_sunk_pass(
-            first,
+            second_job,
             memory,
             ctx.base,
             ctx.game_state,
             ctx.hour,
-            &mut ticks,
+            &mut second_ticks,
         );
-        let mut matched = [true; SUNK_N];
-        if let Some(second_job) = second.as_deref_mut() {
-            let mut second_ticks = [0u64; SUNK_N];
-            copy_sunk_pass(
-                second_job,
-                memory,
-                ctx.base,
-                ctx.game_state,
-                ctx.hour,
-                &mut second_ticks,
-            );
-            for (total, extra) in ticks.iter_mut().zip(second_ticks) {
-                *total += extra;
-            }
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-            }
+        for (total, extra) in ticks.iter_mut().zip(second_ticks) {
+            *total += extra;
         }
-        // Conservative checked bookkeeping mirroring the typed path.
-        self.sunk.checked = ctx.needed[0];
-        self.sunk.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
-        SunkCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+        for (slot, matched) in matched.iter_mut().enumerate() {
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
+    }
+    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    SunkCopyReport {
+        raw_ok,
+        matched,
+        copy_ticks: ticks,
+        raw_bytes: first.log.raw_bytes,
+    }
+}
+
+impl Captured {
+    /// Install checked bookkeeping without changing acquired rows or outcomes.
+    pub(crate) fn apply_sunk_report(&mut self, needed: [bool; SUNK_N], report: &SunkCopyReport) {
+        self.sunk.checked = needed[0];
+        self.sunk.mismatches = usize::from(needed[0] && !report.matched[0]);
+    }
+
+    /// Finish an accepted failure after independent capture without live retry.
+    pub(crate) fn fail_sunk_capture(&mut self, needed: [bool; SUNK_N], reason: &'static str) {
+        self.sunk.outcome = Outcome::Unavailable { reason };
+        self.sunk.checked = needed[0];
+        self.sunk.mismatches = usize::from(needed[0]);
+        self.sunk_names.reset();
+        self.sunk_raw_mode = false;
     }
 
     /// Decode-worker interpretation of a raw sunk-ships payload: replays the
@@ -3208,6 +3263,145 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn owned_failure_fixture() -> Captured {
+        Captured::with_capacities(
+            &Capacities {
+                rows: [1; N],
+                theatre_names: 8,
+                sunk_names: 8,
+                orders_sources: 1,
+                wing_sources: 1,
+            },
+            &[0; N],
+        )
+    }
+
+    #[test]
+    fn owned_supremacy_and_sunk_reports_and_failures_are_table_local() {
+        for needed in [false, true] {
+            for matched in [false, true] {
+                let mut captured = owned_failure_fixture();
+                captured.raw_mode = true;
+                captured.supremacy_raw_mode = true;
+                captured.sunk_raw_mode = true;
+                captured.supremacy.outcome = Outcome::Rows { len: 1 };
+                captured.sunk.outcome = Outcome::Rows { len: 1 };
+                captured.convoys.outcome = Outcome::Rows { len: 1 };
+                captured.sunk_names.len = 4;
+                captured.sunk_names.required = 9;
+                let bytes = captured.allocated_bytes();
+                captured.apply_supremacy_report(
+                    [needed],
+                    &SupremacyCopyReport {
+                        matched: [matched],
+                        ..Default::default()
+                    },
+                );
+                captured.apply_sunk_report(
+                    [needed],
+                    &SunkCopyReport {
+                        matched: [matched],
+                        ..Default::default()
+                    },
+                );
+                assert_eq!(captured.supremacy.outcome, Outcome::Rows { len: 1 });
+                assert_eq!(captured.sunk.outcome, Outcome::Rows { len: 1 });
+                assert_eq!(captured.supremacy.checked, needed);
+                assert_eq!(captured.sunk.checked, needed);
+                assert_eq!(
+                    captured.supremacy.mismatches,
+                    usize::from(needed && !matched)
+                );
+                assert_eq!(captured.sunk.mismatches, usize::from(needed && !matched));
+                assert!(captured.raw_mode && captured.supremacy_raw_mode && captured.sunk_raw_mode);
+
+                captured.fail_supremacy_capture([needed], "supremacy worker failed");
+                assert_eq!(
+                    captured.supremacy.outcome,
+                    Outcome::Unavailable {
+                        reason: "supremacy worker failed"
+                    }
+                );
+                assert_eq!(captured.supremacy.checked, needed);
+                assert_eq!(captured.supremacy.mismatches, usize::from(needed));
+                assert!(!captured.supremacy_raw_mode);
+                assert!(captured.sunk_raw_mode && captured.raw_mode);
+                assert_eq!(captured.sunk.outcome, Outcome::Rows { len: 1 });
+
+                captured.fail_sunk_capture([needed], "sunk worker failed");
+                assert_eq!(
+                    captured.sunk.outcome,
+                    Outcome::Unavailable {
+                        reason: "sunk worker failed"
+                    }
+                );
+                assert_eq!(captured.sunk.checked, needed);
+                assert_eq!(captured.sunk.mismatches, usize::from(needed));
+                assert_eq!(captured.sunk_names.len, 0);
+                assert_eq!(captured.sunk_names.required, 0);
+                assert!(!captured.sunk_raw_mode);
+                assert!(captured.raw_mode);
+                assert_eq!(captured.convoys.outcome, Outcome::Rows { len: 1 });
+                assert_eq!(captured.allocated_bytes(), bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn owned_naval_failure_preserves_independent_sources_and_other_families() {
+        for needed in [
+            [false; NAVAL_PACK_N],
+            std::array::from_fn(|slot| slot % 2 == 0),
+            [true; NAVAL_PACK_N],
+        ] {
+            let mut captured = owned_failure_fixture();
+            captured.raw_mode = true;
+            captured.supremacy_raw_mode = true;
+            captured.sunk_raw_mode = true;
+            captured.supremacy.outcome = Outcome::Rows { len: 1 };
+            captured.convoys.outcome = Outcome::Rows { len: 1 };
+            captured.cooldowns.outcome = Outcome::Rows { len: 1 };
+            captured.edges.outcome = Outcome::Rows { len: 1 };
+            captured.results.outcome = Outcome::Rows { len: 1 };
+            captured.result_members.outcome = Outcome::Rows { len: 1 };
+            captured.result_countries.outcome = Outcome::Rows { len: 1 };
+            captured.sunk.outcome = Outcome::Rows { len: 1 };
+            captured.orders_sources.outcome = Outcome::Rows { len: 1 };
+            captured.wing_sources.outcome = Outcome::Rows { len: 1 };
+            captured.orders_finished = [true; 2];
+            captured.wings_finished = [true; 2];
+            captured.source_ticks = [17, 23, 29];
+            captured.theatre_names.len = 4;
+            captured.theatre_names.required = 9;
+            let mut outcomes = captured.outcomes();
+            let mut mismatches = captured.checked_mismatches();
+            let bytes = captured.allocated_bytes();
+            captured.fail_naval_capture(needed, "naval worker failed");
+            for (index, needed) in [4, 5, 6, 7, 8, 9, 14, 15, 16].into_iter().zip(needed) {
+                outcomes[index] = Outcome::Unavailable {
+                    reason: if needed {
+                        "table changed during double read"
+                    } else {
+                        "naval worker failed"
+                    },
+                };
+                mismatches[index] = usize::from(needed);
+            }
+            assert_eq!(captured.outcomes(), outcomes);
+            assert_eq!(captured.checked_mismatches(), mismatches);
+            assert_eq!(captured.orders_sources.outcome, Outcome::Rows { len: 1 });
+            assert_eq!(captured.wing_sources.outcome, Outcome::Rows { len: 1 });
+            assert_eq!(captured.orders_finished, [true; 2]);
+            assert_eq!(captured.wings_finished, [true; 2]);
+            assert_eq!(captured.source_ticks, [17, 23, 29]);
+            assert_eq!(captured.theatre_names.len, 0);
+            assert_eq!(captured.theatre_names.required, 0);
+            assert!(!captured.raw_mode);
+            assert!(captured.supremacy_raw_mode && captured.sunk_raw_mode);
+            assert_eq!(captured.allocated_bytes(), bytes);
+        }
+    }
 
     #[test]
     fn naval_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
@@ -3922,14 +4116,16 @@ mod tests {
         let capacities = super::Capacities::default();
         let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
         let mut first = SupremacyJob::new();
-        let report = captured.copy_supremacy_refresh(&memory, ctx, &mut first, None);
+        let report = super::copy_supremacy_refresh(&memory, ctx, &mut first, None);
+        captured.apply_supremacy_report(ctx.needed, &report);
         assert!(report.raw_ok);
         let mut torn = bytes.clone();
         torn[kit::DOMINANCE + 0x100] ^= 0xff;
         let torn_memory = kit::memory(&torn);
         let mut second = SupremacyJob::new();
         let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let torn_report = captured2.copy_supremacy_refresh(&torn_memory, ctx, &mut second, None);
+        let torn_report = super::copy_supremacy_refresh(&torn_memory, ctx, &mut second, None);
+        captured2.apply_supremacy_report(ctx.needed, &torn_report);
         assert!(torn_report.raw_ok);
         assert!(!first.log.partition_equal(&second.log, 0));
         assert!(!first.log.logs_equal(&second.log));
@@ -3952,7 +4148,8 @@ mod tests {
         };
         let capacities = super::Capacities::default();
         let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let report = captured.copy_supremacy_refresh(&memory, ctx, &mut tiny, None);
+        let report = super::copy_supremacy_refresh(&memory, ctx, &mut tiny, None);
+        captured.apply_supremacy_report(ctx.needed, &report);
         assert!(!report.raw_ok);
     }
 
@@ -4119,14 +4316,16 @@ mod tests {
         let capacities = super::Capacities::default();
         let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
         let mut first = SunkJob::new();
-        let report = captured.copy_sunk_refresh(&memory, ctx, &mut first, None);
+        let report = super::copy_sunk_refresh(&memory, ctx, &mut first, None);
+        captured.apply_sunk_report(ctx.needed, &report);
         assert!(report.raw_ok);
         let mut torn = bytes.clone();
         torn[kit::FIRST + engine::csunk_ship_info::VICTIM_COUNTRY] ^= 0xff;
         let torn_memory = kit::memory(&torn);
         let mut second = SunkJob::new();
         let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let torn_report = captured2.copy_sunk_refresh(&torn_memory, ctx, &mut second, None);
+        let torn_report = super::copy_sunk_refresh(&torn_memory, ctx, &mut second, None);
+        captured2.apply_sunk_report(ctx.needed, &torn_report);
         assert!(torn_report.raw_ok);
         assert!(!first.log.partition_equal(&second.log, 0));
         assert!(!first.log.logs_equal(&second.log));
@@ -4151,7 +4350,8 @@ mod tests {
         };
         let capacities = super::Capacities::default();
         let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let report = captured.copy_sunk_refresh(&memory, ctx, &mut tiny, None);
+        let report = super::copy_sunk_refresh(&memory, ctx, &mut tiny, None);
+        captured.apply_sunk_report(ctx.needed, &report);
         assert!(!report.raw_ok);
     }
 
@@ -5078,7 +5278,8 @@ pub(crate) mod supremacy_test_kit {
         let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
         let mut first = SupremacyJob::new();
         let mut second = SupremacyJob::new();
-        let report = captured.copy_supremacy_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = super::copy_supremacy_refresh(memory, ctx, &mut first, Some(&mut second));
+        captured.apply_supremacy_report(ctx.needed, &report);
         assert!(report.raw_ok);
         let mut ticks = [0u64; 1];
         captured.decode_supremacy_payload(BASE, &first, &mut ticks);
@@ -5363,7 +5564,8 @@ pub(crate) mod sunk_test_kit {
         let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
         let mut first = SunkJob::new();
         let mut second = SunkJob::new();
-        let report = captured.copy_sunk_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = super::copy_sunk_refresh(memory, ctx, &mut first, Some(&mut second));
+        captured.apply_sunk_report(ctx.needed, &report);
         assert!(report.raw_ok);
         let mut ticks = [0u64; 1];
         captured.decode_sunk_payload(BASE, &first, &mut ticks);

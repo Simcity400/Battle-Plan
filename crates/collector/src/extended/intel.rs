@@ -43,6 +43,22 @@ pub const TABLES: [TableId; N] = [
     TableId::RelationTuples,
     TableId::CountryIntel,
 ];
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CaptureContext {
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    pub needed: [bool; N],
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CaptureReport {
+    pub matched: [bool; N],
+    pub ticks: [u64; N],
+}
+
 /// The operation walker supplies both tables in one census, and one relation
 /// matrix pass supplies the cached opinions and the typed tuples. Each group's
 /// entire cost, including whichever independent second reads are needed, is
@@ -280,6 +296,22 @@ pub struct Captured {
 }
 
 impl Captured {
+    /// Empty ownership placeholder, with no rows, cold buffers or scratch allocated.
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(
+            &Capacities {
+                rows: [0; N],
+                intel_scratch: 0,
+                subject_names: 0,
+                autonomy_names: 0,
+                variable_entries: 0,
+                variable_names: 0,
+                tokens: 0,
+            },
+            &[crate::sampling::CONSISTENCY_TARGET; N],
+        )
+    }
+
     /// Every slice and returned array uses local TABLES order.
     pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
         let operations_successful = successful[9].min(successful[10]);
@@ -316,6 +348,12 @@ impl Captured {
 
     pub fn reset(&mut self) {
         self.capitulation.reset();
+        self.relation_opinions.reset();
+        self.relation_tuples.reset();
+        self.reset_residual();
+    }
+
+    fn reset_residual(&mut self) {
         self.subjects.reset();
         self.autonomy.reset();
         self.agencies.reset();
@@ -328,8 +366,6 @@ impl Captured {
         self.assignments.reset();
         self.operation_tokens.reset();
         self.incoming_actions.reset();
-        self.relation_opinions.reset();
-        self.relation_tuples.reset();
         self.country_intel.reset();
         self.subject_names.reset();
         self.autonomy_names.reset();
@@ -417,7 +453,96 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> ([bool; N], [u64; N]) {
-        self.reset();
+        let report = self.capture_tables(
+            memory,
+            CaptureContext {
+                base,
+                game_state: state,
+                hour,
+                force_full,
+                needed: needed.try_into().expect("Intel consistency count"),
+            },
+            true,
+            true,
+        );
+        (report.matched, report.ticks)
+    }
+
+    /// Acquire the hourly tables whose buffers belong to this request. The
+    /// independently delegated capitulation and relations slots remain intact.
+    pub(crate) fn capture_residual(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+    ) -> CaptureReport {
+        self.capture_tables(memory, context, true, false)
+    }
+
+    /// Complete only the independently delegated slots after residual capture
+    /// has returned. Its rows, checks and arenas remain owned by that result.
+    pub(crate) fn capture_delegated(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+    ) -> CaptureReport {
+        self.capture_tables(memory, context, false, true)
+    }
+
+    /// Reject an accepted residual request without retrying any live reads or
+    /// changing the independently delegated tables and their raw-mode gates.
+    pub(crate) fn fail_residual_capture(
+        &mut self,
+        context: CaptureContext,
+        reason: &'static str,
+    ) -> CaptureReport {
+        self.reset_residual();
+        macro_rules! fail {
+            ($($index:literal => $field:ident),+ $(,)?) => {$(
+                self.$field.outcome = Outcome::Unavailable { reason };
+                self.$field.checked = context.needed[$index];
+                self.$field.mismatches = usize::from(context.needed[$index]);
+            )+};
+        }
+        fail!(
+            1 => subjects,
+            2 => autonomy,
+            3 => agencies,
+            4 => operatives,
+            5 => cryptology,
+            6 => networks,
+            7 => flags,
+            8 => variables,
+            9 => operations,
+            10 => assignments,
+            11 => operation_tokens,
+            12 => incoming_actions,
+            15 => country_intel,
+        );
+        CaptureReport::default()
+    }
+
+    fn capture_tables(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        include_residual: bool,
+        include_delegated: bool,
+    ) -> CaptureReport {
+        if include_delegated {
+            self.capitulation.reset();
+            self.relation_opinions.reset();
+            self.relation_tuples.reset();
+        }
+        if include_residual {
+            self.reset_residual();
+        }
+        let CaptureContext {
+            base,
+            game_state: state,
+            hour,
+            force_full,
+            needed,
+        } = context;
         let mut matched = [false; N];
         let mut ticks = [0; N];
         macro_rules! plain {
@@ -435,112 +560,111 @@ impl Captured {
         // below skips here when `capitulation_raw_mode` is set. Matched flags
         // and costs come from the raw compare, applied by the caller after
         // this returns.
-        if self.capitulation_raw_mode {
-            // Refresh payload staged: leave the reset outcomes for the decode
-            // worker, which installs identical rows and outcomes.
-        } else {
+        if include_delegated && !self.capitulation_raw_mode {
             plain!(0, capitulation, cdiplomacy_status::walk_capitulation);
         }
-        let begin = qpc();
-        matched[1] = capture_named(
-            &mut self.subjects,
-            &mut self.subject_names,
-            needed[1],
-            |rows, names, second| {
-                let result = if second {
-                    csubject_relation::walk_matrix(memory, base, state, rows, names)
-                } else {
-                    csubject_relation::walk(memory, base, state, rows, names)
-                };
-                ArenaRead::from(result)
-            },
-        );
-        ticks[1] = elapsed(begin);
-        let begin = qpc();
-        matched[2] = capture_named(
-            &mut self.autonomy,
-            &mut self.autonomy_names,
-            needed[2],
-            |rows, names, _| {
-                ArenaRead::from(ccurrent_autonomy_status::walk(
-                    memory, base, state, rows, names,
-                ))
-            },
-        );
-        ticks[2] = elapsed(begin);
-        plain!(3, agencies, cintelligence_agency::walk);
-        plain!(4, operatives, coperative_leader::walk);
-        plain!(5, cryptology, ccryptology::walk);
-        plain!(6, networks, ccountry_intel_network::walk);
+        if include_residual {
+            let begin = qpc();
+            matched[1] = capture_named(
+                &mut self.subjects,
+                &mut self.subject_names,
+                needed[1],
+                |rows, names, second| {
+                    let result = if second {
+                        csubject_relation::walk_matrix(memory, base, state, rows, names)
+                    } else {
+                        csubject_relation::walk(memory, base, state, rows, names)
+                    };
+                    ArenaRead::from(result)
+                },
+            );
+            ticks[1] = elapsed(begin);
+            let begin = qpc();
+            matched[2] = capture_named(
+                &mut self.autonomy,
+                &mut self.autonomy_names,
+                needed[2],
+                |rows, names, _| {
+                    ArenaRead::from(ccurrent_autonomy_status::walk(
+                        memory, base, state, rows, names,
+                    ))
+                },
+            );
+            ticks[2] = elapsed(begin);
+            plain!(3, agencies, cintelligence_agency::walk);
+            plain!(4, operatives, coperative_leader::walk);
+            plain!(5, cryptology, ccryptology::walk);
+            plain!(6, networks, ccountry_intel_network::walk);
 
-        let begin = qpc();
-        matched[7] = capture_rows(&mut self.flags, needed[7], |rows| {
-            walk_flags(memory, base, state, rows, &mut self.flag_scratch)
-        });
-        ticks[7] = elapsed(begin);
+            let begin = qpc();
+            matched[7] = capture_rows(&mut self.flags, needed[7], |rows| {
+                walk_flags(memory, base, state, rows, &mut self.flag_scratch)
+            });
+            ticks[7] = elapsed(begin);
 
-        let begin = qpc();
-        matched[8] = capture_variables(
-            &mut self.variables,
-            &mut self.variable_entries,
-            &mut self.variable_names,
-            needed[8],
-            |scopes, entries, names| {
-                cvariables::walk_scopes(memory, base, state, scopes, entries, names)
-            },
-        );
-        ticks[8] = elapsed(begin);
+            let begin = qpc();
+            matched[8] = capture_variables(
+                &mut self.variables,
+                &mut self.variable_entries,
+                &mut self.variable_names,
+                needed[8],
+                |scopes, entries, names| {
+                    cvariables::walk_scopes(memory, base, state, scopes, entries, names)
+                },
+            );
+            ticks[8] = elapsed(begin);
 
-        let begin = qpc();
-        let first = ccountry_operation_manager::walk(
-            memory,
-            base,
-            state,
-            &mut self.operations.rows,
-            &mut self.assignments.rows,
-        );
-        self.operations.outcome = bounded(first.outcome, self.operations.rows.len());
-        self.assignments.outcome = bounded(first.assignments, self.assignments.rows.len());
-        if needed[9] || needed[10] {
-            let second = ccountry_operation_manager::walk(
+            let begin = qpc();
+            let first = ccountry_operation_manager::walk(
                 memory,
                 base,
                 state,
-                &mut self.operations.second,
-                &mut self.assignments.second,
+                &mut self.operations.rows,
+                &mut self.assignments.rows,
             );
-            if needed[9] {
-                self.operations.checked = true;
-                matched[9] = self
-                    .operations
-                    .compare(bounded(second.outcome, self.operations.second.len()));
-            }
-            if needed[10] {
-                self.assignments.checked = true;
-                matched[10] = self
-                    .assignments
-                    .compare(bounded(second.assignments, self.assignments.second.len()));
-            }
-        }
-        ticks[9] = elapsed(begin);
-        // ticks[10] stays zero because the named group above owns its reads.
-        let begin = qpc();
-        matched[11] = capture_named(
-            &mut self.operation_tokens,
-            &mut self.tokens,
-            needed[11],
-            |rows, tokens, _| {
-                let result =
-                    ccountry_operation_token_manager::walk(memory, base, state, rows, tokens);
-                ArenaRead {
-                    outcome: result.outcome,
-                    len: result.tokens_len,
-                    required: result.required_tokens,
+            self.operations.outcome = bounded(first.outcome, self.operations.rows.len());
+            self.assignments.outcome = bounded(first.assignments, self.assignments.rows.len());
+            if needed[9] || needed[10] {
+                let second = ccountry_operation_manager::walk(
+                    memory,
+                    base,
+                    state,
+                    &mut self.operations.second,
+                    &mut self.assignments.second,
+                );
+                if needed[9] {
+                    self.operations.checked = true;
+                    matched[9] = self
+                        .operations
+                        .compare(bounded(second.outcome, self.operations.second.len()));
                 }
-            },
-        );
-        ticks[11] = elapsed(begin);
-        plain!(12, incoming_actions, incoming_diplomatic_action_queue::walk);
+                if needed[10] {
+                    self.assignments.checked = true;
+                    matched[10] = self
+                        .assignments
+                        .compare(bounded(second.assignments, self.assignments.second.len()));
+                }
+            }
+            ticks[9] = elapsed(begin);
+            // ticks[10] stays zero because the named group above owns its reads.
+            let begin = qpc();
+            matched[11] = capture_named(
+                &mut self.operation_tokens,
+                &mut self.tokens,
+                needed[11],
+                |rows, tokens, _| {
+                    let result =
+                        ccountry_operation_token_manager::walk(memory, base, state, rows, tokens);
+                    ArenaRead {
+                        outcome: result.outcome,
+                        len: result.tokens_len,
+                        required: result.required_tokens,
+                    }
+                },
+            );
+            ticks[11] = elapsed(begin);
+            plain!(12, incoming_actions, incoming_diplomatic_action_queue::walk);
+        }
 
         let begin = qpc();
         // Tier-4 relations share one matrix pass; off-hours skip the walk.
@@ -549,10 +673,10 @@ impl Captured {
         // rows before the ready handoff, so both typed passes skip here.
         // Matched flags and costs come from the raw compare, applied by the
         // caller after this returns.
-        let relation_walk =
-            replay::cadence::should_walk(replay::rows::TableId::RelationOpinions, hour, force_full)
-                && !self.relations_raw_mode;
-        if !relation_walk && !self.relations_raw_mode {
+        let relation_walk = include_delegated
+            && replay::cadence::should_walk(TableId::RelationOpinions, hour, force_full)
+            && !self.relations_raw_mode;
+        if include_delegated && !relation_walk && !self.relations_raw_mode {
             let skipped = Outcome::Unavailable {
                 reason: replay::cadence::SKIPPED_REASON,
             };
@@ -595,14 +719,14 @@ impl Captured {
         ticks[13] = if relation_walk { elapsed(begin) } else { 0 };
         // ticks[14] stays zero because the named group above owns its reads.
 
-        {
+        if include_residual {
             let begin = qpc();
             matched[15] = capture_rows(&mut self.country_intel, needed[15], |rows| {
                 ccountry_intel::walk(memory, base, state, rows, &mut self.intel_scratch)
             });
             ticks[15] = elapsed(begin);
         }
-        (matched, ticks)
+        CaptureReport { matched, ticks }
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -2475,6 +2599,18 @@ impl Captured {
         self.relation_tuples.mismatches = usize::from(needed[1] && !matched[1]);
     }
 
+    /// Terminal failure of an accepted relations refresh, without another live
+    /// read. Other Intel tables and their independent acquisition gates survive.
+    pub(crate) fn fail_relations_capture(&mut self, needed: [bool; 2], reason: &'static str) {
+        self.relation_opinions.outcome = Outcome::Unavailable { reason };
+        self.relation_opinions.checked = needed[0];
+        self.relation_opinions.mismatches = usize::from(needed[0]);
+        self.relation_tuples.outcome = Outcome::Unavailable { reason };
+        self.relation_tuples.checked = needed[1];
+        self.relation_tuples.mismatches = usize::from(needed[1]);
+        self.relations_raw_mode = false;
+    }
+
     /// Decode-worker interpretation of a raw refresh payload into the pooled
     /// typed rows. Outcomes match the typed walk exactly; checked/mismatches
     /// set by the raw compare survive. Clears `relations_raw_mode` so the next
@@ -3157,46 +3293,61 @@ fn copy_capitulation_pass(
     }
 }
 
+/// Hourly acquisition into exclusively owned jobs. Copies the first and
+/// optional independent second pass, preserving raw comparison and copy costs.
+/// The frame owner installs checks after completion. Staging overflow retains
+/// the existing typed fallback and enqueues no payload.
+pub(crate) fn copy_capitulation_refresh(
+    memory: &impl Memory,
+    ctx: CapitulationCopyContext,
+    first: &mut CapitulationJob,
+    mut second: Option<&mut CapitulationJob>,
+) -> CapitulationCopyReport {
+    let started = qpc();
+    first.clear();
+    first.game_state = ctx.game_state;
+    copy_capitulation_pass(memory, ctx.base, ctx.game_state, &mut first.log);
+    let mut ticks = [0u64; 1];
+    ticks[0] = elapsed(started);
+    let mut matched = [true; 1];
+    if let Some(second_job) = second.as_deref_mut() {
+        let second_started = qpc();
+        second_job.clear();
+        second_job.game_state = ctx.game_state;
+        copy_capitulation_pass(memory, ctx.base, ctx.game_state, &mut second_job.log);
+        ticks[0] += elapsed(second_started);
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+        let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, 0);
+        matched[0] = equal && !first.log.fault[0] && !second_job.log.fault[0];
+    }
+    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    CapitulationCopyReport {
+        raw_ok,
+        matched,
+        copy_ticks: ticks,
+        raw_bytes: first.log.raw_bytes,
+    }
+}
+
 impl Captured {
-    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
-    /// `second` while the table still needs double-read checks, compares the
-    /// raw partition, and records copy-only costs plus the existing
-    /// checked/mismatches bookkeeping. Returns whether the payload is
-    /// complete (`raw_ok`); on staging overflow the caller falls back to the
-    /// typed walk and enqueues nothing.
-    pub(crate) fn copy_capitulation_refresh(
+    /// Install one completed acquisition's checks without changing its outcome
+    /// or the independently chosen raw-acquisition gate.
+    pub(crate) fn apply_capitulation_report(
         &mut self,
-        memory: &impl Memory,
-        ctx: CapitulationCopyContext,
-        first: &mut CapitulationJob,
-        mut second: Option<&mut CapitulationJob>,
-    ) -> CapitulationCopyReport {
-        let started = qpc();
-        first.clear();
-        first.game_state = ctx.game_state;
-        copy_capitulation_pass(memory, ctx.base, ctx.game_state, &mut first.log);
-        let mut ticks = [0u64; 1];
-        ticks[0] = elapsed(started);
-        let mut matched = [true; 1];
-        if let Some(second_job) = second.as_deref_mut() {
-            let second_started = qpc();
-            second_job.clear();
-            second_job.game_state = ctx.game_state;
-            copy_capitulation_pass(memory, ctx.base, ctx.game_state, &mut second_job.log);
-            ticks[0] += elapsed(second_started);
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, 0);
-            matched[0] = equal && !first.log.fault[0] && !second_job.log.fault[0];
-        }
-        self.capitulation.checked = ctx.needed[0];
-        self.capitulation.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
-        CapitulationCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
-        }
+        needed: [bool; 1],
+        report: &CapitulationCopyReport,
+    ) {
+        self.capitulation.checked = needed[0];
+        self.capitulation.mismatches = usize::from(needed[0] && !report.matched[0]);
+    }
+
+    /// Terminal failure of accepted Capitulation acquisition without retrying
+    /// live memory or invalidating the other Intel tables.
+    pub(crate) fn fail_capitulation_capture(&mut self, needed: [bool; 1], reason: &'static str) {
+        self.capitulation.outcome = Outcome::Unavailable { reason };
+        self.capitulation.checked = needed[0];
+        self.capitulation.mismatches = usize::from(needed[0]);
+        self.capitulation_raw_mode = false;
     }
 
     /// Decode-worker interpretation of a raw hourly payload into the pooled
@@ -3272,6 +3423,185 @@ pub(crate) fn intel_shadow_fixture(value: i64) -> Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delegated_capture_preserves_residual_results_and_obeys_raw_gates_and_cadence() {
+        struct GuardedReads {
+            allowed: bool,
+            calls: std::cell::Cell<usize>,
+        }
+        impl Memory for GuardedReads {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                assert!(
+                    self.allowed,
+                    "delegated raw or skipped tables must not read again"
+                );
+                self.calls.set(self.calls.get() + 1);
+                false
+            }
+        }
+        for mask in [0_u16, 1, 1 << 13, 1 << 14, u16::MAX] {
+            for (capitulation_raw, relations_raw, hour, force_full) in [
+                (true, true, 1, true),
+                (true, false, 0, false),
+                (true, false, 1, false),
+                (false, true, 2, false),
+                (false, false, 0, true),
+            ] {
+                let mut captured = intel_shadow_fixture(42);
+                captured.flags.checked = true;
+                captured.flags.mismatches = 3;
+                captured.country_intel.checked = true;
+                captured.country_intel.mismatches = 5;
+                captured.capitulation_raw_mode = capitulation_raw;
+                captured.relations_raw_mode = relations_raw;
+                let outcomes = captured.outcomes();
+                let mismatches = captured.checked_mismatches();
+                let flags = captured.flags.rows.clone();
+                let country_intel = captured.country_intel.rows.clone();
+                let allocated = captured.allocated_bytes();
+                let context = CaptureContext {
+                    base: 0,
+                    game_state: 0x1000,
+                    hour,
+                    force_full,
+                    needed: std::array::from_fn(|slot| mask & (1 << slot) != 0),
+                };
+                let relation_walk = !relations_raw
+                    && replay::cadence::should_walk(TableId::RelationOpinions, hour, force_full);
+                let memory = GuardedReads {
+                    allowed: !capitulation_raw || relation_walk,
+                    calls: std::cell::Cell::new(0),
+                };
+                let report = captured.capture_delegated(&memory, context);
+                assert_eq!(memory.calls.get() != 0, memory.allowed);
+                assert_eq!(report.matched, [false; N]);
+                assert_eq!(
+                    captured.capitulation.checked,
+                    !capitulation_raw && context.needed[0]
+                );
+                assert_eq!(
+                    captured.relation_opinions.checked,
+                    relation_walk && context.needed[13]
+                );
+                assert_eq!(
+                    captured.relation_tuples.checked,
+                    relation_walk && context.needed[14]
+                );
+                assert_eq!(
+                    report.ticks[14], 0,
+                    "opinions owns the shared relation cost"
+                );
+                if !relation_walk {
+                    assert_eq!(report.ticks[13], 0);
+                    if !relations_raw {
+                        for slot in [13, 14] {
+                            assert_eq!(
+                                captured.outcomes()[slot],
+                                Outcome::Unavailable {
+                                    reason: replay::cadence::SKIPPED_REASON,
+                                }
+                            );
+                        }
+                    }
+                }
+                for slot in (1..=12).chain(std::iter::once(15)) {
+                    assert_eq!(captured.outcomes()[slot], outcomes[slot]);
+                    assert_eq!(captured.checked_mismatches()[slot], mismatches[slot]);
+                    assert_eq!(report.ticks[slot], 0);
+                }
+                assert_eq!(captured.flags.rows, flags);
+                assert_eq!(captured.country_intel.rows, country_intel);
+                assert_eq!(captured.capitulation_raw_mode, capitulation_raw);
+                assert_eq!(captured.relations_raw_mode, relations_raw);
+                assert_eq!(captured.allocated_bytes(), allocated);
+            }
+        }
+    }
+
+    #[test]
+    fn residual_capture_and_failure_preserve_delegated_slots() {
+        struct Unreadable;
+        impl Memory for Unreadable {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                false
+            }
+        }
+        let capacities = Capacities {
+            rows: [1; N],
+            intel_scratch: 32,
+            subject_names: 0,
+            autonomy_names: 0,
+            variable_entries: 0,
+            variable_names: 0,
+            tokens: 0,
+        };
+        for mask in [0u16, 1 << 9, 1 << 10, u16::MAX] {
+            for raw_modes in 0..4 {
+                let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+                captured.capitulation.outcome = Outcome::Rows { len: 1 };
+                captured.capitulation.checked = true;
+                captured.capitulation.mismatches = 3;
+                captured.relation_opinions.outcome = Outcome::Rows { len: 1 };
+                captured.relation_opinions.checked = true;
+                captured.relation_opinions.mismatches = 5;
+                captured.relation_tuples.outcome = Outcome::Rows { len: 1 };
+                captured.relation_tuples.checked = true;
+                captured.relation_tuples.mismatches = 7;
+                captured.capitulation_raw_mode = raw_modes & 1 != 0;
+                captured.relations_raw_mode = raw_modes & 2 != 0;
+                let before = captured.outcomes();
+                let mismatches = captured.checked_mismatches();
+                let allocated = captured.allocated_bytes();
+                let context = CaptureContext {
+                    base: 0,
+                    game_state: 0x1000,
+                    hour: raw_modes,
+                    force_full: raw_modes == 0,
+                    needed: std::array::from_fn(|slot| mask & (1 << slot) != 0),
+                };
+                let report = captured.capture_residual(&Unreadable, context);
+                assert_eq!(report.matched, [false; N]);
+                assert_eq!(captured.operations.checked, context.needed[9]);
+                assert_eq!(captured.assignments.checked, context.needed[10]);
+                assert_eq!(captured.variables.checked, context.needed[8]);
+                assert_eq!(captured.country_intel.checked, context.needed[15]);
+                assert_eq!(report.ticks[10], 0, "operations owns the shared read cost");
+                for slot in [0, 13, 14] {
+                    assert_eq!(captured.outcomes()[slot], before[slot]);
+                    assert_eq!(captured.checked_mismatches()[slot], mismatches[slot]);
+                    assert_eq!(report.ticks[slot], 0);
+                }
+
+                let report = captured.fail_residual_capture(context, "residual worker failed");
+                assert_eq!(report.matched, [false; N]);
+                assert_eq!(report.ticks, [0; N]);
+                for slot in (1..=12).chain(std::iter::once(15)) {
+                    assert_eq!(
+                        captured.outcomes()[slot],
+                        Outcome::Unavailable {
+                            reason: if context.needed[slot] {
+                                "table changed during double read"
+                            } else {
+                                "residual worker failed"
+                            },
+                        }
+                    );
+                    assert_eq!(
+                        captured.checked_mismatches()[slot],
+                        usize::from(context.needed[slot])
+                    );
+                }
+                for slot in [0, 13, 14] {
+                    assert_eq!(captured.outcomes()[slot], before[slot]);
+                    assert_eq!(captured.checked_mismatches()[slot], mismatches[slot]);
+                }
+                assert_eq!(captured.capitulation_raw_mode, raw_modes & 1 != 0);
+                assert_eq!(captured.relations_raw_mode, raw_modes & 2 != 0);
+                assert_eq!(captured.allocated_bytes(), allocated);
+            }
+        }
+    }
 
     fn memo_inputs(
         capture: &Captured,
@@ -5445,12 +5775,94 @@ mod tests {
         };
         let mut first = CapitulationJob::new();
         let mut second = CapitulationJob::new();
-        let report = captured.copy_capitulation_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = copy_capitulation_refresh(memory, ctx, &mut first, Some(&mut second));
+        captured.apply_capitulation_report(ctx.needed, &report);
         assert!(report.raw_ok);
         captured.capitulation_raw_mode = report.raw_ok;
         let mut ticks = [0u64; 1];
         captured.decode_capitulation_payload(CAP_BASE, &first, &mut ticks);
         (captured, report)
+    }
+
+    #[test]
+    fn owned_intel_reports_and_terminal_failures_preserve_other_tables() {
+        const MISMATCH: Outcome = Outcome::Unavailable {
+            reason: "table changed during double read",
+        };
+        for mask in 0..8 {
+            for matched in [false, true] {
+                let mut captured = Captured::with_capacities(&cap_capacities(), &[0; N]);
+                captured.capitulation.outcome = Outcome::Rows { len: 1 };
+                captured.relation_opinions.outcome = Outcome::Rows { len: 1 };
+                captured.relation_tuples.outcome = Outcome::Rows { len: 1 };
+                captured.subjects.outcome = Outcome::Rows { len: 1 };
+                captured.subjects.checked = true;
+                captured.subjects.mismatches = 7;
+                captured.capitulation_raw_mode = true;
+                captured.relations_raw_mode = true;
+                let bytes = captured.allocated_bytes();
+                let capitulation_needed = [mask & 1 != 0];
+                let relations_needed = [mask & 2 != 0, mask & 4 != 0];
+                let report = CapitulationCopyReport {
+                    raw_ok: true,
+                    matched: [matched],
+                    copy_ticks: [17],
+                    raw_bytes: [23],
+                };
+                let mut outcomes = captured.outcomes();
+                let mut mismatches = captured.checked_mismatches();
+                captured.apply_capitulation_report(capitulation_needed, &report);
+                mismatches[0] = usize::from(capitulation_needed[0] && !matched);
+                outcomes[0] = if mismatches[0] != 0 {
+                    MISMATCH
+                } else {
+                    Outcome::Rows { len: 1 }
+                };
+                assert_eq!(captured.capitulation.outcome, Outcome::Rows { len: 1 });
+                assert_eq!(captured.outcomes(), outcomes);
+                assert_eq!(captured.checked_mismatches(), mismatches);
+                assert_eq!(captured.capitulation.checked, capitulation_needed[0]);
+                assert!(captured.capitulation_raw_mode);
+                assert!(captured.relations_raw_mode);
+
+                captured
+                    .fail_capitulation_capture(capitulation_needed, "capitulation worker failed");
+                let capitulation_failure = Outcome::Unavailable {
+                    reason: "capitulation worker failed",
+                };
+                assert_eq!(captured.capitulation.outcome, capitulation_failure);
+                outcomes[0] = if capitulation_needed[0] {
+                    MISMATCH
+                } else {
+                    capitulation_failure
+                };
+                mismatches[0] = usize::from(capitulation_needed[0]);
+                assert_eq!(captured.outcomes(), outcomes);
+                assert_eq!(captured.checked_mismatches(), mismatches);
+                assert_eq!(captured.capitulation.checked, capitulation_needed[0]);
+                assert!(!captured.capitulation_raw_mode);
+                assert!(captured.relations_raw_mode);
+
+                captured.fail_relations_capture(relations_needed, "relations worker failed");
+                let relations_failure = Outcome::Unavailable {
+                    reason: "relations worker failed",
+                };
+                assert_eq!(captured.relation_opinions.outcome, relations_failure);
+                assert_eq!(captured.relation_tuples.outcome, relations_failure);
+                for (slot, needed) in [13, 14].into_iter().zip(relations_needed) {
+                    outcomes[slot] = if needed { MISMATCH } else { relations_failure };
+                    mismatches[slot] = usize::from(needed);
+                }
+                assert_eq!(captured.outcomes(), outcomes);
+                assert_eq!(captured.checked_mismatches(), mismatches);
+                assert_eq!(captured.relation_opinions.checked, relations_needed[0]);
+                assert_eq!(captured.relation_tuples.checked, relations_needed[1]);
+                assert!(captured.subjects.checked);
+                assert!(!captured.capitulation_raw_mode);
+                assert!(!captured.relations_raw_mode);
+                assert_eq!(captured.allocated_bytes(), bytes);
+            }
+        }
     }
 
     #[test]
@@ -5506,7 +5918,8 @@ mod tests {
         };
         let mut first = CapitulationJob::new();
         let mut second = CapitulationJob::new();
-        let report = split.copy_capitulation_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = copy_capitulation_refresh(&memory, ctx, &mut first, Some(&mut second));
+        split.apply_capitulation_report(ctx.needed, &report);
         assert!(report.raw_ok);
         split.capitulation_raw_mode = true;
         let mut ticks = [0u64; 1];
@@ -5548,8 +5961,8 @@ mod tests {
         };
         let mut first = CapitulationJob::new();
         let mut second = CapitulationJob::new();
-        let report =
-            captured.copy_capitulation_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = copy_capitulation_refresh(&memory, ctx, &mut first, Some(&mut second));
+        captured.apply_capitulation_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 1]);
         let mut torn = cap_fixture();
@@ -5588,7 +6001,8 @@ mod tests {
             log: crate::raw::RawLog::new(8, 8),
             game_state: 0,
         };
-        let report = captured.copy_capitulation_refresh(&memory, ctx, &mut tiny, None);
+        let report = copy_capitulation_refresh(&memory, ctx, &mut tiny, None);
+        captured.apply_capitulation_report(ctx.needed, &report);
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());

@@ -21,6 +21,20 @@ pub const TABLES: [TableId; N] = [TableId::DivisionMovement, TableId::DivisionSt
 // Both depend on the shared division census; the combined source read group in
 // extended::read_groups includes their individually measured costs.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CaptureContext {
+    pub base: usize,
+    pub game_state: usize,
+    pub needed: [bool; N],
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CaptureReport {
+    pub matched: [bool; N],
+    pub ticks: [u64; N],
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     movement: usize,
@@ -63,6 +77,7 @@ pub struct Captured {
     source_required: usize,
     source_lens: [usize; 2],
     captured_current: bool,
+    acquisition_started: [[bool; N]; 2],
     decode_pending: bool,
     seed_rejected: [bool; N],
 }
@@ -88,6 +103,32 @@ fn same_seed_observation(
 }
 
 impl Captured {
+    /// Empty ownership placeholder; constructing it never provisions packets.
+    pub(crate) fn vacant() -> Self {
+        Self {
+            movement: CaptureRows::new(0, CONSISTENCY_TARGET),
+            status: CaptureRows::new(0, CONSISTENCY_TARGET),
+            paths: Arena::new(0, CONSISTENCY_TARGET),
+            movement_packet: carmy::MovementPacket::new(0, 0),
+            movement_second: None,
+            geometry: cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
+                provinces: 0,
+                neighbour_entries: 0,
+            }),
+            geometry_second: None,
+            status_packet: carmy::StatusPacket::vacant(),
+            status_second: None,
+            membership: MembershipCapacity::default(),
+            source_capacity: 0,
+            source_required: 0,
+            source_lens: [0; 2],
+            captured_current: false,
+            acquisition_started: [[false; N]; 2],
+            decode_pending: false,
+            seed_rejected: [false; N],
+        }
+    }
+
     pub fn with_capacities(c: &Capacities, successful: &[u16]) -> Self {
         assert_eq!(successful.len(), N);
         Self {
@@ -109,6 +150,7 @@ impl Captured {
             source_required: 0,
             source_lens: [0; 2],
             captured_current: false,
+            acquisition_started: [[false; N]; 2],
             decode_pending: false,
             seed_rejected: [false; N],
         }
@@ -121,6 +163,7 @@ impl Captured {
         // measured scope. Invalidating exposure here avoids duplicate clears.
         self.source_lens = [0; 2];
         self.captured_current = false;
+        self.acquisition_started = [[false; N]; 2];
         self.decode_pending = false;
         self.seed_rejected = [false; N];
     }
@@ -211,6 +254,44 @@ impl Captured {
             packet.grow(self.source_capacity, self.membership);
         }
     }
+
+    /// Acquire the complete family using the request's immutable source lease.
+    /// Each table retains its existing read order, limits and cold comparison.
+    pub(crate) fn capture_owned(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        sources: Sources<'_, DivisionSeed>,
+    ) -> CaptureReport {
+        let (matched, ticks) = self.capture(
+            memory,
+            context.base,
+            context.game_state,
+            &context.needed,
+            sources,
+        );
+        CaptureReport { matched, ticks }
+    }
+
+    /// Finish an accepted worker failure without discarding acquired masks.
+    /// The callback reset precedes dispatch, so an unstarted job exposes none.
+    pub(crate) fn fail_owned_capture(
+        &mut self,
+        context: CaptureContext,
+        reason: &'static str,
+    ) -> CaptureReport {
+        self.movement.outcome = Outcome::Unavailable { reason };
+        self.movement.checked = context.needed[0];
+        self.movement.mismatches = usize::from(context.needed[0]);
+        self.status.outcome = Outcome::Unavailable { reason };
+        self.status.checked = context.needed[1];
+        self.status.mismatches = usize::from(context.needed[1]);
+        self.paths.len = 0;
+        self.decode_pending = false;
+        self.seed_rejected = [true; N];
+        CaptureReport::default()
+    }
+
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -249,6 +330,7 @@ impl Captured {
         let mut pass = [false; N];
         let start = qpc();
         let _ = self.geometry.begin(memory, base, state);
+        self.acquisition_started[0][0] = true;
         let a = carmy::capture_movement_inputs(
             memory,
             base,
@@ -271,6 +353,7 @@ impl Captured {
                 .zip(self.geometry_second.as_mut())
             {
                 let _ = geometry.begin(memory, base, state);
+                self.acquisition_started[1][0] = true;
                 let b = carmy::capture_movement_inputs(
                     memory,
                     base,
@@ -299,6 +382,7 @@ impl Captured {
         }
         let movement_ticks = qpc().saturating_sub(start).max(0) as u64;
         let start = qpc();
+        self.acquisition_started[0][1] = true;
         self.status.outcome = self.status_packet.capture(
             memory,
             base,
@@ -310,6 +394,7 @@ impl Captured {
         if needed[1] {
             self.status.checked = true;
             if let Some(packet) = &mut self.status_second {
+                self.acquisition_started[1][1] = true;
                 let b = packet.capture(
                     memory,
                     base,
@@ -345,17 +430,25 @@ impl Captured {
             [
                 self.movement_second
                     .as_ref()
-                    .filter(|_| self.movement.checked)
+                    .filter(|_| self.acquisition_started[1][0])
                     .map_or(&[], |packet| packet.consumed_seed_fields()),
                 self.status_second
                     .as_ref()
-                    .filter(|_| self.status.checked)
+                    .filter(|_| self.acquisition_started[1][1])
                     .map_or(&[], |packet| packet.consumed_seed_masks()),
             ]
         } else {
             [
-                self.movement_packet.consumed_seed_fields(),
-                self.status_packet.consumed_seed_masks(),
+                if self.acquisition_started[0][0] {
+                    self.movement_packet.consumed_seed_fields()
+                } else {
+                    &[]
+                },
+                if self.acquisition_started[0][1] {
+                    self.status_packet.consumed_seed_masks()
+                } else {
+                    &[]
+                },
             ]
         }
     }
@@ -584,20 +677,7 @@ mod tests {
     use super::*;
     use replay::{frame::TableView, rows::TableRows};
 
-    #[test]
-    fn presentation_packet_checks_precede_pure_decode_and_rejection_survives_it() {
-        let capacity = Capacities {
-            movement: 1,
-            status: 0,
-            paths: 0,
-            geometry: cprovince::GeometryCapacities {
-                provinces: 1,
-                neighbour_entries: 0,
-            },
-            membership: carmy::StatusCapacities::new(0).membership,
-        };
-        let mut capture = Captured::with_capacities(&capacity, &[0, 0]);
-        capture.reserve_sources(1);
+    fn presentation_fixture() -> (DivisionSeed, Vec<u8>) {
         let seed = DivisionSeed {
             pointer: 0x8000,
             division: 7,
@@ -618,6 +698,201 @@ mod tests {
             strategic_redeployment: Some(0),
             ..DivisionSeed::default()
         };
+        let mut bytes = vec![0; 0x400];
+        // Status authenticates the country/link roots even when its row
+        // capacity admits no unit. Supply the required null/sentinel slots.
+        for (offset, data, count) in [
+            (engine::cgame_state::COUNTRIES, 0x1380_u64, 2_u32),
+            (engine::cgame_state::COUNTRY_LINKS, 0x1390_u64, 1_u32),
+        ] {
+            bytes[offset..offset + 8].copy_from_slice(&data.to_le_bytes());
+            bytes[offset + 8..offset + 12].copy_from_slice(&count.to_le_bytes());
+            bytes[offset + 12..offset + 16].copy_from_slice(&count.to_le_bytes());
+        }
+        (seed, bytes)
+    }
+
+    #[test]
+    fn vacant_presentation_has_no_owned_allocations_or_observations() {
+        let mut capture = Captured::vacant();
+        assert_eq!(capture.allocated_bytes(), 0);
+        assert_eq!(capture.decode_inputs(), [0; N]);
+        for pass in [false, true] {
+            assert!(
+                capture
+                    .consumed_seed_masks(pass)
+                    .iter()
+                    .all(|masks| masks.is_empty())
+            );
+        }
+    }
+
+    #[test]
+    fn owned_failure_preserves_only_started_current_observations() {
+        use std::{
+            cell::Cell,
+            panic::{AssertUnwindSafe, catch_unwind},
+        };
+
+        struct PanicAt<'a> {
+            memory: engine::memory::SliceMemory<'a>,
+            address: usize,
+            occurrence: usize,
+            seen: Cell<usize>,
+        }
+        impl Memory for PanicAt<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                if address == self.address {
+                    let seen = self.seen.get() + 1;
+                    self.seen.set(seen);
+                    assert_ne!(seen, self.occurrence, "synthetic acquisition panic");
+                }
+                self.memory.copy(address, destination)
+            }
+        }
+
+        let (seed, bytes) = presentation_fixture();
+        let seeds = [seed];
+        let context = CaptureContext {
+            base: 0,
+            game_state: 0x1000,
+            needed: [true; N],
+        };
+        let sources = || Sources {
+            first: &seeds,
+            first_outcome: Outcome::Rows { len: 1 },
+            second: &seeds,
+            second_outcome: Outcome::Rows { len: 1 },
+        };
+        // Stop before first/second Movement admission or inside the first/
+        // second Status root acquisition. The latter clears its mask packet
+        // before the failing read, while preceding passes retain their masks.
+        for (offset, occurrence, observed) in [
+            (
+                engine::cgame_state::PROVINCES,
+                1,
+                [[false, false], [false, false]],
+            ),
+            (
+                engine::cgame_state::PROVINCES,
+                3,
+                [[true, false], [false, false]],
+            ),
+            (
+                engine::cgame_state::COUNTRIES,
+                3,
+                [[true, false], [true, false]],
+            ),
+            (
+                engine::cgame_state::COUNTRIES,
+                4,
+                [[true, true], [true, false]],
+            ),
+        ] {
+            let mut capture = Captured::with_capacities(
+                &Capacities {
+                    movement: 1,
+                    status: 1,
+                    paths: 0,
+                    geometry: cprovince::GeometryCapacities {
+                        provinces: 1,
+                        neighbour_entries: 0,
+                    },
+                    membership: carmy::StatusCapacities::new(1).membership,
+                },
+                &[0; N],
+            );
+            capture.reserve_sources(1);
+            capture.capture_owned(
+                &engine::memory::SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes,
+                },
+                context,
+                sources(),
+            );
+            for pass in [false, true] {
+                assert!(
+                    capture
+                        .consumed_seed_masks(pass)
+                        .iter()
+                        .all(|masks| { masks.len() == 1 && masks[0] != 0 })
+                );
+            }
+            let memory = PanicAt {
+                memory: engine::memory::SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes,
+                },
+                address: 0x1000 + offset,
+                occurrence,
+                seen: Cell::new(0),
+            };
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| {
+                    capture.capture_owned(&memory, context, sources());
+                }))
+                .is_err()
+            );
+            let report = capture.fail_owned_capture(context, "worker failed");
+            assert_eq!(report.matched, [false; N]);
+            assert_eq!(report.ticks, [0; N]);
+            assert_eq!(capture.checked_mismatches(), [1; N]);
+            assert_eq!(capture.decode_inputs(), [0; N]);
+            assert!(
+                capture
+                    .outcomes()
+                    .iter()
+                    .all(|outcome| matches!(outcome, Outcome::Unavailable { .. }))
+            );
+            for (pass, observed) in observed.into_iter().enumerate() {
+                let masks = capture.consumed_seed_masks(pass != 0);
+                for (masks, observed) in masks.into_iter().zip(observed) {
+                    if observed {
+                        assert_eq!(masks.len(), 1);
+                        assert_ne!(masks[0], 0);
+                    } else {
+                        assert!(masks.is_empty());
+                    }
+                }
+            }
+            // A stopped-before-run completion follows callback reset and may
+            // never expose packets from this failed or an earlier request.
+            capture.reset();
+            capture.fail_owned_capture(
+                CaptureContext {
+                    needed: [false; N],
+                    ..context
+                },
+                "worker stopped",
+            );
+            assert_eq!(capture.checked_mismatches(), [0; N]);
+            for pass in [false, true] {
+                assert!(
+                    capture
+                        .consumed_seed_masks(pass)
+                        .iter()
+                        .all(|masks| masks.is_empty())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn presentation_packet_checks_precede_pure_decode_and_rejection_survives_it() {
+        let capacity = Capacities {
+            movement: 1,
+            status: 0,
+            paths: 0,
+            geometry: cprovince::GeometryCapacities {
+                provinces: 1,
+                neighbour_entries: 0,
+            },
+            membership: carmy::StatusCapacities::new(0).membership,
+        };
+        let mut capture = Captured::with_capacities(&capacity, &[0, 0]);
+        capture.reserve_sources(1);
+        let (seed, _) = presentation_fixture();
         let first = [seed];
         let mut second = first;
         // Status admits no row, so its zero mask must ignore this handle.
@@ -637,17 +912,7 @@ mod tests {
         ));
 
         for reject in [false, true] {
-            let mut bytes = vec![0; 0x400];
-            // Status authenticates the country/link roots even when its row
-            // capacity admits no unit. Supply the required null/sentinel slots.
-            for (offset, data, count) in [
-                (engine::cgame_state::COUNTRIES, 0x1380_u64, 2_u32),
-                (engine::cgame_state::COUNTRY_LINKS, 0x1390_u64, 1_u32),
-            ] {
-                bytes[offset..offset + 8].copy_from_slice(&data.to_le_bytes());
-                bytes[offset + 8..offset + 12].copy_from_slice(&count.to_le_bytes());
-                bytes[offset + 12..offset + 16].copy_from_slice(&count.to_le_bytes());
-            }
+            let (_, mut bytes) = presentation_fixture();
             capture.movement.rows[0].division = 999;
             let (matched, _) = capture.capture(
                 &engine::memory::SliceMemory {

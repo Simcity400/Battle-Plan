@@ -645,11 +645,15 @@ struct ProductionRestCountry {
 
 impl ProductionRestJob {
     pub fn new() -> Self {
+        let mut log = RawLog::new(1 << 17, 8 << 20);
+        // Optional discovery tracing has its own bounded storage. Exhaustion
+        // disables only plan compilation; the ordinary capture still completes.
+        log.initialize_read_plan(1 << 17, 1 << 15, 1 << 20);
         let mut job = Self {
             // Late-campaign worst case is about 768 lines, 1.6k stockpiles,
             // licences plus deployment queues with names; both pools start
             // above that so steady state never overflows.
-            log: RawLog::new(1 << 17, 8 << 20),
+            log,
             game_state: 0,
             census: Vec::with_capacity(512),
             capacity_charge: crate::raw_memory::Charge::default(),
@@ -671,7 +675,8 @@ impl ProductionRestJob {
 
     /// Double every pool off the game thread until copies fit. Converges like
     /// the typed capacity growth; overflowed hours fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
+    /// walk when no prepared source was consumed. Prepared captures that
+    /// overflow report a local failure until their storage grows.
     pub fn grow(&mut self) {
         self.log.grow();
         crate::raw::double_capacity(&mut self.census);
@@ -689,9 +694,12 @@ impl ProductionRestJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ProductionRestCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
+    /// False when staging overflowed or a prepared capture failed. The caller
+    /// may use the typed walk only when plan_failed is also false.
     pub raw_ok: bool,
+    /// Transcript disagreement or capacity exhaustion after prepared source
+    /// observations. This capture must not trigger another live acquisition.
+    pub plan_failed: bool,
     /// Whole-log raw equality gated by live-fault conservatism, in family
     /// order [lines, stockpiles, licences, conveyors, lines, manpower,
     /// equipment, records].
@@ -753,24 +761,18 @@ fn copy_production_string(log: &mut RawLog<8>, memory: &impl Memory, string: usi
         mask,
     );
     let _ = pspan(log, memory, Some(string), 8, mask);
-    let mut header = [0u8; 32];
-    header.copy_from_slice(&log.bytes[header_start..header_start + 32]);
-    let len = match usize::try_from(u64::from_le_bytes(
-        header[msvc_string::LENGTH..msvc_string::CAPACITY]
-            .try_into()
-            .unwrap(),
-    )) {
+    let len = match usize::try_from(p_pool_u64(log, header_start + msvc_string::LENGTH)) {
         Ok(len) => len,
         Err(_) => return,
     };
-    let capacity = u64::from_le_bytes(header[msvc_string::CAPACITY..].try_into().unwrap());
+    let capacity = p_pool_u64(log, header_start + msvc_string::CAPACITY);
     if len as u64 > capacity || capacity < msvc_string::INLINE_CAPACITY {
         return;
     }
     let source = if capacity == msvc_string::INLINE_CAPACITY {
         string
     } else {
-        match usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
+        match usize::try_from(p_pool_u64(log, header_start))
             .ok()
             .filter(|&s| s != 0)
         {
@@ -1191,12 +1193,9 @@ fn copy_production_records(log: &mut RawLog<8>, memory: &impl Memory, manager: u
         let Some(head_start) = pspan(log, memory, Some(pointer), 0x58, M_P_REC) else {
             continue;
         };
-        let mut head = [0u8; 0x58];
-        head.copy_from_slice(&log.bytes[head_start..head_start + 0x58]);
-        let parent = usize::try_from(u64::from_le_bytes(
-            head[cequipment_production_license::PARENT..cequipment_production_license::PARENT + 8]
-                .try_into()
-                .unwrap(),
+        let parent = usize::try_from(p_pool_u64(
+            log,
+            head_start + cequipment_production_license::PARENT,
         ))
         .ok()
         .filter(|&p| p != 0);
@@ -1204,8 +1203,8 @@ fn copy_production_records(log: &mut RawLog<8>, memory: &impl Memory, manager: u
             copy_variant_identity(log, memory, p, M_P_REC);
         }
         let equipment = Array::from_header(
-            head[cequipment_production_license::EQUIPMENT
-                ..cequipment_production_license::EQUIPMENT + 16]
+            log.bytes[head_start + cequipment_production_license::EQUIPMENT
+                ..head_start + cequipment_production_license::EQUIPMENT + 16]
                 .try_into()
                 .unwrap(),
             8,
@@ -1268,13 +1267,9 @@ fn copy_deployment_queue(log: &mut RawLog<8>, memory: &impl Memory, base: usize,
         let Some(head_start) = pspan(log, memory, Some(conveyor), 0x9c, M_P_DEPLOY) else {
             continue;
         };
-        let mut head = [0u8; 0x9c];
-        head.copy_from_slice(&log.bytes[head_start..head_start + 0x9c]);
-        let template = usize::try_from(u64::from_le_bytes(
-            head[cmilitary_deployment_conveyor::TEMPLATE
-                ..cmilitary_deployment_conveyor::TEMPLATE + 8]
-                .try_into()
-                .unwrap(),
+        let template = usize::try_from(p_pool_u64(
+            log,
+            head_start + cmilitary_deployment_conveyor::TEMPLATE,
         ))
         .ok()
         .filter(|&p| p != 0);
@@ -1297,7 +1292,8 @@ fn copy_deployment_queue(log: &mut RawLog<8>, memory: &impl Memory, base: usize,
             M_P_DEPLOY,
         );
         let lines = Array::from_header(
-            head[cmilitary_deployment_conveyor::LINES..cmilitary_deployment_conveyor::LINES + 16]
+            log.bytes[head_start + cmilitary_deployment_conveyor::LINES
+                ..head_start + cmilitary_deployment_conveyor::LINES + 16]
                 .try_into()
                 .unwrap(),
             8,
@@ -1339,19 +1335,15 @@ fn copy_deployment_line(
     let Some(head_start) = pspan(log, memory, Some(line), 0x40, M_P_DEPLOY) else {
         return;
     };
-    let mut head = [0u8; 0x40];
-    head.copy_from_slice(&log.bytes[head_start..head_start + 0x40]);
-    let name = usize::try_from(u64::from_le_bytes(
-        head[cmilitary_deployment_line::NAME..cmilitary_deployment_line::NAME + 8]
-            .try_into()
-            .unwrap(),
+    let name = usize::try_from(p_pool_u64(
+        log,
+        head_start + cmilitary_deployment_line::NAME,
     ))
     .ok()
     .filter(|&p| p != 0);
-    let deployment = usize::try_from(u64::from_le_bytes(
-        head[cmilitary_deployment_line::DEPLOYMENT..cmilitary_deployment_line::DEPLOYMENT + 8]
-            .try_into()
-            .unwrap(),
+    let deployment = usize::try_from(p_pool_u64(
+        log,
+        head_start + cmilitary_deployment_line::DEPLOYMENT,
     ))
     .ok()
     .filter(|&p| p != 0);
@@ -1389,22 +1381,16 @@ fn copy_deployment_line(
         M_P_DEPLOY,
     );
     let _ = pspan(log, memory, Some(string), 8, M_P_DEPLOY);
-    let mut chead = [0u8; 32];
-    chead.copy_from_slice(&log.bytes[chead_start..chead_start + 32]);
-    let len = match usize::try_from(u64::from_le_bytes(
-        chead[msvc_string::LENGTH..msvc_string::CAPACITY]
-            .try_into()
-            .unwrap(),
-    )) {
+    let len = match usize::try_from(p_pool_u64(log, chead_start + msvc_string::LENGTH)) {
         Ok(l) => l,
         Err(_) => return,
     };
-    let capacity = u64::from_le_bytes(chead[msvc_string::CAPACITY..].try_into().unwrap());
+    let capacity = p_pool_u64(log, chead_start + msvc_string::CAPACITY);
     if len as u64 <= capacity && capacity >= msvc_string::INLINE_CAPACITY {
         let source = if capacity == msvc_string::INLINE_CAPACITY {
             string
         } else {
-            match usize::try_from(u64::from_le_bytes(chead[..8].try_into().unwrap()))
+            match usize::try_from(p_pool_u64(log, chead_start))
                 .ok()
                 .filter(|&s| s != 0)
             {
@@ -1600,7 +1586,7 @@ pub(crate) fn copy_production_rest_refresh(
     let started = qpc();
     first.clear();
     first.game_state = ctx.game_state;
-    copy_production_rest_pass(memory, ctx.base, ctx.game_state, first);
+    acquire_production_rest_pass(memory, ctx.base, ctx.game_state, first);
     let mut ticks = [0u64; 8];
     ticks[0] = elapsed(started);
     let mut matched = [true; 8];
@@ -1608,7 +1594,7 @@ pub(crate) fn copy_production_rest_refresh(
         let second_started = qpc();
         second_job.clear();
         second_job.game_state = ctx.game_state;
-        copy_production_rest_pass(memory, ctx.base, ctx.game_state, second_job);
+        acquire_production_rest_pass(memory, ctx.base, ctx.game_state, second_job);
         ticks[0] += elapsed(second_started);
         // Per-table partitions: shared roots gate their dependents,
         // private spans only their own table.
@@ -1618,9 +1604,15 @@ pub(crate) fn copy_production_rest_refresh(
             *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
     }
-    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    let plan_failed = first.log.planned_capture_requires_no_retry()
+        || second
+            .as_ref()
+            .is_some_and(|job| job.log.planned_capture_requires_no_retry());
+    let raw_ok =
+        !plan_failed && !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
     ProductionRestCopyReport {
         raw_ok,
+        plan_failed,
         matched,
         copy_ticks: ticks,
         raw_bytes: first.log.raw_bytes,
@@ -1680,6 +1672,26 @@ impl Captured {
         self.license_records.mismatches = usize::from(needed[7]);
         self.rest_raw_mode = false;
     }
+}
+
+/// Reuse only the discovery program. Every successful replay acquires fresh
+/// payload bytes, and its controls must match before a dependent address is
+/// read. A changed control resumes the producer with the already-observed
+/// ordinal prefix; it never rereads that prefix or a failed source.
+fn acquire_production_rest_pass(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    job: &mut ProductionRestJob,
+) {
+    // These are the producer's external inputs. Output-table capacities and
+    // check masks do not select its reads; the raw producer captures a superset.
+    // Census capacity does affect admission, so it belongs to the plan key.
+    let key = [base, game_state, job.census.capacity(), 1];
+    if !job.log.begin_planned_capture(memory, key) {
+        copy_production_rest_pass(memory, base, game_state, job);
+    }
+    job.log.finish_planned_capture();
 }
 
 /// One structural copy pass: shared census plus every country's production
@@ -2375,8 +2387,8 @@ pub(crate) mod production_rest_test_kit {
     const NEED: usize = 0x7580;
     const TEMPLATE: usize = 0x7600;
     const ALLOCATIONS: usize = 0x7680;
-    const VARIANT: usize = 0x7700;
-    const PLINE: usize = 0x11000;
+    pub(super) const VARIANT: usize = 0x7700;
+    pub(super) const PLINE: usize = 0x11000;
     const PDATA: usize = 0x11100;
     const SDATA: usize = 0x11200;
     const LDATA: usize = 0x11300;
@@ -2912,6 +2924,7 @@ mod tests {
         let needed = std::array::from_fn(|index| index % 2 == 0);
         let report = ProductionRestCopyReport {
             raw_ok: false,
+            plan_failed: false,
             matched: std::array::from_fn(|index| index % 3 != 0),
             copy_ticks: std::array::from_fn(|index| index as u64 + 17),
             raw_bytes: std::array::from_fn(|index| index as u64 + 41),
@@ -4166,6 +4179,184 @@ mod tests {
         assert_eq!(split.deployment_manpower.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.deployment_equipment.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.license_records.outcome, Outcome::Rows { len: 1 });
+    }
+
+    struct PlanFixtureMemory<'a> {
+        bytes: &'a [u8],
+        calls: std::cell::RefCell<Vec<(usize, usize)>>,
+        fail: Option<usize>,
+    }
+
+    impl Memory for PlanFixtureMemory<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.calls.borrow_mut().push((address, destination.len()));
+            if self.fail == Some(address) {
+                if let Some(byte) = destination.first_mut() {
+                    *byte = 0xEC;
+                }
+                return false;
+            }
+            engine::memory::SliceMemory {
+                base: production_rest_test_kit::BASE,
+                bytes: self.bytes,
+            }
+            .copy(address, destination)
+        }
+    }
+
+    fn fixture_plan_context() -> ProductionRestCopyContext {
+        ProductionRestCopyContext {
+            base: 0,
+            game_state: production_rest_test_kit::BASE,
+            needed: [true; 8],
+        }
+    }
+
+    #[test]
+    fn production_plan_copies_changed_payload_without_rebuilding_discovery() {
+        use super::production_rest_test_kit as kit;
+        let mut bytes = kit::fixture();
+        let mut job = ProductionRestJob::new();
+        let initial = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
+        assert!(
+            copy_production_rest_refresh(&initial, fixture_plan_context(), &mut job, None).raw_ok
+        );
+        assert!(!job.census.is_empty());
+        job.log.prepare_read_plan();
+        let cost = kit::PLINE + cproduction_line::COST - kit::BASE;
+        bytes[cost..cost + 8].copy_from_slice(&999_i64.to_le_bytes());
+        let memory = PlanFixtureMemory {
+            bytes: &bytes,
+            calls: Default::default(),
+            fail: None,
+        };
+        let report = copy_production_rest_refresh(&memory, fixture_plan_context(), &mut job, None);
+        assert!(report.raw_ok && !report.plan_failed);
+        assert!(job.log.planned_capture_succeeded());
+        assert!(
+            job.census.is_empty(),
+            "complete plan must skip the discovery producer"
+        );
+        let planned_calls = memory.calls.take();
+        let mut canonical = ProductionRestJob::new();
+        let fresh =
+            copy_production_rest_refresh(&memory, fixture_plan_context(), &mut canonical, None);
+        assert!(fresh.raw_ok);
+        assert_eq!(planned_calls, memory.calls.take());
+        assert!(job.log.logs_equal(&canonical.log));
+        let capacities = kit::capacities();
+        let direct = kit::direct(&memory, &capacities);
+        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        captured.decode_production_rest_payload(0, kit::BASE, &job, &mut [0; 8]);
+        kit::assert_matches_direct(&captured, &direct);
+        assert_eq!(captured.lines.rows[0].cost_raw, 999);
+    }
+
+    #[test]
+    fn production_plan_rebuilds_changed_pointer_and_preserves_a_later_fault_once() {
+        use super::production_rest_test_kit as kit;
+        let mut bytes = kit::fixture();
+        let mut job = ProductionRestJob::new();
+        let initial = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
+        assert!(
+            copy_production_rest_refresh(&initial, fixture_plan_context(), &mut job, None).raw_ok
+        );
+        job.log.prepare_read_plan();
+        let next_variant = kit::BASE + bytes.len();
+        let identity = bytes[kit::VARIANT - kit::BASE..kit::VARIANT - kit::BASE + 16].to_vec();
+        bytes.extend_from_slice(&identity);
+        let pointer = kit::PLINE + cequipment_production_line::EQUIPMENT_VARIANT - kit::BASE;
+        bytes[pointer..pointer + 8].copy_from_slice(&(next_variant as u64).to_le_bytes());
+        for fail in [None, Some(next_variant)] {
+            let memory = PlanFixtureMemory {
+                bytes: &bytes,
+                calls: Default::default(),
+                fail,
+            };
+            let report =
+                copy_production_rest_refresh(&memory, fixture_plan_context(), &mut job, None);
+            assert!(report.raw_ok && !report.plan_failed);
+            assert!(
+                !job.census.is_empty(),
+                "changed pointer or fault resumes discovery"
+            );
+            let planned_calls = memory.calls.take();
+            let mut canonical = ProductionRestJob::new();
+            let fresh =
+                copy_production_rest_refresh(&memory, fixture_plan_context(), &mut canonical, None);
+            assert!(fresh.raw_ok && !fresh.plan_failed);
+            assert_eq!(
+                planned_calls,
+                memory.calls.take(),
+                "no consumed source may be retried"
+            );
+            assert!(job.log.logs_equal(&canonical.log));
+            assert_eq!(job.log.fault[0], fail.is_some());
+            assert_eq!(&job.log.fault[1..], &[false; 7]);
+            if fail.is_none() {
+                job.log.prepare_read_plan();
+            }
+        }
+    }
+
+    #[test]
+    fn production_plans_keep_cold_passes_independent() {
+        use super::production_rest_test_kit as kit;
+        struct Changing<'a> {
+            bytes: &'a [u8],
+            cost_reads: std::cell::Cell<u32>,
+        }
+        impl Memory for Changing<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                if !(engine::memory::SliceMemory {
+                    base: kit::BASE,
+                    bytes: self.bytes,
+                })
+                .copy(address, destination)
+                {
+                    return false;
+                }
+                if address == kit::PLINE + cproduction_line::COST {
+                    let next = self.cost_reads.get() + 1;
+                    self.cost_reads.set(next);
+                    destination[..8].copy_from_slice(&i64::from(next).to_le_bytes());
+                }
+                true
+            }
+        }
+        let bytes = kit::fixture();
+        let initial = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
+        let mut first = ProductionRestJob::new();
+        let mut second = ProductionRestJob::new();
+        let ctx = fixture_plan_context();
+        let report = copy_production_rest_refresh(&initial, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok);
+        first.log.prepare_read_plan();
+        second.log.prepare_read_plan();
+        let changing = Changing {
+            bytes: &bytes,
+            cost_reads: Default::default(),
+        };
+        let report = copy_production_rest_refresh(&changing, ctx, &mut first, Some(&mut second));
+        assert!(report.raw_ok && !report.plan_failed);
+        assert!(first.log.planned_capture_succeeded() && second.log.planned_capture_succeeded());
+        assert!(first.census.is_empty() && second.census.is_empty());
+        assert_eq!(
+            changing.cost_reads.get(),
+            4,
+            "each independent pass observes both country aliases in the fixture"
+        );
+        assert!(!report.matched[0]);
+        assert_eq!(&report.matched[1..], &[true; 7]);
     }
 
     #[test]

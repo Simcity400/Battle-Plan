@@ -678,6 +678,7 @@ pub mod rasterizer_state_wrapper_layout;
 /// Test-only measurement instrument for the deterministic cost proxies.
 #[cfg(test)]
 pub mod read_census;
+pub mod read_plan;
 pub mod reference_bucket;
 pub mod render_context_layout;
 pub mod render_entity_layout;

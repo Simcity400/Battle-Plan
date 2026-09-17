@@ -109,6 +109,13 @@ macro_rules! packs {
             unit_inputs_match: bool,
             division_detail_source_faults: [Option<&'static str>; 5],
             eta_report: Option<division_eta::AcquisitionReport>,
+            governance_report: Option<governance::CaptureReport>,
+            presentation_report: Option<division_presentation::CaptureReport>,
+            intel_residual_report: Option<intel::CaptureReport>,
+            supply_trains_report: Option<supply_trains::CaptureReport>,
+            character_portraits_report: Option<character_portraits::CaptureReport>,
+            province_unit_order_report: Option<province_unit_order::CaptureReport>,
+            ship_models_report: Option<ship_models::CaptureReport>,
             registry: Registry,
             air_roots: [Option<Outcome>; 2],
             overhead: [u64; TABLE_COUNT],
@@ -128,6 +135,13 @@ macro_rules! packs {
                     unit_inputs_match: false,
                     division_detail_source_faults: [None; 5],
                     eta_report: None,
+                    governance_report: None,
+                    presentation_report: None,
+                    intel_residual_report: None,
+                    supply_trains_report: None,
+                    character_portraits_report: None,
+                    province_unit_order_report: None,
+                    ship_models_report: None,
                     registry: Registry::new(capacity.variant_registry, variant_successful(successful)),
                     air_roots: [None; 2], overhead: [0; TABLE_COUNT],
                 };
@@ -140,7 +154,9 @@ macro_rules! packs {
             pub fn reset(&mut self) {
                 $(self.$pack.reset();)+
                 self.divisions.reset(); self.registry.reset();
-                self.release_unit_inputs(); self.unit_inputs_match = false; self.eta_report = None;
+                self.release_unit_inputs(); self.unit_inputs_match = false; self.eta_report = None; self.governance_report = None; self.presentation_report = None;
+                self.intel_residual_report = None;
+                self.supply_trains_report = None; self.character_portraits_report = None; self.province_unit_order_report = None; self.ship_models_report = None;
                 self.division_detail_source_faults = [None; 5];
                 self.air_roots = [None; 2]; self.overhead = [0; TABLE_COUNT];
             }
@@ -329,74 +345,455 @@ impl Captured {
         self.division_presentation.decode_inputs()
     }
 
-    /// Move ETA-owned buffers and borrow the shared source packet for the
-    /// callback-bounded worker. Empty placeholders allocate nothing.
-    pub(crate) fn take_eta_request(
+    pub(crate) fn take_presentation_request(
         &mut self,
         countries: &Arc<engine::country_memory::Cache>,
         base: usize,
         state: usize,
-        checked: bool,
-    ) -> crate::acquisition::EtaRequest {
-        let started = qpc();
-        let request = crate::acquisition::EtaRequest {
+        needed: &[bool],
+    ) -> crate::acquisition_jobs::PresentationRequest {
+        self.presentation_report = None;
+        let needed: [bool; 2] = local(&division_presentation::TABLES, needed);
+        crate::acquisition_jobs::PresentationRequest {
             countries: Arc::clone(countries),
-            base,
-            state,
-            checked,
-            captured: std::mem::replace(&mut self.division_eta, division_eta::Captured::empty()),
-            first: self.unit_inputs[0].as_ref().map(Arc::clone),
-            second: if checked {
-                self.unit_inputs[1].as_ref().map(Arc::clone)
-            } else {
-                None
+            context: division_presentation::CaptureContext {
+                base,
+                game_state: state,
+                needed,
             },
-        };
-        self.overhead[TableId::DivisionEta.index()] += elapsed(started);
-        request
+            first: self.unit_inputs[0].as_ref().map(Arc::clone),
+            second: needed
+                .iter()
+                .any(|&needed| needed)
+                .then(|| self.unit_inputs[1].as_ref().map(Arc::clone))
+                .flatten(),
+            captured: std::mem::replace(
+                &mut self.division_presentation,
+                division_presentation::Captured::vacant(),
+            ),
+        }
     }
-    /// Rejected jobs restore the normal synchronous path. Accepted jobs always
-    /// install a terminal report; failure cannot silently retry or publish a
-    /// worker's partial rows as a successful observation.
-    pub(crate) fn restore_eta_request(
+
+    pub(crate) fn restore_presentation_request(
         &mut self,
-        mut request: crate::acquisition::EtaRequest,
-        report: Option<Result<division_eta::AcquisitionReport, crate::acquisition::Failure>>,
+        mut request: crate::acquisition_jobs::PresentationRequest,
+        report: Result<division_presentation::CaptureReport, crate::acquisition::Failure>,
     ) {
-        self.eta_report = report.map(|report| match report {
+        self.presentation_report = Some(match report {
+            Ok(report) => report,
+            Err(failure) => request.captured.fail_owned_capture(
+                request.context,
+                match failure {
+                    crate::acquisition::Failure::Panicked => {
+                        "division presentation acquisition panicked"
+                    }
+                    crate::acquisition::Failure::Stopped => {
+                        "division presentation acquisition stopped before reading"
+                    }
+                },
+            ),
+        });
+        self.division_presentation = request.captured;
+    }
+
+    fn acquire_presentation(
+        &mut self,
+        memory: &impl Memory,
+        context: division_presentation::CaptureContext,
+    ) -> division_presentation::CaptureReport {
+        let mut report = self.presentation_report.take().unwrap_or_else(|| {
+            self.division_presentation.capture_owned(
+                memory,
+                context,
+                unit_sources(&self.unit_inputs),
+            )
+        });
+        if !self.unit_inputs_match {
+            let source_match = self.division_presentation.reject_source_census();
+            for (matched, source_match) in report.matched.iter_mut().zip(source_match) {
+                *matched &= source_match;
+            }
+        }
+        report
+    }
+
+    /// Loan the complete governance family after the current Focus delegation
+    /// has been decided. The callback restores it before any table publication.
+    pub(crate) fn take_governance_request(
+        &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
+        base: usize,
+        state: usize,
+        hour: i32,
+        force_full: bool,
+        needed: &[bool],
+    ) -> crate::acquisition_jobs::GovernanceRequest {
+        self.governance_report = None;
+        crate::acquisition_jobs::GovernanceRequest {
+            countries: Arc::clone(countries),
+            context: governance::CaptureContext {
+                base,
+                game_state: state,
+                hour,
+                force_full,
+                needed: local(&governance::TABLES, needed),
+            },
+            captured: std::mem::replace(&mut self.governance, governance::Captured::vacant()),
+        }
+    }
+
+    pub(crate) fn restore_governance_request(
+        &mut self,
+        mut request: crate::acquisition_jobs::GovernanceRequest,
+        report: Result<governance::CaptureReport, crate::acquisition::Failure>,
+    ) {
+        self.governance_report = Some(match report {
             Ok(report) => report,
             Err(failure) => {
-                request.captured.fail(
+                request.captured.fail_owned_capture(
+                    request.context,
                     match failure {
-                        crate::acquisition::Failure::Panicked => "ETA acquisition worker panicked",
+                        crate::acquisition::Failure::Panicked => "governance acquisition panicked",
                         crate::acquisition::Failure::Stopped => {
-                            "ETA acquisition worker stopped before reading"
+                            "governance acquisition stopped before reading"
                         }
                     },
-                    request.checked,
                 );
-                division_eta::AcquisitionReport::default()
+                governance::CaptureReport::default()
             }
         });
-        self.division_eta = request.captured;
+        self.governance = request.captured;
+    }
+
+    /// Loan existing hourly buffers before independent acquisition begins.
+    /// Restore them before ordinary capture, table views, growth or publication.
+    pub(crate) fn take_supply_trains_request(
+        &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
+        base: usize,
+        state: usize,
+        needed: &[bool],
+    ) -> crate::acquisition_jobs::SupplyTrainsRequest {
+        self.supply_trains_report = None;
+        crate::acquisition_jobs::SupplyTrainsRequest {
+            countries: Arc::clone(countries),
+            context: supply_trains::CaptureContext {
+                base,
+                game_state: state,
+                needed: local(&supply_trains::TABLES, needed),
+            },
+            captured: std::mem::replace(&mut self.supply_trains, supply_trains::Captured::vacant()),
+        }
+    }
+
+    pub(crate) fn restore_supply_trains_request(
+        &mut self,
+        mut request: crate::acquisition_jobs::SupplyTrainsRequest,
+        report: Result<supply_trains::CaptureReport, crate::acquisition::Failure>,
+    ) {
+        // A failed accepted job is terminal. Its zero ticks are unmeasured;
+        // keeping Some prevents the ordinary stage from retrying native reads.
+        self.supply_trains_report = Some(match report {
+            Ok(report) => report,
+            Err(failure) => request.captured.fail_owned_capture(
+                request.context,
+                match failure {
+                    crate::acquisition::Failure::Panicked => "supply trains acquisition panicked",
+                    crate::acquisition::Failure::Stopped => {
+                        "supply trains acquisition stopped before reading"
+                    }
+                },
+            ),
+        });
+        self.supply_trains = request.captured;
+    }
+
+    fn acquire_supply_trains(
+        &mut self,
+        memory: &impl Memory,
+        context: supply_trains::CaptureContext,
+    ) -> supply_trains::CaptureReport {
+        self.supply_trains_report
+            .take()
+            .unwrap_or_else(|| self.supply_trains.capture_owned(memory, context))
+    }
+
+    pub(crate) fn take_character_portraits_request(
+        &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
+        base: usize,
+        state: usize,
+        needed: &[bool],
+    ) -> crate::acquisition_jobs::CharacterPortraitsRequest {
+        self.character_portraits_report = None;
+        crate::acquisition_jobs::CharacterPortraitsRequest {
+            countries: Arc::clone(countries),
+            context: character_portraits::CaptureContext {
+                base,
+                game_state: state,
+                needed: local(&character_portraits::TABLES, needed),
+            },
+            captured: std::mem::replace(
+                &mut self.character_portraits,
+                character_portraits::Captured::vacant(),
+            ),
+        }
+    }
+
+    pub(crate) fn restore_character_portraits_request(
+        &mut self,
+        mut request: crate::acquisition_jobs::CharacterPortraitsRequest,
+        report: Result<character_portraits::CaptureReport, crate::acquisition::Failure>,
+    ) {
+        self.character_portraits_report = Some(match report {
+            Ok(report) => report,
+            Err(failure) => request.captured.fail_owned_capture(
+                request.context,
+                match failure {
+                    crate::acquisition::Failure::Panicked => {
+                        "character portraits acquisition panicked"
+                    }
+                    crate::acquisition::Failure::Stopped => {
+                        "character portraits acquisition stopped before reading"
+                    }
+                },
+            ),
+        });
+        self.character_portraits = request.captured;
+    }
+
+    fn acquire_character_portraits(
+        &mut self,
+        memory: &impl Memory,
+        context: character_portraits::CaptureContext,
+    ) -> character_portraits::CaptureReport {
+        self.character_portraits_report
+            .take()
+            .unwrap_or_else(|| self.character_portraits.capture_owned(memory, context))
+    }
+
+    /// Loan the complete ProvinceUnitOrder rows and handle arena to the flat
+    /// acquisition pool. Restore before capture_before_eta publishes this pack.
+    pub(crate) fn take_province_unit_order_request(
+        &mut self,
+        base: usize,
+        state: usize,
+        needed: &[bool],
+    ) -> crate::acquisition_jobs::ProvinceUnitOrderRequest {
+        self.province_unit_order_report = None;
+        crate::acquisition_jobs::ProvinceUnitOrderRequest {
+            context: province_unit_order::CaptureContext {
+                base,
+                game_state: state,
+                needed: local(&province_unit_order::TABLES, needed),
+            },
+            captured: std::mem::replace(
+                &mut self.province_unit_order,
+                province_unit_order::Captured::vacant(),
+            ),
+        }
+    }
+
+    pub(crate) fn restore_province_unit_order_request(
+        &mut self,
+        mut request: crate::acquisition_jobs::ProvinceUnitOrderRequest,
+        report: Result<province_unit_order::CaptureReport, crate::acquisition::Failure>,
+    ) {
+        // Some, including terminal failure, prevents capture_before_eta from
+        // retrying an accepted request. Zero failure ticks are unmeasured.
+        self.province_unit_order_report = Some(match report {
+            Ok(report) => report,
+            Err(failure) => request.captured.fail_owned_capture(
+                request.context,
+                match failure {
+                    crate::acquisition::Failure::Panicked => {
+                        "province unit order acquisition panicked"
+                    }
+                    crate::acquisition::Failure::Stopped => {
+                        "province unit order acquisition stopped before reading"
+                    }
+                },
+            ),
+        });
+        self.province_unit_order = request.captured;
+    }
+
+    fn acquire_province_unit_order(
+        &mut self,
+        memory: &impl Memory,
+        context: province_unit_order::CaptureContext,
+    ) -> province_unit_order::CaptureReport {
+        self.province_unit_order_report
+            .take()
+            .unwrap_or_else(|| self.province_unit_order.capture_owned(memory, context))
+    }
+
+    /// Loan ShipModels only after the map's native ship census has produced its
+    /// ordered first/second seeds. Restore before terminal verification and any
+    /// table publication; accepted worker failures are terminal and never retry.
+    pub(crate) fn take_ship_models_request(
+        &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
+        base: usize,
+        needed: &[bool],
+    ) -> crate::acquisition_jobs::ShipModelsRequest {
+        self.ship_models_report = None;
+        crate::acquisition_jobs::ShipModelsRequest {
+            countries: Arc::clone(countries),
+            context: ship_models::CaptureContext {
+                base,
+                needed: local(&ship_models::TABLES, needed),
+            },
+            captured: std::mem::replace(&mut self.ship_models, ship_models::Captured::vacant()),
+        }
+    }
+
+    pub(crate) fn restore_ship_models_request(
+        &mut self,
+        mut request: crate::acquisition_jobs::ShipModelsRequest,
+        report: Result<ship_models::CaptureReport, crate::acquisition::Failure>,
+    ) {
+        self.ship_models_report = Some(match report {
+            Ok(report) => report,
+            Err(failure) => request.captured.fail_owned_capture(
+                request.context,
+                match failure {
+                    crate::acquisition::Failure::Panicked => "ship models acquisition panicked",
+                    crate::acquisition::Failure::Stopped => {
+                        "ship models acquisition stopped before reading"
+                    }
+                },
+            ),
+        });
+        self.ship_models = request.captured;
+    }
+
+    fn acquire_ship_models(
+        &mut self,
+        memory: &impl Memory,
+        context: ship_models::CaptureContext,
+    ) -> ship_models::CaptureReport {
+        if let Some(report) = self.ship_models_report.take() {
+            report
+        } else if self.ship_models.has_terminal_failure() {
+            // A consumed accepted failure remains authoritative until a normal
+            // reset/new first source census starts a new epoch. Never reuse its
+            // deliberately scrubbed raw seed pointers.
+            ship_models::CaptureReport::default()
+        } else {
+            self.ship_models.capture_owned(memory, context)
+        }
+    }
+
+    /// Loan Intel's residual tables until the independent raw-job reports are
+    /// ready. The callback restores this family before applying those reports.
+    pub(crate) fn take_intel_residual_request(
+        &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
+        context: intel::CaptureContext,
+    ) -> crate::acquisition_jobs::IntelResidualRequest {
+        self.intel_residual_report = None;
+        crate::acquisition_jobs::IntelResidualRequest {
+            countries: Arc::clone(countries),
+            context,
+            captured: std::mem::replace(&mut self.intel, intel::Captured::vacant()),
+        }
+    }
+
+    pub(crate) fn restore_intel_residual_request(
+        &mut self,
+        mut request: crate::acquisition_jobs::IntelResidualRequest,
+        report: Result<intel::CaptureReport, crate::acquisition::Failure>,
+    ) {
+        self.intel_residual_report = Some(match report {
+            Ok(report) => report,
+            Err(failure) => request.captured.fail_residual_capture(
+                request.context,
+                match failure {
+                    crate::acquisition::Failure::Panicked => "residual Intel acquisition panicked",
+                    crate::acquisition::Failure::Stopped => {
+                        "residual Intel acquisition stopped before reading"
+                    }
+                },
+            ),
+        });
+        self.intel = request.captured;
+    }
+
+    fn acquire_intel(
+        &mut self,
+        memory: &impl Memory,
+        context: intel::CaptureContext,
+    ) -> intel::CaptureReport {
+        if let Some(mut report) = self.intel_residual_report.take() {
+            let delegated = self.intel.capture_delegated(memory, context);
+            for index in [0, 13, 14] {
+                report.matched[index] = delegated.matched[index];
+                report.ticks[index] = delegated.ticks[index];
+            }
+            report
+        } else {
+            let (matched, ticks) = self.intel.capture(
+                memory,
+                context.base,
+                context.game_state,
+                &context.needed,
+                context.hour,
+                context.force_full,
+            );
+            intel::CaptureReport { matched, ticks }
+        }
+    }
+
+    pub(crate) fn prepare_eta_ranges(&mut self, checked: bool, max_ranges: usize) -> usize {
+        self.eta_report = None;
+        self.division_eta
+            .prepare_ranges(&unit_sources(&self.unit_inputs), checked, max_ranges)
+    }
+    pub(crate) fn take_eta_range(&mut self, index: usize) -> division_eta::RangeCaptured {
+        self.division_eta
+            .take_range(index)
+            .expect("prepared ETA range remains owned")
+    }
+    pub(crate) fn restore_eta_range(&mut self, index: usize, range: division_eta::RangeCaptured) {
+        self.division_eta.restore_range(index, range);
+    }
+    pub(crate) fn finish_eta_ranges(&mut self) {
+        self.eta_report = Some(self.division_eta.finish_ranges());
+    }
+    pub(crate) fn eta_diagnostics(&self) -> division_eta::CacheDiagnostics {
+        self.division_eta.cache_diagnostics()
+    }
+    pub(crate) fn fail_eta_capture(&mut self, checked: bool, reason: &'static str) {
+        self.division_eta.fail(reason, checked);
+        self.eta_report = Some(division_eta::AcquisitionReport::default());
     }
     fn acquire_eta(
         &mut self,
-        memory: &impl Memory,
-        base: usize,
-        state: usize,
+        _memory: &impl Memory,
+        _base: usize,
+        _state: usize,
         needed: bool,
     ) -> ([bool; 1], [u64; 1]) {
         if let Some(report) = self.eta_report.take() {
             ([report.matched], [report.ticks])
         } else {
-            self.division_eta.capture(
-                memory,
-                base,
-                state,
-                &[needed],
-                unit_sources(&self.unit_inputs),
-            )
+            #[cfg(test)]
+            {
+                self.division_eta.capture(
+                    _memory,
+                    _base,
+                    _state,
+                    &[needed],
+                    unit_sources(&self.unit_inputs),
+                )
+            }
+            #[cfg(not(test))]
+            {
+                self.division_eta
+                    .fail("ETA acquisition was not completed", needed);
+                ([false], [0])
+            }
         }
     }
     /// Decode-worker handoff for the hourly focus pair (copy/decode split).
@@ -584,22 +981,6 @@ impl Captured {
     /// with no cross-family decoded roots.
     pub(crate) fn capitulation_pilot(&mut self) -> &mut intel::Captured {
         &mut self.intel
-    }
-
-    /// Game-thread raw copy for the shared hourly bases payload. Runs the
-    /// air-hosted copy (country census, manager, bases, registrations,
-    /// aces) with disjoint borrows of both packs; the report comes back for
-    /// sampling's calibration install, while matched rows and costs install
-    /// into the returned report like every other family.
-    pub(crate) fn copy_air_bases_refresh(
-        &mut self,
-        memory: &impl engine::Memory,
-        ctx: air::AirBasesCopyContext,
-        first: &mut air::AirBasesJob,
-        second: Option<&mut air::AirBasesJob>,
-    ) -> air::AirBasesCopyReport {
-        self.air
-            .copy_air_bases_refresh(memory, ctx, &mut self.fog, first, second)
     }
 
     /// Decode-worker interpretation of a raw shared bases payload, in pack
@@ -799,6 +1180,15 @@ impl Captured {
     ) -> ([bool; TABLE_COUNT], [u64; TABLE_COUNT]) {
         let (mut matched, mut ticks) =
             self.capture_before_eta(memory, base, game_state, current_hour, needed, force_full);
+        let ships = TableId::ShipModels.index();
+        (matched[ships], ticks[ships]) = self.capture_ship_models(
+            memory,
+            base,
+            game_state,
+            current_hour,
+            needed[ships],
+            force_full,
+        );
         let eta = TableId::DivisionEta.index();
         (matched[eta], ticks[eta]) = self.capture_eta(memory, base, game_state, needed[eta]);
         self.decode_division_presentation_inputs();
@@ -844,13 +1234,57 @@ impl Captured {
             naval_details,
             naval_result_details,
             state_flags,
-            country_appearance,
-            ship_models,
-            province_unit_order,
-            counter_layers,
-            character_portraits,
-            leader_portraits,
-            supply_trains,
+            country_appearance
+        );
+        let province_order_report = self.acquire_province_unit_order(
+            memory,
+            province_unit_order::CaptureContext {
+                base,
+                game_state,
+                needed: local(&province_unit_order::TABLES, needed),
+            },
+        );
+        scatter(
+            &province_unit_order::TABLES,
+            province_order_report.matched,
+            &mut matched,
+        );
+        scatter(
+            &province_unit_order::TABLES,
+            province_order_report.ticks,
+            &mut ticks,
+        );
+        ordinary!(counter_layers);
+        let portraits_report = self.acquire_character_portraits(
+            memory,
+            character_portraits::CaptureContext {
+                base,
+                game_state,
+                needed: local(&character_portraits::TABLES, needed),
+            },
+        );
+        scatter(
+            &character_portraits::TABLES,
+            portraits_report.matched,
+            &mut matched,
+        );
+        scatter(
+            &character_portraits::TABLES,
+            portraits_report.ticks,
+            &mut ticks,
+        );
+        ordinary!(leader_portraits);
+        let supply_report = self.acquire_supply_trains(
+            memory,
+            supply_trains::CaptureContext {
+                base,
+                game_state,
+                needed: local(&supply_trains::TABLES, needed),
+            },
+        );
+        scatter(&supply_trains::TABLES, supply_report.matched, &mut matched);
+        scatter(&supply_trains::TABLES, supply_report.ticks, &mut ticks);
+        ordinary!(
             plans,
             weather_passes,
             counter_state,
@@ -862,13 +1296,35 @@ impl Captured {
         staggered!(
             characters,
             construction,
-            governance,
-            intel,
             projects,
             map_names,
             division_templates,
             weather_neighbours
         );
+        let intel_context = intel::CaptureContext {
+            base,
+            game_state,
+            hour: current_hour,
+            force_full,
+            needed: local(&intel::TABLES, needed),
+        };
+        let intel_report = self.acquire_intel(memory, intel_context);
+        scatter(&intel::TABLES, intel_report.matched, &mut matched);
+        scatter(&intel::TABLES, intel_report.ticks, &mut ticks);
+        let governance_report = self.governance_report.take().unwrap_or_else(|| {
+            self.governance.capture_owned(
+                memory,
+                governance::CaptureContext {
+                    base,
+                    game_state,
+                    needed: local(&governance::TABLES, needed),
+                    hour: current_hour,
+                    force_full,
+                },
+            )
+        });
+        scatter(&governance::TABLES, governance_report.matched, &mut matched);
+        scatter(&governance::TABLES, governance_report.ticks, &mut ticks);
         let air_needed = local(&air::TABLES, needed);
         self.air.finish_wings(
             self.air_roots[0].unwrap_or(MISSING),
@@ -916,21 +1372,16 @@ impl Captured {
         );
         scatter(&production::TABLES, pass, &mut matched);
         scatter(&production::TABLES, cost, &mut ticks);
-        let (mut pass, cost) = self.division_presentation.capture(
+        let report = self.acquire_presentation(
             memory,
-            base,
-            game_state,
-            &local(&division_presentation::TABLES, needed),
-            unit_sources(&self.unit_inputs),
+            division_presentation::CaptureContext {
+                base,
+                game_state,
+                needed: local(&division_presentation::TABLES, needed),
+            },
         );
-        if !self.unit_inputs_match {
-            let source_match = self.division_presentation.reject_source_census();
-            for (matched, source_match) in pass.iter_mut().zip(source_match) {
-                *matched &= source_match;
-            }
-        }
-        scatter(&division_presentation::TABLES, pass, &mut matched);
-        scatter(&division_presentation::TABLES, cost, &mut ticks);
+        scatter(&division_presentation::TABLES, report.matched, &mut matched);
+        scatter(&division_presentation::TABLES, report.ticks, &mut ticks);
         // The saved campaign registry is authoritative. It includes variants
         // absent from units, current production and stockpiles. Preserve every
         // native entry and duplicate for shared off-thread key rejection.
@@ -958,7 +1409,7 @@ impl Captured {
         }
         staggered!(lexical);
         for table in TABLES {
-            if table == TableId::DivisionEta {
+            if matches!(table, TableId::ShipModels | TableId::DivisionEta) {
                 continue;
             }
             ticks[table.index()] =
@@ -967,6 +1418,45 @@ impl Captured {
                 && replay::cadence::should_walk(table, current_hour, force_full);
         }
         (matched, ticks)
+    }
+
+    /// Finish the ShipModels family after its owned detail request has had the
+    /// whole independent pre-ETA callback region to run. A rejected request is
+    /// executed exactly once by the caller before this function. An accepted
+    /// panic/stop is terminal: the restored report suppresses any detail retry,
+    /// while retained modifier witnesses are still freshly verified here.
+    pub(crate) fn capture_ship_models(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        current_hour: i32,
+        needed: bool,
+        force_full: bool,
+    ) -> (bool, u64) {
+        let context = ship_models::CaptureContext {
+            base,
+            needed: [needed],
+        };
+        let report = self.acquire_ship_models(memory, context);
+        let (pass, terminal) = self
+            .ship_models
+            .capture(memory, base, game_state, &context.needed);
+        let table = TableId::ShipModels;
+        let failed = self.ship_models.has_terminal_failure();
+        (
+            pass[0] && needed && replay::cadence::should_walk(table, current_hour, force_full),
+            if failed {
+                // The terminal verifier still ran and cleared every retained
+                // witness above, but an interrupted detail job makes the whole
+                // table service duration unmeasured.
+                0
+            } else {
+                report.ticks[0]
+                    .saturating_add(terminal[0])
+                    .saturating_add(self.overhead[table.index()])
+            },
+        )
     }
 
     /// Terminal ETA consumption after an accepted request has been joined. A
@@ -1049,7 +1539,7 @@ impl<M: Memory> MapSources for Sources<'_, M> {
             return 0;
         }
         let begin = qpc();
-        self.captured.ship_models.begin(second);
+        self.captured.ship_models.begin_sources(second);
         self.attribute_overhead(TableId::ShipModels, begin, 0)
     }
     fn ship(&mut self, second: bool, pointer: usize, row: &cship::Row) -> u64 {
@@ -1057,9 +1547,7 @@ impl<M: Memory> MapSources for Sources<'_, M> {
             return 0;
         }
         let begin = qpc();
-        self.captured
-            .ship_models
-            .visit(self.memory, self.base, pointer, row, second);
+        self.captured.ship_models.visit_source(pointer, row, second);
         self.attribute_overhead(TableId::ShipModels, begin, 0)
     }
     fn finish_ships(&mut self, second: bool, outcome: Outcome) -> u64 {
@@ -1067,7 +1555,7 @@ impl<M: Memory> MapSources for Sources<'_, M> {
             return 0;
         }
         let begin = qpc();
-        self.captured.ship_models.finish(second, outcome);
+        self.captured.ship_models.finish_sources(second, outcome);
         self.attribute_overhead(TableId::ShipModels, begin, 0)
     }
     fn begin_air(&mut self, second: bool) -> u64 {
@@ -1450,7 +1938,7 @@ mod tests {
     }
 
     #[test]
-    fn independent_capture_leaves_eta_owned_until_terminal_join_and_charges_it_once() {
+    fn independent_capture_leaves_eta_range_owned_until_terminal_reduction() {
         struct FailedReads(std::cell::Cell<usize>);
         impl Memory for FailedReads {
             fn copy(&self, _: usize, _: &mut [u8]) -> bool {
@@ -1458,10 +1946,383 @@ mod tests {
                 false
             }
         }
+        struct ProvinceReads(std::cell::Cell<usize>);
+        impl Memory for ProvinceReads {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                assert_eq!(
+                    (address, output.len()),
+                    (0x1000 + engine::cgame_state::PROVINCES, 16)
+                );
+                self.0.set(self.0.get() + 1);
+                output[..8].copy_from_slice(&0x2200_u64.to_le_bytes());
+                output[8..12].copy_from_slice(&2_u32.to_le_bytes());
+                output[12..16].copy_from_slice(&2_u32.to_le_bytes());
+                true
+            }
+        }
         struct NoRead;
         impl Memory for NoRead {
             fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-                panic!("terminal ETA report must not retry live acquisition");
+                panic!("terminal ETA reduction must not retry live acquisition");
+            }
+        }
+        for terminal in [
+            None,
+            Some("ETA acquisition panicked"),
+            Some("ETA acquisition stopped"),
+        ] {
+            let mut captured = Captured::with_capacities(&Capacities::default(), &[0; TABLE_COUNT]);
+            captured.install_unit_inputs(
+                Some(Arc::new(UnitInputs::empty_rows())),
+                Some(Arc::new(UnitInputs::empty_rows())),
+                true,
+            );
+            let bytes = captured.allocated_bytes();
+            assert_eq!(
+                captured.prepare_eta_ranges(true, division_eta::MAX_RANGES),
+                1
+            );
+            let mut range = captured.take_eta_range(0);
+            assert!(captured.allocated_bytes() < bytes);
+            let eta = TableId::DivisionEta.index();
+            let overhead = captured.overhead[eta];
+            let independent = FailedReads(std::cell::Cell::new(0));
+            let (checks, ticks) =
+                captured.capture_before_eta(&independent, 0, 0x1000, 0, &[true; TABLE_COUNT], true);
+            assert!(
+                independent.0.get() > 0,
+                "independent capture still runs while ETA is owned elsewhere"
+            );
+            assert!(!checks[eta]);
+            assert_eq!(ticks[eta], 0);
+            assert_eq!(captured.overhead[eta], overhead);
+            assert!(captured.eta_report.is_none());
+            if let Some(reason) = terminal {
+                for pass in 0..2 {
+                    range.fail(reason, pass, true);
+                }
+            } else {
+                let mut workspace = division_eta::Workspace::with_capacities(
+                    &division_eta::Captured::empty().workspace_capacities(),
+                    true,
+                );
+                let memory = ProvinceReads(std::cell::Cell::new(0));
+                for pass in 0..2 {
+                    range.acquire_pass(
+                        &mut workspace,
+                        &memory,
+                        0,
+                        0x1000,
+                        &[],
+                        Outcome::Rows { len: 0 },
+                        pass,
+                    );
+                    range.verify_pass(&mut workspace, &memory, 0, 0x1000, pass);
+                }
+                assert_eq!(
+                    memory.0.get(),
+                    4,
+                    "each cold pass independently acquires and verifies its province root"
+                );
+            }
+            captured.restore_eta_range(0, range);
+            assert_eq!(captured.allocated_bytes(), bytes);
+            captured.finish_eta_ranges();
+            let report = captured.eta_report.unwrap();
+            assert_eq!(report.matched, terminal.is_none());
+            assert_eq!(
+                captured.capture_eta(&NoRead, 0, 0x1000, true),
+                (report.matched, overhead + report.ticks)
+            );
+            assert!(
+                captured.eta_report.is_none(),
+                "the reduced cost is consumed once"
+            );
+            if terminal.is_some() {
+                assert!(matches!(
+                    captured.division_eta.outcomes()[0],
+                    Outcome::Unavailable { .. }
+                ));
+            } else {
+                assert_eq!(captured.division_eta.outcomes(), [Outcome::Rows { len: 0 }]);
+            }
+        }
+    }
+
+    #[test]
+    fn eta_range_handoff_retains_frame_sources_and_restores_storage_without_retry() {
+        struct NoRead;
+        impl Memory for NoRead {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("finished ETA range must not acquire live memory again");
+            }
+        }
+        let capacity = Capacities {
+            division_sources: 2,
+            ..Capacities::default()
+        };
+        let mut captured = Captured::with_capacities(&capacity, &[0; TABLE_COUNT]);
+        let first = Arc::new(UnitInputs::fixture(
+            vec![carmy::DivisionSeed {
+                pointer: 0x1234,
+                handle: Some(7),
+                ..Default::default()
+            }],
+            Outcome::Rows { len: 1 },
+        ));
+        let second = Arc::new(UnitInputs::fixture(
+            vec![carmy::DivisionSeed {
+                pointer: 0x5678,
+                handle: Some(7),
+                ..Default::default()
+            }],
+            Outcome::Rows { len: 1 },
+        ));
+        captured.install_unit_inputs(Some(Arc::clone(&first)), Some(Arc::clone(&second)), true);
+        let bytes = captured.allocated_bytes();
+        for checked in [true, false] {
+            assert_eq!(captured.prepare_eta_ranges(checked, 1), 1);
+            let mut range = captured.take_eta_range(0);
+            assert!(captured.allocated_bytes() < bytes);
+            // Range payloads contain owned operands; the job adapter owns any extra
+            // source leases. Moving a range does not consume this frame's sources.
+            assert_eq!(Arc::strong_count(&first), 2);
+            assert_eq!(Arc::strong_count(&second), 2);
+            assert_eq!(unit_sources(&captured.unit_inputs).first[0].pointer, 0x1234);
+            assert_eq!(
+                unit_sources(&captured.unit_inputs).second[0].pointer,
+                0x5678
+            );
+            for pass in 0..=usize::from(checked) {
+                range.fail("synthetic terminal ETA", pass, true);
+            }
+            captured.restore_eta_range(0, range);
+            captured.finish_eta_ranges();
+            let report = captured.eta_report.unwrap();
+            assert!(!report.matched);
+            assert_eq!(
+                captured.acquire_eta(&NoRead, 11, 22, checked),
+                ([false], [report.ticks])
+            );
+            assert!(matches!(
+                captured.division_eta.outcomes()[0],
+                Outcome::Unavailable { .. }
+            ));
+            assert_eq!(captured.allocated_bytes(), bytes);
+            assert_eq!(Arc::strong_count(&first), 2);
+            assert_eq!(Arc::strong_count(&second), 2);
+        }
+        captured.release_unit_inputs();
+        assert_eq!(Arc::strong_count(&first), 1);
+        assert_eq!(Arc::strong_count(&second), 1);
+        captured.reset();
+        assert!(captured.eta_report.is_none());
+    }
+
+    #[test]
+    fn presentation_handoff_restores_storage_and_exact_source_leases() {
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0; TABLE_COUNT]);
+        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        let first = Arc::new(UnitInputs::fixture(
+            vec![carmy::DivisionSeed {
+                pointer: 0x1234,
+                handle: Some(7),
+                ..Default::default()
+            }],
+            Outcome::Rows { len: 1 },
+        ));
+        let second = Arc::new(UnitInputs::fixture(
+            vec![carmy::DivisionSeed {
+                pointer: 0x5678,
+                handle: Some(11),
+                ..Default::default()
+            }],
+            Outcome::Rows { len: 1 },
+        ));
+        let bytes = captured.allocated_bytes();
+        let presentation_bytes = captured.division_presentation.allocated_bytes();
+        assert!(presentation_bytes > 0);
+        let report = division_presentation::CaptureReport {
+            matched: [true, false],
+            ticks: [89, 97],
+        };
+        for checked in [[false, false], [true, false], [false, true], [true, true]] {
+            captured.install_unit_inputs(Some(Arc::clone(&first)), Some(Arc::clone(&second)), true);
+            captured.presentation_report = Some(report);
+            let mut needed = [false; TABLE_COUNT];
+            for (table, checked) in division_presentation::TABLES.into_iter().zip(checked) {
+                needed[table.index()] = checked;
+            }
+            let request = captured.take_presentation_request(&countries, 11, 0x1000, &needed);
+            assert!(captured.presentation_report.is_none());
+            assert_eq!(captured.division_presentation.allocated_bytes(), 0);
+            assert_eq!(captured.allocated_bytes() + presentation_bytes, bytes);
+            assert_eq!(request.captured.allocated_bytes(), presentation_bytes);
+            assert_eq!(
+                (request.context.base, request.context.game_state),
+                (11, 0x1000)
+            );
+            assert_eq!(request.context.needed, checked);
+            assert!(Arc::ptr_eq(&request.countries, &countries));
+            assert!(Arc::ptr_eq(request.first.as_ref().unwrap(), &first));
+            let checking = checked.into_iter().any(|checked| checked);
+            if checking {
+                assert!(Arc::ptr_eq(request.second.as_ref().unwrap(), &second));
+                assert_ne!(
+                    request.first.as_ref().unwrap().seeds()[0].pointer,
+                    request.second.as_ref().unwrap().seeds()[0].pointer
+                );
+            } else {
+                assert!(request.second.is_none());
+            }
+            assert_eq!(Arc::strong_count(&countries), 2);
+            assert_eq!(Arc::strong_count(&first), 3);
+            assert_eq!(Arc::strong_count(&second), 2 + usize::from(checking));
+            captured.restore_presentation_request(request, Ok(report));
+            assert_eq!(captured.allocated_bytes(), bytes);
+            assert_eq!(
+                captured.division_presentation.allocated_bytes(),
+                presentation_bytes
+            );
+            assert_eq!(Arc::strong_count(&countries), 1);
+            assert_eq!(Arc::strong_count(&first), 2);
+            assert_eq!(Arc::strong_count(&second), 2);
+            assert!(Arc::ptr_eq(
+                captured.unit_inputs[0].as_ref().unwrap(),
+                &first
+            ));
+            assert!(Arc::ptr_eq(
+                captured.unit_inputs[1].as_ref().unwrap(),
+                &second
+            ));
+            let pending = captured.presentation_report.as_ref().unwrap();
+            assert_eq!(pending.matched, report.matched);
+            assert_eq!(pending.ticks, report.ticks);
+            // Reset must discard a pending report, not merely preserve an already
+            // consumed None, and release the frame's independent input leases.
+            captured.reset();
+            assert!(captured.presentation_report.is_none());
+            assert_eq!(captured.allocated_bytes(), bytes);
+            assert_eq!(Arc::strong_count(&first), 1);
+            assert_eq!(Arc::strong_count(&second), 1);
+        }
+    }
+
+    #[test]
+    fn presentation_terminal_reports_scatter_once_without_live_retry() {
+        struct NoPresentationRead {
+            independent: std::cell::Cell<usize>,
+            presentation: std::cell::Cell<usize>,
+            forbid_presentation: std::cell::Cell<bool>,
+        }
+        impl Memory for NoPresentationRead {
+            fn copy(&self, address: usize, _: &mut [u8]) -> bool {
+                // Presentation begins with this geometry root even for an empty
+                // census. New province tables legitimately read the same root,
+                // so the strict probe applies to the family handoff itself.
+                if address == 0x1000 + engine::cgame_state::PROVINCES {
+                    assert!(
+                        !self.forbid_presentation.get(),
+                        "terminal Presentation report must not retry live acquisition"
+                    );
+                    self.presentation.set(self.presentation.get() + 1);
+                } else {
+                    self.independent.set(self.independent.get() + 1);
+                }
+                false
+            }
+        }
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0; TABLE_COUNT]);
+        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        let first = Arc::new(UnitInputs::empty_rows());
+        let second = Arc::new(UnitInputs::new(0));
+        let mut needed = [false; TABLE_COUNT];
+        for table in division_presentation::TABLES {
+            needed[table.index()] = true;
+        }
+        let bytes = captured.allocated_bytes();
+        let report = division_presentation::CaptureReport {
+            matched: [true, false],
+            ticks: [113, 227],
+        };
+        for failure in [
+            None,
+            Some(crate::acquisition::Failure::Panicked),
+            Some(crate::acquisition::Failure::Stopped),
+        ] {
+            captured.reset();
+            captured.install_unit_inputs(Some(Arc::clone(&first)), Some(Arc::clone(&second)), true);
+            let request = captured.take_presentation_request(&countries, 11, 0x1000, &needed);
+            let context = request.context;
+            captured.restore_presentation_request(request, failure.map_or(Ok(report), Err));
+            let expected_outcomes = captured.division_presentation.outcomes();
+            if failure.is_some() {
+                assert!(
+                    expected_outcomes
+                        .iter()
+                        .all(|outcome| matches!(outcome, Outcome::Unavailable { .. }))
+                );
+                assert_eq!(captured.division_presentation.checked_mismatches(), [1; 2]);
+            }
+            let memory = NoPresentationRead {
+                independent: std::cell::Cell::new(0),
+                presentation: std::cell::Cell::new(0),
+                forbid_presentation: std::cell::Cell::new(true),
+            };
+            let completed = captured.acquire_presentation(&memory, context);
+            assert_eq!(memory.presentation.get(), 0);
+            assert_eq!(memory.independent.get(), 0);
+            assert!(captured.presentation_report.is_none());
+            // Exercise the same completed result through global table routing,
+            // where unrelated province consumers may read this native root.
+            captured.presentation_report = Some(completed);
+            memory.forbid_presentation.set(false);
+            let (matched, ticks) =
+                captured.capture_before_eta(&memory, 11, 0x1000, 0, &needed, false);
+            assert!(memory.independent.get() > 0);
+            assert!(
+                captured.presentation_report.is_none(),
+                "the report is consumed once"
+            );
+            assert_eq!(captured.division_presentation.outcomes(), expected_outcomes);
+            for (slot, table) in division_presentation::TABLES.into_iter().enumerate() {
+                assert_eq!(
+                    matched[table.index()],
+                    failure.is_none() && report.matched[slot]
+                );
+                assert_eq!(
+                    ticks[table.index()],
+                    if failure.is_none() {
+                        report.ticks[slot]
+                    } else {
+                        0
+                    }
+                );
+            }
+            assert_eq!(captured.allocated_bytes(), bytes);
+            assert_eq!(captured.decode_division_presentation_inputs(), [0; 2]);
+            assert_eq!(captured.division_presentation.outcomes(), expected_outcomes);
+            // The same probe must detect an actual acquisition, making absence
+            // above meaningful even when every unrelated read fails immediately.
+            let before = memory.presentation.get();
+            captured.acquire_presentation(&memory, context);
+            assert!(memory.presentation.get() > before);
+        }
+    }
+
+    #[test]
+    fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results() {
+        struct Reads {
+            total: std::cell::Cell<usize>,
+            governance: std::cell::Cell<usize>,
+        }
+        impl Memory for Reads {
+            fn copy(&self, address: usize, _: &mut [u8]) -> bool {
+                self.total.set(self.total.get() + 1);
+                if address == 0x1000 + engine::cgame_state::TECH_SHARING_GROUPS {
+                    self.governance.set(self.governance.get() + 1);
+                }
+                false
             }
         }
         for failure in [
@@ -1470,214 +2331,524 @@ mod tests {
             Some(crate::acquisition::Failure::Stopped),
         ] {
             let mut captured = Captured::with_capacities(&Capacities::default(), &[0; TABLE_COUNT]);
-            captured.install_unit_inputs(
-                Some(Arc::new(UnitInputs::fixture(
-                    Vec::new(),
-                    Outcome::Rows { len: 0 },
-                ))),
-                Some(Arc::new(UnitInputs::fixture(
-                    Vec::new(),
-                    Outcome::Rows { len: 0 },
-                ))),
-                true,
-            );
-            let eta = TableId::DivisionEta.index();
+            captured.governance.focus_raw_mode = true;
+            captured.governance_report = Some(governance::CaptureReport::default());
+            let bytes = captured.allocated_bytes();
+            let governance_bytes = captured.governance.allocated_bytes();
             let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
-            let request = captured.take_eta_request(&countries, 0, 0x1000, true);
-            let overhead = captured.overhead[eta];
-            let memory = FailedReads(std::cell::Cell::new(0));
-            let (checks, ticks) =
-                captured.capture_before_eta(&memory, 0, 0x1000, 0, &[true; TABLE_COUNT], true);
-            assert!(
-                memory.0.get() > 0,
-                "independent live work ran before ETA recovery"
+            let request = captured.take_governance_request(
+                &countries,
+                11,
+                0x1000,
+                1,
+                failure.is_none(),
+                &[true; TABLE_COUNT],
             );
-            assert!(!checks[eta]);
-            assert_eq!(ticks[eta], 0);
-            assert_eq!(captured.overhead[eta], overhead);
-            assert!(captured.eta_report.is_none());
-            let report = failure.map_or(
-                Ok(division_eta::AcquisitionReport {
-                    matched: true,
-                    ticks: 123,
-                }),
-                Err,
+            assert!(captured.governance_report.is_none());
+            assert_eq!(captured.governance.allocated_bytes(), 0);
+            assert_eq!(captured.allocated_bytes() + governance_bytes, bytes);
+            assert_eq!(request.captured.allocated_bytes(), governance_bytes);
+            assert!(request.captured.focus_raw_mode);
+            assert!(Arc::ptr_eq(&request.countries, &countries));
+            assert_eq!(Arc::strong_count(&countries), 2);
+            assert_eq!(
+                (
+                    request.context.base,
+                    request.context.game_state,
+                    request.context.hour
+                ),
+                (11, 0x1000, 1)
             );
-            captured.restore_eta_request(request, Some(report));
-            let (matched, ticks) = captured.capture_eta(&NoRead, 0, 0x1000, true);
-            assert_eq!(matched, failure.is_none());
-            assert_eq!(ticks, overhead + if failure.is_none() { 123 } else { 0 });
-            assert!(captured.eta_report.is_none());
-            if failure.is_some() {
-                assert!(matches!(
-                    captured.division_eta.outcomes()[0],
-                    Outcome::Unavailable { .. }
-                ));
+            assert_eq!(request.context.needed, [true; governance::N]);
+            let context = request.context;
+            let report = governance::CaptureReport {
+                matched: std::array::from_fn(|slot| slot % 2 == 0),
+                ticks: std::array::from_fn(|slot| slot as u64 + 101),
+            };
+            captured.restore_governance_request(request, failure.map_or(Ok(report), Err));
+            assert_eq!(Arc::strong_count(&countries), 1);
+            assert_eq!(captured.allocated_bytes(), bytes);
+            assert!(captured.governance.focus_raw_mode);
+            let expected_outcomes = captured.governance.outcomes();
+            let memory = Reads {
+                total: std::cell::Cell::new(0),
+                governance: std::cell::Cell::new(0),
+            };
+            let (matched, ticks) = captured.capture_before_eta(
+                &memory,
+                11,
+                0x1000,
+                1,
+                &[true; TABLE_COUNT],
+                context.force_full,
+            );
+            assert!(memory.total.get() > 0);
+            assert_eq!(
+                memory.governance.get(),
+                0,
+                "completed Governance must not run again during independent capture"
+            );
+            assert!(captured.governance_report.is_none());
+            assert_eq!(captured.governance.outcomes(), expected_outcomes);
+            for (slot, table) in governance::TABLES.into_iter().enumerate() {
+                assert_eq!(
+                    matched[table.index()],
+                    failure.is_none() && report.matched[slot]
+                );
+                assert_eq!(
+                    ticks[table.index()],
+                    if failure.is_none() {
+                        report.ticks[slot]
+                    } else {
+                        0
+                    }
+                );
+                if failure.is_some() && (2..=4).contains(&slot) {
+                    assert_eq!(
+                        expected_outcomes[slot],
+                        Outcome::Unavailable {
+                            reason: replay::cadence::SKIPPED_REASON
+                        }
+                    );
+                }
             }
+            // A direct control capture proves that the spy detects Governance work.
+            captured.governance.capture_owned(
+                &memory,
+                governance::CaptureContext {
+                    force_full: true,
+                    ..context
+                },
+            );
+            assert!(memory.governance.get() > 0);
+            captured.reset();
+            assert!(captured.governance_report.is_none());
         }
     }
 
     #[test]
-    fn deferred_eta_rejected_dispatch_still_runs_both_independent_live_passes() {
-        struct FailedReads(std::cell::Cell<usize>);
-        impl Memory for FailedReads {
+    fn intel_residual_handoff_preserves_terminal_results_without_repeating_live_reads() {
+        struct NoReads;
+        impl Memory for NoReads {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("completed residual capture and delegated raw jobs must not read again");
+            }
+        }
+        for failure in [
+            None,
+            Some(crate::acquisition::Failure::Panicked),
+            Some(crate::acquisition::Failure::Stopped),
+        ] {
+            let mut captured = Captured::with_capacities(&Capacities::default(), &[0; TABLE_COUNT]);
+            captured.intel.capitulation_raw_mode = true;
+            captured.intel.relations_raw_mode = true;
+            let bytes = captured.allocated_bytes();
+            let family_bytes = captured.intel.allocated_bytes();
+            let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+            let context = intel::CaptureContext {
+                base: 11,
+                game_state: 0x1000,
+                hour: 1,
+                force_full: true,
+                needed: [true; intel::N],
+            };
+            let request = captured.take_intel_residual_request(&countries, context);
+            assert_eq!(captured.intel.allocated_bytes(), 0);
+            assert_eq!(captured.allocated_bytes() + family_bytes, bytes);
+            assert_eq!(request.captured.allocated_bytes(), family_bytes);
+            assert!(Arc::ptr_eq(&request.countries, &countries));
+            let original = intel::CaptureReport {
+                matched: [true; intel::N],
+                ticks: std::array::from_fn(|index| index as u64 + 101),
+            };
+            captured.restore_intel_residual_request(request, failure.map_or(Ok(original), Err));
+            assert_eq!(Arc::strong_count(&countries), 1);
+            assert_eq!(captured.allocated_bytes(), bytes);
+            let outcomes = captured.intel.outcomes();
+            let report = captured.acquire_intel(&NoReads, context);
+            assert!(captured.intel_residual_report.is_none());
+            for index in (1..=12).chain(std::iter::once(15)) {
+                assert_eq!(captured.intel.outcomes()[index], outcomes[index]);
+                assert_eq!(report.matched[index], failure.is_none());
+                assert_eq!(
+                    report.ticks[index],
+                    if failure.is_none() {
+                        original.ticks[index]
+                    } else {
+                        0
+                    }
+                );
+            }
+            for index in [0, 13, 14] {
+                assert!(!report.matched[index]);
+                assert_eq!(report.ticks[index], 0);
+            }
+            captured.reset();
+            assert!(captured.intel_residual_report.is_none());
+        }
+    }
+
+    #[test]
+    fn ship_models_late_terminal_handoff_is_unavailable_consumed_once_and_keeps_cold_check() {
+        struct NoReads;
+        impl Memory for NoReads {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("terminal ShipModels routing must not retry owned detail reads");
+            }
+        }
+        let mut captured = Captured::with_capacities(&Capacities::default(), &[0; TABLE_COUNT]);
+        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        let mut needed = [false; TABLE_COUNT];
+        let table = TableId::ShipModels.index();
+        needed[table] = true;
+        for second in [false, true] {
+            captured.ship_models.begin_sources(second);
+            captured
+                .ship_models
+                .finish_sources(second, Outcome::Rows { len: 0 });
+        }
+        let request = captured.take_ship_models_request(&countries, 11, &needed);
+        let family_bytes = request.captured.allocated_bytes();
+        assert_eq!(captured.ship_models.allocated_bytes(), 0);
+        captured.restore_ship_models_request(request, Err(crate::acquisition::Failure::Panicked));
+        assert_eq!(captured.ship_models.allocated_bytes(), family_bytes);
+        assert_eq!(
+            captured.ship_models_report.unwrap().ticks,
+            [0],
+            "interrupted worker detail cost remains unmeasured"
+        );
+        let (matched, ticks) = captured.capture_ship_models(&NoReads, 11, 0x1000, 0, true, false);
+        assert!(!matched);
+        assert_eq!(ticks, 0, "failed whole-table service cost is unmeasured");
+        assert!(
+            captured.ship_models_report.is_none(),
+            "terminal report is consumed once"
+        );
+        assert!(captured.ship_models.checked_mismatches()[0] > 0);
+        assert!(matches!(
+            captured.ship_models.outcomes()[0],
+            Outcome::Unavailable {
+                reason: "ship models acquisition panicked"
+            }
+        ));
+        let (again, again_ticks) =
+            captured.capture_ship_models(&NoReads, 11, 0x1000, 0, true, false);
+        assert!(!again);
+        assert_eq!(again_ticks, 0);
+        assert!(captured.ship_models_report.is_none());
+        assert!(matches!(
+            captured.ship_models.outcomes()[0],
+            Outcome::Unavailable {
+                reason: "ship models acquisition panicked"
+            }
+        ));
+
+        captured.reset();
+        for second in [false, true] {
+            captured.ship_models.begin_sources(second);
+            captured
+                .ship_models
+                .finish_sources(second, Outcome::Rows { len: 0 });
+        }
+        let (fresh, _fresh_ticks) =
+            captured.capture_ship_models(&NoReads, 11, 0x1000, 0, true, true);
+        assert!(
+            fresh,
+            "a new complete source epoch clears the stale terminal failure"
+        );
+        assert_eq!(captured.ship_models.checked_mismatches(), [0]);
+        assert_eq!(captured.ship_models.outcomes(), [Outcome::Rows { len: 0 }]);
+        assert_eq!(Arc::strong_count(&countries), 1);
+    }
+
+    #[test]
+    fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_once() {
+        struct NoReads;
+        impl Memory for NoReads {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("a terminal hourly family must not read again");
+            }
+        }
+        #[derive(Default)]
+        struct Reads(std::cell::Cell<usize>);
+        impl Memory for Reads {
             fn copy(&self, _: usize, _: &mut [u8]) -> bool {
                 self.0.set(self.0.get() + 1);
                 false
             }
         }
+        use crate::acquisition::Failure::{Panicked, Stopped};
         let mut captured = Captured::with_capacities(&Capacities::default(), &[0; TABLE_COUNT]);
-        captured.divisions.finish(Outcome::Rows { len: 0 }, false);
-        captured.divisions.finish(Outcome::Rows { len: 0 }, true);
-        captured.install_unit_inputs(
-            Some(Arc::new(UnitInputs::fixture(
-                Vec::new(),
-                Outcome::Rows { len: 0 },
-            ))),
-            Some(Arc::new(UnitInputs::fixture(
-                Vec::new(),
-                Outcome::Rows { len: 0 },
-            ))),
-            true,
-        );
         let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
-        let request = captured.take_eta_request(&countries, 0, 0x1000, true);
-        captured.restore_eta_request(request, None);
-        let memory = FailedReads(std::cell::Cell::new(0));
-        captured.capture_before_eta(&memory, 0, 0x1000, 0, &[true; TABLE_COUNT], true);
-        let before_eta = memory.0.get();
-        let (matched, _) = captured.capture_eta(&memory, 0, 0x1000, true);
-        assert!(!matched);
-        assert_eq!(
-            memory.0.get() - before_eta,
-            2,
-            "first and second ETA province-header reads remain independent"
-        );
-        assert!(matches!(
-            captured.division_eta.outcomes()[0],
-            Outcome::Unavailable { .. }
-        ));
-    }
-
-    #[test]
-    fn eta_owned_handoff_restores_storage_and_terminal_worker_results_without_rereading() {
-        struct NoRead;
-        impl Memory for NoRead {
-            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-                panic!("completed ETA must not acquire live memory again");
+        let bytes = captured.allocated_bytes();
+        let supply_bytes = captured.supply_trains.allocated_bytes();
+        let portrait_bytes = captured.character_portraits.allocated_bytes();
+        let province_order_bytes = captured.province_unit_order.allocated_bytes();
+        for bits in 0_u32..16 {
+            let mut needed = [false; TABLE_COUNT];
+            for (bit, table) in [
+                TableId::SupplyNodes,
+                TableId::TrainInventory,
+                TableId::CharacterPortraits,
+                TableId::ProvinceUnitOrder,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                needed[table.index()] = bits & (1 << bit) != 0;
+            }
+            for (supply_failure, portrait_failure, province_order_failure) in [
+                (None, None, None),
+                (Some(Panicked), None, None),
+                (None, Some(Panicked), None),
+                (None, None, Some(Panicked)),
+                (Some(Stopped), None, None),
+                (None, Some(Stopped), None),
+                (None, None, Some(Stopped)),
+            ] {
+                captured.reset();
+                let before = captured.outcomes();
+                captured.supply_trains_report = Some(supply_trains::CaptureReport::default());
+                captured.character_portraits_report =
+                    Some(character_portraits::CaptureReport::default());
+                captured.province_unit_order_report =
+                    Some(province_unit_order::CaptureReport::default());
+                let supply = captured.take_supply_trains_request(&countries, 11, 0x1000, &needed);
+                assert!(captured.supply_trains_report.is_none());
+                assert_eq!(captured.supply_trains.allocated_bytes(), 0);
+                assert_eq!(
+                    captured.character_portraits.allocated_bytes(),
+                    portrait_bytes
+                );
+                assert_eq!(supply.captured.allocated_bytes(), supply_bytes);
+                assert_eq!(captured.allocated_bytes() + supply_bytes, bytes);
+                let portraits =
+                    captured.take_character_portraits_request(&countries, 11, 0x1000, &needed);
+                assert!(captured.character_portraits_report.is_none());
+                assert_eq!(captured.character_portraits.allocated_bytes(), 0);
+                assert_eq!(portraits.captured.allocated_bytes(), portrait_bytes);
+                assert_eq!(
+                    captured.allocated_bytes() + supply_bytes + portrait_bytes,
+                    bytes
+                );
+                let province_order = captured.take_province_unit_order_request(11, 0x1000, &needed);
+                assert!(captured.province_unit_order_report.is_none());
+                assert_eq!(captured.province_unit_order.allocated_bytes(), 0);
+                assert_eq!(
+                    province_order.captured.allocated_bytes(),
+                    province_order_bytes
+                );
+                assert_eq!(
+                    captured.allocated_bytes()
+                        + supply_bytes
+                        + portrait_bytes
+                        + province_order_bytes,
+                    bytes
+                );
+                assert!(Arc::ptr_eq(&supply.countries, &countries));
+                assert!(Arc::ptr_eq(&portraits.countries, &countries));
+                assert_eq!(Arc::strong_count(&countries), 3);
+                let supply_context = supply.context;
+                let portrait_context = portraits.context;
+                let province_order_context = province_order.context;
+                assert_eq!(
+                    supply_context.needed,
+                    local(&supply_trains::TABLES, &needed)
+                );
+                assert_eq!(
+                    portrait_context.needed,
+                    local(&character_portraits::TABLES, &needed)
+                );
+                assert_eq!(
+                    province_order_context.needed,
+                    local(&province_unit_order::TABLES, &needed)
+                );
+                assert_eq!(
+                    (supply_context.base, supply_context.game_state),
+                    (11, 0x1000)
+                );
+                assert_eq!(
+                    (portrait_context.base, portrait_context.game_state),
+                    (11, 0x1000)
+                );
+                assert_eq!(
+                    (
+                        province_order_context.base,
+                        province_order_context.game_state
+                    ),
+                    (11, 0x1000)
+                );
+                let supply_report = supply_trains::CaptureReport {
+                    matched: [supply_context.needed[0], false],
+                    ticks: [101, 103],
+                };
+                let portrait_report = character_portraits::CaptureReport {
+                    matched: portrait_context.needed,
+                    ticks: [107],
+                };
+                let province_order_report = province_unit_order::CaptureReport {
+                    matched: province_order_context.needed,
+                    ticks: [109],
+                };
+                captured.restore_supply_trains_request(
+                    supply,
+                    supply_failure.map_or(Ok(supply_report), Err),
+                );
+                assert_eq!(Arc::strong_count(&countries), 2);
+                assert!(captured.supply_trains_report.is_some());
+                assert!(captured.character_portraits_report.is_none());
+                captured.restore_character_portraits_request(
+                    portraits,
+                    portrait_failure.map_or(Ok(portrait_report), Err),
+                );
+                assert_eq!(Arc::strong_count(&countries), 1);
+                captured.restore_province_unit_order_request(
+                    province_order,
+                    province_order_failure.map_or(Ok(province_order_report), Err),
+                );
+                assert_eq!(captured.allocated_bytes(), bytes);
+                let outcomes = captured.outcomes();
+                for (index, outcome) in outcomes.into_iter().enumerate() {
+                    if ![
+                        TableId::SupplyNodes.index(),
+                        TableId::TrainInventory.index(),
+                        TableId::CharacterPortraits.index(),
+                        TableId::ProvinceUnitOrder.index(),
+                    ]
+                    .contains(&index)
+                    {
+                        assert_eq!(outcome, before[index], "unowned table {index}");
+                    }
+                }
+                assert_eq!(
+                    captured.supply_trains.checked_mismatches(),
+                    supply_context
+                        .needed
+                        .map(|needed| usize::from(needed && supply_failure.is_some()))
+                );
+                assert_eq!(
+                    captured.character_portraits.checked_mismatches(),
+                    portrait_context
+                        .needed
+                        .map(|needed| usize::from(needed && portrait_failure.is_some()))
+                );
+                assert_eq!(
+                    captured.province_unit_order.checked_mismatches(),
+                    province_order_context
+                        .needed
+                        .map(|needed| usize::from(needed && province_order_failure.is_some()))
+                );
+                let supply = captured.acquire_supply_trains(&NoReads, supply_context);
+                let portraits = captured.acquire_character_portraits(&NoReads, portrait_context);
+                let province_order =
+                    captured.acquire_province_unit_order(&NoReads, province_order_context);
+                assert_eq!(
+                    supply.matched,
+                    if supply_failure.is_none() {
+                        supply_report.matched
+                    } else {
+                        [false; 2]
+                    }
+                );
+                assert_eq!(
+                    portraits.matched,
+                    if portrait_failure.is_none() {
+                        portrait_report.matched
+                    } else {
+                        [false]
+                    }
+                );
+                assert_eq!(
+                    province_order.matched,
+                    if province_order_failure.is_none() {
+                        province_order_report.matched
+                    } else {
+                        [false]
+                    }
+                );
+                assert_eq!(
+                    supply.ticks,
+                    if supply_failure.is_none() {
+                        supply_report.ticks
+                    } else {
+                        [0; 2]
+                    }
+                );
+                assert_eq!(
+                    portraits.ticks,
+                    if portrait_failure.is_none() {
+                        portrait_report.ticks
+                    } else {
+                        [0]
+                    }
+                );
+                assert_eq!(
+                    province_order.ticks,
+                    if province_order_failure.is_none() {
+                        province_order_report.ticks
+                    } else {
+                        [0]
+                    }
+                );
+                assert!(captured.supply_trains_report.is_none());
+                assert!(captured.character_portraits_report.is_none());
+                assert!(captured.province_unit_order_report.is_none());
+                // Route the identical reports through the full ordinary stage.
+                // Unrelated families may legitimately read the same native roots.
+                captured.supply_trains_report = Some(supply);
+                captured.character_portraits_report = Some(portraits);
+                captured.province_unit_order_report = Some(province_order);
+                let memory = Reads::default();
+                let (matched, ticks) =
+                    captured.capture_before_eta(&memory, 11, 0x1000, 1, &needed, false);
+                assert!(memory.0.get() > 0);
+                assert_eq!(local(&supply_trains::TABLES, &matched), supply.matched);
+                assert_eq!(local(&supply_trains::TABLES, &ticks), supply.ticks);
+                assert_eq!(
+                    local(&character_portraits::TABLES, &matched),
+                    portraits.matched
+                );
+                assert_eq!(local(&character_portraits::TABLES, &ticks), portraits.ticks);
+                assert_eq!(
+                    local(&province_unit_order::TABLES, &matched),
+                    province_order.matched
+                );
+                assert_eq!(
+                    local(&province_unit_order::TABLES, &ticks),
+                    province_order.ticks
+                );
+                assert_eq!(
+                    local(&supply_trains::TABLES, &captured.outcomes()),
+                    local(&supply_trains::TABLES, &outcomes)
+                );
+                assert_eq!(
+                    local(&character_portraits::TABLES, &captured.outcomes()),
+                    local(&character_portraits::TABLES, &outcomes)
+                );
+                assert_eq!(
+                    local(&province_unit_order::TABLES, &captured.outcomes()),
+                    local(&province_unit_order::TABLES, &outcomes)
+                );
+                assert!(captured.supply_trains_report.is_none());
+                assert!(captured.character_portraits_report.is_none());
+                assert!(captured.province_unit_order_report.is_none());
+                // With no loan or terminal report, the same helpers still run
+                // the direct capture and its requested comparison passes.
+                let direct = Reads::default();
+                captured.acquire_supply_trains(&direct, supply_context);
+                captured.acquire_character_portraits(&direct, portrait_context);
+                captured.acquire_province_unit_order(&direct, province_order_context);
+                assert_eq!(direct.0.get(), 4 + bits.count_ones() as usize);
+                captured.supply_trains_report = Some(supply);
+                captured.character_portraits_report = Some(portraits);
+                captured.province_unit_order_report = Some(province_order);
+                captured.reset();
+                assert!(captured.supply_trains_report.is_none());
+                assert!(captured.character_portraits_report.is_none());
+                assert!(captured.province_unit_order_report.is_none());
+                assert_eq!(captured.allocated_bytes(), bytes);
             }
         }
-        let capacity = Capacities {
-            division_sources: 2,
-            ..Capacities::default()
-        };
-        let mut captured = Captured::with_capacities(&capacity, &[0; TABLE_COUNT]);
-        let bytes = captured.allocated_bytes();
-        let source = DivisionSource {
-            pointer: 0x1234,
-            division: 7,
-            ..Default::default()
-        };
-        captured.visit_division_source(source, false);
-        captured.divisions.finish(Outcome::Rows { len: 1 }, false);
-        captured.visit_division_source(
-            DivisionSource {
-                pointer: 0x5678,
-                ..source
-            },
-            true,
-        );
-        captured.divisions.finish(Outcome::Rows { len: 1 }, true);
-        let first = Arc::new(UnitInputs::fixture(
-            vec![carmy::DivisionSeed {
-                pointer: 0x1234,
-                handle: Some(source.division),
-                ..Default::default()
-            }],
-            Outcome::Rows { len: 1 },
-        ));
-        let second = Arc::new(UnitInputs::fixture(
-            vec![carmy::DivisionSeed {
-                pointer: 0x5678,
-                handle: Some(source.division),
-                ..Default::default()
-            }],
-            Outcome::Rows { len: 1 },
-        ));
-        captured.install_unit_inputs(Some(Arc::clone(&first)), Some(Arc::clone(&second)), true);
-        assert_eq!(Arc::strong_count(&first), 2);
-        assert_eq!(Arc::strong_count(&second), 2);
-        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
-        let mut request = captured.take_eta_request(&countries, 11, 22, true);
-        assert!(Arc::ptr_eq(&request.countries, &countries));
-        assert_eq!(
-            (request.base, request.state, request.checked),
-            (11, 22, true)
-        );
-        assert!(Arc::ptr_eq(request.first.as_ref().unwrap(), &first));
-        assert!(Arc::ptr_eq(request.second.as_ref().unwrap(), &second));
-        assert_eq!(request.first.as_ref().unwrap().seeds()[0].pointer, 0x1234);
-        assert_eq!(request.second.as_ref().unwrap().seeds()[0].pointer, 0x5678);
-        assert_eq!(Arc::strong_count(&first), 3);
-        assert_eq!(Arc::strong_count(&second), 3);
-        assert!(captured.allocated_bytes() < bytes);
-        request.captured.fail("synthetic terminal ETA", true);
-        captured.restore_eta_request(
-            request,
-            Some(Ok(division_eta::AcquisitionReport {
-                matched: false,
-                ticks: 123,
-            })),
-        );
-        assert_eq!(Arc::strong_count(&first), 2);
-        assert_eq!(Arc::strong_count(&second), 2);
-        assert_eq!(captured.allocated_bytes(), bytes);
-        assert_eq!(
-            captured.acquire_eta(&NoRead, 11, 22, true),
-            ([false], [123])
-        );
-        assert_eq!(
-            captured.division_eta.outcomes(),
-            [Outcome::Unavailable {
-                reason: "synthetic terminal ETA"
-            }]
-        );
-
-        for failure in [
-            crate::acquisition::Failure::Panicked,
-            crate::acquisition::Failure::Stopped,
-        ] {
-            let request = captured.take_eta_request(&countries, 11, 22, true);
-            captured.restore_eta_request(request, Some(Err(failure)));
-            assert_eq!(captured.acquire_eta(&NoRead, 11, 22, true), ([false], [0]));
-            assert!(matches!(
-                captured.division_eta.outcomes()[0],
-                Outcome::Unavailable { .. }
-            ));
-            assert_eq!(captured.allocated_bytes(), bytes);
-        }
-        let request = captured.take_eta_request(&countries, 11, 22, true);
-        captured.restore_eta_request(request, None);
-        assert!(captured.eta_report.is_none());
-        assert_eq!(captured.allocated_bytes(), bytes);
-        // A rejected dispatch leaves the shared source census untouched, for
-        // the existing synchronous path and the other division consumers.
-        assert_eq!(captured.divisions.first[0].pointer, 0x1234);
-        assert_eq!(captured.divisions.second[0].pointer, 0x5678);
-        assert_eq!(unit_sources(&captured.unit_inputs).first[0].pointer, 0x1234);
-        assert_eq!(
-            unit_sources(&captured.unit_inputs).second[0].pointer,
-            0x5678
-        );
-        let request = captured.take_eta_request(&countries, 11, 22, false);
-        assert!(request.second.is_none());
-        assert_eq!(Arc::strong_count(&second), 2);
-        captured.restore_eta_request(request, None);
-        captured.release_unit_inputs();
-        assert_eq!(Arc::strong_count(&first), 1);
-        assert_eq!(Arc::strong_count(&second), 1);
-        captured.reset();
-        assert!(captured.eta_report.is_none());
     }
 
     #[test]

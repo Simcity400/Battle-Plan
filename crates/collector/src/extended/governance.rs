@@ -182,6 +182,24 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("Power balance and children", 15, &[15, 16, 17, 18]),
 ];
 
+/// Callback-local inputs for an exclusively owned governance acquisition.
+/// Native readers are constructed on the executing thread and never retained.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CaptureContext {
+    pub base: usize,
+    pub game_state: usize,
+    pub needed: [bool; N],
+    pub hour: i32,
+    pub force_full: bool,
+}
+
+/// Per-table results from the existing acquisition and independent cold pass.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CaptureReport {
+    pub matched: [bool; N],
+    pub ticks: [u64; N],
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capacities {
     rows: [usize; N],
@@ -278,6 +296,31 @@ pub struct Captured {
 }
 
 impl Captured {
+    /// Allocation-free replacement while this frame's buffers belong to an
+    /// acquisition worker. The caller restores the original before any view,
+    /// growth, delegated Focus installation, or publication.
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(
+            &Capacities {
+                rows: [0; N],
+                focus_text: 0,
+                definition_text: 0,
+                party_text: 0,
+                idea_text: 0,
+                decision_text: 0,
+                modifier_text: 0,
+                modifier_values: 0,
+                tactic_text: 0,
+                balance_text: 0,
+                party_countries: 0,
+                idea_countries: 0,
+                decision_countries: 0,
+                dictionary: 0,
+            },
+            &[CONSISTENCY_TARGET; N],
+        )
+    }
+
     pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
         let successful = group_success(successful);
         Self {
@@ -322,6 +365,74 @@ impl Captured {
             focus_raw_mode: false,
         }
     }
+
+    /// Run the unchanged complete family capture on its owning thread. Focus
+    /// delegation must already describe this callback before dispatch.
+    pub(crate) fn capture_owned(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+    ) -> CaptureReport {
+        let (matched, ticks) = self.capture(
+            memory,
+            context.base,
+            context.game_state,
+            &context.needed,
+            context.hour,
+            context.force_full,
+        );
+        CaptureReport { matched, ticks }
+    }
+
+    /// Terminal completion after an accepted worker failure. Partial rows and
+    /// arena lengths cannot become publishable, genuine cadence skips remain
+    /// skips, and an independently delegated Focus payload retains ownership.
+    /// No native reads or synchronous retry are performed here.
+    pub(crate) fn fail_owned_capture(
+        &mut self,
+        context: CaptureContext,
+        reason: &'static str,
+    ) -> CaptureReport {
+        self.reset();
+        macro_rules! reject {
+            ($($field:ident = $index:literal),+ $(,)?) => {
+                $({
+                    let active = replay::cadence::should_walk(
+                        TABLES[$index], context.hour, context.force_full,
+                    );
+                    self.$field.outcome = Outcome::Unavailable {
+                        reason: if active { reason } else { replay::cadence::SKIPPED_REASON },
+                    };
+                    self.$field.checked = active && context.needed[$index];
+                    self.$field.mismatches = usize::from(self.$field.checked);
+                })+
+            };
+        }
+        if !self.focus_raw_mode {
+            reject!(focus = 0, completed = 1);
+        }
+        reject!(
+            technologies = 2,
+            slots = 3,
+            definitions = 4,
+            politics = 5,
+            parties = 6,
+            ideas = 7,
+            counts = 8,
+            decisions = 9,
+            modifiers = 10,
+            tactics = 11,
+            operands = 12,
+            sharing = 13,
+            sharing_members = 14,
+            balances = 15,
+            balance_members = 16,
+            ranges = 17,
+            overrides = 18,
+        );
+        CaptureReport::default()
+    }
+
     pub fn reset(&mut self) {
         self.focus.reset();
         self.completed.reset();
@@ -2189,6 +2300,78 @@ mod tests {
     use engine::cnational_focus;
 
     #[test]
+    fn owned_governance_vacancy_has_no_buffer_allocation() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Captured>();
+        let captured = Captured::vacant();
+        assert_eq!(captured.allocated_bytes(), 0);
+        assert!(captured.dictionary.is_empty());
+        assert!(captured.dictionary_second.is_empty());
+        assert!(!captured.focus_raw_mode);
+    }
+
+    #[test]
+    fn owned_governance_failure_preserves_cadence_and_focus_delegation() {
+        for force_full in [false, true] {
+            for delegated_focus in [false, true] {
+                let mut captured = Captured::vacant();
+                captured.focus_raw_mode = delegated_focus;
+                captured.definition_text.first = vec![1, 2, 3];
+                captured.definition_text.len = 3;
+                captured.definition_text.required = 7;
+                captured.modifier_values.first = vec![11, 12];
+                captured.modifier_values.len = 2;
+                captured.modifier_values.required = 4;
+                captured.dictionary_required = 9;
+                captured.technologies.checked = true;
+                captured.technologies.mismatches = 5;
+                captured.focus.checked = true;
+                captured.focus.mismatches = 5;
+                let context = CaptureContext {
+                    base: 0,
+                    game_state: 0,
+                    needed: std::array::from_fn(|index| index % 2 == 0),
+                    hour: 1,
+                    force_full,
+                };
+                let report = captured.fail_owned_capture(context, "worker stopped");
+                assert_eq!(report.matched, [false; N]);
+                assert_eq!(report.ticks, [0; N]);
+                assert_eq!(captured.focus_raw_mode, delegated_focus);
+                assert_eq!(captured.definition_text.len, 0);
+                assert_eq!(captured.definition_text.required, 0);
+                assert_eq!(captured.modifier_values.len, 0);
+                assert_eq!(captured.modifier_values.required, 0);
+                assert_eq!(captured.dictionary_required, 0);
+                for (index, outcome) in captured.outcomes().into_iter().enumerate() {
+                    let delegated = delegated_focus && index < 2;
+                    let skipped = !force_full && (2..=4).contains(&index);
+                    assert_eq!(
+                        outcome,
+                        Outcome::Unavailable {
+                            reason: if delegated {
+                                "clock unavailable"
+                            } else if skipped {
+                                replay::cadence::SKIPPED_REASON
+                            } else {
+                                "worker stopped"
+                            },
+                        },
+                        "{index}",
+                    );
+                    assert_eq!(
+                        captured.checked_mismatches()[index],
+                        usize::from(!delegated && !skipped && context.needed[index]),
+                        "{index}",
+                    );
+                }
+                assert_eq!(captured.technologies.checked, force_full);
+                assert_eq!(captured.focus.checked, !delegated_focus);
+            }
+        }
+    }
+
+    #[test]
     fn focus_copy_report_bookkeeping_and_terminal_failure_are_table_local() {
         let mut captured = Captured::with_capacities(&Capacities::default(), &[0; N]);
         captured.focus_raw_mode = true;
@@ -3340,7 +3523,10 @@ mod tests {
             assert_eq!(report.matched, needed);
         }
         for bytes in [0, 20, 88] {
-            let caps = Capacities { focus_text: bytes, ..Capacities::default() };
+            let caps = Capacities {
+                focus_text: bytes,
+                ..Capacities::default()
+            };
             let mut captured = Captured::with_capacities(&caps, &[0; TABLE_COUNT]);
             let (report, first) =
                 Fixture::copy_first(&mut captured, &fixture.memory(), Some(&mut FocusJob::new()));

@@ -181,11 +181,8 @@ impl Captured {
         // skipped here. Matched flags and costs come from the raw compare,
         // applied by the caller after this returns. Hourly tables below
         // always run.
-        let walk = replay::cadence::should_walk(
-            replay::rows::TableId::Projects,
-            hour,
-            force_full,
-        ) && !self.raw_mode;
+        let walk = replay::cadence::should_walk(replay::rows::TableId::Projects, hour, force_full)
+            && !self.raw_mode;
         if self.raw_mode {
             // Refresh payload staged: leave the reset outcomes for the decode
             // worker, which installs identical rows, outcomes and arenas.
@@ -211,11 +208,7 @@ impl Captured {
                 [needed[1], needed[2]],
                 |projects, histories| {
                     nproject_cproject::walk_with_history(
-                        memory,
-                        base,
-                        game_state,
-                        projects,
-                        histories,
+                        memory, base, game_state, projects, histories,
                     )
                 },
             );
@@ -575,8 +568,8 @@ impl ProjectsJob {
     /// walk in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
         self.log.grow();
-crate::raw::double_capacity(&mut self.census);
-crate::raw::double_capacity(&mut self.pointers);
+        crate::raw::double_capacity(&mut self.census);
+        crate::raw::double_capacity(&mut self.pointers);
         self.update_capacity_charge();
     }
 
@@ -653,8 +646,7 @@ fn copy_project_tables(
         census,
     };
     for country in census.iter().filter(|entry| entry.canonical) {
-        let Some(status) = copy_status(log, memory, base, shared, country, M_PROJECT_TABLES)
-        else {
+        let Some(status) = copy_status(log, memory, base, shared, country, M_PROJECT_TABLES) else {
             return;
         };
         let Some(pool_start) = span(
@@ -666,7 +658,9 @@ fn copy_project_tables(
         ) else {
             return;
         };
-        let pool = match usize::try_from(pool_u64(log, pool_start)).ok().filter(|&p| p != 0)
+        let pool = match usize::try_from(pool_u64(log, pool_start))
+            .ok()
+            .filter(|&p| p != 0)
         {
             Some(pool) => pool,
             None => return,
@@ -674,7 +668,10 @@ fn copy_project_tables(
         let Some(pool_vtable) = span(log, memory, Some(pool), 8, M_PROJECT_TABLES) else {
             return;
         };
-        if pool_u64(log, pool_vtable) != base.checked_add(nproject_cproject_pool::VTABLE_RVA).unwrap_or(0) as u64
+        if pool_u64(log, pool_vtable)
+            != base
+                .checked_add(nproject_cproject_pool::VTABLE_RVA)
+                .unwrap_or(0) as u64
         {
             return;
         }
@@ -766,12 +763,21 @@ fn copy_project_tables(
                         _ => return,
                     }
                 }
-                let machine = match usize::try_from(pool_u64(log, header + nproject_cproject::STATE_MACHINE)).ok()
-                {
-                    Some(machine) => machine,
-                    None => return,
-                };
-                if span(log, memory, Some(machine), nproject_cproject_state_machine::SIZE, M_PROJECTS).is_none()
+                let machine =
+                    match usize::try_from(pool_u64(log, header + nproject_cproject::STATE_MACHINE))
+                        .ok()
+                    {
+                        Some(machine) => machine,
+                        None => return,
+                    };
+                if span(
+                    log,
+                    memory,
+                    Some(machine),
+                    nproject_cproject_state_machine::SIZE,
+                    M_PROJECTS,
+                )
+                .is_none()
                     && !log.overflowed
                 {
                     // A failed machine gather fails projects only; history
@@ -936,7 +942,10 @@ fn copy_project_context(
         return false;
     };
     for (present_start, offset) in [
-        (country_present, nproject_sproject_context::COUNTRY_REFERENCE),
+        (
+            country_present,
+            nproject_sproject_context::COUNTRY_REFERENCE,
+        ),
         (
             scientist_present,
             nproject_sproject_context::SCIENTIST_REFERENCE,
@@ -1191,8 +1200,7 @@ fn copy_breakthroughs(
             countries,
             census,
         };
-        let Some(status) = copy_status(log, memory, base, shared, country, M_BREAKTHROUGH)
-        else {
+        let Some(status) = copy_status(log, memory, base, shared, country, M_BREAKTHROUGH) else {
             return;
         };
         if !copy_breakthrough_tree(log, memory, base, status) {
@@ -1210,14 +1218,23 @@ fn copy_breakthroughs(
 fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut ProjectsJob) {
     job.game_state = game_state;
     job.census.clear();
-    let (links, countries) = match copy_census(&mut job.log, memory, base, game_state, &mut job.census) {
-        Some(census) => census,
-        None => return,
-    };
+    let (links, countries) =
+        match copy_census(&mut job.log, memory, base, game_state, &mut job.census) {
+            Some(census) => census,
+            None => return,
+        };
     if job.log.overflowed {
         return;
     }
-    copy_programs(&mut job.log, memory, base, &links, countries, &job.census, &mut job.pointers);
+    copy_programs(
+        &mut job.log,
+        memory,
+        base,
+        &links,
+        countries,
+        &job.census,
+        &mut job.pointers,
+    );
     if job.log.overflowed {
         return;
     }
@@ -1290,8 +1307,7 @@ fn copy_census(
         if canonical_slot != canonical {
             return None;
         }
-        let Some(Some(check)) = copy_link(log, memory, &links, countries.count, canonical)
-        else {
+        let Some(Some(check)) = copy_link(log, memory, &links, countries.count, canonical) else {
             return None;
         };
         if check != canonical {
@@ -1318,55 +1334,76 @@ fn copy_census(
     Some((links, countries.count))
 }
 
+/// Acquire a refresh into owned jobs and compare independent raw passes.
+/// The caller applies the report after acquisition has completed.
+/// The caller schedules this only for the four slot-3 project tables.
+pub(crate) fn copy_projects_refresh(
+    memory: &impl Memory,
+    ctx: ProjectsCopyContext,
+    first: &mut ProjectsJob,
+    mut second: Option<&mut ProjectsJob>,
+) -> ProjectsCopyReport {
+    let started = qpc();
+    copy_pass(memory, ctx.base, ctx.game_state, first);
+    let mut ticks = [0u64; 4];
+    ticks[0] = elapsed(started);
+    let mut matched = [true; 4];
+    if let Some(second_job) = second.as_deref_mut() {
+        let second_started = qpc();
+        copy_pass(memory, ctx.base, ctx.game_state, second_job);
+        ticks[0] += elapsed(second_started);
+        // Per-table partitions: shared program roots gate dependents,
+        // private spans only their own table.
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+        for (slot, matched) in matched.iter_mut().enumerate() {
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+        }
+    }
+    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    ProjectsCopyReport {
+        raw_ok,
+        matched,
+        copy_ticks: ticks,
+        raw_bytes: first.log.raw_bytes,
+    }
+}
+
 impl Captured {
-    /// Game-thread raw copy for a slot-3 refresh hour. Copies `first` always
-    /// and `second` while any family table still needs double-read checks,
-    /// compares the raw logs, and records copy-only costs plus the existing
-    /// checked/mismatches bookkeeping. Returns whether the payload is
-    /// complete (`raw_ok`); on staging overflow the caller falls back to the
-    /// typed walk and enqueues nothing.
-    pub(crate) fn copy_projects_refresh(
+    /// Apply completed acquisition checks without changing rows or outcomes.
+    pub(crate) fn apply_projects_report(
         &mut self,
-        memory: &impl Memory,
         ctx: ProjectsCopyContext,
-        first: &mut ProjectsJob,
-        mut second: Option<&mut ProjectsJob>,
-    ) -> ProjectsCopyReport {
+        report: &ProjectsCopyReport,
+    ) {
         let needed = |local: usize| ctx.needed[TABLES[local].index()];
-        let started = qpc();
-        copy_pass(memory, ctx.base, ctx.game_state, first);
-        let mut ticks = [0u64; 4];
-        ticks[0] = elapsed(started);
-        let mut matched = [true; 4];
-        if let Some(second_job) = second.as_deref_mut() {
-            let second_started = qpc();
-            copy_pass(memory, ctx.base, ctx.game_state, second_job);
-            ticks[0] += elapsed(second_started);
-            // Per-table partitions: shared program roots gate dependents,
-            // private spans only their own table.
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal =
-                    raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-            }
-        }
         self.programs.checked = needed(0);
-        self.programs.mismatches = usize::from(needed(0) && !matched[0]);
+        self.programs.mismatches = usize::from(needed(0) && !report.matched[0]);
         self.projects.checked = needed(1);
-        self.projects.mismatches = usize::from(needed(1) && !matched[1]);
+        self.projects.mismatches = usize::from(needed(1) && !report.matched[1]);
         self.history.checked = needed(2);
-        self.history.mismatches = usize::from(needed(2) && !matched[2]);
+        self.history.mismatches = usize::from(needed(2) && !report.matched[2]);
         self.breakthroughs.checked = needed(3);
-        self.breakthroughs.mismatches = usize::from(needed(3) && !matched[3]);
-        let raw_ok = !first.log.overflowed
-            && second.is_none_or(|job| !job.log.overflowed);
-        ProjectsCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
-        }
+        self.breakthroughs.mismatches = usize::from(needed(3) && !report.matched[3]);
+    }
+
+    /// Mark an accepted acquisition failure without retrying live memory.
+    /// Only slot-3 project tables are affected; hourly tables retain their results.
+    pub(crate) fn fail_projects_capture(&mut self, ctx: ProjectsCopyContext, reason: &'static str) {
+        let needed = |local: usize| ctx.needed[TABLES[local].index()];
+        self.programs.outcome = Outcome::Unavailable { reason };
+        self.programs.checked = needed(0);
+        self.programs.mismatches = usize::from(needed(0));
+        self.projects.outcome = Outcome::Unavailable { reason };
+        self.projects.checked = needed(1);
+        self.projects.mismatches = usize::from(needed(1));
+        self.history.outcome = Outcome::Unavailable { reason };
+        self.history.checked = needed(2);
+        self.history.mismatches = usize::from(needed(2));
+        self.breakthroughs.outcome = Outcome::Unavailable { reason };
+        self.breakthroughs.checked = needed(3);
+        self.breakthroughs.mismatches = usize::from(needed(3));
+        self.raw_mode = false;
     }
 
     /// Decode-worker interpretation of a raw refresh payload into the pooled
@@ -1404,7 +1441,12 @@ impl Captured {
         self.projects.outcome = bounded(projects, self.projects.rows.len());
         self.history.outcome = bounded(histories, self.history.rows.len());
         self.breakthroughs.outcome = bounded(
-            nproject_cbreakthrough_progress::walk(&recorded, base, job.game_state, &mut self.breakthroughs.rows),
+            nproject_cbreakthrough_progress::walk(
+                &recorded,
+                base,
+                job.game_state,
+                &mut self.breakthroughs.rows,
+            ),
             self.breakthroughs.rows.len(),
         );
         decode_ticks[0] += elapsed(started);
@@ -1583,20 +1625,10 @@ fn copy_program_row(
     let Some(source) = source else {
         return false;
     };
-    if span(
-        log,
-        memory,
-        source.checked_add(building_len),
-        1,
-        M_PROGRAMS,
-    )
-    .is_none()
-    {
+    if span(log, memory, source.checked_add(building_len), 1, M_PROGRAMS).is_none() {
         return false;
     }
-    if building_len != 0
-        && span(log, memory, Some(source), building_len, M_PROGRAMS).is_none()
-    {
+    if building_len != 0 && span(log, memory, Some(source), building_len, M_PROGRAMS).is_none() {
         return false;
     }
     copy_resolve(log, memory, census, owner, M_PROGRAMS).is_some()
@@ -1799,6 +1831,7 @@ fn valid_names(
 /// breakthrough node.
 #[cfg(test)]
 pub(crate) mod projects_test_kit {
+    use super::copy_projects_refresh;
     use super::{
         Capacities, Captured, N, ProjectsCopyContext, ProjectsCopyReport, ProjectsJob, bounded,
         program_outcome,
@@ -1808,8 +1841,8 @@ pub(crate) mod projects_test_kit {
         ccountry, cgame_state, msvc_string, nproject_breakthrough_node,
         nproject_cbreakthrough_progress, nproject_cprogram, nproject_cprogram_status,
         nproject_cproject, nproject_cproject_pool, nproject_cproject_state_machine,
-        nproject_cprototype_project_state as prototype, nproject_sproject_context,
-        nproject_sproject_history, nproject_csimple_project_state as simple,
+        nproject_cprototype_project_state as prototype, nproject_csimple_project_state as simple,
+        nproject_sproject_context, nproject_sproject_history,
     };
     use replay::frame::TABLE_COUNT;
 
@@ -1832,7 +1865,10 @@ pub(crate) mod projects_test_kit {
     pub(crate) const HEAP: usize = 0xA000;
 
     pub(crate) fn memory(bytes: &[u8]) -> engine::memory::SliceMemory<'_> {
-        engine::memory::SliceMemory { base: ADDRESS, bytes }
+        engine::memory::SliceMemory {
+            base: ADDRESS,
+            bytes,
+        }
     }
 
     fn put<const COUNT: usize>(bytes: &mut [u8], offset: usize, value: [u8; COUNT]) {
@@ -1896,7 +1932,11 @@ pub(crate) mod projects_test_kit {
             status + nproject_cprogram_status::SECONDARY_VTABLE,
             ((BASE + nproject_cprogram_status::SECONDARY_VTABLE_RVA) as u64).to_le_bytes(),
         );
-        put(bytes, status + nproject_cprogram_status::OWNER, id.to_le_bytes());
+        put(
+            bytes,
+            status + nproject_cprogram_status::OWNER,
+            id.to_le_bytes(),
+        );
         pointer(bytes, status + nproject_cprogram_status::PROJECT_POOL, pool);
         put(
             bytes,
@@ -1907,10 +1947,22 @@ pub(crate) mod projects_test_kit {
         array(bytes, status + nproject_cprogram_status::PROGRAMS, 0, 0);
         // Empty breakthrough tree, inline in the status object.
         let tree = status + nproject_cprogram_status::BREAKTHROUGH;
-        put(bytes, tree, ((BASE + nproject_cbreakthrough_progress::VTABLE_RVA) as u64).to_le_bytes());
+        put(
+            bytes,
+            tree,
+            ((BASE + nproject_cbreakthrough_progress::VTABLE_RVA) as u64).to_le_bytes(),
+        );
         let head = tree + 0x40;
-        pointer(bytes, tree + nproject_cbreakthrough_progress::TREE_HEADER, head);
-        put(bytes, tree + nproject_cbreakthrough_progress::TREE_SIZE, 0_u64.to_le_bytes());
+        pointer(
+            bytes,
+            tree + nproject_cbreakthrough_progress::TREE_HEADER,
+            head,
+        );
+        put(
+            bytes,
+            tree + nproject_cbreakthrough_progress::TREE_SIZE,
+            0_u64.to_le_bytes(),
+        );
         for link in [0, 8, 16] {
             pointer(bytes, head + link, head);
         }
@@ -1925,13 +1977,22 @@ pub(crate) mod projects_test_kit {
         array(&mut bytes, cgame_state::COUNTRY_LINKS, LTAB, 3);
         country(&mut bytes, 1, 1, C1, S1);
         country(&mut bytes, 2, 2, C2, S1 + 0x200);
-        pointer(&mut bytes, S1 + nproject_cprogram_status::PROJECT_POOL, POOL1);
+        pointer(
+            &mut bytes,
+            S1 + nproject_cprogram_status::PROJECT_POOL,
+            POOL1,
+        );
         put(
             &mut bytes,
             POOL1,
             ((BASE + nproject_cproject_pool::VTABLE_RVA) as u64).to_le_bytes(),
         );
-        array(&mut bytes, POOL1 + nproject_cproject_pool::PROJECTS, PROJ1, 1);
+        array(
+            &mut bytes,
+            POOL1 + nproject_cproject_pool::PROJECTS,
+            PROJ1,
+            1,
+        );
         array(&mut bytes, S1 + nproject_cprogram_status::PROGRAMS, PARR, 1);
         pointer(&mut bytes, PARR, PROG1);
         // Program with a heap building string and an active project.
@@ -1945,8 +2006,16 @@ pub(crate) mod projects_test_kit {
             PROG1 + nproject_cprogram::TYPE,
             nproject_cprogram::REFERENCE_TYPE.to_le_bytes(),
         );
-        put(&mut bytes, PROG1 + nproject_cprogram::ID, 5_u32.to_le_bytes());
-        put(&mut bytes, PROG1 + nproject_cprogram::OWNER_PRIMARY, 1_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            PROG1 + nproject_cprogram::ID,
+            5_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            PROG1 + nproject_cprogram::OWNER_PRIMARY,
+            1_u32.to_le_bytes(),
+        );
         put(
             &mut bytes,
             PROG1 + nproject_cprogram::PROVINCE_PRIMARY,
@@ -1978,7 +2047,12 @@ pub(crate) mod projects_test_kit {
             PROG1 + nproject_cprogram::ACTIVE_PROJECT_HANDLE,
             9_u32.to_le_bytes(),
         );
-        heap_string(&mut bytes, PROG1 + nproject_cprogram::BUILDING, HEAP, b"program-building-01");
+        heap_string(
+            &mut bytes,
+            PROG1 + nproject_cprogram::BUILDING,
+            HEAP,
+            b"program-building-01",
+        );
         // Project with a valid state machine and one history entry.
         put(
             &mut bytes,
@@ -1990,13 +2064,21 @@ pub(crate) mod projects_test_kit {
             PROJ1 + nproject_cproject::TYPE,
             nproject_cproject::REFERENCE_TYPE.to_le_bytes(),
         );
-        put(&mut bytes, PROJ1 + nproject_cproject::ID, 3_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            PROJ1 + nproject_cproject::ID,
+            3_u32.to_le_bytes(),
+        );
         put(
             &mut bytes,
             PROJ1 + nproject_cproject::DEFINITION_HANDLE,
             45_u32.to_le_bytes(),
         );
-        put(&mut bytes, PROJ1 + nproject_cproject::OWNER, 1_u32.to_le_bytes());
+        put(
+            &mut bytes,
+            PROJ1 + nproject_cproject::OWNER,
+            1_u32.to_le_bytes(),
+        );
         pointer(&mut bytes, PROJ1 + nproject_cproject::STATE_MACHINE, MACH1);
         put(
             &mut bytes,
@@ -2031,7 +2113,11 @@ pub(crate) mod projects_test_kit {
             } else {
                 simple::VTABLE_RVA
             };
-            put(&mut bytes, MACH1 + offset, ((BASE + vtable) as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                MACH1 + offset,
+                ((BASE + vtable) as u64).to_le_bytes(),
+            );
             put(
                 &mut bytes,
                 MACH1 + offset + simple::STATE_ENUM,
@@ -2100,12 +2186,14 @@ pub(crate) mod projects_test_kit {
         );
         pointer(
             &mut bytes,
-            S1 + nproject_cprogram_status::BREAKTHROUGH + nproject_cbreakthrough_progress::TREE_HEADER,
+            S1 + nproject_cprogram_status::BREAKTHROUGH
+                + nproject_cbreakthrough_progress::TREE_HEADER,
             BT_HEAD,
         );
         put(
             &mut bytes,
-            S1 + nproject_cprogram_status::BREAKTHROUGH + nproject_cbreakthrough_progress::TREE_SIZE,
+            S1 + nproject_cprogram_status::BREAKTHROUGH
+                + nproject_cbreakthrough_progress::TREE_SIZE,
             1_u64.to_le_bytes(),
         );
         pointer(&mut bytes, BT_HEAD, BT_NODE);
@@ -2132,10 +2220,7 @@ pub(crate) mod projects_test_kit {
 
     /// Reference typed walks with identical pooled buffers, outcomes and
     /// arenas installed exactly like `decode_projects_payload` installs them.
-    pub(crate) fn direct(
-        memory: &impl engine::Memory,
-        capacities: &Capacities,
-    ) -> Captured {
+    pub(crate) fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> Captured {
         let mut captured = Captured::with_capacities(capacities, &[0; N]);
         let first = nproject_cprogram::walk(
             memory,
@@ -2145,7 +2230,8 @@ pub(crate) mod projects_test_kit {
             &mut captured.programs.rows,
             &mut captured.names.first,
         );
-        captured.programs.outcome = program_outcome(first, &captured.programs.rows, &captured.names.first);
+        captured.programs.outcome =
+            program_outcome(first, &captured.programs.rows, &captured.names.first);
         captured.names.len = first.bytes_len;
         captured.names.required = first.required_bytes;
         captured.required_candidates = first.required_candidates;
@@ -2159,7 +2245,12 @@ pub(crate) mod projects_test_kit {
         captured.projects.outcome = bounded(projects, captured.projects.rows.len());
         captured.history.outcome = bounded(histories, captured.history.rows.len());
         captured.breakthroughs.outcome = bounded(
-            nproject_cbreakthrough_progress::walk(memory, BASE, GAME_STATE, &mut captured.breakthroughs.rows),
+            nproject_cbreakthrough_progress::walk(
+                memory,
+                BASE,
+                GAME_STATE,
+                &mut captured.breakthroughs.rows,
+            ),
             captured.breakthroughs.rows.len(),
         );
         captured
@@ -2179,7 +2270,8 @@ pub(crate) mod projects_test_kit {
         };
         let mut first = ProjectsJob::new();
         let mut second = ProjectsJob::new();
-        let report = captured.copy_projects_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = copy_projects_refresh(memory, ctx, &mut first, Some(&mut second));
+        captured.apply_projects_report(ctx, &report);
         assert!(report.raw_ok);
         let mut ticks = [0u64; 4];
         captured.decode_projects_payload(BASE, &first, &mut ticks);
@@ -2207,7 +2299,10 @@ pub(crate) mod projects_test_kit {
             &direct.names.first[..direct.names.len],
             "program names arena"
         );
-        assert_eq!(split.names.required, direct.names.required, "names required");
+        assert_eq!(
+            split.names.required, direct.names.required,
+            "names required"
+        );
         assert_eq!(
             split.required_candidates, direct.required_candidates,
             "required candidates"
@@ -2228,8 +2323,7 @@ mod tests {
         job.pointers.reserve_exact(3);
         job.capacity_charge = Charge::empty_on(&LOCAL);
         job.update_capacity_charge();
-        let expected =
-            |job: &ProjectsJob| vector_bytes(&job.census) + vector_bytes(&job.pointers);
+        let expected = |job: &ProjectsJob| vector_bytes(&job.census) + vector_bytes(&job.pointers);
         let initial = LOCAL.snapshot().current.auxiliary_vectors;
         assert_eq!(initial, expected(&job));
         job.grow();
@@ -2253,6 +2347,48 @@ mod tests {
         };
         let captured = Captured::with_capacities(&capacities, &[0; N]);
         (capacities, captured)
+    }
+
+    #[test]
+    fn failed_project_job_hides_prior_rows_and_preserves_hourly_results() {
+        let (_, mut captured) = small();
+        captured.programs.outcome = Outcome::Rows { len: 1 };
+        captured.projects.outcome = Outcome::Rows { len: 1 };
+        captured.history.outcome = Outcome::Rows { len: 1 };
+        captured.breakthroughs.outcome = Outcome::Rows { len: 1 };
+        captured.nukes.outcome = Outcome::Rows { len: 1 };
+        captured.raids.outcome = Outcome::Rows { len: 1 };
+        let hourly = captured.outcomes()[4..].to_vec();
+        let mut needed = [false; TABLE_COUNT];
+        needed[TABLES[0].index()] = true;
+        needed[TABLES[2].index()] = true;
+        // These independently checked hourly rows must survive a project-job failure.
+        needed[TABLES[4].index()] = true;
+        captured.raw_mode = true;
+        captured.fail_projects_capture(
+            ProjectsCopyContext {
+                base: 0,
+                game_state: 0,
+                needed,
+            },
+            "project acquisition worker failed",
+        );
+        assert!(!captured.raw_mode);
+        assert_eq!(
+            captured.checked_mismatches(),
+            [1, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert!(
+            captured.outcomes()[..4]
+                .iter()
+                .all(|outcome| matches!(outcome, Outcome::Unavailable { .. }))
+        );
+        assert_eq!(&captured.outcomes()[4..], hourly);
+        assert!(
+            captured.tables()[..4]
+                .iter()
+                .all(|table| matches!(table, TableView::Unavailable { .. }))
+        );
     }
 
     fn complete<S: TableSchema>(view: &TableView) -> &[S::Row] {
@@ -2649,12 +2785,16 @@ mod tests {
         assert_eq!((program.id, program.owner, program.province), (5, 1, 13413));
         assert_eq!(program.active_project, Some(9));
         assert_eq!(
-            &split.names.first[program.building_start..program.building_start + program.building_len],
+            &split.names.first
+                [program.building_start..program.building_start + program.building_len],
             b"program-building-01"
         );
         assert_eq!(split.projects.outcome, Outcome::Rows { len: 1 });
         let project = &split.projects.rows[0];
-        assert_eq!((project.owner, project.local_id, project.definition_id), (1, 3, 45));
+        assert_eq!(
+            (project.owner, project.local_id, project.definition_id),
+            (1, 3, 45)
+        );
         assert_eq!((project.started, project.completed), (1, 0));
         assert_eq!(split.history.outcome, Outcome::Rows { len: 1 });
         let history = &split.history.rows[0];
@@ -2678,7 +2818,14 @@ mod tests {
         );
         assert_eq!(split.breakthroughs.outcome, Outcome::Rows { len: 1 });
         let breakthrough = &split.breakthroughs.rows[0];
-        assert_eq!((breakthrough.owner, breakthrough.specialization, breakthrough.points), (1, 77, -8));
+        assert_eq!(
+            (
+                breakthrough.owner,
+                breakthrough.specialization,
+                breakthrough.points
+            ),
+            (1, 77, -8)
+        );
     }
 
     #[test]
@@ -2695,7 +2842,11 @@ mod tests {
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
         for rows in [[0; N], [1; N], [256; N]] {
-            let capacities = Capacities { rows, program_names: 8192, program_candidates: 1024 };
+            let capacities = Capacities {
+                rows,
+                program_names: 8192,
+                program_candidates: 1024,
+            };
             let direct = kit::direct(&memory, &capacities);
             let (split, report, _) = kit::split(&memory, &capacities);
             assert!(report.raw_ok, "rows={rows:?}");
@@ -2704,7 +2855,11 @@ mod tests {
         }
         // Arena arms: names/candidates truncation agrees on both paths.
         for (names, candidates) in [(0, 0), (4, 1), (8192, 1024)] {
-            let capacities = Capacities { rows: [256; N], program_names: names, program_candidates: candidates };
+            let capacities = Capacities {
+                rows: [256; N],
+                program_names: names,
+                program_candidates: candidates,
+            };
             let direct = kit::direct(&memory, &capacities);
             let (split, report, _) = kit::split(&memory, &capacities);
             assert!(report.raw_ok);
@@ -2712,7 +2867,11 @@ mod tests {
             kit::assert_matches_direct(&split, &direct);
         }
         // Exact-fit arm pins Rows on every table.
-        let capacities = Capacities { rows: [1; N], program_names: 8192, program_candidates: 1024 };
+        let capacities = Capacities {
+            rows: [1; N],
+            program_names: 8192,
+            program_candidates: 1024,
+        };
         let (split, _, _) = kit::split(&memory, &capacities);
         assert_eq!(split.programs.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.projects.outcome, Outcome::Rows { len: 1 });
@@ -2830,8 +2989,8 @@ mod tests {
         };
         let mut first = ProjectsJob::new();
         let mut second = ProjectsJob::new();
-        let report =
-            captured.copy_projects_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = copy_projects_refresh(&memory, ctx, &mut first, Some(&mut second));
+        captured.apply_projects_report(ctx, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 4]);
         // Same-hour tearing between the passes changes the log.
@@ -2869,7 +3028,8 @@ mod tests {
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         tiny.update_capacity_charge();
-        let report = captured.copy_projects_refresh(&memory, ctx, &mut tiny, None);
+        let report = copy_projects_refresh(&memory, ctx, &mut tiny, None);
+        captured.apply_projects_report(ctx, &report);
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());

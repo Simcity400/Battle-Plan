@@ -158,7 +158,7 @@ impl RecordSources<'_> {
 /// the noncanonical gap is noncanonical even when both ends look canonical
 /// in isolation.
 #[inline]
-fn is_canonical_range(addr: usize, len: usize) -> bool {
+pub(crate) fn is_canonical_range(addr: usize, len: usize) -> bool {
     if len == 0 {
         return true;
     }
@@ -238,6 +238,19 @@ pub struct ReadWitness {
 /// Implementations fill the destination or return false; a failed copy may be partial.
 pub trait Memory {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool;
+
+    /// Execute prepared scalar reads and owned-control comparisons in order.
+    /// The default preserves this adapter's `copy` observations. `None` means
+    /// unsupported execution or insufficient destination geometry, never a
+    /// changed control/read fault. Wrappers must not forward to a different
+    /// source implementation unless their acquisition protocol permits it.
+    fn execute_read_plan(
+        &self,
+        plan: &crate::read_plan::PreparedPlan,
+        destination: &mut [u8],
+    ) -> Option<crate::read_plan::Outcome> {
+        plan.execute(self, destination)
+    }
 
     /// Optional checkpoint for deferring redundant derived-graph verification.
     /// Every successful byte observation after this checkpoint must either be
@@ -503,6 +516,55 @@ impl LiveMemory {
 
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 impl Memory for LiveMemory {
+    fn execute_read_plan(
+        &self,
+        plan: &crate::read_plan::PreparedPlan,
+        destination: &mut [u8],
+    ) -> Option<crate::read_plan::Outcome> {
+        use crate::read_plan::{Control, Outcome, Read};
+
+        unsafe extern "C" {
+            fn seh_execute_read_plan(
+                reads: *const Read,
+                read_count: usize,
+                controls: *const Control,
+                control_count: usize,
+                expected: *const u8,
+                destination: *mut u8,
+                completed: *mut usize,
+            ) -> i32;
+        }
+        if destination.len() < plan.destination_len() {
+            return None;
+        }
+        let mut completed = 0;
+        // SAFETY: PreparedPlan owns immutable repr(C) descriptors and expected
+        // bytes; its constructor validates every source and destination bound.
+        // The writable owned destination outlives C, which guards only the
+        // active exact source copy and stops before every later read on failure.
+        let result = unsafe {
+            seh_execute_read_plan(
+                plan.reads().as_ptr(),
+                plan.reads().len(),
+                plan.controls().as_ptr(),
+                plan.controls().len(),
+                plan.expected().as_ptr(),
+                destination.as_mut_ptr(),
+                &mut completed,
+            )
+        };
+        Some(match result {
+            0 => Outcome::Complete,
+            1 => Outcome::ControlChanged {
+                completed_reads: completed,
+            },
+            2 => Outcome::ReadFailed {
+                completed_reads: completed,
+            },
+            _ => unreachable!("native read plan returned an invalid outcome"),
+        })
+    }
+
     #[inline(always)]
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         unsafe extern "C" {

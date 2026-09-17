@@ -29,8 +29,11 @@ pub const TABLES: [TableId; N] = [
 
 /// Root authentication and both array headers are read once per pass and
 /// charged to the manager row; the two vectors keep their own read times.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("world threat manager, sources and aggregates", 0, &[0, 1, 2])];
+pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
+    "world threat manager, sources and aggregates",
+    0,
+    &[0, 1, 2],
+)];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
@@ -172,13 +175,7 @@ impl Captured {
     }
 
     /// One authenticated pass over all three tables into the chosen buffers.
-    fn pass(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        second: bool,
-    ) -> Pass {
+    fn pass(&mut self, memory: &impl Memory, base: usize, game_state: usize, second: bool) -> Pass {
         let reader = match cworld_threat::Reader::new(memory, base, game_state) {
             Ok(reader) => reader,
             Err(reason) => return Pass::unavailable(reason),
@@ -240,14 +237,12 @@ impl Captured {
                 }
             }),
             sources(outcomes[1], &self.sources, &self.reason_bytes),
-            table::<tables::ThreatCountryAggregates, _>(
-                outcomes[2],
-                &self.aggregates.rows,
-                |r| rows::ThreatCountryAggregateRow {
+            table::<tables::ThreatCountryAggregates, _>(outcomes[2], &self.aggregates.rows, |r| {
+                rows::ThreatCountryAggregateRow {
                     country_slot: r.country_slot,
                     total_raw: r.total_raw,
-                },
-            ),
+                }
+            }),
         ]
     }
 }
@@ -446,11 +441,7 @@ fn copy_reason_literal(
 /// Mirror of one threat source's read set: head plus reason string header
 /// with heap payload. Takes are unconditional; the replay validates vtables
 /// and string headers itself.
-fn copy_source(
-    log: &mut RawLog<3>,
-    memory: &impl engine::Memory,
-    pointer: usize,
-) {
+fn copy_source(log: &mut RawLog<3>, memory: &impl engine::Memory, pointer: usize) {
     use engine::{cthreat_source, msvc_string};
     let head = match sspan(log, memory, Some(pointer), 0x34, M_SOURCES) {
         Some(start) => start,
@@ -511,7 +502,10 @@ fn copy_pass(memory: &impl engine::Memory, base: usize, game_state: usize, log: 
         Some(start) => start,
         None => return,
     };
-    let pointer = match usize::try_from(pool_u64(log, ptr_start)).ok().filter(|&p| p != 0) {
+    let pointer = match usize::try_from(pool_u64(log, ptr_start))
+        .ok()
+        .filter(|&p| p != 0)
+    {
         Some(p) => p,
         None => return,
     };
@@ -531,7 +525,9 @@ fn copy_pass(memory: &impl engine::Memory, base: usize, game_state: usize, log: 
         None => return,
     };
     for ordinal in 0..sources.count {
-        let addr = sources.data.checked_add((ordinal as usize).saturating_mul(8));
+        let addr = sources
+            .data
+            .checked_add((ordinal as usize).saturating_mul(8));
         let src = match sspan(log, memory, addr, 8, M_SOURCES)
             .and_then(|s| usize::try_from(pool_u64(log, s)).ok().filter(|&p| p != 0))
         {
@@ -544,7 +540,9 @@ fn copy_pass(memory: &impl engine::Memory, base: usize, game_state: usize, log: 
         }
     }
     for slot in 0..aggregates.count {
-        let addr = aggregates.data.checked_add((slot as usize).saturating_mul(8));
+        let addr = aggregates
+            .data
+            .checked_add((slot as usize).saturating_mul(8));
         let _ = sspan(log, memory, addr, 8, M_AGGREGATES);
         if log.overflowed {
             return;
@@ -554,58 +552,71 @@ fn copy_pass(memory: &impl engine::Memory, base: usize, game_state: usize, log: 
     let _ = sspan(log, memory, Some(pointer), 0x40, M_ALL);
 }
 
+/// Acquire a refresh into owned jobs and compare independent raw passes.
+/// The caller applies the report after acquisition has completed.
+pub(crate) fn copy_session_refresh(
+    memory: &impl engine::Memory,
+    ctx: SessionCopyContext,
+    first: &mut SessionJob,
+    mut second: Option<&mut SessionJob>,
+) -> SessionCopyReport {
+    let started = qpc();
+    first.clear();
+    first.game_state = ctx.game_state;
+    copy_pass(memory, ctx.base, ctx.game_state, &mut first.log);
+    let mut ticks = [0u64; 3];
+    ticks[0] = elapsed(started);
+    let mut matched = [true; 3];
+    if let Some(second_job) = second.as_deref_mut() {
+        let second_started = qpc();
+        second_job.clear();
+        second_job.game_state = ctx.game_state;
+        copy_pass(memory, ctx.base, ctx.game_state, &mut second_job.log);
+        ticks[0] += elapsed(second_started);
+        // Three-way partition equality: manager spans (M_ALL) gate all
+        // three slots, sources/aggregates private spans only their own.
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+        for (slot, matched) in matched.iter_mut().enumerate() {
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+        }
+    }
+    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    SessionCopyReport {
+        raw_ok,
+        matched,
+        copy_ticks: ticks,
+        raw_bytes: first.log.raw_bytes,
+    }
+}
+
 impl Captured {
-    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
-    /// `second` while any table still needs double-read checks, compares the
-    /// per-table raw partitions, and records copy-only costs plus the
-    /// existing checked/mismatches bookkeeping. Returns whether the payload
-    /// is complete (`raw_ok`); on staging overflow the caller falls back to
-    /// the typed walk and enqueues nothing.
-    pub(crate) fn copy_session_refresh(
+    /// Apply completed acquisition checks without changing rows or outcomes.
+    pub(crate) fn apply_session_report(
         &mut self,
-        memory: &impl engine::Memory,
         ctx: SessionCopyContext,
-        first: &mut SessionJob,
-        mut second: Option<&mut SessionJob>,
-    ) -> SessionCopyReport {
-        let started = qpc();
-        first.clear();
-        first.game_state = ctx.game_state;
-        copy_pass(memory, ctx.base, ctx.game_state, &mut first.log);
-        let mut ticks = [0u64; 3];
-        ticks[0] = elapsed(started);
-        let mut matched = [true; 3];
-        if let Some(second_job) = second.as_deref_mut() {
-            let second_started = qpc();
-            second_job.clear();
-            second_job.game_state = ctx.game_state;
-            copy_pass(memory, ctx.base, ctx.game_state, &mut second_job.log);
-            ticks[0] += elapsed(second_started);
-            // Three-way partition equality: manager spans (M_ALL) gate all
-            // three slots, sources/aggregates private spans only their own.
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal =
-                    raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-            }
-        }
-        // Binary per refresh per table: tearing detected (0/1), not a row
-        // count. Spool gates test `==0`/`!=0` only.
+        report: &SessionCopyReport,
+    ) {
         self.manager.checked = ctx.needed[0];
-        self.manager.mismatches = usize::from(ctx.needed[0] && !matched[0]);
+        self.manager.mismatches = usize::from(ctx.needed[0] && !report.matched[0]);
         self.sources.checked = ctx.needed[1];
-        self.sources.mismatches = usize::from(ctx.needed[1] && !matched[1]);
+        self.sources.mismatches = usize::from(ctx.needed[1] && !report.matched[1]);
         self.aggregates.checked = ctx.needed[2];
-        self.aggregates.mismatches = usize::from(ctx.needed[2] && !matched[2]);
-        let raw_ok = !first.log.overflowed
-            && second.is_none_or(|job| !job.log.overflowed);
-        SessionCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
-        }
+        self.aggregates.mismatches = usize::from(ctx.needed[2] && !report.matched[2]);
+    }
+
+    /// Mark an accepted acquisition failure without retrying live memory.
+    pub(crate) fn fail_session_capture(&mut self, ctx: SessionCopyContext, reason: &'static str) {
+        self.manager.outcome = Outcome::Unavailable { reason };
+        self.manager.checked = ctx.needed[0];
+        self.manager.mismatches = usize::from(ctx.needed[0]);
+        self.sources.outcome = Outcome::Unavailable { reason };
+        self.sources.checked = ctx.needed[1];
+        self.sources.mismatches = usize::from(ctx.needed[1]);
+        self.aggregates.outcome = Outcome::Unavailable { reason };
+        self.aggregates.checked = ctx.needed[2];
+        self.aggregates.mismatches = usize::from(ctx.needed[2]);
+        self.raw_mode = false;
     }
 
     /// Decode-worker interpretation of a raw hourly payload into the pooled
@@ -658,7 +669,11 @@ mod tests {
     }
 
     fn source(bytes: &mut [u8], at: usize, current: i64, reason: &[u8]) {
-        put(bytes, at, &(cthreat_source::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            bytes,
+            at,
+            &(cthreat_source::VTABLE_RVA as u64).to_le_bytes(),
+        );
         put(bytes, at + cthreat_source::COUNTRY, &u32::MAX.to_le_bytes());
         put(
             bytes,
@@ -699,7 +714,12 @@ mod tests {
             MANAGER + cworld_threat::TOTAL,
             &(-125_682_i64).to_le_bytes(),
         );
-        array(&mut bytes, MANAGER + cworld_threat::SOURCES, SOURCE_ARRAY, 2);
+        array(
+            &mut bytes,
+            MANAGER + cworld_threat::SOURCES,
+            SOURCE_ARRAY,
+            2,
+        );
         array(
             &mut bytes,
             MANAGER + cworld_threat::COUNTRY_AGGREGATES,
@@ -906,7 +926,8 @@ mod tests {
         };
         let mut first = SessionJob::new();
         let mut second = SessionJob::new();
-        let report = captured.copy_session_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = copy_session_refresh(memory, ctx, &mut first, Some(&mut second));
+        captured.apply_session_report(ctx, &report);
         assert!(report.raw_ok);
         captured.raw_mode = report.raw_ok;
         let mut ticks = [0u64; 3];
@@ -915,22 +936,39 @@ mod tests {
     }
 
     fn assert_matches_direct(split: &Captured, direct: &Captured) {
-        assert_eq!(split.manager.outcome, direct.manager.outcome, "manager outcome");
-        assert_eq!(split.sources.outcome, direct.sources.outcome, "sources outcome");
+        assert_eq!(
+            split.manager.outcome, direct.manager.outcome,
+            "manager outcome"
+        );
+        assert_eq!(
+            split.sources.outcome, direct.sources.outcome,
+            "sources outcome"
+        );
         assert_eq!(
             split.aggregates.outcome, direct.aggregates.outcome,
             "aggregates outcome"
         );
         let len = split.manager.outcome.len();
-        assert_eq!(&split.manager.rows[..len], &direct.manager.rows[..len], "manager rows");
+        assert_eq!(
+            &split.manager.rows[..len],
+            &direct.manager.rows[..len],
+            "manager rows"
+        );
         let len = split.sources.outcome.len();
-        assert_eq!(&split.sources.rows[..len], &direct.sources.rows[..len], "source rows");
+        assert_eq!(
+            &split.sources.rows[..len],
+            &direct.sources.rows[..len],
+            "source rows"
+        );
         assert_eq!(
             &split.reason_bytes.first[..split.reason_bytes.len],
             &direct.reason_bytes.first[..direct.reason_bytes.len],
             "reason arena"
         );
-        assert_eq!(split.reason_bytes.required, direct.reason_bytes.required, "required");
+        assert_eq!(
+            split.reason_bytes.required, direct.reason_bytes.required,
+            "required"
+        );
         let len = split.aggregates.outcome.len();
         assert_eq!(
             &split.aggregates.rows[..len],
@@ -943,7 +981,10 @@ mod tests {
     fn session_split_copy_matches_direct_walk() {
         let capacities = split_capacities();
         let bytes = fixture();
-        let memory = SliceMemory { base: BASE, bytes: &bytes };
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
         let direct = direct(&memory, &capacities);
         let (split, report) = split(&memory, &capacities);
         assert_eq!(report.matched, [true; 3]);
@@ -954,18 +995,29 @@ mod tests {
 
     #[test]
     fn session_split_copy_matches_direct_walk_under_truncation() {
-        let capacities = Capacities { rows: [1, 1, 1], reason_bytes: 2 };
+        let capacities = Capacities {
+            rows: [1, 1, 1],
+            reason_bytes: 2,
+        };
         let bytes = fixture();
-        let memory = SliceMemory { base: BASE, bytes: &bytes };
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
         let mut direct = Captured::with_capacities(&capacities, &[0; N]);
         let (matched, _) = direct.capture(&memory, 0, BASE, &[true; N]);
         assert_eq!(matched, [true, false, false]);
         let (split, report) = {
             let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-            let ctx = SessionCopyContext { base: 0, game_state: BASE, needed: [true; N] };
+            let ctx = SessionCopyContext {
+                base: 0,
+                game_state: BASE,
+                needed: [true; N],
+            };
             let mut first = SessionJob::new();
             let mut second = SessionJob::new();
-            let report = captured.copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
+            let report = copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
+            captured.apply_session_report(ctx, &report);
             assert!(report.raw_ok);
             captured.raw_mode = true;
             let mut ticks = [0u64; 3];
@@ -981,12 +1033,20 @@ mod tests {
     fn session_double_copy_compare_blocks_checks_on_tearing() {
         let capacities = split_capacities();
         let bytes = fixture();
-        let memory = SliceMemory { base: BASE, bytes: &bytes };
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
         let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = SessionCopyContext { base: 0, game_state: BASE, needed: [true; N] };
+        let ctx = SessionCopyContext {
+            base: 0,
+            game_state: BASE,
+            needed: [true; N],
+        };
         let mut first = SessionJob::new();
         let mut second = SessionJob::new();
-        let report = captured.copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
+        captured.apply_session_report(ctx, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 3]);
         // A torn source pointer between the passes changes the log.
@@ -996,7 +1056,10 @@ mod tests {
         copy_pass(&memory, 0, BASE, &mut after.log);
         let mut after_torn = SessionJob::new();
         copy_pass(
-            &SliceMemory { base: BASE, bytes: &torn },
+            &SliceMemory {
+                base: BASE,
+                bytes: &torn,
+            },
             0,
             BASE,
             &mut after_torn.log,
@@ -1012,12 +1075,20 @@ mod tests {
         // payloads gate only sources.
         let capacities = split_capacities();
         let bytes = fixture();
-        let memory = SliceMemory { base: BASE, bytes: &bytes };
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
         let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = SessionCopyContext { base: 0, game_state: BASE, needed: [true; N] };
+        let ctx = SessionCopyContext {
+            base: 0,
+            game_state: BASE,
+            needed: [true; N],
+        };
         let mut first = SessionJob::new();
         let mut second = SessionJob::new();
-        let report = captured.copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
+        captured.apply_session_report(ctx, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 3]);
         let sources_idx = second
@@ -1037,11 +1108,22 @@ mod tests {
     fn session_staging_overflow_falls_back_to_typed_walk() {
         let capacities = split_capacities();
         let bytes = fixture();
-        let memory = SliceMemory { base: BASE, bytes: &bytes };
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
         let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = SessionCopyContext { base: 0, game_state: BASE, needed: [true; N] };
-        let mut tiny = SessionJob { log: crate::raw::RawLog::new(8, 8), game_state: 0 };
-        let report = captured.copy_session_refresh(&memory, ctx, &mut tiny, None);
+        let ctx = SessionCopyContext {
+            base: 0,
+            game_state: BASE,
+            needed: [true; N],
+        };
+        let mut tiny = SessionJob {
+            log: crate::raw::RawLog::new(8, 8),
+            game_state: 0,
+        };
+        let report = copy_session_refresh(&memory, ctx, &mut tiny, None);
+        captured.apply_session_report(ctx, &report);
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());
@@ -1057,7 +1139,10 @@ mod tests {
         // reachable with 2 rows and is covered by the walk's own saturating
         // arithmetic.
         let bytes = fixture();
-        let memory = SliceMemory { base: BASE, bytes: &bytes };
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
         for (rows, reason) in [
             ([0, 0, 0], 0),
             ([1, 1, 1], 2),
@@ -1065,15 +1150,23 @@ mod tests {
             ([2, 3, 3], 8),
             ([8, 8, 8], 64),
         ] {
-            let capacities = Capacities { rows, reason_bytes: reason };
+            let capacities = Capacities {
+                rows,
+                reason_bytes: reason,
+            };
             let mut direct = Captured::with_capacities(&capacities, &[0; N]);
             let (matched, _) = direct.capture(&memory, 0, BASE, &[true; N]);
             let _ = matched;
             let mut split = Captured::with_capacities(&capacities, &[0; N]);
-            let ctx = SessionCopyContext { base: 0, game_state: BASE, needed: [true; N] };
+            let ctx = SessionCopyContext {
+                base: 0,
+                game_state: BASE,
+                needed: [true; N],
+            };
             let mut first = SessionJob::new();
             let mut second = SessionJob::new();
-            let report = split.copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
+            let report = copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
+            split.apply_session_report(ctx, &report);
             assert!(report.raw_ok, "rows={rows:?}");
             assert_eq!(report.matched, [true; 3], "rows={rows:?}");
             split.raw_mode = true;
@@ -1082,7 +1175,10 @@ mod tests {
             assert_matches_direct(&split, &direct);
         }
         // Exact-fit arm pins Rows with all rows present.
-        let capacities = Capacities { rows: [1, 2, 2], reason_bytes: 8 };
+        let capacities = Capacities {
+            rows: [1, 2, 2],
+            reason_bytes: 8,
+        };
         let mut direct = Captured::with_capacities(&capacities, &[0; N]);
         let _ = direct.capture(&memory, 0, BASE, &[true; N]);
         assert_eq!(direct.manager.outcome, Outcome::Rows { len: 1 });
@@ -1112,13 +1208,22 @@ mod tests {
             }
         }
         let bytes = fixture();
-        let memory = Recorder { inner: SliceMemory { base: BASE, bytes: &bytes }, sizes: std::cell::RefCell::new(BTreeSet::new()) };
+        let memory = Recorder {
+            inner: SliceMemory {
+                base: BASE,
+                bytes: &bytes,
+            },
+            sizes: std::cell::RefCell::new(BTreeSet::new()),
+        };
         let mut job = SessionJob::new();
         copy_pass(&memory, 0, BASE, &mut job.log);
         assert!(job.log.raw_bytes.iter().any(|&b| b > 0));
         let sizes = memory.sizes.borrow().clone();
         for required in [8, 32, 52, 64] {
-            assert!(sizes.contains(&required), "missing size {required} in {sizes:?}");
+            assert!(
+                sizes.contains(&required),
+                "missing size {required} in {sizes:?}"
+            );
         }
     }
 
@@ -1142,7 +1247,10 @@ mod tests {
         // served from the same recorded bytes (raw.rs bulk rule). Proves
         // the sspan containment claim with overlapping/unaligned sub-reads.
         let bytes = fixture();
-        let memory = SliceMemory { base: BASE, bytes: &bytes };
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
         let mut job = SessionJob::new();
         copy_pass(&memory, 0, BASE, &mut job.log);
         assert!(job.log.has_bulk);
@@ -1158,9 +1266,7 @@ mod tests {
         let mut word = [0u8; 8];
         assert!(recorded.copy(header.addr + 3, &mut word));
         let mut expected = [0u8; 8];
-        expected.copy_from_slice(
-            &bytes[header.addr - BASE + 3..header.addr - BASE + 11],
-        );
+        expected.copy_from_slice(&bytes[header.addr - BASE + 3..header.addr - BASE + 11]);
         assert_eq!(word, expected);
     }
 }

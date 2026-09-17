@@ -8,6 +8,7 @@
 compile_error!("collector requires Windows x64 MSVC");
 
 mod acquisition;
+mod acquisition_jobs;
 mod decode;
 mod division_census;
 mod division_detail;
@@ -19,6 +20,7 @@ mod map_spool;
 mod projection;
 mod raw;
 mod raw_memory;
+mod raw_plan;
 mod roster;
 mod runtime;
 mod sampling;

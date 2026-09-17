@@ -52,6 +52,7 @@ use crate::{
         },
         characters::CharactersJob,
         construction::ConstructionRestJob,
+        division_eta::{self, Workspace as EtaWorkspace},
         economy::EconomyRestJob,
         fog::{IntelJob, RadarJob},
         governance::FocusJob,
@@ -1067,6 +1068,10 @@ fn release_production_rest_job(mut job: ProductionRestJob) {
     if job.grow_for_next() {
         job.grow();
     }
+    // Compile sealed source/control metadata at retirement, after any required
+    // decode. Production decoding does not modify captured bytes. Reusing a
+    // successful plan avoids recompiling it on every returned job.
+    job.log.prepare_read_plan();
     job.clear();
     if let Ok(mut pool) = PRODUCTION_REST_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
@@ -1467,6 +1472,123 @@ enum RetiredPayload {
 static RETIRED_PAYLOADS: AtomicPtr<ArrayQueue<RetiredPayload>> =
     AtomicPtr::new(std::ptr::null_mut());
 
+/// Acquisition scratch is shared across frames and retained through every ETA
+/// phase. Only the decode worker grows returned scratch; callback reuse is bounded.
+struct EtaWorkspaces {
+    ready: ArrayQueue<Box<EtaWorkspace>>,
+    retired: ArrayQueue<Box<EtaWorkspace>>,
+}
+static ETA_WORKSPACES: AtomicPtr<EtaWorkspaces> = AtomicPtr::new(std::ptr::null_mut());
+static ETA_WORKSPACE_BYTES: AtomicU64 = AtomicU64::new(0);
+
+fn prepare_eta_workspaces() {
+    if !ETA_WORKSPACES.load(Ordering::Acquire).is_null() {
+        return;
+    }
+    let pool = Box::new(EtaWorkspaces {
+        ready: ArrayQueue::new(division_eta::MAX_RANGES),
+        retired: ArrayQueue::new(division_eta::MAX_RANGES),
+    });
+    // crossbeam-queue's pinned ArrayQueue slot holds one u64 stamp and one
+    // pointer. Include both fixed queue buffers and each workspace's inline data.
+    let mut bytes = std::mem::size_of::<EtaWorkspaces>()
+        + 2 * division_eta::MAX_RANGES * std::mem::size_of::<(u64, Box<EtaWorkspace>)>();
+    for _ in 0..division_eta::MAX_RANGES {
+        let workspace = Box::new(EtaWorkspace::with_capacities(
+            &division_eta::Capacities::default(),
+            true,
+        ));
+        bytes += std::mem::size_of::<EtaWorkspace>() + workspace.allocated_bytes();
+        assert!(pool.ready.push(workspace).is_ok());
+    }
+    let pool = Box::into_raw(pool);
+    if ETA_WORKSPACES
+        .compare_exchange(
+            std::ptr::null_mut(),
+            pool,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        ETA_WORKSPACE_BYTES.store(bytes as u64, Ordering::Relaxed);
+    } else {
+        // This unpublished pool has no callback or maintenance borrowers.
+        unsafe {
+            drop(Box::from_raw(pool));
+        }
+    }
+}
+
+pub(crate) fn eta_workspace_bytes() -> u64 {
+    ETA_WORKSPACE_BYTES.load(Ordering::Relaxed)
+}
+
+pub(crate) fn acquire_eta_workspace() -> Option<Box<EtaWorkspace>> {
+    let pool = ETA_WORKSPACES.load(Ordering::Acquire);
+    if pool.is_null() {
+        return None;
+    }
+    // Pool publication precedes hook installation; destruction follows quiescence.
+    let pool = unsafe { &*pool };
+    pool.ready
+        .pop()
+        .or_else(|| pool.retired.pop())
+        .or_else(|| pool.ready.pop())
+}
+
+pub(crate) fn recycle_eta_workspace(workspace: Box<EtaWorkspace>) {
+    let pool = ETA_WORKSPACES.load(Ordering::Acquire);
+    assert!(
+        !pool.is_null(),
+        "ETA workspace pool initialized before hook"
+    );
+    // Exactly MAX_RANGES workspaces exist, including all outstanding leases.
+    assert!(
+        unsafe { &*pool }.retired.push(workspace).is_ok(),
+        "ETA workspace retirement bound exceeded"
+    );
+}
+
+fn reclaim_eta_workspaces() {
+    let pool = ETA_WORKSPACES.load(Ordering::Acquire);
+    if pool.is_null() {
+        return;
+    }
+    // Only the decode worker or the quiescent loader performs maintenance.
+    let pool = unsafe { &*pool };
+    for _ in 0..division_eta::MAX_RANGES {
+        let Some(mut workspace) = pool.retired.pop() else {
+            break;
+        };
+        let before = workspace.allocated_bytes() as u64;
+        workspace.prepare_for_reuse();
+        let after = workspace.allocated_bytes() as u64;
+        let shared = sampling::SHARED.load(Ordering::Acquire);
+        if after >= before {
+            ETA_WORKSPACE_BYTES.fetch_add(after - before, Ordering::Relaxed);
+            if !shared.is_null() {
+                unsafe { &*shared }
+                    .pool_bytes
+                    .fetch_add(after - before, Ordering::Relaxed);
+            }
+        } else {
+            ETA_WORKSPACE_BYTES.fetch_sub(before - after, Ordering::Relaxed);
+            if !shared.is_null() {
+                unsafe { &*shared }
+                    .pool_bytes
+                    .fetch_sub(before - after, Ordering::Relaxed);
+            }
+        }
+        // Publish this workspace before taking another: maintenance holds at
+        // most one, leaving the callback at least three available range slots.
+        assert!(
+            pool.ready.push(workspace).is_ok(),
+            "ETA ready workspace bound exceeded"
+        );
+    }
+}
+
 fn prepare_retirement() {
     if !RETIRED_PAYLOADS.load(Ordering::Acquire).is_null() {
         return;
@@ -1499,6 +1621,15 @@ impl Drop for PayloadPools {
             return;
         }
         reclaim_payloads();
+
+        let workspaces = ETA_WORKSPACES.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if !workspaces.is_null() {
+            // Callback and acquisition/decode workers have all quiesced.
+            unsafe {
+                drop(Box::from_raw(workspaces));
+            }
+        }
+        ETA_WORKSPACE_BYTES.store(0, Ordering::Relaxed);
 
         if let Ok(mut pool) = RELATIONS_JOB_POOL.lock() {
             *pool = Vec::new();
@@ -1582,6 +1713,7 @@ impl Drop for PayloadPools {
 
 pub fn prepare_payload_pools() -> PayloadPools {
     prepare_retirement();
+    prepare_eta_workspaces();
     for _ in 0..JOB_POOL_KEEP + 1 {
         release_relations_job(RelationsJob::new());
         release_characters_job(CharactersJob::new());
@@ -1624,6 +1756,7 @@ fn defer_payload(payload: RetiredPayload) {
 }
 
 fn reclaim_payloads() {
+    reclaim_eta_workspaces();
     let queue = RETIRED_PAYLOADS.load(Ordering::Acquire);
     if queue.is_null() {
         return;
@@ -2599,6 +2732,7 @@ impl Calibration {
             "scope": "decode worker totals since attach; monotonic counters except live capacity fields",
             "raw_growth": crate::raw::growth_diagnostics(),
             "raw_indexes": crate::raw::index_diagnostics(),
+            "read_plans": crate::raw::read_plan_diagnostics(),
             "raw_memory": crate::raw_memory::diagnostics(),
             "air_stats_memo": {
                 "hits": AIR_STATS_MEMO[0].load(Ordering::Relaxed),
@@ -3585,9 +3719,12 @@ mod tests {
             bytes: [131_072; 7],
         };
         let direct = characters_test_kit::direct(&memory, &capacities);
+        let (trait_rows, trait_bytes) = direct.trait_capture_capacities();
         let ctx = CharactersCopyContext {
             base: characters_test_kit::BASE,
             game_state: characters_test_kit::GAME_STATE,
+            trait_rows,
+            trait_bytes,
         };
         let mut first = CharactersJob::new();
         let mut second = CharactersJob::new();
@@ -3694,12 +3831,16 @@ mod tests {
         };
         let mut first = ProjectsJob::new();
         let mut second = ProjectsJob::new();
-        let report = frame.extended.projects_pilot().copy_projects_refresh(
+        let report = crate::extended::projects::copy_projects_refresh(
             &memory,
             ctx,
             &mut first,
             Some(&mut second),
         );
+        frame
+            .extended
+            .projects_pilot()
+            .apply_projects_report(ctx, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 4]);
         shared.completed[index].store(0, Ordering::Relaxed);
@@ -3790,12 +3931,16 @@ mod tests {
         };
         let mut first = LexicalJob::new();
         let mut second = LexicalJob::new();
-        let report = frame.extended.lexical_pilot().copy_lexical_refresh(
+        let report = crate::extended::lexical::copy_lexical_refresh(
             &memory,
             ctx,
             &mut first,
             Some(&mut second),
         );
+        frame
+            .extended
+            .lexical_pilot()
+            .apply_lexical_report(ctx, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true]);
         shared.completed[index].store(0, Ordering::Relaxed);
@@ -5258,16 +5403,25 @@ mod tests {
             if step != 3 && step != 6 {
                 let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
                 let mut payload = AirBasesJob::new();
-                let report = frame.extended.copy_air_bases_refresh(
+                let ctx = AirBasesCopyContext {
+                    base: kit::BASE,
+                    game_state: kit::GAME_STATE,
+                    needed: [false; 3],
+                };
+                let report = crate::extended::air::copy_air_bases_refresh(
                     &kit::memory(&bytes),
-                    AirBasesCopyContext {
-                        base: kit::BASE,
-                        game_state: kit::GAME_STATE,
-                        needed: [false; 3],
-                    },
+                    ctx,
                     &mut payload,
                     None,
                 );
+                frame
+                    .extended
+                    .air_bases_pilot()
+                    .apply_air_bases_report(ctx.needed, &report);
+                frame
+                    .extended
+                    .radar_pilot()
+                    .note_registrations_copy(ctx.needed[1], report.matched[1]);
                 assert!(report.raw_ok);
                 frame.extended.air_bases_pilot().bases_raw_mode = true;
                 frame.extended.radar_pilot().registrations_raw_mode = true;
@@ -5316,16 +5470,25 @@ mod tests {
                 let checked = frame.extended_checked;
                 let mismatches = frame.extended_raw_mismatches;
                 let mut payload = AirBasesJob::new();
-                let report = frame.extended.copy_air_bases_refresh(
+                let ctx = AirBasesCopyContext {
+                    base: kit::BASE,
+                    game_state: kit::GAME_STATE,
+                    needed: [false; 3],
+                };
+                let report = crate::extended::air::copy_air_bases_refresh(
                     &kit::memory(&bytes),
-                    AirBasesCopyContext {
-                        base: kit::BASE,
-                        game_state: kit::GAME_STATE,
-                        needed: [false; 3],
-                    },
+                    ctx,
                     &mut payload,
                     None,
                 );
+                frame
+                    .extended
+                    .air_bases_pilot()
+                    .apply_air_bases_report(ctx.needed, &report);
+                frame
+                    .extended
+                    .radar_pilot()
+                    .note_registrations_copy(ctx.needed[1], report.matched[1]);
                 assert!(report.raw_ok);
                 // Model the raw-mode capture path after local flags reset.
                 frame.extended.air_bases_pilot().bases_raw_mode = true;
@@ -5368,10 +5531,20 @@ mod tests {
         let mut first = acquire_air_bases_job();
         let mut second = acquire_air_bases_job();
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-        let report =
-            frame
-                .extended
-                .copy_air_bases_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = crate::extended::air::copy_air_bases_refresh(
+            &memory,
+            ctx,
+            &mut first,
+            Some(&mut second),
+        );
+        frame
+            .extended
+            .air_bases_pilot()
+            .apply_air_bases_report(ctx.needed, &report);
+        frame
+            .extended
+            .radar_pilot()
+            .note_registrations_copy(ctx.needed[1], report.matched[1]);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 3]);
         recycle_air_bases_job(second);
@@ -5426,20 +5599,27 @@ mod tests {
         let shared = Shared::new(kit::BASE, 0, 1);
         let index = shared.free.pop().expect("pooled buffer");
         shared.completed[index].store(0, Ordering::Relaxed);
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let [history_limit, damage_limit] = frame.extended.air_history_pilot().air_history_limits();
         let ctx = crate::extended::air::AirHistoryCopyContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
             needed: [true; 2],
+            history_limit,
+            damage_limit,
         };
         let mut first = acquire_air_history_job();
         let mut second = acquire_air_history_job();
-        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-        let report = frame.extended.air_history_pilot().copy_air_history_refresh(
+        let report = crate::extended::air::copy_air_history_refresh(
             &memory,
             ctx,
             &mut first,
             Some(&mut second),
         );
+        frame
+            .extended
+            .air_history_pilot()
+            .apply_air_history_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 2]);
         recycle_air_history_job(second);
@@ -5494,12 +5674,16 @@ mod tests {
         let mut first = acquire_supremacy_job();
         let mut second = acquire_supremacy_job();
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-        let report = frame.extended.supremacy_pilot().copy_supremacy_refresh(
+        let report = crate::extended::naval_history::copy_supremacy_refresh(
             &memory,
             ctx,
             &mut first,
             Some(&mut second),
         );
+        frame
+            .extended
+            .supremacy_pilot()
+            .apply_supremacy_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 1]);
         recycle_supremacy_job(second);
@@ -5549,12 +5733,16 @@ mod tests {
         let mut first = acquire_sunk_job();
         let mut second = acquire_sunk_job();
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-        let report = frame.extended.sunk_pilot().copy_sunk_refresh(
+        let report = crate::extended::naval_history::copy_sunk_refresh(
             &memory,
             ctx,
             &mut first,
             Some(&mut second),
         );
+        frame
+            .extended
+            .sunk_pilot()
+            .apply_sunk_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 1]);
         recycle_sunk_job(second);
@@ -5602,20 +5790,20 @@ mod tests {
         let shared = Shared::new(kit::BASE, 0, 1);
         let index = shared.free.pop().expect("pooled buffer");
         shared.completed[index].store(0, Ordering::Relaxed);
-        let ctx = crate::extended::fog::RadarCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed: [true; 1],
-        };
         let mut first = acquire_radar_job();
         let mut second = acquire_radar_job();
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-        let report = frame.extended.radar_pilot().copy_radar_refresh(
-            &memory,
-            ctx,
-            &mut first,
-            Some(&mut second),
-        );
+        let ctx =
+            frame
+                .extended
+                .radar_pilot()
+                .radar_copy_context(kit::BASE, kit::GAME_STATE, [true; 1]);
+        let report =
+            crate::extended::fog::copy_radar_refresh(&memory, ctx, &mut first, Some(&mut second));
+        frame
+            .extended
+            .radar_pilot()
+            .apply_radar_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 1]);
         recycle_radar_job(second);
@@ -5653,20 +5841,25 @@ mod tests {
         let shared = Shared::new(kit::BASE, 0, 1);
         let index = shared.free.pop().expect("pooled buffer");
         shared.completed[index].store(0, Ordering::Relaxed);
-        let ctx = crate::extended::fog::IntelCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed: [true; 1],
-        };
         let mut first = acquire_intel_job();
         let mut second = acquire_intel_job();
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-        let report = frame.extended.intel_pilot().copy_intel_refresh(
+        let ctx =
+            frame
+                .extended
+                .intel_pilot()
+                .intel_copy_context(kit::BASE, kit::GAME_STATE, [true; 1]);
+        let report = crate::extended::fog::copy_intel_refresh_with_divisions(
             &memory,
             ctx,
             &mut first,
             Some(&mut second),
+            None,
         );
+        frame
+            .extended
+            .intel_pilot()
+            .apply_intel_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 1]);
         recycle_intel_job(second);

@@ -13,8 +13,9 @@ use crate::{
 };
 use engine::{
     Memory, cace, cair_base, cair_region_combat_data, cair_wing, cair_wing_pool, ccountry,
-    ccountry_air_container, cgame_state, cloop_history, cpdx_array::Array, cprovince, cstate,
-    cstrategic_air_manager, equipment_entry,
+    ccountry_air_container, cgame_state, cloop_history,
+    cpdx_array::Array,
+    cprovince, cstate, cstrategic_air_manager, equipment_entry,
     memory::{RecordLayout, RecordSources},
     msvc_string, sair_wing_combat_data, sdamage_entry,
     walk::Outcome,
@@ -1016,6 +1017,35 @@ pub(crate) struct AirWingCopyContext {
 impl Captured {
     pub(crate) fn wing_limits(&self) -> [usize; 2] {
         [self.equipment.rows.len(), self.cumulative.rows.len()]
+    }
+
+    /// Complete a failed owned wing job after the typed visitors were gated.
+    /// Other air tables retain their independently acquired results and costs.
+    pub(crate) fn fail_air_wing_capture(
+        &mut self,
+        needed: [bool; WING_PACK_N],
+        reason: &'static str,
+    ) {
+        self.equipment.outcome = Outcome::Unavailable { reason };
+        self.equipment.checked = needed[0];
+        self.equipment.mismatches = usize::from(needed[0]);
+        self.cumulative.outcome = Outcome::Unavailable { reason };
+        self.cumulative.checked = needed[1];
+        self.cumulative.mismatches = usize::from(needed[1]);
+        self.wing_second = [Outcome::Unavailable { reason }; WING_PACK_N];
+        self.wing_matched = [false; WING_PACK_N];
+    }
+
+    /// Complete a failed statistics job after its typed walk was gated.
+    pub(crate) fn fail_air_stats_capture(
+        &mut self,
+        needed: [bool; AIR_STATS_N],
+        reason: &'static str,
+    ) {
+        self.statistics.outcome = Outcome::Unavailable { reason };
+        self.statistics.checked = needed[0];
+        self.statistics.mismatches = usize::from(needed[0]);
+        self.stats_raw_mode = false;
     }
 }
 
@@ -3489,58 +3519,76 @@ fn copy_air_bases_vectors(
     ticks[1] += reg_ticks;
 }
 
+/// Acquire the shared bases, registrations and aces payload independently of
+/// the captured output. Each table retains its own comparison and byte counts.
+pub(crate) fn copy_air_bases_refresh(
+    memory: &impl Memory,
+    ctx: AirBasesCopyContext,
+    first: &mut AirBasesJob,
+    mut second: Option<&mut AirBasesJob>,
+) -> AirBasesCopyReport {
+    let mut ticks = [0u64; AIR_BASES_N];
+    copy_air_bases_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
+    let mut matched = [true; AIR_BASES_N];
+    if let Some(second_job) = second.as_deref_mut() {
+        let mut second_ticks = [0u64; AIR_BASES_N];
+        copy_air_bases_pass(
+            second_job,
+            memory,
+            ctx.base,
+            ctx.game_state,
+            &mut second_ticks,
+        );
+        for (total, extra) in ticks.iter_mut().zip(second_ticks) {
+            *total += extra;
+        }
+        // Per-table partitions: the shared census gates every slot, the
+        // manager/vector spans gate bases and registrations, private
+        // spans only their own table.
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+        for (slot, matched) in matched.iter_mut().enumerate() {
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
+        }
+    }
+    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    AirBasesCopyReport {
+        raw_ok,
+        matched,
+        copy_ticks: ticks,
+        raw_bytes: first.log.raw_bytes,
+    }
+}
+
 impl Captured {
-    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
-    /// `second` while any rest table still needs double-read checks, compares
-    /// the raw logs, and records copy-only costs plus the existing
-    /// checked/mismatches bookkeeping. Returns whether the payload is
-    /// complete (`raw_ok`); on staging overflow the caller falls back to the
-    /// typed walks and enqueues nothing.
-    pub(crate) fn copy_air_bases_refresh(
+    /// Install comparison bookkeeping after the independent acquisition completes.
+    /// Fog registrations apply their own slot from this same report.
+    pub(crate) fn apply_air_bases_report(
         &mut self,
-        memory: &impl Memory,
-        ctx: AirBasesCopyContext,
-        fog: &mut super::fog::Captured,
-        first: &mut AirBasesJob,
-        mut second: Option<&mut AirBasesJob>,
-    ) -> AirBasesCopyReport {
-        let mut ticks = [0u64; AIR_BASES_N];
-        copy_air_bases_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
-        let mut matched = [true; AIR_BASES_N];
-        if let Some(second_job) = second.as_deref_mut() {
-            let mut second_ticks = [0u64; AIR_BASES_N];
-            copy_air_bases_pass(
-                second_job,
-                memory,
-                ctx.base,
-                ctx.game_state,
-                &mut second_ticks,
-            );
-            for (total, extra) in ticks.iter_mut().zip(second_ticks) {
-                *total += extra;
-            }
-            // Per-table partitions: the shared census gates every slot, the
-            // manager/vector spans gate bases and registrations, private
-            // spans only their own table.
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-            }
-        }
-        // Conservative checked bookkeeping mirroring the typed paths.
-        self.bases.checked = ctx.needed[0];
-        self.bases.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        self.aces.checked = ctx.needed[2];
-        self.aces.mismatches = usize::from(ctx.needed[2] && !matched[2]);
-        fog.note_registrations_copy(ctx.needed[1], matched[1]);
-        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
-        AirBasesCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
-        }
+        needed: [bool; AIR_BASES_N],
+        report: &AirBasesCopyReport,
+    ) {
+        self.bases.checked = needed[0];
+        self.bases.mismatches = usize::from(needed[0] && !report.matched[0]);
+        self.aces.checked = needed[2];
+        self.aces.mismatches = usize::from(needed[2] && !report.matched[2]);
+    }
+
+    /// Install an accepted worker failure after the ordinary capture was gated.
+    /// Registrations are failed separately by their fog owner; no live retry runs.
+    pub(crate) fn fail_air_bases_capture(
+        &mut self,
+        needed: [bool; AIR_BASES_N],
+        reason: &'static str,
+    ) {
+        self.bases.outcome = Outcome::Unavailable { reason };
+        self.bases.checked = needed[0];
+        self.bases.mismatches = usize::from(needed[0]);
+        self.aces.outcome = Outcome::Unavailable { reason };
+        self.aces.checked = needed[2];
+        self.aces.mismatches = usize::from(needed[2]);
+        self.names.len = 0;
+        self.bases_raw_mode = false;
     }
 
     /// Decode-worker interpretation of a raw shared bases payload: replays
@@ -4040,7 +4088,8 @@ impl<M: Memory> Memory for AirHistoryMemory<'_, M> {
             if ordinal > completed {
                 break;
             }
-            let Some(address) = pointer.and_then(|pointer| pointer.checked_add(field.source_offset))
+            let Some(address) =
+                pointer.and_then(|pointer| pointer.checked_add(field.source_offset))
             else {
                 self.overflowed.set(true);
                 break;
@@ -4094,6 +4143,9 @@ pub(crate) struct AirHistoryCopyContext {
     pub base: usize,
     pub game_state: usize,
     pub needed: [bool; AIR_HISTORY_N],
+    /// Exact native row limits of this frame's destination buffers.
+    pub history_limit: usize,
+    pub damage_limit: usize,
 }
 
 fn acquire_air_history_pass(
@@ -4139,29 +4191,44 @@ fn acquire_air_history_pass(
     job.witnessed = checking;
 }
 
-impl Captured {
-    /// One native acquisition, not a raw address mirror followed by a re-walk.
-    /// Existing names retain the shared sampling/decode cost-accounting API.
-    pub(crate) fn copy_air_history_refresh(
-        &mut self,
-        memory: &impl Memory,
-        ctx: AirHistoryCopyContext,
-        first: &mut AirHistoryJob,
-        mut second: Option<&mut AirHistoryJob>,
-    ) -> AirHistoryCopyReport {
-        let started = qpc();
-        let checking = ctx.needed.iter().any(|&needed| needed);
-        let history_limit = self.history.rows.len();
-        let damage_limit = self.damage.rows.len();
-        let fits = |job: &AirHistoryJob| {
-            history_limit <= job.history.len() && damage_limit <= job.damage.len()
-        };
-        // Check both destinations before either source pass: a missing second
-        // buffer must not cause a completed first native read to be retried.
-        let storage_ready = fits(first) && second.as_deref().is_none_or(fits);
+/// Acquire owned regional history and damage with the submitted row limits.
+/// Both destinations are checked before either pass observes live memory.
+pub(crate) fn copy_air_history_refresh(
+    memory: &impl Memory,
+    ctx: AirHistoryCopyContext,
+    first: &mut AirHistoryJob,
+    mut second: Option<&mut AirHistoryJob>,
+) -> AirHistoryCopyReport {
+    let started = qpc();
+    let checking = ctx.needed.iter().any(|&needed| needed);
+    let history_limit = ctx.history_limit;
+    let damage_limit = ctx.damage_limit;
+    let fits = |job: &AirHistoryJob| {
+        history_limit <= job.history.len() && damage_limit <= job.damage.len()
+    };
+    // Check both destinations before either source pass: a missing second
+    // buffer must not cause a completed first native read to be retried.
+    let storage_ready = fits(first) && second.as_deref().is_none_or(fits);
+    if storage_ready {
+        acquire_air_history_pass(
+            first,
+            memory,
+            ctx.base,
+            ctx.game_state,
+            history_limit,
+            damage_limit,
+            checking,
+        );
+    } else {
+        first.clear();
+        first.required_history = history_limit;
+        first.required_damage = damage_limit;
+    }
+    let mut matched = [true; AIR_HISTORY_N];
+    if let Some(second_job) = second.as_deref_mut() {
         if storage_ready {
             acquire_air_history_pass(
-                first,
+                second_job,
                 memory,
                 ctx.base,
                 ctx.game_state,
@@ -4170,49 +4237,60 @@ impl Captured {
                 checking,
             );
         } else {
-            first.clear();
-            first.required_history = history_limit;
-            first.required_damage = damage_limit;
+            second_job.clear();
+            second_job.required_history = history_limit;
+            second_job.required_damage = damage_limit;
         }
-        let mut matched = [true; AIR_HISTORY_N];
-        if let Some(second_job) = second.as_deref_mut() {
-            if storage_ready {
-                acquire_air_history_pass(
-                    second_job,
-                    memory,
-                    ctx.base,
-                    ctx.game_state,
-                    history_limit,
-                    damage_limit,
-                    checking,
-                );
-            } else {
-                second_job.clear();
-                second_job.required_history = history_limit;
-                second_job.required_damage = damage_limit;
-            }
-            matched = first.matches(second_job);
-        } else if checking {
-            matched = [false; AIR_HISTORY_N];
-        }
-        self.history.checked = ctx.needed[0];
-        self.history.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        self.damage.checked = ctx.needed[1];
-        self.damage.mismatches = usize::from(ctx.needed[1] && !matched[1]);
-        if ctx
-            .needed
-            .iter()
-            .zip(matched)
-            .any(|(&needed, matched)| needed && !matched)
-        {
-            first.failure = Some(first.failure_against(second.as_deref()));
-        }
-        AirHistoryCopyReport {
-            raw_ok: first.acquired && second.is_none_or(|job| job.acquired),
-            matched,
-            copy_ticks: [elapsed(started), 0],
-            raw_bytes: first.raw_bytes,
-        }
+        matched = first.matches(second_job);
+    } else if checking {
+        matched = [false; AIR_HISTORY_N];
+    }
+    if ctx
+        .needed
+        .iter()
+        .zip(matched)
+        .any(|(&needed, matched)| needed && !matched)
+    {
+        first.failure = Some(first.failure_against(second.as_deref()));
+    }
+    AirHistoryCopyReport {
+        raw_ok: first.acquired && second.is_none_or(|job| job.acquired),
+        matched,
+        copy_ticks: [elapsed(started), 0],
+        raw_bytes: first.raw_bytes,
+    }
+}
+
+impl Captured {
+    /// Native row limits carried into an independently submitted acquisition.
+    pub(crate) fn air_history_limits(&self) -> [usize; AIR_HISTORY_N] {
+        [self.history.rows.len(), self.damage.rows.len()]
+    }
+
+    pub(crate) fn apply_air_history_report(
+        &mut self,
+        needed: [bool; AIR_HISTORY_N],
+        report: &AirHistoryCopyReport,
+    ) {
+        self.history.checked = needed[0];
+        self.history.mismatches = usize::from(needed[0] && !report.matched[0]);
+        self.damage.checked = needed[1];
+        self.damage.mismatches = usize::from(needed[1] && !report.matched[1]);
+    }
+
+    /// Install an accepted worker failure after the ordinary capture was gated.
+    pub(crate) fn fail_air_history_capture(
+        &mut self,
+        needed: [bool; AIR_HISTORY_N],
+        reason: &'static str,
+    ) {
+        self.history.outcome = Outcome::Unavailable { reason };
+        self.history.checked = needed[0];
+        self.history.mismatches = usize::from(needed[0]);
+        self.damage.outcome = Outcome::Unavailable { reason };
+        self.damage.checked = needed[1];
+        self.damage.mismatches = usize::from(needed[1]);
+        self.history_raw_mode = false;
     }
 
     /// Installation copies only admitted owned row prefixes. Unavailable outcomes
@@ -5377,7 +5455,9 @@ mod tests {
         let mut air = super::Captured::with_capacities(&air_cap, &[0; 7]);
         let mut fog = crate::extended::fog::Captured::with_capacities(&fog_cap, &[0; 6]);
         let mut first = AirBasesJob::new();
-        let report = air.copy_air_bases_refresh(&memory, ctx, &mut fog, &mut first, None);
+        let report = super::copy_air_bases_refresh(&memory, ctx, &mut first, None);
+        air.apply_air_bases_report(ctx.needed, &report);
+        fog.note_registrations_copy(ctx.needed[1], report.matched[1]);
         assert!(report.raw_ok);
         // Tear the wing handle: only the registrations partition flips.
         let mut torn = bytes.clone();
@@ -5386,8 +5466,9 @@ mod tests {
         let mut second = AirBasesJob::new();
         let mut air2 = super::Captured::with_capacities(&air_cap, &[0; 7]);
         let mut fog2 = crate::extended::fog::Captured::with_capacities(&fog_cap, &[0; 6]);
-        let torn_report =
-            air2.copy_air_bases_refresh(&torn_memory, ctx, &mut fog2, &mut second, None);
+        let torn_report = super::copy_air_bases_refresh(&torn_memory, ctx, &mut second, None);
+        air2.apply_air_bases_report(ctx.needed, &torn_report);
+        fog2.note_registrations_copy(ctx.needed[1], torn_report.matched[1]);
         assert!(torn_report.raw_ok);
         assert!(first.log.partition_equal(&second.log, 0));
         assert!(!first.log.partition_equal(&second.log, 1));
@@ -5399,8 +5480,9 @@ mod tests {
         let mut third = AirBasesJob::new();
         let mut air3 = super::Captured::with_capacities(&air_cap, &[0; 7]);
         let mut fog3 = crate::extended::fog::Captured::with_capacities(&fog_cap, &[0; 6]);
-        let torn_report =
-            air3.copy_air_bases_refresh(&torn_memory, ctx, &mut fog3, &mut third, None);
+        let torn_report = super::copy_air_bases_refresh(&torn_memory, ctx, &mut third, None);
+        air3.apply_air_bases_report(ctx.needed, &torn_report);
+        fog3.note_registrations_copy(ctx.needed[1], torn_report.matched[1]);
         assert!(torn_report.raw_ok);
         assert!(!first.log.partition_equal(&third.log, 0));
         assert!(!first.log.partition_equal(&third.log, 1));
@@ -5792,7 +5874,9 @@ mod tests {
         let fog_cap = FogCapacities::default();
         let mut air = super::Captured::with_capacities(&air_cap, &[0; 7]);
         let mut fog = crate::extended::fog::Captured::with_capacities(&fog_cap, &[0; 6]);
-        let report = air.copy_air_bases_refresh(&memory, ctx, &mut fog, &mut tiny, None);
+        let report = super::copy_air_bases_refresh(&memory, ctx, &mut tiny, None);
+        air.apply_air_bases_report(ctx.needed, &report);
+        fog.note_registrations_copy(ctx.needed[1], report.matched[1]);
         assert!(!report.raw_ok);
     }
 
@@ -5995,6 +6079,8 @@ mod tests {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
             needed: [true; 2],
+            history_limit: 8192,
+            damage_limit: 16_384,
         };
         let capacities = super::Capacities {
             rows: [8192, 2048, 4096, 8192, 16_384, 1024, 2048],
@@ -6002,14 +6088,16 @@ mod tests {
         };
         let mut captured = super::Captured::with_capacities(&capacities, &[0; 7]);
         let mut first = AirHistoryJob::new();
-        let report = captured.copy_air_history_refresh(&memory, ctx, &mut first, None);
+        let report = super::copy_air_history_refresh(&memory, ctx, &mut first, None);
+        captured.apply_air_history_report(ctx.needed, &report);
         assert!(report.raw_ok);
         let mut torn = bytes.clone();
         torn[kit::E0 + engine::sdamage_entry::AMOUNT] ^= 0xff;
         let torn_memory = kit::memory(&torn);
         let mut second = AirHistoryJob::new();
         let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 7]);
-        let torn_report = captured2.copy_air_history_refresh(&torn_memory, ctx, &mut second, None);
+        let torn_report = super::copy_air_history_refresh(&torn_memory, ctx, &mut second, None);
+        captured2.apply_air_history_report(ctx.needed, &torn_report);
         assert!(torn_report.raw_ok);
         assert_eq!(first.matches(&second), [true, false]);
         let mut torn = bytes.clone();
@@ -6017,7 +6105,8 @@ mod tests {
         let torn_memory = kit::memory(&torn);
         let mut third = AirHistoryJob::new();
         let mut captured3 = super::Captured::with_capacities(&capacities, &[0; 7]);
-        let torn_report = captured3.copy_air_history_refresh(&torn_memory, ctx, &mut third, None);
+        let torn_report = super::copy_air_history_refresh(&torn_memory, ctx, &mut third, None);
+        captured3.apply_air_history_report(ctx.needed, &torn_report);
         assert!(torn_report.raw_ok);
         assert_eq!(first.matches(&third), [false, false]);
     }
@@ -6032,6 +6121,8 @@ mod tests {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
             needed: [true; 2],
+            history_limit: 8192,
+            damage_limit: 16_384,
         };
         let mut tiny = AirHistoryJob::default();
         let capacities = super::Capacities {
@@ -6039,7 +6130,8 @@ mod tests {
             ace_names: 65_536,
         };
         let mut captured = super::Captured::with_capacities(&capacities, &[0; 7]);
-        let report = captured.copy_air_history_refresh(&memory, ctx, &mut tiny, None);
+        let report = super::copy_air_history_refresh(&memory, ctx, &mut tiny, None);
+        captured.apply_air_history_report(ctx.needed, &report);
         assert!(!report.raw_ok);
     }
 
@@ -6226,8 +6318,11 @@ mod tests {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
             needed: [true; 2],
+            history_limit: 8192,
+            damage_limit: 16_384,
         };
-        let report = captured.copy_air_history_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = super::copy_air_history_refresh(&memory, ctx, &mut first, Some(&mut second));
+        captured.apply_air_history_report(ctx.needed, &report);
         assert!(
             report.raw_ok,
             "witness overflow must not retry native acquisition"
@@ -6252,7 +6347,7 @@ mod tests {
         assert_eq!(captured.history.outcome, Outcome::Rows { len: 3 });
         assert_eq!(captured.damage.outcome, Outcome::Rows { len: 3 });
 
-        let report = captured.copy_air_history_refresh(
+        let report = super::copy_air_history_refresh(
             &memory,
             AirHistoryCopyContext {
                 needed: [false; 2],
@@ -6261,6 +6356,7 @@ mod tests {
             &mut first,
             None,
         );
+        captured.apply_air_history_report([false; 2], &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true; 2]);
         assert!(first.witness.is_empty());
@@ -6290,16 +6386,19 @@ mod tests {
         let mut first = AirHistoryJob::new();
         let mut second = AirHistoryJob::default();
         assert!(!second.checks_complete());
-        let report = captured.copy_air_history_refresh(
+        let report = super::copy_air_history_refresh(
             &Unread,
             AirHistoryCopyContext {
                 base: kit::BASE,
                 game_state: kit::GAME_STATE,
                 needed: [true; 2],
+                history_limit: 8192,
+                damage_limit: 16_384,
             },
             &mut first,
             Some(&mut second),
         );
+        captured.apply_air_history_report([true; 2], &report);
         assert!(!report.raw_ok);
         assert_eq!(report.matched, [false; 2]);
         assert!(!first.acquired && !second.acquired);
@@ -8534,8 +8633,9 @@ pub(crate) mod air_bases_test_kit {
         );
         let mut first = AirBasesJob::new();
         let mut second = AirBasesJob::new();
-        let report =
-            air.copy_air_bases_refresh(memory, ctx, &mut fog, &mut first, Some(&mut second));
+        let report = super::copy_air_bases_refresh(memory, ctx, &mut first, Some(&mut second));
+        air.apply_air_bases_report(ctx.needed, &report);
+        fog.note_registrations_copy(ctx.needed[1], report.matched[1]);
         assert!(report.raw_ok);
         let mut ticks = [0u64; 3];
         air.decode_air_bases_payload(BASE, &first, &mut ticks);
@@ -8861,6 +8961,8 @@ pub(crate) mod air_history_test_kit {
             base: BASE,
             game_state: GAME_STATE,
             needed: [true; 2],
+            history_limit: history_cap,
+            damage_limit: damage_cap,
         };
         let capacities = Capacities {
             rows: [8192, 2048, 4096, history_cap, damage_cap, 1024, 2048],
@@ -8869,7 +8971,8 @@ pub(crate) mod air_history_test_kit {
         let mut captured = Captured::with_capacities(&capacities, &[0; 7]);
         let mut first = AirHistoryJob::new();
         let mut second = AirHistoryJob::new();
-        let report = captured.copy_air_history_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = super::copy_air_history_refresh(memory, ctx, &mut first, Some(&mut second));
+        captured.apply_air_history_report(ctx.needed, &report);
         assert!(report.raw_ok);
         let mut ticks = [0u64; 2];
         captured.decode_air_history_payload(BASE, &first, &mut ticks);

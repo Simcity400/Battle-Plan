@@ -29,6 +29,7 @@
 //! refresh (deterministic fault, both copies equal) still counts its check
 //! while emitting the identical Unavailable outcome.
 
+use crate::raw_plan::{Attempt, CapturePlan, Observations, Request};
 use engine::Memory;
 use std::cell::RefCell;
 use std::hash::Hasher;
@@ -43,6 +44,10 @@ static INDEX_REUSE_NS: AtomicU64 = AtomicU64::new(0);
 static INDEX_REBUILD_NS: AtomicU64 = AtomicU64::new(0);
 static INDEX_REUSED_SPANS: AtomicU64 = AtomicU64::new(0);
 static INDEX_REBUILT_SPANS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn read_plan_diagnostics() -> serde_json::Value {
+    crate::raw_plan::diagnostics()
+}
 
 pub(crate) fn index_diagnostics() -> serde_json::Value {
     serde_json::json!({
@@ -145,6 +150,7 @@ pub struct Span {
 pub struct RawBytes {
     storage: Vec<u8>,
     used: usize,
+    observations: Option<RefCell<Observations>>,
 }
 
 impl RawBytes {
@@ -152,7 +158,47 @@ impl RawBytes {
         let mut storage = vec![0; capacity];
         // Initialize the actual allocation, including any allocator headroom.
         storage.resize(storage.capacity(), 0);
-        Self { storage, used: 0 }
+        Self {
+            storage,
+            used: 0,
+            observations: None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.used
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.used == 0
+    }
+
+    #[inline]
+    fn observe<T: ?Sized>(&self, value: &T) {
+        if let Some(observations) = &self.observations {
+            let mut observations = observations.borrow_mut();
+            if observations.active {
+                let start =
+                    (value as *const T).cast::<u8>() as usize - self.storage.as_ptr() as usize;
+                let len = std::mem::size_of_val(value);
+                observations.observe(start, &self.storage[start..start + len]);
+            }
+        }
+    }
+
+    #[inline]
+    fn untracked(&self) {
+        if let Some(observations) = &self.observations {
+            observations.borrow_mut().escape();
+        }
+    }
+
+    pub fn get<I: std::slice::SliceIndex<[u8]>>(&self, index: I) -> Option<&I::Output> {
+        let value = self.storage[..self.used].get(index)?;
+        self.observe(value);
+        Some(value)
     }
 
     pub fn capacity(&self) -> usize {
@@ -161,6 +207,9 @@ impl RawBytes {
 
     fn clear(&mut self) {
         self.used = 0;
+        if let Some(observations) = &mut self.observations {
+            observations.get_mut().active = false;
+        }
     }
 
     /// Worker-only growth. The logical prefix and existing bytes survive.
@@ -175,6 +224,7 @@ impl RawBytes {
     /// exceptional decoder uses this after reserving the exact payload size.
     /// This never allocates and never publishes an unfilled destination.
     pub fn extend_from_slice(&mut self, bytes: &[u8]) {
+        self.untracked();
         let end = self
             .used
             .checked_add(bytes.len())
@@ -203,6 +253,7 @@ impl std::ops::Deref for RawBytes {
 
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
+        self.untracked();
         &self.storage[..self.used]
     }
 }
@@ -210,7 +261,27 @@ impl std::ops::Deref for RawBytes {
 impl std::ops::DerefMut for RawBytes {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
+        self.untracked();
         &mut self.storage[..self.used]
+    }
+}
+
+impl<I: std::slice::SliceIndex<[u8]>> std::ops::Index<I> for RawBytes {
+    type Output = I::Output;
+
+    #[inline]
+    fn index(&self, index: I) -> &Self::Output {
+        let value = &self.storage[..self.used][index];
+        self.observe(value);
+        value
+    }
+}
+
+impl<I: std::slice::SliceIndex<[u8]>> std::ops::IndexMut<I> for RawBytes {
+    #[inline]
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        self.untracked();
+        &mut self.storage[..self.used][index]
     }
 }
 
@@ -253,6 +324,7 @@ pub struct RawLog<const N: usize> {
     // Address metadata only, never game bytes. Taken and returned by the
     // decode worker; clear() on the copy side leaves it untouched.
     index: RefCell<Option<RecordedIndex>>,
+    plan: CapturePlan<N>,
     capacity_charge: crate::raw_memory::Charge,
 }
 
@@ -277,6 +349,7 @@ impl<const N: usize> RawLog<N> {
             required_bytes: 0,
             has_bulk: false,
             index: RefCell::new(None),
+            plan: CapturePlan::default(),
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         log.update_capacity_charge();
@@ -287,6 +360,12 @@ impl<const N: usize> RawLog<N> {
         self.capacity_charge.set(crate::raw_memory::Capacity {
             payload_vectors: crate::raw_memory::vector_bytes(&self.spans)
                 + self.bytes.capacity() as u64,
+            auxiliary_vectors: self.plan.capacity_bytes()
+                + self
+                    .bytes
+                    .observations
+                    .as_ref()
+                    .map_or(0, |observations| observations.borrow().capacity_bytes()),
             ..Default::default()
         });
     }
@@ -301,6 +380,158 @@ impl<const N: usize> RawLog<N> {
         self.span_exhausted = false;
         self.required_bytes = 0;
         self.has_bulk = false;
+        self.plan.active = false;
+        self.plan.sealed = false;
+        self.plan.blocked = false;
+        self.plan.source_observed = false;
+        self.plan.attempt = Attempt::None;
+    }
+
+    /// Opt in off-thread. Trace exhaustion changes only optimization eligibility.
+    pub(crate) fn initialize_read_plan(
+        &mut self,
+        read_capacity: usize,
+        control_capacity: usize,
+        control_byte_capacity: usize,
+    ) {
+        self.plan.enabled = true;
+        self.plan.requests = Vec::with_capacity(read_capacity);
+        self.bytes.observations = Some(RefCell::new(Observations::new(
+            control_capacity,
+            control_byte_capacity,
+        )));
+        self.update_capacity_charge();
+    }
+
+    /// Begin on an empty log with the same fresh provider used by the producer.
+    /// False requires running that producer before finish_planned_capture().
+    pub(crate) fn begin_planned_capture(&mut self, memory: &impl Memory, key: [usize; 4]) -> bool {
+        if !self.plan.enabled {
+            return false;
+        }
+        self.plan.begin(key);
+        self.bytes
+            .observations
+            .as_mut()
+            .expect("enabled trace storage")
+            .get_mut()
+            .begin();
+        if !self.spans.is_empty() || !self.bytes.is_empty() || self.overflowed {
+            self.plan.block();
+            self.fault.fill(true);
+            self.bytes.observations.as_mut().unwrap().get_mut().eligible = false;
+            return false;
+        }
+        let Some(compiled) = &self.plan.compiled else {
+            return false;
+        };
+        if self.plan.retire
+            || compiled.key != key
+            || compiled.spans > self.spans.capacity()
+            || compiled.plan.destination_len() > self.bytes.capacity()
+        {
+            self.plan.retire = true;
+            return false;
+        }
+        let backend_started = std::time::Instant::now();
+        let outcome = memory.execute_read_plan(&compiled.plan, &mut self.bytes.storage);
+        CapturePlan::<N>::note_backend_elapsed(backend_started.elapsed());
+        let Some(outcome) = outcome else {
+            // Unsupported execution guarantees that no source read occurred.
+            return false;
+        };
+        use engine::read_plan::Outcome;
+        match outcome {
+            Outcome::Complete => {
+                let completed = compiled.requests.len();
+                self.bytes.used = compiled.plan.destination_len();
+                self.has_bulk = compiled.has_bulk;
+                self.raw_bytes = compiled.raw_bytes;
+                self.spans.extend(
+                    compiled
+                        .requests
+                        .iter()
+                        .filter(|request| request.len != 0)
+                        .map(|request| Span {
+                            addr: request.address,
+                            len: request.len as u32,
+                            ok: true,
+                            mask: request.mask,
+                            start: request.start as u32,
+                            bulk: request.bulk,
+                        }),
+                );
+                self.plan.attempt = Attempt::Complete;
+                self.plan.note_execution(completed, false);
+                self.bytes.observations.as_mut().unwrap().get_mut().active = false;
+                true
+            }
+            Outcome::ControlChanged { completed_reads } => {
+                if completed_reads > compiled.requests.len() {
+                    self.plan.block();
+                    self.fault.fill(true);
+                } else {
+                    self.plan.prefix_len = completed_reads;
+                    self.plan.attempt = Attempt::Changed;
+                    self.plan.retire = true;
+                    self.plan.note_execution(completed_reads, false);
+                }
+                false
+            }
+            Outcome::ReadFailed { completed_reads } => {
+                if completed_reads >= compiled.requests.len() {
+                    self.plan.block();
+                    self.fault.fill(true);
+                } else {
+                    self.plan.prefix_len = completed_reads + 1;
+                    self.plan.failed_read = Some(completed_reads);
+                    self.plan.attempt = Attempt::Faulted;
+                    self.plan.retire = true;
+                    self.plan.note_execution(completed_reads, true);
+                }
+                false
+            }
+        }
+    }
+
+    pub(crate) fn finish_planned_capture(&mut self) {
+        if !self.plan.enabled || !self.plan.active {
+            return;
+        }
+        let observations = self.bytes.observations.as_mut().unwrap().get_mut();
+        observations.active = false;
+        let eligible =
+            observations.eligible && !self.overflowed && !self.fault.iter().any(|fault| *fault);
+        self.plan.finish(eligible, self.overflowed);
+        if self.plan.blocked {
+            self.fault.fill(true);
+        }
+    }
+
+    pub(crate) fn planned_capture_failed(&self) -> bool {
+        self.plan.blocked
+    }
+
+    /// Capacity exhaustion after a prepared source observation must not enter
+    /// an outer fresh typed retry. Keep its fault bits clear so normal worker
+    /// growth can repair capacity before the next independent capture.
+    pub(crate) fn planned_capture_requires_no_retry(&self) -> bool {
+        self.planned_capture_failed() || (self.overflowed && self.plan.source_observed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn planned_capture_succeeded(&self) -> bool {
+        self.plan.attempt == Attempt::Complete && !self.plan.blocked
+    }
+
+    /// Worker-only compilation and retirement, before clear/recycle.
+    pub(crate) fn prepare_read_plan(&mut self) {
+        let len = self.bytes.len();
+        if let Some(observations) = &mut self.bytes.observations {
+            self.plan
+                .prepare(observations.get_mut(), self.has_bulk, self.raw_bytes, len);
+            self.update_capacity_charge();
+        }
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -365,6 +596,80 @@ impl<const N: usize> RawLog<N> {
         mask: u32,
         bulk: bool,
     ) -> Option<usize> {
+        if !self.plan.active {
+            return self.take_scalar(memory, addr, len, mask, bulk);
+        }
+        if self.plan.blocked {
+            return None;
+        }
+        let result = if self.plan.prefix_cursor < self.plan.prefix_len {
+            let index = self.plan.prefix_cursor;
+            let request = self
+                .plan
+                .compiled
+                .as_ref()
+                .and_then(|compiled| compiled.requests.get(index))
+                .copied();
+            if !request
+                .is_some_and(|request| request.matches(addr, len, mask, bulk, self.bytes.len()))
+            {
+                self.plan.block();
+                self.fault.fill(true);
+                self.bytes.observations.as_mut().unwrap().get_mut().eligible = false;
+                return None;
+            }
+            let request = request.unwrap();
+            self.plan.prefix_cursor += 1;
+            if self.plan.failed_read == Some(index) {
+                self.note_fail(addr, len as u32, mask);
+                None
+            } else {
+                if len != 0 {
+                    self.spans.push(Span {
+                        addr,
+                        len: len as u32,
+                        ok: true,
+                        mask,
+                        start: request.start as u32,
+                        bulk,
+                    });
+                    self.bytes.used = request.start + len;
+                    self.raw_bytes[lowest_table(mask)] += len as u64;
+                }
+                Some(request.start)
+            }
+        } else {
+            self.take_scalar(memory, addr, len, mask, bulk)
+        };
+        let observations = self.bytes.observations.as_mut().unwrap().get_mut();
+        observations.after_reads += 1;
+        if let Some(start) = result {
+            if self.plan.requests.len() < self.plan.requests.capacity() {
+                self.plan.requests.push(Request {
+                    address: addr,
+                    len,
+                    start,
+                    mask,
+                    bulk,
+                });
+            } else {
+                observations.eligible = false;
+            }
+        } else {
+            observations.eligible = false;
+        }
+        result
+    }
+
+    #[inline]
+    fn take_scalar(
+        &mut self,
+        memory: &impl Memory,
+        addr: usize,
+        len: usize,
+        mask: u32,
+        bulk: bool,
+    ) -> Option<usize> {
         if self.overflowed {
             return None;
         }
@@ -405,6 +710,9 @@ impl<const N: usize> RawLog<N> {
         let start = self.bytes.len();
         // The whole destination is already initialized. A failed partial
         // copy stays outside the logical prefix and records only its fault.
+        if self.plan.active {
+            self.plan.canonical_reads += 1;
+        }
         if !memory.copy(addr, &mut self.bytes.storage[start..start + len]) {
             self.note_fail(addr, len32, mask);
             return None;
@@ -432,6 +740,9 @@ impl<const N: usize> RawLog<N> {
         lengths: [usize; M],
         masks: [u32; M],
     ) -> Option<([usize; M], usize)> {
+        if !self.allow_unplanned_operation() {
+            return None;
+        }
         if self.overflowed {
             return None;
         }
@@ -516,6 +827,9 @@ impl<const N: usize> RawLog<N> {
         count: usize,
         mask: u32,
     ) -> Option<(usize, usize)> {
+        if !self.allow_unplanned_operation() {
+            return None;
+        }
         if self.overflowed || count > 64 || width == 0 || width > u32::MAX as usize {
             return None;
         }
@@ -612,6 +926,21 @@ impl<const N: usize> RawLog<N> {
         }
     }
 
+    /// A different source-operation kind cannot consume a scalar prefix.
+    /// Without a prefix, it only makes this capture ineligible for planning.
+    fn allow_unplanned_operation(&mut self) -> bool {
+        if !self.plan.active {
+            return true;
+        }
+        self.bytes.observations.as_mut().unwrap().get_mut().eligible = false;
+        self.plan.retire = true;
+        if self.plan.prefix_cursor != self.plan.prefix_len {
+            self.plan.block();
+            self.fault.fill(true);
+        }
+        !self.plan.blocked
+    }
+
     #[allow(dead_code)]
     pub fn logs_equal(&self, other: &Self) -> bool {
         self.spans == other.spans && self.bytes == other.bytes
@@ -685,6 +1014,330 @@ impl<const N: usize> RawLog<N> {
                 }
                 _ => return false,
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod read_plan_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    struct Script {
+        reads: Vec<(usize, Option<Vec<u8>>)>,
+        cursor: Cell<usize>,
+    }
+
+    impl Script {
+        fn new(reads: Vec<(usize, Option<Vec<u8>>)>) -> Self {
+            Self {
+                reads,
+                cursor: Cell::new(0),
+            }
+        }
+
+        fn complete(&self) {
+            assert_eq!(
+                self.cursor.get(),
+                self.reads.len(),
+                "all expected source observations consumed"
+            );
+        }
+    }
+
+    impl Memory for Script {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            let index = self.cursor.get();
+            let (expected, bytes) = self
+                .reads
+                .get(index)
+                .expect("unexpected source read or retry");
+            assert_eq!(address, *expected, "source occurrence {index}");
+            self.cursor.set(index + 1);
+            if let Some(bytes) = bytes {
+                assert_eq!(destination.len(), bytes.len());
+                destination.copy_from_slice(bytes);
+                true
+            } else {
+                if let Some(first) = destination.first_mut() {
+                    *first = 0xEE;
+                }
+                false
+            }
+        }
+    }
+
+    fn log() -> RawLog<2> {
+        let mut log = RawLog::new(16, 128);
+        log.initialize_read_plan(16, 16, 128);
+        log
+    }
+
+    fn linked(memory: &impl Memory, log: &mut RawLog<2>) {
+        let Some(root) = log.take(memory, 0x1000, 8, 3) else {
+            return;
+        };
+        let child = u64::from_le_bytes(log.bytes[root..root + 8].try_into().unwrap()) as usize;
+        let _ = log.take(memory, child, 4, 2);
+    }
+
+    fn linked_script(child: usize, value: [u8; 4]) -> Script {
+        Script::new(vec![
+            (0x1000, Some((child as u64).to_le_bytes().to_vec())),
+            (child, Some(value.to_vec())),
+        ])
+    }
+
+    #[test]
+    fn fresh_payload_reuses_plan_and_changed_pointer_resumes_without_repeating_root() {
+        let mut log = log();
+        let first = linked_script(0x2000, [1; 4]);
+        assert!(!log.begin_planned_capture(&first, [1, 2, 3, 4]));
+        linked(&first, &mut log);
+        log.finish_planned_capture();
+        first.complete();
+        let shape = log.spans.clone();
+        log.prepare_read_plan();
+        log.clear();
+
+        let fresh = linked_script(0x2000, [9; 4]);
+        assert!(log.begin_planned_capture(&fresh, [1, 2, 3, 4]));
+        log.finish_planned_capture();
+        fresh.complete();
+        assert!(log.planned_capture_succeeded());
+        assert_eq!(log.spans, shape);
+        assert_eq!(&log.bytes[8..], &[9; 4]);
+        assert_eq!(log.raw_bytes, [8, 4]);
+        log.prepare_read_plan();
+        log.clear();
+
+        let changed = linked_script(0x3000, [7; 4]);
+        assert!(!log.begin_planned_capture(&changed, [1, 2, 3, 4]));
+        assert!(log.bytes.is_empty());
+        linked(&changed, &mut log);
+        log.finish_planned_capture();
+        changed.complete();
+        assert!(!log.planned_capture_failed());
+        assert_eq!(log.spans[1].addr, 0x3000);
+        assert_eq!(&log.bytes[8..], &[7; 4]);
+        log.prepare_read_plan();
+        log.clear();
+        let rebuilt = linked_script(0x3000, [6; 4]);
+        assert!(log.begin_planned_capture(&rebuilt, [1, 2, 3, 4]));
+        log.finish_planned_capture();
+        rebuilt.complete();
+    }
+
+    #[test]
+    fn failed_occurrence_is_replayed_once_and_partial_bytes_stay_unpublished() {
+        let mut log = log();
+        let first = Script::new(vec![
+            (0x10, Some(vec![1; 4])),
+            (0x20, Some(vec![2; 4])),
+            (0x30, Some(vec![3; 4])),
+        ]);
+        assert!(!log.begin_planned_capture(&first, [0; 4]));
+        for address in [0x10, 0x20, 0x30] {
+            log.take(&first, address, 4, 1);
+        }
+        log.finish_planned_capture();
+        log.prepare_read_plan();
+        log.clear();
+        let failed = Script::new(vec![
+            (0x10, Some(vec![8; 4])),
+            (0x20, None),
+            (0x30, Some(vec![9; 4])),
+        ]);
+        assert!(!log.begin_planned_capture(&failed, [0; 4]));
+        assert!(log.bytes.is_empty());
+        assert_eq!(log.take(&failed, 0x10, 4, 1), Some(0));
+        assert_eq!(log.take(&failed, 0x20, 4, 1), None);
+        assert_eq!(log.bytes.len(), 4);
+        assert_eq!(log.take(&failed, 0x30, 4, 1), Some(4));
+        log.finish_planned_capture();
+        failed.complete();
+        assert_eq!(&log.bytes[..], &[8, 8, 8, 8, 9, 9, 9, 9]);
+        assert_eq!(log.raw_bytes, [8, 0]);
+        assert_eq!(log.fault, [true, false]);
+        assert!(!log.spans[1].ok);
+        log.prepare_read_plan();
+        assert!(log.plan.compiled.is_none());
+    }
+
+    #[test]
+    fn duplicate_observations_empty_takes_and_terminal_controls_keep_their_ordinals() {
+        let mut log = log();
+        let walk = |memory: &Script, log: &mut RawLog<2>| {
+            assert_eq!(log.take(memory, 0, 0, 3), Some(0));
+            for value in [1u8, 2, 1] {
+                let start = log.take(memory, 0x10, 1, 1).unwrap();
+                let observed = log.bytes.get(start).copied().unwrap();
+                assert_eq!(observed, value);
+            }
+            assert_eq!(log.take(memory, usize::MAX, 0, 2), Some(3));
+            assert_eq!(log.bytes[0], 1);
+            assert_eq!(log.bytes.get(1..2), Some(&[2][..]));
+        };
+        let sequence = || {
+            Script::new(vec![
+                (0x10, Some(vec![1])),
+                (0x10, Some(vec![2])),
+                (0x10, Some(vec![1])),
+            ])
+        };
+        let first = sequence();
+        assert!(!log.begin_planned_capture(&first, [0; 4]));
+        walk(&first, &mut log);
+        log.finish_planned_capture();
+        log.prepare_read_plan();
+        assert_eq!(log.plan.compiled.as_ref().unwrap().requests.len(), 5);
+        log.clear();
+        let fresh = sequence();
+        assert!(log.begin_planned_capture(&fresh, [0; 4]));
+        log.finish_planned_capture();
+        fresh.complete();
+        assert_eq!(log.spans.len(), 3);
+        assert_eq!(&log.bytes[..], &[1, 2, 1]);
+    }
+
+    #[test]
+    fn prefix_descriptor_mismatch_blocks_all_later_reads_and_retires_plan() {
+        for (address, len, mask, bulk) in [
+            (0x11, 1, 1, false),
+            (0x10, 2, 1, false),
+            (0x10, 1, 2, false),
+            (0x10, 1, 1, true),
+        ] {
+            let mut log = log();
+            let first = Script::new(vec![(0x10, Some(vec![1]))]);
+            assert!(!log.begin_planned_capture(&first, [0; 4]));
+            log.take(&first, 0x10, 1, 1);
+            assert_eq!(log.bytes[0], 1);
+            log.finish_planned_capture();
+            log.prepare_read_plan();
+            log.clear();
+            let changed = Script::new(vec![(0x10, Some(vec![2]))]);
+            assert!(!log.begin_planned_capture(&changed, [0; 4]));
+            let result = if bulk {
+                log.take_bulk(&changed, address, len, mask)
+            } else {
+                log.take(&changed, address, len, mask)
+            };
+            assert_eq!(result, None);
+            assert_eq!(log.take(&changed, 0x10, 1, 1), None);
+            log.finish_planned_capture();
+            changed.complete();
+            assert!(log.planned_capture_failed());
+            assert_eq!(log.fault, [true; 2]);
+            log.prepare_read_plan();
+            assert!(log.plan.compiled.is_none());
+        }
+    }
+
+    #[test]
+    fn planned_prefix_then_payload_overflow_forbids_retry_without_preventing_growth() {
+        let mut log = RawLog::<2>::new(4, 8);
+        log.initialize_read_plan(4, 4, 8);
+        let first = Script::new(vec![(0x10, Some(vec![1])), (0x20, Some(vec![7]))]);
+        assert!(!log.begin_planned_capture(&first, [0; 4]));
+        let root = log.take(&first, 0x10, 1, 1).unwrap();
+        assert_eq!(log.bytes[root], 1);
+        assert_eq!(log.take(&first, 0x20, 1, 1), Some(1));
+        log.finish_planned_capture();
+        log.prepare_read_plan();
+        log.clear();
+
+        let changed = Script::new(vec![(0x10, Some(vec![2]))]);
+        assert!(!log.begin_planned_capture(&changed, [0; 4]));
+        let root = log.take(&changed, 0x10, 1, 1).unwrap();
+        assert_eq!(log.bytes[root], 2);
+        let overflowing_len = log.bytes.capacity();
+        assert_eq!(log.take(&changed, 0x20, overflowing_len, 1), None);
+        assert_eq!(log.take(&changed, 0x30, 1, 1), None);
+        log.finish_planned_capture();
+        changed.complete();
+        assert!(log.overflowed);
+        assert!(log.planned_capture_requires_no_retry());
+        assert!(!log.planned_capture_failed());
+        assert_eq!(log.fault, [false; 2]);
+        assert!(log.grow_for_next());
+        log.prepare_read_plan();
+        assert!(log.plan.compiled.is_none());
+        log.grow();
+        assert!(log.bytes.capacity() > overflowing_len);
+        log.clear();
+        assert!(!log.planned_capture_requires_no_retry());
+
+        // The same ordinary overflow keeps the existing fallback contract.
+        let ordinary = Script::new(vec![(0x10, Some(vec![2]))]);
+        assert!(!log.begin_planned_capture(&ordinary, [0; 4]));
+        log.take(&ordinary, 0x10, 1, 1);
+        let overflowing_len = log.bytes.capacity();
+        log.take(&ordinary, 0x20, overflowing_len, 1);
+        log.finish_planned_capture();
+        ordinary.complete();
+        assert!(log.overflowed);
+        assert!(!log.planned_capture_requires_no_retry());
+        assert!(log.grow_for_next());
+    }
+
+    #[test]
+    fn trace_exhaustion_grows_only_off_thread_and_never_truncates_the_payload() {
+        let mut log = RawLog::<2>::new(16, 128);
+        log.initialize_read_plan(1, 0, 0);
+        let first = linked_script(0x2000, [1; 4]);
+        assert!(!log.begin_planned_capture(&first, [0; 4]));
+        linked(&first, &mut log);
+        log.finish_planned_capture();
+        first.complete();
+        assert!(!log.overflowed);
+        assert_eq!(log.fault, [false; 2]);
+        assert_eq!(log.bytes.len(), 12);
+        assert_eq!(log.plan.requests.capacity(), 1);
+        log.prepare_read_plan();
+        assert!(log.plan.compiled.is_none());
+        assert!(log.plan.requests.capacity() >= 2);
+        assert!(
+            log.bytes
+                .observations
+                .as_ref()
+                .unwrap()
+                .borrow()
+                .expected
+                .capacity()
+                >= 8
+        );
+        log.clear();
+        let next = linked_script(0x2000, [2; 4]);
+        assert!(!log.begin_planned_capture(&next, [0; 4]));
+        linked(&next, &mut log);
+        log.finish_planned_capture();
+        log.prepare_read_plan();
+        assert!(log.plan.compiled.is_some());
+    }
+
+    #[test]
+    fn untracked_slice_escape_and_non_scalar_acquisition_only_disable_optimization() {
+        for escape in [false, true] {
+            let mut log = log();
+            let first = Script::new(vec![(0x10, Some(vec![1])), (0x20, Some(vec![2]))]);
+            assert!(!log.begin_planned_capture(&first, [0; 4]));
+            log.take(&first, 0x10, 1, 1);
+            if escape {
+                let escaped: &[u8] = &log.bytes;
+                assert_eq!(escaped, &[1]);
+                log.take(&first, 0x20, 1, 2);
+            } else {
+                log.take_scattered(&first, [0x20], [1], [2]);
+            }
+            log.finish_planned_capture();
+            first.complete();
+            assert!(!log.overflowed);
+            assert!(!log.planned_capture_failed());
+            assert_eq!(log.fault, [false; 2]);
+            assert_eq!(&log.bytes[..], &[1, 2]);
+            log.prepare_read_plan();
+            assert!(log.plan.compiled.is_none());
         }
     }
 }

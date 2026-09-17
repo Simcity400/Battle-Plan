@@ -157,6 +157,9 @@ pub struct MapCaptured {
     /// Current callback's shared complete wing source already installed this
     /// independently bounded map projection; never a cross-hour cache.
     owned_air_match: Option<bool>,
+    /// An accepted wing acquisition failed this callback. Retain its terminal
+    /// outcome until reset so neither the map nor its visitors retry the source.
+    air_capture_failure: Option<&'static str>,
     pub player_names: Vec<u8>,
     player_names_second: Vec<u8>,
     pub player_names_len: usize,
@@ -179,12 +182,25 @@ pub struct MapCaptured {
 
 impl MapCaptured {
     pub(crate) fn install_owned_air(&mut self, job: &crate::extended::air::AirWingJob) -> u64 {
+        if self.air_capture_failure.is_some() {
+            return 0;
+        }
         let begin = qpc();
         let len = job.map_outcome.len();
         self.air_wings.rows[..len].copy_from_slice(&job.map_rows[..len]);
         self.air_wings.outcome = job.map_outcome;
         self.owned_air_match = Some(job.map_matched);
         qpc().saturating_sub(begin).max(0) as u64
+    }
+
+    /// Call before `sample` after an accepted wing acquisition fails. The
+    /// terminal gate survives sampling and clears only at the next frame reset.
+    pub(crate) fn fail_air_capture(&mut self, needed: bool, reason: &'static str) {
+        self.air_capture_failure = Some(reason);
+        self.owned_air_match = None;
+        self.air_wings.outcome = Outcome::Unavailable { reason };
+        self.air_wings.checked = needed;
+        self.air_wings.mismatches = usize::from(needed);
     }
 
     #[cfg(test)]
@@ -213,6 +229,7 @@ impl MapCaptured {
             naval_combat_participants: CaptureRows::new(capacity.rows[7], successful[7]),
             air_wings: CaptureRows::new(capacity.rows[8], successful[8]),
             owned_air_match: None,
+            air_capture_failure: None,
             army_orders: CaptureRows::new(capacity.rows[9], successful[9]),
             player_names: vec![0; capacity.player_names],
             player_names_second: comparison_rows(capacity.player_names, successful[0]),
@@ -270,6 +287,7 @@ impl MapCaptured {
         self.naval_combat_participants.reset();
         self.air_wings.reset();
         self.owned_air_match = None;
+        self.air_capture_failure = None;
         self.army_orders.reset();
         self.player_names_len = 0;
         self.player_names_required = 0;
@@ -630,7 +648,10 @@ impl MapCaptured {
         }
 
         let begin = qpc();
-        if let Some(equal) = self.owned_air_match {
+        if let Some(reason) = self.air_capture_failure {
+            self.air_wings.outcome = Outcome::Unavailable { reason };
+            self.air_wings.mismatches = usize::from(needed[8]);
+        } else if let Some(equal) = self.owned_air_match {
             matched[8] = equal;
             self.air_wings.mismatches = usize::from(needed[8] && !equal);
         } else {
@@ -1124,52 +1145,66 @@ fn copy_players_pass(
     }
 }
 
-impl MapCaptured {
-    /// Game-thread raw copy for an hourly refresh. Copies `first` always and
-    /// `second` while either players table still needs double-read checks,
-    /// compares the per-table raw partitions, and records copy-only costs
-    /// plus the existing checked/mismatches bookkeeping. Returns whether the
-    /// payload is complete (`raw_ok`); on staging overflow the caller falls
-    /// back to the typed walk and enqueues nothing.
-    pub(crate) fn copy_players_refresh(
-        &mut self,
-        memory: &impl engine::Memory,
-        ctx: PlayersCopyContext,
-        first: &mut PlayersJob,
-        mut second: Option<&mut PlayersJob>,
-    ) -> PlayersCopyReport {
-        let started = qpc();
-        first.clear();
-        first.game_state = ctx.game_state;
-        copy_players_pass(&mut first.log, memory, ctx.base, ctx.game_state);
-        let mut ticks = [0u64; 2];
-        ticks[0] = elapsed(started);
-        let mut matched = [true; 2];
-        if let Some(second_job) = second.as_deref_mut() {
-            let second_started = qpc();
-            second_job.clear();
-            second_job.game_state = ctx.game_state;
-            copy_players_pass(&mut second_job.log, memory, ctx.base, ctx.game_state);
-            ticks[0] += elapsed(second_started);
-            let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-            for (slot, matched) in matched.iter_mut().enumerate() {
-                let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-                *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-            }
+/// Raw copy for an hourly refresh. Copies `first` always and `second` while
+/// either players table still needs double-read checks, compares the per-table
+/// raw partitions, and records copy-only costs. Returns whether the payload is
+/// complete (`raw_ok`); on staging overflow the caller falls back to the typed
+/// walk and enqueues nothing.
+pub(crate) fn copy_players_refresh(
+    memory: &impl engine::Memory,
+    ctx: PlayersCopyContext,
+    first: &mut PlayersJob,
+    mut second: Option<&mut PlayersJob>,
+) -> PlayersCopyReport {
+    let started = qpc();
+    first.clear();
+    first.game_state = ctx.game_state;
+    copy_players_pass(&mut first.log, memory, ctx.base, ctx.game_state);
+    let mut ticks = [0u64; 2];
+    ticks[0] = elapsed(started);
+    let mut matched = [true; 2];
+    if let Some(second_job) = second.as_deref_mut() {
+        let second_started = qpc();
+        second_job.clear();
+        second_job.game_state = ctx.game_state;
+        copy_players_pass(&mut second_job.log, memory, ctx.base, ctx.game_state);
+        ticks[0] += elapsed(second_started);
+        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
+        for (slot, matched) in matched.iter_mut().enumerate() {
+            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
+            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
         }
-        self.players.checked = ctx.needed[0];
+    }
+    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    PlayersCopyReport {
+        raw_ok,
+        matched,
+        copy_ticks: ticks,
+        raw_bytes: first.log.raw_bytes,
+    }
+}
+
+impl MapCaptured {
+    pub(crate) fn apply_players_report(&mut self, needed: [bool; 2], report: &PlayersCopyReport) {
+        self.players.checked = needed[0];
         // Binary per refresh: tearing detected (0/1), not a row count.
         // Spool gates test `==0`/`!=0` only.
-        self.players.mismatches = usize::from(ctx.needed[0] && !matched[0]);
-        self.human_controllers.checked = ctx.needed[1];
-        self.human_controllers.mismatches = usize::from(ctx.needed[1] && !matched[1]);
-        let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
-        PlayersCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: first.log.raw_bytes,
-        }
+        self.players.mismatches = usize::from(needed[0] && !report.matched[0]);
+        self.human_controllers.checked = needed[1];
+        self.human_controllers.mismatches = usize::from(needed[1] && !report.matched[1]);
+    }
+
+    /// Apply a failed worker capture after `sample` has skipped the players
+    /// walks with `players_raw_mode` set, preventing a retry on the callback.
+    pub(crate) fn fail_players_capture(&mut self, needed: [bool; 2], reason: &'static str) {
+        self.players.outcome = Outcome::Unavailable { reason };
+        self.players.checked = needed[0];
+        self.players.mismatches = usize::from(needed[0]);
+        self.human_controllers.outcome = Outcome::Unavailable { reason };
+        self.human_controllers.checked = needed[1];
+        self.human_controllers.mismatches = usize::from(needed[1]);
+        self.player_names_len = 0;
+        self.players_raw_mode = false;
     }
 
     /// Decode-worker interpretation of a raw hourly payload into the pooled
@@ -1213,7 +1248,10 @@ impl MapCaptured {
 #[cfg(test)]
 pub(crate) mod players_split_tests {
     use super::SourceChecks;
-    use super::{MapCapacities, MapCaptured, PlayersCopyContext, PlayersCopyReport, PlayersJob};
+    use super::{
+        MapCapacities, MapCaptured, PlayersCopyContext, PlayersCopyReport, PlayersJob,
+        copy_players_refresh,
+    };
     use engine::{ccountry, cgame_state, chuman, memory::SliceMemory, walk::Outcome};
 
     const BASE: usize = 0;
@@ -1346,7 +1384,8 @@ pub(crate) mod players_split_tests {
         };
         let mut first = PlayersJob::new();
         let mut second = PlayersJob::new();
-        let report = captured.copy_players_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = copy_players_refresh(memory, ctx, &mut first, Some(&mut second));
+        captured.apply_players_report(ctx.needed, &report);
         assert!(report.raw_ok);
         captured.players_raw_mode = true;
         let mut ticks = [0u64; 2];
@@ -1447,7 +1486,8 @@ pub(crate) mod players_split_tests {
             };
             let mut first = PlayersJob::new();
             let mut second = PlayersJob::new();
-            let report = captured.copy_players_refresh(&memory, ctx, &mut first, Some(&mut second));
+            let report = copy_players_refresh(&memory, ctx, &mut first, Some(&mut second));
+            captured.apply_players_report(ctx.needed, &report);
             assert!(report.raw_ok, "players={players} controllers={controllers}");
             captured.players_raw_mode = true;
             let mut ticks = [0u64; 2];
@@ -1577,7 +1617,8 @@ pub(crate) mod players_split_tests {
             needed: [true, true],
         };
         let mut first = PlayersJob::new();
-        let report = captured.copy_players_refresh(&memory, ctx, &mut first, None);
+        let report = copy_players_refresh(&memory, ctx, &mut first, None);
+        captured.apply_players_report(ctx.needed, &report);
         assert!(report.raw_ok);
         captured.players_raw_mode = true;
         let mut ticks = [0u64; 2];
@@ -1604,7 +1645,8 @@ pub(crate) mod players_split_tests {
         };
         let mut first = PlayersJob::new();
         let mut second = PlayersJob::new();
-        let report = captured.copy_players_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = copy_players_refresh(&memory, ctx, &mut first, Some(&mut second));
+        captured.apply_players_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true, true]);
         let mut torn = fixture();
@@ -1650,7 +1692,8 @@ pub(crate) mod players_split_tests {
         };
         let mut first = PlayersJob::new();
         let mut second = PlayersJob::new();
-        let report = captured.copy_players_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = copy_players_refresh(&memory, ctx, &mut first, Some(&mut second));
+        captured.apply_players_report(ctx.needed, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true, true]);
         let players_idx = second
@@ -1686,7 +1729,8 @@ pub(crate) mod players_split_tests {
             log: crate::raw::RawLog::new(8, 8),
             game_state: 0,
         };
-        let report = captured.copy_players_refresh(&memory, ctx, &mut tiny, None);
+        let report = copy_players_refresh(&memory, ctx, &mut tiny, None);
+        captured.apply_players_report(ctx.needed, &report);
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());
@@ -1740,9 +1784,11 @@ mod tests {
 
     #[test]
     fn downstream_requests_force_fresh_passes_and_receive_source_failures() {
-        struct Unreadable;
+        #[derive(Default)]
+        struct Unreadable(std::cell::Cell<usize>);
         impl Memory for Unreadable {
             fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                self.0.set(self.0.get() + 1);
                 false
             }
         }
@@ -1810,8 +1856,8 @@ mod tests {
             &[CONSISTENCY_TARGET; MAP_TABLES],
             sources.checks(),
         );
-        let (matched, _) =
-            captured.sample(&Unreadable, 0, 0x1000, &[false; MAP_TABLES], &mut sources);
+        let memory = Unreadable::default();
+        let (matched, _) = captured.sample(&memory, 0, 0x1000, &[false; MAP_TABLES], &mut sources);
         assert_eq!(matched, [false; MAP_TABLES]);
         assert_eq!(sources.begins, [2, 2, 2]);
         assert_eq!(sources.finished.len(), 8);
@@ -1831,6 +1877,48 @@ mod tests {
             !captured.ships.checked && !captured.air_wings.checked && !captured.army_orders.checked
         );
         assert!(!captured.land_combats.checked);
+
+        let ordinary_reads = memory.0.get();
+        let ordinary_outcomes = captured.outcomes();
+        memory.0.set(0);
+        cair_wing::walk_with(
+            &memory,
+            0,
+            0x1000,
+            &mut captured.air_wings.rows,
+            |_, _, _| {},
+        );
+        let wing_reads = memory.0.get();
+        assert!(wing_reads > 0);
+        for needed in [false, true] {
+            captured.reset();
+            let reason = "accepted wing worker failed";
+            captured.fail_air_capture(needed, reason);
+            memory.0.set(0);
+            let mut sources = Sources::default();
+            let mut checks = [false; MAP_TABLES];
+            checks[8] = needed;
+            let (matched, _) = captured.sample(&memory, 0, 0x1000, &checks, &mut sources);
+            assert!(!matched[8]);
+            assert_eq!(captured.air_wings.outcome, Outcome::Unavailable { reason });
+            assert_eq!(captured.air_wings.checked, needed);
+            assert_eq!(captured.air_wings.mismatches, usize::from(needed));
+            assert_eq!(memory.0.get(), ordinary_reads - 2 * wing_reads);
+            assert_eq!(sources.begins, [2, 0, 2]);
+            assert_eq!(sources.finished.len(), 6);
+            for (index, outcome) in captured.outcomes().into_iter().enumerate() {
+                if index != 8 {
+                    assert_eq!(outcome, ordinary_outcomes[index]);
+                }
+            }
+        }
+        // The terminal decision owns just this callback, never the next one.
+        captured.reset();
+        memory.0.set(0);
+        let mut sources = Sources::default();
+        captured.sample(&memory, 0, 0x1000, &[false; MAP_TABLES], &mut sources);
+        assert_eq!(memory.0.get(), ordinary_reads);
+        assert_eq!(sources.begins, [2, 2, 2]);
     }
 
     #[test]

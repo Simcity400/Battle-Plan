@@ -1,7 +1,7 @@
 //! Loader worker, spool thread, and restore/drain/self-unload lifecycle.
 
 use crate::{
-    acquisition, decode,
+    acquisition_jobs as acquisition, decode,
     history::PreparedCampaigns,
     hook::{Hook, Threads},
     sampling::{self, ACTIVE, SHARED, Shared},
@@ -343,8 +343,8 @@ fn run(module: HMODULE) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     let memory = unsafe { LiveMemory::new() };
-    let rva = cgame_state::TICK_CANDIDATE_RVA;
-    let sentinel = cgame_state::TICK_CANDIDATE_SENTINEL;
+    let rva = cgame_state::HOURLY_UPDATE_RVA;
+    let sentinel = cgame_state::HOURLY_UPDATE_SENTINEL;
     if read::<[u8; 16]>(&memory, base + rva) != Some(sentinel) {
         return Err(format!("hourly boundary sentinel differs at RVA {rva:#x}"));
     }
@@ -371,7 +371,10 @@ fn run(module: HMODULE) -> Result<(), String> {
     let mut hook =
         unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }?;
     let shared = Arc::new(Shared::new(base, hook.trampoline(), frequency as u64));
-    let acquisition = acquisition::Pool::start()?;
+    let acquisition = acquisition::Pool::start(
+        crate::acquisition::recommended_worker_count(),
+        acquisition::MAX_JOBS,
+    )?;
     shared
         .pool_bytes
         .fetch_add(acquisition.allocated_bytes() as u64, Ordering::Relaxed);
@@ -380,6 +383,9 @@ fn run(module: HMODULE) -> Result<(), String> {
         .set(acquisition)
         .map_err(|_| "acquisition pool already initialized".to_string())?;
     let _payload_pools = decode::prepare_payload_pools();
+    shared
+        .pool_bytes
+        .fetch_add(decode::eta_workspace_bytes(), Ordering::Relaxed);
     let spool_id = Arc::new(AtomicU32::new(0));
     if config.cancel_file.exists() || detach.signaled() {
         return Err("recording cancelled before hook installation".into());
@@ -439,14 +445,8 @@ fn run(module: HMODULE) -> Result<(), String> {
         std::thread::yield_now();
     }
     let acquisition = shared.acquisition.get().expect("initialized before hook");
-    let [characters_id, relations_id, eta_id] = acquisition.thread_ids();
-    let owned_workers = [
-        spool_id.load(Ordering::Acquire),
-        decode::worker_id(),
-        characters_id,
-        relations_id,
-        eta_id,
-    ];
+    let mut owned_workers = acquisition.thread_ids();
+    owned_workers.extend([spool_id.load(Ordering::Acquire), decode::worker_id()]);
     wait_quiet(&ranges, image_size, &owned_workers, &dll_path);
     // Keep sampling until even callbacks already in the relay have returned.
     // A delayed restore therefore never silently stops recording hours.
@@ -597,26 +597,46 @@ fn add_decode_status(status: &mut Value) {
         status["native_tick_work"] = json!({
             "elapsed_ns": shared.native_tick_ns.load(Ordering::Relaxed),
             "calls": shared.native_tick_calls.load(Ordering::Relaxed),
-            "scope": "asynchronously sampled cumulative original native tick wall time since attach, including engine waits and callbacks without a free frame; excludes collector acquisition and game-loop work outside the hook; not a recorder-free baseline or CPU time",
+            "scope": "asynchronously sampled cumulative original hourly-tick (trampoline) wall time since attach, including engine waits; excludes the entry read, the collect wait and all acquisition; not a recorder-free baseline or CPU time",
         });
         if let Some(acquisition) = shared.acquisition.get() {
             let world = acquisition.world_calibration();
             let calibration = acquisition.calibration();
+            let block_ns = shared.collect_wait_ns.load(Ordering::Relaxed);
+            let block_calls = shared.native_tick_calls.load(Ordering::Relaxed);
+            let phase_calls = shared.phase_calls.load(Ordering::Relaxed);
+            let phase_mean = |ns: u64| ns.checked_div(phase_calls).unwrap_or(0);
             status["acquisition_work"] = json!({
+                "collect_wait_ns": block_ns,
+                "calls": block_calls,
+                "mean_ns": block_ns.checked_div(block_calls).unwrap_or(0),
+                "collect_scope": "cumulative game-thread block per hour running the acquisition body at the tick's entry, before the trampoline (the whole main-thread exposure, over every recording tick including drops). Drive mean under the render gap for 90%; its per-hour percentiles are callback_work (the same body wall)",
+                "block_phases": {
+                    "calls": phase_calls,
+                    "setup_mean_ns": phase_mean(shared.phase_setup_ns.load(Ordering::Relaxed)),
+                    "parallel_mean_ns": phase_mean(shared.phase_parallel_ns.load(Ordering::Relaxed)),
+                    "parallel_inline_walk_mean_ns": phase_mean(shared.phase_inline_walk_ns.load(Ordering::Relaxed)),
+                    "parallel_noneta_join_mean_ns": phase_mean(shared.phase_noneta_join_ns.load(Ordering::Relaxed)),
+                    "eta_mean_ns": phase_mean(shared.phase_eta_ns.load(Ordering::Relaxed)),
+                    "residual_mean_ns": phase_mean(shared.phase_residual_ns.load(Ordering::Relaxed)),
+                },
+                "block_phases_scope": "disjoint game-thread wall means summing to the per-frame body wall: setup = frame reset, entry clock and the country snapshot (a serial dependency, must be first); parallel = dispatching the reader pool, the inline countries/links/provinces/states/wars/factions walks and every non-ETA join, all on this one thread so the inline walks do not overlap the pool; eta = the serial DivisionEta barrier loop (2 barriers when its window is closed, 4 while open); residual = unit/country verification and decode enqueue. parallel splits into parallel_inline_walk (the contiguous game-thread typed walks) and parallel_noneta_join (wall this thread spends joining the already-dispatched non-ETA pool jobs, including any job it runs inline while helping drain); their sum is a touch under parallel (dispatch and world-report application are the small remainder). The critical path is setup then the serial parallel work then the eta barriers then residual",
+                "panics": shared.acquisition_panics.load(Ordering::Relaxed),
                 "workers": calibration,
                 "eta_read_witness": calibration.eta_country_cache.read_witness,
-                "eta_read_witness_scope": "cumulative returned worker captures, including both cold passes and later country-verification failures; excludes panics, cancelled requests and synchronous fallback; journal sizes are maximum bounded army-scope observations, not total allocated pool bytes",
+                "eta_read_witness_scope": "cumulative returned range captures, including both cold passes and later country-verification failures; includes callback execution of queued jobs; journal sizes are maximum bounded army-scope observations, not total allocated pool bytes",
                 "eta_stage_qpc_frequency": shared.frequency,
                 "eta_stage_scope": "cumulative QPC ticks and call counts; walk includes resolver and scope-verification spans; transport may include modifier spans; pass-final supply, transport, modifier, primary and cache verification spans are disjoint from walk and one another; supply/modifier fallbacks are counted but execute outside resolver spans",
                 "dispatch_ns": shared.acquisition_dispatch_ns.load(Ordering::Relaxed),
                 "join_wait_ns": shared.acquisition_wait_ns.load(Ordering::Relaxed),
+                "join_scope": "game-thread completion spans; they may include exact-target caller execution when the awaited request is queued and FIFO execution of other ready jobs while the awaited target is already running, so they are not pure waits",
                 "table_costs_overlap": true,
-                "country_snapshot_scope": "one immutable callback-owned country authentication snapshot shared with all acquisition workers; payload counted once in pool_bytes; preparation and final verification charged once to Countries after all joins; worker calibration reports the borrowed snapshot status",
-                "eta_cost_scope": "worker acquisition and request/lease handoff overhead; shared country preparation/verification charged to Countries; overlaps callback work; failed worker cost is unavailable",
+                "country_snapshot_scope": "one immutable country authentication snapshot shared with acquisition workers; production-rest acquires fresh country inputs for both its discovery builder and read plan; payload counted once in pool_bytes; preparation and final verification charged once to Countries after all joins; worker calibration reports the borrowed snapshot status",
+                "eta_cost_scope": "sum of range acquisition and verification work plus request handoff; ranges may overlap each other and other families; shared country preparation/verification charged to Countries; failed worker cost is unavailable",
                 "world_country_cache": world.country_cache,
                 "world_acquisition_ns": shared.ns(i64::try_from(world.acquisition_ticks).unwrap_or(i64::MAX)),
                 "world_last_error": world.last_error,
-                "world_cost_scope": "non-Characters hours on the same worker; whole-worker total includes staging attempts; shared country preparation/verification charged once to Countries; typed fallback table costs exclude the discarded staging attempt; overlaps callback work; panicked/stopped worker cost is unavailable",
+                "world_cost_scope": "hourly owned World job on any acquisition participant; includes staging attempts; shared country preparation/verification charged once to Countries; typed fallback table costs exclude discarded staging attempts; overlaps other jobs and acquisition work; panicked/stopped worker cost is unavailable",
             });
         }
     }

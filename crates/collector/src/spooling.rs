@@ -13,7 +13,7 @@ use crate::sampling::{
     CONSISTENCY_TABLES, CONSISTENCY_TARGET, Captured, LossBatch, LostObservation,
     qpc as current_qpc, stable_clock,
 };
-use engine::{cgame_state::Clock, walk::Outcome};
+use engine::{cgame_state::Clock, save_allocation_counters::AllocationCounters, walk::Outcome};
 use replay::{
     BranchId,
     branches::{BranchStart, BranchTracker, Gap},
@@ -711,6 +711,11 @@ struct BoundOrderCounterSample {
     begin: i64,
     end: i64,
     elapsed_ns: u64,
+    allocation_counters_before: Option<AllocationCounters>,
+    allocation_counters_terminal: Option<AllocationCounters>,
+    terminal_qpc_begin: i64,
+    terminal_qpc_end: i64,
+    terminal_elapsed_ns: u64,
     read: Option<engine::ccountry::OrderInstanceCounterRead>,
     source_range_valid: bool,
     source_capacity_bytes: usize,
@@ -748,6 +753,11 @@ impl OrderCounterWitness {
             begin: source.qpc_begin,
             end: source.qpc_end,
             elapsed_ns: source.elapsed_ns,
+            allocation_counters_before: captured.counters,
+            allocation_counters_terminal: source.terminal_counters,
+            terminal_qpc_begin: source.terminal_qpc_begin,
+            terminal_qpc_end: source.terminal_qpc_end,
+            terminal_elapsed_ns: source.terminal_elapsed_ns,
             read: source.read,
             source_range_valid: rows.is_some(),
             source_capacity_bytes: source.allocated_bytes(),
@@ -801,9 +811,29 @@ impl OrderCounterWitness {
                 })
             })
         };
+        let allocation_counters = |counters: Option<AllocationCounters>| {
+            counters.map(|counters| {
+                json!({
+                    "debug_current_ref_id": counters.debug_current_ref_id,
+                    "unit": counters.unit,
+                    "order_index": counters.order_index,
+                    "front_index": counters.front_index,
+                    "theatre_index": counters.theatre_index,
+                    "theater_group_index": counters.theater_group_index,
+                    "military_deployment_line_index": counters.military_deployment_line_index,
+                    "military_deployment_conveyor_index": counters.military_deployment_conveyor_index,
+                    "equipment_variant_index": counters.equipment_variant_index,
+                    "country_leader_index": counters.country_leader_index,
+                    "navy_id": counters.navy_id,
+                    "land_combat_id": counters.land_combat_id,
+                    "multiplayer_random_count": counters.multiplayer_random_count,
+                })
+            })
+        };
         json!({
-            "scope": "latest consumed force_full trailing acquisition; not the latest status hour",
+            "scope": "latest consumed force_full callback, bound to its sequence, clocks, branch and frame-write result; not the latest status hour",
             "counter_epoch": "no universal no-reset, no-load or no-wrap proof",
+            "allocation_counters_scope": "before is the recorded beginning-of-acquisition sample; terminal is a diagnostic after all acquisition jobs and unit/country verification, before clock_after. These samples bracket acquisition within the callback. Counters are read independently and missing values are null; equality does not prove all mutable fields were stable. Counter metadata does not change the existing order-counter sample validity checks.",
             "retained_capacity_bytes": capacity,
             "sample": {
                 "sequence": sample.seq, "branch": sample.branch,
@@ -811,6 +841,11 @@ impl OrderCounterWitness {
                 "callback_qpc": sample.callback_qpc,
                 "read_begin_qpc": sample.begin, "read_end_qpc": sample.end,
                 "read_ns": sample.elapsed_ns,
+                "allocation_counters_before": allocation_counters(sample.allocation_counters_before),
+                "allocation_counters_terminal": allocation_counters(sample.allocation_counters_terminal),
+                "terminal_qpc_begin": sample.terminal_qpc_begin,
+                "terminal_qpc_end": sample.terminal_qpc_end,
+                "terminal_elapsed_ns": sample.terminal_elapsed_ns,
                 "clock_stable": stable,
                 "country_cache_status": format!("{:?}", sample.cache_status),
                 "country_cache_error": sample.cache_error,
@@ -1605,7 +1640,7 @@ impl Processor {
             "campaign": stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
             "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
             "callback_work": stats.callback.json(),
-            "callback_work_scope": "cumulative successfully processed recorded-frame callback wall costs since attach, including acquisition joins and hook overhead but excluding the original native tick; drops, failed frames and unattributed startup callbacks excluded; sampled asynchronously after decode, not a CPU counter or exact partition with native_tick_work",
+            "callback_work_scope": "cumulative per-hour game-thread acquisition body wall inside the hook since attach (the block before the trampoline), excluding the original native tick; equals acquisition_work.collect_wait_ns per hour. Drops, failed frames and unattributed startup callbacks excluded; sampled asynchronously after decode, not a CPU counter or exact partition with native_tick_work",
             "max_ns": callback.max_ns, "table_ns": stats.table_ns.as_slice(),
             "table_total_ns": stats.table_total_ns.as_slice(),
             "table_total_ns_scope": "cumulative reported acquisition costs for successfully processed recorded frames; same cohort as callback_work; skipped tables contribute zero, shared reads retain existing anchor charges, worker costs overlap and are not additive callback wall time",
@@ -2768,6 +2803,93 @@ mod tests {
             witness.json()["sample"]["clock_before"]["load_signal"],
             5678
         );
+    }
+
+    #[test]
+    fn order_counter_status_retains_allocation_bracket_values_and_missing_metadata() {
+        let mut source = captured(10);
+        prepare_order_counter_sample(&mut source, 10, 7);
+        let before = AllocationCounters {
+            debug_current_ref_id: Some(u32::MAX),
+            unit: Some(11),
+            order_index: Some(12),
+            front_index: Some(13),
+            theatre_index: Some(14),
+            theater_group_index: Some(15),
+            military_deployment_line_index: Some(16),
+            military_deployment_conveyor_index: Some(17),
+            equipment_variant_index: Some(18),
+            country_leader_index: Some(19),
+            navy_id: Some(20),
+            land_combat_id: Some(21),
+            multiplayer_random_count: Some(-100),
+        };
+        source.counters = Some(before);
+        source.order_counters.terminal_counters = Some(AllocationCounters {
+            unit: None,
+            multiplayer_random_count: Some(-98),
+            ..before
+        });
+        source.order_counters.terminal_qpc_begin = 2200;
+        source.order_counters.terminal_qpc_end = 2250;
+        source.order_counters.terminal_elapsed_ns = 5000;
+        let mut witness = OrderCounterWitness::default();
+        witness.observe(&source, Some(2), &Ok(()));
+        let retained = witness.json();
+        let sample = &retained["sample"];
+        assert_eq!(sample["sequence"], 7);
+        assert_eq!(sample["branch"], 2);
+        assert_eq!(sample["clock_before"]["hour"], 10);
+        assert_eq!(sample["sample_valid"], true);
+        assert_eq!(sample["usable_with_recorded_frame"], true);
+        assert_eq!(
+            sample["allocation_counters_before"],
+            json!({
+                "debug_current_ref_id": u32::MAX,
+                "unit": 11,
+                "order_index": 12,
+                "front_index": 13,
+                "theatre_index": 14,
+                "theater_group_index": 15,
+                "military_deployment_line_index": 16,
+                "military_deployment_conveyor_index": 17,
+                "equipment_variant_index": 18,
+                "country_leader_index": 19,
+                "navy_id": 20,
+                "land_combat_id": 21,
+                "multiplayer_random_count": -100,
+            })
+        );
+        let terminal = &sample["allocation_counters_terminal"];
+        assert_eq!(terminal.as_object().unwrap().len(), 13);
+        assert_eq!(terminal["debug_current_ref_id"], u32::MAX);
+        assert!(terminal["unit"].is_null());
+        assert_eq!(terminal["multiplayer_random_count"], -98);
+        assert_eq!(sample["terminal_qpc_begin"], 2200);
+        assert_eq!(sample["terminal_qpc_end"], 2250);
+        assert_eq!(sample["terminal_elapsed_ns"], 5000);
+
+        // A reused frame and a later ordinary hour cannot change the bound
+        // force_full sample. Missing terminal data adds no new validity gate.
+        prepare_order_counter_sample(&mut source, 11, 8);
+        source.order_counters.forced = false;
+        source.counters = None;
+        source.order_counters.terminal_counters = None;
+        source.order_counters.terminal_qpc_begin = 0;
+        source.order_counters.terminal_qpc_end = 0;
+        source.order_counters.terminal_elapsed_ns = 0;
+        witness.observe(&source, Some(3), &Ok(()));
+        assert_eq!(witness.json(), retained);
+        source.order_counters.forced = true;
+        witness.observe(&source, Some(3), &Ok(()));
+        let missing = witness.json();
+        assert_eq!(missing["sample"]["sequence"], 8);
+        assert_eq!(missing["sample"]["branch"], 3);
+        assert!(missing["sample"]["allocation_counters_before"].is_null());
+        assert!(missing["sample"]["allocation_counters_terminal"].is_null());
+        assert_eq!(missing["sample"]["terminal_qpc_begin"], 0);
+        assert_eq!(missing["sample"]["sample_valid"], true);
+        assert_eq!(missing["sample"]["usable_with_recorded_frame"], true);
     }
 
     #[test]

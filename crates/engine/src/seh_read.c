@@ -71,6 +71,83 @@ int seh_guarded_copy(unsigned char *dst, const unsigned char *src, size_t len) {
 }
 
 typedef struct {
+    uintptr_t address;
+    size_t destination_offset;
+    size_t len;
+} PlannedRead;
+
+typedef struct {
+    size_t after_reads;
+    size_t offset;
+    size_t len;
+    size_t expected_offset;
+} PlannedControl;
+
+/* Only an active source copy is recoverable here. Recorder-owned metadata and
+   comparisons are outside that interval; an unrelated exception must retain
+   the game's normal handling rather than become a fabricated read failure. */
+static int plan_copy_fault(EXCEPTION_POINTERS *ep, const PlannedRead *reads,
+                           size_t read_count, unsigned char *destination,
+                           size_t completed, int active_read) {
+    if (!active_read || completed >= read_count) {
+        return 0;
+    }
+    const PlannedRead *read = &reads[completed];
+    return copy_fault(ep, (const unsigned char *)read->address, read->len,
+                      destination + read->destination_offset);
+}
+
+/* Immutable geometry and canonical nonempty sources are admitted in Rust.
+   Reads and controls retain their exact order. In particular, a changed parent
+   control stops before the next old child address is evaluated or prefetched.
+   Empty reads count as complete but touch no source. Return codes are 0 for a
+   complete plan, 1 for changed control, and 2 for an attempted read fault. */
+int seh_execute_read_plan(const PlannedRead *reads, size_t read_count,
+                         const PlannedControl *controls, size_t control_count,
+                         const unsigned char *expected, unsigned char *destination,
+                         size_t *completed_out) {
+    volatile size_t completed = 0;
+    volatile int active_read = 0;
+    size_t control_index = 0;
+    int result = 0;
+    __try {
+        for (size_t index = 0;;) {
+            while (control_index < control_count &&
+                   controls[control_index].after_reads == index) {
+                const PlannedControl *control = &controls[control_index];
+                if (control->len != 0 &&
+                    memcmp(destination + control->offset,
+                           expected + control->expected_offset, control->len) != 0) {
+                    result = 1;
+                    goto plan_finished;
+                }
+                ++control_index;
+            }
+            if (index == read_count) {
+                break;
+            }
+            const PlannedRead *read = &reads[index];
+            if (read->len != 0) {
+                unsigned char *target = destination + read->destination_offset;
+                const unsigned char *source = (const unsigned char *)read->address;
+                size_t len = read->len;
+                active_read = 1;
+                copy_bytes(target, source, len);
+                active_read = 0;
+            }
+            completed = ++index;
+        }
+    } __except (plan_copy_fault(GetExceptionInformation(), reads, read_count,
+                               destination, completed, active_read)
+                    ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        result = 2;
+    }
+plan_finished:
+    *completed_out = completed;
+    return result;
+}
+
+typedef struct {
     unsigned char *dst;
     const unsigned char *src;
     size_t len;

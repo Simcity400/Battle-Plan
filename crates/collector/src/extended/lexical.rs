@@ -828,35 +828,53 @@ fn copy_pass(memory: &impl Memory, base: usize, job: &mut LexicalJob) {
     job.after = copy_witness(job, memory, base).0;
 }
 
-impl Captured {
-    pub(crate) fn copy_lexical_refresh(
-        &mut self,
-        memory: &impl Memory,
-        ctx: LexicalCopyContext,
-        first: &mut LexicalJob,
-        second: Option<&mut LexicalJob>,
-    ) -> LexicalCopyReport {
-        let needed = ctx.needed[TableId::LexicalTokens.index()];
+/// Acquire a refresh into owned jobs and compare independent raw passes.
+/// The caller applies the report after acquisition has completed.
+pub(crate) fn copy_lexical_refresh(
+    memory: &impl Memory,
+    ctx: LexicalCopyContext,
+    first: &mut LexicalJob,
+    second: Option<&mut LexicalJob>,
+) -> LexicalCopyReport {
+    let started = qpc();
+    copy_pass(memory, ctx.base, first);
+    let mut ticks = [elapsed(started)];
+    let mut matched = [true];
+    let mut raw_ok = !first.overflowed;
+    if let Some(second) = second {
         let started = qpc();
-        copy_pass(memory, ctx.base, first);
-        let mut ticks = [elapsed(started)];
-        let mut matched = [true];
-        let mut raw_ok = !first.overflowed;
-        if let Some(second) = second {
-            let started = qpc();
-            copy_pass(memory, ctx.base, second);
-            ticks[0] += elapsed(started);
-            raw_ok &= !second.overflowed;
-            matched[0] = first.equal(second) && !first.fault && !second.fault;
-        }
+        copy_pass(memory, ctx.base, second);
+        ticks[0] += elapsed(started);
+        raw_ok &= !second.overflowed;
+        matched[0] = first.equal(second) && !first.fault && !second.fault;
+    }
+    LexicalCopyReport {
+        raw_ok,
+        matched,
+        copy_ticks: ticks,
+        raw_bytes: [first.raw_bytes],
+    }
+}
+
+impl Captured {
+    /// Apply completed acquisition checks without changing rows or outcomes.
+    pub(crate) fn apply_lexical_report(
+        &mut self,
+        ctx: LexicalCopyContext,
+        report: &LexicalCopyReport,
+    ) {
+        let needed = ctx.needed[TableId::LexicalTokens.index()];
         self.rows.checked = needed;
-        self.rows.mismatches = usize::from(needed && !matched[0]);
-        LexicalCopyReport {
-            raw_ok,
-            matched,
-            copy_ticks: ticks,
-            raw_bytes: [first.raw_bytes],
-        }
+        self.rows.mismatches = usize::from(needed && !report.matched[0]);
+    }
+
+    /// Mark an accepted acquisition failure without retrying live memory.
+    pub(crate) fn fail_lexical_capture(&mut self, ctx: LexicalCopyContext, reason: &'static str) {
+        let needed = ctx.needed[TableId::LexicalTokens.index()];
+        self.rows.outcome = Outcome::Unavailable { reason };
+        self.rows.checked = needed;
+        self.rows.mismatches = usize::from(needed);
+        self.raw_mode = false;
     }
 
     pub(crate) fn decode_lexical_payload(
@@ -879,7 +897,10 @@ impl Captured {
 /// harness: a three-token dictionary with inline, heap and empty names.
 #[cfg(test)]
 pub(crate) mod lexical_test_kit {
-    use super::{Capacities, Captured, LexicalCopyContext, LexicalCopyReport, LexicalJob, N};
+    use super::{
+        Capacities, Captured, LexicalCopyContext, LexicalCopyReport, LexicalJob, N,
+        copy_lexical_refresh,
+    };
     use engine::cpdx_lexer::{
         DYNAMIC_CAPACITY_RVA, DYNAMIC_COUNT_RVA, DYNAMIC_TOKENS_RVA, INITIALIZED_RVA,
         MAX_TOKEN_ID_RVA, STATIC_MAX_TOKEN_ID_RVA, TOKEN_ALLOCATION_RVA, TOKEN_CAPACITY_RVA,
@@ -1052,7 +1073,8 @@ pub(crate) mod lexical_test_kit {
         };
         let mut first = LexicalJob::new();
         let mut second = LexicalJob::new();
-        let report = captured.copy_lexical_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = copy_lexical_refresh(memory, ctx, &mut first, Some(&mut second));
+        captured.apply_lexical_report(ctx, &report);
         assert!(report.raw_ok);
         let mut ticks = [0u64; 1];
         captured.decode_lexical_payload(BASE, &first, &mut ticks);
@@ -1965,7 +1987,8 @@ mod tests {
         };
         let mut first = LexicalJob::new();
         let mut second = LexicalJob::new();
-        let report = captured.copy_lexical_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = copy_lexical_refresh(&memory, ctx, &mut first, Some(&mut second));
+        captured.apply_lexical_report(ctx, &report);
         assert!(report.raw_ok);
         assert_eq!(report.matched, [true]);
         // A torn token header between the passes changes the log.
@@ -1990,7 +2013,8 @@ mod tests {
             needed: [true; TABLE_COUNT],
         };
         let mut tiny = LexicalJob::with_capacity(8, 8);
-        let report = captured.copy_lexical_refresh(&memory, ctx, &mut tiny, None);
+        let report = copy_lexical_refresh(&memory, ctx, &mut tiny, None);
+        captured.apply_lexical_report(ctx, &report);
         assert!(!report.raw_ok);
         assert!(tiny.overflowed);
         assert!(tiny.grow_for_next());

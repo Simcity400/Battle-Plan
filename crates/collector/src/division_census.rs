@@ -24,12 +24,18 @@ pub(crate) use engine::unit_viewer_entry::DivisionSource as Entry;
 pub(crate) struct UnitInputs {
     seeds: Vec<carmy::DivisionSeed>,
     outcome: Outcome,
+    roster_slots: Vec<Entry>,
+    intel_outcome: Outcome,
 }
 impl UnitInputs {
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
             seeds: Vec::with_capacity(capacity),
             outcome: Outcome::Unavailable {
+                reason: "division census not captured",
+            },
+            roster_slots: Vec::with_capacity(capacity.saturating_mul(2)),
+            intel_outcome: Outcome::Unavailable {
                 reason: "division census not captured",
             },
         }
@@ -40,9 +46,27 @@ impl UnitInputs {
     pub(crate) fn outcome(&self) -> Outcome {
         self.outcome
     }
+    pub(crate) fn intel_sources(&self) -> engine::unit_viewer_entry::DivisionSources<'_> {
+        engine::unit_viewer_entry::DivisionSources {
+            entries: &self.roster_slots,
+            outcome: self.intel_outcome,
+        }
+    }
     #[cfg(test)]
     pub(crate) fn fixture(seeds: Vec<carmy::DivisionSeed>, outcome: Outcome) -> Self {
-        Self { seeds, outcome }
+        let roster_slots = seeds
+            .iter()
+            .map(|seed| Entry {
+                pointer: seed.pointer,
+                canonical: seed.roster_owner.unwrap_or(0),
+            })
+            .collect();
+        Self {
+            seeds,
+            outcome,
+            roster_slots,
+            intel_outcome: outcome,
+        }
     }
     #[cfg(test)]
     pub(crate) fn empty_rows() -> Self {
@@ -62,7 +86,6 @@ pub(crate) struct Census {
     sources: Vec<DivisionSource>,
     headers: Vec<[u8; 16]>,
     country_roots: Vec<(u32, usize, u32, u32)>,
-    roster_slots: Vec<Entry>,
     census_result: Outcome,
     row_error: Option<&'static str>,
     core_root_error: Option<&'static str>,
@@ -70,6 +93,8 @@ pub(crate) struct Census {
     pub overflowed: bool,
     bytes: u64,
     roster_headers: usize,
+    core_roots: Option<CoreRoots>,
+    core_captured: bool,
 }
 impl Default for Census {
     fn default() -> Self {
@@ -84,7 +109,6 @@ impl Default for Census {
             sources: Vec::new(),
             headers: Vec::new(),
             country_roots: Vec::new(),
-            roster_slots: Vec::new(),
             census_result: Outcome::Unavailable {
                 reason: "division census not captured",
             },
@@ -94,6 +118,8 @@ impl Default for Census {
             overflowed: false,
             bytes: 0,
             roster_headers: 0,
+            core_roots: None,
+            core_captured: false,
         }
     }
 }
@@ -110,7 +136,6 @@ impl Census {
             sources: Vec::with_capacity(8192),
             headers: Vec::with_capacity(1024),
             country_roots: Vec::with_capacity(1024),
-            roster_slots: Vec::with_capacity(16384),
             ..Self::default()
         }
     }
@@ -120,9 +145,11 @@ impl Census {
             let inputs =
                 Arc::get_mut(shared).expect("prior division input leases released before reuse");
             inputs.seeds.clear();
+            inputs.roster_slots.clear();
             inputs.outcome = Outcome::Unavailable {
                 reason: "division census not captured",
             };
+            inputs.intel_outcome = inputs.outcome;
         }
         self.core_masks.clear();
         self.union_masks.clear();
@@ -132,7 +159,6 @@ impl Census {
         self.sources.clear();
         self.headers.clear();
         self.country_roots.clear();
-        self.roster_slots.clear();
         self.census_result = Outcome::Unavailable {
             reason: "division census not captured",
         };
@@ -142,13 +168,15 @@ impl Census {
         self.overflowed = false;
         self.bytes = 0;
         self.roster_headers = 0;
+        self.core_roots = None;
+        self.core_captured = false;
     }
     pub fn allocated_bytes(&self) -> u64 {
         crate::raw_memory::vector_bytes(&self.entries)
-            + self
-                .unit_inputs
-                .as_ref()
-                .map_or(0, |inputs| crate::raw_memory::vector_bytes(&inputs.seeds))
+            + self.unit_inputs.as_ref().map_or(0, |inputs| {
+                crate::raw_memory::vector_bytes(&inputs.seeds)
+                    + crate::raw_memory::vector_bytes(&inputs.roster_slots)
+            })
             + crate::raw_memory::vector_bytes(&self.core_masks)
             + crate::raw_memory::vector_bytes(&self.union_masks)
             + crate::raw_memory::vector_bytes(&self.changed_masks)
@@ -157,7 +185,6 @@ impl Census {
             + crate::raw_memory::vector_bytes(&self.group_kinds)
             + crate::raw_memory::vector_bytes(&self.headers)
             + crate::raw_memory::vector_bytes(&self.country_roots)
-            + crate::raw_memory::vector_bytes(&self.roster_slots)
     }
     pub fn payload_bytes(&self) -> u64 {
         self.bytes
@@ -211,12 +238,11 @@ impl Census {
         }
         reserve(&mut self.entries, target);
         if let Some(shared) = &mut self.unit_inputs {
-            reserve(
-                &mut Arc::get_mut(shared)
-                    .expect("division input leases released before growth")
-                    .seeds,
-                target,
-            );
+            let inputs =
+                Arc::get_mut(shared).expect("division input leases released before growth");
+            reserve(&mut inputs.seeds, target);
+            let slots = inputs.roster_slots.capacity().saturating_mul(2).max(16384);
+            reserve(&mut inputs.roster_slots, slots);
         } else {
             self.unit_inputs = Some(Arc::new(UnitInputs::new(target)));
         }
@@ -228,10 +254,8 @@ impl Census {
         reserve(&mut self.group_kinds, target);
         let headers = self.headers.capacity().saturating_mul(2).max(1024);
         let countries = self.country_roots.capacity().saturating_mul(2).max(1024);
-        let slots = self.roster_slots.capacity().saturating_mul(2).max(16384);
         reserve(&mut self.headers, headers);
         reserve(&mut self.country_roots, countries);
-        reserve(&mut self.roster_slots, slots);
     }
     /// Grow retained storage only while the frame is off the callback.
     pub(crate) fn reserve_sources(&mut self, capacity: usize) {
@@ -249,22 +273,19 @@ impl Census {
         self.census_result
     }
     pub fn intel_sources(&self) -> engine::unit_viewer_entry::DivisionSources<'_> {
-        let outcome = match self.census_result {
-            Outcome::Rows { .. } => Outcome::Rows {
-                len: self.roster_slots.len(),
+        self.unit_inputs.as_ref().map_or(
+            engine::unit_viewer_entry::DivisionSources {
+                entries: &[],
+                outcome: self.census_result,
             },
-            other => other,
-        };
-        engine::unit_viewer_entry::DivisionSources {
-            entries: &self.roster_slots,
-            outcome,
-        }
+            |inputs| inputs.intel_sources(),
+        )
     }
     pub fn intel_equal(&self, other: &Self) -> bool {
         matches!(
             (self.census_result, other.census_result),
             (Outcome::Rows { .. }, Outcome::Rows { .. })
-        ) && self.roster_slots == other.roster_slots
+        ) && self.intel_sources().entries == other.intel_sources().entries
             && self.country_roots == other.country_roots
             && self.headers.get(..self.roster_headers) == other.headers.get(..other.roster_headers)
     }
@@ -292,6 +313,11 @@ impl Census {
         }
         if let Some(reason) = self.core_root_error {
             return Outcome::Unavailable { reason };
+        }
+        if !self.core_captured {
+            return Outcome::Unavailable {
+                reason: "division core not captured",
+            };
         }
         let len = self.entries.len().min(capacity);
         if self
@@ -324,7 +350,7 @@ impl Census {
             && self.entries == other.entries
             && self.headers == other.headers
             && self.country_roots == other.country_roots
-            && self.roster_slots == other.roster_slots
+            && self.intel_sources().entries == other.intel_sources().entries
             && self
                 .unit_inputs
                 .as_ref()
@@ -340,9 +366,16 @@ impl Census {
             && self.group_kinds.get(..a.len()) == other.group_kinds.get(..b.len())
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize, capacity: usize) {
+        self.capture_inputs(memory, base, state);
+        self.capture_core(memory, capacity);
+    }
+    /// Publish the immutable native input packet before acquiring private core
+    /// dependencies. The owning callback may lease it to other jobs as soon as
+    /// this method returns; those jobs must finish before `clear` or `grow`.
+    pub(crate) fn capture_inputs(&mut self, memory: &impl Memory, base: usize, state: usize) {
         self.clear();
         let counted = crate::division_detail::CountedMemory::new(memory);
-        let result = self.capture_inner(&counted, base, state, capacity);
+        let result = self.capture_inputs_inner(&counted, base, state);
         self.bytes = counted.bytes();
         if let Err(reason) = result {
             if matches!(self.census_result, Outcome::Rows { .. }) {
@@ -355,14 +388,37 @@ impl Census {
             {
                 inputs.outcome = Outcome::Unavailable { reason };
             }
+            if let Some(inputs) = self.unit_inputs.as_mut().and_then(Arc::get_mut)
+                && !matches!(inputs.intel_outcome, Outcome::Rows { .. })
+            {
+                inputs.intel_outcome = Outcome::Unavailable { reason };
+            }
         }
     }
-    fn capture_inner(
+    /// Consume the retained roots exactly once, without mutating the leased
+    /// input packet or walking the country and division censuses again. A
+    /// second call preserves the first result, including its failures.
+    pub(crate) fn capture_core(&mut self, memory: &impl Memory, capacity: usize) {
+        if self.core_captured {
+            return;
+        }
+        let Some(roots) = self.core_roots.take() else {
+            return;
+        };
+        let counted = crate::division_detail::CountedMemory::new(memory);
+        let bytes_before = self.bytes;
+        let result = self.capture_core_inner(&counted, roots, capacity);
+        self.bytes = bytes_before.saturating_add(counted.bytes());
+        if let Err(reason) = result {
+            self.row_error = Some(reason);
+        }
+        self.core_captured = true;
+    }
+    fn capture_inputs_inner(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
-        capacity: usize,
     ) -> Result<(), &'static str> {
         let countries = Countries {
             countries: self.array(
@@ -442,7 +498,13 @@ impl Census {
                     &POINTER_LAYOUT,
                     &mut pointer_bytes,
                 );
-                self.bytes += (copied * 8) as u64;
+                if copied == 0 {
+                    return Err("division roster pointer unreadable");
+                }
+                let Some(inputs) = self.unit_inputs.as_mut().and_then(Arc::get_mut) else {
+                    self.overflowed = true;
+                    return Err("division owned roster capacity exhausted");
+                };
                 for i in 0..count {
                     if i >= copied {
                         return Err("division roster pointer unreadable");
@@ -451,11 +513,11 @@ impl Census {
                         pointer_bytes[i * 8..i * 8 + 8].try_into().unwrap(),
                     ))
                     .map_err(|_| "division roster pointer unreadable")?;
-                    if self.roster_slots.len() == self.roster_slots.capacity() {
+                    if inputs.roster_slots.len() == inputs.roster_slots.capacity() {
                         self.overflowed = true;
                         return Err("division owned roster capacity exhausted");
                     }
-                    self.roster_slots.push(Entry { pointer, canonical });
+                    inputs.roster_slots.push(Entry { pointer, canonical });
                     if pointer == 0 {
                         continue;
                     }
@@ -481,6 +543,9 @@ impl Census {
         };
         let inputs =
             Arc::get_mut(shared).expect("division inputs uniquely owned during acquisition");
+        inputs.intel_outcome = Outcome::Rows {
+            len: inputs.roster_slots.len(),
+        };
         if self.entries.len() > inputs.seeds.capacity()
             || self.entries.len() > self.core_masks.capacity()
             || self.entries.len() > self.union_masks.capacity()
@@ -503,6 +568,26 @@ impl Census {
         self.core_masks.resize(self.entries.len(), 0);
         self.union_masks.resize(self.entries.len(), 0);
         self.changed_masks.resize(self.entries.len(), 0);
+        self.core_roots = Some(CoreRoots {
+            base,
+            state,
+            countries,
+            found,
+        });
+        Ok(())
+    }
+    fn capture_core_inner(
+        &mut self,
+        memory: &impl Memory,
+        roots: CoreRoots,
+        capacity: usize,
+    ) -> Result<(), &'static str> {
+        let CoreRoots {
+            base,
+            state,
+            countries,
+            found,
+        } = roots;
         if !found {
             self.core_root_error = Some("country table has no readable countries");
             return Ok(());
@@ -577,7 +662,6 @@ impl Census {
             return Err("division owned header capacity exhausted");
         }
         self.headers.push(bytes);
-        self.bytes += 16;
         Array::from_header(bytes, stride).ok_or(reason)
     }
     fn root(&mut self, root: (u32, usize, u32, u32)) -> Result<(), &'static str> {
@@ -590,6 +674,15 @@ impl Census {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CoreRoots {
+    base: usize,
+    state: usize,
+    countries: Countries,
+    found: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct Countries {
     countries: Array,
     links: Array,
@@ -814,6 +907,161 @@ fn consume<T>(
 mod tests {
     use super::*;
     use crate::sampling::divisions_test_kit as kit;
+    use std::cell::RefCell;
+
+    struct Observed<'a> {
+        bytes: &'a [u8],
+        reads: RefCell<Vec<(usize, usize)>>,
+        fault: Option<usize>,
+    }
+    impl Memory for Observed<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push((address, output.len()));
+            if self.fault.is_some_and(|fault| {
+                address <= fault && address.saturating_add(output.len()) > fault
+            }) {
+                return false;
+            }
+            kit::memory(self.bytes).copy(address, output)
+        }
+    }
+
+    #[test]
+    fn input_stage_can_be_leased_before_core_without_repeating_the_census() {
+        let bytes = kit::fixture();
+        let memory = Observed {
+            bytes: &bytes,
+            reads: RefCell::new(Vec::new()),
+            fault: None,
+        };
+        let mut staged = Census::new();
+        let allocated = staged.allocated_bytes();
+        staged.capture_inputs(&memory, kit::BASE, kit::GAME_STATE);
+        assert_eq!(
+            staged.outcome(0),
+            Outcome::Unavailable {
+                reason: "division core not captured"
+            }
+        );
+        assert_eq!(
+            staged.outcome(64),
+            Outcome::Unavailable {
+                reason: "division core not captured"
+            }
+        );
+        let lease = Arc::clone(staged.unit_inputs().unwrap());
+        assert_eq!(lease.outcome(), Outcome::Rows { len: 3 });
+        let boundary = memory.reads.borrow().len();
+        assert!(!memory.reads.borrow().iter().any(|&(address, _)| {
+            address == kit::GAME_STATE + cgame_state::PROVINCES
+                || address == 0x40000
+                || address == 0x41000
+        }));
+        let input_bytes = staged.payload_bytes();
+        assert_eq!(
+            input_bytes,
+            memory
+                .reads
+                .borrow()
+                .iter()
+                .map(|&(_, len)| len as u64)
+                .sum::<u64>()
+        );
+
+        staged.capture_core(&memory, 64);
+        assert_eq!(staged.outcome(64), Outcome::Rows { len: 3 });
+        assert!(Arc::ptr_eq(&lease, staged.unit_inputs().unwrap()));
+        assert_eq!(staged.allocated_bytes(), allocated);
+        assert!(staged.payload_bytes() > input_bytes);
+        assert!(
+            !memory.reads.borrow()[boundary..]
+                .iter()
+                .any(|&(address, _)| {
+                    address == kit::GAME_STATE + cgame_state::COUNTRIES
+                        || address == kit::GAME_STATE + cgame_state::COUNTRY_LINKS
+                        || (0x23000..0x23010).contains(&address)
+                        || address == 0x23100
+                })
+        );
+        assert_eq!(
+            staged.payload_bytes(),
+            memory
+                .reads
+                .borrow()
+                .iter()
+                .map(|&(_, len)| len as u64)
+                .sum::<u64>()
+        );
+
+        let mut combined = Census::new();
+        combined.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
+        assert!(staged.equal(&combined, 64));
+        assert_eq!(staged.sources(64), combined.sources(64));
+        assert_eq!(staged.payload_bytes(), combined.payload_bytes());
+        let completed_reads = memory.reads.borrow().len();
+        staged.capture_core(&memory, 64);
+        assert_eq!(memory.reads.borrow().len(), completed_reads);
+        drop(lease);
+        staged.clear();
+    }
+
+    #[test]
+    fn core_failure_is_not_retried_and_does_not_change_leased_intel_inputs() {
+        let mut bytes = kit::fixture();
+        // The full native roster retains counted nulls while typed unit seeds
+        // omit them. UnitIntel must still observe the original null ordinal.
+        bytes[0x23008..0x23010].fill(0);
+        let mut census = Census::new();
+        census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
+        let lease = Arc::clone(census.unit_inputs().unwrap());
+        assert_eq!(lease.outcome(), Outcome::Rows { len: 2 });
+        assert_eq!(lease.intel_sources().outcome, Outcome::Rows { len: 3 });
+        assert_eq!(lease.intel_sources().entries[1].pointer, 0);
+        let memory = Observed {
+            bytes: &bytes,
+            reads: RefCell::new(Vec::new()),
+            fault: Some(kit::GAME_STATE + cgame_state::PROVINCES),
+        };
+        census.capture_core(&memory, 0);
+        assert_eq!(
+            census.outcome(0),
+            Outcome::Unavailable {
+                reason: "province array unreadable or invalid"
+            }
+        );
+        assert_eq!(memory.reads.borrow().len(), 1);
+        census.capture_core(&memory, 64);
+        assert_eq!(memory.reads.borrow().len(), 1);
+        assert_eq!(lease.intel_sources().outcome, Outcome::Rows { len: 3 });
+        assert_eq!(
+            census.intel_sources().entries,
+            lease.intel_sources().entries
+        );
+        drop(lease);
+        census.clear();
+    }
+
+    #[test]
+    fn intel_pointer_outcome_survives_private_seed_capacity_failure() {
+        let bytes = kit::fixture();
+        let mut census = Census::new();
+        Arc::get_mut(census.unit_inputs.as_mut().unwrap())
+            .unwrap()
+            .seeds = Vec::new();
+        census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
+        let lease = Arc::clone(census.unit_inputs().unwrap());
+        assert_eq!(
+            lease.outcome(),
+            Outcome::Unavailable {
+                reason: "division owned scalar capacity exhausted"
+            }
+        );
+        assert_eq!(lease.intel_sources().outcome, Outcome::Rows { len: 3 });
+        assert_eq!(lease.intel_sources().entries.len(), 3);
+        let bytes_before = census.payload_bytes();
+        census.capture_core(&kit::memory(&bytes), 64);
+        assert_eq!(census.payload_bytes(), bytes_before);
+    }
 
     #[test]
     fn shared_seeds_keep_complete_census_beyond_core_capacity_and_private_faults() {
