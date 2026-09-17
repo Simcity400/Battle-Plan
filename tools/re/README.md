@@ -41,9 +41,21 @@ Struct layouts used by the recorder stay authoritative in `crates/engine/src`; `
 
 - `seed [rtti] [engine] [docs] [registry]`: rebuild the imported layers (RTTI from the exe, the engine crate, reports
   and docs, the old registry). Re-runnable; agent-written rows are untouched. Run `seed engine` after engine changes.
+- `derive [defines] [plumbing] [accessors] [ctors] [virtuals]`: names a script can prove alone, at confidence `derived`:
+  define globals (with the value and comment from `00_defines.lua`), compiler plumbing (unwind funclets, adjustor thunks,
+  static destructors), one-line accessors, constructors and destructors, and overrides of any named virtual. Naming a
+  virtual re-runs `virtuals` automatically. Re-run the rest after `seed`.
 - `export`: agent-written knowledge as JSONL (`batch` reads it back).
 - `install`: copy this directory to `C:\Tools\hoi4_mcp\hoi4re` after changing it.
 - Patch day: `migrate export`, `migrate index`, `migrate names` (see `migrate.py`), then `HOI4RE_BUILD=<id>`.
   Matching order: RTTI slot, identical bytes, unique instruction shape, call-graph neighbours.
 
 Paths are overridable with `HOI4RE_STATE`, `HOI4RE_INDEX`, `HOI4RE_KNOWLEDGE`, `HOI4RE_EXE`, `HOI4RE_REPO`, `HOI4RE_BUILD`.
+
+## Fleet work
+
+`todo fill` builds ranked queues; `todo next <kind> --author A --count 5` claims items and prints the brief to follow
+(`briefs/RULES.md` plus one file per kind: `hot`, `cited`, `sourced`, `class`, `docs`); `todo status` shows what is left.
+Function items close when the function gets a name at `low` or better; `todo done` closes the rest. Claims lapse after 3 hours.
+Every agent write needs an author, and confidence above `medium` needs `HOI4RE_TRUSTED=1`.
+`review authors`, `review sample --author A`, `review drop --author A` check and, if needed, remove one agent's work.

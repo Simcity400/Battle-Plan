@@ -22,7 +22,7 @@ BUILD = env("HOI4RE_BUILD", "a729")
 SUPPLEMENT = env("HOI4RE_SUPPLEMENT", os.path.join(STATE, "builds", BUILD, "index.sqlite3"))
 INDEX = env("HOI4RE_INDEX", os.path.join(STATE, "function_index.sqlite3") if BUILD == "a729" else os.path.join(STATE, "builds", BUILD, "index.sqlite3"))
 BASE = 0x140000000
-RANK = {"auto": 0, "low": 1, "medium": 2, "high": 3, "verified": 4}
+RANK = {"auto": 0, "derived": 1, "low": 2, "medium": 3, "high": 4, "verified": 5}
 LABEL = re.compile(r"\b((?:thunk_|PTR_)?(?:FUN|DAT|LAB|PTR|s|u)_(?:\w*?_)?)(1[0-9a-f]{8})\b")
 
 SCHEMA = """
@@ -180,6 +180,13 @@ class Re:
     def set_name(self, a, name, summary="", confidence="medium", source="agent", evidence="", author="", kind=None, log=True):
         if confidence not in RANK:
             raise ValueError("confidence must be one of " + "/".join(RANK))
+        capped = ""
+        if source == "agent":
+            self.need_author(author)
+            if RANK[confidence] > RANK["medium"] and env("HOI4RE_TRUSTED", "") != "1":
+                confidence, capped = "medium", " (confidence capped at medium; high and verified need HOI4RE_TRUSTED=1)"
+            if self.kb.execute("SELECT 1 FROM vslots WHERE build=? AND address=? LIMIT 1", (BUILD, a)).fetchone():
+                self.virtual_named = True
         if not re.fullmatch(r"[A-Za-z_~][\w:~<>,*&\-\[\]]*", name):
             raise ValueError("bad name %r" % name)
         kind = kind or ("function" if self.ix.execute("SELECT 1 FROM functions WHERE address=?", (a,)).fetchone() else "data")
@@ -195,9 +202,23 @@ class Re:
                         (BUILD, a, kind, name, summary or (old[2] if old else ""), confidence, source, evidence, author, now()))
         self.kb.commit()
         self._names = None
-        return "0x%x = %s%s" % (a, name, " (was %s)" % old[0] if old and old[0] != name else "")
+        return "0x%x = %s%s%s" % (a, name, " (was %s)" % old[0] if old and old[0] != name else "", capped)
+
+    def need_author(self, author):
+        if not author:
+            raise ValueError("an author is required: pass --author or set HOI4RE_AUTHOR (it is how work is reviewed)")
+
+    def after_writes(self):
+        """Naming a virtual names every override of its slot."""
+        if getattr(self, "virtual_named", False):
+            import derive
+            self.virtual_named = False
+            return "\n" + derive.virtuals(self)
+        return ""
 
     def add_note(self, a, text, evidence="", source="agent", author="", log=True):
+        if source == "agent" and log:
+            self.need_author(author)
         if log:
             self.journal({"op": "note", "target": "0x%x" % a, "text": text, "evidence": evidence, "source": source, "author": author})
         dup = self.kb.execute("SELECT 1 FROM notes WHERE build=? AND address=? AND text=?", (BUILD, a, text)).fetchone()
@@ -208,6 +229,8 @@ class Re:
         return "note saved on 0x%x" % a
 
     def set_field(self, cls, offset, name, type_="", meaning="", evidence="", source="agent", author="", log=True):
+        if source == "agent":
+            self.need_author(author)
         if log:
             self.journal({"op": "field", "cls": cls, "offset": "0x%x" % offset, "name": name, "type": type_,
                           "meaning": meaning, "evidence": evidence, "source": source, "author": author})
@@ -264,10 +287,10 @@ def cmd_fn(target, raw=False, body=True, max_lines=0):
     callers = [r[0] for r in R.ix.execute("SELECT caller FROM call_edges WHERE callee=?", (a,))]
     callees = [r[0] for r in R.ix.execute("SELECT callee FROM call_edges WHERE caller=?", (a,))]
     if not sym or "::" not in sym[0]:
-        tally = collections.Counter(filter(None, (R.class_of(n) for n in set(callers + callees))))
+        tally = collections.Counter(filter(None, (R.class_of(n) for n in list(dict.fromkeys(callers + callees))[:300])))
         if tally:
             out.append("neighbour classes: " + ", ".join("%s %d" % kv for kv in tally.most_common(4)))
-        near = set(callers + callees)
+        near = set((callers + callees)[:2000])
         files = collections.Counter(p for x, p in R.kb.execute("SELECT address, path FROM sources WHERE build=? AND path LIKE '%.cpp'", (BUILD,)) if x in near) if not src and near else None
         if files:
             out.append("neighbour source files: " + ", ".join("%s %d" % kv for kv in files.most_common(4)))
@@ -293,6 +316,8 @@ def cmd_fn(target, raw=False, body=True, max_lines=0):
         else:
             text = text if raw else R.rewrite(text)
             lines = text.splitlines()
+            while lines and (not lines[0].strip() or lines[0].startswith("// ")):  # export header, already shown above
+                lines.pop(0)
             if max_lines and len(lines) > max_lines:
                 lines = lines[:max_lines] + ["... %d more lines (raise max_lines)" % (len(lines) - max_lines)]
             out += lines
@@ -477,7 +502,7 @@ def cmd_field_users(cls, offset, limit=40):
 
 def cmd_name(target, name, summary="", confidence="medium", evidence="", author=""):
     """Name a function, global or vtable. Shown everywhere afterwards, including inside other functions' bodies."""
-    return R.set_name(R.resolve(target), name, summary, confidence, "agent", evidence, author or env("HOI4RE_AUTHOR", ""))
+    return R.set_name(R.resolve(target), name, summary, confidence, "agent", evidence, author or env("HOI4RE_AUTHOR", "")) + R.after_writes()
 
 
 def cmd_note(target, text, evidence="", author=""):
@@ -507,7 +532,7 @@ def cmd_batch(items):
                 out.append(R.set_field(it["cls"], hexint(it["offset"]), it["name"], it.get("type", ""), it.get("meaning", ""), ev, src, author))
         except Exception as e:
             out.append("FAILED %s %s: %s" % (op, it, e))
-    return "\n".join(out)
+    return "\n".join(out) + R.after_writes()
 
 
 def cmd_export(path=""):
@@ -577,13 +602,16 @@ def run_cli(argv):
                 p.add_argument("--" + pn.replace("_", "-"), dest=pn, action=argparse.BooleanOptionalAction, default=None, help=ph)
             else:
                 p.add_argument("--" + pn.replace("_", "-"), dest=pn, type=pt, default=None, help=ph)
-    for extra in ("seed", "migrate", "install"):
+    for extra in ("seed", "derive", "migrate", "install", "todo", "review"):
         sub.add_parser(extra, help="see tools/re/README.md", add_help=False)
     if argv and argv[0] == "install":
         return print(install(*argv[1:2]))
-    if argv and argv[0] in ("seed", "migrate"):
+    if argv and argv[0] in ("seed", "derive", "migrate"):
         mod = __import__(argv[0])
         return mod.main(R, argv[1:])
+    if argv and argv[0] in ("todo", "review"):
+        import work
+        return work.main(R, argv[1:], argv[0])
     args = vars(ap.parse_args(argv))
     cmd = args.pop("cmd")
     if cmd == "batch":
