@@ -5,7 +5,7 @@ One row per old registry domain: what format 13 records for it, what is excluded
 ## Sources
 
 - Old tree: `<local-path>` (tag `archive/pre-rewrite-2026-09-09`). Registry: `extractor/native/domain_registry.json`. Line ranges in the table below are relative to that root; most old walks are in `extractor/native/collector/src/attach_log.rs` (`attach_log`) or under `extractor/native/lanes/<lane>/src/` (`lanes/<lane>`).
-- Decompiled a729 functions: `<local-path>` (tables `functions` keyed by `0x140000000 + RVA`, `call_edges`, `artifacts` pointing into `<local-path>`, and the FTS table `decompile_fts` with the address as text like `0x1401dcef0`). RVAs in this file are image-relative.
+- Decompiled a729 functions and everything already learned about them: `hoi4re` (source and guide in `tools/re/`; also the `hoi4re` MCP server). `fn`, `search`, `xrefs`, `class`, `field-users` read; `name`, `note`, `field`, `batch` save findings for the next agent. It reads `C:\hoi4_evidencegent_reunction_index.sqlite3` and writes `knowledge.sqlite3` beside it. RVAs in this file are image-relative (VA = `0x140000000` + RVA).
 - Engine constants: `crates/engine/src/<struct>.rs`, one file per engine struct, every constant with a comment naming its decompiled evidence. Walkers live beside the constants; the collector packs are `crates/collector/src/extended/*.rs`; save parsers `crates/installed-content/src/save*.rs`; comparators `crates/recorder/src/oracle*.rs`.
 
 ## Rules for a table

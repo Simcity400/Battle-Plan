@@ -1,0 +1,50 @@
+# hoi4re
+
+One tool for reading the decompiled game and saving what you learn. Python 3.11, standard library only.
+Every agent uses the same install: `hoi4re <command>` on the command line, or the
+`hoi4re` MCP server (`hoi4re.py mcp`, stdio) whose tools are the same commands prefixed `re_`.
+
+## Data
+
+- Decompile index (read-only): `<local-path>`, every function of hoi4.exe 1.19.2.0.a729.
+- Knowledge (shared, written by agents): `<local-path>`. Tables: `symbols` (names for
+  functions, globals, vtables), `notes`, `classes` and `vslots` (RTTI), `fields` (class, offset, meaning), `mentions`
+  (where the repo and reports cite an address). Every write is also appended to `knowledge.journal.jsonl`.
+- Known names replace `FUN_`/`DAT_` labels everywhere they are shown, as `Name@address`.
+
+## Read
+
+| Command | Use |
+|---|---|
+| `fn <addr or name>` | Name, summary, class, notes, mentions, callers, callees, matching fields, decompile. `--no-body`, `--max-lines N`, `--raw` |
+| `search <fts query>` | Full-text search of decompiled bodies: `"instant_build"`, `NEAR(supply homebase)` |
+| `xrefs <addr>` | Every function that references a global, vtable, string or function |
+| `find <text>` | Names, classes and fields containing the text |
+| `callers` / `callees <addr> [--depth N]`, `path <a> <b>` | Call graph (direct calls only; virtual calls are not edges) |
+| `class <Name>`, `vtable <Name>` | Bases, vtables, fields, named methods; slot list |
+| `field-users <Class> <offset>` | Functions touching an offset, those tied to the class first |
+| `strings <literal>`, `data <addr>`, `asm <addr>` | Literal and its users; initialised bytes; instruction listing |
+
+
+## Write (do this before you finish)
+
+```
+hoi4re name 1422198a0 CApplication::Run --summary "main loop; calls Frame until quit" --confidence high --evidence "SetThreadAffinityMask then loop on Frame"
+hoi4re note 1401dcef0 "sets tick_busy (+0x4c0) before advancing the hour"
+hoi4re field CGameState 0x4c0 TICK_BUSY --type u8 --meaning "set for the whole hourly tick"
+hoi4re batch @findings.jsonl        # lines: {"op":"name","target":"...","name":"..."} | {"op":"note",...} | {"op":"field","cls":...}
+```
+
+Confidence is `low`, `medium`, `high` or `verified`; a name never replaces one of higher confidence (it is kept as a note).
+Struct layouts used by the recorder stay authoritative in `crates/engine/src`; `seed engine` re-imports them.
+
+## Maintain
+
+- `seed [rtti] [engine] [docs] [registry]`: rebuild the imported layers (RTTI from the exe, the engine crate, reports
+  and docs, the old registry). Re-runnable; agent-written rows are untouched. Run `seed engine` after engine changes.
+- `export`: agent-written knowledge as JSONL (`batch` reads it back).
+- `install`: copy this directory to `C:\Tools\hoi4_mcp\hoi4re` after changing it.
+- Patch day: `migrate export`, `migrate index`, `migrate names` (see `migrate.py`), then `HOI4RE_BUILD=<id>`.
+  Matching order: RTTI slot, identical bytes, unique instruction shape, call-graph neighbours.
+
+Paths are overridable with `HOI4RE_STATE`, `HOI4RE_INDEX`, `HOI4RE_KNOWLEDGE`, `HOI4RE_EXE`, `HOI4RE_REPO`, `HOI4RE_BUILD`.

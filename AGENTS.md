@@ -7,5 +7,6 @@
 - Replace, never shim. Delete replaced code and its references. A format change updates every reader and writer in the same commit.
 - Validation is [PLAN.md section 5](PLAN.md#5-validation) and nothing else. Do not add test infrastructure, cloud CI, corpus tests or evidence reverification.
 - Use the per-worktree `.cargo-target` and shared sccache at `C:\sccache_cache`. Never delete the shared cache.
+- Reverse engineering goes through `hoi4re` ([tools/re](tools/re/README.md)): look functions up there, and save every name, note and field you establish before you report.
 - Captures belong under `captures\`, never in the repo. Keep scratch outside the repo. Never commit logs, dumps or build output.
 - Only the owner changes decisions in `README.md`, `AGENTS.md` or `PLAN.md`. Apply owner-authorized amendments and record phase outcomes honestly.
