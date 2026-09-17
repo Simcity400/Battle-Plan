@@ -205,6 +205,14 @@ impl Player {
                     .map_or(Random { seed, index: 0 }, |p| p.random.clone());
                 let previous = self.nodes[index].as_ref().map(|p| (p.clip, time - p.start));
                 self.nodes[index] = pick(node, &chosen, &mut random).map(|clip| {
+                    // Native idle has NO random start: 14127f000 copies
+                    // 1422814f0's defaults and sets only request flag 4, whose
+                    // range field stays 0, so 1422755a0 falls back to the
+                    // authored `animation_random_start_time`, which no shipped
+                    // entity sets. The game still shows neighbouring figures in
+                    // different poses, so the spread is their unrecorded
+                    // state-entry times. This five-second range is that
+                    // stand-in, not a native constant.
                     let random_range = if index == 0 && matches!(instance.animation, IDLE | DEFEND)
                     {
                         5.0
