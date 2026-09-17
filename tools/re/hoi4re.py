@@ -305,8 +305,7 @@ def cmd_fn(target, raw=False, body=True, max_lines=0):
         files = collections.Counter(p for x, p in R.kb.execute("SELECT address, path FROM sources WHERE build=? AND path LIKE '%.cpp'", (BUILD,)) if x in near) if not src and near else None
         if files:
             out.append("neighbour source files: " + ", ".join("%s %d" % kv for kv in files.most_common(4)))
-    for (t, ev, src, au, utc) in R.kb.execute("SELECT text, evidence, source, author, created_utc FROM notes WHERE build=? AND address=? ORDER BY id", (BUILD, a)):
-        out.append("note (%s %s %s): %s%s" % (src, au, utc[:10], t[:1500], "  [" + ev + "]" if ev else ""))
+    out += notes(min(a, f[1]), max(a, f[2]), a)
     for (s, l, t) in R.kb.execute("SELECT source, line, text FROM mentions WHERE build=? AND address=? LIMIT 12", (BUILD, a)):
         out.append("mentioned %s:%d  %s" % (s, l, t))
     for title, lst in (("callers", callers), ("callees", callees)):
@@ -446,14 +445,26 @@ def cmd_strings(text, limit=40):
     return "\n".join(dict.fromkeys(out)) or "literal not found in the executable"
 
 
+def notes(lo, hi, anchor):
+    """Note lines for every address in [lo, hi]; notes away from the anchor say where they sit."""
+    out = []
+    for ad, t, ev, src, au, utc in R.kb.execute("SELECT address, text, evidence, source, author, created_utc FROM notes "
+                                                "WHERE build=? AND address BETWEEN ? AND ? ORDER BY address, id", (BUILD, lo, hi)):
+        where = "" if ad == anchor else " at %+#x (%x)" % (ad - anchor, ad)
+        out.append("note%s (%s %s %s): %s%s" % (where, src, au, utc[:10], t[:1500], "  [" + ev + "]" if ev else ""))
+    return out
+
+
 def cmd_data(target, size=64):
     """Bytes of initialised data at an address, with qwords labelled when they point at known symbols."""
     import struct
     a = R.resolve(target)
     raw = R.pe.read(a, size)
+    sym = R.kb.execute("SELECT summary FROM symbols WHERE build=? AND address=?", (BUILD, a)).fetchone()
+    head = (["summary: " + sym[0]] if sym and sym[0] else []) + notes(a, a + max(size, 1) - 1, a)
     if raw is None:
-        return "0x%x is not file-backed (uninitialised .data/.bss or outside the image); name: %s" % (a, R.label(a))
-    out = ["data at %s" % R.label(a)]
+        return "\n".join(["0x%x is not file-backed (uninitialised .data/.bss or outside the image); name: %s" % (a, R.label(a))] + head)
+    out = ["data at %s" % R.label(a)] + head
     for i in range(0, len(raw) - 7, 8):
         q, = struct.unpack_from("<Q", raw, i)
         f4, = struct.unpack_from("<f", raw, i)
