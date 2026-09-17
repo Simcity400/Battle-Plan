@@ -20,5 +20,8 @@ desktop.ini
 .DS_Store
 *.swp
 
+# hoi4re data: decompiled game code and working databases (tools/re/README.md)
+/tools/re/data/
+
 # Python bytecode
 __pycache__/

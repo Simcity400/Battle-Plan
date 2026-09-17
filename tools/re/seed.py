@@ -153,7 +153,7 @@ def seed_docs(R, files=None):
 
 
 def seed_registry(R, path=None):
-    path = path or os.path.join(H.STATE, "registry.sqlite3")
+    path = path or H.REGISTRY
     reg = sqlite3.connect("file:" + path.replace("\\", "/") + "?mode=ro", uri=True)
     kb = R.kb
     kb.execute("DELETE FROM notes WHERE build=? AND source='registry'", (H.BUILD,))

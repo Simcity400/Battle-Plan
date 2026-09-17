@@ -5,7 +5,7 @@ Stdlib only. Usage: `hoi4re.py <command> ...`; see README.md.
 """
 import argparse, collections, datetime, json, os, re, sqlite3, sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
 
@@ -13,14 +13,25 @@ def env(key, default):
     return os.environ.get(key, default)
 
 
-STATE = env("HOI4RE_STATE", r"C:\hoi4_evidence\agent_re")
-KNOWLEDGE = env("HOI4RE_KNOWLEDGE", os.path.join(STATE, "knowledge.sqlite3"))
-EXPORTS = env("HOI4RE_EXPORTS", r"C:\hoi4_evidence\ghidra_agent_exports")
+def main_checkout():
+    """Root of the main checkout, also when this file runs from a git worktree (worktrees do not hold the data)."""
+    root = os.path.dirname(os.path.dirname(HERE))
+    git = os.path.join(root, ".git")
+    if os.path.isfile(git):
+        target = open(git, encoding="utf-8").read().split("gitdir:", 1)[1].strip().replace("/", os.sep)
+        root = target.split(os.sep + ".git" + os.sep)[0]
+    return root
+
+
+REPO = env("HOI4RE_REPO", main_checkout())
+DATA = env("HOI4RE_DATA", os.path.join(REPO, "tools", "re", "data"))
+KNOWLEDGE = os.path.join(DATA, "knowledge.sqlite3")
+EXPORTS = os.path.join(DATA, "ghidra_exports")
+REGISTRY = os.path.join(DATA, "hoi4_re_server", "registry.sqlite3")
 EXE = env("HOI4RE_EXE", r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe")
-REPO = env("HOI4RE_REPO", r"")
 BUILD = env("HOI4RE_BUILD", "a729")
-SUPPLEMENT = env("HOI4RE_SUPPLEMENT", os.path.join(STATE, "builds", BUILD, "index.sqlite3"))
-INDEX = env("HOI4RE_INDEX", os.path.join(STATE, "function_index.sqlite3") if BUILD == "a729" else os.path.join(STATE, "builds", BUILD, "index.sqlite3"))
+SUPPLEMENT = os.path.join(DATA, "builds", BUILD, "index.sqlite3")
+INDEX = os.path.join(DATA, "function_index.sqlite3") if BUILD == "a729" else SUPPLEMENT
 BASE = 0x140000000
 RANK = {"auto": 0, "derived": 1, "low": 2, "medium": 3, "high": 4, "verified": 5}
 LABEL = re.compile(r"\b((?:thunk_|PTR_)?(?:FUN|DAT|LAB|PTR|s|u)_(?:\w*?_)?)(1[0-9a-f]{8})\b")
@@ -580,16 +591,6 @@ COMMANDS = [
 ]
 
 
-def install(dest=r"C:\Tools\hoi4_mcp\hoi4re"):
-    """Copy the tool to the stable path every client config points at."""
-    import shutil
-    shutil.copytree(HERE, dest, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
-    main = os.path.join(dest, "hoi4re.py")
-    with open(os.path.join(os.path.dirname(dest), "hoi4re.cmd"), "w") as f:
-        f.write('@"%s" "%s" %%*\n' % (sys.executable, main))
-    return "installed to %s; CLI: %s" % (dest, os.path.join(os.path.dirname(dest), "hoi4re.cmd"))
-
-
 def run_cli(argv):
     ap = argparse.ArgumentParser(prog="hoi4re", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -602,10 +603,8 @@ def run_cli(argv):
                 p.add_argument("--" + pn.replace("_", "-"), dest=pn, action=argparse.BooleanOptionalAction, default=None, help=ph)
             else:
                 p.add_argument("--" + pn.replace("_", "-"), dest=pn, type=pt, default=None, help=ph)
-    for extra in ("seed", "derive", "migrate", "install", "todo", "review"):
+    for extra in ("seed", "derive", "migrate", "todo", "review"):
         sub.add_parser(extra, help="see tools/re/README.md", add_help=False)
-    if argv and argv[0] == "install":
-        return print(install(*argv[1:2]))
     if argv and argv[0] in ("seed", "derive", "migrate"):
         mod = __import__(argv[0])
         return mod.main(R, argv[1:])

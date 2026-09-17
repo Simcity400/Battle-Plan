@@ -1,7 +1,7 @@
 """Patch day: export a new build, index it, and carry names, notes and fields across.
 
   hoi4re.py migrate export --exe <new hoi4.exe> --build <id> [--shards N]   Ghidra import, analysis and export (hours)
-  hoi4re.py migrate index  --build <id>                                     build <state>/builds/<id>/index.sqlite3
+  hoi4re.py migrate index  --build <id>                                     build data/builds/<id>/index.sqlite3
   hoi4re.py migrate names  --from a729 --to <id> --exe <new hoi4.exe>       match functions and copy knowledge
 Afterwards use the new build with HOI4RE_BUILD=<id> HOI4RE_EXE=<new exe>.
 """
@@ -26,7 +26,7 @@ CREATE VIRTUAL TABLE decompile_fts USING fts5(address UNINDEXED, content, tokeni
 
 
 def build_dir(build):
-    d = os.path.join(H.STATE, "builds", build)
+    d = os.path.join(H.DATA, "builds", build)
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -82,9 +82,9 @@ def index(build):
 def fingerprints(build):
     """{address: (byte_sha, shape_sha)} and {caller: set(callees)} for a build."""
     if build == "a729":
-        reg = sqlite3.connect("file:" + os.path.join(H.STATE, "registry.sqlite3").replace("\\", "/") + "?mode=ro", uri=True)
+        reg = sqlite3.connect("file:" + H.REGISTRY.replace(chr(92), "/") + "?mode=ro", uri=True)
         fp = {H.BASE + rva: (b, s) for rva, b, s in reg.execute("SELECT rva, byte_sha256, shape_sha256 FROM functions")}
-        ix = sqlite3.connect("file:" + os.path.join(H.STATE, "function_index.sqlite3").replace("\\", "/") + "?mode=ro", uri=True)
+        ix = sqlite3.connect("file:" + H.INDEX.replace(chr(92), "/") + "?mode=ro", uri=True)
         extra = os.path.join(build_dir(build), "index.sqlite3")
         if os.path.exists(extra):  # functions the first index missed
             sup = sqlite3.connect(extra)

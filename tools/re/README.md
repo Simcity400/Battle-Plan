@@ -1,15 +1,27 @@
 # hoi4re
 
 One tool for reading the decompiled game and saving what you learn. Python 3.11, standard library only.
-Every agent runs the same install from its shell: `hoi4re <command>` (`--help` lists them).
+Run it from any shell as `python tools/re/hoi4re.py <command>` or `hoi4re <command>`
+(`--help` lists them). `C:/Tools/hoi4_mcp/hoi4re` is a junction to this directory, so both run the same code.
 
 ## Data
 
-- Decompile index (read-only): `<local-path>`, every function of hoi4.exe 1.19.2.0.a729.
-- Knowledge (shared, written by agents): `<local-path>`. Tables: `symbols` (names for
-  functions, globals, vtables), `notes`, `classes` and `vslots` (RTTI), `fields` (class, offset, meaning), `mentions`
-  (where the repo and reports cite an address). Every write is also appended to `knowledge.journal.jsonl`.
-- Known names replace `FUN_`/`DAT_` labels everywhere they are shown, as `Name@address`.
+Everything lives in `tools/re/data/` of the main checkout (``). It is git-ignored: it holds decompiled
+game code and multi-GB databases. The tool finds it from a worktree too. Back up `knowledge.sqlite3` and its journal;
+the rest can be rebuilt.
+
+| Path | What |
+|---|---|
+| `knowledge.sqlite3`, `knowledge.journal.jsonl` | What agents and scripts learned: `symbols` (names), `notes`, `fields`, `classes` and `vslots` (RTTI), `mentions`, `sources`, `accessors`, `queue`. Every agent write is also appended to the journal. |
+| `function_index.sqlite3` | Decompile, call graph and full-text search for hoi4.exe 1.19.2.0.a729 (read-only). |
+| `builds/a729/` | Functions the first index missed (`index.sqlite3`) and their raw export. New builds go in `builds/<id>/`. |
+| `ghidra/a729/` | The Ghidra project of the a729 exe, for re-exports. |
+| `ghidra_exports/` | Raw per-function Ghidra artifacts; `asm` reads instruction listings from here. |
+| `hoi4_re_server/` | State of the older `hoi4_re` MCP server (live memory observation): registry, jobs, receipts. `migrate` reads its build fingerprints. |
+| `fleet/` | Batch files and the orchestrator log of the naming fleet. |
+
+The old locations (`<local-path>`, `<local-path>`, `<local-path>`)
+are junctions into this directory. Known names replace `FUN_`/`DAT_` labels everywhere they are shown, as `Name@address`.
 
 ## Read
 
@@ -46,11 +58,10 @@ Struct layouts used by the recorder stay authoritative in `crates/engine/src`; `
   static destructors), one-line accessors, constructors and destructors, and overrides of any named virtual. Naming a
   virtual re-runs `virtuals` automatically. Re-run the rest after `seed`.
 - `export`: agent-written knowledge as JSONL (`batch` reads it back).
-- `install`: copy this directory to `C:\Tools\hoi4_mcp\hoi4re` after changing it.
 - Patch day: `migrate export`, `migrate index`, `migrate names` (see `migrate.py`), then `HOI4RE_BUILD=<id>`.
   Matching order: RTTI slot, identical bytes, unique instruction shape, call-graph neighbours.
 
-Paths are overridable with `HOI4RE_STATE`, `HOI4RE_INDEX`, `HOI4RE_KNOWLEDGE`, `HOI4RE_EXE`, `HOI4RE_REPO`, `HOI4RE_BUILD`.
+`HOI4RE_DATA`, `HOI4RE_REPO`, `HOI4RE_EXE` and `HOI4RE_BUILD` override the defaults.
 
 ## Fleet work
 
