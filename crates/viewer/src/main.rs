@@ -1093,7 +1093,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "Map buildings: {} authored slots, {} built rows, {} entities placed, {} drawn; \
              {} rows with an unnamed type token, {} with no slot at their location; \
-             {} slots hidden by fog of war, {} hub slots the port graphics carry,              {} need_detection slots placed with detection unrecorded",
+             {} slots hidden by fog of war, {} hub slots the port or city graphics carry,              {} need_detection slots placed with detection unrecorded",
             building_summary.slots,
             building_summary.built,
             building_summary.placed,
@@ -1101,7 +1101,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             building_summary.unnamed_tokens,
             building_summary.missing_slots,
             building_summary.fogged,
-            building_summary.on_a_naval_base,
+            building_summary.hubs_left_to_another_layer,
             building_summary.undetected_candidates
         );
         for (name, count) in &building_summary.missing_by_type {
