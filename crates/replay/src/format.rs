@@ -13,6 +13,10 @@
 //! orders-group and division counter operands and leader portrait path inputs (ids174..185).
 //! Format25 extends the land combat-window operand rows in place with per-side HQ units
 //! and per-division direction and template frame operands, keeping the same 186 tables.
+//! Format27 appends the raid map-icon inputs, RaidTargets and RaidProvinces (ids186..187).
+//! Format26 belongs to the division-ETA branch; when the two merge, its two tables take
+//! ids186..187 and these move to 188..189. The id block is asserted in the tests below so
+//! a merge that forgets to renumber fails here rather than in a recording.
 //!
 //! A frame body is a `table_ns` entry per recorded table followed by one update
 //! per recorded table in `TableId` order. The timing and table arrays each use
@@ -91,10 +95,15 @@ impl FormatVersion {
     /// the same 186 tables with shorter land combat-window operand rows.
     pub const LEGACY_24: Self = Self {
         version: 24,
-        recorded_tables: TABLE_COUNT,
+        recorded_tables: TableId::LeaderPortraitPaths.index() + 1,
+    };
+    /// Last version before the raid map-icon inputs.
+    pub const LEGACY_25: Self = Self {
+        version: 25,
+        recorded_tables: TableId::LeaderPortraitPaths.index() + 1,
     };
     /// Every readable version, oldest first.
-    pub const READABLE: [Self; 10] = [
+    pub const READABLE: [Self; 11] = [
         Self::LEGACY_14,
         Self::LEGACY_17,
         Self::LEGACY_18,
@@ -104,6 +113,7 @@ impl FormatVersion {
         Self::LEGACY_22,
         Self::LEGACY_23,
         Self::LEGACY_24,
+        Self::LEGACY_25,
         Self::CURRENT,
     ];
 
@@ -169,7 +179,13 @@ mod tests {
         assert_eq!(FormatVersion::LEGACY_22.recorded_tables, 170);
         assert_eq!(FormatVersion::LEGACY_23.recorded_tables, 174);
         assert_eq!(FormatVersion::LEGACY_24.recorded_tables, 186);
-        assert_eq!(FormatVersion::CURRENT.recorded_tables, 186);
+        assert_eq!(FormatVersion::LEGACY_25.recorded_tables, 186);
+        assert_eq!(FormatVersion::CURRENT.recorded_tables, 188);
+        // The raid map-icon tables are the last block. Merging the division-ETA
+        // branch renumbers them to 188..189; this assertion is where a merge
+        // that forgot to fails.
+        assert_eq!(TableId::RaidTargets as usize, 186);
+        assert_eq!(TableId::RaidProvinces as usize, 187);
         // The writer's version must stay readable, or a file this build wrote
         // could not be reopened.
         assert_eq!(
@@ -211,19 +227,21 @@ mod tests {
 
     #[test]
     fn unsupported_versions_are_refused() {
-        // Development formats15/16 existed but have no supported decoder here.
+        // Development formats15/16 existed but have no supported decoder here,
+        // and 26 belongs to the unmerged division-ETA branch.
         for version in [0, 13, 15, 16, 26, u16::MAX] {
             let error = FormatVersion::read(version).unwrap_err().to_string();
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24, 25 and \
-                     writes 25"
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27 and \
+                     writes 27"
                 )
             );
         }
-        // The writer's version decodes, and so does the format it extends.
-        assert_eq!(FormatVersion::read(25).unwrap(), FormatVersion::CURRENT);
+        // The writer's version decodes, and so do the formats it extends.
+        assert_eq!(FormatVersion::read(27).unwrap(), FormatVersion::CURRENT);
+        assert_eq!(FormatVersion::read(25).unwrap(), FormatVersion::LEGACY_25);
         assert_eq!(FormatVersion::read(24).unwrap(), FormatVersion::LEGACY_24);
     }
 
@@ -271,6 +289,9 @@ mod tests {
                 TableId::LeaderPortraitPaths,
             ] {
                 assert_eq!(format.records(table), format.version() >= 24);
+            }
+            for table in [TableId::RaidTargets, TableId::RaidProvinces] {
+                assert_eq!(format.records(table), format.version() >= 27);
             }
         }
         assert!(FormatVersion::LEGACY_19.records(TableId::Fronts));

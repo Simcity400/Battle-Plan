@@ -7,8 +7,8 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
 use engine::{
-    Memory, ccountry, ccountry_raid_status, cgame_state, cnuke, cpdx_array::Array, craid_instance,
-    craid_system, msvc_string, nproject_breakthrough_node, nproject_cbreakthrough_progress,
+    Memory, ccountry, ccountry_raid_status, cgame_state, cnuke, cpdx_array::Array,
+    craid_instance, craid_province_entries, craid_system, msvc_string, nproject_breakthrough_node, nproject_cbreakthrough_progress,
     nproject_cprogram, nproject_cprogram_status, nproject_cproject, nproject_cproject_pool,
     nproject_cproject_state_machine, nproject_sproject_context, nproject_sproject_history,
     peace_conference, scientist_roster, walk::Outcome,
@@ -19,7 +19,7 @@ use replay::{
 };
 use std::mem::size_of;
 
-pub const N: usize = 10;
+pub const N: usize = 12;
 pub const TABLES: [TableId; N] = [
     TableId::ProjectPrograms,
     TableId::Projects,
@@ -31,14 +31,19 @@ pub const TABLES: [TableId; N] = [
     TableId::PeaceConferences,
     TableId::Scientists,
     TableId::ScientistSkills,
+    TableId::RaidTargets,
+    TableId::RaidProvinces,
 ];
 
 /// Each rooted walk produces two tables with independent consistency windows.
 /// Its entire cost is attributed once to the anchor named by each group.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("project pool and reward histories", 1, &[1, 2]),
-    ("raid countries and instances", 5, &[5, 6]),
+    // RaidTargets is the raid instance walk's second projection: the same rows
+    // and the same double read, so it joins that walk's cost group.
+    ("raid countries and instances", 5, &[5, 6, 10]),
     ("scientist rosters and specializations", 8, &[8, 9]),
+    ("raid province registrations", 11, &[11]),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,7 +56,7 @@ pub struct Capacities {
 impl Default for Capacities {
     fn default() -> Self {
         Self {
-            rows: [256, 32768, 1024, 2048, 1024, 512, 256, 32, 2048, 8192],
+            rows: [256, 32768, 1024, 2048, 1024, 512, 256, 32, 2048, 8192, 0, 4096],
             program_names: 8192,
             program_candidates: 1024,
         }
@@ -69,6 +74,7 @@ pub struct Captured {
     peace: CaptureRows<peace_conference::Row>,
     scientists: CaptureRows<scientist_roster::Row>,
     scientist_skills: CaptureRows<scientist_roster::SkillRow>,
+    raid_provinces: CaptureRows<craid_province_entries::Row>,
     names: Arena<u8>,
     candidates: Vec<usize>,
     required_candidates: usize,
@@ -95,6 +101,7 @@ impl Captured {
             peace: CaptureRows::new(capacity.rows[7], successful[7]),
             scientists: CaptureRows::new(capacity.rows[8], successful[8]),
             scientist_skills: CaptureRows::new(capacity.rows[9], successful[9]),
+            raid_provinces: CaptureRows::new(capacity.rows[11], successful[11]),
             names: Arena::new(capacity.program_names, successful[0]),
             candidates: vec![0; capacity.program_candidates],
             required_candidates: 0,
@@ -113,6 +120,7 @@ impl Captured {
         self.peace.reset();
         self.scientists.reset();
         self.scientist_skills.reset();
+        self.raid_provinces.reset();
         self.names.reset();
         self.required_candidates = 0;
     }
@@ -128,6 +136,7 @@ impl Captured {
             + self.peace.allocated_bytes()
             + self.scientists.allocated_bytes()
             + self.scientist_skills.allocated_bytes()
+            + self.raid_provinces.allocated_bytes()
             + self.names.allocated_bytes()
             + self.candidates.capacity() * size_of::<usize>()
     }
@@ -146,6 +155,8 @@ impl Captured {
         self.scientists.grow(&mut capacity.rows[8], successful[8]);
         self.scientist_skills
             .grow(&mut capacity.rows[9], successful[9]);
+        self.raid_provinces
+            .grow(&mut capacity.rows[11], successful[11]);
         self.names.grow(&mut capacity.program_names, successful[0]);
         grow_capacity(&mut capacity.program_candidates, self.required_candidates);
         if self.required_candidates > 0
@@ -239,7 +250,19 @@ impl Captured {
             |parents, instances| craid_system::walk(memory, base, game_state, parents, instances),
         );
         matched[5..7].copy_from_slice(&raid_matches);
+        // Slot 10 is the same read as slot 6: one walk, two published tables.
+        matched[10] = raid_matches[1];
         ticks[5] = elapsed(begin);
+
+        let begin = qpc();
+        let provinces = game_state
+            .checked_add(cgame_state::PROVINCES_COUNT)
+            .and_then(|at| engine::read::<u32>(memory, at))
+            .unwrap_or(0);
+        matched[11] = capture_rows(&mut self.raid_provinces, needed[11], |rows| {
+            craid_province_entries::walk(memory, base, game_state, provinces, rows)
+        });
+        ticks[11] = elapsed(begin);
         plain!(peace, 7, peace_conference);
 
         // One roster traversal fills both scientist tables. Their consistency
@@ -314,6 +337,8 @@ impl Captured {
             self.peace.mismatches,
             self.scientists.mismatches,
             self.scientist_skills.mismatches,
+            self.raids.mismatches,
+            self.raid_provinces.mismatches,
         ]
     }
 
@@ -329,6 +354,8 @@ impl Captured {
             effective(&self.peace),
             effective(&self.scientists),
             effective(&self.scientist_skills),
+            effective(&self.raids),
+            effective(&self.raid_provinces),
         ]
     }
 
@@ -438,6 +465,34 @@ impl Captured {
                     token: r.token,
                     level: r.level,
                     experience_raw: r.experience_raw,
+                }
+            }),
+            // The raid instance rows carry the map icon's own operands; they
+            // publish as a twin table so a pre-format-27 reader sees the
+            // shorter `Raids` row unchanged.
+            table::<tables::RaidTargets, _>(outcomes[10], &self.raids.rows, |r| {
+                rows::RaidTargetRow {
+                    reference_type: r.reference_type,
+                    id: r.id,
+                    province: r.target.province,
+                    leader_province: r.target.leader_province,
+                    state: r.target.state,
+                    building_type: r.target.building_type,
+                    building_location: r.target.building_location,
+                    building_flags: r.target.building_flags,
+                    raid_type: r.raid_type,
+                    detected: r.detected,
+                }
+            }),
+            table::<tables::RaidProvinces, _>(outcomes[11], &self.raid_provinces.rows, |r| {
+                rows::RaidProvinceRow {
+                    province: r.province,
+                    targets: r.targets,
+                    subset: r.subset,
+                    owned: r.owned,
+                    incoming: r.incoming,
+                    words: r.words().to_vec(),
+                    dropped_words: r.dropped_words,
                 }
             }),
         ]
@@ -2376,7 +2431,7 @@ mod tests {
         assert!(!captured.raw_mode);
         assert_eq!(
             captured.checked_mismatches(),
-            [1, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+            [1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
         );
         assert!(
             captured.outcomes()[..4]
@@ -2491,6 +2546,31 @@ mod tests {
                 ship_reference_id: u32::MAX - 1,
                 country: -1,
             },
+            target: engine::craid_target::Row {
+                province: 6521,
+                leader_province: 0,
+                state: 64,
+                building_type: 0x2fb6,
+                building_location: 9421,
+                building_flags: 1,
+            },
+            raid_type: 0x4b06,
+            detected: 1,
+        };
+        captured.raid_provinces.outcome = Outcome::Rows { len: 1 };
+        captured.raid_provinces.rows[0] = engine::craid_province_entries::Row {
+            province: 6521,
+            targets: 1,
+            subset: 0,
+            owned: 0,
+            incoming: 2,
+            words: {
+                let mut words = [0; engine::craid_province_entries::MAX_WORDS];
+                words[0] = (u64::from(u32::MAX) << 32) | 99;
+                words
+            },
+            words_len: 1,
+            dropped_words: 3,
         };
         captured.peace.outcome = Outcome::Rows { len: 1 };
         captured.peace.rows[0] = peace_conference::Row {

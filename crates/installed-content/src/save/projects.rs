@@ -96,6 +96,25 @@ pub struct Raid {
     /// FDA710 omits the entire source when kind presence is zero. Omission
     /// cannot certify its independently stored location/reference fields.
     pub source: Option<RaidSource>,
+    /// FDA710 writes the raid type definition's own token string; absent only
+    /// when the definition pointer is null.
+    pub raid_type: Option<Vec<u8>>,
+    /// FDA710 writes `detected` only when the byte is set.
+    pub detected: bool,
+    /// The `target` block, absent when the scope is empty.
+    pub target: Option<RaidTarget>,
+}
+/// A character target (`rescue_captured_general`) carries none of these.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RaidTarget {
+    pub province: Option<u32>,
+    pub state: Option<u32>,
+    /// `target.leader_province`, the scope's `+0x20` province arm.
+    pub leader_province: Option<u32>,
+    /// `target.building.template`, the building type's own token string.
+    pub building_template: Option<Vec<u8>>,
+    /// `target.building.location`, a province or a state id by the template.
+    pub building_location: Option<u32>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RaidSource {
@@ -272,7 +291,27 @@ fn parse_raid(items: &[Item]) -> io::Result<Raid> {
         Some(b"CANCELED") => 5,
         _ => return Err(invalid("unknown saved raid outcome")),
     };
+    let target = field(items, b"target")?
+        .map(|value| -> io::Result<RaidTarget> {
+            let items = block(value)?;
+            let building = field(items, b"building")?.map(block).transpose()?;
+            Ok(RaidTarget {
+                province: optional_number(items, b"province")?,
+                state: optional_number(items, b"state")?,
+                leader_province: optional_number(items, b"leader_province")?,
+                building_template: building
+                    .map(|items| required_bytes(items, b"template"))
+                    .transpose()?,
+                building_location: building
+                    .map(|items| number(items, b"location"))
+                    .transpose()?,
+            })
+        })
+        .transpose()?;
     Ok(Raid {
+        raid_type: bytes(items, b"type")?,
+        detected: bytes(items, b"detected")?.as_deref() == Some(b"yes"),
+        target,
         id: id(items)?,
         preparation_hours: optional_number(items, b"prep_time")?.unwrap_or(0),
         phase,

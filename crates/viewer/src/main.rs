@@ -811,7 +811,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Warning: {warning}");
         }
         // counters: bases, labels, counters and combats in priority order.
-        let (mut label_batch, label_report, counter_report) =
+        let (mut label_batch, label_report, counter_report, raid_report) =
             document.overlay_batch(camera, options.size, &options.perspective, omitted)?;
         if let Some(path) = &options.counters_json {
             let census = document
@@ -1206,6 +1206,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .perspective
                 .as_deref()
                 .unwrap_or("no human country")
+        );
+        println!(
+            "Raid icons: {} drawn, {} with no recorded raid, {} with no anchor, {} entry words dropped",
+            raid_report.icons,
+            raid_report.unbound,
+            raid_report.unanchored,
+            raid_report.dropped_words
         );
         // counters
         println!(

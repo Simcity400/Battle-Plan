@@ -3819,7 +3819,7 @@ mod tests {
         let index = shared.free.pop().expect("pooled buffer");
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let capacities = crate::extended::projects::Capacities {
-            rows: [256; 10],
+            rows: [256; 12],
             program_names: 8192,
             program_candidates: 1024,
         };

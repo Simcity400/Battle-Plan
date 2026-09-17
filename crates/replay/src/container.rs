@@ -1724,6 +1724,14 @@ mod tests {
                     let legacy = crate::rows::encode_legacy_ship_update(&frame.tables[index]);
                     payload.splice(start..start + sizes[index], legacy);
                 }
+                if format.records(TableId::DivisionStatus) && format.version() < 27 {
+                    let index = TableId::DivisionStatus.index();
+                    let start =
+                        8 + 4 + 1 + 8 + TABLE_COUNT * 8 + 16 + sizes[..index].iter().sum::<usize>();
+                    let legacy =
+                        crate::rows::encode_legacy_division_status_update(&frame.tables[index]);
+                    payload.splice(start..start + sizes[index], legacy);
+                }
                 // branch, hour, keyframe flag and total time precede the array.
                 let timings = 8 + 4 + 1 + 8 + recorded * 8;
                 payload.drain(timings..timings + (TABLE_COUNT - recorded) * 8);
@@ -1805,6 +1813,17 @@ mod tests {
                         row.direction = 0;
                         row.direction_group = 0;
                         row.template_frames = 0;
+                    }
+                }
+                // Format27 appends `invalid_orders`; an older file decodes it as
+                // zero, so the fixture leaves it zero and the downgraded and
+                // current files stay comparable field for field.
+                if table == TableId::DivisionStatus
+                    && let TableView::Complete(TableRows::DivisionStatus(rows)) =
+                        &mut frame.tables[table.index()]
+                {
+                    for row in rows {
+                        row.invalid_orders = 0;
                     }
                 }
                 frame.metrics.table_ns[table.index()] = (hour as u64) * 1000 + table.index() as u64;
@@ -2081,7 +2100,7 @@ mod tests {
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24, 25 and \
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27 and \
                      writes {FORMAT_VERSION}"
                 )
             );

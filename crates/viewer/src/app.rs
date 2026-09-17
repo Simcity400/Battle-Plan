@@ -1691,7 +1691,7 @@ impl Viewer {
         }
         laps.lap("overlay_prepare");
         if self.overlay_fraction != Some(document.hour_fraction) {
-            let (batch, label_report, counter_report) = self
+            let (batch, label_report, counter_report, _raids) = self
                 .prepared_overlay
                 .as_mut()
                 .expect("prepared above")

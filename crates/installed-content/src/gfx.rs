@@ -169,6 +169,28 @@ pub fn sprites(layers: &ResolvedLayers) -> io::Result<BTreeMap<String, SpriteTyp
     Ok(read(layers)?.sprites)
 }
 
+/// Reads the sprites of named `.gfx` files, in the order given.
+///
+/// [`read`] covers `interface/*.gfx` only; the engine also loads the
+/// subdirectories, and the raid map icon's sprites live in one of them. A pass
+/// that needs a subdirectory names its file rather than widening the sweep,
+/// which would change which declaration wins for every other pass.
+pub fn sprites_of_files(
+    layers: &ResolvedLayers,
+    paths: &[&str],
+) -> io::Result<BTreeMap<String, SpriteType>> {
+    let mut sprites = BTreeMap::new();
+    for path in paths {
+        let bytes = layers.read(path)?;
+        let (document, _) =
+            parse_interface(&bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
+        for sprite in sprites_of(&document, path)? {
+            sprites.insert(sprite.name.clone(), sprite);
+        }
+    }
+    Ok(sprites)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -80,6 +80,8 @@ pub struct MapIcons {
     pub victory_points: SpriteSheet,
     // counters: the unit-counter, base and combat sheets, and the flag atlas.
     pub counters: CounterAssets,
+    /// The raid map icon's frame strip, glyphs and raid types.
+    pub raids: super::raids::RaidAssets,
 }
 
 impl MapIcons {
@@ -96,12 +98,14 @@ impl MapIcons {
         // counters
         let counters = CounterAssets::load(layers, &sprites, &mut images)?;
         let combat = crate::combat::Assets::load(layers, &sprites, &mut images, combat_details)?;
+        let raids = super::raids::RaidAssets::load(layers, &mut images)?;
         Ok(Self {
             combat,
             images,
             fonts,
             victory_points,
             counters,
+            raids,
         })
     }
 }

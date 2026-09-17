@@ -158,6 +158,9 @@ pub(super) fn compare(
     succeeded &= report.attempt("projects Raids", |report| {
         compare_raids(frame, pack, countries, report)
     });
+    succeeded &= report.attempt("projects RaidTargets", |report| {
+        compare_raid_targets(frame, pack, tokens, report)
+    });
     succeeded &= report.attempt("projects PeaceConferences", |report| {
         compare_conferences(frame, pack, report)
     });
@@ -957,6 +960,98 @@ fn compare_raids(
     Ok(())
 }
 
+/// `RaidTargets` against the saved `type`, `target` and `detected` fields.
+///
+/// `state` is `scope + 0x10`, `leader_province` is `scope + 0x20` and
+/// `building` is `scope + 0`, whose `template` is the building's own lexer
+/// token and whose `location` is its `CBuildingStatus + 0x6c`. The character
+/// arm at `scope + 0x18` is not recorded and is stated as a limitation.
+fn compare_raid_targets(
+    frame: &DecodedFrame,
+    pack: &saved::Pack,
+    tokens: &TokenNames<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let expected = pack
+        .raids
+        .as_ref()
+        .ok_or_else(|| invalid("save lacks raids root; absence does not certify empty graph"))?;
+    let expected_children: BTreeMap<_, _> = expected
+        .iter()
+        .flat_map(|parent| parent.instances.iter().map(|raid| (raid.id, raid)))
+        .collect();
+    let mut seen = BTreeSet::new();
+    let mut count = 0;
+    for row in complete::<tables::RaidTargets>(frame)? {
+        let id = (u64::from(row.id) << 32) | u64::from(row.reference_type);
+        if !seen.insert(id) {
+            return Err(invalid("duplicate raid target reference"));
+        }
+        let Some(saved) = expected_children.get(&id) else {
+            missing(report, "RaidTargets", id, "absent from save");
+            continue;
+        };
+        let label = format!("RaidTarget {id}");
+        equal(
+            report,
+            format!("{label}.detected"),
+            row.detected != 0,
+            saved.detected,
+        );
+        compare_optional_token(
+            report,
+            &format!("{label}.type"),
+            tokens,
+            (row.raid_type != 0).then_some(row.raid_type),
+            saved.raid_type.as_deref(),
+        );
+        let target = saved.target.clone().unwrap_or_default();
+        equal(
+            report,
+            format!("{label}.province"),
+            (row.province != 0).then_some(row.province),
+            target.province,
+        );
+        equal(
+            report,
+            format!("{label}.state"),
+            (row.state != 0).then_some(row.state),
+            target.state,
+        );
+        equal(
+            report,
+            format!("{label}.leader_province"),
+            (row.leader_province != 0).then_some(row.leader_province),
+            target.leader_province,
+        );
+        compare_optional_token(
+            report,
+            &format!("{label}.building_template"),
+            tokens,
+            (row.building_type != 0).then_some(row.building_type),
+            target.building_template.as_deref(),
+        );
+        equal(
+            report,
+            format!("{label}.building_location"),
+            (row.building_type != 0).then_some(row.building_location),
+            target.building_location,
+        );
+        count += 1;
+    }
+    for id in expected_children.keys() {
+        if !seen.contains(id) {
+            missing(report, "RaidTargets", id, "absent from replay");
+        }
+    }
+    report.compared("RaidTargets", count);
+    report.limitation(
+        "the raid target scope's character arm (scope + 0x18, saved as leader) and the map icon's per-province registration are outside this field set",
+        "RaidTargets and RaidProvinces",
+    );
+    Ok(())
+}
+
 fn reconstructed_turn(saved: &saved::Conference) -> Option<i32> {
     let first = saved.history_turns.values().next().copied().unwrap_or(0);
     saved
@@ -1026,7 +1121,8 @@ mod tests {
         frame::TableView,
         rows::{
             NukeRow, ProjectBreakthroughRow, ProjectContext, ProjectHistoryRow, ProjectProgramRow,
-            ProjectRow, ProjectState, RaidCountryRow, RaidRow, RaidSource, TableId, TableRows,
+            ProjectRow, ProjectState, RaidCountryRow, RaidRow, RaidSource, RaidTargetRow, TableId,
+            TableRows,
         },
     };
 
@@ -1288,7 +1384,7 @@ mod tests {
             metrics: Default::default(),
         };
         let source = br"countries={GER={nukes={{amount=90071992547.40993 nukes_ready=-1}{amount=0 nukes_ready=0}} program_status={project_pool={project={}} breakthrough={}}}}
-            raids={countries={{tag=GER priority=-1 raid_instance={{id={id=4294967295 type=84} phase=PREPARED prep_time=-2}}}}} peace_conference={}";
+            raids={countries={{tag=GER priority=-1 raid_instance={{id={id=4294967295 type=84} phase=PREPARED prep_time=-2 target={state=291}}}}}} peace_conference={}";
         let pack = saved::parse(&installed_content::parser::parse(source).unwrap().items).unwrap();
         frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(vec![
             NukeRow {
@@ -1331,6 +1427,19 @@ mod tests {
                     country: 102,
                 },
             }]));
+        frame.tables[TableId::RaidTargets.index()] =
+            TableView::Complete(TableRows::RaidTargets(vec![RaidTargetRow {
+                reference_type: 84,
+                id: u32::MAX,
+                province: 0,
+                leader_province: 0,
+                state: 291,
+                building_type: 0,
+                building_location: 0,
+                building_flags: 0,
+                raid_type: 0,
+                detected: 0,
+            }]));
         let country = CountryRow {
             id: 102,
             canonical_slot: 0,
@@ -1338,6 +1447,35 @@ mod tests {
             ..Default::default()
         };
         (frame, pack, country)
+    }
+
+    /// Every RaidTargets field the save carries is compared: a changed target
+    /// arm, raid type or detected byte has to show as a difference.
+    #[test]
+    fn raid_target_fields_are_compared_against_the_saved_target_block() {
+        let (frame, pack, country) = raid_fixture();
+        let countries = BTreeMap::from([(102, &country)]);
+        let mutate = |edit: &dyn Fn(&mut RaidTargetRow)| {
+            let mut frame = frame.clone();
+            let TableView::Complete(TableRows::RaidTargets(rows)) =
+                &mut frame.tables[TableId::RaidTargets.index()]
+            else {
+                panic!("fixture holds complete raid targets");
+            };
+            edit(&mut rows[0]);
+            let mut report = Report::default();
+            compare(&frame, &pack, &countries, &BTreeMap::new(), &mut report).unwrap();
+            report.differences
+        };
+        assert!(mutate(&|row| row.state = 292)[0].contains("state"));
+        assert!(mutate(&|row| row.detected = 1)[0].contains("detected"));
+        assert!(mutate(&|row| row.province = 7)[0].contains("province"));
+        assert!(mutate(&|row| row.leader_province = 7)[0].contains("leader_province"));
+        // An unchanged row is silent, so the assertions above cannot pass by
+        // comparing nothing at all.
+        let mut report = Report::default();
+        compare(&frame, &pack, &countries, &BTreeMap::new(), &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
     }
 
     #[test]

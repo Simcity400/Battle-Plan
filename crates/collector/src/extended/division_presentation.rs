@@ -595,6 +595,7 @@ impl Captured {
                 exercising: r.exercising,
                 has_order: r.has_order,
                 no_orders: r.no_orders,
+                invalid_orders: r.invalid_orders,
             },
         );
         let Some(paths) = self.paths.first.get(..self.paths.len) else {

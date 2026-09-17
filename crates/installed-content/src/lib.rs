@@ -15,6 +15,7 @@ pub mod map;
 pub mod mesh;
 pub mod parser;
 pub mod positions;
+pub mod raids;
 pub mod railways;
 pub mod regions;
 pub mod save;
