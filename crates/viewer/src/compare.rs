@@ -1,7 +1,7 @@
 //! Scoring for reference pairs: the metrics, masks and difference image behind `--compare`.
 //!
 //! A reference pair is a game screenshot and the viewer's render of the same hour and camera
-//! (`RENDERING.md` section 2). This module turns such a pair into numbers: mean absolute error
+//! ([archived rendering notes](#) section 2). This module turns such a pair into numbers: mean absolute error
 //! in gamma space, a luminance SSIM on a three level pyramid, and a mean CIE76 colour distance,
 //! reported once for the frame and once per cell of a region grid so a worker can see which part
 //! of the frame is wrong. Everything here is a pure function over decoded images except

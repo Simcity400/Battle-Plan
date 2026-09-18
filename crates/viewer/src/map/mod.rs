@@ -1,4 +1,4 @@
-//! The game-identical map pipeline (`RENDERING.md`). CPU-side generators live beside the passes
+//! The game-identical map pipeline ([archived rendering notes](#)). CPU-side generators live beside the passes
 //! that consume them; each module owns one intermediate or one pass.
 
 // counters

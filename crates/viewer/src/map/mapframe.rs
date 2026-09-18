@@ -119,7 +119,7 @@ impl FrameAssets {
     ///
     /// `map/ambient_object.txt` is covered content and is hash-verified;
     /// `gfx/entities` and `gfx/models` are outside the coverage policy
-    /// (`RENDERING.md` section 4), so the descriptors, the meshes and their
+    /// ([archived rendering notes](#) section 4), so the descriptors, the meshes and their
     /// textures go through [`ResolvedLayers::read_uncovered`] and are not
     /// verified. The caller states that limitation once.
     ///

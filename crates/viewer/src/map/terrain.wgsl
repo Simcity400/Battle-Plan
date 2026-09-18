@@ -832,7 +832,7 @@ fn terrain_main(input: TerrainVertex) -> @location(0) vec4<f32> {
 // as sRGB, and blend half the water tint with the lit floor by
 // saturate((world_y - 5.3) / 7.7). The open floor is about y=8.9.
 // The native terrain scene is a later draw, including below the waterline.
-// RENDERING.md's water section records the sampled inputs and pixel histories.
+// [archived rendering notes](#)'s water section records the sampled inputs and pixel histories.
 @fragment
 fn underwater_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     if WATER_HEIGHT - input.prepos.y + TERRAIN_WATER_CLIP_HEIGHT < 0.0 {

@@ -1690,7 +1690,7 @@ impl Descriptors {
 
 /// Reads the `pdxmesh` and `entity` blocks of the named descriptor files.
 ///
-/// `gfx/entities` is outside the content coverage policy (`RENDERING.md`
+/// `gfx/entities` is outside the content coverage policy ([archived rendering notes](#)
 /// section 4), so the files go through [`ResolvedLayers::read_uncovered`] and
 /// are **not** hash-verified; the viewer states that limitation once.
 ///

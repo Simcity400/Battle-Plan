@@ -18,7 +18,7 @@
 // pixels. The GPU probes use the game's cached HLSL and retain native draws,
 // textures, constants and samplers; their unmodified output is checked against
 // pixel history before attributing terms. Details, numeric comparisons and
-// remaining animation/geometry limitations: RENDERING.md, "Water refraction
+// remaining animation/geometry limitations: [archived rendering notes](#), "Water refraction
 // and tint (2026-09-15)". Evidence: captures/water_20260915 outside the repo.
 
 /// `SHADOW_WEIGHT_WATER` (`constants.fxh:173`): open water keeps half its sun
@@ -286,7 +286,7 @@ fn water_main(input: WaterVertex) -> @location(0) vec4<f32> {
         mix(BORDER_NIGHT_DESATURATION_MAX, 1.0, bloom_alpha),
     );
     // `dominance_fx_apply` is skipped: no naval-dominance data is recorded, so
-    // its `Texture3` lookup has nothing to read (`RENDERING.md` section 5).
+    // its `Texture3` lookup has nothing to read ([archived rendering notes](#) section 5).
 
     return vec4<f32>(out, 1.0 - water_shore);
 }

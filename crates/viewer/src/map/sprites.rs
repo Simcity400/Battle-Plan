@@ -89,7 +89,7 @@ impl MapIcons {
     ///
     /// `interface` and `gfx/interface` are covered content and go through
     /// [`ResolvedLayers::read`]; `gfx/fonts` is not, and [`text::Fonts::load`]
-    /// states that limitation (`RENDERING.md` section 4).
+    /// states that limitation ([archived rendering notes](#) section 4).
     pub fn load(layers: &ResolvedLayers, combat_details: bool) -> io::Result<Self> {
         let mut images = Vec::new();
         let fonts = text::Fonts::load(layers, &mut images)?;

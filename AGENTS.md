@@ -1,12 +1,34 @@
-# Agent guidance
+# Working on Battle Plan
 
-- Read [PLAN.md](PLAN.md) first, then [README.md](README.md). Work the current phase; do not start the next phase before its check passes.
-- Work on one coordinated branch. Parallel helpers are owner-authorized; give them bounded tasks with clear file ownership. No lanes, landing branches or owner rulings in code comments.
-- Design for aggregate cost as recorded data grows. Batch independent implementation and validation; shared captures must retain per-table correctness and cost results. Keep builds and heavy analysis outside timed game intervals.
-- Keep one file per engine struct. The owner superseded the original under-100-file limit; report the final count without inventing a replacement cap.
-- Replace, never shim. Delete replaced code and its references. A format change updates every reader and writer in the same commit.
-- Validation is [PLAN.md section 5](PLAN.md#5-validation) and nothing else. Do not add test infrastructure, cloud CI, corpus tests or evidence reverification.
-- Use the per-worktree `.cargo-target` and shared sccache at `C:\sccache_cache`. Never delete the shared cache.
-- Reverse engineering goes through `hoi4re` ([tools/re](tools/re/README.md)): look functions up there, and save every name, note and field you establish before you report.
-- Captures belong under `captures\`, never in the repo. Keep scratch outside the repo. Never commit logs, dumps or build output.
-- Only the owner changes decisions in `README.md`, `AGENTS.md` or `PLAN.md`. Apply owner-authorized amendments and record phase outcomes honestly.
+Read the [project README](README.md) and the README for the component you are changing. The user's current instructions take precedence over old handoffs.
+
+## Keep these guarantees
+
+- Update affected format readers, writers and consumers together. Code owns version numbers, table IDs and cadence; do not duplicate those catalogs in prose.
+
+## Validate locally
+
+```powershell
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+For frontend or analytics data-type changes:
+
+```powershell
+npm.cmd run check:ui
+npm.cmd run build:ui
+cargo run -p analytics --bin export-types -- --check
+```
+
+Unit tests use pure functions and synthetic memory, not the game or a capture corpus. Recorder/viewer integration also needs the relevant fresh-save oracle and existing smoke workflow in the [recorder guide](crates/recorder/README.md).
+
+Coordinate game ownership. Keep builds outside timed intervals; reuse matched saves/baselines and batch expensive live checks. Never waive a save difference. Report what ran, failed or remains unverified. Documentation-only changes need link and diff checks, not game captures.
+
+## Files and documentation
+
+Use the worktree's `.cargo-target` and shared `C:\sccache_cache`; never delete the shared cache. Put local captures/reports under `captures\`, outside Git. Keep other scratch outside source. Never commit dumps, logs or build output.
+
+Keep the root README as an index, shared rules here, component details beside each crate and field evidence beside code. Preserve approved decisions.

@@ -8,7 +8,7 @@
 // ps_5_0 cache with D3DCOMPILE_OPTIMIZATION_LEVEL3 reproduces all 3408 bytes
 // (DXBC checksum DFA8F0D38DD19B71052792C25B3753AA). Its input signature has
 // position/UV only: there is no country colour, font-definition colour, SDF
-// threshold, shadow offset or procedural outline. See RENDERING.md's name
+// threshold, shadow offset or procedural outline. See [archived rendering notes](#)'s name
 // material audit for the mip comparison and individual pixel histories.
 
 // `DiffuseTexture`: the `hoi_mapfont4` atlas page. `MipMapLodBias = -0.4`,

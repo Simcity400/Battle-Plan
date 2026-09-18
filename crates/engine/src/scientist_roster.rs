@@ -5,7 +5,7 @@
 //! so the walk authenticates what it can prove instead: the country roster
 //! itself, each entry's CCharacter vtable and reference type, and each
 //! character's CScientist vtable. The roster's own object identity remains
-//! unproved and is recorded as such in PORTING.md.
+//! unproved and is recorded as such in [archived domain index](#).
 
 use crate::{
     Memory, ccharacter, ccountry, cpdx_array::Array, cscientist, read, scientist_roster_entry,

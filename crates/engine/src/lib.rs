@@ -1,5 +1,5 @@
 //! Pinned engine layouts, guarded reads and the measured hourly sampling boundary.
-//! See PORTING.md for archived sources, excluded acquisition and unproved layouts.
+//! See the engine README for the source map, reader rules and historical evidence.
 
 pub mod ability_context;
 pub mod ability_controller;

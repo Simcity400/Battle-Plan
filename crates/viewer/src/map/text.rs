@@ -5,7 +5,7 @@
 //! victory-point and capital labels), `Main_14` (unit-counter counts) and
 //! `hoi_16mbs` (base counts). `gfx/fonts` is outside the coverage policy, so
 //! [`installed_content::fonts::load_font`] reads the `.fnt` and its page through
-//! `ResolvedLayers::read_uncovered` (`RENDERING.md` section 4).
+//! `ResolvedLayers::read_uncovered` ([archived rendering notes](#) section 4).
 //!
 //! # No code-side outline
 //!
@@ -20,7 +20,7 @@
 //!
 //! # Colour codes
 //!
-//! Localisation keeps the game's `§Y…§!` runs (`RENDERING.md` section 4), and
+//! Localisation keeps the game's `§Y…§!` runs ([archived rendering notes](#) section 4), and
 //! the engine strips them when it lays text out. [`strip_color_codes`] does the
 //! same and keeps the text. The per-code colours in the `textcolors` blocks are
 //! not applied: every map label the viewer draws is a plain name, and applying

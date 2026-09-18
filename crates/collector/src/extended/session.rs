@@ -4,7 +4,7 @@
 //! The hourly game speed is not a table here: `CGameState+0x4bc` is already read
 //! by the authenticated clock read in the same guarded batch as the hour, so it
 //! rides on the existing Clock row instead of paying a second read and a second
-//! availability outcome. Pause is not recorded; see PORTING.md's D57 row.
+//! availability outcome. Pause is not recorded; see [archived domain index](#)'s D57 row.
 //!
 //! Only growth and replay conversion allocate.
 

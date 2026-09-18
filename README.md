@@ -1,87 +1,45 @@
 # Battle Plan
 
-Battle Plan records a Hearts of Iron IV campaign while you play and opens it later as an interactive map. A passive recorder injects one collector into the game, the collector samples the game state once per game hour, and the viewer plays the recording back hour by hour with branch-aware playback, pan, zoom and headless image export. It supports the pinned Windows build, Operation Postern v1.19.2.0.a729, verified by executable hash; any other build is refused with the build it wanted.
+Record a Hearts of Iron IV campaign, replay it on an interactive map, and explore its statistics over time.
 
-The release is a portable ZIP with `recorder.exe`, `viewer.exe`, `collector.dll` and this README, with checksums. Plan, status and evidence live in [PLAN.md](PLAN.md); the engine knowledge index is [crates/engine/PORTING.md](crates/engine/PORTING.md).
+The recorder reads the game's state without controlling the game. The desktop app has a native **Map** tab and a web-based **Analytics** tab. Both read the same `.battleplan` file; neither needs access to live game memory.
 
-## Use
+## Start here
 
-The desktop app adds **Map** and **Analytics** side tabs, hosting the existing native viewer in Map; see [DESKTOP.md](DESKTOP.md). The standalone viewer commands below remain available.
+This is a Windows project for a specific, hash-verified HOI4 build. Unsupported game executables are refused. Rust is pinned in [rust-toolchain.toml](rust-toolchain.toml); build settings are in [.cargo/config.toml](.cargo/config.toml).
 
-Build from source with the pinned Rust 1.96.0 toolchain, the Windows MSVC build tools, `lld-link` and `sccache`:
-
-```powershell
-cargo build --workspace --release
-.\.cargo-target\release\recorder.exe --out captures
-```
-
-Keep `collector.dll` beside `recorder.exe`. Start the recorder, then play normally. It finds `hoi4.exe`, prints the Paradox user folder it selected (`--user-dir <directory>` selects another), records, and finalizes the replay when the game exits, then waits for the next process. Ctrl+C detaches, finalizes and exits. `--once` stops after one process session.
+For desktop development, install the pinned Rust toolchain, Windows MSVC build tools, `lld-link`, `sccache`, Node.js 22.12 or newer, and the Microsoft Edge WebView2 Runtime. From the repository root:
 
 ```powershell
-.\.cargo-target\release\recorder.exe inspect <campaign.battleplan>
-.\.cargo-target\release\recorder.exe oracle <campaign.battleplan> <save.hoi4> --hour <n> --branch <id>
-.\.cargo-target\release\viewer.exe <campaign.battleplan>
-.\.cargo-target\release\viewer.exe --dump <campaign.battleplan> --hour <n> --branch <id> --out <frame.png> --camera <world-x,world-z,height>
-.\.cargo-target\release\viewer.exe --compare <game.png> <viewer.png> --upscale 1.25 --exclude-game-ui --diff <difference.png>
+npm.cmd ci
+npm.cmd run dev
 ```
 
-On first run the viewer asks for the game and Paradox user folders and stores them beside the executable in `viewer.json`. It offers political and control maps, a session and branch picker, an hourly scrubber and play, pause and speed controls. Windowed playback and headless export use the same wgpu renderer. An hour present on several branches requires a branch selection. Both executables print `--help`. `--compare` scores a reference pair of same-sized PNGs, printing the mean absolute error, a luminance SSIM pyramid and a CIE76 colour distance for the frame and for each cell of a `--regions <cols>x<rows>` grid; `--mask <mask.png>`, `--exclude <x,y,w,h>` and `--exclude-game-ui` drop the game's interface, `--upscale <factor>` bilinearly resamples the viewer render first so a native-resolution frame scores against an upscaled screenshot, `--diff <out.png>` writes the amplified difference and `--json <out.json>` writes the same numbers as JSON.
+Choose **Open recording** to load a `.battleplan`. The map also needs the matching game and user folders; Analytics can read the recording without map assets.
 
-## Rules
+To make a recording, follow the [recorder guide](crates/recorder/README.md). For builds, launch arguments and desktop packaging, see the [desktop guide](crates/desktop/README.md).
 
-Recording:
+## Find your way around
 
-- The recorder is passive. It never pauses, saves, sends input or drives the game.
-- The collector reads game state through exactly one detour at the proven hourly boundary. The parallel-acquisition prototype may use acquisition workers while the game thread waits; all live reads finish before the game resumes. Polling intervals and recorded fields are unchanged. Diffing, encoding and disk writes happen off the game thread. The detour is restored and verified on detach, and all collector workers are joined before unloading.
-- Two simultaneous game processes are unsupported and refused. An unsupported executable records nothing.
-- A failed read or dropped hour costs only the affected table or hours and is named in the file.
+Each crate's README explains its responsibility, important rules and development entry points.
 
-Truth:
+| Component | What belongs here |
+|---|---|
+| [engine](crates/engine/README.md) | Supported game build, native layouts and guarded memory reads. |
+| [collector](crates/collector/README.md) | Injected DLL, hourly acquisition and recording pipeline. |
+| [recorder](crates/recorder/README.md) | Attach/detach, replay finalization, inspection and save comparison. |
+| [replay](crates/replay/README.md) | Shared recording format, tables, branches, cadence and sample history. |
+| [installed-content](crates/installed-content/README.md) | Game assets, text saves, content layers and identity verification. |
+| [viewer](crates/viewer/README.md) | Native map, playback, game-derived visuals and image export. |
+| [analytics](crates/analytics/README.md) | Asset-independent replay queries and frontend data types. |
+| [desktop](crates/desktop/README.md) | Tauri host and the native viewer's lifecycle. |
+| [desktop-protocol](crates/desktop-protocol/README.md) | Messages shared by the desktop host and viewer. |
+| [ui](ui/README.md) | React interface, charts and the game-calendar picker. |
 
-- Record state, never pictures or invented data. Values keep the engine's own representation and precision; rounding belongs to display.
-- The viewer shows gaps, truncated tables and unavailable tables as such. Recorded hours are drawn exactly; between two recorded hours a moving division's position is extrapolated along its recorded route by its recorded remaining time, because the game glides and the map is meant to be indistinguishable from it (owner ruling 2026-09-14), and the frame's warning area says so. Nothing else is interpolated.
-- Save comparisons are the correctness check for captured values and print their own limitations. A comparison difference is never waived.
+## Working on the project
 
-Files:
+Read [AGENTS.md](AGENTS.md) for development rules and validation commands. Detailed references stay beside their subject: [engine readers](crates/engine/README.md#source-map), [map rendering](crates/viewer/README.md#rendering-rules), [reverse-engineering tools](tools/re/README.md), and [reference captures](reference/).
 
- - One `.battleplan` file links recorder and viewer. It stores content identity (executable, DLC and mod layer hashes, layer order, coverage policy), never game assets or machine paths. The writer emits format 25; finalized format-14, format-17, format-18, format-19, format-20, format-21, format-22, format-23 and format-24 recordings remain readable. The extended ShipModels counter payload is explicitly absent in earlier formats; their formation flags carry only bits 7, 8 and 39. Tables predating a file's format are explicitly not applicable in the oracle, never fabricated as empty or zero. Other formats and old spool segments are refused, and older files cannot be appended to.
-- The viewer resolves content by id, verifies its bytes under the recorded coverage policy, and refuses missing or mismatching content. An identity the recorder could not verify is refused unless `--allow-unverified-content` is given; that override keeps a visible warning and never waives hash checks.
-- The viewer never touches live game memory.
+Preserve exact recorded values and distinguish missing data from zero. Show gaps, uncertainty and carried samples honestly. A passing build is not proof of capture correctness, map fidelity or game-speed performance.
 
-Branches:
-
-- Every game process starts a new branch. Within a process, the measured load signal or an unexplained hour discontinuity starts another. Parentage is recorded as probable or unknown, never asserted.
-- The load signal has one-second resolution, so a timestamp collision is a documented blind spot.
-- A different campaign id is a different replay file.
-
-Scope:
-
-- Data is exact. Visuals come from the game's own files with our own compositing, checked side by side against the game.
-- The map is always viewed as a country, as in the game: `--perspective <TAG>|recorded` picks the viewing country and `--fog on|off` is the game's fog-of-war switch; fog off still views as that country. The land and naval combat windows are drawn from the game's own interface files; the rest of the game-skinned `.gui`/`.gfx` interface and custom data panels are later work. Sound is dropped.
-- Vanilla with all DLC is the first tested content set. Mods are recorded by identity and tested afterwards.
-
-## Validation
-
-Validation is local only: the workspace build, pure-function tests, strict Clippy, and an oracle comparison against a fresh text save at the recorded hour (`save_as_binary=no`; binary saves are refused).
-
-```powershell
-cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all -- --check
-.\.cargo-target\release\recorder.exe oracle <campaign.battleplan> <save.hoi4> --hour <n> --branch <id>
-```
-
-`tools/smoke.ps1 -Action Smoke` builds and tests the workspace, freezes release binaries, records the explicitly selected local save through all 183 consistency windows, saves a new text file through the game UI at a full-refresh hour, samples that hour at H+1, detaches and verifies collector absence, exits the game normally, runs the fresh-save oracle, and renders/scores five camera views plus a headless/window parity pair. Any failed command or incomplete oracle fails the run. It reports measured costs, not acceptance of the separate performance targets.
-
-The run requires an isolated user directory with `save_as_binary=no`, a matching existing `continue_game.json` selection, a calibrated UI JSON file (schema in the script's help), no competing game/recorder or game lock, and a **new** output directory. It preserves the input save and restores the original settings/continue-selection bytes after exit. `-WaitForUiReview` provides a bounded pre-save checkpoint for dismissing dynamic informational notifications through the same guarded driver; it never waives validation. `-MapMode controller` and `-Perspective recorded` select the matching political view. The `Bypass` below applies only to this PowerShell process, not a persistent security-policy change.
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/smoke.ps1 -Action Smoke `
-  -UserDirectory captures\m11_20260909\userdir `
-  -ExpectedSave GER_1944_07_20_121_record23_20260915.hoi4 `
-  -UiConfig captures\pr_full_smoke_20260916\ui2560.json `
-  -Out captures\my_new_smoke_run -WaitForUiReview
-```
-
-The separate Launch, Screenshot, Key, Click, Move, Wheel, Text, Console, Clock and Baseline actions remain available. Captures, logs, the frozen driver and `smoke-result.json` stay in the output directory, never in source control. [reference/01.md](reference/01.md) holds the first historical game/viewer screenshot pair.
+These documents describe how the project works. Old plans and decisions remain in Git history; experiment logs and captures do not belong in the documentation or source control.
