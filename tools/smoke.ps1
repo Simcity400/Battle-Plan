@@ -398,6 +398,42 @@ function Invoke-FullSmoke {
         if (-not $path) { return $null }
         try { [IO.File]::ReadAllText($path) | ConvertFrom-Json } catch { return $null }
     }
+    function Changed-Pixels([string]$first,[string]$second,[int[]]$box) {
+        # Pixels in box (x0,y0,x1,y1) whose channels differ by more than 8.
+        Add-Type -AssemblyName System.Drawing
+        $a=[Drawing.Bitmap]::new($first); $b=[Drawing.Bitmap]::new($second)
+        try {
+            $count=0
+            for ($y=$box[1]; $y -lt $box[3]; $y++) { for ($x=$box[0]; $x -lt $box[2]; $x++) {
+                $p=$a.GetPixel($x,$y); $q=$b.GetPixel($x,$y)
+                if ([Math]::Abs($p.R-$q.R) -gt 8 -or [Math]::Abs($p.G-$q.G) -gt 8 -or [Math]::Abs($p.B-$q.B) -gt 8) { $count++ }
+            } }
+            $count
+        } finally { $a.Dispose(); $b.Dispose() }
+    }
+    function Park-Cursor([int]$index) {
+        # A posted Move never reaches the game's cursor, so the province tooltip under
+        # the last map-centre Wheel would stay in the capture. A shim click does move it,
+        # so click capture_cursor, and only while it is inert: the paused clock, speed and
+        # camera hold and the top-bar strip around it (pixel-stable while paused) shows no
+        # hover or press through two clicks.
+        $point=$ui.capture_cursor
+        $box=@([Math]::Max(0,[int]$point[0]-200),0,[Math]::Min([int]$ui.width,[int]$point[0]+200),[int]$point[1]+7)
+        $shots=@(0,1,2 | ForEach-Object { Join-Path $output ("park-{0}-{1}.png" -f $index,$_) })
+        $state=Clock
+        $null=Drive 'Screenshot' @{Out=$shots[0]}
+        for ($click=1; $click -le 2; $click++) {
+            Click-Point 'capture_cursor'; Start-Sleep -Milliseconds 800
+            $null=Drive 'Screenshot' @{Out=$shots[$click]}
+        }
+        $after=Clock
+        $changed=(Changed-Pixels $shots[0] $shots[1] $box) + (Changed-Pixels $shots[1] $shots[2] $box)
+        $held=$after.hour -eq $state.hour -and $after.paused -eq 1 -and $after.speed -eq $state.speed -and
+            (($after.eye -join ',') -eq ($state.eye -join ',')) -and (($after.look_at -join ',') -eq ($state.look_at -join ','))
+        if (-not $held -or $changed -ne 0) { throw "capture_cursor is not inert: $changed strip pixels changed, state held=$held; see park-$index-*.png" }
+        Remove-Item -LiteralPath $shots
+        $report.cursor_parks += @{index=$index;strip=$box;strip_changed=$changed}
+    }
     function Stop-OwnedGame {
         $game.Refresh(); if ($game.HasExited) { return }
         Pause-Game $true
@@ -531,13 +567,13 @@ function Invoke-FullSmoke {
         # would select the province behind it and open a state panel.
         $null=Drive 'Move' @{X=[int]$ui.map_center[0];Y=[int]$ui.map_center[1]}
         Stage 'same-hour-reference-captures'
-        $references=@(); $steps=@(0,-3,6,6,-9)
+        $references=@(); $steps=@(0,-3,6,6,-9); $report.cursor_parks=@()
         for ($i=0; $i -lt $steps.Count; $i++) {
             if ($steps[$i] -ne 0) { $null=Drive 'Wheel' @{X=[int]$ui.map_center[0];Y=[int]$ui.map_center[1];Delta=$steps[$i]} }
-            # Keep the pointer over calibrated inert UI chrome, not the map,
-            # so a hover tooltip does not cover the scored land.
-            $null=Drive 'Move' @{X=[int]$ui.capture_cursor[0];Y=[int]$ui.capture_cursor[1]}
+            # Let the zoom settle, then park the pointer over inert UI chrome, not
+            # the map, so a hover tooltip does not cover the scored land.
             Start-Sleep -Seconds 2
+            Park-Cursor $i
             $camera=Clock
             if ($camera.hour -ne $target -or $camera.paused -ne 1 -or -not $camera.eye) { throw 'Reference capture lacks an authenticated paused camera.' }
             $image=Join-Path $output ("reference-{0}-game.png" -f $i)
