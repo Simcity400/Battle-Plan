@@ -11,6 +11,8 @@ import {
   formatMetric, metrics, parseRange, retainedSamples,
 } from './model';
 import type { AnalyticsMemory } from './model';
+import { formatDateTime } from './calendar';
+import DateTimePicker from './DateTimePicker';
 
 const HistoryChart = lazy(() => import('./HistoryChart'));
 
@@ -37,7 +39,6 @@ export default function Analytics({ path, memory, viewer, viewerRunning, viewerR
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [seriesError, setSeriesError] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<'idle' | 'loading' | 'cancelled' | 'error'>('idle');
-  const [rangeSubmitted, setRangeSubmitted] = useState(false);
   const [seeking, setSeeking] = useState(false);
   const [seekError, setSeekError] = useState<string | null>(null);
   const [showIntervals, setShowIntervals] = useState(false);
@@ -156,7 +157,6 @@ export default function Analytics({ path, memory, viewer, viewerRunning, viewerR
 
   function applyRange(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setRangeSubmitted(true);
     if (!rangeResult || typeof rangeResult === 'string') return;
     update((previous) => ({ ...previous, range: rangeResult }));
   }
@@ -166,7 +166,6 @@ export default function Analytics({ path, memory, viewer, viewerRunning, viewerR
     setMetadataError(null);
     setSeriesError(null);
     setSeekError(null);
-    setRangeSubmitted(false);
     update((previous) => ({ ...previous, metadata: null, series: null, seriesKey: null }));
     setMetadataRetry((value) => value + 1);
   }
@@ -254,7 +253,6 @@ export default function Analytics({ path, memory, viewer, viewerRunning, viewerR
                   <select value={data.branchId} disabled={!metadata.branches.length} onChange={(event) => {
                     const next = metadata.branches.find((item) => item.id === event.currentTarget.value);
                     if (!next) return;
-                    setRangeSubmitted(false);
                     update((previous) => ({
                       ...previous, branchId: next.id, fromInput: String(next.firstHour), toInput: String(next.lastHour),
                       range: { firstHour: next.firstHour, lastHour: next.lastHour },
@@ -264,35 +262,28 @@ export default function Analytics({ path, memory, viewer, viewerRunning, viewerR
                     {metadata.branches.map((item) => <option key={item.id} value={item.id}>Branch {item.id}</option>)}
                   </select>
                 </label>
-                <label className="field"><span>From hour</span>
-                  <input type="number" step="1" value={data.fromInput} disabled={!branch}
-                    min={branch?.firstHour} max={branch?.lastHour} aria-describedby="hour-help range-error"
-                    aria-invalid={rangeSubmitted && !!rangeError} onChange={(event) => {
-                      const fromInput = event.currentTarget.value;
-                      update((previous) => ({ ...previous, fromInput }));
-                    }} />
-                </label>
-                <label className="field"><span>To hour</span>
-                  <input type="number" step="1" value={data.toInput} disabled={!branch}
-                    min={branch?.firstHour} max={branch?.lastHour} aria-describedby="hour-help range-error"
-                    aria-invalid={rangeSubmitted && !!rangeError} onChange={(event) => {
-                      const toInput = event.currentTarget.value;
-                      update((previous) => ({ ...previous, toInput }));
-                    }} />
-                </label>
-                <button type="submit" className="button" disabled={!branch}>Apply range</button>
+                <DateTimePicker key={`from-${branch?.id}-${branch?.firstHour}-${branch?.lastHour}`} label="From"
+                  value={data.fromInput === '' ? null : Number(data.fromInput)}
+                  otherValue={data.toInput === '' ? null : Number(data.toInput)}
+                  min={branch?.firstHour ?? 0} max={branch?.lastHour ?? 0} disabled={!branch} invalid={!!rangeError}
+                  onChange={(hour) => update((previous) => ({ ...previous, fromInput: String(hour) }))} />
+                <DateTimePicker key={`to-${branch?.id}-${branch?.firstHour}-${branch?.lastHour}`} label="To"
+                  value={data.toInput === '' ? null : Number(data.toInput)}
+                  otherValue={data.fromInput === '' ? null : Number(data.fromInput)}
+                  min={branch?.firstHour ?? 0} max={branch?.lastHour ?? 0} disabled={!branch} invalid={!!rangeError}
+                  onChange={(hour) => update((previous) => ({ ...previous, toInput: String(hour) }))} />
+                <button type="submit" className="button apply-range" disabled={!branch || !!rangeError}>Apply range</button>
               </div>
               <div className="control-footnote">
-                <span id="hour-help">Inclusive engine hours{branch ? ` · ${formatHour(branch.firstHour)}–${formatHour(branch.lastHour)} on this branch` : ''}</span>
+                <span id="date-range-help">{branch ? `Available · ${formatDateTime(branch.firstHour)} — ${formatDateTime(branch.lastHour)}. ` : ''}Dates and times are inclusive.</span>
                 {branch && <button type="button" className="text-button" onClick={() => {
-                  setRangeSubmitted(false);
                   update((previous) => ({
                     ...previous, fromInput: String(branch.firstHour), toInput: String(branch.lastHour),
                     range: { firstHour: branch.firstHour, lastHour: branch.lastHour },
                   }));
                 }}>Full branch</button>}
               </div>
-              <p id="range-error" className="form-error" role={rangeSubmitted && rangeError ? 'alert' : undefined} hidden={!rangeSubmitted || !rangeError}>{rangeError}</p>
+              <p id="range-error" className="form-error" role={rangeError ? 'alert' : undefined} hidden={!rangeError}>{rangeError}</p>
             </form>
 
             {!branch || (!countries.length && !data.countryId) ? <div className="empty-state">
@@ -316,7 +307,7 @@ export default function Analytics({ path, memory, viewer, viewerRunning, viewerR
               <>
                 <div className="section-heading">
                   <h2>{selectedCountry ? countryLabel(selectedCountry) : `Country ${data.countryId}`}</h2>
-                  <p>{selected ? `Selected sample · Hour ${formatHour(selected.hour)}` : 'No recorded country samples in this range'}</p>
+                  <p>{selected ? `Selected sample · ${formatDateTime(selected.hour)}` : 'No recorded country samples in this range'}</p>
                 </div>
                 <div className="metric-grid" role="group" aria-label="Metric to chart">
                   {metrics.map((item) => (
@@ -338,7 +329,7 @@ export default function Analytics({ path, memory, viewer, viewerRunning, viewerR
 
                 <div className="history-card">
                   <div className="chart-heading">
-                    <div><h2>{metric.label}</h2><p>Analysis range · Hours {formatHour(series.firstHour)}–{formatHour(series.lastHour)}</p></div>
+                    <div><h2>{metric.label}</h2><p>Analysis range · {formatDateTime(series.firstHour)} — {formatDateTime(series.lastHour)}</p></div>
                     <div className="chart-legend" aria-label="Chart legend">
                       <span><i className="legend-line" />Recorded observations</span>
                       {series.downsampled && <span><i className="legend-line range" />Interval low / high</span>}
@@ -352,12 +343,12 @@ export default function Analytics({ path, memory, viewer, viewerRunning, viewerR
                     <span>{formatHour(series.points.length)} {series.downsampled ? 'intervals' : 'points'}</span>
                   </div>
                   <div className="sample-bar">
-                    <div><span className="sample-label">Selected recorded sample</span><span className="sample-hour">{selected ? `Hour ${formatHour(selected.hour)}` : 'Unavailable in this range'}</span></div>
+                    <div><span className="sample-label">Selected recorded sample</span><span className="sample-hour">{selected ? formatDateTime(selected.hour) : 'Unavailable in this range'}</span></div>
                     <div className="sample-controls">
                       <label className="sr-only" htmlFor="recorded-sample">Recorded sample to inspect</label>
                       <select id="recorded-sample" disabled={!samples.length} value={selected?.hour ?? ''} onChange={(event) => selectHour(Number(event.currentTarget.value))}>
                         {!samples.length && <option value="">No recorded samples</option>}
-                        {samples.map((sample) => <option key={sample.hour} value={sample.hour}>Hour {formatHour(sample.hour)}</option>)}
+                        {samples.map((sample) => <option key={sample.hour} value={sample.hour}>{formatDateTime(sample.hour)}</option>)}
                       </select>
                       <button type="button" className="button primary" disabled={!selected || seeking} onClick={() => void seekSelected()}>
                         {seeking ? <span className="spinner" /> : <Icon name="map" />}{seeking ? 'Opening map…' : 'View on map'}
@@ -380,12 +371,12 @@ export default function Analytics({ path, memory, viewer, viewerRunning, viewerR
                   {showIntervals && <div className="data-table-wrap">
                     <table className="data-table">
                       <caption className="sr-only">{metric.label}: retained first and last observations, exact interval extrema, and coverage.</caption>
-                      <thead><tr><th scope="col">Engine hours</th><th scope="col">Coverage</th><th scope="col">First observation</th><th scope="col">Last observation</th><th scope="col">Low</th><th scope="col">High</th><th scope="col">Notes</th></tr></thead>
+                      <thead><tr><th scope="col">Date & time</th><th scope="col">Coverage</th><th scope="col">First observation</th><th scope="col">Last observation</th><th scope="col">Low</th><th scope="col">High</th><th scope="col">Notes</th></tr></thead>
                       <tbody>{series.points.map((point, index) => <tr key={`${point.firstHour}-${index}`}>
-                        <td>{formatHour(point.firstHour)}{point.lastHour !== point.firstHour ? `–${formatHour(point.lastHour)}` : ''}</td>
+                        <td title={`Engine hours ${point.firstHour}–${point.lastHour}`}>{formatDateTime(point.firstHour)}{point.lastHour !== point.firstHour ? ` — ${formatDateTime(point.lastHour)}` : ''}</td>
                         <td>{coverageLabels[point.status]}</td>
-                        <td>{point.first ? `${formatMetric(point.first.values[data.metric], series.valueScale, data.metric)} at ${formatHour(point.first.hour)}` : 'Unavailable'}</td>
-                        <td>{point.last ? `${formatMetric(point.last.values[data.metric], series.valueScale, data.metric)} at ${formatHour(point.last.hour)}` : 'Unavailable'}</td>
+                        <td>{point.first ? `${formatMetric(point.first.values[data.metric], series.valueScale, data.metric)} at ${formatDateTime(point.first.hour)}` : 'Unavailable'}</td>
+                        <td>{point.last ? `${formatMetric(point.last.values[data.metric], series.valueScale, data.metric)} at ${formatDateTime(point.last.hour)}` : 'Unavailable'}</td>
                         <td>{formatMetric(point.min[data.metric], series.valueScale, data.metric)}</td>
                         <td>{formatMetric(point.max[data.metric], series.valueScale, data.metric)}</td>
                         <td>{point.reason ?? (point.missingMetricHours[data.metric] ? `${formatHour(point.missingMetricHours[data.metric])} hours missing this metric` : '—')}</td>
@@ -400,7 +391,7 @@ export default function Analytics({ path, memory, viewer, viewerRunning, viewerR
               <summary>Recording details{notices.length ? ` · ${notices.length} ${notices.length === 1 ? 'note' : 'notes'}` : ''}</summary>
               <p>{metadata.contentVerified ? 'The recording carries a verified content identity from capture time.' : 'The recording does not carry a verified content identity from capture time.'} Analytics does not check local map assets.</p>
               <p>The country list reflects observed snapshots and may grow after a branch is read.</p>
-              {branch && <p>Branch {branch.id} · Session {branch.sessionId}. {branch.parentId ? `Probable parent: branch ${branch.parentId}${branch.parentHour != null ? ` at hour ${formatHour(branch.parentHour)}` : ''}.` : 'Parentage is unknown.'}</p>}
+              {branch && <p>Branch {branch.id} · Session {branch.sessionId}. {branch.parentId ? `Probable parent: branch ${branch.parentId}${branch.parentHour != null ? ` at ${formatDateTime(branch.parentHour)}` : ''}.` : 'Parentage is unknown.'}</p>}
               {!!(series?.sampleBoundary ?? branch?.sampleBoundary) && <p>Sample boundary: {series?.sampleBoundary ?? branch?.sampleBoundary}</p>}
               {notices.length > 0 && <ul>{notices.map((notice) => <li key={notice}>{notice}</li>)}</ul>}
             </details>
@@ -410,7 +401,7 @@ export default function Analytics({ path, memory, viewer, viewerRunning, viewerR
         <div className="map-position">
           <Icon name="map" />
           <span>{viewer?.path && viewer.hour != null ? <>
-            <strong>Map</strong> · Hour {formatHour(viewer.hour)} · Branch {viewer.branch ?? 'unknown'}
+            <strong>Map</strong> · {formatDateTime(viewer.hour)} · Branch {viewer.branch ?? 'unknown'}
             {viewer.path !== path && ` · ${recordingName(viewer.path)}`}
             {!viewerAvailable && ` · ${viewerUnavailableReason}`}
           </> : <><strong>Map</strong> · {viewerAvailable ? 'No hour displayed yet' : viewerUnavailableReason}</>}</span>

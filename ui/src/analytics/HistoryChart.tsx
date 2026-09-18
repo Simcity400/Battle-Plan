@@ -9,6 +9,7 @@ import { errorMessage } from '../api';
 import { Icon } from '../Icons';
 import { chartValue, coverageLabels, formatHour, formatMetric, metrics } from './model';
 import type { MetricKey } from './model';
+import { formatChartDate, formatDateTime } from './calendar';
 
 echarts.use([LineChart, GridComponent, TooltipComponent, DataZoomComponent, CanvasRenderer]);
 
@@ -89,8 +90,8 @@ function tooltip(series: CountrySeries, metric: MetricKey, params: unknown): HTM
 
   const title = document.createElement('strong');
   title.textContent = point.firstHour === point.lastHour
-    ? `Hour ${formatHour(point.firstHour)}`
-    : `Interval ${formatHour(point.firstHour)}–${formatHour(point.lastHour)}`;
+    ? formatDateTime(point.firstHour)
+    : `${formatDateTime(point.firstHour)} — ${formatDateTime(point.lastHour)}`;
   container.append(title);
   const list = document.createElement('dl');
   const row = (label: string, value: string) => {
@@ -101,8 +102,8 @@ function tooltip(series: CountrySeries, metric: MetricKey, params: unknown): HTM
     list.append(term, description);
   };
   row('Coverage', coverageLabels[point.status]);
-  if (point.first) row(`First · ${formatHour(point.first.hour)}`, formatMetric(point.first.values[metric], series.valueScale, metric));
-  if (point.last && point.last.hour !== point.first?.hour) row(`Last · ${formatHour(point.last.hour)}`, formatMetric(point.last.values[metric], series.valueScale, metric));
+  if (point.first) row(`First · ${formatDateTime(point.first.hour)}`, formatMetric(point.first.values[metric], series.valueScale, metric));
+  if (point.last && point.last.hour !== point.first?.hour) row(`Last · ${formatDateTime(point.last.hour)}`, formatMetric(point.last.values[metric], series.valueScale, metric));
   if (point.firstHour !== point.lastHour) {
     row('Interval low', formatMetric(point.min[metric], series.valueScale, metric));
     row('Interval high', formatMetric(point.max[metric], series.valueScale, metric));
@@ -159,7 +160,7 @@ function HistoryChart({ series, metric, onSelectHour }: Props) {
         animation: false,
         backgroundColor: 'transparent',
         textStyle: { fontFamily: 'Segoe UI, system-ui, sans-serif', color: '#a7b0ad' },
-        grid: { left: 78, right: 30, top: 32, bottom: 80 },
+        grid: { left: 78, right: 30, top: 32, bottom: 94 },
         tooltip: {
           trigger: 'axis', confine: true, renderMode: 'html', transitionDuration: 0,
           backgroundColor: '#222a29', borderColor: '#4a5850', borderWidth: 1,
@@ -170,7 +171,7 @@ function HistoryChart({ series, metric, onSelectHour }: Props) {
         xAxis: {
           type: 'value', min: series.firstHour, max: series.lastHour,
           minInterval: 1, splitNumber: 5,
-          axisLabel: { color: '#8f9b95', fontSize: 10, hideOverlap: true, formatter: (value: number) => formatHour(value) },
+          axisLabel: { color: '#8f9b95', fontSize: 10, lineHeight: 16, hideOverlap: true, formatter: formatChartDate },
           axisLine: { lineStyle: { color: '#414b47' } }, axisTick: { show: false }, splitLine: { show: false },
         },
         yAxis: {
@@ -239,7 +240,7 @@ function HistoryChart({ series, metric, onSelectHour }: Props) {
 
   return <>
     <div ref={element} className="history-chart" role="img"
-      aria-label={`${definition.label} history, engine hours ${formatHour(series.firstHour)} through ${formatHour(series.lastHour)}. Missing data breaks the line. Use the recorded sample selector and exact values table below for keyboard access.`}
+      aria-label={`${definition.label} history, ${formatDateTime(series.firstHour)} through ${formatDateTime(series.lastHour)}. Missing data breaks the line. Use the recorded sample selector and exact values table below for keyboard access.`}
       hidden={!!error} />
     {error && <div className="empty-state compact" role="alert">
       <h2>The chart could not be prepared</h2>

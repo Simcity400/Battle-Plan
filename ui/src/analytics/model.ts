@@ -1,4 +1,5 @@
 import type { CountryMetadata, CountrySample, CountrySeries, CountryValues, ReplayMetadata } from '../api';
+import { formatDateTime, isEngineHour } from './calendar';
 
 export type MetricKey = keyof CountryValues;
 
@@ -87,13 +88,13 @@ export function countryLabel(country: CountryMetadata): string {
 }
 
 export function parseRange(from: string, to: string, bounds: HourRange): HourRange | string {
-  if (!/^-?\d+$/.test(from) || !/^-?\d+$/.test(to)) return 'Enter a whole engine hour in both fields.';
+  if (!/^-?\d+$/.test(from) || !/^-?\d+$/.test(to)) return 'Choose a date and time for both ends of the range.';
   const firstHour = Number(from);
   const lastHour = Number(to);
-  if (!Number.isSafeInteger(firstHour) || !Number.isSafeInteger(lastHour)) return 'Enter valid whole engine hours.';
-  if (firstHour > lastHour) return 'The starting hour must be at or before the ending hour.';
+  if (!isEngineHour(firstHour) || !isEngineHour(lastHour)) return 'Choose valid dates and times.';
+  if (firstHour > lastHour) return 'The From date and time must be at or before To.';
   if (firstHour < bounds.firstHour || lastHour > bounds.lastHour) {
-    return `Use hours ${formatHour(bounds.firstHour)} through ${formatHour(bounds.lastHour)} for this branch.`;
+    return `Choose dates from ${formatDateTime(bounds.firstHour)} through ${formatDateTime(bounds.lastHour)} for this branch.`;
   }
   return { firstHour, lastHour };
 }
