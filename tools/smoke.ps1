@@ -41,7 +41,7 @@ sets hook_mask (bit per hook, 0x7f enables all) to bisect what the click path de
 The renderer map mode matching the game screenshot, controller by default.
 .PARAMETER RecordHours
 Minimum live advance. The run extends to a 720-hour full-refresh boundary and
-requires all 183 native consistency windows plus the war matrix to reach 200/0.
+requires all 186 native consistency windows plus the war matrix to reach 200/0.
 .EXAMPLE
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/smoke.ps1 -Action Smoke -ExpectedSave save.hoi4 -UiConfig C:\hoi4_scratch\ui.json -Out captures\smoke_new -WaitForUiReview
 .EXAMPLE
@@ -471,7 +471,7 @@ function Invoke-FullSmoke {
                 if ($mismatches.Count) { [IO.File]::WriteAllText((Join-Path $output 'failed-consistency.json'),($status | ConvertTo-Json -Depth 30),$utf8); throw ('Consistency mismatches: '+(($mismatches.Name) -join ', ')) }
                 $checks=@($status.consistency.successful_checks.PSObject.Properties)
                 $ready=@($checks | Where-Object { $_.Value -ge 200 }).Count
-                $allChecked=$checks.Count -eq 183 -and $ready -eq $checks.Count -and $status.war_matrix_checks -ge 200
+                $allChecked=$checks.Count -eq 186 -and $ready -eq $checks.Count -and $status.war_matrix_checks -ge 200
                 if ($live.Elapsed.TotalSeconds -ge $progressAt) {
                     Write-Host "H=$($clock.hour) target=$target checked=$ready/$($checks.Count) samples=$($status.hours)"
                     $progressAt=$live.Elapsed.TotalSeconds+15

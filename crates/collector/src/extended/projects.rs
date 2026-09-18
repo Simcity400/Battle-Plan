@@ -255,12 +255,8 @@ impl Captured {
         ticks[5] = elapsed(begin);
 
         let begin = qpc();
-        let provinces = game_state
-            .checked_add(cgame_state::PROVINCES_COUNT)
-            .and_then(|at| engine::read::<u32>(memory, at))
-            .unwrap_or(0);
         matched[11] = capture_rows(&mut self.raid_provinces, needed[11], |rows| {
-            craid_province_entries::walk(memory, base, game_state, provinces, rows)
+            craid_province_entries::walk(memory, base, game_state, rows)
         });
         ticks[11] = elapsed(begin);
         plain!(peace, 7, peace_conference);
