@@ -418,7 +418,7 @@ function Invoke-FullSmoke {
         # camera hold and the top-bar strip around it (pixel-stable while paused) shows no
         # hover or press through two clicks.
         $point=$ui.capture_cursor
-        $box=@([Math]::Max(0,[int]$point[0]-200),0,[Math]::Min([int]$ui.width,[int]$point[0]+200),[int]$point[1]+7)
+        $box=@([Math]::Max(0,[int]$point[0]-200),0,[Math]::Min([int]$ui.width,[int]$point[0]+200),([int]$point[1]+7))
         $shots=@(0,1,2 | ForEach-Object { Join-Path $output ("park-{0}-{1}.png" -f $index,$_) })
         $state=Clock
         $null=Drive 'Screenshot' @{Out=$shots[0]}
