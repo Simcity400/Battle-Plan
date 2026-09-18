@@ -232,7 +232,32 @@ struct Capture {
     index: u32,
 }
 
+struct LoadedReplay {
+    document: Document,
+    scene: Scene,
+    revision: Option<String>,
+}
+
+fn seek_open_target(
+    seek: &crate::embedded::Seek,
+    accepted: Option<(&std::path::Path, Option<&str>)>,
+    pending_load: Option<(&std::path::Path, Option<&str>)>,
+) -> Option<crate::embedded::OpenRequest> {
+    // An in-flight load or folder retry takes precedence over the old map.
+    // An unknown native-picker revision cannot satisfy a host's exact target.
+    let matches = pending_load
+        .or(accepted)
+        .is_some_and(|(path, revision)| seek.matches(path, revision));
+    (!matches).then(|| seek.open_request())
+}
+
 pub struct Viewer {
+    embedded: Option<crate::embedded::Controller>,
+    embedded_open: Option<crate::embedded::OpenRequest>,
+    embedded_seek: Option<crate::embedded::Seek>,
+    revision: Option<String>,
+    expected_revision: Option<String>,
+    hidden_since: Option<Instant>,
     combat: crate::combat::Window,
     config: Config,
     options: Options,
@@ -240,7 +265,7 @@ pub struct Viewer {
     user_text: String,
     settings: bool,
     document: Option<Document>,
-    loading: Option<mpsc::Receiver<Result<(Document, Scene), String>>>,
+    loading: Option<mpsc::Receiver<Result<LoadedReplay, String>>>,
     error: Option<String>,
     scene: Option<Scene>,
     texture: Option<egui::TextureId>,
@@ -393,6 +418,7 @@ impl Viewer {
         error: Option<String>,
         // capture
         failure: Arc<Mutex<Option<String>>>,
+        embedded: Option<crate::embedded::Controller>,
     ) -> Self {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
         // capture: `--window-dump` arms the readback before the first frame, so
@@ -420,7 +446,14 @@ impl Viewer {
         });
         // counters: the header's control starts where the command line put it.
         let perspective = options.perspective.clone();
+        let hidden_since = embedded.as_ref().map(|_| Instant::now());
         let mut viewer = Self {
+            embedded,
+            embedded_open: None,
+            embedded_seek: None,
+            revision: None,
+            expected_revision: None,
+            hidden_since,
             combat: crate::combat::Window::default(),
             game_text: config.game_dir.to_string_lossy().into_owned(),
             user_text: config.user_dir.to_string_lossy().into_owned(),
@@ -488,12 +521,170 @@ impl Viewer {
         if !viewer.settings
             && let Some(path) = viewer.options.replay.clone()
         {
-            viewer.open(path, &cc.egui_ctx);
+            viewer.open(path, &cc.egui_ctx, None);
         }
         viewer
     }
 
-    fn open(&mut self, path: PathBuf, ctx: &egui::Context) {
+    fn embedded_logic(&mut self, ctx: &egui::Context) {
+        let Some(embedded) = self.embedded.as_mut() else {
+            return;
+        };
+        let pending = embedded.poll(ctx);
+        if pending.close {
+            return;
+        }
+        if let Some(request) = pending.open {
+            self.embedded_open = Some(request);
+            self.embedded_seek = None;
+        }
+        if let Some(seek) = pending.seek {
+            let accepted = self
+                .document
+                .as_ref()
+                .map(|document| (document.source_path.as_path(), self.revision.as_deref()));
+            let pending_load = if self.loading.is_some() || self.settings {
+                self.options
+                    .replay
+                    .as_deref()
+                    .map(|path| (path, self.expected_revision.as_deref()))
+            } else {
+                None
+            };
+            // The seek is newer than any queued open: the pipe drops earlier
+            // seeks when an open arrives. Its explicit snapshot supersedes
+            // that queue, even if a native picker changed the local selection.
+            self.embedded_open = seek_open_target(&seek, accepted, pending_load);
+            self.embedded_seek = Some(seek);
+        }
+        // A host can select files faster than their content can load. Retain
+        // one pending path and finish the active loader before starting it.
+        // Each pending seek is tied to its requested file, never the old map.
+        self.poll();
+        if self.loading.is_none()
+            && let Some(request) = self.embedded_open.take()
+        {
+            self.options.branch = None;
+            self.options.hour = None;
+            self.options.hour_fraction = 0.0;
+            self.open(request.path, ctx, request.revision);
+            if self.loading.is_none() && !self.settings {
+                self.embedded_seek = None;
+            }
+        }
+        if self.loading.is_none()
+            && !self.settings
+            && let Some(seek) = self.embedded_seek.take()
+        {
+            let result = self
+                .document
+                .as_ref()
+                .filter(|document| seek.matches(&document.source_path, self.revision.as_deref()))
+                .ok_or_else(|| {
+                    self.error.clone().unwrap_or_else(|| {
+                        "The requested replay snapshot did not open; seek was not applied"
+                            .to_owned()
+                    })
+                })
+                .and_then(|document| match document.playback.range(seek.branch) {
+                    Some((first, last)) if (first..=last).contains(&seek.hour) => Ok(()),
+                    Some((first, last)) => Err(format!(
+                        "Hour {} is outside branch {} ({first}..{last})",
+                        seek.hour, seek.branch
+                    )),
+                    None => Err(format!("Unknown branch {}", seek.branch)),
+                });
+            match result {
+                Ok(()) => {
+                    self.error = None;
+                    self.playing = false;
+                    self.last_step = Instant::now();
+                    self.playhead = Some(Playhead {
+                        branch: seek.branch,
+                        hour: seek.hour,
+                        fraction: 0.0,
+                    });
+                }
+                Err(error) => {
+                    self.error = Some(error);
+                }
+            }
+        }
+        let visible = self
+            .embedded
+            .as_ref()
+            .is_some_and(|embedded| embedded.visible());
+        let now = Instant::now();
+        if visible {
+            if let Some(hidden) = self.hidden_since.take() {
+                self.started += now.duration_since(hidden);
+                self.last_step = now;
+                self.last_frame = now;
+                ctx.request_repaint();
+            }
+        } else if self.hidden_since.is_none() {
+            self.hidden_since = Some(now);
+        }
+        // Invalid input arrives after any earlier coalesced work. Retain its
+        // failure until a later successful open/seek or native user action.
+        if let Some(error) = pending.error {
+            self.error = Some(error);
+        }
+        self.report_embedded(ctx);
+    }
+
+    fn report_embedded(&mut self, ctx: &egui::Context) {
+        let Some(embedded) = self.embedded.as_mut() else {
+            return;
+        };
+        let shown = self
+            .shown
+            .as_ref()
+            .filter(|shown| shown.epoch == self.epoch);
+        embedded.report(
+            desktop_protocol::ViewerState {
+                path: self
+                    .document
+                    .as_ref()
+                    .map(|document| document.source_path.to_string_lossy().into_owned()),
+                branch: shown.map(|shown| shown.branch.to_string()),
+                hour: shown.map(|shown| shown.hour),
+                revision: self.document.as_ref().and(self.revision.clone()),
+            },
+            self.error.as_deref().or(self.map_error.as_deref()),
+            ctx,
+        );
+    }
+
+    fn open(&mut self, mut path: PathBuf, ctx: &egui::Context, expected_revision: Option<String>) {
+        if self.embedded.is_some() {
+            match path.canonicalize() {
+                Ok(canonical) => path = canonical,
+                Err(error) => {
+                    self.error = Some(format!("{}: {error}", path.display()));
+                    return;
+                }
+            }
+            if self.loading.is_some() {
+                self.embedded_open = Some(crate::embedded::OpenRequest {
+                    path,
+                    revision: expected_revision,
+                });
+                self.embedded_seek = None;
+                return;
+            }
+            self.embedded_open = None;
+            if self
+                .embedded_seek
+                .as_ref()
+                .is_some_and(|pending| !pending.matches(&path, expected_revision.as_deref()))
+            {
+                self.embedded_seek = None;
+            }
+            // Retain this selection if folders must be configured first.
+            self.options.replay = Some(path.clone());
+            self.expected_revision = expected_revision.clone();
+        }
         let resolve = match self.config.resolve_options() {
             Ok(resolve) => resolve,
             Err(error) => {
@@ -508,6 +699,7 @@ impl Viewer {
         };
         self.options.replay = Some(path.clone());
         let options = self.options.clone();
+        let verify_revision = self.embedded.is_some();
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
@@ -516,14 +708,33 @@ impl Viewer {
                 hour: options.hour,
                 hour_fraction: options.hour_fraction,
             };
-            let result = Document::load(&path, &resolve, options.allow_unverified, &initial)
-                .and_then(|document| {
-                    // The builders need seconds for the first hour and the UI
-                    // thread idles on the spinner meanwhile; the whole
-                    // hour-independent scene is cheaper here than on any frame.
-                    load_scene(&device, &queue, &document).map(|scene| (document, scene))
+            let result = (|| -> Result<LoadedReplay, String> {
+                let revision = if verify_revision {
+                    let revision = desktop_protocol::replay_revision(&path)
+                        .map_err(|error| error.to_string())?;
+                    if expected_revision
+                        .as_ref()
+                        .is_some_and(|expected| *expected != revision)
+                    {
+                        return Err("Recording changed since it was selected; reopen it in Analytics before viewing this snapshot".into());
+                    }
+                    Some(revision)
+                } else {
+                    None
+                };
+                let document = Document::load(&path, &resolve, options.allow_unverified, &initial)
+                    .map_err(|error| error.to_string())?;
+                // The builders need seconds for the first hour and the UI
+                // thread idles on the spinner meanwhile; the whole
+                // hour-independent scene is cheaper here than on any frame.
+                let scene =
+                    load_scene(&device, &queue, &document).map_err(|error| error.to_string())?;
+                Ok(LoadedReplay {
+                    document,
+                    scene,
+                    revision,
                 })
-                .map_err(|error| error.to_string());
+            })();
             let _ = sender.send(result);
             ctx.request_repaint();
         });
@@ -531,6 +742,7 @@ impl Viewer {
         self.opened = Some(Instant::now());
         self.combat.close();
         self.document = None;
+        self.revision = None;
         self.scene = None;
         // hours
         self.playhead = None;
@@ -544,7 +756,9 @@ impl Viewer {
         self.unit_capacity = None;
         self.profile_frame = 0;
         self.generation = 0;
-        self.error = None;
+        if self.embedded.is_none() {
+            self.error = None;
+        }
         self.map_error = None;
         self.playing = false;
         self.camera = self.options.camera;
@@ -570,8 +784,26 @@ impl Viewer {
 
     fn poll(&mut self) {
         let result = self.loading.as_ref().map(|receiver| receiver.try_recv());
+        // An older loader may finish between logic and UI. Do not briefly
+        // display or announce its replay after the host selected another.
+        if self.embedded_open.is_some()
+            && result
+                .as_ref()
+                .is_some_and(|result| !matches!(result, Err(mpsc::TryRecvError::Empty)))
+        {
+            self.loading = None;
+            return;
+        }
         match result {
-            Some(Ok(Ok((document, scene)))) => {
+            Some(Ok(Ok(LoadedReplay {
+                document,
+                scene,
+                revision,
+            }))) => {
+                self.revision = revision;
+                if self.embedded.is_some() {
+                    self.error = None;
+                }
                 if let Some(selector) = self.options.combat {
                     match selector.resolve(&document) {
                         Ok(selection) => self.combat.open(selection),
@@ -641,7 +873,7 @@ impl Viewer {
                     self.settings = false;
                     self.error = None;
                     if let Some(path) = self.options.replay.clone() {
-                        self.open(path, ctx);
+                        self.open(path, ctx, self.expected_revision.clone());
                     }
                 }
                 Err(error) => self.error = Some(error.to_string()),
@@ -1428,6 +1660,9 @@ impl Viewer {
                     *failure = Some(message.clone());
                 }
                 eprintln!("{message}");
+                if self.embedded.is_some() {
+                    self.error = Some(message.clone());
+                }
                 self.capture_note = Some(message);
             }
         }
@@ -1928,7 +2163,20 @@ impl Viewer {
 }
 
 impl eframe::App for Viewer {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.embedded_logic(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // The hide command may arrive in logic after eframe chose to draw
+        // this pass. Skip it as well as all later hidden passes.
+        if self
+            .embedded
+            .as_ref()
+            .is_some_and(|embedded| !embedded.visible())
+        {
+            return;
+        }
         let waited = if map::counter_move::profiling() && self.capture.is_some() {
             pace_profiled_frame()
         } else {
@@ -1980,7 +2228,7 @@ impl eframe::App for Viewer {
                 {
                     self.options.hour = None;
                     self.options.branch = None;
-                    self.open(path, ui.ctx());
+                    self.open(path, ui.ctx(), None);
                 }
                 if ui.button("Folders").clicked() {
                     self.settings = true;
@@ -2222,6 +2470,7 @@ impl eframe::App for Viewer {
                 });
             });
         }
+        self.report_embedded(ui.ctx());
         mark_frame_end();
     }
 }
@@ -2252,6 +2501,79 @@ fn date(hour: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seek_from_stale_host_state_reopens_its_explicit_snapshot() {
+        let seek = crate::embedded::Seek {
+            path: PathBuf::from("A.battleplan"),
+            revision: "100:20:0".into(),
+            branch: 1,
+            hour: 12,
+        };
+        let target = seek.open_request();
+        let a = std::path::Path::new("A.battleplan");
+        let b = std::path::Path::new("B.battleplan");
+
+        // Both recordings may contain branch 1/hour 12. A throttled host
+        // state for A must not route its seek to a newly accepted native B.
+        assert_eq!(
+            seek_open_target(&seek, Some((b, Some("100:20:0"))), None),
+            Some(target.clone())
+        );
+        // B may instead still be loading from the native picker, with its
+        // actual revision only established when that load completes.
+        assert_eq!(
+            seek_open_target(&seek, None, Some((b, None))),
+            Some(target.clone())
+        );
+        // A folder retry for B also supersedes a previously accepted A.
+        assert_eq!(
+            seek_open_target(
+                &seek,
+                Some((a, Some("100:20:0"))),
+                Some((b, Some("120:30:0"))),
+            ),
+            Some(target.clone())
+        );
+        assert_eq!(seek_open_target(&seek, None, None), Some(target));
+        assert_eq!(
+            seek_open_target(&seek, Some((a, Some("100:20:0"))), None),
+            None
+        );
+    }
+
+    #[test]
+    fn seek_reuses_only_the_exact_accepted_or_pending_revision() {
+        let seek = crate::embedded::Seek {
+            path: PathBuf::from("A.battleplan"),
+            revision: "120:30:0".into(),
+            branch: u64::MAX,
+            hour: 12,
+        };
+        let path = seek.path.as_path();
+        for revision in [None, Some("100:20:0")] {
+            assert_eq!(
+                seek_open_target(&seek, Some((path, revision)), None),
+                Some(seek.open_request())
+            );
+            assert_eq!(
+                seek_open_target(
+                    &seek,
+                    Some((path, Some("120:30:0"))),
+                    Some((path, revision)),
+                ),
+                Some(seek.open_request())
+            );
+            // The same strict predicate gates applying the seek after load.
+            assert!(!seek.matches(path, revision));
+        }
+        assert_eq!(
+            seek_open_target(&seek, None, Some((path, Some("120:30:0")))),
+            None
+        );
+        assert!(seek.matches(path, Some("120:30:0")));
+    }
+
     #[test]
     fn display_uses_the_save_calendar_at_midnight() {
         assert_eq!(date(60_765_882), "1936-09-29  19:00");

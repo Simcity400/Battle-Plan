@@ -2,6 +2,7 @@ mod app;
 mod combat;
 mod compare;
 mod document;
+mod embedded;
 mod hours;
 mod map;
 mod playback;
@@ -723,6 +724,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let options = Options::parse(args.into_iter())?;
+    let parent = embedded::Parent::from_environment()?;
+    if std::env::var_os("BATTLE_PLAN_VIEWER_PARENT").or_else(|| std::env::var_os("HOI4_VIEWER_PARENT")).is_some()
+        && (options.compare.is_some() || options.headless_dump || options.window_dump)
+    {
+        return Err(invalid(
+            "Desktop embedding requires the interactive viewer, without dump or compare options",
+        )
+        .into());
+    }
     if let Some(paths) = &options.compare {
         run_compare(&options, paths)?;
         return Ok(());
@@ -1346,11 +1356,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
+    let viewport = eframe::egui::ViewportBuilder::default()
+        .with_inner_size([1400.0, 900.0])
+        .with_min_inner_size([800.0, 500.0]);
+    let viewport = if parent.is_some() {
+        viewport
+            .with_visible(false)
+            .with_active(false)
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_taskbar(false)
+            .with_min_inner_size([1.0, 1.0])
+    } else {
+        viewport
+    };
     let native = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1400.0, 900.0])
-            .with_min_inner_size([800.0, 500.0]),
+        viewport,
         wgpu_options: render::configuration(),
         ..Default::default()
     };
@@ -1362,13 +1384,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "Battle Plan",
         native,
         Box::new(move |cc| {
-            Ok(Box::new(app::Viewer::new(
-                cc,
-                config,
-                options,
-                config_error,
-                reported,
-            )))
+            let embedding = parent.map(|parent| parent.attach(cc)).transpose()?;
+            let viewer = app::Viewer::new(cc, config, options, config_error, reported, embedding);
+            Ok(Box::new(viewer))
         }),
     )?;
     map::counter_move::profile_flush();
@@ -1384,6 +1402,7 @@ fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
+            embedded::startup_error(error.to_string());
             std::process::ExitCode::FAILURE
         }
     }

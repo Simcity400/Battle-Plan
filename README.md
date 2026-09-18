@@ -6,6 +6,8 @@ The release is a portable ZIP with `recorder.exe`, `viewer.exe`, `collector.dll`
 
 ## Use
 
+The desktop app adds **Map** and **Analytics** side tabs, hosting the existing native viewer in Map; see [DESKTOP.md](DESKTOP.md). The standalone viewer commands below remain available.
+
 Build from source with the pinned Rust 1.96.0 toolchain, the Windows MSVC build tools, `lld-link` and `sccache`:
 
 ```powershell

@@ -1,6 +1,9 @@
 # Build output
 /.cargo-target/
 /target/
+node_modules/
+/ui/dist/
+/crates/desktop/gen/
 *.pdb
 *.obj
 

@@ -1,0 +1,180 @@
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { RefObject } from 'react';
+import {
+  desktopAvailable,
+  errorMessage,
+  getDesktopState,
+  onViewerState,
+  setMapView,
+} from './api';
+import type { DesktopState, MapBounds, MapView } from './api';
+
+export function useDesktopState(retry: number) {
+  const [state, setState] = useState<DesktopState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!desktopAvailable) return;
+    let active = true;
+    let eventVersion = 0;
+    let unlisten: (() => void) | undefined;
+    setError(null);
+
+    async function connect() {
+      try {
+        const stop = await onViewerState((next) => {
+          if (!active) return;
+          eventVersion += 1;
+          setState(next);
+          setError(null);
+        });
+        if (!active) {
+          stop();
+          return;
+        }
+        unlisten = stop;
+        const beforeRead = eventVersion;
+        const snapshot = await getDesktopState();
+        // An event delivered during the read is newer than its snapshot.
+        if (active && beforeRead === eventVersion) setState(snapshot);
+      } catch (cause) {
+        if (active) setError(errorMessage(cause));
+      }
+    }
+
+    void connect();
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [retry]);
+
+  return { state, error };
+}
+
+interface MapViewFailure {
+  retry: number;
+  message: string;
+}
+
+function createMapViewQueue(report: (failure: MapViewFailure) => void) {
+  let pending: { view: MapView; retry: number; force: boolean } | null = null;
+  let busy = false;
+  let applied: string | null = null;
+  let latestRetry = 0;
+  let acceptedBounds: MapBounds = { x: 0, y: 0, width: 1, height: 1 };
+
+  async function drain() {
+    if (busy) return;
+    busy = true;
+    try {
+      while (pending) {
+        const next = pending;
+        pending = null;
+        // A rejected resize must not prevent hiding the child to expose Retry.
+        const view = next.view.visible ? next.view : { visible: false, bounds: acceptedBounds };
+        const key = JSON.stringify(view);
+        if (!next.force && key === applied) continue;
+        try {
+          await setMapView(view);
+          applied = key;
+          acceptedBounds = view.bounds;
+        } catch (cause) {
+          applied = null;
+          if (next.retry === latestRetry) report({ retry: next.retry, message: errorMessage(cause) });
+        }
+      }
+    } finally {
+      busy = false;
+    }
+  }
+
+  return {
+    send(view: MapView, retry: number, force = false) {
+      latestRetry = retry;
+      // Only the most recent resize/tab intent waits behind an in-flight call.
+      pending = { view, retry, force };
+      void drain();
+    },
+  };
+}
+
+export function useMapSurface(
+  element: RefObject<HTMLElement | null>,
+  visible: boolean,
+  retry: number,
+): string | null {
+  const [failure, setFailure] = useState<MapViewFailure | null>(null);
+  // Successful hide calls cannot clear the failure and reveal the child again.
+  // Only an explicit retry begins a new attempt; stale completions are ignored.
+  const error = failure?.retry === retry ? failure.message : null;
+  const surfaceVisible = visible && !error;
+  const mounted = useRef(false);
+  const queue = useMemo(
+    () => createMapViewQueue((next) => { if (mounted.current) setFailure(next); }),
+    [],
+  );
+
+  useLayoutEffect(() => {
+    if (!desktopAvailable || !element.current) return;
+    mounted.current = true;
+    const target = element.current;
+    let frame = 0;
+    let resolution: MediaQueryList | null = null;
+    let lastBounds: MapBounds = { x: 0, y: 0, width: 1, height: 1 };
+
+    const measure = (force = false) => {
+      const rect = target.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const x = Math.max(0, Math.round(rect.left * dpr));
+      const y = Math.max(0, Math.round(rect.top * dpr));
+      const width = Math.max(1, Math.round(rect.right * dpr) - x);
+      const height = Math.max(1, Math.round(rect.bottom * dpr) - y);
+      lastBounds = { x, y, width, height };
+      queue.send({
+        visible: surfaceVisible && !document.hidden && rect.width > 0 && rect.height > 0,
+        bounds: lastBounds,
+      }, retry, force);
+    };
+
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        measure();
+      });
+    };
+    const visibilityChanged = () => measure();
+
+    const watchResolution = () => {
+      resolution?.removeEventListener('change', resolutionChanged);
+      resolution = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      resolution.addEventListener('change', resolutionChanged);
+    };
+    function resolutionChanged() {
+      watchResolution();
+      schedule();
+    }
+
+    const observer = new ResizeObserver(schedule);
+    observer.observe(target);
+    window.addEventListener('resize', schedule);
+    window.visualViewport?.addEventListener('resize', schedule);
+    document.addEventListener('visibilitychange', visibilityChanged);
+    watchResolution();
+    measure(true);
+
+    return () => {
+      mounted.current = false;
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+      window.removeEventListener('resize', schedule);
+      window.visualViewport?.removeEventListener('resize', schedule);
+      document.removeEventListener('visibilitychange', visibilityChanged);
+      resolution?.removeEventListener('change', resolutionChanged);
+      queue.send({ visible: false, bounds: lastBounds }, retry);
+    };
+  }, [element, surfaceVisible, retry, queue]);
+
+  return error;
+}
