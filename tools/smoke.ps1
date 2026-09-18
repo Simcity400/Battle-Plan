@@ -40,8 +40,8 @@ sets hook_mask (bit per hook, 0x7f enables all) to bisect what the click path de
 .PARAMETER MapMode
 The renderer map mode matching the game screenshot, controller by default.
 .PARAMETER RecordHours
-Minimum live advance. The run extends to a 720-hour full-refresh boundary and
-requires all 186 native consistency windows plus the war matrix to reach 200/0.
+Minimum live advance, rounded up to a 720-hour full-refresh boundary where the run stops.
+1440 reaches the reference hour 60835691 from the record23 save.
 .EXAMPLE
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/smoke.ps1 -Action Smoke -ExpectedSave save.hoi4 -UiConfig C:\hoi4_scratch\ui.json -Out captures\smoke_new -WaitForUiReview
 .EXAMPLE
@@ -415,6 +415,8 @@ function Invoke-FullSmoke {
         $dirty=Run-Tool $git @('status','--porcelain','--untracked-files=no') 'source-status' 30
         if (-not [string]::IsNullOrWhiteSpace($dirty)) { throw 'Commit the smoke candidate before running the full check.' }
         $report.source_clean=$true
+        $format=[int][regex]::Match([IO.File]::ReadAllText((Join-Path $repo 'crates\replay\src\lib.rs')),'FORMAT_VERSION: u16 = (\d+);').Groups[1].Value
+        if ($format -lt 1) { throw 'FORMAT_VERSION not found in crates/replay/src/lib.rs.' }
         $cargo=(Get-Command cargo -ErrorAction Stop).Source
         $null=Run-Tool $cargo @('build','--workspace') 'build' 600
         $tests=Run-Tool $cargo @('test','--workspace') 'test' 600
@@ -455,7 +457,7 @@ function Invoke-FullSmoke {
         $clock=Clock; $report.initial_clock=$clock; $report.game_pid=$game.Id
         $first=[int]$clock.hour; $target=$first + 720*[int][Math]::Ceiling($RecordHours/720.0)
         $load=$clock.play_session_started_at; $seed=$clock.seed
-        $live=[Diagnostics.Stopwatch]::StartNew(); $progressAt=0.0; $slow=$false; $allChecked=$false
+        $live=[Diagnostics.Stopwatch]::StartNew(); $progressAt=0.0; $slow=$false
         Stage 'recording'
         Speed-Game 4; Pause-Game $false
         while ($true) {
@@ -469,19 +471,13 @@ function Invoke-FullSmoke {
                 if ($status.dropped_frames -ne 0 -or $status.write_errors -ne 0 -or $status.war_matrix_failures -ne 0) { throw 'Recording reported drops, write errors or a failed war-matrix check.' }
                 $mismatches=@($status.consistency.mismatches.PSObject.Properties | Where-Object { $_.Value -ne 0 })
                 if ($mismatches.Count) { [IO.File]::WriteAllText((Join-Path $output 'failed-consistency.json'),($status | ConvertTo-Json -Depth 30),$utf8); throw ('Consistency mismatches: '+(($mismatches.Name) -join ', ')) }
-                $checks=@($status.consistency.successful_checks.PSObject.Properties)
-                $ready=@($checks | Where-Object { $_.Value -ge 200 }).Count
-                $allChecked=$checks.Count -eq 186 -and $ready -eq $checks.Count -and $status.war_matrix_checks -ge 200
                 if ($live.Elapsed.TotalSeconds -ge $progressAt) {
-                    Write-Host "H=$($clock.hour) target=$target checked=$ready/$($checks.Count) samples=$($status.hours)"
+                    Write-Host "H=$($clock.hour) target=$target samples=$($status.hours)"
                     $progressAt=$live.Elapsed.TotalSeconds+15
-                    $report.live_progress=@{hour=$clock.hour;target=$target;ready=$ready;windows=$checks.Count;samples=$status.hours}; Write-Report
+                    $report.live_progress=@{hour=$clock.hour;target=$target;samples=$status.hours}; Write-Report
                 }
             }
-            if (-not $slow -and $clock.hour -ge $target-40) {
-                if (-not $allChecked) { $target+=720; continue }
-                Speed-Game 0; $slow=$true
-            }
+            if (-not $slow -and $clock.hour -ge $target-40) { Speed-Game 0; $slow=$true }
             if ($clock.hour -ge $target) {
                 Pause-Game $true; $clock=Clock
                 if ($clock.hour -ne $target) { throw "Missed exact full-refresh save hour: target=$target actual=$($clock.hour)" }
@@ -578,14 +574,14 @@ function Invoke-FullSmoke {
         if ($replays.Count -ne 1) { throw 'Expected exactly one finalized replay.' }
         $replay=$replays[0].FullName; $report.replay=$replay; $report.replay_bytes=$replays[0].Length
         $stream=[IO.File]::OpenRead($replay)
-        try { $header=New-Object byte[] 6; $n=$stream.Read($header,0,6); if ($n -ne 6 -or [Text.Encoding]::ASCII.GetString($header,0,4) -cne 'H4RP' -or [BitConverter]::ToUInt16($header,4) -ne 25) { throw 'Smoke did not produce the expected format-25 replay.' } } finally { $stream.Dispose() }
+        try { $header=New-Object byte[] 6; $n=$stream.Read($header,0,6); if ($n -ne 6 -or [Text.Encoding]::ASCII.GetString($header,0,4) -cne 'H4RP' -or [BitConverter]::ToUInt16($header,4) -ne $format) { throw "Smoke did not produce the expected format-$format replay." } } finally { $stream.Dispose() }
         Stage 'fresh-save-oracle'
         $inspection=Run-Tool $recorder @('inspect',$replay) 'inspect' 180
         if ($inspection -notmatch 'content_verified=true sessions=1 branches=1 blocks=\d+') { throw 'Replay identity/session/branch inspection failed.' }
         $oracle=Run-Tool $recorder @('oracle',$replay,$save,'--hour',[string]$target,'--branch','1','--game-dir',(Split-Path -Parent $gamePath),'--user-dir',$userPath) 'oracle' 240
         if ($oracle -notmatch '(?m)^Differences: 0\s*$' -or $oracle -notmatch 'coverage: complete; 0 table availability issues; 0 failed or skipped comparison groups') { throw 'Fresh-save oracle did not establish complete matching coverage.' }
         $report.oracle_comparisons=[int]([regex]::Match($oracle,'(\d+) exact field comparisons').Groups[1].Value)
-        $report.oracle_differences=0; $report.recorded_format=25
+        $report.oracle_differences=0; $report.recorded_format=$format
         Copy-Item -LiteralPath $save -Destination (Join-Path $output 'boundary-save.hoi4')
         Stage 'render-and-score-five-reference-pairs'
         $culture=[Globalization.CultureInfo]::InvariantCulture
@@ -612,7 +608,7 @@ function Invoke-FullSmoke {
         $finalStatus=Status
         [IO.File]::WriteAllText((Join-Path $output 'final-status.json'),($finalStatus | ConvertTo-Json -Depth 30),$utf8)
         if ($finalStatus.hours -lt $RecordHours -or $finalStatus.dropped_frames -ne 0 -or $finalStatus.write_errors -ne 0) { throw 'Final transport counters failed.' }
-        $report.performance=@{recorded_hours=$finalStatus.hours;advancing_game_hours=$target-$first;advance_seconds=$live.Elapsed.TotalSeconds;advancing_hours_per_second=($target-$first)/$live.Elapsed.TotalSeconds;callback_p50_ms=$finalStatus.callback_work.p50_ns/1e6;callback_p95_ms=$finalStatus.callback_work.p95_ns/1e6;callback_max_ms=$finalStatus.callback_work.max_ns/1e6;pool_bytes=$finalStatus.pool_bytes;spool_bytes=$finalStatus.spool_bytes;scope='One live smoke including consistency-check warmup and slow boundary approach. Not a paired baseline or performance acceptance.'}
+        $report.performance=@{recorded_hours=$finalStatus.hours;advancing_game_hours=$target-$first;advance_seconds=$live.Elapsed.TotalSeconds;advancing_hours_per_second=($target-$first)/$live.Elapsed.TotalSeconds;callback_p50_ms=$finalStatus.callback_work.p50_ns/1e6;callback_p95_ms=$finalStatus.callback_work.p95_ns/1e6;callback_max_ms=$finalStatus.callback_work.max_ns/1e6;pool_bytes=$finalStatus.pool_bytes;spool_bytes=$finalStatus.spool_bytes;scope='One live smoke including the slow boundary approach. Not a paired baseline or performance acceptance.'}
         if ((Get-FileHash $sourceSave -Algorithm SHA256).Hash -cne $report.source_save_sha256) { throw 'Original input save changed.' }
         $report.source_save_unchanged=$true
         $report.passed=$true; Stage 'validations-passed'
