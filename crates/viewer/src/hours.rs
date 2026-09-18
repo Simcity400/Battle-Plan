@@ -187,6 +187,15 @@ pub struct Borders {
     pub highlighted: ZonePlan,
 }
 
+/// What the window's header shows of an hour: every country tag for the
+/// viewing-country chooser and the viewing country's own tag. Both walk the
+/// hour's country tables, so they are read here and not on a frame.
+#[derive(Debug, Default)]
+pub struct Header {
+    pub countries: Vec<String>,
+    pub viewing: Option<String>,
+}
+
 /// Everything the map draws for one recorded hour, built off the frame path.
 pub struct Layers {
     pub political: Arc<Political>,
@@ -199,9 +208,11 @@ pub struct Layers {
     pub orders: OrderField,
     pub effects: weather_effects::Warmed,
     pub intel: IntelMap,
-    pub snow_mud: SnowMud,
+    /// Shared so the window can hold the grid it uploaded and compare.
+    pub snow_mud: Arc<SnowMud>,
     /// Worded at fraction 0; the window sets its own fraction before reading.
     pub limitations: Limitations,
+    pub header: Arc<Header>,
     pub names: Placements,
     pub overlay: PreparedOverlay,
 }
@@ -229,8 +240,8 @@ enum Part {
     Rails(io::Result<Arc<Rails>>),
     Buildings(io::Result<Arc<Shared<ModelField>>>),
     Movers(io::Result<Box<Movers>>),
-    Fog(io::Result<(IntelMap, Limitations)>),
-    Snow(io::Result<SnowMud>),
+    Fog(io::Result<(IntelMap, Limitations, Arc<Header>)>),
+    Snow(io::Result<Arc<SnowMud>>),
 }
 
 struct Movers {
@@ -429,8 +440,8 @@ struct Pending {
     rails: Option<Arc<Rails>>,
     buildings: Option<Arc<Shared<ModelField>>>,
     movers: Option<Movers>,
-    fog: Option<(IntelMap, Limitations)>,
-    snow: Option<SnowMud>,
+    fog: Option<(IntelMap, Limitations, Arc<Header>)>,
+    snow: Option<Arc<SnowMud>>,
     received: usize,
     error: Option<String>,
     /// Rank of the part `error` names, so concurrent failures report the
@@ -537,7 +548,7 @@ impl Pending {
         let missing = || "an hour part did not arrive".to_owned();
         let (political, borders) = self.political.ok_or_else(missing)?;
         let movers = self.movers.ok_or_else(missing)?;
-        let (intel, limitations) = self.fog.ok_or_else(missing)?;
+        let (intel, limitations, header) = self.fog.ok_or_else(missing)?;
         Ok(Layers {
             political,
             borders,
@@ -551,6 +562,7 @@ impl Pending {
             intel,
             snow_mud: self.snow.ok_or_else(missing)?,
             limitations,
+            header,
             names: self.names.ok_or_else(missing)?,
             overlay: self.overlay.ok_or_else(missing)?,
         })
@@ -1034,6 +1046,13 @@ impl Coordinator {
                     Ok((
                         view.intel_map(&fog_perspective)?,
                         view.limitations(&fog_perspective)?,
+                        Arc::new(Header {
+                            countries: view.country_tags()?,
+                            viewing: view
+                                .vision(&fog_perspective)
+                                .and_then(|vision| view.viewing_tag(&vision))
+                                .ok(),
+                        }),
                     ))
                 })())
             }),
@@ -1041,9 +1060,13 @@ impl Coordinator {
         submit(
             "snow",
             Box::new(move |view| {
-                Part::Snow(snapshot.and_then(|snapshot| {
-                    weather::grid(&view.map, &view.assets.perm_snow, &snapshot, view.frame)
-                }))
+                Part::Snow(
+                    snapshot
+                        .and_then(|snapshot| {
+                            weather::grid(&view.map, &view.assets.perm_snow, &snapshot, view.frame)
+                        })
+                        .map(Arc::new),
+                )
             }),
         );
         true

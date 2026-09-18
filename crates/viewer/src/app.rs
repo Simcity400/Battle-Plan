@@ -37,16 +37,40 @@ struct Laps {
     enabled: bool,
     start: Instant,
     last: Instant,
+    /// Milliseconds between the previous frame's laps ending and these
+    /// starting, less the profiled pacing sleep.
+    outside: f64,
     laps: Vec<(&'static str, f64)>,
 }
 
+/// When the previous frame's laps stopped, for [`Laps::outside`].
+static FRAME_END: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Marks the end of a frame's own path, so the next frame reports the gap.
+fn mark_frame_end() {
+    if let Ok(mut end) = FRAME_END.lock() {
+        *end = Some(Instant::now());
+    }
+}
+
 impl Laps {
-    fn new() -> Self {
+    /// `waited` is the profiled pacing sleep, which is not a frame's cost; the
+    /// rest of the gap since the previous frame ended is egui's own tessellation
+    /// and paint and the present, which these laps do not cover.
+    fn new(waited: Duration) -> Self {
         let now = Instant::now();
+        let outside = FRAME_END
+            .lock()
+            .ok()
+            .and_then(|end| *end)
+            .map_or(0.0, |end| {
+                (now.saturating_duration_since(end).saturating_sub(waited)).as_secs_f64() * 1000.0
+            });
         Self {
             enabled: map::counter_move::profiling(),
             start: now,
             last: now,
+            outside,
             laps: Vec::new(),
         }
     }
@@ -75,17 +99,37 @@ impl Laps {
     }
 }
 
+/// Milliseconds the frame's submission takes on the GPU, under
+/// `BATTLE_PLAN_VIEWER_GPU_WAIT`.
+///
+/// Waiting out the submission is the only way to see the GPU's own time without
+/// timestamp queries, and it costs the frame that wait, so an ordinary run and
+/// a profiled run without the variable never call it and report 0.
+fn gpu_wait(device: &wgpu::Device) -> f64 {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_GPU_WAIT").or_else(|| std::env::var_os("HOI4_VIEWER_GPU_WAIT")).is_some()) {
+        return 0.0;
+    }
+    let start = Instant::now();
+    let _ = device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    });
+    start.elapsed().as_secs_f64() * 1000.0
+}
+
 /// Holds a profiled capture's frames to a 60 Hz display's pace.
 ///
 /// A `--window-dump` frame does not wait for a display, so unpaced it runs at
 /// hundreds of frames a second and a sweep that advances the playhead by
 /// `speed / 60` hours a frame outruns the builders, which work in wall time.
 /// The wait falls before the frame's laps start, so it is not a frame's cost.
-fn pace_profiled_frame() {
+fn pace_profiled_frame() -> Duration {
     const PERIOD: Duration = Duration::from_micros(16_667);
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    let started = Instant::now();
     let Ok(mut last) = LAST.lock() else {
-        return;
+        return Duration::ZERO;
     };
     if let Some(previous) = *last {
         let due = previous + PERIOD;
@@ -98,6 +142,7 @@ fn pace_profiled_frame() {
         }
     }
     *last = Some(Instant::now());
+    started.elapsed()
 }
 
 /// Where the timeline is: the recorded hour the clock is in and how far past it.
@@ -124,16 +169,22 @@ struct ShownHour {
     political_build: Duration,
     limitations: map::tables::Limitations,
     snow_line: String,
+    /// The header's country list and viewing tag, built with the hour.
+    header: Arc<hours::Header>,
 }
 
 /// The ids of the shared hour layers the scene holds (`hours::Shared`), so an
 /// hour that shares one with the hour on screen uploads nothing for it.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Default)]
 struct Uploaded {
     political: Option<u64>,
     borders: Option<u64>,
     rails: Option<u64>,
     buildings: Option<u64>,
+    /// The snow and mud grid on the GPU. Weather changes only in an hour's own
+    /// update window, so most hours rasterise the same grid; comparing it is a
+    /// memcmp beside a whole-texture write and the winter-volume pass.
+    snow_mud: Option<Arc<map::weather::SnowMud>>,
 }
 
 /// The largest share of the central panel the warning area may take before it
@@ -202,6 +253,9 @@ pub struct Viewer {
     speed: u32,
     last_step: Instant,
     started: Instant,
+    /// When the replay was opened, so a profiled run reports the cold open:
+    /// the loading thread's document and scene, then the first hour built.
+    opened: Option<Instant>,
     // colour
     /// Whether the map is graded through the engine's post chain.
     postfx: bool,
@@ -347,10 +401,10 @@ impl Viewer {
         let capture = options.window_dump.then(|| Capture {
             path: options.out.clone().unwrap_or_default(),
             remaining: if map::counter_move::profiling() {
-                // A cold seek is followed for ten seconds past it, long
-                // enough to see the frame that shows the hour it lands on.
+                // A cold seek is followed for thirty seconds past it: a seek
+                // across a 1,400-hour branch walks its snow history for ~10 s.
                 if std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).is_ok_and(|mode| mode == "seek_end") {
-                    721
+                    1921
                 } else {
                     241
                 }
@@ -391,6 +445,7 @@ impl Viewer {
             speed: 24,
             last_step: Instant::now(),
             started: Instant::now(),
+            opened: None,
             // hours
             playhead: None,
             hours: None,
@@ -473,6 +528,7 @@ impl Viewer {
             ctx.request_repaint();
         });
         self.loading = Some(receiver);
+        self.opened = Some(Instant::now());
         self.combat.close();
         self.document = None;
         self.scene = None;
@@ -505,6 +561,13 @@ impl Viewer {
         self.overlay_tables = None;
     }
 
+    /// Records a lap of the frame that is being timed, if one is.
+    fn lap(&mut self, name: &'static str) {
+        if let Some(laps) = &mut self.laps {
+            laps.lap(name);
+        }
+    }
+
     fn poll(&mut self) {
         let result = self.loading.as_ref().map(|receiver| receiver.try_recv());
         match result {
@@ -526,6 +589,14 @@ impl Viewer {
                 self.scene = Some(scene);
                 self.uploaded = Uploaded::default();
                 self.loading = None;
+                if let Some(opened) = self.opened
+                    && map::counter_move::profiling()
+                {
+                    map::counter_move::profile_print(format!(
+                        "PROFILE open document_and_scene {:.1} ms",
+                        opened.elapsed().as_secs_f64() * 1000.0
+                    ));
+                }
             }
             Some(Ok(Err(error))) => {
                 self.error = Some(error);
@@ -1056,6 +1127,14 @@ impl Viewer {
             laps: built_laps,
             wall,
         } = built;
+        if let Some(opened) = self.opened.take()
+            && map::counter_move::profiling()
+        {
+            map::counter_move::profile_print(format!(
+                "PROFILE open first_hour {:.1} ms",
+                opened.elapsed().as_secs_f64() * 1000.0
+            ));
+        }
         let passed = document.playback.present(branch, hour, current);
         let dropper = self
             .dropper
@@ -1088,6 +1167,7 @@ impl Viewer {
                     political_build: Duration::ZERO,
                     limitations: Default::default(),
                     snow_line: String::new(),
+                    header: Default::default(),
                 });
                 return Ok(());
             }
@@ -1105,6 +1185,7 @@ impl Viewer {
             intel,
             snow_mud,
             limitations,
+            header,
             names,
             overlay,
         } = layers;
@@ -1136,14 +1217,17 @@ impl Viewer {
             uploaded.buildings = Some(buildings.id);
         }
         laps.lap("buildings_upload");
-        scene.set_trains(&state.device, &state.queue, document.trains.clone(), trains)?;
+        let replaced =
+            scene.set_trains(&state.device, &state.queue, document.trains.clone(), trains)?;
+        dropper.drop_later(replaced);
         laps.lap("trains_upload");
-        scene.set_aircraft(
+        let replaced = scene.set_aircraft(
             &state.device,
             &state.queue,
             document.aircraft.clone(),
             aircraft,
         )?;
+        dropper.drop_later(replaced);
         laps.lap("aircraft_upload");
         dropper.drop_later(self.unit_models.replace(units));
         self.unit_fraction = None;
@@ -1190,14 +1274,24 @@ impl Viewer {
             uploaded.borders = Some(borders.id);
         }
         laps.lap("border_classes");
-        scene.set_snow_mud(
-            &state.device,
-            &state.queue,
-            &snow_mud.texels,
-            snow_mud.width,
-            snow_mud.height,
-            &snow_mud.province_snow,
-        )?;
+        // weather: an hour whose grid equals the one on the GPU writes nothing.
+        let same_snow = uploaded.snow_mud.as_ref().is_some_and(|had| {
+            had.width == snow_mud.width
+                && had.height == snow_mud.height
+                && had.texels == snow_mud.texels
+                && had.province_snow == snow_mud.province_snow
+        });
+        if !same_snow {
+            scene.set_snow_mud(
+                &state.device,
+                &state.queue,
+                &snow_mud.texels,
+                snow_mud.width,
+                snow_mud.height,
+                &snow_mud.province_snow,
+            )?;
+            uploaded.snow_mud = Some(Arc::clone(&snow_mud));
+        }
         laps.lap("snow_upload");
         scene.set_fog_of_war(&state.queue, &intel.texels, intel.fog)?;
         laps.lap("fog_upload");
@@ -1212,7 +1306,7 @@ impl Viewer {
             self.perspective.clone(),
         ));
         self.overlay_fraction = None;
-        self.shown = Some(ShownHour {
+        let shown = ShownHour {
             epoch,
             branch,
             hour,
@@ -1221,6 +1315,7 @@ impl Viewer {
             political_summary: political.layers.summary(),
             political_build: political.layers.build,
             limitations,
+            header,
             snow_line: format!(
                 "Snow and mud: {}; {}x{} grid rasterised in {:.0} ms",
                 snow_mud.summary.line(),
@@ -1228,7 +1323,8 @@ impl Viewer {
                 snow_mud.height,
                 snow_mud.build.as_secs_f64() * 1000.0
             ),
-        });
+        };
+        dropper.drop_later(self.shown.replace(shown));
         dropper.drop_later((political, borders, rails, buildings, snow_mud, intel));
         laps.lap("apply_end");
         Ok(())
@@ -1354,7 +1450,10 @@ impl Viewer {
         document: &mut Document,
     ) -> Result<(), String> {
         let map_timer = Instant::now();
-        let mut laps = self.laps.take().unwrap_or_else(Laps::new);
+        let mut laps = self
+            .laps
+            .take()
+            .unwrap_or_else(|| Laps::new(Duration::ZERO));
         laps.lap("before_map");
         map::counter_move::take_profile();
         let state = frame
@@ -1579,20 +1678,20 @@ impl Viewer {
             );
             // Size the buffer for every height band: height 0 draws all land
             // units and ships, so zooming between bands rewrites the same
-            // buffer instead of reallocating mid-gesture. Built once per hour;
-            // the build itself is sub-millisecond beside the upload.
+            // buffer instead of reallocating mid-gesture. The count is read
+            // off the prepared hour rather than by building that field.
             let hour_key = (document.playback.branch(), document.playback.hour());
             let fresh_hour = self
                 .unit_capacity
                 .as_ref()
                 .is_none_or(|(branch, hour, _)| (*branch, *hour) != hour_key);
             let min_capacity = if fresh_hour {
-                let full = self.unit_models.as_ref().expect("prepared above").field(
-                    &document.unit_models,
-                    document.hour_fraction,
-                    0.0,
-                );
-                let capacity = (full.byte_len() as u64).max(units.byte_len() as u64);
+                let full = self
+                    .unit_models
+                    .as_ref()
+                    .expect("prepared above")
+                    .full_byte_len() as u64;
+                let capacity = full.max(units.byte_len() as u64);
                 self.unit_capacity = Some((hour_key.0, hour_key.1, capacity));
                 capacity
             } else {
@@ -1770,6 +1869,7 @@ impl Viewer {
                 },
             )
             .map_err(|e| e.to_string())?;
+        let [animate, overlay_upload, encode, submit] = scene.render_laps();
         if self.generation != scene.generation() {
             let view = scene.view().ok_or("Map target was not created")?;
             let mut egui_renderer = state.renderer.write();
@@ -1794,7 +1894,7 @@ impl Viewer {
         laps.lap("render");
         if map::counter_move::profiling() {
             map::counter_move::profile_print(format!(
-                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} laps {}",
+                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} outside {:.3} scene {:.3}/{:.3}/{:.3}/{:.3} gpu {:.3} laps {}",
                 self.profile_frame,
                 document.hour_fraction,
                 camera.height,
@@ -1803,6 +1903,12 @@ impl Viewer {
                 map::counter_move::take_profile(),
                 document.playback.hour(),
                 laps.total(),
+                laps.outside,
+                animate,
+                overlay_upload,
+                encode,
+                submit,
+                gpu_wait(&state.device),
                 laps.line()
             ));
         }
@@ -1823,11 +1929,14 @@ impl Viewer {
 
 impl eframe::App for Viewer {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        if map::counter_move::profiling() && self.capture.is_some() {
-            pace_profiled_frame();
-        }
-        self.laps = Some(Laps::new());
+        let waited = if map::counter_move::profiling() && self.capture.is_some() {
+            pace_profiled_frame()
+        } else {
+            Duration::ZERO
+        };
+        self.laps = Some(Laps::new(waited));
         self.poll();
+        self.lap("poll");
         // capture: F12 writes the map target as it stands, at its own pixel
         // size, through the readback `--dump` uses. It is the only way to score
         // a window frame against a dump without a screenshot tool, which would
@@ -1851,16 +1960,14 @@ impl eframe::App for Viewer {
         }
         // counters: what the header's viewing-country chooser offers and shows,
         // read from the hour on screen before the header borrows `self`.
-        let (country_tags, viewing) = match &self.document {
-            Some(document) => (
-                document.country_tags().unwrap_or_default(),
-                document
-                    .vision(&self.perspective)
-                    .and_then(|vision| document.viewing_tag(&vision))
-                    .ok(),
-            ),
-            None => (Vec::new(), None),
-        };
+        let header = self
+            .shown
+            .as_ref()
+            .filter(|_| self.document.is_some())
+            .map(|shown| Arc::clone(&shown.header))
+            .unwrap_or_default();
+        let (country_tags, viewing) = (&header.countries, &header.viewing);
+        self.lap("header_tags");
         egui::Panel::top("header").show(ui, |ui| {
             ui.add_space(5.0);
             ui.horizontal(|ui| {
@@ -1912,7 +2019,7 @@ impl eframe::App for Viewer {
                             map::perspective::Country::Recorded,
                             "Recorded player",
                         );
-                        for tag in &country_tags {
+                        for tag in country_tags {
                             ui.selectable_value(
                                 &mut self.perspective.country,
                                 map::perspective::Country::Tag(tag.clone()),
@@ -1949,6 +2056,7 @@ impl eframe::App for Viewer {
                 ui.weak(note);
             }
         });
+        self.lap("header_panel");
         self.paths(ui.ctx());
         if let Some(mut document) = self.document.take() {
             egui::Panel::bottom("timeline").show(ui, |ui| {
@@ -2089,6 +2197,7 @@ impl eframe::App for Viewer {
                     camera.height = (camera.height * zoom).clamp(40.0, 900.0);
                 }
             }
+            self.lap("timeline_panel");
             egui::CentralPanel::default().show(ui, |ui| {
                 if let Err(error) = self.map(ui, frame, &mut document) {
                     self.error = Some(error);
@@ -2113,6 +2222,7 @@ impl eframe::App for Viewer {
                 });
             });
         }
+        mark_frame_end();
     }
 }
 

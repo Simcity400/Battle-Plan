@@ -424,7 +424,8 @@ pub fn dump_png(
         }
         if !layers.omitted.rails {
             scene.set_railways(&device, &queue, layers.rail_assets, layers.rail_mesh)?;
-            scene.set_trains(
+            // A dump builds the pass, so it replaces no earlier plan.
+            let _ = scene.set_trains(
                 &device,
                 &queue,
                 layers.trains.clone(),
@@ -438,7 +439,7 @@ pub fn dump_png(
             )?;
         }
         if !layers.omitted.models {
-            scene.set_aircraft(
+            let _ = scene.set_aircraft(
                 &device,
                 &queue,
                 layers.aircraft.clone(),
