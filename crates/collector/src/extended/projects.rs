@@ -489,6 +489,8 @@ impl Captured {
                     incoming: r.incoming,
                     words: r.words().to_vec(),
                     dropped_words: r.dropped_words,
+                    offers: r.offers().to_vec(),
+                    offer_count: r.offer_count,
                 }
             }),
         ]
@@ -2599,6 +2601,13 @@ mod tests {
             },
             words_len: 1,
             dropped_words: 3,
+            offers: {
+                let mut offers = [0; engine::craid_province_entries::MAX_OFFERS];
+                offers[0] = (0x4b06_u64 << 32) | 0x2fb6;
+                offers
+            },
+            offers_len: 1,
+            offer_count: 2,
         };
         captured.peace.outcome = Outcome::Rows { len: 1 };
         captured.peace.rows[0] = peace_conference::Row {
@@ -2608,6 +2617,9 @@ mod tests {
             finalized: 1,
         };
         let views = captured.tables();
+        let province = &complete::<tables::RaidProvinces>(&views[11])[0];
+        assert_eq!(province.offers, [(0x4b06_u64 << 32) | 0x2fb6]);
+        assert_eq!(province.offer_count, 2);
         let program = &complete::<tables::ProjectPrograms>(&views[0])[0];
         assert_eq!(
             (

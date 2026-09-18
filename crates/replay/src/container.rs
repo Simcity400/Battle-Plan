@@ -1700,6 +1700,14 @@ mod tests {
                 // with zeroed new fields. Later tables are rewritten first, and
                 // before the earlier ShipModels rewrite, so earlier byte
                 // offsets stay valid.
+                if format.records(TableId::RaidProvinces) && format.version() < 28 {
+                    let index = TableId::RaidProvinces.index();
+                    let start =
+                        8 + 4 + 1 + 8 + TABLE_COUNT * 8 + 16 + sizes[..index].iter().sum::<usize>();
+                    let legacy =
+                        crate::rows::encode_legacy_raid_provinces_update(&frame.tables[index]);
+                    payload.splice(start..start + sizes[index], legacy);
+                }
                 if format.records(TableId::LandCombatDivisions) && format.version() < 25 {
                     for table in [TableId::LandCombatDivisions, TableId::LandCombatDetails] {
                         let index = table.index();
@@ -1842,6 +1850,16 @@ mod tests {
                         row.invalid_orders = 0;
                     }
                 }
+                // Likewise format28's raid offers.
+                if table == TableId::RaidProvinces
+                    && let TableView::Complete(TableRows::RaidProvinces(rows)) =
+                        &mut frame.tables[table.index()]
+                {
+                    for row in rows {
+                        row.offers.clear();
+                        row.offer_count = 0;
+                    }
+                }
                 frame.metrics.table_ns[table.index()] = (hour as u64) * 1000 + table.index() as u64;
             }
             if hour == 2 {
@@ -1862,6 +1880,7 @@ mod tests {
             FormatVersion::LEGACY_22,
             FormatVersion::LEGACY_23,
             FormatVersion::LEGACY_24,
+            FormatVersion::LEGACY_27,
         ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             assert_eq!(old.format, format);
@@ -1946,6 +1965,7 @@ mod tests {
             FormatVersion::LEGACY_22,
             FormatVersion::LEGACY_23,
             FormatVersion::LEGACY_24,
+            FormatVersion::LEGACY_27,
         ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             let error = old
@@ -2082,6 +2102,7 @@ mod tests {
             FormatVersion::LEGACY_22,
             FormatVersion::LEGACY_23,
             FormatVersion::LEGACY_24,
+            FormatVersion::LEGACY_27,
         ] {
             let bytes = downgrade(&current, format);
             assert!(Replay::open(bytes.clone()).is_ok());
@@ -2116,8 +2137,8 @@ mod tests {
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27 and \
-                     writes {FORMAT_VERSION}"
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28 \
+                     and writes {FORMAT_VERSION}"
                 )
             );
         }

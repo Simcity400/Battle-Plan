@@ -18,6 +18,8 @@
 //! Format26 belongs to the division-ETA branch; when the two merge, its two tables take
 //! ids186..187 and these move to 188..189. The id block is asserted in the tests below so
 //! a merge that forgets to renumber fails here rather than in a recording.
+//! Format28 extends RaidProvinces in place with the available-target glyph inputs
+//! (`offers`, `offer_count`), keeping the same 189 tables.
 //!
 //! A frame body is a `table_ns` entry per recorded table followed by one update
 //! per recorded table in `TableId` order. The timing and table arrays each use
@@ -103,8 +105,13 @@ impl FormatVersion {
         version: 25,
         recorded_tables: TableId::LeaderPortraitPaths.index() + 1,
     };
+    /// Last version before the raid offers, with the same 189 tables.
+    pub const LEGACY_27: Self = Self {
+        version: 27,
+        recorded_tables: TableId::NavalBases.index() + 1,
+    };
     /// Every readable version, oldest first.
-    pub const READABLE: [Self; 11] = [
+    pub const READABLE: [Self; 12] = [
         Self::LEGACY_14,
         Self::LEGACY_17,
         Self::LEGACY_18,
@@ -115,6 +122,7 @@ impl FormatVersion {
         Self::LEGACY_23,
         Self::LEGACY_24,
         Self::LEGACY_25,
+        Self::LEGACY_27,
         Self::CURRENT,
     ];
 
@@ -181,6 +189,7 @@ mod tests {
         assert_eq!(FormatVersion::LEGACY_23.recorded_tables, 174);
         assert_eq!(FormatVersion::LEGACY_24.recorded_tables, 186);
         assert_eq!(FormatVersion::LEGACY_25.recorded_tables, 186);
+        assert_eq!(FormatVersion::LEGACY_27.recorded_tables, 189);
         assert_eq!(FormatVersion::CURRENT.recorded_tables, 189);
         // The raid map-icon tables are the last block. Merging the division-ETA
         // branch renumbers them to 188..189; this assertion is where a merge
@@ -236,13 +245,14 @@ mod tests {
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27 and \
-                     writes 27"
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28 \
+                     and writes 28"
                 )
             );
         }
         // The writer's version decodes, and so do the formats it extends.
-        assert_eq!(FormatVersion::read(27).unwrap(), FormatVersion::CURRENT);
+        assert_eq!(FormatVersion::read(28).unwrap(), FormatVersion::CURRENT);
+        assert_eq!(FormatVersion::read(27).unwrap(), FormatVersion::LEGACY_27);
         assert_eq!(FormatVersion::read(25).unwrap(), FormatVersion::LEGACY_25);
         assert_eq!(FormatVersion::read(24).unwrap(), FormatVersion::LEGACY_24);
     }
