@@ -2021,7 +2021,7 @@ fn copy_relations_pass(
             Some(pointer) => pointer,
         };
         meta.diplomacy_pointer = diplomacy;
-        let scattered = memory.copy_scattered(
+        let scattered = memory.copy_scattered_prefetched(
             [
                 diplomacy,
                 diplomacy.saturating_add(cdiplomacy_status::COUNTRY),

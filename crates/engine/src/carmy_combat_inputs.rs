@@ -126,6 +126,23 @@ fn values<const N: usize>(source: &[u8]) -> [i64; N] {
     })
 }
 
+/// Keep checked-address errors at their original ordinal, after every readable
+/// prefix span. No failed scatter is retried, including a partially copied field.
+fn copy_input_spans<const N: usize>(
+    memory: &impl Memory,
+    addresses: [Result<usize, &'static str>; N],
+    destinations: &mut [&mut [u8]; N],
+) -> Result<(), &'static str> {
+    let copied = memory.copy_scattered_prefetched(addresses.map(|p| p.unwrap_or(0)), destinations);
+    if copied == N {
+        Ok(())
+    } else {
+        Err(addresses[copied]
+            .err()
+            .unwrap_or("land combat division inputs unreadable"))
+    }
+}
+
 /// The caller supplies the authenticated combat/side/role membership.
 /// Terminal checks retain CArmy/stat-block identities and formation leader link.
 pub fn capture_stats(
@@ -158,42 +175,96 @@ pub fn capture_stats(
     {
         return Err("land combat division stat identity mismatch");
     }
-    let current = values::<3>(&bytes::<24>(memory, pointer, carmy::STRENGTH)?);
-    let entrenchment = values::<2>(&bytes::<16>(memory, pointer, carmy::ENTRENCHMENT)?);
-    let maxima = values::<2>(&bytes::<16>(
+    let (mut current, mut entrenchment, mut maxima, mut armour, mut group_pointer) =
+        ([0; 24], [0; 16], [0; 16], [0; 16], [0; 8]);
+    copy_input_spans(
         memory,
-        stat,
-        csub_unit_definition::MAXIMUM_ORGANISATION,
-    )?);
-    let armour = values::<2>(&bytes::<16>(memory, stat, ARMOUR)?);
-    let group_pointer = bytes::<8>(memory, pointer, carmy::ORDERS_GROUP)?;
+        [
+            (pointer, carmy::STRENGTH),
+            (pointer, carmy::ENTRENCHMENT),
+            (stat, csub_unit_definition::MAXIMUM_ORGANISATION),
+            (stat, ARMOUR),
+            (pointer, carmy::ORDERS_GROUP),
+        ]
+        .map(|(p, offset)| {
+            p.checked_add(offset)
+                .ok_or("land combat division inputs unreadable")
+        }),
+        &mut [
+            &mut current,
+            &mut entrenchment,
+            &mut maxima,
+            &mut armour,
+            &mut group_pointer,
+        ],
+    )?;
+    let current = values::<3>(&current);
+    let entrenchment = values::<2>(&entrenchment);
+    let maxima = values::<2>(&maxima);
+    let armour = values::<2>(&armour);
     let group = u64::from_le_bytes(group_pointer) as usize;
     let commander = commander(memory, base, group)?;
+    let name = display_name(memory, pointer)?;
+    let (mut strength_factor, mut fuel, mut fuel_capacity, mut fuel_define, mut retreat) =
+        ([0; 8], [0; 8], [0; 8], [0; 8], [0; 1]);
+    let (mut stats, mut air_attack, mut reconnaissance, mut initiative, mut scales) =
+        ([0; 40], [0; 8], [0; 8], [0; 8], [0; 32]);
+    copy_input_spans(
+        memory,
+        [
+            (pointer, 0x468),
+            (pointer, 0x620),
+            (stat, 0x120),
+            (base, 0x0331_97d0),
+            (pointer, carmy::RETREAT),
+            (stat, csub_unit_definition::DEFENSE),
+            (stat, AIR_ATTACK),
+            (stat, 0xd0),
+            (stat, 0xe0),
+            (pointer, cunit::ATTACK_ACCUMULATOR),
+        ]
+        .map(|(p, offset)| {
+            p.checked_add(offset)
+                .ok_or("land combat division inputs unreadable")
+        }),
+        &mut [
+            &mut strength_factor,
+            &mut fuel,
+            &mut fuel_capacity,
+            &mut fuel_define,
+            &mut retreat,
+            &mut stats,
+            &mut air_attack,
+            &mut reconnaissance,
+            &mut initiative,
+            &mut scales,
+        ],
+    )?;
     let row = Row {
         division: expected_handle,
-        name: display_name(memory, pointer)?,
+        name,
         strength: current[0],
-        strength_combat_factor: i64::from_le_bytes(bytes(memory, pointer, 0x468)?),
+        strength_combat_factor: i64::from_le_bytes(strength_factor),
         fuel_inputs: [
-            i64::from_le_bytes(bytes(memory, pointer, 0x620)?),
-            i64::from_le_bytes(bytes(memory, stat, 0x120)?),
-            i64::from_le_bytes(bytes(memory, base, 0x0331_97d0)?),
+            i64::from_le_bytes(fuel),
+            i64::from_le_bytes(fuel_capacity),
+            i64::from_le_bytes(fuel_define),
         ],
         organisation: current[1],
         experience: current[2],
         entrenchment: entrenchment[0],
         entrenchment_cap: entrenchment[1],
-        retreat: bytes::<1>(memory, pointer, carmy::RETREAT)?[0],
-        stat_values: values(&bytes::<40>(memory, stat, csub_unit_definition::DEFENSE)?),
+        retreat: retreat[0],
+        stat_values: values(&stats),
         max_organisation: maxima[0],
         max_strength: maxima[1],
         armour: armour[0],
         piercing: armour[1],
-        air_attack: i64::from_le_bytes(bytes(memory, stat, AIR_ATTACK)?),
-        reconnaissance: i64::from_le_bytes(bytes(memory, stat, 0xd0)?),
-        initiative: i64::from_le_bytes(bytes(memory, stat, 0xe0)?),
+        air_attack: i64::from_le_bytes(air_attack),
+        reconnaissance: i64::from_le_bytes(reconnaissance),
+        initiative: i64::from_le_bytes(initiative),
         commander,
-        scales: values(&bytes::<32>(memory, pointer, cunit::ATTACK_ACCUMULATOR)?),
+        scales: values(&scales),
     };
     if bytes::<8>(memory, pointer, 0)? != identity
         || bytes::<8>(memory, pointer, cunit::HANDLE)? != handle
@@ -405,19 +476,26 @@ pub fn capture_context(
     if table == 0 {
         return Err("land combat context metadata table null");
     }
-    let mut modifier_metadata = [[0; 2]; 3];
     let mut metadata_witness = [[0; 12]; 3];
-    for (index, key) in CONTEXT_MODIFIER_KEYS.into_iter().enumerate() {
-        let row = table
-            .checked_add(key as usize * metadata::STRIDE)
-            .ok_or("land combat context metadata address overflow")?;
-        let raw = bytes::<12>(memory, row, metadata::FLAGS)?;
-        modifier_metadata[index] = [
+    copy_input_spans(
+        memory,
+        CONTEXT_MODIFIER_KEYS.map(|key| {
+            table
+                .checked_add(key as usize * metadata::STRIDE)
+                .ok_or("land combat context metadata address overflow")
+                .and_then(|row| {
+                    row.checked_add(metadata::FLAGS)
+                        .ok_or("land combat division inputs unreadable")
+                })
+        }),
+        &mut metadata_witness.each_mut().map(|raw| raw.as_mut_slice()),
+    )?;
+    let modifier_metadata = metadata_witness.map(|raw| {
+        [
             u32::from_le_bytes(raw[..4].try_into().unwrap()),
             u32::from_le_bytes(raw[8..].try_into().unwrap()),
-        ];
-        metadata_witness[index] = raw;
-    }
+        ]
+    });
     let callback = u64::from_le_bytes(bytes(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA)?);
     let eligibility_callback = if callback == 0 {
         0
@@ -441,10 +519,16 @@ pub fn capture_context(
         return Err("land combat context stat identity mismatch");
     }
     let base_speed = i64::from_le_bytes(bytes(memory, stat_pointer, 0x290)?);
-    let mut defines = [0; 8];
-    for (value, offset) in defines.iter_mut().zip(CONTEXT_DEFINE_RVAS) {
-        *value = i64::from_le_bytes(bytes(memory, base, offset)?);
-    }
+    let mut defines = [[0; 8]; 8];
+    copy_input_spans(
+        memory,
+        CONTEXT_DEFINE_RVAS.map(|offset| {
+            base.checked_add(offset)
+                .ok_or("land combat division inputs unreadable")
+        }),
+        &mut defines.each_mut().map(|raw| raw.as_mut_slice()),
+    )?;
+    let defines = defines.map(i64::from_le_bytes);
     let template_pointer =
         u64::from_le_bytes(bytes(memory, pointer, carmy::STANDARD_TEMPLATE)?) as usize;
     let mut template_handle = 0;
@@ -631,7 +715,406 @@ fn commander(memory: &impl Memory, base: usize, group: usize) -> Result<u64, &'s
 mod tests {
     use super::*;
     use crate::memory::SliceMemory;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
+
+    struct Observed<'a, M> {
+        source: &'a M,
+        reads: RefCell<Vec<(usize, usize)>>,
+        scatters: RefCell<Vec<Vec<(usize, usize)>>>,
+        fault: Option<usize>,
+        change: Option<(usize, usize)>,
+    }
+
+    impl<'a, M> Observed<'a, M> {
+        fn new(source: &'a M) -> Self {
+            Self {
+                source,
+                reads: RefCell::default(),
+                scatters: RefCell::default(),
+                fault: None,
+                change: None,
+            }
+        }
+    }
+
+    impl<M: Memory> Memory for Observed<'_, M> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            let ordinal = self.reads.borrow().len();
+            self.reads.borrow_mut().push((address, destination.len()));
+            if self.fault == Some(ordinal) {
+                let prefix = destination.len().div_ceil(2);
+                destination[..prefix].fill(0xed);
+                return false;
+            }
+            let copied = self.source.copy(address, destination);
+            if copied
+                && let Some((at, byte)) = self.change
+                && at == ordinal
+            {
+                destination[byte] ^= 1;
+            }
+            copied
+        }
+
+        fn copy_scattered<const N: usize>(
+            &self,
+            addresses: [usize; N],
+            destinations: &mut [&mut [u8]; N],
+        ) -> usize {
+            self.scatters.borrow_mut().push(
+                addresses
+                    .iter()
+                    .zip(destinations.iter())
+                    .map(|(&p, d)| (p, d.len()))
+                    .collect(),
+            );
+            for (index, (address, destination)) in
+                addresses.into_iter().zip(destinations).enumerate()
+            {
+                if !read_slice(self, address, destination) {
+                    return index;
+                }
+            }
+            N
+        }
+    }
+
+    // The scalar order before batching. Unchanged dependency helpers stay shared
+    // so the differential covers their interleaving with both new leaf groups.
+    fn scalar_stats(
+        memory: &impl Memory,
+        base: usize,
+        pointer: usize,
+        expected_handle: u64,
+    ) -> Result<Row, &'static str> {
+        let identity = bytes::<8>(memory, pointer, 0)?;
+        let expected_vtable = base
+            .checked_add(carmy::VTABLE_RVA)
+            .ok_or("land combat division identity mismatch")? as u64;
+        let handle = bytes::<8>(memory, pointer, cunit::HANDLE)?;
+        if pointer == 0
+            || u64::from_le_bytes(identity) != expected_vtable
+            || expected_handle == 0
+            || u64::from_le_bytes(handle) != expected_handle
+        {
+            return Err("land combat division identity mismatch");
+        }
+        let stat_pointer = bytes::<8>(memory, pointer, cunit::STAT_BLOCK)?;
+        let stat = usize::try_from(u64::from_le_bytes(stat_pointer))
+            .map_err(|_| "land combat division stat pointer invalid")?;
+        let stat_identity = bytes::<8>(memory, stat, 0)?;
+        if stat == 0
+            || Some(u64::from_le_bytes(stat_identity))
+                != base
+                    .checked_add(csub_unit_definition::VTABLE_RVA)
+                    .map(|p| p as u64)
+        {
+            return Err("land combat division stat identity mismatch");
+        }
+        let current = values::<3>(&bytes::<24>(memory, pointer, carmy::STRENGTH)?);
+        let entrenchment = values::<2>(&bytes::<16>(memory, pointer, carmy::ENTRENCHMENT)?);
+        let maxima = values::<2>(&bytes::<16>(
+            memory,
+            stat,
+            csub_unit_definition::MAXIMUM_ORGANISATION,
+        )?);
+        let armour = values::<2>(&bytes::<16>(memory, stat, ARMOUR)?);
+        let group_pointer = bytes::<8>(memory, pointer, carmy::ORDERS_GROUP)?;
+        let group = u64::from_le_bytes(group_pointer) as usize;
+        let commander = commander(memory, base, group)?;
+        let row = Row {
+            division: expected_handle,
+            name: display_name(memory, pointer)?,
+            strength: current[0],
+            strength_combat_factor: i64::from_le_bytes(bytes(memory, pointer, 0x468)?),
+            fuel_inputs: [
+                i64::from_le_bytes(bytes(memory, pointer, 0x620)?),
+                i64::from_le_bytes(bytes(memory, stat, 0x120)?),
+                i64::from_le_bytes(bytes(memory, base, 0x0331_97d0)?),
+            ],
+            organisation: current[1],
+            experience: current[2],
+            entrenchment: entrenchment[0],
+            entrenchment_cap: entrenchment[1],
+            retreat: bytes::<1>(memory, pointer, carmy::RETREAT)?[0],
+            stat_values: values(&bytes::<40>(memory, stat, csub_unit_definition::DEFENSE)?),
+            max_organisation: maxima[0],
+            max_strength: maxima[1],
+            armour: armour[0],
+            piercing: armour[1],
+            air_attack: i64::from_le_bytes(bytes(memory, stat, AIR_ATTACK)?),
+            reconnaissance: i64::from_le_bytes(bytes(memory, stat, 0xd0)?),
+            initiative: i64::from_le_bytes(bytes(memory, stat, 0xe0)?),
+            commander,
+            scales: values(&bytes::<32>(memory, pointer, cunit::ATTACK_ACCUMULATOR)?),
+        };
+        if bytes::<8>(memory, pointer, 0)? != identity
+            || bytes::<8>(memory, pointer, cunit::HANDLE)? != handle
+            || bytes::<8>(memory, pointer, cunit::STAT_BLOCK)? != stat_pointer
+            || bytes::<8>(memory, stat, 0)? != stat_identity
+            || bytes::<8>(memory, pointer, carmy::ORDERS_GROUP)? != group_pointer
+            || self::commander(memory, base, group)? != commander
+        {
+            return Err("land combat division identity changed");
+        }
+        Ok(row)
+    }
+
+    #[test]
+    fn stats_scatter_matches_scalar_values_every_fault_and_changed_witness() {
+        let mut source = context_fixture();
+        source.u64(0x0331_97d0, i64::MIN as u64);
+        source.u64(0x10c0, 0xe000);
+        source.u64(0xe000, crate::corders_group::VTABLE_RVA as u64);
+        source.u64(0xe008, 1_u64 << 32 | 53);
+        source.u64(0xe088, 0xf000);
+        source.u64(0xf000, crate::carmy_leader::VTABLE_RVA as u64);
+        source.u64(0xf008, 77_u64 << 32 | 4713);
+        for (index, (address, count)) in [
+            (0x1420, 3),
+            (0x1458, 2),
+            (0x2280, 2),
+            (0x2298, 2),
+            (0x1468, 1),
+            (0x1620, 1),
+            (0x2120, 1),
+            (0x20a8, 5),
+            (0x2220, 1),
+            (0x20d0, 1),
+            (0x20e0, 1),
+            (0x1000 + cunit::ATTACK_ACCUMULATOR, 4),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for lane in 0..count {
+                source.u64(
+                    address + lane * 8,
+                    (i64::MIN + index as i64 * 31 + lane as i64) as u64,
+                );
+            }
+        }
+        source.put(0x124c, &[0xff]);
+        let expected = Observed::new(&source);
+        let actual = Observed::new(&source);
+        let row = scalar_stats(&expected, 0, 0x1000, 0x1234_0000_0033).unwrap();
+        assert_eq!(capture_stats(&actual, 0, 0x1000, row.division), Ok(row));
+        assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
+        assert_eq!(
+            *actual.scatters.borrow(),
+            [
+                vec![
+                    (0x1420, 24),
+                    (0x1458, 16),
+                    (0x2280, 16),
+                    (0x2298, 16),
+                    (0x10c0, 8)
+                ],
+                vec![
+                    (0x1468, 8),
+                    (0x1620, 8),
+                    (0x2120, 8),
+                    (0x0331_97d0, 8),
+                    (0x124c, 1),
+                    (0x20a8, 40),
+                    (0x2220, 8),
+                    (0x20d0, 8),
+                    (0x20e0, 8),
+                    (0x1000 + cunit::ATTACK_ACCUMULATOR, 32)
+                ],
+            ]
+        );
+        let trace = expected.reads.into_inner();
+        for ordinal in 0..trace.len() {
+            for change in [false, true] {
+                let mut expected = Observed::new(&source);
+                let mut actual = Observed::new(&source);
+                if change {
+                    expected.change = Some((ordinal, 0));
+                    actual.change = expected.change;
+                } else {
+                    expected.fault = Some(ordinal);
+                    actual.fault = expected.fault;
+                }
+                assert_eq!(
+                    capture_stats(&actual, 0, 0x1000, row.division),
+                    scalar_stats(&expected, 0, 0x1000, row.division),
+                    "ordinal {ordinal}, change {change}"
+                );
+                assert_eq!(
+                    *actual.reads.borrow(),
+                    *expected.reads.borrow(),
+                    "ordinal {ordinal}"
+                );
+                if !change {
+                    assert_eq!(*actual.reads.borrow(), trace[..=ordinal]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stats_preserve_identity_module_overflow_order_and_later_address_failure() {
+        let mut source = context_fixture();
+        for fault in [None, Some(0)] {
+            let mut actual = Observed::new(&source);
+            actual.fault = fault;
+            let result = capture_stats(&actual, usize::MAX, 0x1000, 0x1234_0000_0033);
+            assert_eq!(
+                result,
+                Err(if fault.is_some() {
+                    "land combat division inputs unreadable"
+                } else {
+                    "land combat division identity mismatch"
+                })
+            );
+            assert_eq!(*actual.reads.borrow(), [(0x1000, 8)]);
+            assert!(actual.scatters.borrow().is_empty());
+        }
+        let stat = usize::MAX - 0x290;
+        source.u64(0x1138, stat as u64);
+        source.u64(stat, csub_unit_definition::VTABLE_RVA as u64);
+        source.put(stat + 0x280, &[0x31; 16]);
+        let actual = Observed::new(&source);
+        let expected = Observed::new(&source);
+        assert_eq!(
+            capture_stats(&actual, 0, 0x1000, 0x1234_0000_0033),
+            scalar_stats(&expected, 0, 0x1000, 0x1234_0000_0033)
+        );
+        assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
+        assert_eq!(actual.reads.borrow().last(), Some(&(stat + 0x280, 16)));
+        assert!(!actual.reads.borrow().contains(&(0x10c0, 8)));
+    }
+
+    #[test]
+    fn input_scatter_keeps_partial_failure_empty_duplicates_and_address_error_prefix() {
+        let source = SliceMemory {
+            base: 0x1000,
+            bytes: &[1, 2, 3, 4, 5, 6, 7, 8],
+        };
+        for fault in [None, Some(0), Some(1)] {
+            let mut memory = Observed::new(&source);
+            memory.fault = fault;
+            let (mut first, mut duplicate, mut later) = ([0xa5; 8], [0xa5; 8], [0xa5; 8]);
+            let result = copy_input_spans(
+                &memory,
+                [
+                    Ok(0x1000),
+                    Err("empty address"),
+                    Ok(0x1000),
+                    Err("late address"),
+                ],
+                &mut [&mut first, &mut [], &mut duplicate, &mut later],
+            );
+            assert_eq!(
+                result,
+                Err(if fault.is_some() {
+                    "land combat division inputs unreadable"
+                } else {
+                    "late address"
+                })
+            );
+            assert_eq!(later, [0xa5; 8]);
+            if let Some(ordinal) = fault {
+                let failed = if ordinal == 0 { first } else { duplicate };
+                assert_eq!(failed, [0xed, 0xed, 0xed, 0xed, 0xa5, 0xa5, 0xa5, 0xa5]);
+                if ordinal == 0 {
+                    assert_eq!(duplicate, [0xa5; 8]);
+                }
+            } else {
+                assert_eq!(first, [1, 2, 3, 4, 5, 6, 7, 8]);
+                assert_eq!(duplicate, first);
+            }
+            assert_eq!(memory.reads.borrow().len(), fault.map_or(2, |i| i + 1));
+        }
+    }
+
+    #[test]
+    fn context_groups_keep_all_bytes_fault_prefixes_and_terminal_metadata_checks() {
+        use crate::modifier_definition as md;
+        let source = context_fixture();
+        let baseline = Observed::new(&source);
+        let mut terms = [WidthTerm::default(); 2];
+        let row =
+            capture_context(&baseline, 0, 0x5000, 0x1000, 0x1234_0000_0033, &mut terms).unwrap();
+        assert_eq!(row.defines, [1, 2, 3, 4, 5, 6, 7, 8]);
+        let metadata: Vec<_> = CONTEXT_MODIFIER_KEYS
+            .map(|key| (0x10000 + key as usize * md::STRIDE + md::FLAGS, 12))
+            .into();
+        let defines: Vec<_> = CONTEXT_DEFINE_RVAS.map(|p| (p, 8)).into();
+        assert!(baseline.scatters.borrow().contains(&metadata));
+        assert!(baseline.scatters.borrow().contains(&defines));
+        let trace = baseline.reads.into_inner();
+        assert_eq!(trace.len(), 70);
+        assert_eq!(trace.iter().map(|(_, len)| len).sum::<usize>(), 704);
+        for group in [&metadata, &defines] {
+            let start = trace
+                .windows(group.len())
+                .position(|p| p == group.as_slice())
+                .unwrap();
+            for ordinal in start..start + group.len() {
+                let mut memory = Observed::new(&source);
+                memory.fault = Some(ordinal);
+                let mut out = [WidthTerm::default(); 2];
+                assert_eq!(
+                    capture_context(&memory, 0, 0x5000, 0x1000, 0x1234_0000_0033, &mut out),
+                    Err("land combat division inputs unreadable")
+                );
+                assert_eq!(*memory.reads.borrow(), trace[..=ordinal]);
+                assert_eq!(out, [WidthTerm::default(); 2]);
+            }
+        }
+        for span in &metadata {
+            let ordinal = trace.iter().rposition(|p| p == span).unwrap();
+            let mut memory = Observed::new(&source);
+            // The middle word is not projected but remains part of the witness.
+            memory.change = Some((ordinal, 4));
+            assert_eq!(
+                capture_context(&memory, 0, 0x5000, 0x1000, 0x1234_0000_0033, &mut terms),
+                Err("land combat context metadata changed")
+            );
+            assert_eq!(*memory.reads.borrow(), trace[..=ordinal]);
+        }
+    }
+
+    #[test]
+    fn context_metadata_address_errors_follow_readable_prefix_and_earlier_fault() {
+        use crate::modifier_definition as md;
+        let second_offset = CONTEXT_MODIFIER_KEYS[1] as usize * md::STRIDE;
+        for (table, reason) in [
+            (
+                usize::MAX - second_offset + 1,
+                "land combat context metadata address overflow",
+            ),
+            (
+                usize::MAX - second_offset - md::FLAGS + 1,
+                "land combat division inputs unreadable",
+            ),
+            (
+                usize::MAX - second_offset - md::FLAGS - 5,
+                "land combat division inputs unreadable",
+            ),
+        ] {
+            let mut source = context_fixture();
+            source.u64(md::TABLE_RVA, table as u64);
+            let first = table + CONTEXT_MODIFIER_KEYS[0] as usize * md::STRIDE + md::FLAGS;
+            source.put(first, &[0x17; 12]);
+            let memory = Observed::new(&source);
+            assert_eq!(
+                capture_context(&memory, 0, 0x5000, 0x1000, 0x1234_0000_0033, &mut []),
+                Err(reason)
+            );
+            let trace = memory.reads.into_inner();
+            assert_eq!(trace.last(), Some(&(first, 12)));
+            let mut failed = Observed::new(&source);
+            failed.fault = Some(trace.len() - 1);
+            assert_eq!(
+                capture_context(&failed, 0, 0x5000, 0x1000, 0x1234_0000_0033, &mut []),
+                Err("land combat division inputs unreadable")
+            );
+            assert_eq!(*failed.reads.borrow(), trace);
+        }
+    }
 
     struct Counted<'a> {
         inner: SliceMemory<'a>,
@@ -703,7 +1186,7 @@ mod tests {
         assert_eq!(memory.copies.get(), 36);
         assert_eq!(memory.bytes.get(), 505);
         println!(
-            "division scalar/name plus two modifiers: {} guarded copies / {} bytes",
+            "division stats/name plus two modifiers: {} logical copy observations / {} bytes",
             memory.copies.get(),
             memory.bytes.get()
         );

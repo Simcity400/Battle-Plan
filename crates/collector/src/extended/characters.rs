@@ -1449,7 +1449,7 @@ impl TraitDefinitions {
                 .ok_or("unit leader address overflow")?;
             let (starts, completed) = self
                 .log
-                .take_scattered(
+                .take_scattered_prefetched(
                     memory,
                     [
                         address,
@@ -1598,24 +1598,58 @@ impl TraitDefinitions {
 
     fn seal(&mut self, memory: &impl Memory) -> [Option<&'static str>; 2] {
         let mut terminal = [None; 2];
-        for definition in &self.entries {
-            if definition.error.is_some() || definition.users == 0 {
-                continue;
+        let mut pending = self
+            .entries
+            .iter()
+            .filter(|definition| definition.error.is_none() && definition.users != 0)
+            .flat_map(|definition| {
+                definition
+                    .header
+                    .clone()
+                    .chain(definition.token_spans.clone())
+                    .enumerate()
+                    .filter_map(move |(position, span_index)| {
+                        let mask = if position > definition.header.len() {
+                            definition.full_users
+                        } else {
+                            definition.users
+                        };
+                        (mask != 0).then_some((span_index, mask))
+                    })
+            });
+        loop {
+            let chunk: [Option<(usize, u32)>; 4] = std::array::from_fn(|_| pending.next());
+            if chunk[0].is_none() {
+                break;
             }
-            for (position, span_index) in definition
-                .header
-                .clone()
-                .chain(definition.token_spans.clone())
-                .enumerate()
-            {
-                let mask = if position > definition.header.len() {
-                    definition.full_users
-                } else {
-                    definition.users
-                };
-                if mask == 0 {
-                    continue;
+            // Hint each admitted occurrence once, including repeated header
+            // witnesses from token upgrades. Capacity only bounds the hints;
+            // the scalar takes below retain all failure and growth decisions.
+            if !self.witness.overflowed {
+                let mut room = self.witness.spans.capacity() - self.witness.spans.len();
+                let mut end = self.witness.bytes.len();
+                for &(span_index, _) in chunk.iter().flatten() {
+                    let span = &self.log.spans[span_index];
+                    let len = span.len as usize;
+                    if len == 0 {
+                        continue;
+                    }
+                    if room == 0 {
+                        break;
+                    }
+                    let Some(next) = end.checked_add(len).filter(|&next| {
+                        next <= self.witness.bytes.capacity() && next <= u32::MAX as usize
+                    }) else {
+                        break;
+                    };
+                    if span.addr != 0 && crate::raw::is_canonical_range(span.addr, len) {
+                        engine::prefetch::span(span.addr, len);
+                    }
+                    room -= 1;
+                    end = next;
                 }
+            }
+            for (span_index, mask) in chunk.into_iter().flatten() {
                 let span = &self.log.spans[span_index];
                 let fresh = self
                     .witness
@@ -2570,10 +2604,12 @@ fn take_fixed_fields<const M: usize, const CONTINUE: bool>(
         }
         return starts;
     }
-    let Some((copied, completed)) =
-        job.log
-            .take_scattered(memory, addresses.map(Option::unwrap), lengths, [mask; M])
-    else {
+    let Some((copied, completed)) = job.log.take_scattered_prefetched(
+        memory,
+        addresses.map(Option::unwrap),
+        lengths,
+        [mask; M],
+    ) else {
         *dead = true;
         return starts;
     };
@@ -2728,7 +2764,7 @@ fn take_advisor_fields<const M: usize>(
         }
         return Some(starts);
     }
-    match job.log.take_scattered(
+    match job.log.take_scattered_prefetched(
         memory,
         addresses.map(Option::unwrap),
         lengths,
@@ -5145,6 +5181,7 @@ mod tests {
         guards: Cell<usize>,
         spans: Cell<usize>,
         bytes: Cell<usize>,
+        prefetched: std::cell::RefCell<Vec<Vec<(usize, usize)>>>,
     }
 
     impl<'a> CostMemory<'a> {
@@ -5157,6 +5194,7 @@ mod tests {
                 guards: Cell::new(0),
                 spans: Cell::new(0),
                 bytes: Cell::new(0),
+                prefetched: Default::default(),
             }
         }
 
@@ -5194,6 +5232,105 @@ mod tests {
             }
             M
         }
+
+        fn copy_scattered_prefetched<const M: usize>(
+            &self,
+            addresses: [usize; M],
+            outputs: &mut [&mut [u8]; M],
+        ) -> usize {
+            self.prefetched.borrow_mut().push(
+                addresses
+                    .iter()
+                    .zip(outputs.iter())
+                    .map(|(&address, output)| (address, output.len()))
+                    .collect(),
+            );
+            self.copy_scattered(addresses, outputs)
+        }
+    }
+
+    #[test]
+    fn character_nested_prefetch_selects_fixed_groups_without_rehinting_main_or_heap_scatter() {
+        let mut bytes = fixture();
+        let heap = 0x8200;
+        pointer(&mut bytes, DEFINITION + cunit_leader_trait::TOKEN, heap);
+        put(
+            &mut bytes,
+            DEFINITION + cunit_leader_trait::TOKEN + msvc_string::LENGTH,
+            17_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            DEFINITION + cunit_leader_trait::TOKEN + msvc_string::CAPACITY,
+            31_u64.to_le_bytes(),
+        );
+        bytes[heap..heap + 17].fill(0xff);
+        let source = CostMemory::new(&bytes);
+        let mut job = small_wave_job();
+        assert!(copy_view(&mut job, &source, IMAGE, ADDRESS + CHARACTERS[0]).is_some());
+        assert!(source.prefetched.borrow().is_empty());
+        let definition = job
+            .traits
+            .definitions
+            .header(&source, IMAGE, ADDRESS + DEFINITION, 0)
+            .unwrap();
+        job.traits.definitions.result(definition).unwrap();
+        job.traits
+            .definitions
+            .consume(&source, definition, 0, true)
+            .unwrap();
+        job.traits.definitions.result(definition).unwrap();
+        assert_eq!(source.prefetched.borrow().len(), 1);
+
+        let node = [0x1000, 0x1040, 0x1080].map(|offset| ADDRESS + offset);
+        let role = [0x1100, 0x1140, 0x1180, 0x11c0].map(|offset| ADDRESS + offset);
+        let unit = [
+            cunit_leader::CHARACTER_TYPE,
+            cunit_leader::CATEGORY,
+            cunit_leader::EXPERIENCE,
+            cunit_leader::SKILL,
+        ]
+        .map(|offset| ADDRESS + UNITS[0] + offset);
+        let mut dead = false;
+        assert!(
+            take_advisor_fields(&mut job, &source, node.map(Some), [8, 32, 4], &mut dead).is_some()
+        );
+        assert!(
+            take_advisor_fields(&mut job, &source, role.map(Some), [8, 8, 32, 32], &mut dead)
+                .is_some()
+        );
+        assert!(
+            take_fixed_fields::<4, false>(
+                &mut job,
+                &source,
+                unit.map(Some),
+                [8, 4, 8, 8],
+                MASK_UNITS,
+                &mut dead,
+            )
+            .iter()
+            .all(Option::is_some)
+        );
+        assert!(!dead);
+        assert_eq!(
+            *source.prefetched.borrow(),
+            [
+                vec![
+                    (ADDRESS + DEFINITION, 12),
+                    (ADDRESS + DEFINITION + cunit_leader_trait::ORDINAL, 4),
+                    (ADDRESS + DEFINITION + cunit_leader_trait::TOKEN, 32),
+                ],
+                node.into_iter().zip([8, 32, 4]).collect(),
+                role.into_iter().zip([8, 8, 32, 32]).collect(),
+                unit.into_iter().zip([8, 4, 8, 8]).collect(),
+            ]
+        );
+        // All six groups already used one guard each. Hints preserve every
+        // observation and byte, including the ordinary view and heap groups.
+        assert_eq!(
+            (source.guards.get(), source.spans.get(), source.bytes.get()),
+            (6, 23, 346)
+        );
     }
 
     #[test]
@@ -5385,6 +5522,168 @@ mod tests {
         assert_eq!(report.matched, [true, true, true, true, true, false]);
         let direct = characters_test_kit::direct(&source, &capacities);
         assert_wave_rows(&captured, &direct);
+    }
+
+    #[test]
+    fn trait_seal_lookahead_keeps_repeated_masks_fault_continuation_and_capacity() {
+        let mut bytes = vec![0; 0x5000];
+        let definitions = [0x100, 0x1100, 0x2100, 0x3100];
+        let heap = 0x4500;
+        for (index, &definition) in definitions.iter().enumerate() {
+            put(
+                &mut bytes,
+                definition,
+                ((IMAGE + cunit_leader_trait::VTABLE_RVA) as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                definition + cunit_leader_trait::ORDINAL,
+                (index as i32).to_le_bytes(),
+            );
+            literal(&mut bytes, definition + cunit_leader_trait::TOKEN, b"");
+        }
+        pointer(&mut bytes, definitions[0] + cunit_leader_trait::TOKEN, heap);
+        put(
+            &mut bytes,
+            definitions[0] + cunit_leader_trait::TOKEN + msvc_string::LENGTH,
+            17_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            definitions[0] + cunit_leader_trait::TOKEN + msvc_string::CAPACITY,
+            31_u64.to_le_bytes(),
+        );
+        bytes[heap..heap + 17].fill(0xff);
+        bytes[definitions[3]] ^= 1;
+
+        let header = |index: usize, mask| {
+            [
+                (ADDRESS + definitions[index], 12, mask),
+                (
+                    ADDRESS + definitions[index] + cunit_leader_trait::ORDINAL,
+                    4,
+                    mask,
+                ),
+                (
+                    ADDRESS + definitions[index] + cunit_leader_trait::TOKEN,
+                    32,
+                    mask,
+                ),
+            ]
+        };
+        let mut expected = header(0, 1).to_vec();
+        expected.push((ADDRESS + heap + 17, 1, 1));
+        expected.extend(header(0, 2));
+        expected.extend([(ADDRESS + heap + 17, 1, 2), (ADDRESS + heap, 17, 2)]);
+        expected.extend(header(1, 3));
+        assert_eq!(expected.len(), 12);
+        assert_eq!(expected.iter().map(|&(_, len, _)| len).sum::<usize>(), 163);
+
+        let mut cases = vec![(None, None)];
+        for &(address, len, _) in &expected {
+            cases.push((Some(address), None));
+            cases.push((None, Some((address, len))));
+        }
+        for (span_room, byte_room) in [
+            (12, 163),
+            (0, 163),
+            (3, 163),
+            (4, 163),
+            (5, 163),
+            (11, 163),
+            (12, 0),
+            (12, 48),
+            (12, 49),
+            (12, 114),
+            (12, 162),
+        ] {
+            for &(blocked, changing) in &cases {
+                let mut actual = TraitDefinitions {
+                    entries: Vec::with_capacity(8),
+                    by_address: std::collections::HashMap::with_capacity(8),
+                    log: crate::raw::RawLog::new(32, 512),
+                    witness: crate::raw::RawLog::new(span_room, byte_room),
+                    ..TraitDefinitions::default()
+                };
+                let source = characters_test_kit::memory(&bytes);
+                let limited = actual
+                    .header(&source, IMAGE, ADDRESS + definitions[0], 0)
+                    .unwrap();
+                actual.consume(&source, limited, 0, false).unwrap();
+                let upgraded = actual.consume(&source, limited, 1, true).unwrap();
+                assert_ne!(limited, upgraded);
+                let inline = actual
+                    .header(&source, IMAGE, ADDRESS + definitions[1], 0)
+                    .unwrap();
+                actual.consume(&source, inline, 0, true).unwrap();
+                actual.consume(&source, inline, 1, false).unwrap();
+                // Successful but unused and failed definitions add no seal reads.
+                actual
+                    .header(&source, IMAGE, ADDRESS + definitions[2], 0)
+                    .unwrap();
+                let failed = actual
+                    .header(&source, IMAGE, ADDRESS + definitions[3], 1)
+                    .unwrap();
+                assert_eq!(
+                    actual.result(failed),
+                    Err("unit leader trait vtable mismatch")
+                );
+
+                let observed = || {
+                    let mut source = WaveMemory::new(&bytes, blocked);
+                    source.changing = changing;
+                    source
+                };
+                let source = observed();
+                let scalar = observed();
+                let terminal = actual.seal(&source);
+                let mut reference = crate::raw::RawLog::<2>::new(span_room, byte_room);
+                let mut failures = [None; 2];
+                for &(address, len, mask) in &expected {
+                    let equal = reference
+                        .take(&scalar, address, len, mask)
+                        .is_some_and(|start| {
+                            reference.bytes[start..start + len]
+                                == bytes[address - ADDRESS..address - ADDRESS + len]
+                        });
+                    if !equal {
+                        for (table, failure) in failures.iter_mut().enumerate() {
+                            if mask & (1 << table) != 0 {
+                                *failure = Some(
+                                    "character trait definition changed or unreadable at seal",
+                                );
+                            }
+                        }
+                    }
+                }
+                assert_eq!(terminal, failures);
+                assert_eq!(*source.reads.borrow(), *scalar.reads.borrow());
+                assert_eq!(actual.witness.spans, reference.spans);
+                assert_eq!(actual.witness.bytes, reference.bytes);
+                assert_eq!(actual.witness.fault, reference.fault);
+                assert_eq!(actual.witness.raw_bytes, reference.raw_bytes);
+                assert_eq!(actual.witness.overflowed, reference.overflowed);
+                assert_eq!(actual.witness.grow_for_next(), reference.grow_for_next());
+                if (span_room, byte_room) == (12, 163) && blocked.is_none() && changing.is_none() {
+                    assert_eq!(terminal, [None; 2]);
+                    assert_eq!(actual.witness.raw_bytes, [97, 66]);
+                    assert_eq!(source.reads.borrow().len(), 12);
+                    assert_eq!(
+                        actual
+                            .witness
+                            .spans
+                            .iter()
+                            .map(|span| span.mask)
+                            .collect::<Vec<_>>(),
+                        [1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3]
+                    );
+                }
+                actual.witness.grow();
+                reference.grow();
+                assert_eq!(actual.witness.spans.capacity(), reference.spans.capacity());
+                assert_eq!(actual.witness.bytes.capacity(), reference.bytes.capacity());
+            }
+        }
     }
 
     #[test]
@@ -5596,6 +5895,7 @@ mod tests {
         failed_call: Option<usize>,
         calls: std::cell::RefCell<Vec<(usize, usize)>>,
         guards: Cell<usize>,
+        prefetched: Cell<usize>,
     }
 
     impl FixedFieldMemory {
@@ -5604,6 +5904,7 @@ mod tests {
                 failed_call,
                 calls: Default::default(),
                 guards: Cell::new(0),
+                prefetched: Cell::new(0),
             }
         }
 
@@ -5642,6 +5943,15 @@ mod tests {
                 }
             }
             M
+        }
+
+        fn copy_scattered_prefetched<const M: usize>(
+            &self,
+            addresses: [usize; M],
+            outputs: &mut [&mut [u8]; M],
+        ) -> usize {
+            self.prefetched.set(self.prefetched.get() + 1);
+            self.copy_scattered(addresses, outputs)
         }
     }
 
@@ -5722,6 +6032,16 @@ mod tests {
         assert_eq!(actual.log.has_bulk, expected.log.has_bulk);
         assert_eq!(actual.log.grow_for_next(), expected.log.grow_for_next());
         assert_eq!(*memory.calls.borrow(), *scalar_memory.calls.borrow());
+        assert_eq!(
+            memory.prefetched.get(),
+            usize::from(
+                addresses.iter().all(Option::is_some)
+                    && lengths.iter().filter(|&&len| len != 0).count() <= span_room
+                    && lengths.iter().sum::<usize>() <= byte_room
+            ),
+            "only a whole admitted group selects the prefetched provider"
+        );
+        assert_eq!(scalar_memory.prefetched.get(), 0);
         assert_eq!(actual.log.spans.capacity(), 1 + span_room);
         assert_eq!(actual.log.bytes.capacity(), 3 + byte_room);
         // Also compare authoritative repeated-key replay, including sticky

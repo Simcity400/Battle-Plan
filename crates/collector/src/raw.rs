@@ -740,6 +740,31 @@ impl<const N: usize> RawLog<N> {
         lengths: [usize; M],
         masks: [u32; M],
     ) -> Option<([usize; M], usize)> {
+        self.take_scattered_inner::<M, false>(memory, addresses, lengths, masks)
+    }
+
+    /// The same ordered capture with advisory hints for bounded independent
+    /// spans. Admission, planning eligibility and failure accounting are shared
+    /// with `take_scattered`; a short copy must not be retried.
+    #[inline(always)]
+    pub fn take_scattered_prefetched<const M: usize>(
+        &mut self,
+        memory: &impl Memory,
+        addresses: [usize; M],
+        lengths: [usize; M],
+        masks: [u32; M],
+    ) -> Option<([usize; M], usize)> {
+        self.take_scattered_inner::<M, true>(memory, addresses, lengths, masks)
+    }
+
+    #[inline(always)]
+    fn take_scattered_inner<const M: usize, const PREFETCH: bool>(
+        &mut self,
+        memory: &impl Memory,
+        addresses: [usize; M],
+        lengths: [usize; M],
+        masks: [u32; M],
+    ) -> Option<([usize; M], usize)> {
         if !self.allow_unplanned_operation() {
             return None;
         }
@@ -782,7 +807,11 @@ impl<const N: usize> RawLog<N> {
                     0
                 }
             });
-            memory.copy_scattered(guarded, &mut destinations)
+            if PREFETCH {
+                memory.copy_scattered_prefetched(guarded, &mut destinations)
+            } else {
+                memory.copy_scattered(guarded, &mut destinations)
+            }
         };
         debug_assert!(completed <= M);
         self.bytes.used = if completed == M {
@@ -1318,17 +1347,19 @@ mod read_plan_tests {
 
     #[test]
     fn untracked_slice_escape_and_non_scalar_acquisition_only_disable_optimization() {
-        for escape in [false, true] {
+        for operation in 0..3 {
             let mut log = log();
             let first = Script::new(vec![(0x10, Some(vec![1])), (0x20, Some(vec![2]))]);
             assert!(!log.begin_planned_capture(&first, [0; 4]));
             log.take(&first, 0x10, 1, 1);
-            if escape {
+            if operation == 0 {
                 let escaped: &[u8] = &log.bytes;
                 assert_eq!(escaped, &[1]);
                 log.take(&first, 0x20, 1, 2);
-            } else {
+            } else if operation == 1 {
                 log.take_scattered(&first, [0x20], [1], [2]);
+            } else {
+                log.take_scattered_prefetched(&first, [0x20], [1], [2]);
             }
             log.finish_planned_capture();
             first.complete();
@@ -1338,6 +1369,63 @@ mod read_plan_tests {
             assert_eq!(&log.bytes[..], &[1, 2]);
             log.prepare_read_plan();
             assert!(log.plan.compiled.is_none());
+        }
+    }
+
+    #[test]
+    fn prefetched_scatter_obeys_pending_and_consumed_plan_prefix_gates() {
+        for prefetched in [false, true] {
+            for failed in [false, true] {
+                for consume_prefix in [false, true] {
+                    let mut log = log();
+                    let first = Script::new(vec![(0x10, Some(vec![1]))]);
+                    assert!(!log.begin_planned_capture(&first, [0; 4]));
+                    assert_eq!(log.take(&first, 0x10, 1, 1), Some(0));
+                    assert_eq!(log.bytes[0], 1);
+                    log.finish_planned_capture();
+                    first.complete();
+                    log.prepare_read_plan();
+                    assert!(log.plan.compiled.is_some());
+                    log.clear();
+
+                    let mut reads = vec![(0x10, (!failed).then(|| vec![2]))];
+                    if consume_prefix {
+                        reads.push((0x20, Some(vec![7])));
+                    }
+                    let changed = Script::new(reads);
+                    assert!(!log.begin_planned_capture(&changed, [0; 4]));
+                    assert_eq!(log.plan.prefix_len, 1);
+                    if consume_prefix {
+                        assert_eq!(log.take(&changed, 0x10, 1, 1), (!failed).then_some(0));
+                    }
+                    let result = if prefetched {
+                        log.take_scattered_prefetched(&changed, [0x20], [1], [2])
+                    } else {
+                        log.take_scattered(&changed, [0x20], [1], [2])
+                    };
+                    assert_eq!(
+                        result,
+                        consume_prefix.then_some(([usize::from(!failed)], 1))
+                    );
+                    assert!(log.plan.retire);
+                    assert!(!log.bytes.observations.as_ref().unwrap().borrow().eligible);
+                    assert_eq!(log.planned_capture_failed(), !consume_prefix);
+                    if consume_prefix {
+                        assert_eq!(log.fault, [failed, false]);
+                        assert_eq!(log.raw_bytes, [u64::from(!failed), 1]);
+                        assert_eq!(log.bytes.last(), Some(&7));
+                    } else {
+                        assert_eq!(log.fault, [true; 2]);
+                        assert!(log.spans.is_empty());
+                        assert!(log.bytes.is_empty());
+                        assert_eq!(log.take(&changed, 0x20, 1, 2), None);
+                    }
+                    log.finish_planned_capture();
+                    changed.complete();
+                    log.prepare_read_plan();
+                    assert!(log.plan.compiled.is_none());
+                }
+            }
         }
     }
 }
@@ -2688,6 +2776,183 @@ mod tests {
         assert_raw_specialization_equal(&actual, &expected);
         assert!(actual_source.calls.borrow().is_empty());
         assert!(expected_source.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn prefetched_scattered_matches_frozen_faults_masks_duplicates_and_dirty_suffixes() {
+        let lengths = [0, 8, 12, 8, 1, 32, 0, 8];
+        let masks = [0, 3, 2, 4, 0, 5, 1, 2];
+        let original = [
+            usize::MAX,
+            0x1000,
+            0x1010,
+            0x1020,
+            0x1030,
+            0x1040,
+            0,
+            0x1000,
+        ];
+        for replaced in 0..=original.len() {
+            for replacement in [0, 0x0000_8000_0000_0000, usize::MAX - 3] {
+                let mut addresses = original;
+                if replaced < addresses.len() {
+                    addresses[replaced] = replacement;
+                }
+                for fail in 0..=6 {
+                    let fail_call = (fail < 6).then_some(fail);
+                    let source = RawSpecializationSource {
+                        fail_call,
+                        ..Default::default()
+                    };
+                    let reference = RawSpecializationSource {
+                        fail_call,
+                        ..Default::default()
+                    };
+                    let mut actual = raw_specialization_log(16, 128);
+                    let mut expected = raw_specialization_log(16, 128);
+                    assert_eq!(
+                        actual.take_scattered_prefetched(&source, addresses, lengths, masks),
+                        raw_specialization_frozen_scattered(
+                            &mut expected,
+                            &reference,
+                            addresses,
+                            lengths,
+                            masks,
+                        )
+                    );
+                    assert_raw_specialization_equal(&actual, &expected);
+                    assert_eq!(*source.calls.borrow(), *reference.calls.borrow());
+                    assert!(actual.bytes.get(actual.bytes.len()).is_none());
+                    // A later independent field overwrites only its new span;
+                    // dirty failed bytes and untouched suffixes stay unpublished.
+                    let resumed = RawSpecializationSource::default();
+                    let resumed_reference = RawSpecializationSource::default();
+                    assert_eq!(
+                        actual.take(&resumed, 0x2000, 4, 1),
+                        expected.take(&resumed_reference, 0x2000, 4, 1)
+                    );
+                    assert_raw_specialization_equal(&actual, &expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prefetched_scattered_preserves_capacity_empty_and_length_admission() {
+        for span_capacity in 0..=6 {
+            for byte_capacity in 0..=65 {
+                let mut actual = raw_specialization_log(span_capacity, byte_capacity);
+                let mut expected = raw_specialization_log(span_capacity, byte_capacity);
+                let source = RawSpecializationSource::default();
+                let reference = RawSpecializationSource::default();
+                assert_eq!(
+                    actual.take_scattered_prefetched(
+                        &source,
+                        [0x1000, 0x1010, 0x1020, 0x1030, 0x1040],
+                        [8, 12, 8, 1, 32],
+                        [1; 5],
+                    ),
+                    expected.take_scattered(
+                        &reference,
+                        [0x1000, 0x1010, 0x1020, 0x1030, 0x1040],
+                        [8, 12, 8, 1, 32],
+                        [1; 5],
+                    )
+                );
+                assert_raw_specialization_equal(&actual, &expected);
+                assert_eq!(*source.calls.borrow(), *reference.calls.borrow());
+                if actual.grow_for_next() {
+                    actual.grow();
+                    expected.grow();
+                    assert_raw_specialization_equal(&actual, &expected);
+                }
+            }
+        }
+        for lengths in [
+            [0, 0],
+            [1, u32::MAX as usize],
+            [u32::MAX as usize + 1, 0],
+            [8, usize::MAX],
+        ] {
+            for overflowed in [false, true] {
+                let mut actual = raw_specialization_log(2, 16);
+                let mut expected = raw_specialization_log(2, 16);
+                actual.overflowed = overflowed;
+                expected.overflowed = overflowed;
+                let source = RawSpecializationSource::default();
+                assert_eq!(
+                    actual.take_scattered_prefetched(&source, [usize::MAX; 2], lengths, [0, 3]),
+                    expected.take_scattered(&source, [usize::MAX; 2], lengths, [0, 3])
+                );
+                assert_raw_specialization_equal(&actual, &expected);
+                assert!(source.calls.borrow().is_empty());
+            }
+        }
+        let mut empty = RawLog::<1>::default();
+        let source = RawSpecializationSource::default();
+        assert_eq!(
+            empty.take_scattered_prefetched(&source, [], [], []),
+            Some(([], 0))
+        );
+        assert_eq!(
+            empty.take_scattered_prefetched(&source, [usize::MAX; 2], [0; 2], [1; 2]),
+            Some(([0; 2], 2))
+        );
+        assert!(empty.spans.is_empty());
+        assert!(empty.bytes.is_empty());
+        assert!(!empty.overflowed);
+        assert!(source.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn prefetched_scattered_selects_only_the_requested_provider_entry() {
+        #[derive(Default)]
+        struct Provider {
+            ordinary: std::cell::Cell<usize>,
+            prefetched: std::cell::Cell<usize>,
+        }
+        impl Memory for Provider {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("raw scatter must use the provider's grouped operation")
+            }
+            fn copy_scattered<const M: usize>(
+                &self,
+                addresses: [usize; M],
+                destinations: &mut [&mut [u8]; M],
+            ) -> usize {
+                self.ordinary.set(self.ordinary.get() + 1);
+                SliceMemory {
+                    base: 0x1000,
+                    bytes: &[7; 8],
+                }
+                .copy_scattered(addresses, destinations)
+            }
+            fn copy_scattered_prefetched<const M: usize>(
+                &self,
+                addresses: [usize; M],
+                destinations: &mut [&mut [u8]; M],
+            ) -> usize {
+                self.prefetched.set(self.prefetched.get() + 1);
+                SliceMemory {
+                    base: 0x1000,
+                    bytes: &[7; 8],
+                }
+                .copy_scattered(addresses, destinations)
+            }
+        }
+        let provider = Provider::default();
+        let mut log = RawLog::<1>::new(4, 16);
+        assert_eq!(
+            log.take_scattered(&provider, [0x1000, 0x1004], [4; 2], [1; 2]),
+            Some(([0, 4], 2))
+        );
+        assert_eq!((provider.ordinary.get(), provider.prefetched.get()), (1, 0));
+        assert_eq!(
+            log.take_scattered_prefetched(&provider, [0x1000, 0x1004], [4; 2], [1; 2]),
+            Some(([8, 12], 2))
+        );
+        assert_eq!((provider.ordinary.get(), provider.prefetched.get()), (1, 1));
+        assert_eq!(log.raw_bytes, [16]);
     }
 
     #[test]

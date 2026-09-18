@@ -391,6 +391,33 @@ pub trait Memory {
         N
     }
 
+    /// The same exact ordered scattered copy with advisory cache hints for its
+    /// independent source spans. Callers should supply bounded batches of fields
+    /// whose addresses are already known. Hints neither read values nor consume
+    /// guard pages; the first failed copy still leaves every later destination
+    /// untouched. No sorting, allocation, retry or retained observation occurs.
+    ///
+    /// Adapters retain their existing `copy_scattered` implementation, including
+    /// read logging and cached-source rules. LiveMemory rolls a four-span hint
+    /// window inside the native guard; adapters hint this batch before forwarding
+    /// through their own scattered-copy protocol.
+    fn copy_scattered_prefetched<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        for (&address, destination) in addresses.iter().zip(destinations.iter()) {
+            if destination.is_empty() {
+                continue;
+            }
+            if address == 0 || address.checked_add(destination.len()).is_none() {
+                break;
+            }
+            crate::prefetch::span(address, destination.len());
+        }
+        self.copy_scattered(addresses, destinations)
+    }
+
     /// Gather a fixed exact layout from independently addressed records into
     /// initialized caller-owned bytes. Returns completed fields in row-major
     /// order; a failed field may be partial and later fields stay untouched.
@@ -512,6 +539,75 @@ impl LiveMemory {
     pub unsafe fn new() -> Self {
         Self(std::marker::PhantomData)
     }
+
+    #[inline(always)]
+    fn copy_scattered_inner<const N: usize, const PREFETCH: bool>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        #[derive(Clone, Copy)]
+        #[repr(C)]
+        struct Span {
+            dst: *mut u8,
+            src: *const u8,
+            len: usize,
+        }
+        unsafe extern "C" {
+            fn seh_guarded_copy_scattered(spans: *const Span, count: usize) -> usize;
+            fn seh_guarded_copy_scattered_prefetched(spans: *const Span, count: usize) -> usize;
+        }
+        // Only the validated prefix crosses the C boundary. Avoid clearing the
+        // entire metadata array before replacing that prefix, especially for
+        // large batches with an invalid address or a short populated tail.
+        let mut spans = [std::mem::MaybeUninit::<Span>::uninit(); N];
+        let mut count = 0;
+        let mut copy_count = 0;
+        for (index, (address, destination)) in addresses
+            .into_iter()
+            .zip(destinations.iter_mut())
+            .enumerate()
+        {
+            if !destination.is_empty()
+                && (address == 0
+                    || address.checked_add(destination.len()).is_none()
+                    || !is_canonical_range(address, destination.len()))
+            {
+                break;
+            }
+            spans[index].write(Span {
+                dst: destination.as_mut_ptr(),
+                src: address as *const u8,
+                len: destination.len(),
+            });
+            count = index + 1;
+            if !destination.is_empty() {
+                copy_count = count;
+            }
+        }
+        if copy_count == 0 {
+            return count;
+        }
+        // SAFETY: spans[..count] is initialized, including empty entries, and
+        // metadata and writable destinations outlive C. Both native paths copy
+        // the same exact spans in order, returning the completed prefix on a
+        // fault. The opt-in path only hints validated future spans; it performs
+        // no future loads, and hints cannot consume a guard-page exception.
+        let copied = unsafe {
+            if PREFETCH {
+                seh_guarded_copy_scattered_prefetched(spans.as_ptr().cast::<Span>(), copy_count)
+            } else {
+                seh_guarded_copy_scattered(spans.as_ptr().cast::<Span>(), copy_count)
+            }
+        };
+        if copied == copy_count {
+            // Trailing empty spans succeed without entering the C loop. Empty
+            // spans before a failure retain their original prefix positions.
+            count
+        } else {
+            copied
+        }
+    }
 }
 
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
@@ -599,62 +695,16 @@ impl Memory for LiveMemory {
         addresses: [usize; N],
         destinations: &mut [&mut [u8]; N],
     ) -> usize {
-        #[derive(Clone, Copy)]
-        #[repr(C)]
-        struct Span {
-            dst: *mut u8,
-            src: *const u8,
-            len: usize,
-        }
-        unsafe extern "C" {
-            fn seh_guarded_copy_scattered(spans: *const Span, count: usize) -> usize;
-        }
-        // Only the validated prefix crosses the C boundary. Avoid clearing the
-        // entire metadata array before replacing that prefix, especially for
-        // large batches with an invalid address or a short populated tail.
-        let mut spans = [std::mem::MaybeUninit::<Span>::uninit(); N];
-        let mut count = 0;
-        let mut copy_count = 0;
-        for (index, (address, destination)) in addresses
-            .into_iter()
-            .zip(destinations.iter_mut())
-            .enumerate()
-        {
-            if !destination.is_empty()
-                && (address == 0
-                    || address.checked_add(destination.len()).is_none()
-                    || !is_canonical_range(address, destination.len()))
-            {
-                break;
-            }
-            spans[index].write(Span {
-                dst: destination.as_mut_ptr(),
-                src: address as *const u8,
-                len: destination.len(),
-            });
-            count = index + 1;
-            if !destination.is_empty() {
-                copy_count = count;
-            }
-        }
-        if copy_count == 0 {
-            return count;
-        }
-        // SAFETY: exactly spans[..count] has been initialized above, including
-        // empty entries. MaybeUninit<Span> has Span's layout; C reads only this
-        // initialized prefix. Metadata and destinations outlive the call.
-        // C skips empty spans and catches faults only within the current span's
-        // ranges, returning the fully copied prefix. It never reads later spans
-        // after a fault; address validation also excludes the invalid suffix.
-        let copied =
-            unsafe { seh_guarded_copy_scattered(spans.as_ptr().cast::<Span>(), copy_count) };
-        if copied == copy_count {
-            // Trailing empty spans succeed without entering the C loop. Empty
-            // spans before a failure retain their original prefix positions.
-            count
-        } else {
-            copied
-        }
+        self.copy_scattered_inner::<N, false>(addresses, destinations)
+    }
+
+    #[inline(always)]
+    fn copy_scattered_prefetched<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.copy_scattered_inner::<N, true>(addresses, destinations)
     }
 
     #[inline(always)]
@@ -1417,6 +1467,121 @@ mod tests {
     }
 
     #[test]
+    fn prefetched_scattered_preserves_ordered_adapter_observations_and_failed_prefixes() {
+        fn scatter(bytes: &mut [[u8; 8]; 6]) -> [&mut [u8]; 6] {
+            let [first, empty, repeated, failed, invalid, later] = bytes;
+            [
+                first.as_mut_slice(),
+                &mut empty[..0],
+                repeated.as_mut_slice(),
+                failed.as_mut_slice(),
+                invalid.as_mut_slice(),
+                later.as_mut_slice(),
+            ]
+        }
+        for fail_at in [0, 0x1002] {
+            for invalid in [0, usize::MAX, 0x1003] {
+                let ordered = TracedMemory {
+                    calls: RefCell::new(Vec::new()),
+                    fail_at,
+                };
+                let prefetched = TracedMemory {
+                    calls: RefCell::new(Vec::new()),
+                    fail_at,
+                };
+                let addresses = [0x1001, 0, 0x1001, 0x1002, invalid, 0x1004];
+                let mut expected = [[0xa5; 8]; 6];
+                let mut actual = expected;
+                let expected_count = ordered.copy_scattered(addresses, &mut scatter(&mut expected));
+                let actual_count =
+                    prefetched.copy_scattered_prefetched(addresses, &mut scatter(&mut actual));
+                assert_eq!(actual_count, expected_count);
+                assert_eq!(actual, expected);
+                assert_eq!(*prefetched.calls.borrow(), *ordered.calls.borrow());
+            }
+        }
+    }
+
+    #[test]
+    fn prefetched_scattered_uses_the_adapters_scattered_protocol() {
+        struct ScatterOnly(std::cell::Cell<usize>);
+        impl Memory for ScatterOnly {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("the adapter's scattered path must own all observations");
+            }
+            fn copy_scattered<const N: usize>(
+                &self,
+                _: [usize; N],
+                destinations: &mut [&mut [u8]; N],
+            ) -> usize {
+                self.0.set(self.0.get() + 1);
+                for destination in destinations {
+                    destination.fill(0x6d);
+                }
+                N
+            }
+        }
+        let memory = ScatterOnly(std::cell::Cell::new(0));
+        let mut first = [0; 8];
+        let mut second = [0; 4];
+        assert_eq!(
+            memory.copy_scattered_prefetched([0x1000, 0x2000], &mut [&mut first, &mut second]),
+            2
+        );
+        assert_eq!(first, [0x6d; 8]);
+        assert_eq!(second, [0x6d; 4]);
+        assert_eq!(memory.0.get(), 1);
+    }
+
+    #[test]
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    fn native_prefetched_scattered_keeps_empty_repeated_and_invalid_prefixes() {
+        let source: [u8; 16] = std::array::from_fn(|index| index as u8);
+        // SAFETY: valid sources are immutable owned bytes; invalid sources are
+        // rejected by preflight or contained in the native exact-source guard.
+        let memory = unsafe { LiveMemory::new() };
+        for invalid in [0, usize::MAX, 1, 0x0000_8000_0000_0000] {
+            let mut empty = [];
+            let mut first = [0xa5; 8];
+            let mut repeated = [0xa5; 8];
+            let mut failed = [0xa5; 8];
+            let mut later = [0xa5; 8];
+            assert_eq!(
+                memory.copy_scattered_prefetched(
+                    [
+                        0,
+                        source.as_ptr() as usize + 1,
+                        source.as_ptr() as usize + 1,
+                        invalid,
+                        source.as_ptr() as usize
+                    ],
+                    &mut [
+                        &mut empty,
+                        &mut first,
+                        &mut repeated,
+                        &mut failed,
+                        &mut later
+                    ],
+                ),
+                3,
+            );
+            assert_eq!(first, source[1..9]);
+            assert_eq!(repeated, first);
+            assert_eq!(later, [0xa5; 8]);
+        }
+        let mut first_empty = [];
+        let mut second_empty = [];
+        assert_eq!(
+            memory.copy_scattered_prefetched(
+                [0, usize::MAX],
+                &mut [&mut first_empty, &mut second_empty]
+            ),
+            2
+        );
+        assert_eq!(memory.copy_scattered_prefetched([], &mut []), 0);
+    }
+
+    #[test]
     fn scattered_invalid_addresses_leave_the_valid_prefix_copied() {
         for invalid in [0, usize::MAX - 1] {
             let memory = TracedMemory {
@@ -1875,6 +2040,88 @@ mod tests {
             fn drop(&mut self) {
                 // SAFETY: the entire allocation belongs to this fixture.
                 unsafe { VirtualFree(self.address, 0, 0x8000) };
+            }
+        }
+
+        #[test]
+        fn prefetched_scattered_matches_native_faults_at_every_span_and_page_boundary() {
+            const ROWS: usize = 9;
+            let pages = Pages::new(ROWS * 2);
+            // SAFETY: the fixture owns all readable and deliberately protected
+            // source pages. Only the native guarded copy may dereference them.
+            let memory = unsafe { LiveMemory::new() };
+            for width in [1, 2, 4, 8, 12, 16, 24, 32, 48, 64] {
+                for offset in [0, 61, PAGE - 4] {
+                    let addresses =
+                        std::array::from_fn::<_, ROWS, _>(|row| pages.at(row * 2) + offset);
+                    for failed in 0..ROWS {
+                        let failed_page = failed * 2 + usize::from(offset + width > PAGE);
+                        for protection in [NOACCESS, READWRITE | GUARD] {
+                            pages.protect(failed_page, protection);
+                            let mut expected = [[0xa5; 64]; ROWS];
+                            let count = memory.copy_scattered(
+                                addresses,
+                                &mut expected.each_mut().map(|bytes| &mut bytes[..width]),
+                            );
+                            assert_eq!(count, failed);
+                            pages.protect(failed_page, protection);
+                            let mut actual = [[0xa5; 64]; ROWS];
+                            let count = memory.copy_scattered_prefetched(
+                                addresses,
+                                &mut actual.each_mut().map(|bytes| &mut bytes[..width]),
+                            );
+                            assert_eq!(count, failed);
+                            // Failed spans may be partial in either implementation.
+                            // Every complete prefix, padding byte and later span
+                            // must still be identical to the existing native path.
+                            actual[failed][..width].fill(0xa5);
+                            expected[failed][..width].fill(0xa5);
+                            assert_eq!(actual, expected);
+                            assert!(
+                                actual[failed + 1..]
+                                    .iter()
+                                    .flatten()
+                                    .all(|&byte| byte == 0xa5)
+                            );
+                            let observed = pages.protect(failed_page, READWRITE);
+                            assert_eq!(
+                                observed,
+                                if protection & GUARD != 0 {
+                                    READWRITE
+                                } else {
+                                    NOACCESS
+                                }
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn prefetched_scattered_future_hints_leave_guard_pages_armed() {
+            let pages = Pages::new(9);
+            let addresses = std::array::from_fn::<_, 9, _>(|row| pages.at(row) + 61);
+            // SAFETY: all sources belong to this synthetic fixture. Its page
+            // protections exercise the native guard without accessing the game.
+            let memory = unsafe { LiveMemory::new() };
+            for (failed, guarded) in [(0, 1), (0, 4), (1, 5), (4, 8)] {
+                pages.protect(failed, NOACCESS);
+                pages.protect(guarded, READWRITE | GUARD);
+                let mut output = [[0xa5; 8]; 9];
+                assert_eq!(
+                    memory.copy_scattered_prefetched(
+                        addresses,
+                        &mut output.each_mut().map(|bytes| bytes.as_mut_slice())
+                    ),
+                    failed,
+                );
+                for (row, bytes) in output[..failed].iter().enumerate() {
+                    assert_eq!(*bytes, [0x20 + row as u8; 8]);
+                }
+                assert!(output[failed..].iter().flatten().all(|&byte| byte == 0xa5));
+                assert_eq!(pages.protect(failed, READWRITE), NOACCESS);
+                assert_eq!(pages.protect(guarded, READWRITE), READWRITE | GUARD);
             }
         }
 

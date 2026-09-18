@@ -1,7 +1,8 @@
 //! The sole game-thread callback. Buffers are allocated before publication to its free queue.
 
 use crate::{
-    acquisition_jobs as acquisition, decode, extended,
+    acquisition_factions, acquisition_jobs as acquisition, acquisition_states, acquisition_wars,
+    decode, extended,
     map_capture::{MapCapacities, MapCaptured},
     roster::Roster,
     table_capture::{comparison_rows, grow_capacity},
@@ -508,6 +509,97 @@ impl Captured {
                 * size_of::<cfaction_system::MemberRow>()
             + (self.links.capacity() + self.links_second.capacity())
                 * size_of::<ccountry::LinkRow>()
+    }
+
+    pub(crate) fn take_states_request(
+        &mut self,
+        base: usize,
+        game_state: usize,
+        needed: bool,
+        flags_needed: bool,
+    ) -> acquisition_states::Request {
+        acquisition_states::Request {
+            census: acquisition::GatherRequest {
+                base,
+                game_state,
+                needed,
+                buffers: acquisition::GatherBuffers::take(
+                    &mut self.states,
+                    &mut self.states_second,
+                ),
+            },
+            flags_needed,
+            visitor: self.extended.take_state_visitor(),
+        }
+    }
+
+    pub(crate) fn restore_states_request(
+        &mut self,
+        mut request: acquisition_states::Request,
+        report: acquisition_states::Report,
+        failure: Option<&'static str>,
+    ) -> acquisition_states::Report {
+        let needed = request.census.needed;
+        let report = failure.map_or(report, |reason| {
+            request.visitor.fail_sources(reason);
+            acquisition_states::Report::failed(needed, reason)
+        });
+        request
+            .census
+            .buffers
+            .restore(&mut self.states, &mut self.states_second);
+        self.extended.restore_state_visitor(request.visitor);
+        self.states_result = report.census.result;
+        self.consistency_checked[1] = needed;
+        self.states_mismatches = if needed { report.census.mismatches } else { 0 };
+        report
+    }
+
+    pub(crate) fn take_wars_request(
+        &mut self,
+        countries: &Arc<Cache>,
+        base: usize,
+        game_state: usize,
+        needed: bool,
+        matrix_needed: bool,
+    ) -> acquisition_wars::Request {
+        acquisition_wars::Request {
+            countries: Arc::clone(countries),
+            table: acquisition::GatherRequest {
+                base,
+                game_state,
+                needed,
+                buffers: acquisition::GatherBuffers::take(&mut self.wars, &mut self.wars_second),
+            },
+            snapshot: std::mem::take(&mut self.wars_snapshot),
+            snapshot_sampled: false,
+            matrix: std::mem::take(&mut self.wars_matrix),
+            matrix_needed,
+        }
+    }
+
+    pub(crate) fn restore_wars_request(
+        &mut self,
+        request: acquisition_wars::Request,
+        report: acquisition_wars::Report,
+        failure: Option<&'static str>,
+    ) -> acquisition_wars::Report {
+        let needed = request.table.needed;
+        let report = failure.map_or(report, |reason| {
+            acquisition_wars::Report::failed(reason, request.matrix_needed)
+        });
+        request
+            .table
+            .buffers
+            .restore(&mut self.wars, &mut self.wars_second);
+        self.wars_snapshot = request.snapshot;
+        self.wars_snapshot_sampled = request.snapshot_sampled;
+        self.wars_matrix = request.matrix;
+        self.wars_result = report.table.result;
+        self.consistency_checked[3] = needed;
+        self.wars_mismatches = if needed { report.table.mismatches } else { 0 };
+        self.war_matrix_result = report.matrix;
+        report
     }
 
     /// Called only by the spool thread while it owns this buffer's queue index.
@@ -1114,7 +1206,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         let mut ts_parallel = dispatched;
         let mut ts_eta = dispatched;
         // The two halves of the parallel phase.
-        let mut inline_walk_ticks = 0i64;
+        let mut inline_walk_ns = 0u64;
         let mut noneta_join_ns = 0u64;
         if let Some(clock) = frame.clock_before {
             let force_full = unsafe { (&mut *shared.cadence.get()).force_full(&clock) };
@@ -1200,9 +1292,71 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     base: shared.base,
                     game_state: state,
                     needed: needed[PROVINCE_CHECK],
-                    provinces: std::mem::take(&mut frame.provinces),
-                    provinces_second: std::mem::take(&mut frame.provinces_second),
+                    buffers: acquisition::GatherBuffers::take(
+                        &mut frame.provinces,
+                        &mut frame.provinces_second,
+                    ),
                 }));
+            // The state visitor travels with its census. Restore it before
+            // StateFlags consumes the two source passes later in this callback.
+            let states_pending = queue!(acquisition::Job::States(frame.take_states_request(
+                shared.base,
+                state,
+                needed[1],
+                extended::Captured::needs_state_check(&extended_needed),
+            )));
+            // Both faction tables use this callback's country snapshot and
+            // retain separate second-pass windows. All six buffers return at
+            // the original factions/member collection point.
+            let factions_pending =
+                queue!(acquisition::Job::Factions(acquisition_factions::Request {
+                    countries: Arc::clone(&country_snapshot),
+                    factions: acquisition::GatherRequest {
+                        base: shared.base,
+                        game_state: state,
+                        needed: needed[4],
+                        buffers: acquisition::GatherBuffers {
+                            first: acquisition_factions::Names::take(
+                                &mut frame.factions,
+                                &mut frame.faction_names,
+                            ),
+                            second: acquisition_factions::Names::take(
+                                &mut frame.factions_second,
+                                &mut frame.faction_names_second,
+                            ),
+                        },
+                    },
+                    members: acquisition::GatherRequest {
+                        base: shared.base,
+                        game_state: state,
+                        needed: needed[5],
+                        buffers: acquisition::GatherBuffers::take(
+                            &mut frame.faction_members,
+                            &mut frame.faction_members_second,
+                        ),
+                    },
+                }));
+            let countries_pending = queue!(acquisition::Job::Countries(
+                acquisition::CountriesRequest::take(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    needed[0],
+                    &mut frame.countries,
+                    &mut frame.links,
+                    &mut frame.links_second,
+                )
+            ));
+            // Both war censuses depend only on the callback's country snapshot.
+            // Their independent window state cannot advance until publication.
+            let matrix_needed = shared.war_matrix_remaining.load(Ordering::Relaxed) != 0;
+            let wars_pending = queue!(acquisition::Job::Wars(frame.take_wars_request(
+                &country_snapshot,
+                shared.base,
+                state,
+                needed[3],
+                matrix_needed,
+            )));
             let province_unit_order_pending = queue!(acquisition::Job::ProvinceUnitOrder(
                 frame.extended.take_province_unit_order_request(
                     shared.base,
@@ -1878,30 +2032,33 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     },
                 )
             ));
-            // The contiguous game-thread typed walks: no pool join or dispatch
-            // between here and faction_members, so this whole span is the
-            // inline-walk half of the parallel phase.
+            // Keep the original collection span. Accepted pool joins in this
+            // span are already charged to noneta_join_ns; subtract those from
+            // the inline subtotal, including callback helping inside a join.
             let inline_walk_begin = qpc();
-            let begin = qpc();
-            frame.countries_result =
-                ccountry::walk(&cached, shared.base, state, &mut frame.countries);
-            frame.table_ns[2] = shared.ns(qpc() - begin);
-            let begin = qpc();
-            frame.links_result =
-                ccountry::walk_links(&cached, shared.base, state, &mut frame.links);
+            let inline_wait_begin = shared.acquisition_wait_ns.load(Ordering::Relaxed);
+            // Restore both tables at their original collection point. Service
+            // ticks remain per table; shared authentication is charged below.
+            let (countries_request, countries_report, _countries_failure) =
+                completed!(countries_pending, Countries);
+            countries_request.restore(
+                &mut frame.countries,
+                &mut frame.links,
+                &mut frame.links_second,
+            );
+            frame.countries_result = countries_report.countries;
+            frame.table_ns[2] = shared.ns(countries_report.countries_ticks);
+            frame.links_result = countries_report.links.result;
             if needed[0] {
                 frame.consistency_checked[0] = true;
-                let second =
-                    ccountry::walk_links(&cached, shared.base, state, &mut frame.links_second);
-                frame.links_mismatches = mismatches(
+                frame.links_mismatches = countries_report.links.mismatches;
+                matched[0] = full_match(
                     frame.links_result,
-                    &frame.links,
-                    second,
-                    &frame.links_second,
+                    countries_report.links.second,
+                    frame.links_mismatches,
                 );
-                matched[0] = full_match(frame.links_result, second, frame.links_mismatches);
             }
-            frame.table_ns[3] = shared.ns(qpc() - begin);
+            frame.table_ns[3] = shared.ns(countries_report.links_ticks);
             // These independent core tables do not feed the division
             // census or ETA: both authenticate their own native roots.
             // Retain the same reads/checks, now overlapping ETA acquisition.
@@ -1910,8 +2067,9 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             // is now the join wall; the read cost is on the pool (Role::Provinces).
             let (provinces_request, provinces_report, _provinces_failure) =
                 completed!(provinces_pending, Provinces);
-            frame.provinces = provinces_request.provinces;
-            frame.provinces_second = provinces_request.provinces_second;
+            provinces_request
+                .buffers
+                .restore(&mut frame.provinces, &mut frame.provinces_second);
             frame.provinces_result = provinces_report.result;
             if needed[PROVINCE_CHECK] {
                 frame.consistency_checked[PROVINCE_CHECK] = true;
@@ -1923,138 +2081,70 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 );
             }
             frame.table_ns[4] = shared.ns(qpc() - begin);
-            let begin = qpc();
-            frame.states_result =
-                cstate::walk_with(&memory, shared.base, state, &mut frame.states, |source| {
-                    frame.extended.visit_state(source, false)
-                });
-            frame.extended.finish_states(frame.states_result, false);
-            if needed[1] || extended::Captured::needs_state_check(&extended_needed) {
-                let second = cstate::walk_with(
-                    &memory,
-                    shared.base,
-                    state,
-                    &mut frame.states_second,
-                    |source| frame.extended.visit_state(source, true),
+            // Collection stays between Provinces and Wars. Restore the visitor
+            // without reading flags here; their original later stage is intact.
+            let (states_request, states_report, states_failure) =
+                completed!(states_pending, States);
+            let states_report =
+                frame.restore_states_request(states_request, states_report, states_failure);
+            matched[1] = needed[1]
+                && full_match(
+                    states_report.census.result,
+                    states_report.census.second,
+                    states_report.census.mismatches,
                 );
-                frame.extended.finish_states(second, true);
-                if needed[1] {
-                    frame.consistency_checked[1] = true;
-                    frame.states_mismatches = mismatches(
-                        frame.states_result,
-                        &frame.states,
-                        second,
-                        &frame.states_second,
-                    );
-                    matched[1] = full_match(frame.states_result, second, frame.states_mismatches);
-                }
+            frame.table_ns[5] = shared.ns(states_report.ticks);
+            // Restore all wars storage at the original wars point. Pool read
+            // ticks retain distinct table/matrix costs; collection contributes
+            // to the callback's existing non-ETA join accounting.
+            let (wars_request, wars_report, wars_failure) = completed!(wars_pending, Wars);
+            let wars_report = frame.restore_wars_request(wars_request, wars_report, wars_failure);
+            matched[3] = needed[3] && wars_report.table_matched();
+            wars_matrix_check = wars_report.matrix_eligible();
+            frame.table_ns[7] = shared.ns(wars_report.table_ticks);
+            frame.war_matrix_ns = shared.ns(wars_report.matrix_ticks);
+            let (factions_request, mut factions_report, factions_failure) =
+                completed!(factions_pending, Factions);
+            if let Some(reason) = factions_failure {
+                factions_report =
+                    acquisition_factions::Report::failed([needed[4], needed[5]], reason);
             }
-            frame.table_ns[5] = shared.ns(qpc() - begin);
-            // The optimized typed walk already batches relation roots and
-            // reuses callback-local country authentication. No raw Wars
-            // payload, duplicate mirror walk or decode index is constructed.
-            let matrix_needed = shared.war_matrix_remaining.load(Ordering::Relaxed) != 0;
-            let begin = qpc();
-            frame.wars_snapshot_sampled = true;
-            // Verify the ownership snapshot only while a consuming window (the
-            // WarRelations double read or the matrix) is still open; once both
-            // are closed the quiescent re-read is redundant.
-            let war_read = cwar_relation::walk_verified(
-                &cached,
-                &memory,
-                shared.base,
-                state,
-                &mut frame.wars,
-                &mut frame.wars_snapshot,
-                needed[3] || matrix_needed,
-            );
-            frame.wars_result = war_read.outcome;
-            if needed[3] {
-                frame.consistency_checked[3] = true;
-                let second =
-                    cwar_relation::walk(&cached, shared.base, state, &mut frame.wars_second);
-                frame.wars_mismatches =
-                    mismatches(frame.wars_result, &frame.wars, second, &frame.wars_second);
-                frame.wars_mismatches += usize::from(war_read.verification_failed);
-                matched[3] = !war_read.verification_failed
-                    && full_match(frame.wars_result, second, frame.wars_mismatches);
-            }
-            // Retain distinct owned/table and independent-matrix costs.
-            frame.table_ns[7] = shared.ns(qpc() - begin);
-            if matrix_needed {
-                let matrix_begin = qpc();
-                let matrix =
-                    cwar_relation::walk_matrix(&cached, shared.base, state, &mut frame.wars_matrix);
-                frame.war_matrix_ns = shared.ns(qpc() - matrix_begin);
-                frame.war_matrix_result = Some(matrix);
-                wars_matrix_check = matches!(
-                    (frame.wars_result, matrix),
-                    (Outcome::Rows { .. }, Outcome::Rows { .. })
-                ) && frame.wars_mismatches == 0;
-            }
-            let begin = qpc();
-            let names = cfaction::walk(
-                &cached,
-                shared.base,
-                state,
+            (frame.faction_names_len, frame.faction_names_required) = factions_request.restore(
                 &mut frame.factions,
+                &mut frame.factions_second,
                 &mut frame.faction_names,
+                &mut frame.faction_names_second,
+                &mut frame.faction_members,
+                &mut frame.faction_members_second,
             );
-            frame.factions_result = names.outcome;
-            frame.faction_names_len = names.bytes_len;
-            frame.faction_names_required = names.required_bytes;
+            frame.factions_result = factions_report.factions.result;
             if needed[4] {
                 frame.consistency_checked[4] = true;
-                let second = cfaction::walk(
-                    &cached,
-                    shared.base,
-                    state,
-                    &mut frame.factions_second,
-                    &mut frame.faction_names_second,
+                frame.factions_mismatches = factions_report.factions.mismatches;
+                matched[4] = full_match(
+                    factions_report.factions.result,
+                    factions_report.factions.second,
+                    factions_report.factions.mismatches,
                 );
-                frame.factions_mismatches = mismatches(
-                    names.outcome,
-                    &frame.factions,
-                    second.outcome,
-                    &frame.factions_second,
-                ) + usize::from(
-                    names.bytes_len != second.bytes_len
-                        || names.required_bytes != second.required_bytes
-                        || frame.faction_names[..names.bytes_len]
-                            != frame.faction_names_second[..second.bytes_len],
-                );
-                matched[4] = full_match(names.outcome, second.outcome, frame.factions_mismatches);
             }
-            frame.table_ns[8] = shared.ns(qpc() - begin);
-            let begin = qpc();
-            frame.faction_members_result = cfaction_system::walk_members(
-                &cached,
-                shared.base,
-                state,
-                &mut frame.faction_members,
-            );
+            frame.table_ns[8] = shared.ns(factions_report.ticks[0] as i64);
+            frame.faction_members_result = factions_report.members.result;
             if needed[5] {
                 frame.consistency_checked[5] = true;
-                let second = cfaction_system::walk_members(
-                    &cached,
-                    shared.base,
-                    state,
-                    &mut frame.faction_members_second,
-                );
-                frame.faction_members_mismatches = mismatches(
-                    frame.faction_members_result,
-                    &frame.faction_members,
-                    second,
-                    &frame.faction_members_second,
-                );
+                frame.faction_members_mismatches = factions_report.members.mismatches;
                 matched[5] = full_match(
-                    frame.faction_members_result,
-                    second,
-                    frame.faction_members_mismatches,
+                    factions_report.members.result,
+                    factions_report.members.second,
+                    factions_report.members.mismatches,
                 );
             }
-            frame.table_ns[9] = shared.ns(qpc() - begin);
-            inline_walk_ticks = qpc() - inline_walk_begin;
+            frame.table_ns[9] = shared.ns(factions_report.ticks[1] as i64);
+            inline_walk_ns = shared.ns(qpc() - inline_walk_begin).saturating_sub(
+                shared
+                    .acquisition_wait_ns
+                    .load(Ordering::Relaxed)
+                    .saturating_sub(inline_wait_begin),
+            );
             let (air_request, report, air_failure) = completed!(air_pending, AirWing);
             air_wing_report = report;
             let mut air_second = air_request.second;
@@ -3373,7 +3463,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         );
         shared
             .phase_inline_walk_ns
-            .fetch_add(shared.ns(inline_walk_ticks), Ordering::Relaxed);
+            .fetch_add(inline_walk_ns, Ordering::Relaxed);
         shared
             .phase_noneta_join_ns
             .fetch_add(noneta_join_ns, Ordering::Relaxed);
@@ -5432,6 +5522,140 @@ mod tests {
         }
         assert_eq!(successes, 4);
         assert_eq!(window.successful[table], 4);
+    }
+
+    #[test]
+    fn wars_acquisition_restores_storage_and_denies_failed_completion_credit() {
+        use crate::acquisition::Failure;
+        use wars_test_kit as kit;
+        for failure in [None, Some(Failure::Panicked), Some(Failure::Stopped)] {
+            let bytes = kit::fixture();
+            let memory = kit::memory(&bytes);
+            let mut owner = Arc::new(Cache::with_capacity(1024));
+            let countries =
+                Cache::prepare_shared(&mut owner, &memory, kit::BASE, kit::GAME_STATE).unwrap();
+            let mut frame = Captured::new();
+            let expected_bytes = frame.allocated_bytes();
+            let pointers = [
+                frame.wars.as_ptr(),
+                frame.wars_second.as_ptr(),
+                frame.wars_matrix.as_ptr(),
+            ];
+            let snapshot_capacity = frame.wars_snapshot.capacity();
+            let mut request =
+                frame.take_wars_request(&countries, kit::BASE, kit::GAME_STATE, true, true);
+            assert!(frame.wars.is_empty());
+            assert!(frame.wars_second.is_empty());
+            assert!(frame.wars_matrix.is_empty());
+            assert_eq!(
+                frame.wars_snapshot.capacity(),
+                cwar_relation::OwnedSnapshotCapacity::default()
+            );
+            let row_bytes = (request.table.buffers.first.capacity()
+                + request.table.buffers.second.capacity()
+                + request.matrix.capacity())
+                * size_of::<cwar_relation::Row>();
+            assert_eq!(
+                frame.allocated_bytes() + snapshot_capacity.allocated_bytes + row_bytes,
+                expected_bytes
+            );
+            let report = if failure == Some(Failure::Stopped) {
+                acquisition_wars::Report::default()
+            } else {
+                request.run(&memory)
+            };
+            // A completion failure overrides even fully populated, matching
+            // buffers. They are recovered, but cannot publish a valid report.
+            let report = frame.restore_wars_request(
+                request,
+                report,
+                failure.map(acquisition_failure_reason),
+            );
+            assert_eq!(
+                [
+                    frame.wars.as_ptr(),
+                    frame.wars_second.as_ptr(),
+                    frame.wars_matrix.as_ptr()
+                ],
+                pointers
+            );
+            assert_eq!(frame.wars_snapshot.capacity(), snapshot_capacity);
+            assert_eq!(frame.allocated_bytes(), expected_bytes);
+            assert_eq!(
+                frame.wars_snapshot_sampled,
+                failure != Some(Failure::Stopped)
+            );
+            assert!(frame.consistency_checked[3]);
+            assert_eq!(Arc::strong_count(&countries), 2);
+            drop(countries);
+            assert!(Arc::get_mut(&mut owner).is_some());
+            let mut window = ConsistencyWindow::<17>::default();
+            let mut matched = [false; 17];
+            matched[3] = report.table_matched();
+            assert_eq!(
+                window.commit(matched, true, true)[3],
+                u16::from(failure.is_none())
+            );
+            let matrix_remaining = AtomicUsize::new(1);
+            if report.matrix_eligible() {
+                complete_matrix_check(&matrix_remaining);
+            }
+            assert_eq!(
+                matrix_remaining.load(Ordering::Relaxed),
+                usize::from(failure.is_some())
+            );
+            if let Some(failure) = failure {
+                let unavailable = Outcome::Unavailable {
+                    reason: acquisition_failure_reason(failure),
+                };
+                assert_eq!(frame.wars_result, unavailable);
+                assert_eq!(frame.war_matrix_result, Some(unavailable));
+                assert_eq!(report.table_ticks, 0);
+                assert_eq!(report.matrix_ticks, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn wars_acquisition_uses_empty_default_and_preserves_closed_outputs() {
+        use wars_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        let mut cache = Cache::with_capacity(1024);
+        let _ = cache.prepare(&memory, kit::BASE, kit::GAME_STATE);
+        let countries = Arc::new(cache);
+        let mut frame = Captured::new();
+        let bytes = frame.allocated_bytes();
+        for (needed, matrix_needed) in [(true, true), (false, true), (true, false), (false, false)]
+        {
+            let second = frame.wars_second.clone();
+            let matrix = frame.wars_matrix.clone();
+            let mut request = frame.take_wars_request(
+                &countries,
+                kit::BASE,
+                kit::GAME_STATE,
+                needed,
+                matrix_needed,
+            );
+            assert_eq!(
+                frame.wars_snapshot.capacity(),
+                cwar_relation::OwnedSnapshotCapacity::default()
+            );
+            let report = request.run(&memory);
+            let report = frame.restore_wars_request(request, report, None);
+            assert_eq!(frame.consistency_checked[3], needed);
+            assert_eq!(frame.wars_mismatches, 0);
+            assert_eq!(frame.war_matrix_result.is_some(), matrix_needed);
+            assert_eq!(report.table_matched(), needed);
+            assert_eq!(report.matrix_eligible(), matrix_needed);
+            assert_eq!(frame.allocated_bytes(), bytes);
+            if !needed {
+                assert_eq!(frame.wars_second, second);
+            }
+            if !matrix_needed {
+                assert_eq!(frame.wars_matrix, matrix);
+            }
+        }
     }
 
     #[test]

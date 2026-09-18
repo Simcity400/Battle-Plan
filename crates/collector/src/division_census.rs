@@ -625,6 +625,33 @@ impl Census {
             .take(take)
             .enumerate()
         {
+            // Only hint this pass's admitted seeds. Each four-row group is
+            // hinted once before serial projection; no seed field is consumed
+            // and no child value is copied ahead of its validation gates.
+            const LOOKAHEAD: usize = 4;
+            if index.is_multiple_of(LOOKAHEAD) {
+                for pending in inputs
+                    .seeds
+                    .iter()
+                    .skip(index)
+                    .take((take - index).min(LOOKAHEAD))
+                {
+                    if let Some(location) = pending.location.filter(|&pointer| pointer != 0) {
+                        engine::prefetch::span(location, 8);
+                        if let Some(id) = location.checked_add(cprovince::ID) {
+                            engine::prefetch::span(id, 4);
+                        }
+                    }
+                    // Both identities occupy the exact vtable/handle pair.
+                    for pointer in [pending.standard_template, pending.orders_group]
+                        .into_iter()
+                        .flatten()
+                        .filter(|&pointer| pointer != 0)
+                    {
+                        engine::prefetch::span(pointer, 16);
+                    }
+                }
+            }
             let (row, group_kind) = project(
                 memory,
                 base,
@@ -913,13 +940,17 @@ mod tests {
         bytes: &'a [u8],
         reads: RefCell<Vec<(usize, usize)>>,
         fault: Option<usize>,
+        fault_at: Option<usize>,
     }
     impl Memory for Observed<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let ordinal = self.reads.borrow().len();
             self.reads.borrow_mut().push((address, output.len()));
-            if self.fault.is_some_and(|fault| {
-                address <= fault && address.saturating_add(output.len()) > fault
-            }) {
+            if self.fault_at == Some(ordinal)
+                || self.fault.is_some_and(|fault| {
+                    address <= fault && address.saturating_add(output.len()) > fault
+                })
+            {
                 return false;
             }
             kit::memory(self.bytes).copy(address, output)
@@ -933,6 +964,7 @@ mod tests {
             bytes: &bytes,
             reads: RefCell::new(Vec::new()),
             fault: None,
+            fault_at: None,
         };
         let mut staged = Census::new();
         let allocated = staged.allocated_bytes();
@@ -1021,6 +1053,7 @@ mod tests {
             bytes: &bytes,
             reads: RefCell::new(Vec::new()),
             fault: Some(kit::GAME_STATE + cgame_state::PROVINCES),
+            fault_at: None,
         };
         census.capture_core(&memory, 0);
         assert_eq!(
@@ -1157,5 +1190,100 @@ mod tests {
             &second.unit_inputs().unwrap().seeds()[0],
             carmy::DivisionSeed::CLASS,
         ));
+    }
+
+    #[test]
+    fn core_lookahead_keeps_serial_observations_masks_and_every_failure_prefix() {
+        let mut bytes = kit::fixture();
+        // Ten entries cross two four-seed boundaries, retaining repeated child
+        // pointers and the fixture's independent null location/template/group.
+        let roster = kit::C0 + ccountry::DIVISIONS;
+        for offset in [8, 12] {
+            bytes[roster + offset..roster + offset + 4].copy_from_slice(&9u32.to_le_bytes());
+        }
+        for index in 0..9 {
+            let pointer = [kit::A1, kit::A2][index % 2];
+            bytes[0x23000 + index * 8..0x23008 + index * 8]
+                .copy_from_slice(&(pointer as u64).to_le_bytes());
+        }
+        for capacity in [0, 1, 3, 4, 5, 8, 10] {
+            // One root plus at most seven scalar copies per admitted seed.
+            // Inject by ordinal so repeated addresses can fail in later groups.
+            for fault_at in std::iter::once(None).chain((0..1 + 7 * capacity).map(Some)) {
+                let mut census = Census::new();
+                census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
+                let allocated = census.allocated_bytes();
+                let input_bytes = census.payload_bytes();
+                let seeds = census.unit_inputs().unwrap().seeds().to_vec();
+                assert_eq!(seeds.len(), 10);
+                let roots = census.core_roots.unwrap();
+                let make_memory = || Observed {
+                    bytes: &bytes,
+                    reads: RefCell::new(Vec::new()),
+                    fault: None,
+                    fault_at,
+                };
+                let serial = make_memory();
+                let mut rows = Vec::new();
+                let mut kinds = Vec::new();
+                let mut masks = vec![0; seeds.len()];
+                // Reference: the unchanged scalar projector, with its own
+                // province-root observation and no lookahead path.
+                let expected = (|| {
+                    let provinces =
+                        Array::read(&serial, kit::GAME_STATE + cgame_state::PROVINCES, 8)
+                            .ok_or("province array unreadable or invalid")?;
+                    for index in 0..capacity {
+                        let (row, kind) = project(
+                            &serial,
+                            roots.base,
+                            &roots.countries,
+                            provinces,
+                            census.entries[index],
+                            &seeds[index],
+                            &mut masks[index],
+                        )?;
+                        rows.push(row);
+                        kinds.push(kind);
+                    }
+                    Ok::<_, &'static str>(())
+                })();
+
+                let observed = make_memory();
+                census.capture_core(&observed, capacity);
+                assert_eq!(*observed.reads.borrow(), *serial.reads.borrow());
+                assert_eq!(census.rows, rows);
+                assert_eq!(census.group_kinds, kinds);
+                assert_eq!(census.core_masks, masks);
+                assert_eq!(census.sources.len(), rows.len());
+                assert_eq!(census.unit_inputs().unwrap().seeds(), seeds);
+                assert!(
+                    census
+                        .union_masks
+                        .iter()
+                        .chain(&census.changed_masks)
+                        .all(|&m| m == 0)
+                );
+                assert_eq!(census.allocated_bytes(), allocated);
+                assert_eq!(
+                    census.payload_bytes() - input_bytes,
+                    observed
+                        .reads
+                        .borrow()
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| Some(*index) != fault_at)
+                        .map(|(_, &(_, len))| len as u64)
+                        .sum::<u64>()
+                );
+                assert_eq!(
+                    census.outcome(capacity),
+                    match expected {
+                        Ok(()) => complete(capacity, seeds.len() - capacity),
+                        Err(reason) => Outcome::Unavailable { reason },
+                    }
+                );
+            }
+        }
     }
 }

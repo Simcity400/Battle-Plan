@@ -1111,12 +1111,13 @@ impl Captured {
     pub fn needs_state_check(needed: &[bool]) -> bool {
         needed[TableId::StateFlags.index()]
     }
-    /// Callback-scoped source copies are charged to the shared States census.
-    pub fn visit_state(&mut self, source: engine::cstate::Source, second: bool) {
-        self.state_flags.visit(source, second);
+    /// Loan the complete visitor until the original States collection point.
+    /// Its allocation-free replacement is never used for the later flag read.
+    pub(crate) fn take_state_visitor(&mut self) -> state_flags::Captured {
+        std::mem::take(&mut self.state_flags)
     }
-    pub fn finish_states(&mut self, outcome: Outcome, second: bool) {
-        self.state_flags.finish(outcome, second);
+    pub(crate) fn restore_state_visitor(&mut self, visitor: state_flags::Captured) {
+        self.state_flags = visitor;
     }
 
     /// Source copies remain inside the enclosing Divisions measurement. The

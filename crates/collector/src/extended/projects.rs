@@ -1626,20 +1626,52 @@ fn copy_program_row(
     }
     let at = |offset| pointer.checked_add(offset);
     let mut spans = [0usize; 5];
-    for (slot, (offset, len)) in [
-        (nproject_cprogram::OWNER_PRIMARY, 8),
-        (nproject_cprogram::OWNER_COPY, 12),
-        (nproject_cprogram::SCIENTIST_REFERENCE_TYPE, 8),
-        (nproject_cprogram::ACTIVE_FLAG, 1),
-        (nproject_cprogram::BUILDING, 32),
-    ]
-    .iter()
-    .enumerate()
+    // Whole-group admission is only a path selection. A tight arena or a
+    // missing later address must retain the scalar prefix and its exact demand.
+    if let [
+        Some(owner),
+        Some(owner_copy),
+        Some(scientist),
+        Some(active),
+        Some(building),
+    ] = [
+        at(nproject_cprogram::OWNER_PRIMARY),
+        at(nproject_cprogram::OWNER_COPY),
+        at(nproject_cprogram::SCIENTIST_REFERENCE_TYPE),
+        at(nproject_cprogram::ACTIVE_FLAG),
+        at(nproject_cprogram::BUILDING),
+    ] && log.spans.capacity() - log.spans.len() >= 5
+        && log
+            .bytes
+            .len()
+            .checked_add(61)
+            .is_some_and(|end| end <= log.bytes.capacity() && end <= u32::MAX as usize)
     {
-        let Some(start) = span(log, memory, at(*offset), *len, M_PROGRAMS) else {
+        let Some((starts, 5)) = log.take_scattered_prefetched(
+            memory,
+            [owner, owner_copy, scientist, active, building],
+            [8, 12, 8, 1, 32],
+            [M_PROGRAMS; 5],
+        ) else {
             return false;
         };
-        spans[slot] = start;
+        spans = starts;
+    } else {
+        for (slot, (offset, len)) in [
+            (nproject_cprogram::OWNER_PRIMARY, 8),
+            (nproject_cprogram::OWNER_COPY, 12),
+            (nproject_cprogram::SCIENTIST_REFERENCE_TYPE, 8),
+            (nproject_cprogram::ACTIVE_FLAG, 1),
+            (nproject_cprogram::BUILDING, 32),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let Some(start) = span(log, memory, at(*offset), *len, M_PROGRAMS) else {
+                return false;
+            };
+            spans[slot] = start;
+        }
     }
     if log.bytes[spans[0]..spans[0] + 8] != log.bytes[spans[1]..spans[1] + 8] {
         return false;
@@ -2844,6 +2876,471 @@ mod tests {
             rows: [256; N],
             program_names: 8192,
             program_candidates: 1024,
+        }
+    }
+
+    struct ProgramSource<'a> {
+        memory: engine::memory::SliceMemory<'a>,
+        pointer: usize,
+        fail: Option<usize>,
+        partial: usize,
+        calls: std::cell::RefCell<Vec<(usize, usize)>>,
+        scatters: std::cell::RefCell<Vec<Vec<(usize, usize)>>>,
+    }
+
+    impl<'a> ProgramSource<'a> {
+        fn new(bytes: &'a [u8]) -> Self {
+            use super::projects_test_kit as kit;
+            Self {
+                memory: kit::memory(bytes),
+                pointer: kit::GAME_STATE + kit::PROG1,
+                fail: None,
+                partial: 0,
+                calls: Default::default(),
+                scatters: Default::default(),
+            }
+        }
+    }
+
+    impl Memory for ProgramSource<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            use super::projects_test_kit as kit;
+            let ordinal = self.calls.borrow().len();
+            self.calls.borrow_mut().push((address, destination.len()));
+            if self.fail == Some(ordinal) {
+                let partial = self.partial.min(destination.len());
+                destination[..partial].fill(0xe3);
+                return false;
+            }
+            // Relocate only the program object for checked-address tests;
+            // heap text and country links retain their fixture addresses.
+            let source = address
+                .checked_sub(self.pointer)
+                .filter(|&offset| offset < nproject_cprogram::OWNER_COPY + 12)
+                .map_or(address, |offset| kit::GAME_STATE + kit::PROG1 + offset);
+            self.memory.copy(source, destination)
+        }
+
+        fn copy_scattered_prefetched<const M: usize>(
+            &self,
+            addresses: [usize; M],
+            destinations: &mut [&mut [u8]; M],
+        ) -> usize {
+            self.scatters.borrow_mut().push(
+                addresses
+                    .iter()
+                    .copied()
+                    .zip(destinations.iter().map(|field| field.len()))
+                    .collect(),
+            );
+            self.copy_scattered(addresses, destinations)
+        }
+    }
+
+    fn program_links(bytes: &[u8]) -> Array {
+        let start = cgame_state::COUNTRY_LINKS;
+        Array::from_header(bytes[start..start + 16].try_into().unwrap(), 4).unwrap()
+    }
+
+    fn copy_fixture_program(log: &mut RawLog<4>, memory: &ProgramSource<'_>) -> bool {
+        use super::projects_test_kit as kit;
+        let links = program_links(memory.memory.bytes);
+        copy_program_row(
+            log,
+            memory,
+            kit::BASE,
+            ProjectCensus {
+                links: &links,
+                countries: 3,
+                census: &[CensusEntry {
+                    pointer: kit::GAME_STATE + kit::C1,
+                    id: 1,
+                    slot: 1,
+                    canonical: true,
+                }],
+            },
+            memory.pointer,
+        )
+    }
+
+    /// Exact successful fixture observations through the original scalar path.
+    /// Optional/invalid fixture cases shorten or replace this explicit script.
+    fn program_script(bytes: &[u8], pointer: usize) -> Vec<(Option<usize>, usize)> {
+        use super::projects_test_kit as kit;
+        let at = |offset| pointer.checked_add(offset);
+        let heap = kit::GAME_STATE + kit::HEAP;
+        let text_len = b"program-building-01".len();
+        vec![
+            (Some(pointer), 16),
+            (at(nproject_cprogram::OWNER_PRIMARY), 8),
+            (at(nproject_cprogram::OWNER_COPY), 12),
+            (at(nproject_cprogram::SCIENTIST_REFERENCE_TYPE), 8),
+            (at(nproject_cprogram::ACTIVE_FLAG), 1),
+            (at(nproject_cprogram::BUILDING), 32),
+            (at(nproject_cprogram::ACTIVE_PROJECT_HANDLE), 4),
+            (Some(heap + text_len), 1),
+            (Some(heap), text_len),
+            (Some(program_links(bytes).data + 4), 4),
+        ]
+    }
+
+    fn scalar_program_script(
+        log: &mut RawLog<4>,
+        memory: &ProgramSource<'_>,
+        script: &[(Option<usize>, usize)],
+    ) -> bool {
+        script
+            .iter()
+            .all(|&(address, len)| span(log, memory, address, len, M_PROGRAMS).is_some())
+    }
+
+    fn dirty_program_log(span_capacity: usize, byte_capacity: usize) -> RawLog<4> {
+        let mut log = RawLog::new(span_capacity, byte_capacity);
+        log.bytes.extend_from_slice(&vec![0xa7; byte_capacity]);
+        log.clear();
+        log
+    }
+
+    fn assert_program_logs_equal(actual: &RawLog<4>, expected: &RawLog<4>) {
+        assert_eq!(actual.spans, expected.spans);
+        assert_eq!(actual.bytes, expected.bytes);
+        assert_eq!(actual.fault, expected.fault);
+        assert_eq!(actual.raw_bytes, expected.raw_bytes);
+        assert_eq!(actual.overflowed, expected.overflowed);
+        assert_eq!(actual.has_bulk, expected.has_bulk);
+        assert_eq!(actual.grow_for_next(), expected.grow_for_next());
+        for slot in 0..4 {
+            assert_eq!(actual.partition_equal(expected, slot), !actual.overflowed);
+        }
+    }
+
+    #[test]
+    fn program_body_batch_matches_scalar_at_every_fault_and_partial_byte() {
+        let bytes = projects_test_kit::fixture();
+        let pointer = projects_test_kit::GAME_STATE + projects_test_kit::PROG1;
+        let script = program_script(&bytes, pointer);
+        for failed in 0..=script.len() {
+            for partial in 0..=script.get(failed).map_or(0, |field| field.1) {
+                let source = ProgramSource {
+                    fail: (failed < script.len()).then_some(failed),
+                    partial,
+                    ..ProgramSource::new(&bytes)
+                };
+                let reference = ProgramSource {
+                    fail: source.fail,
+                    partial,
+                    ..ProgramSource::new(&bytes)
+                };
+                let mut actual = dirty_program_log(16, 256);
+                let mut expected = dirty_program_log(16, 256);
+                assert_eq!(
+                    copy_fixture_program(&mut actual, &source),
+                    scalar_program_script(&mut expected, &reference, &script),
+                    "failed={failed}, partial={partial}"
+                );
+                assert_program_logs_equal(&actual, &expected);
+                assert_eq!(*source.calls.borrow(), *reference.calls.borrow());
+                assert_eq!(source.calls.borrow().len(), (failed + 1).min(script.len()));
+                assert!(actual.bytes.get(actual.bytes.len()).is_none());
+                assert_eq!(source.scatters.borrow().len(), usize::from(failed != 0));
+                if failed != 0 {
+                    let body: Vec<_> = script[1..6]
+                        .iter()
+                        .map(|&(address, len)| (address.unwrap(), len))
+                        .collect();
+                    assert_eq!(source.scatters.borrow()[0], body);
+                }
+                if failed == script.len() {
+                    assert_eq!(
+                        actual.spans[1..6].iter().map(|span| span.len).sum::<u32>(),
+                        61
+                    );
+                    assert!(actual.spans.iter().all(|span| span.mask == M_PROGRAMS));
+                    assert_eq!(actual.raw_bytes, [105, 0, 0, 0]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn program_body_batch_preserves_every_capacity_prefix_and_growth() {
+        let bytes = projects_test_kit::fixture();
+        let pointer = projects_test_kit::GAME_STATE + projects_test_kit::PROG1;
+        let script = program_script(&bytes, pointer);
+        for span_capacity in 0..=11 {
+            for byte_capacity in 0..=106 {
+                let source = ProgramSource::new(&bytes);
+                let reference = ProgramSource::new(&bytes);
+                let mut actual = dirty_program_log(span_capacity, byte_capacity);
+                let mut expected = dirty_program_log(span_capacity, byte_capacity);
+                assert_eq!(
+                    copy_fixture_program(&mut actual, &source),
+                    scalar_program_script(&mut expected, &reference, &script),
+                    "spans={span_capacity}, bytes={byte_capacity}"
+                );
+                assert_program_logs_equal(&actual, &expected);
+                assert_eq!(*source.calls.borrow(), *reference.calls.borrow());
+                assert_eq!(
+                    source.scatters.borrow().len(),
+                    usize::from(span_capacity >= 6 && byte_capacity >= 77)
+                );
+                actual.grow();
+                expected.grow();
+                assert_eq!(actual.spans.capacity(), expected.spans.capacity());
+                assert_eq!(actual.bytes.capacity(), expected.bytes.capacity());
+            }
+        }
+        // Identity leaves nine body bytes: publish eight, then demand twelve
+        // more (20 body bytes total), rather than preflighting all 61.
+        let source = ProgramSource::new(&bytes);
+        let mut log = dirty_program_log(16, 25);
+        assert!(!copy_fixture_program(&mut log, &source));
+        assert_eq!(log.bytes.len(), 24);
+        assert_eq!(source.calls.borrow().len(), 2);
+        assert!(source.scatters.borrow().is_empty());
+        log.grow();
+        assert_eq!(log.bytes.capacity(), 50);
+    }
+
+    #[test]
+    fn program_body_batch_preserves_checked_address_and_canonical_prefixes() {
+        let bytes = projects_test_kit::fixture();
+        for pointer in [
+            0,
+            usize::MAX - 15,
+            usize::MAX - 16,
+            usize::MAX - 32,
+            usize::MAX - 0x100,
+            usize::MAX - 0x170,
+            usize::MAX - 0x178,
+            usize::MAX - 0x17c,
+            0x0000_7fff_ffff_ff00,
+            0x0000_8000_0000_0000,
+        ] {
+            let source = ProgramSource {
+                pointer,
+                ..ProgramSource::new(&bytes)
+            };
+            let reference = ProgramSource {
+                pointer,
+                ..ProgramSource::new(&bytes)
+            };
+            let script = program_script(&bytes, pointer);
+            let mut actual = dirty_program_log(16, 256);
+            let mut expected = dirty_program_log(16, 256);
+            assert_eq!(
+                copy_fixture_program(&mut actual, &source),
+                scalar_program_script(&mut expected, &reference, &script),
+                "pointer={pointer:#x}"
+            );
+            assert_program_logs_equal(&actual, &expected);
+            assert_eq!(*source.calls.borrow(), *reference.calls.borrow());
+            if script[1..6].iter().any(|field| field.0.is_none()) {
+                assert!(source.scatters.borrow().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn program_body_batch_keeps_identity_owner_presence_and_string_gates() {
+        use super::projects_test_kit as kit;
+        let pointer = kit::GAME_STATE + kit::PROG1;
+        for case in 0..=14 {
+            let mut bytes = kit::fixture();
+            let mut script = program_script(&bytes, pointer);
+            let building = kit::PROG1 + nproject_cprogram::BUILDING;
+            let success = match case {
+                0 => true,
+                1..=3 => {
+                    let (offset, width) = match case {
+                        1 => (0, 8),
+                        2 => (nproject_cprogram::TYPE, 4),
+                        _ => (nproject_cprogram::ID, 4),
+                    };
+                    bytes[kit::PROG1 + offset..kit::PROG1 + offset + width].fill(0);
+                    script.truncate(1);
+                    false
+                }
+                4 => {
+                    bytes[kit::PROG1 + nproject_cprogram::OWNER_COPY] = 2;
+                    script.truncate(6);
+                    false
+                }
+                5 => {
+                    bytes[kit::PROG1 + nproject_cprogram::ACTIVE_FLAG] = 2;
+                    script.truncate(6);
+                    false
+                }
+                6 => {
+                    bytes[kit::PROG1 + nproject_cprogram::ACTIVE_FLAG] = 0;
+                    script.remove(6);
+                    true
+                }
+                7..=10 => {
+                    match case {
+                        7 => bytes[building + 24..building + 32]
+                            .copy_from_slice(&14_u64.to_le_bytes()),
+                        8 => bytes[building + 16..building + 24]
+                            .copy_from_slice(&20_u64.to_le_bytes()),
+                        9 => bytes[building..building + 8].fill(0),
+                        _ => bytes[building..building + 8]
+                            .copy_from_slice(&((usize::MAX - 3) as u64).to_le_bytes()),
+                    }
+                    script.truncate(7);
+                    false
+                }
+                11 | 12 => {
+                    bytes[building..building + 32].fill(0);
+                    let len = if case == 11 { 0 } else { 8 };
+                    if len != 0 {
+                        bytes[building..building + len].copy_from_slice(b"facility");
+                    }
+                    bytes[building + 16..building + 24]
+                        .copy_from_slice(&(len as u64).to_le_bytes());
+                    bytes[building + 24..building + 32]
+                        .copy_from_slice(&msvc_string::INLINE_CAPACITY.to_le_bytes());
+                    script[7] = (Some(pointer + nproject_cprogram::BUILDING + len), 1);
+                    if len == 0 {
+                        script.remove(8);
+                    } else {
+                        script[8] = (Some(pointer + nproject_cprogram::BUILDING), len);
+                    }
+                    true
+                }
+                13 => {
+                    for offset in [
+                        nproject_cprogram::OWNER_PRIMARY,
+                        nproject_cprogram::OWNER_COPY,
+                    ] {
+                        bytes[kit::PROG1 + offset..kit::PROG1 + offset + 4].fill(0);
+                    }
+                    script.truncate(9);
+                    false
+                }
+                _ => {
+                    // The mirror stages the terminator; its value is validated
+                    // during typed decoding, not by an extra live read/gate.
+                    bytes[kit::HEAP + b"program-building-01".len()] = 7;
+                    true
+                }
+            };
+            let source = ProgramSource::new(&bytes);
+            let reference = ProgramSource::new(&bytes);
+            let mut actual = dirty_program_log(16, 256);
+            let mut expected = dirty_program_log(16, 256);
+            assert_eq!(
+                copy_fixture_program(&mut actual, &source),
+                success,
+                "case={case}"
+            );
+            assert!(scalar_program_script(&mut expected, &reference, &script));
+            assert_program_logs_equal(&actual, &expected);
+            assert_eq!(
+                *source.calls.borrow(),
+                *reference.calls.borrow(),
+                "case={case}"
+            );
+            assert_eq!(
+                source.scatters.borrow().len(),
+                usize::from(!(1..=3).contains(&case))
+            );
+        }
+        let bytes = kit::fixture();
+        let source = ProgramSource::new(&bytes);
+        let links = program_links(&bytes);
+        let mut log = dirty_program_log(16, 256);
+        assert!(!copy_program_row(
+            &mut log,
+            &source,
+            usize::MAX,
+            ProjectCensus {
+                links: &links,
+                countries: 3,
+                census: &[]
+            },
+            pointer,
+        ));
+        assert!(source.calls.borrow().is_empty());
+        assert!(source.scatters.borrow().is_empty());
+        assert!(log.spans.is_empty());
+    }
+
+    #[test]
+    fn program_body_batch_preserves_duplicate_observations() {
+        let bytes = projects_test_kit::fixture();
+        let source = ProgramSource::new(&bytes);
+        let reference = ProgramSource::new(&bytes);
+        let script = program_script(&bytes, source.pointer);
+        let mut actual = dirty_program_log(32, 256);
+        let mut expected = dirty_program_log(32, 256);
+        for _ in 0..2 {
+            assert!(copy_fixture_program(&mut actual, &source));
+            assert!(scalar_program_script(&mut expected, &reference, &script));
+        }
+        assert_program_logs_equal(&actual, &expected);
+        assert_eq!(*source.calls.borrow(), *reference.calls.borrow());
+        assert_eq!(source.scatters.borrow().len(), 2);
+        assert_eq!(actual.spans.len(), 20);
+        assert_eq!(actual.raw_bytes, [210, 0, 0, 0]);
+    }
+
+    #[test]
+    fn program_body_batch_keeps_plan_blocking_and_cold_retirement() {
+        use super::projects_test_kit as kit;
+        for failed in [false, true] {
+            let bytes = kit::fixture();
+            let source = ProgramSource::new(&bytes);
+            let mut log = dirty_program_log(16, 256);
+            log.initialize_read_plan(16, 16, 128);
+            assert!(!log.begin_planned_capture(&source, [0; 4]));
+            assert!(log.take(&source, source.pointer, 16, M_PROGRAMS).is_some());
+            let owner = log
+                .take(
+                    &source,
+                    source.pointer + nproject_cprogram::OWNER_PRIMARY,
+                    8,
+                    M_PROGRAMS,
+                )
+                .unwrap();
+            assert_eq!(log.bytes[owner], 1);
+            log.finish_planned_capture();
+            log.prepare_read_plan();
+            log.clear();
+
+            let mut changed = bytes.clone();
+            changed[kit::PROG1 + nproject_cprogram::OWNER_PRIMARY] = 2;
+            let current = ProgramSource {
+                fail: failed.then_some(1),
+                ..ProgramSource::new(&changed)
+            };
+            assert!(!log.begin_planned_capture(&current, [0; 4]));
+            assert_eq!(current.calls.borrow().len(), 2);
+            assert!(!copy_fixture_program(&mut log, &current));
+            assert!(log.planned_capture_failed());
+            assert!(log.planned_capture_requires_no_retry());
+            assert_eq!(log.fault, [true; 4]);
+            assert_eq!(log.spans.len(), 1);
+            assert_eq!(log.bytes.len(), 16);
+            assert_eq!(current.calls.borrow().len(), 2);
+            assert!(current.scatters.borrow().is_empty());
+            log.finish_planned_capture();
+            log.prepare_read_plan();
+            log.clear();
+
+            // Retired plans permit fresh discovery, while the body scatter
+            // keeps that new capture ineligible for a scalar compiled plan.
+            for _ in 0..2 {
+                let fresh = ProgramSource::new(&bytes);
+                assert!(!log.begin_planned_capture(&fresh, [0; 4]));
+                assert!(fresh.calls.borrow().is_empty());
+                assert!(copy_fixture_program(&mut log, &fresh));
+                assert!(!log.planned_capture_failed());
+                assert_eq!(fresh.scatters.borrow().len(), 1);
+                assert_eq!(fresh.calls.borrow().len(), 10);
+                log.finish_planned_capture();
+                log.prepare_read_plan();
+                log.clear();
+            }
         }
     }
 

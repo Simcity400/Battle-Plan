@@ -4,12 +4,20 @@
 //! waiting;
 //! no family owns a dedicated thread.
 
+pub(crate) use crate::acquisition_countries::{
+    Report as CountriesReport, Request as CountriesRequest,
+};
+pub(crate) use crate::acquisition_gather::{
+    Buffers as GatherBuffers, Report as GatherReport, Request as GatherRequest,
+};
 use crate::extended::{
     air, character_portraits, characters, construction, division_eta, division_presentation,
     economy, fog, governance, intel, lexical, naval_history, production, projects,
     province_unit_order, session, ship_models, supply_trains, weather,
 };
-use crate::{acquisition, map_capture, sampling};
+use crate::{
+    acquisition, acquisition_factions, acquisition_states, acquisition_wars, map_capture, sampling,
+};
 pub(crate) use acquisition::{Completion, Failure, SubmitError, Ticket};
 use engine::memory::LiveMemory;
 use serde::Serialize;
@@ -75,31 +83,8 @@ pub(crate) struct ProvinceUnitOrderRequest {
 }
 /// Independent core-map walk moved to the pool so its pointer chase overlaps the
 /// other readers. Owns its pre-sized row buffers; the callback restores them.
-pub(crate) struct ProvincesRequest {
-    pub base: usize,
-    pub game_state: usize,
-    pub needed: bool,
-    pub provinces: Vec<engine::cprovince::Row>,
-    pub provinces_second: Vec<engine::cprovince::Row>,
-}
-#[derive(Clone, Copy)]
-pub(crate) struct ProvincesReport {
-    pub result: engine::walk::Outcome,
-    pub second: engine::walk::Outcome,
-    pub mismatches: usize,
-}
-impl Default for ProvincesReport {
-    fn default() -> Self {
-        let unavailable = engine::walk::Outcome::Unavailable {
-            reason: "provinces acquisition did not complete",
-        };
-        Self {
-            result: unavailable,
-            second: unavailable,
-            mismatches: 0,
-        }
-    }
-}
+pub(crate) type ProvincesRequest = GatherRequest<Vec<engine::cprovince::Row>>;
+pub(crate) type ProvincesReport = GatherReport;
 pub(crate) struct ShipModelsRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: ship_models::CaptureContext,
@@ -193,6 +178,10 @@ pub(crate) enum Job {
     ProvinceUnitOrder(ProvinceUnitOrderRequest),
     ShipModels(ShipModelsRequest),
     Provinces(ProvincesRequest),
+    Factions(acquisition_factions::Request),
+    Countries(CountriesRequest),
+    Wars(acquisition_wars::Request),
+    States(acquisition_states::Request),
 }
 #[derive(Clone, Copy)]
 #[allow(clippy::large_enum_variant)]
@@ -225,6 +214,10 @@ pub(crate) enum Report {
     ProvinceUnitOrder(province_unit_order::CaptureReport),
     ShipModels(ship_models::CaptureReport),
     Provinces(ProvincesReport),
+    Factions(acquisition_factions::Report),
+    Countries(CountriesReport),
+    Wars(acquisition_wars::Report),
+    States(acquisition_states::Report),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -258,8 +251,12 @@ pub(crate) enum Role {
     ProvinceUnitOrder,
     ShipModels,
     Provinces,
+    Factions,
+    Countries,
+    Wars,
+    States,
 }
-const ROLE_COUNT: usize = 28;
+const ROLE_COUNT: usize = 32;
 const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::Relations,
@@ -289,6 +286,10 @@ const ROLES: [Role; ROLE_COUNT] = [
     Role::ProvinceUnitOrder,
     Role::ShipModels,
     Role::Provinces,
+    Role::Factions,
+    Role::Countries,
+    Role::Wars,
+    Role::States,
 ];
 impl Job {
     pub(crate) fn role(&self) -> Role {
@@ -321,6 +322,10 @@ impl Job {
             Self::ProvinceUnitOrder(..) => Role::ProvinceUnitOrder,
             Self::ShipModels(..) => Role::ShipModels,
             Self::Provinces(..) => Role::Provinces,
+            Self::Factions(..) => Role::Factions,
+            Self::Countries(..) => Role::Countries,
+            Self::Wars(..) => Role::Wars,
+            Self::States(..) => Role::States,
         }
     }
 }
@@ -757,40 +762,14 @@ fn run_with_memory(
             Report::ShipModels(request.captured.capture_owned(&cached, request.context))
         }
         Job::Provinces(request) => {
-            let result = engine::cprovince::walk(
-                memory,
-                request.base,
-                request.game_state,
-                &mut request.provinces,
-            );
-            let (second, mismatches) = if request.needed {
-                let second = engine::cprovince::walk(
-                    memory,
-                    request.base,
-                    request.game_state,
-                    &mut request.provinces_second,
-                );
-                let mismatches = crate::sampling::mismatches(
-                    result,
-                    &request.provinces,
-                    second,
-                    &request.provinces_second,
-                );
-                (second, mismatches)
-            } else {
-                (
-                    engine::walk::Outcome::Unavailable {
-                        reason: "provinces consistency window closed",
-                    },
-                    0,
-                )
-            };
-            Report::Provinces(ProvincesReport {
-                result,
-                second,
-                mismatches,
-            })
+            Report::Provinces(request.buffers.rows(request.needed, |rows, _| {
+                engine::cprovince::walk(memory, request.base, request.game_state, rows)
+            }))
         }
+        Job::Factions(request) => Report::Factions(acquisition_factions::run(request, memory)),
+        Job::Countries(request) => Report::Countries(request.run(memory)),
+        Job::Wars(request) => Report::Wars(request.run(memory)),
+        Job::States(request) => Report::States(request.run(memory)),
         Job::Presentation(request) => {
             let cached = request.countries.view(memory);
             let first = request.first.as_deref();

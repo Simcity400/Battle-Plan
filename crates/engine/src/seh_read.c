@@ -175,6 +175,50 @@ size_t seh_guarded_copy_scattered(const CopySpan *spans, size_t count) {
     return completed;
 }
 
+/* Only endpoint cache hints for an admitted exact span. The Rust preflight
+   excludes invalid nonempty sources and the suffix after them. A hint observes
+   no bytes, including for NOACCESS and GUARD pages; readability is decided only
+   by the ordered guarded copy. Endpoint hints bound work even for a large span. */
+static __forceinline void hint_copy_span(const CopySpan *span) {
+    if (span->len != 0) {
+        uintptr_t first = (uintptr_t)span->src;
+        uintptr_t last = first + span->len - 1;
+        _mm_prefetch((const char *)first, _MM_HINT_T0);
+        if ((first >> 6) != (last >> 6)) {
+            _mm_prefetch((const char *)last, _MM_HINT_T0);
+        }
+    }
+}
+
+size_t seh_guarded_copy_scattered_prefetched(const CopySpan *spans, size_t count) {
+    volatile size_t completed = 0;
+    volatile int active_read = 0;
+    __try {
+        size_t hinted = 0;
+        while (hinted < 4 && hinted < count) {
+            hint_copy_span(&spans[hinted++]);
+        }
+        for (size_t index = 0; index < count; ++index) {
+            if (hinted < count) {
+                hint_copy_span(&spans[hinted++]);
+            }
+            const CopySpan *span = &spans[index];
+            if (span->len != 0) {
+                active_read = 1;
+                copy_bytes(span->dst, span->src, span->len);
+                active_read = 0;
+            }
+            completed = index + 1;
+        }
+    } __except (active_read && completed < count &&
+                        copy_fault(GetExceptionInformation(), spans[completed].src,
+                                   spans[completed].len, spans[completed].dst)
+                    ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        /* The failed span may be partial; later spans were only hinted. */
+    }
+    return completed;
+}
+
 typedef struct {
     size_t source_offset;
     size_t destination_offset;

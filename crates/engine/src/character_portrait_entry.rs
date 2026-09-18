@@ -33,7 +33,7 @@ pub struct Row {
 pub fn read(memory: &impl crate::Memory, pointer: usize) -> Result<Row, &'static str> {
     use crate::cnaval_combatant::field;
     let header = field::<[u8; 16]>(memory, pointer, 0)?;
-    let identity = crate::msvc_string::read_text(
+    let identity = crate::msvc_string::read_text_prefetched(
         memory,
         pointer
             .checked_add(IDENTITY)

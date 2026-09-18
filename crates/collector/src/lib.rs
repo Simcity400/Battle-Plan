@@ -8,7 +8,12 @@
 compile_error!("collector requires Windows x64 MSVC");
 
 mod acquisition;
+mod acquisition_countries;
+mod acquisition_factions;
+mod acquisition_gather;
 mod acquisition_jobs;
+mod acquisition_states;
+mod acquisition_wars;
 mod decode;
 mod division_census;
 mod division_detail;
