@@ -18,7 +18,8 @@
 //! Format26 belongs to the division-ETA branch; when the two merge, its two tables take
 //! ids186..187 and these move to 188..189. The id block is asserted in the tests below so
 //! a merge that forgets to renumber fails here rather than in a recording.
-//! Format28 extends RaidProvinces in place with the available-target glyph inputs
+//! Format28 adds node-less parent-map vertex rows to SupplyNodes, keeping 189 tables.
+//! Format29 extends RaidProvinces in place with the available-target glyph inputs
 //! (`offers`, `offer_count`), keeping the same 189 tables.
 //!
 //! A frame body is a `table_ns` entry per recorded table followed by one update
@@ -105,13 +106,18 @@ impl FormatVersion {
         version: 25,
         recorded_tables: TableId::LeaderPortraitPaths.index() + 1,
     };
-    /// Last version before the raid offers, with the same 189 tables.
+    /// Last version before SupplyNodes vertex rows. Same 189 tables.
     pub const LEGACY_27: Self = Self {
         version: 27,
         recorded_tables: TableId::NavalBases.index() + 1,
     };
+    /// Last version before the raid offers. Same 189 tables.
+    pub const LEGACY_28: Self = Self {
+        version: 28,
+        recorded_tables: TableId::NavalBases.index() + 1,
+    };
     /// Every readable version, oldest first.
-    pub const READABLE: [Self; 12] = [
+    pub const READABLE: [Self; 13] = [
         Self::LEGACY_14,
         Self::LEGACY_17,
         Self::LEGACY_18,
@@ -123,6 +129,7 @@ impl FormatVersion {
         Self::LEGACY_24,
         Self::LEGACY_25,
         Self::LEGACY_27,
+        Self::LEGACY_28,
         Self::CURRENT,
     ];
 
@@ -152,6 +159,12 @@ impl FormatVersion {
     /// sampled after the hourly update returned.
     pub const fn records_sample_boundary(self) -> bool {
         self.version >= 24
+    }
+
+    /// Format 28 records every vertex on a supply node's parent chain;
+    /// earlier SupplyNodes stop at the first parent without a node.
+    pub const fn records_supply_vertices(self) -> bool {
+        self.version >= 28
     }
 
     /// How many leading `TableId::ALL` entries this version's frames carry.
@@ -190,7 +203,10 @@ mod tests {
         assert_eq!(FormatVersion::LEGACY_24.recorded_tables, 186);
         assert_eq!(FormatVersion::LEGACY_25.recorded_tables, 186);
         assert_eq!(FormatVersion::LEGACY_27.recorded_tables, 189);
+        assert_eq!(FormatVersion::LEGACY_28.recorded_tables, 189);
         assert_eq!(FormatVersion::CURRENT.recorded_tables, 189);
+        assert!(!FormatVersion::LEGACY_27.records_supply_vertices());
+        assert!(FormatVersion::CURRENT.records_supply_vertices());
         // The raid map-icon tables are the last block. Merging the division-ETA
         // branch renumbers them to 188..189; this assertion is where a merge
         // that forgot to fails.
@@ -245,13 +261,14 @@ mod tests {
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28 \
-                     and writes 28"
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29 \
+                     and writes 29"
                 )
             );
         }
         // The writer's version decodes, and so do the formats it extends.
-        assert_eq!(FormatVersion::read(28).unwrap(), FormatVersion::CURRENT);
+        assert_eq!(FormatVersion::read(29).unwrap(), FormatVersion::CURRENT);
+        assert_eq!(FormatVersion::read(28).unwrap(), FormatVersion::LEGACY_28);
         assert_eq!(FormatVersion::read(27).unwrap(), FormatVersion::LEGACY_27);
         assert_eq!(FormatVersion::read(25).unwrap(), FormatVersion::LEGACY_25);
         assert_eq!(FormatVersion::read(24).unwrap(), FormatVersion::LEGACY_24);

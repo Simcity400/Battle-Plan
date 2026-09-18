@@ -409,7 +409,7 @@ fn decode_rows(
         validate_rows(table, &values)?;
         return Ok(values);
     }
-    if table == TableId::RaidProvinces && format.version() < 28 {
+    if table == TableId::RaidProvinces && format.version() < 29 {
         // Without the trailing list count and offer count, four bytes each.
         let count = decode_row_count(table, input, table.minimum_row_bytes() - 8)?;
         let values = rows::decode_legacy_raid_provinces(count, input)?;

@@ -1700,7 +1700,7 @@ mod tests {
                 // with zeroed new fields. Later tables are rewritten first, and
                 // before the earlier ShipModels rewrite, so earlier byte
                 // offsets stay valid.
-                if format.records(TableId::RaidProvinces) && format.version() < 28 {
+                if format.records(TableId::RaidProvinces) && format.version() < 29 {
                     let index = TableId::RaidProvinces.index();
                     let start =
                         8 + 4 + 1 + 8 + TABLE_COUNT * 8 + 16 + sizes[..index].iter().sum::<usize>();
@@ -1850,7 +1850,7 @@ mod tests {
                         row.invalid_orders = 0;
                     }
                 }
-                // Likewise format28's raid offers.
+                // Likewise format29's raid offers.
                 if table == TableId::RaidProvinces
                     && let TableView::Complete(TableRows::RaidProvinces(rows)) =
                         &mut frame.tables[table.index()]
@@ -1881,6 +1881,7 @@ mod tests {
             FormatVersion::LEGACY_23,
             FormatVersion::LEGACY_24,
             FormatVersion::LEGACY_27,
+            FormatVersion::LEGACY_28,
         ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             assert_eq!(old.format, format);
@@ -1966,6 +1967,7 @@ mod tests {
             FormatVersion::LEGACY_23,
             FormatVersion::LEGACY_24,
             FormatVersion::LEGACY_27,
+            FormatVersion::LEGACY_28,
         ] {
             let old = Replay::open(downgrade(&current, format)).unwrap();
             let error = old
@@ -2103,6 +2105,7 @@ mod tests {
             FormatVersion::LEGACY_23,
             FormatVersion::LEGACY_24,
             FormatVersion::LEGACY_27,
+            FormatVersion::LEGACY_28,
         ] {
             let bytes = downgrade(&current, format);
             assert!(Replay::open(bytes.clone()).is_ok());
@@ -2137,7 +2140,7 @@ mod tests {
             assert_eq!(
                 error,
                 format!(
-                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28 \
+                    "unsupported replay format version {version}; this build reads 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29 \
                      and writes {FORMAT_VERSION}"
                 )
             );
