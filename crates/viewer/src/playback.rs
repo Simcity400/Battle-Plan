@@ -538,6 +538,7 @@ mod tests {
                         id: (1_u64 << 32) | 61,
                         owner: 1,
                         home_base: 1,
+                        home_base_flag: 0,
                     }])),
                     TableView::Complete(TableRows::TaskForces(vec![TaskForceRow {
                         id: (2_u64 << 32) | 51,

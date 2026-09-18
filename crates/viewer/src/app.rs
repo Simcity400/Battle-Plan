@@ -1750,6 +1750,8 @@ impl Viewer {
                     camera,
                     day_night: DayNight::at_hour(document.playback.hour()),
                     animation_time,
+                    // The window runs one clock, so the map scene shares it.
+                    map_time: animation_time,
                     // colour
                     postfx: self.postfx,
                     // The window has no verification aids; `--dump` owns them.

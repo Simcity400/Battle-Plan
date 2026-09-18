@@ -1732,6 +1732,13 @@ mod tests {
                         crate::rows::encode_legacy_division_status_update(&frame.tables[index]);
                     payload.splice(start..start + sizes[index], legacy);
                 }
+                if format.records(TableId::Fleets) && format.version() < 27 {
+                    let index = TableId::Fleets.index();
+                    let start =
+                        8 + 4 + 1 + 8 + TABLE_COUNT * 8 + 16 + sizes[..index].iter().sum::<usize>();
+                    let legacy = crate::rows::encode_legacy_fleets_update(&frame.tables[index]);
+                    payload.splice(start..start + sizes[index], legacy);
+                }
                 // branch, hour, keyframe flag and total time precede the array.
                 let timings = 8 + 4 + 1 + 8 + recorded * 8;
                 payload.drain(timings..timings + (TABLE_COUNT - recorded) * 8);
@@ -1813,6 +1820,15 @@ mod tests {
                         row.direction = 0;
                         row.direction_group = 0;
                         row.template_frames = 0;
+                    }
+                }
+                // Format27 appends `Fleets.home_base_flag` the same way.
+                if table == TableId::Fleets
+                    && let TableView::Complete(TableRows::Fleets(rows)) =
+                        &mut frame.tables[table.index()]
+                {
+                    for row in rows {
+                        row.home_base_flag = 0;
                     }
                 }
                 // Format27 appends `invalid_orders`; an older file decodes it as

@@ -397,6 +397,12 @@ fn decode_rows(
         validate_rows(table, &values)?;
         return Ok(values);
     }
+    if table == TableId::Fleets && format.version() < 27 {
+        let count = decode_row_count(table, input, table.minimum_row_bytes() - 1)?;
+        let values = rows::decode_legacy_fleets(count, input)?;
+        validate_rows(table, &values)?;
+        return Ok(values);
+    }
     if table == TableId::DivisionStatus && format.version() < 27 {
         let count = decode_row_count(table, input, table.minimum_row_bytes() - 1)?;
         let values = rows::decode_legacy_division_status(count, input)?;

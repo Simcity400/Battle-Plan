@@ -13,7 +13,8 @@
 //! orders-group and division counter operands and leader portrait path inputs (ids174..185).
 //! Format25 extends the land combat-window operand rows in place with per-side HQ units
 //! and per-division direction and template frame operands, keeping the same 186 tables.
-//! Format27 appends the raid map-icon inputs, RaidTargets and RaidProvinces (ids186..187).
+//! Format27 appends the raid map-icon inputs, RaidTargets and RaidProvinces (ids186..187),
+//! the naval base registrations (id188), and extends DivisionStatus and Fleets in place.
 //! Format26 belongs to the division-ETA branch; when the two merge, its two tables take
 //! ids186..187 and these move to 188..189. The id block is asserted in the tests below so
 //! a merge that forgets to renumber fails here rather than in a recording.
@@ -180,12 +181,13 @@ mod tests {
         assert_eq!(FormatVersion::LEGACY_23.recorded_tables, 174);
         assert_eq!(FormatVersion::LEGACY_24.recorded_tables, 186);
         assert_eq!(FormatVersion::LEGACY_25.recorded_tables, 186);
-        assert_eq!(FormatVersion::CURRENT.recorded_tables, 188);
+        assert_eq!(FormatVersion::CURRENT.recorded_tables, 189);
         // The raid map-icon tables are the last block. Merging the division-ETA
         // branch renumbers them to 188..189; this assertion is where a merge
         // that forgot to fails.
         assert_eq!(TableId::RaidTargets as usize, 186);
         assert_eq!(TableId::RaidProvinces as usize, 187);
+        assert_eq!(TableId::NavalBases as usize, 188);
         // The writer's version must stay readable, or a file this build wrote
         // could not be reopened.
         assert_eq!(
@@ -290,7 +292,11 @@ mod tests {
             ] {
                 assert_eq!(format.records(table), format.version() >= 24);
             }
-            for table in [TableId::RaidTargets, TableId::RaidProvinces] {
+            for table in [
+                TableId::RaidTargets,
+                TableId::RaidProvinces,
+                TableId::NavalBases,
+            ] {
                 assert_eq!(format.records(table), format.version() >= 27);
             }
         }

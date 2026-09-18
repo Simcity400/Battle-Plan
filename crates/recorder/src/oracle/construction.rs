@@ -60,6 +60,72 @@ macro_rules! production_fields {
     }};
 }
 
+/// `NavalBases` against the saved `naval_base` province buildings.
+///
+/// province's eligible port buildings, so for the one `naval_base` a province
+/// carries they are its saved `level` and `healthy_levels`. The base's own
+/// country (`(CNavalBase + 8) + 0x10`) and its `+0x40` country list are not
+/// serialized at all, so they are stated as a limitation rather than checked.
+pub(super) fn naval_bases(
+    rows: &[replay::rows::NavalBaseRow],
+    saved: &BTreeMap<saved::BuildingKey, saved::Building>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let ports: BTreeMap<u32, &saved::Building> = saved
+        .iter()
+        .filter(|((_, kind), _)| kind.as_slice() == b"naval_base")
+        .map(|((province, _), building)| (*province, building))
+        .collect();
+    let mut seen = BTreeSet::new();
+    let mut count = 0;
+    for row in rows {
+        if !seen.insert(row.province) {
+            return Err(invalid("duplicate naval base province"));
+        }
+        let Some(building) = ports.get(&row.province) else {
+            // The hash keeps a base while its level is zero, so only a
+            // positive level has to have a saved building behind it.
+            if row.level > 0 {
+                report.difference(
+                    format!("NavalBase {} membership", row.province),
+                    "replay row with a positive level",
+                    "no saved naval_base building",
+                );
+            }
+            continue;
+        };
+        let label = format!("NavalBase {}", row.province);
+        for (name, actual, expected) in [
+            ("level", row.level, i32::from(building.level)),
+            (
+                "healthy_level",
+                row.healthy_level,
+                i32::from(building.healthy_level),
+            ),
+        ] {
+            if actual != expected {
+                report.difference(format!("{label}.{name}"), actual, expected);
+            }
+        }
+        count += 1;
+    }
+    for province in ports.keys() {
+        if !seen.contains(province) {
+            report.difference(
+                format!("NavalBase {province} membership"),
+                "absent from replay",
+                "saved naval_base building",
+            );
+        }
+    }
+    report.compared("NavalBases", count);
+    report.limitation(
+        "the naval base's own country and its country list are not serialized; only its province membership and its port levels can be compared",
+        "NavalBases",
+    );
+    Ok(())
+}
+
 pub(super) fn buildings(
     rows: &[replay::rows::BuildingRow],
     saved: &BTreeMap<saved::BuildingKey, saved::Building>,

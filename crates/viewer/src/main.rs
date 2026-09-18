@@ -26,7 +26,7 @@ use std::{
 
 const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
          division is extrapolated along its recorded route by its recorded ETA
-         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with device rectangles, sprite frames and text\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:\n             the fog-of-war noise and the entity animation\n           --map-time <seconds>, the map scene's own second clock: the selection\n             pulse, the river flow and the waves\n           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with device rectangles, sprite frames and text\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -93,6 +93,22 @@ struct Options {
     animation_time: f32,
     animation_step: f32,
     window_frames: u32,
+    /// `--dump --presentation-time <seconds>`: the engine's global presentation
+    /// clock, `vGlobalTime`, which a dump otherwise renders at zero.
+    ///
+    /// It is not a recorded quantity and cannot become one — the clock runs
+    /// while the game is paused, so no value sampled at an hour equals the clock
+    /// at a screenshot taken later. What it is for is proving that the port's
+    /// pattern is the game's *at the same clock*: fit it against a reference
+    /// frame, then score that frame with it. Every consumer of `vGlobalTime`
+    /// reads it, which is the fog-of-war noise and the entity animation.
+    presentation_time: f32,
+    /// `--dump --map-time <seconds>`: the map scene's own clock, which frame33840
+    /// shows is a different one — `vGlobalTime` 547.981 and `FoWTime` 547.978
+    /// against the border pass's `vTime_Transparency.x` 206.792, the river's
+    /// `vTimeDirectionSeasonLerp.x` 206.822 and the water's 206.826. It drives
+    /// the border selection pulse, the river flow and the waves.
+    map_time: f32,
     hour: Option<Hour>,
     // counters: the glide between recorded hours
     /// How far past `hour` the frame is, in hours, in `[0, 1)`.
@@ -314,9 +330,20 @@ impl Options {
                         Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
                 }
                 Some(
-                    "--hour" | "--hour-fraction" | "--branch" | "--width" | "--height" | "--camera"
-                    | "--mode" | "--perspective" | "--fog" | "--animation-time"
-                    | "--animation-step" | "--window-frames",
+                    "--hour"
+                    | "--hour-fraction"
+                    | "--branch"
+                    | "--width"
+                    | "--height"
+                    | "--camera"
+                    | "--mode"
+                    | "--perspective"
+                    | "--fog"
+                    | "--animation-time"
+                    | "--animation-step"
+                    | "--window-frames"
+                    | "--presentation-time"
+                    | "--map-time",
                 ) => {
                     let value = args
                         .next()
@@ -344,6 +371,20 @@ impl Options {
                                 options.animation_time = seconds;
                             } else {
                                 options.animation_step = seconds;
+                            }
+                        }
+                        "--presentation-time" | "--map-time" => {
+                            let seconds = value
+                                .parse::<f32>()
+                                .ok()
+                                .filter(|seconds: &f32| seconds.is_finite() && *seconds >= 0.0);
+                            let seconds = seconds.ok_or_else(|| {
+                                invalid("a presentation clock must be finite nonnegative seconds")
+                            })?;
+                            if arg == "--presentation-time" {
+                                options.presentation_time = seconds;
+                            } else {
+                                options.map_time = seconds;
                             }
                         }
                         "--window-frames" => {
@@ -480,6 +521,12 @@ impl Options {
                 || options.window_frames != 0)
         {
             return Err(invalid("animation sampling options require --window-dump"));
+        }
+        if (options.presentation_time != 0.0 || options.map_time != 0.0) && !options.headless_dump {
+            return Err(invalid(
+                "--presentation-time and --map-time set the clocks a dump otherwise renders at zero; the \
+                 window runs its own, and --window-dump samples it with --animation-time",
+            ));
         }
         if options.out.is_some() && options.replay.is_none() {
             return Err(invalid(USAGE));
@@ -901,8 +948,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 size: options.size,
                 camera,
                 day_night: DayNight::at_hour(hour),
-                // The animation time is 0 so a headless dump is deterministic.
-                animation_time: 0.0,
+                // `vGlobalTime`: zero unless `--presentation-time` names one, so
+                // a headless dump is deterministic either way.
+                animation_time: options.presentation_time,
+                map_time: options.map_time,
                 // colour
                 postfx: options.postfx,
                 no_water: options.no_water,
@@ -935,6 +984,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "Camera: {},{},{}",
             camera.center[0], camera.center[1], camera.height
+        );
+        println!(
+            "Presentation clocks: vGlobalTime {} s, map scene {} s",
+            options.presentation_time, options.map_time
         );
         println!(
             "Terrain grid: {} quads at step {}; render {:.1} ms (cpu {:.1}, gpu {:.1})",
@@ -1625,6 +1678,65 @@ mod tests {
                 .no_trees
         );
         assert!(parse(&["c.battleplan", "--no-trees"]).is_err());
+    }
+
+    /// The presentation clock is a dump option: the window runs its own, and a
+    /// dump renders zero unless a fitted time is named.
+    #[test]
+    fn the_presentation_clock_is_a_dump_option_and_defaults_to_zero() {
+        let dump = |seconds: &str| {
+            parse(&[
+                "--dump",
+                "campaign.battleplan",
+                "--hour",
+                "60835691",
+                "--out",
+                "frame.png",
+                "--presentation-time",
+                seconds,
+            ])
+        };
+        assert_eq!(dump("547.981").unwrap().presentation_time, 547.981);
+        assert_eq!(dump("0").unwrap().presentation_time, 0.0);
+        assert!(dump("-1").is_err());
+        assert!(dump("nan").is_err());
+        assert!(dump("inf").is_err());
+        // The map scene runs a second clock and takes its own option.
+        let both = parse(&[
+            "--dump",
+            "campaign.battleplan",
+            "--hour",
+            "60835691",
+            "--out",
+            "frame.png",
+            "--presentation-time",
+            "547.981",
+            "--map-time",
+            "206.792",
+        ])
+        .unwrap();
+        assert_eq!(both.presentation_time, 547.981);
+        assert_eq!(both.map_time, 206.792);
+        assert_eq!(dump("1").unwrap().map_time, 0.0);
+        assert_eq!(
+            parse(&["--dump", "c.battleplan", "--hour", "1", "--out", "f.png"])
+                .unwrap()
+                .presentation_time,
+            0.0
+        );
+        assert!(
+            parse(&[
+                "--window-dump",
+                "c.battleplan",
+                "--hour",
+                "1",
+                "--out",
+                "f.png",
+                "--presentation-time",
+                "1",
+            ])
+            .is_err()
+        );
     }
 
     // capture

@@ -255,6 +255,7 @@ packs!(
     ship_models,
     province_unit_order,
     counter_layers,
+    naval_bases,
     character_portraits,
     leader_portraits,
     supply_trains,
@@ -1254,7 +1255,7 @@ impl Captured {
             province_order_report.ticks,
             &mut ticks,
         );
-        ordinary!(counter_layers);
+        ordinary!(counter_layers, naval_bases);
         let portraits_report = self.acquire_character_portraits(
             memory,
             character_portraits::CaptureContext {
@@ -1888,6 +1889,7 @@ mod tests {
         }
         cost!(province_unit_order);
         cost!(counter_layers);
+        cost!(naval_bases);
         cost!(character_portraits);
         cost!(leader_portraits);
         cost!(ship_models);
@@ -2895,7 +2897,7 @@ mod tests {
 
     #[test]
     fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership() {
-        assert_eq!(N, 168);
+        assert_eq!(N, 169);
         let actual: BTreeSet<_> = TABLES.into_iter().collect();
         assert_eq!(actual.len(), N);
         let expected: BTreeSet<_> = TableId::ALL

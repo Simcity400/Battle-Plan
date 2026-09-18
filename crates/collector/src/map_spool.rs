@@ -214,6 +214,7 @@ fn fleets(
             id: row.id,
             owner: row.owner,
             home_base: row.home_base,
+            home_base_flag: row.home_base_flag,
         },
     )
 }
@@ -531,6 +532,7 @@ mod tests {
                 id: u64::MAX,
                 owner: u32::MAX,
                 home_base: u32::MAX - 1,
+                home_base_flag: 1,
             }],
         );
         set(
@@ -641,6 +643,7 @@ mod tests {
                 id: u64::MAX,
                 owner: u32::MAX,
                 home_base: u32::MAX - 1,
+                home_base_flag: 1,
             }]),
             TableRows::TaskForces(vec![TaskForceRow {
                 id: u64::MAX,
