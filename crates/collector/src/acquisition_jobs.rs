@@ -97,11 +97,6 @@ pub(crate) struct PresentationRequest {
     pub first: Option<Arc<crate::division_census::UnitInputs>>,
     pub second: Option<Arc<crate::division_census::UnitInputs>>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum EtaPhase {
-    Acquire { pass: usize },
-    Verify { pass: usize },
-}
 pub(crate) struct EtaRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub base: usize,
@@ -110,7 +105,7 @@ pub(crate) struct EtaRequest {
     pub workspace: Box<division_eta::Workspace>,
     pub first: Option<Arc<crate::division_census::UnitInputs>>,
     pub second: Option<Arc<crate::division_census::UnitInputs>>,
-    pub phase: EtaPhase,
+    pub pass: usize,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct EtaReport;
@@ -571,46 +566,36 @@ fn run_eta_with_memory(
     calibration: &Mutex<EtaCountryCacheCalibration>,
 ) -> EtaReport {
     let cached = request.countries.view(memory);
-    match request.phase {
-        EtaPhase::Acquire { pass } => {
-            if pass == 0 {
-                calibration
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .observe(cached.seed_status(), cached.cached_entries());
-            }
-            let inputs = if pass == 0 {
-                request.first.as_ref()
-            } else {
-                request.second.as_ref()
-            };
-            let seeds = inputs.map_or(&[][..], |inputs| inputs.seeds());
-            let outcome = inputs.map_or(
-                engine::walk::Outcome::Unavailable {
-                    reason: "division inputs unavailable",
-                },
-                |inputs| inputs.outcome(),
-            );
-            request.payload.acquire_pass(
-                &mut request.workspace,
-                &cached,
-                request.base,
-                request.state,
-                seeds,
-                outcome,
-                pass,
-            )
-        }
-        EtaPhase::Verify { pass } => request.payload.verify_pass(
-            &mut request.workspace,
-            &cached,
-            request.base,
-            request.state,
-            pass,
-        ),
+    let pass = request.pass;
+    if pass == 0 {
+        calibration
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .observe(cached.seed_status(), cached.cached_entries());
+    }
+    let inputs = if pass == 0 {
+        request.first.as_ref()
+    } else {
+        request.second.as_ref()
     };
+    let seeds = inputs.map_or(&[][..], |inputs| inputs.seeds());
+    let outcome = inputs.map_or(
+        engine::walk::Outcome::Unavailable {
+            reason: "division inputs unavailable",
+        },
+        |inputs| inputs.outcome(),
+    );
+    request.payload.acquire_pass(
+        &mut request.workspace,
+        &cached,
+        request.base,
+        request.state,
+        seeds,
+        outcome,
+        pass,
+    );
     // The callback records the final range diagnostics once, after its last
-    // verification. Neither inputs nor the workspace may be released here.
+    // pass. Neither inputs nor the workspace may be released here.
     EtaReport
 }
 
@@ -1376,13 +1361,14 @@ mod tests {
             workspace,
             first: Some(Arc::clone(&first)),
             second: checked.then_some(first),
-            phase: EtaPhase::Acquire { pass: 0 },
+            pass: 0,
         };
         (request, captured)
     }
 
+    /// A single acquisition publishes the table; no later phase is required.
     #[test]
-    fn eta_owned_worker_returns_both_passes_for_outer_verification_and_can_be_reused() {
+    fn eta_owned_worker_publishes_after_one_acquisition_per_pass_and_can_be_reused() {
         let bytes = empty_eta_memory();
         let calibration = Arc::new(Mutex::new(EtaCountryCacheCalibration::default()));
         let worker_calibration = Arc::clone(&calibration);
@@ -1401,21 +1387,19 @@ mod tests {
             let (mut request, mut captured) = empty_eta_request(checked);
             let workspace_address = (&*request.workspace) as *const division_eta::Workspace;
             for pass in 0..=usize::from(checked) {
-                for phase in [EtaPhase::Acquire { pass }, EtaPhase::Verify { pass }] {
-                    request.phase = phase;
-                    let mut pending = Some(request);
-                    let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
-                    assert!(pending.is_none());
-                    let completion = pool.finish(ticket).unwrap();
-                    assert!(completion.report.is_ok());
-                    request = completion.request;
-                    assert_eq!(
-                        (&*request.workspace) as *const division_eta::Workspace,
-                        workspace_address
-                    );
-                    assert!(request.first.is_some(), "source leases survive every phase");
-                    assert_eq!(request.second.is_some(), checked);
-                }
+                request.pass = pass;
+                let mut pending = Some(request);
+                let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
+                assert!(pending.is_none());
+                let completion = pool.finish(ticket).unwrap();
+                assert!(completion.report.is_ok());
+                request = completion.request;
+                assert_eq!(
+                    (&*request.workspace) as *const division_eta::Workspace,
+                    workspace_address
+                );
+                assert!(request.first.is_some(), "source leases survive every pass");
+                assert_eq!(request.second.is_some(), checked);
             }
             captured.restore_range(0, request.payload);
             assert_eq!(captured.finish_ranges().matched, checked);
@@ -1436,9 +1420,7 @@ mod tests {
             bytes: &bytes,
         };
         for pass in 0..2 {
-            request.phase = EtaPhase::Acquire { pass };
-            run_eta_with_memory(&mut request, &memory, &calibration);
-            request.phase = EtaPhase::Verify { pass };
+            request.pass = pass;
             run_eta_with_memory(&mut request, &memory, &calibration);
         }
         captured.restore_range(0, request.payload);
@@ -1482,9 +1464,7 @@ mod tests {
         request.countries = country_snapshot(&memory, 64);
         let calibration = Mutex::new(EtaCountryCacheCalibration::default());
         for pass in 0..2 {
-            request.phase = EtaPhase::Acquire { pass };
-            run_eta_with_memory(&mut request, &memory, &calibration);
-            request.phase = EtaPhase::Verify { pass };
+            request.pass = pass;
             run_eta_with_memory(&mut request, &memory, &calibration);
         }
         captured.restore_range(0, request.payload);
@@ -1501,7 +1481,7 @@ mod tests {
     #[test]
     fn eta_panic_and_pre_run_cancellation_recover_owned_buffers_without_a_success_report() {
         let pool = acquisition::Pool::start(0, 1, |request: &mut EtaRequest| -> EtaReport {
-            request.payload.fail("partial acquisition result", 0, true);
+            request.payload.fail("partial acquisition result", 0);
             panic!("synthetic ETA panic");
         })
         .unwrap();

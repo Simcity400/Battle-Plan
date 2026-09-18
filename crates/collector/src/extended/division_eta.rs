@@ -51,21 +51,16 @@ impl StageCost {
     }
 }
 
-/// Nested acquisition service spans, plus disjoint pass-final verification.
+/// Nested acquisition service spans, plus the walk's scoped witness checks.
 /// No QPC call or trace is added to the scalar-memory read path. Capability
 /// fallbacks execute in the engine outside the corresponding resolver span.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct StageDiagnostics {
     pub walk: StageCost,
     pub supply_acquire: StageCost,
-    pub supply_verify: StageCost,
     pub transport_acquire: StageCost,
-    pub transport_verify: StageCost,
     pub modifiers_acquire: StageCost,
-    pub modifiers_verify: StageCost,
     pub primary_acquire: StageCost,
-    pub primary_verify: StageCost,
-    pub cache_verify: StageCost,
     pub scope_verify: StageCost,
     pub supply_builds: u64,
     pub transport_builds: u64,
@@ -78,14 +73,9 @@ impl StageDiagnostics {
         spans!(
             walk,
             supply_acquire,
-            supply_verify,
             transport_acquire,
-            transport_verify,
             modifiers_acquire,
-            modifiers_verify,
             primary_acquire,
-            primary_verify,
-            cache_verify,
             scope_verify
         );
         self.supply_builds = self.supply_builds.saturating_add(next.supply_builds);
@@ -659,7 +649,7 @@ mod range_planner_tests {
 
 /// The flat acquisition pool retains one workspace for each active ETA range.
 /// Frame payloads never own these caches. Every workspace stays leased until
-/// all ranges have acquired and its terminal verification has completed.
+/// all ranges have acquired.
 pub(crate) struct Workspace {
     capacities: Capacities,
     cache: RefCell<SmallReadCache>,
@@ -710,15 +700,21 @@ impl Workspace {
 
     fn reset(&mut self) {
         self.cache.get_mut().clear();
+        self.clear_dependencies();
+        self.geometry.clear();
+        if let Some(geometry) = &mut self.geometry_second {
+            geometry.clear();
+        }
+    }
+
+    /// Each pass starts cold: nothing read by one pass serves the other.
+    fn clear_dependencies(&mut self) {
+        self.cache.get_mut().clear_reads();
         self.transport.clear();
         self.modifiers.get_mut().clear();
         self.supply.get_mut().clear();
         self.air_defense.get_mut().clear();
         self.primary.get_mut().clear();
-        self.geometry.clear();
-        if let Some(geometry) = &mut self.geometry_second {
-            geometry.clear();
-        }
     }
 
     /// Pool maintenance only; no growth is permitted inside an acquisition job.
@@ -798,29 +794,20 @@ impl Workspace {
 #[derive(Clone, Copy)]
 struct PassReport {
     walk: cunit::EtaWalk,
-    outcome: Outcome,
-    geometry_active: bool,
-    verified: bool,
-    terminal_stage: u8,
 }
 impl Default for PassReport {
     fn default() -> Self {
-        let outcome = Outcome::Unavailable {
-            reason: "ETA range was not acquired",
-        };
         Self {
             walk: cunit::EtaWalk {
-                outcome,
+                outcome: Outcome::Unavailable {
+                    reason: "ETA range was not acquired",
+                },
                 legs_len: 0,
                 required_legs: 0,
                 visited_sources: 0,
                 acquisition_failed: true,
                 boundary_failure: None,
             },
-            outcome,
-            geometry_active: false,
-            verified: false,
-            terminal_stage: 0,
         }
     }
 }
@@ -872,19 +859,11 @@ impl RangeCaptured {
         self.ticks = 0;
     }
 
-    /// A failed accepted job is terminal. Verification failure retains the
-    /// complete acquisition frontier; an interrupted acquisition cannot credit
-    /// its unfinished native walk. Neither phase may silently retry.
-    pub(crate) fn fail(&mut self, reason: &'static str, pass: usize, acquisition: bool) {
-        let outcome = Outcome::Unavailable { reason };
-        self.reports[pass].outcome = outcome;
-        if acquisition {
-            self.reports[pass].walk.outcome = outcome;
-            self.reports[pass].walk.acquisition_failed = true;
-        } else {
-            self.reports[pass].terminal_stage = u8::MAX;
-        }
-        self.reports[pass].verified = true;
+    /// A failed accepted job is terminal: an interrupted acquisition cannot
+    /// credit its unfinished native walk, and it is never retried.
+    pub(crate) fn fail(&mut self, reason: &'static str, pass: usize) {
+        self.reports[pass].walk.outcome = Outcome::Unavailable { reason };
+        self.reports[pass].walk.acquisition_failed = true;
     }
 
     /// Each pass receives its independently captured full census. A serial
@@ -903,10 +882,12 @@ impl RangeCaptured {
         let started = qpc();
         if pass == 0 {
             workspace.reset();
+        } else {
+            workspace.clear_dependencies();
         }
         self.reports[pass] = PassReport::default();
         if !self.plan.serial && !workspace.supports_ranges() {
-            self.fail("ETA range witness storage unavailable", pass, true);
+            self.fail("ETA range witness storage unavailable", pass);
             let cost = qpc().saturating_sub(started).max(0) as u64;
             self.ticks = self.ticks.saturating_add(cost);
             return cost;
@@ -938,16 +919,16 @@ impl RangeCaptured {
             workspace.geometry_second.as_mut()
         };
         let Some(geometry) = geometry else {
-            self.fail("ETA cold geometry storage unavailable", pass, true);
+            self.fail("ETA cold geometry storage unavailable", pass);
             let cost = qpc().saturating_sub(started).max(0) as u64;
             self.ticks = self.ticks.saturating_add(cost);
             return cost;
         };
         let report = &mut self.reports[pass];
-        report.geometry_active = !matches!(outcome, Outcome::Unavailable { .. })
+        let geometry_active = !matches!(outcome, Outcome::Unavailable { .. })
             && outcome.len() <= sources.len()
             && outcome.len() <= self.seed_masks[pass].len();
-        let ready = if report.geometry_active {
+        let ready = if geometry_active {
             geometry.begin(memory, base, state)
         } else {
             match outcome {
@@ -1025,104 +1006,12 @@ impl RangeCaptured {
                 )
             },
         );
-        report.outcome = report.walk.outcome;
-        let cost = qpc().saturating_sub(started).max(0) as u64;
-        self.ticks = self.ticks.saturating_add(cost);
-        cost
-    }
-
-    /// The callback schedules this phase only after every range acquisition
-    /// has completed. All retained dependencies are checked even after faults.
-    pub(crate) fn verify_pass(
-        &mut self,
-        workspace: &mut Workspace,
-        memory: &impl Memory,
-        base: usize,
-        state: usize,
-        pass: usize,
-    ) -> u64 {
-        let started = qpc();
-        let report = &mut self.reports[pass];
-        let geometry = if pass == 0 {
-            Some(&workspace.geometry)
-        } else {
-            workspace.geometry_second.as_ref()
-        };
-        if report.geometry_active
-            && let Some(geometry) = geometry
-            && let Err(reason) = geometry.verify(memory)
-        {
-            report.outcome = Outcome::Unavailable { reason };
-            report.terminal_stage = 1;
-        }
-        if !measure_stage(
-            &workspace.cache,
-            |s| &mut s.transport_verify,
-            || {
-                workspace.transport.verify_and_clear(|owner, region| {
-                    engine::cnaval_unit_transfer::movement_speed(memory, base, state, owner, region)
-                })
-            },
-        ) {
-            report.outcome = Outcome::Unavailable {
-                reason: "division ETA transport speed changed or unreadable",
-            };
-            report.terminal_stage = 2;
-        }
-        if !measure_stage(
-            &workspace.cache,
-            |s| &mut s.supply_verify,
-            || {
-                workspace
-                    .supply
-                    .borrow_mut()
-                    .verify_and_clear(|base, state, owner, area| {
-                        engine::ccountry::has_core_supply_access_direct(
-                            memory, base, state, owner, area,
-                        )
-                    })
-            },
-        ) {
-            report.outcome = Outcome::Unavailable {
-                reason: "division ETA core supply access changed or unreadable",
-            };
-            report.terminal_stage = 3;
-        }
-        if !measure_stage(
-            &workspace.cache,
-            |s| &mut s.modifiers_verify,
-            || workspace.modifiers.borrow_mut().verify_and_clear(memory),
-        ) {
-            report.outcome = Outcome::Unavailable {
-                reason: "division ETA modifier snapshot changed or unreadable",
-            };
-            report.terminal_stage = 4;
-        }
-        workspace.air_defense.borrow_mut().clear();
-        if !measure_stage(
-            &workspace.cache,
-            |s| &mut s.primary_verify,
-            || workspace.primary.borrow_mut().verify_and_clear(memory),
-        ) {
-            report.outcome = Outcome::Unavailable {
-                reason: "division ETA primary order dependencies changed or unreadable",
-            };
-            report.terminal_stage = 5;
-        }
-        if !measure_stage(
-            &workspace.cache,
-            |s| &mut s.cache_verify,
-            || workspace.cache.borrow_mut().verify_and_clear(memory),
-        ) {
-            report.outcome = Outcome::Unavailable {
-                reason: "division ETA cached operands changed or unreadable",
-            };
-            report.terminal_stage = 6;
-        }
-        report.verified = true;
-        self.diagnostics = workspace.cache.borrow().diagnostics;
+        let mut cache = workspace.cache.borrow_mut();
+        cache.observe_witness();
+        self.diagnostics = cache.diagnostics;
+        drop(cache);
         if pass == 0 {
-            self.rows.outcome = report.outcome;
+            self.rows.outcome = report.walk.outcome;
             self.legs.len = report.walk.legs_len;
             self.legs.required = report.walk.required_legs;
         } else {
@@ -1442,8 +1331,7 @@ impl Captured {
         self.ranges[index] = Some(range);
     }
 
-    /// Reduce only the source prefix the serial walker demanded. Terminal
-    /// faults occur after acquisition and never shorten this mask frontier.
+    /// Reduce only the source prefix the serial walker demanded.
     fn reduce_pass(&mut self, pass: usize) -> Outcome {
         self.seed_masks[pass].fill(0);
         self.retained_ranges[pass] = 0;
@@ -1453,18 +1341,12 @@ impl Captured {
         let mut outcome = Outcome::Rows { len: 0 };
         let mut len = 0_usize;
         let mut required = 0_usize;
-        let mut terminal_stage = 0;
         let mut terminal = None;
         let mut serial = false;
         let mut pending_boundary: Option<(usize, &'static str)> = None;
         for (index, range) in self.ranges[..self.active].iter().flatten().enumerate() {
             let report = range.reports[pass];
             self.retained_ranges[pass] += 1;
-            if !report.verified {
-                return Outcome::Unavailable {
-                    reason: "ETA range verification incomplete",
-                };
-            }
             serial = range.plan.serial;
             let start = if serial { 0 } else { range.plan.start };
             let mut walk = report.walk;
@@ -1537,23 +1419,17 @@ impl Captured {
                     };
                 }
             };
-            let boundary_only =
-                !serial && report.walk.boundary_failure.is_some() && report.terminal_stage == 0;
-            if matches!(report.outcome, Outcome::Unavailable { .. })
+            let boundary_only = !serial && report.walk.boundary_failure.is_some();
+            if terminal.is_none()
                 && !boundary_only
-                && (terminal.is_none() || report.terminal_stage > terminal_stage)
+                && matches!(report.walk.outcome, Outcome::Unavailable { .. })
             {
-                terminal = Some(report.outcome);
-                terminal_stage = report.terminal_stage;
+                terminal = Some(report.walk.outcome);
             }
             outcome = walk.outcome;
             if walk.acquisition_failed {
-                // A reconstructed boundary abort precedes this range's own
-                // acquisition error, but independent terminal checks retain
-                // their original later-stage priority.
-                if terminal_stage == 0 {
-                    terminal = Some(walk.outcome);
-                }
+                // A reconstructed boundary abort precedes this range's own error.
+                terminal = Some(walk.outcome);
                 break;
             }
             if !serial && pending_boundary.is_none() {
@@ -1645,8 +1521,8 @@ impl Captured {
                 && !matches!(self.outcome, Outcome::Unavailable { .. })
                 && self.outcome == second
             {
-                range.rows.outcome = range.reports[0].outcome;
-                range.rows.compare(range.reports[1].outcome);
+                range.rows.outcome = range.reports[0].walk.outcome;
+                range.rows.compare(range.reports[1].walk.outcome);
                 self.mismatches = self.mismatches.saturating_add(range.rows.mismatches);
             }
             if self.checked && index < common {
@@ -1688,7 +1564,6 @@ impl Captured {
                 (sources.second, sources.second_outcome)
             };
             range.acquire_pass(workspace, memory, base, state, seeds, outcome, pass);
-            range.verify_pass(workspace, memory, base, state, pass);
         }
         self.restore_range(0, range);
         self.finish_ranges()
@@ -1872,10 +1747,6 @@ mod range_reduction_tests {
                         acquisition_failed: false,
                         boundary_failure: None,
                     },
-                    outcome: Outcome::Rows { len: 2 },
-                    geometry_active: false,
-                    verified: true,
-                    terminal_stage: 0,
                 };
             }
             part.geometry_same = true;
@@ -1897,7 +1768,6 @@ mod range_reduction_tests {
             acquisition_failed: true,
             boundary_failure: None,
         };
-        part.reports[0].outcome = part.reports[0].walk.outcome;
         part.seed_masks[0][0] = DivisionSeed::PRIMARY_VTABLE;
         assert_eq!(
             captured.reduce_pass(0),
@@ -1920,24 +1790,6 @@ mod range_reduction_tests {
     }
 
     #[test]
-    fn terminal_fault_preserves_the_complete_acquisition_mask_union() {
-        let mut captured = fixture();
-        let part = captured.ranges[0].as_mut().unwrap();
-        part.reports[0].outcome = Outcome::Unavailable {
-            reason: "changed dependency",
-        };
-        part.reports[0].terminal_stage = 5;
-        assert_eq!(
-            captured.reduce_pass(0),
-            Outcome::Unavailable {
-                reason: "changed dependency"
-            }
-        );
-        assert_eq!(&captured.seed_masks[0][..6], &[DivisionSeed::CLASS; 6]);
-        assert_eq!(captured.required_legs, 6);
-    }
-
-    #[test]
     fn inherited_missing_sources_are_counted_once_after_range_reassembly() {
         let mut captured = fixture();
         captured.source_outcomes[0] = Outcome::Truncated {
@@ -1954,39 +1806,12 @@ mod range_reduction_tests {
     }
 
     #[test]
-    fn terminal_stage_priority_is_independent_of_range_completion_order() {
-        let mut captured = fixture();
-        captured.ranges[0].as_mut().unwrap().reports[0].outcome = Outcome::Unavailable {
-            reason: "cache verification",
-        };
-        captured.ranges[0].as_mut().unwrap().reports[0].terminal_stage = 6;
-        captured.ranges[2].as_mut().unwrap().reports[0].outcome = Outcome::Unavailable {
-            reason: "transport verification",
-        };
-        captured.ranges[2].as_mut().unwrap().reports[0].terminal_stage = 2;
-        assert_eq!(
-            captured.reduce_pass(0),
-            Outcome::Unavailable {
-                reason: "cache verification"
-            }
-        );
-        assert_eq!(&captured.seed_masks[0][..6], &[DivisionSeed::CLASS; 6]);
-    }
-
-    #[test]
-    fn failed_verify_job_retains_masks_while_failed_acquire_stops_the_frontier() {
-        let mut captured = fixture();
-        captured.ranges[0]
-            .as_mut()
-            .unwrap()
-            .fail("verify panic", 0, false);
-        captured.reduce_pass(0);
-        assert_eq!(&captured.seed_masks[0][..6], &[DivisionSeed::CLASS; 6]);
+    fn failed_acquire_job_stops_the_mask_frontier() {
         let mut captured = fixture();
         let range = captured.ranges[1].as_mut().unwrap();
         range.reports[0].walk.visited_sources = 0;
         range.reports[0].walk.required_legs = 0;
-        range.fail("acquire panic", 0, true);
+        range.fail("acquire panic", 0);
         captured.reduce_pass(0);
         assert_eq!(
             &captured.seed_masks[0][..6],
@@ -2002,7 +1827,6 @@ mod range_reduction_tests {
         first.reports[0].walk.outcome = Outcome::Unavailable {
             reason: "preceding context changed",
         };
-        first.reports[0].outcome = first.reports[0].walk.outcome;
         let next = captured.ranges[1].as_mut().unwrap();
         let before_speed = DivisionSeed::CLASS | DivisionSeed::LOCATION;
         next.speed_frontiers[0][1] = Some((200, before_speed, 2, 0, 1));
@@ -2036,7 +1860,6 @@ mod range_reduction_tests {
         first.reports[0].walk.outcome = Outcome::Unavailable {
             reason: "preceding context changed",
         };
-        first.reports[0].outcome = first.reports[0].walk.outcome;
         let next = captured.ranges[1].as_mut().unwrap();
         next.reports[0].walk.acquisition_failed = true;
         next.reports[0].walk.visited_sources = 1;
@@ -2044,7 +1867,6 @@ mod range_reduction_tests {
         next.reports[0].walk.outcome = Outcome::Unavailable {
             reason: "route unreadable",
         };
-        next.reports[0].outcome = next.reports[0].walk.outcome;
         assert_eq!(
             captured.reduce_pass(0),
             Outcome::Unavailable {
@@ -2077,7 +1899,6 @@ mod range_reduction_tests {
             first.reports[pass].walk.outcome = Outcome::Unavailable {
                 reason: "same source fault",
             };
-            first.reports[pass].outcome = first.reports[pass].walk.outcome;
         }
         for range in captured.ranges[1..3].iter_mut().flatten() {
             range.geometry_same = false;
@@ -2112,15 +1933,14 @@ const SMALL_READ_BYTES: usize = 32;
 #[derive(Clone, Copy, Default)]
 struct ModifierSnapshot {
     address: usize,
-    header: [u8; 16],
     start: usize,
     len: usize,
     occupied: bool,
 }
 
-/// Full raw sorted accumulators, owned only until this pass's direct final
-/// verification. A collision or exhausted arena uses the original live reader;
-/// no eviction, allocation, partial snapshot, or cross-pass reuse is allowed.
+/// Full raw sorted accumulators, owned for one pass. A collision or exhausted
+/// arena uses the original live reader; no eviction, allocation, partial
+/// snapshot, or cross-pass reuse is allowed.
 struct ModifierSnapshots {
     entries: Vec<ModifierSnapshot>,
     used: Vec<usize>,
@@ -2183,13 +2003,9 @@ impl ModifierSnapshots {
         if let Err(reason) = engine::modifier_accumulator::validate_snapshot(bytes) {
             return Some(Err(reason));
         }
-        if engine::read::<[u8; 16]>(source, address) != Some(header) {
-            return Some(Err("modifier accumulator header changed"));
-        }
         let result = engine::modifier_accumulator::lookup_snapshot(bytes, key);
         self.entries[slot] = ModifierSnapshot {
             address,
-            header,
             start: self.bytes_len,
             len,
             occupied: true,
@@ -2206,32 +2022,6 @@ impl ModifierSnapshots {
         }
         self.used_len = 0;
         self.bytes_len = 0;
-    }
-
-    fn verify_and_clear(&mut self, source: &impl Memory) -> bool {
-        let mut matched = true;
-        let mut fresh = [0_u8; 64 * 16];
-        for &slot in &self.used[..self.used_len] {
-            let entry = self.entries[slot];
-            matched &= engine::read::<[u8; 16]>(source, entry.address) == Some(entry.header);
-            // The stored header was fully bounded before insertion. Continue
-            // checking all retained bytes even if a prior header/read failed.
-            let data = u64::from_le_bytes(entry.header[..8].try_into().unwrap()) as usize;
-            let mut offset = 0;
-            while offset < entry.len {
-                let count = (entry.len - offset).min(fresh.len());
-                let copied = engine::read_slice(source, data + offset, &mut fresh[..count]);
-                matched &= copied
-                    && fresh[..count]
-                        == self.bytes[entry.start + offset..entry.start + offset + count];
-                offset += count;
-            }
-            matched &= engine::read::<[u8; 16]>(source, entry.address) == Some(entry.header);
-            self.entries[slot] = ModifierSnapshot::default();
-        }
-        self.used_len = 0;
-        self.bytes_len = 0;
-        matched
     }
 
     fn grow(&mut self, capacity: usize, bytes: usize) {
@@ -2339,9 +2129,8 @@ struct SupplyEntry {
     occupied: bool,
 }
 
-/// Native country/area predicates shared only during one independently checked
-/// pass. Occupied slots are never evicted; every retained result is recomputed
-/// through the unshared engine reader before publication, including on errors.
+/// Native country/area predicates shared only during one pass. Occupied slots
+/// are never evicted; a collision uses the unshared engine reader.
 struct SupplyMemo {
     entries: Vec<SupplyEntry>,
     used: Vec<usize>,
@@ -2404,20 +2193,6 @@ impl SupplyMemo {
         }
         self.used_len = 0;
     }
-    fn verify_and_clear(
-        &mut self,
-        mut calculate: impl FnMut(usize, usize, u32, usize) -> Result<bool, &'static str>,
-    ) -> bool {
-        let mut matched = true;
-        for &slot in &self.used[..self.used_len] {
-            let entry = self.entries[slot];
-            matched &=
-                calculate(entry.base, entry.state, entry.owner, entry.area) == Ok(entry.accessible);
-            self.entries[slot] = SupplyEntry::default();
-        }
-        self.used_len = 0;
-        matched
-    }
     fn grow(&mut self, capacity: usize) {
         self.clear();
         if capacity > self.entries.len() {
@@ -2439,9 +2214,8 @@ struct TransportEntry {
     occupied: bool,
 }
 
-/// Derived results are local to one base/game-state/pass. Even reads which
-/// collided in SmallReadCache participate in the direct final recomputation of
-/// every retained result. No eviction or inferred success on failed misses.
+/// Derived results are local to one base/game-state/pass. No eviction or
+/// inferred success on failed misses.
 struct TransportMemo {
     entries: Vec<TransportEntry>,
     used: Vec<usize>,
@@ -2490,20 +2264,6 @@ impl TransportMemo {
             self.entries[slot] = TransportEntry::default();
         }
         self.used_len = 0;
-    }
-    fn verify_and_clear(
-        &mut self,
-        mut calculate: impl FnMut(u32, usize) -> Result<i64, &'static str>,
-    ) -> bool {
-        let mut matched = true;
-        for &slot in &self.used[..self.used_len] {
-            let entry = &mut self.entries[slot];
-            let result = calculate(entry.owner, entry.region);
-            matched &= result == Ok(entry.speed);
-            *entry = TransportEntry::default();
-        }
-        self.used_len = 0;
-        matched
     }
     fn grow(&mut self, capacity: usize) {
         self.clear();
@@ -2688,9 +2448,8 @@ struct CacheKey {
     len: usize,
 }
 
-/// Callback-local exact reads only. Occupied slots are never evicted: a full
-/// four-slot neighborhood is acquired normally, leaving retained observations
-/// available for mandatory direct verification at the end of each pass.
+/// Callback-local exact reads, shared within one pass. Occupied slots are
+/// never evicted: a full four-slot neighborhood is acquired normally.
 struct SmallReadCache {
     // Dense metadata avoids fetching the 32-byte payload on misses/collisions.
     keys: Vec<CacheKey>,
@@ -2735,6 +2494,10 @@ impl SmallReadCache {
     }
     fn clear(&mut self) {
         self.diagnostics = CacheDiagnostics::default();
+        self.clear_reads();
+    }
+    /// Drops every retained read; diagnostics accumulate across passes.
+    fn clear_reads(&mut self) {
         self.witness.clear();
         for &slot in &self.used[..self.used_len] {
             self.keys[slot] = CacheKey::default();
@@ -2774,30 +2537,6 @@ impl SmallReadCache {
             .diagnostics
             .witness_bytes_required
             .max(self.witness.required_bytes);
-    }
-    fn verify_and_clear(&mut self, memory: &impl Memory) -> bool {
-        self.observe_witness();
-        let mut matched = self.witness.verify_and_clear(memory);
-        for slots in self.used[..self.used_len].chunks(WITNESS_BATCH_READS) {
-            let addresses = std::array::from_fn(|index| {
-                slots.get(index).map_or(0, |&slot| self.keys[slot].address)
-            });
-            let expected = std::array::from_fn(|index| {
-                slots
-                    .get(index)
-                    .map_or(&[][..], |&slot| &self.bytes[slot][..self.keys[slot].len])
-            });
-            // Every retained read remains independent, even after a witness
-            // failure or a mismatch in an earlier batch.
-            matched &=
-                verify_read_batch::<SMALL_READ_BYTES>(memory, slots.len(), addresses, expected);
-            for &slot in slots {
-                self.keys[slot] = CacheKey::default();
-                self.bytes[slot] = [0; SMALL_READ_BYTES];
-            }
-        }
-        self.used_len = 0;
-        matched
     }
 }
 
@@ -2852,9 +2591,8 @@ impl<M: Memory> Memory for CacheRef<'_, M> {
         }
         let complete = witness.uncovered == cache.witness.uncovered;
         cache.observe_witness();
-        // Only uncached collision/bulk observations are scoped. Exact scalar
-        // cache entries and typed shared dependencies retain their independent
-        // terminal checks; this never evicts or restages them for every army.
+        // Only uncached collision/bulk observations are scoped; exact scalar
+        // cache entries are never evicted or restaged for every army.
         let started = qpc();
         let matched = cache.witness.verify_and_clear(self.source);
         cache.diagnostics.stages.scope_verify.record(started);
@@ -3100,6 +2838,11 @@ mod tests {
             K
         }
     }
+    fn end_pass(cache: &RefCell<SmallReadCache>) {
+        let mut cache = cache.borrow_mut();
+        cache.observe_witness();
+        cache.clear_reads();
+    }
     fn acquire_terminal_journal(
         memory: &impl Memory,
         spans: &[(usize, usize)],
@@ -3113,26 +2856,6 @@ mod tests {
         }
         journal
     }
-    fn acquire_terminal_cache(memory: &impl Memory, spans: &[(usize, usize)]) -> SmallReadCache {
-        let cache = RefCell::new(SmallReadCache::new(128));
-        {
-            let cached = CacheRef {
-                source: memory,
-                cache: &cache,
-                modifiers: None,
-                supply: None,
-                air_defense: None,
-                primary: None,
-            };
-            let mut bytes = [0; SMALL_READ_BYTES];
-            for &(address, len) in spans {
-                assert!(cached.copy(address, &mut bytes[..len]));
-            }
-        }
-        assert_eq!(cache.borrow().used_len, spans.len());
-        cache.into_inner()
-    }
-
     #[test]
     fn witness_terminal_batches_keep_duplicates_overlaps_widths_and_differences() {
         let count = 2 * WITNESS_BATCH_READS + 3;
@@ -3169,50 +2892,6 @@ mod tests {
     }
 
     #[test]
-    fn small_cache_terminal_batches_preserve_used_order_and_reduce_calls() {
-        let count = 2 * WITNESS_BATCH_READS + 3;
-        let spans: Vec<_> = (0..count)
-            .map(|index| (0x2000 + 8 * ((index * 11) % count), 8))
-            .collect();
-        for changed in [None, Some(0), Some(16), Some(count - 1)] {
-            let source = TerminalMemory::new(true);
-            let mut cache = acquire_terminal_cache(&source, &spans);
-            let allocated = cache.allocated_bytes();
-            let storage = (
-                cache.keys.as_ptr(),
-                cache.bytes.as_ptr(),
-                cache.used.as_ptr(),
-            );
-            source.reset_calls();
-            source.changed.set(changed);
-            assert_eq!(cache.verify_and_clear(&source), changed.is_none());
-            assert_eq!(*source.reads.borrow(), spans);
-            assert_eq!(source.scalar_calls.get(), 0);
-            assert_eq!(source.batches.get(), count.div_ceil(WITNESS_BATCH_READS));
-            assert_eq!(cache.used_len, 0);
-            assert!(
-                cache
-                    .keys
-                    .iter()
-                    .all(|key| key.address == 0 && key.len == 0)
-            );
-            assert!(cache.bytes.iter().flatten().all(|&byte| byte == 0));
-            assert_eq!(cache.diagnostics.retained_misses, count as u64);
-            assert_eq!(cache.diagnostics.direct_reads, 0);
-            assert_eq!(cache.diagnostics.hits, 0);
-            assert_eq!(cache.allocated_bytes(), allocated);
-            assert_eq!(
-                storage,
-                (
-                    cache.keys.as_ptr(),
-                    cache.bytes.as_ptr(),
-                    cache.used.as_ptr()
-                )
-            );
-        }
-    }
-
-    #[test]
     fn terminal_faults_skip_failed_fields_finish_suffixes_and_preserve_byte_counts() {
         let count = WITNESS_BATCH_READS + 3;
         let spans: Vec<_> = (0..count).map(|index| (0x2000 + index * 8, 8)).collect();
@@ -3224,56 +2903,36 @@ mod tests {
             (1 << 1) | (1 << 2) | (1 << (WITNESS_BATCH_READS + 1)),
             (1 << count) - 1,
         ];
-        for as_cache in [false, true] {
-            for faults in faults {
-                // A failed copy can leave zero, partial, or all expected bytes.
-                for partial in [0, 3, 8] {
-                    let source = TerminalMemory::new(false);
-                    let counted = crate::division_detail::CountedMemory::new(&source);
-                    let mut journal = ReadWitnessJournal::new(0, 0);
-                    let mut cache = SmallReadCache::new(0);
-                    if as_cache {
-                        cache = acquire_terminal_cache(&counted, &spans);
-                    } else {
-                        journal = acquire_terminal_journal(&counted, &spans);
-                    }
-                    let before = counted.bytes();
-                    source.reset_calls();
-                    source.faults.set(faults);
-                    source.partial.set(partial);
-                    let matched = if as_cache {
-                        cache.verify_and_clear(&counted)
-                    } else {
-                        journal.verify_and_clear(&counted)
-                    };
-                    assert!(!matched);
-                    assert_eq!(*source.reads.borrow(), spans);
-                    assert_eq!(source.scalar_calls.get(), 0);
-                    assert_eq!(
-                        counted.bytes() - before,
-                        (count as u64 - u64::from(faults.count_ones())) * 8
-                    );
-                    let continuations = (0..count)
-                        .filter(|&index| {
-                            faults & (1 << index) != 0
-                                && !(index + 1).is_multiple_of(WITNESS_BATCH_READS)
-                                && index + 1 < count
-                        })
-                        .count();
-                    assert_eq!(
-                        source.batches.get(),
-                        count.div_ceil(WITNESS_BATCH_READS) + continuations
-                    );
-                    assert_eq!((journal.len, journal.bytes_len, cache.used_len), (0, 0, 0));
-                    assert!(journal.bytes.iter().all(|&byte| byte == 0));
-                    assert!(
-                        cache
-                            .keys
-                            .iter()
-                            .all(|key| key.address == 0 && key.len == 0)
-                    );
-                    assert!(cache.bytes.iter().flatten().all(|&byte| byte == 0));
-                }
+        for faults in faults {
+            // A failed copy can leave zero, partial, or all expected bytes.
+            for partial in [0, 3, 8] {
+                let source = TerminalMemory::new(false);
+                let counted = crate::division_detail::CountedMemory::new(&source);
+                let mut journal = acquire_terminal_journal(&counted, &spans);
+                let before = counted.bytes();
+                source.reset_calls();
+                source.faults.set(faults);
+                source.partial.set(partial);
+                assert!(!journal.verify_and_clear(&counted));
+                assert_eq!(*source.reads.borrow(), spans);
+                assert_eq!(source.scalar_calls.get(), 0);
+                assert_eq!(
+                    counted.bytes() - before,
+                    (count as u64 - u64::from(faults.count_ones())) * 8
+                );
+                let continuations = (0..count)
+                    .filter(|&index| {
+                        faults & (1 << index) != 0
+                            && !(index + 1).is_multiple_of(WITNESS_BATCH_READS)
+                            && index + 1 < count
+                    })
+                    .count();
+                assert_eq!(
+                    source.batches.get(),
+                    count.div_ceil(WITNESS_BATCH_READS) + continuations
+                );
+                assert_eq!((journal.len, journal.bytes_len), (0, 0));
+                assert!(journal.bytes.iter().all(|&byte| byte == 0));
             }
         }
     }
@@ -3287,12 +2946,6 @@ mod tests {
         source.fault.set(Some(24));
         assert!(!journal.verify_and_clear(&source));
         assert_eq!(*source.calls.borrow(), spans);
-        source.fault.set(None);
-        let mut cache = acquire_terminal_cache(&source, &spans);
-        source.calls.borrow_mut().clear();
-        source.fault.set(Some(24));
-        assert!(!cache.verify_and_clear(&source));
-        assert_eq!(*source.calls.borrow(), spans);
     }
 
     #[test]
@@ -3303,8 +2956,6 @@ mod tests {
         let generation = journal.generation;
         assert!(journal.verify_and_clear(&source));
         assert_eq!(journal.generation, generation + 1);
-        let mut cache = SmallReadCache::with_witness(0, 2, 64);
-        assert!(cache.verify_and_clear(&source));
         assert!(source.reads.borrow().is_empty());
         assert_eq!((source.scalar_calls.get(), source.batches.get()), (0, 0));
     }
@@ -3338,17 +2989,10 @@ mod tests {
             assert_eq!(cache.borrow().witness.len, 0);
             assert_eq!(cache.borrow().diagnostics.witness_entries_peak, 2);
             assert_eq!(cache.borrow().diagnostics.witness_bytes_peak, 16);
-            source.reset_calls();
-            assert!(cache.borrow_mut().verify_and_clear(&source));
-            assert_eq!(*source.reads.borrow(), [(0x2010, 8)]);
-            assert_eq!((source.scalar_calls.get(), source.batches.get()), (0, 1));
+            end_pass(&cache);
+            assert_eq!(cache.borrow().used_len, 0);
         }
         assert!(!memory.read_witness_complete(stale));
-        assert!(memory.copy(0x2010, &mut [0; 8]));
-        source.epoch.set(11);
-        assert!(!cache.borrow_mut().verify_and_clear(&source));
-        assert!(memory.copy(0x2010, &mut [0; 8]));
-        assert!(cache.borrow_mut().verify_and_clear(&source));
     }
 
     #[test]
@@ -3546,7 +3190,6 @@ mod tests {
         assert_eq!(cache.borrow().allocated_bytes(), allocated);
         assert_eq!(cache.borrow().diagnostics.witness_skips, 4);
         assert_eq!(cache.borrow().diagnostics.witness_entries_peak, 1);
-        assert!(cache.borrow_mut().verify_and_clear(&source));
     }
 
     #[test]
@@ -3593,7 +3236,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_root_hook_uses_cache_ref_and_independent_terminal_checks_without_reentry() {
+    fn primary_root_hook_uses_cache_ref_without_reentry() {
         use engine::{corder_instance as order, corders_group as group};
         const MEMBER: usize = 0x100;
         const GROUP: usize = 0x1000;
@@ -3659,17 +3302,12 @@ mod tests {
                 .count(),
             1
         );
+        // The next pass starts cold and observes the changed membership.
         source.bytes.borrow_mut()[MEMBERS..MEMBERS + 8].fill(0);
-        assert!(!primary.borrow_mut().verify_and_clear(&source));
-        let before = source.calls.borrow().len();
-        // A failed typed verifier cannot prevent the scalar verifier from
-        // checking and releasing its overlapping retained observations.
-        assert!(!cache.borrow_mut().verify_and_clear(&source));
-        assert!(source.calls.borrow().len() > before);
+        primary.borrow_mut().clear();
+        end_pass(&cache);
         assert_eq!(cache.borrow().used_len, 0);
         assert_eq!(memory.movement_primary_root(0, MEMBER), Some(Ok(0)));
-        assert!(primary.borrow_mut().verify_and_clear(&source));
-        assert!(cache.borrow_mut().verify_and_clear(&source));
         assert_eq!(
             primary.borrow().allocated_bytes() + cache.borrow().allocated_bytes(),
             allocated
@@ -3677,7 +3315,7 @@ mod tests {
     }
 
     #[test]
-    fn witness_keeps_collision_and_bulk_reads_fresh_and_checks_every_observation() {
+    fn witness_keeps_collision_and_bulk_reads_fresh() {
         let source = Observed::new();
         let cache = RefCell::new(SmallReadCache::with_witness(1, 8, 256));
         let memory = CacheRef {
@@ -3706,7 +3344,7 @@ mod tests {
             &[(8, 8), (16, 8), (16, 8), (64, 64)]
         );
         assert!(memory.read_witness_complete(mark));
-        assert!(!cache.borrow_mut().verify_and_clear(&source));
+        end_pass(&cache);
         let diagnostics = cache.borrow().diagnostics;
         assert_eq!(diagnostics.hits, 1);
         assert_eq!(diagnostics.retained_misses, 1);
@@ -3719,35 +3357,6 @@ mod tests {
         assert!(!memory.read_witness_complete(mark));
         assert_eq!(cache.borrow().witness.len, 0);
         assert!(cache.borrow().witness.bytes.iter().all(|&byte| byte == 0));
-    }
-
-    #[test]
-    fn witness_terminal_fault_does_not_skip_later_journal_or_small_cache_reads() {
-        let source = Observed::new();
-        let cache = RefCell::new(SmallReadCache::with_witness(1, 8, 256));
-        let memory = CacheRef {
-            source: &source,
-            cache: &cache,
-            modifiers: None,
-            supply: None,
-            air_defense: None,
-            primary: None,
-        };
-        let mark = memory.read_witness().unwrap();
-        for address in [8, 16, 24, 32] {
-            assert!(memory.copy(address, &mut [0; 8]));
-        }
-        assert!(memory.read_witness_complete(mark));
-        source.calls.borrow_mut().clear();
-        source.fault.set(Some(16));
-        source.bytes.borrow_mut()[24] ^= 1;
-        assert!(!cache.borrow_mut().verify_and_clear(&source));
-        assert_eq!(
-            &*source.calls.borrow(),
-            &[(16, 8), (24, 8), (32, 8), (8, 8)]
-        );
-        assert_eq!(cache.borrow().witness.len, 0);
-        assert_eq!(cache.borrow().used_len, 0);
     }
 
     #[test]
@@ -3769,7 +3378,7 @@ mod tests {
             assert!(memory.copy(32, &mut [0; 8]));
             assert!(!memory.read_witness_complete(mark));
             assert_eq!(cache.borrow().witness.len, 1);
-            assert!(cache.borrow_mut().verify_and_clear(&source));
+            end_pass(&cache);
             let diagnostics = cache.borrow().diagnostics;
             assert_eq!(diagnostics.witness_entries_required, 2);
             assert_eq!(diagnostics.witness_bytes_required, 16);
@@ -3784,7 +3393,6 @@ mod tests {
                 0,
                 "failed partial bytes must not be retained"
             );
-            assert!(cache.borrow_mut().verify_and_clear(&source));
         }
     }
 
@@ -3810,7 +3418,7 @@ mod tests {
         assert!(memory.copy(0x1000, &mut [0; WITNESS_MAX_READ + 1]));
         assert!(!memory.read_witness_complete(mark));
         assert_eq!(cache.borrow().witness.len, 1);
-        assert!(cache.borrow_mut().verify_and_clear(&source));
+        end_pass(&cache);
         let other_cache = RefCell::new(SmallReadCache::with_witness(0, 4, 2 * bytes.len()));
         let other = CacheRef {
             source: &source,
@@ -3838,33 +3446,6 @@ mod tests {
     }
 
     #[test]
-    fn witness_does_not_replace_independent_modifier_snapshot_verification() {
-        let source = Observed::new();
-        source.accumulator(16, 64, &[(2, 10), (5, 20)]);
-        let cache = RefCell::new(SmallReadCache::with_witness(1, 8, 256));
-        let modifiers = RefCell::new(ModifierSnapshots::new(8, 128));
-        let memory = CacheRef {
-            source: &source,
-            cache: &cache,
-            modifiers: Some(&modifiers),
-            supply: None,
-            air_defense: None,
-            primary: None,
-        };
-        let mark = memory.read_witness().unwrap();
-        assert_eq!(
-            engine::modifier_accumulator::lookup_at(&memory, 16, 2)
-                .unwrap()
-                .raw,
-            10
-        );
-        assert!(memory.read_witness_complete(mark));
-        source.bytes.borrow_mut()[88] ^= 1; // Unselected key5 value still belongs to the snapshot.
-        assert!(!modifiers.borrow_mut().verify_and_clear(&source));
-        assert!(cache.borrow_mut().verify_and_clear(&source));
-    }
-
-    #[test]
     fn witness_growth_accounting_and_independent_pass_diagnostics_are_bounded() {
         let source = Observed::new();
         let cache = RefCell::new(SmallReadCache::with_witness(1, 1, 8));
@@ -3880,7 +3461,7 @@ mod tests {
         for _ in 0..2 {
             assert!(memory.copy(8, &mut [0; 8]));
             assert!(memory.copy(16, &mut [0; 8]));
-            assert!(cache.borrow_mut().verify_and_clear(&source));
+            end_pass(&cache);
         }
         assert_eq!(cache.borrow().allocated_bytes(), allocated);
         assert_eq!(cache.borrow().diagnostics.retained_misses, 2);
@@ -3894,7 +3475,6 @@ mod tests {
         let mark = memory.read_witness().unwrap();
         assert!(memory.copy(32, &mut [0; 64]));
         assert!(memory.read_witness_complete(mark));
-        assert!(cache.borrow_mut().verify_and_clear(&source));
     }
 
     #[test]
@@ -3936,10 +3516,9 @@ mod tests {
             );
             assert_eq!(lookup_at(&memory, 16, 6), Ok(Value::default()));
         }
-        assert_eq!(&*source.calls.borrow(), &[(16, 16), (64, 48), (16, 16)]);
+        assert_eq!(&*source.calls.borrow(), &[(16, 16), (64, 48)]);
         assert_eq!(cache.borrow().used_len, 0);
-        assert!(modifiers.borrow_mut().verify_and_clear(&source));
-        assert_eq!(&source.calls.borrow()[3..], &[(16, 16), (64, 48), (16, 16)]);
+        modifiers.borrow_mut().clear();
         assert_eq!(modifiers.borrow().used_len, 0);
         assert_eq!(modifiers.borrow().bytes_len, 0);
         assert!(
@@ -3947,63 +3526,8 @@ mod tests {
                 .borrow()
                 .entries
                 .iter()
-                .all(|entry| !entry.occupied && entry.address == 0 && entry.header == [0; 16])
+                .all(|entry| !entry.occupied && entry.address == 0)
         );
-    }
-
-    #[test]
-    fn modifier_snapshot_verifies_unused_keys_values_padding_and_all_header_fields() {
-        for mutation in [16, 24, 28, 96, 100, 104] {
-            let source = Observed::new();
-            source.accumulator(16, 64, &[(2, 7), (5, 0), (9, 13)]);
-            let mut snapshots = ModifierSnapshots::new(8, 128);
-            let first = snapshots.lookup(&source, 16, 2).unwrap().unwrap();
-            source.bytes.borrow_mut()[mutation] ^= 1;
-            assert_eq!(snapshots.lookup(&source, 16, 2), Some(Ok(first)));
-            assert!(
-                !snapshots.verify_and_clear(&source),
-                "missed mutation at {mutation}"
-            );
-            assert_eq!(snapshots.used_len, 0);
-            assert_eq!(snapshots.bytes_len, 0);
-        }
-        let source = Observed::new();
-        source.accumulator(16, 64, &[(2, 7)]);
-        let mut snapshots = ModifierSnapshots::new(8, 128);
-        assert_eq!(snapshots.lookup(&source, 16, 2).unwrap().unwrap().raw, 7);
-        source.bytes.borrow_mut()[72..80].copy_from_slice(&11_i64.to_le_bytes());
-        assert!(!snapshots.verify_and_clear(&source));
-        assert_eq!(snapshots.lookup(&source, 16, 2).unwrap().unwrap().raw, 11);
-        assert!(snapshots.verify_and_clear(&source));
-    }
-
-    #[test]
-    fn modifier_snapshot_faults_check_every_retained_array_and_clear_failed_passes() {
-        for fault in [16, 64, 32, 128] {
-            let source = Observed::new();
-            source.accumulator(16, 64, &[(2, 7), (5, 11)]);
-            source.accumulator(32, 128, &[(3, 17)]);
-            let mut snapshots = ModifierSnapshots::new(8, 128);
-            assert!(snapshots.lookup(&source, 16, 2).unwrap().is_ok());
-            assert!(snapshots.lookup(&source, 32, 3).unwrap().is_ok());
-            source.calls.borrow_mut().clear();
-            source.fault.set(Some(fault));
-            assert!(!snapshots.verify_and_clear(&source));
-            assert_eq!(
-                &*source.calls.borrow(),
-                &[(16, 16), (64, 32), (16, 16), (32, 16), (128, 16), (32, 16)]
-            );
-            assert_eq!(snapshots.used_len, 0);
-            source.fault.set(None);
-            assert!(snapshots.lookup(&source, 16, 2).unwrap().is_ok());
-            // A later failed lookup must not discard prior retained inputs:
-            // capture finalizes them even when the walk is already unavailable.
-            source.fault.set(Some(32));
-            assert!(snapshots.lookup(&source, 32, 3).unwrap().is_err());
-            source.bytes.borrow_mut()[72] ^= 1;
-            assert!(!snapshots.verify_and_clear(&source));
-            assert_eq!(snapshots.used_len, 0);
-        }
     }
 
     #[test]
@@ -4027,7 +3551,6 @@ mod tests {
         }
         source.fault.set(None);
         assert!(snapshots.lookup(&source, 16, 2).unwrap().is_ok());
-        assert!(snapshots.verify_and_clear(&source));
     }
 
     #[test]
@@ -4057,7 +3580,6 @@ mod tests {
                 "fallback skipped malformed suffix"
             );
             assert_eq!(modifiers.borrow().used_len, usize::from(slots != 0));
-            assert!(modifiers.borrow_mut().verify_and_clear(&source));
         }
     }
 
@@ -4081,7 +3603,7 @@ mod tests {
                 snapshots.lookup(&source, 16, 1),
                 Some(Ok(engine::modifier_accumulator::Value::default()))
             );
-            assert!(snapshots.verify_and_clear(&source));
+            snapshots.clear();
             assert_eq!(
                 (
                     snapshots.entries.as_ptr(),
@@ -4112,89 +3634,7 @@ mod tests {
     }
 
     #[test]
-    fn modifier_snapshot_initial_header_reread_rejects_changes_including_empty_arrays() {
-        struct Changed {
-            source: Observed,
-            reads: Cell<usize>,
-            changed_byte: usize,
-        }
-        impl Memory for Changed {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                if !self.source.copy(address, destination) {
-                    return false;
-                }
-                if address == 16 {
-                    self.reads.set(self.reads.get() + 1);
-                    if self.reads.get() > 1 {
-                        destination[self.changed_byte] ^= 1;
-                    }
-                }
-                true
-            }
-        }
-        for count in [0, 1] {
-            for changed_byte in [0, 8, 12] {
-                let source = Changed {
-                    source: Observed::new(),
-                    reads: Cell::new(0),
-                    changed_byte,
-                };
-                source.source.accumulator(16, 64, &[(2, 7)][..count]);
-                let mut snapshots = ModifierSnapshots::new(8, 128);
-                assert_eq!(
-                    snapshots.lookup(&source, 16, 2),
-                    Some(Err("modifier accumulator header changed"))
-                );
-                assert_eq!(snapshots.used_len, 0);
-                assert_eq!(snapshots.bytes_len, 0);
-            }
-        }
-    }
-
-    #[test]
-    fn modifier_snapshot_direct_verification_reaches_the_final_partial_batch() {
-        struct Wide {
-            bytes: RefCell<Vec<u8>>,
-            calls: RefCell<Vec<(usize, usize)>>,
-        }
-        impl Memory for Wide {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                self.calls.borrow_mut().push((address, destination.len()));
-                engine::memory::SliceMemory {
-                    base: 0,
-                    bytes: &self.bytes.borrow(),
-                }
-                .copy(address, destination)
-            }
-        }
-        let source = Wide {
-            bytes: RefCell::new(vec![0; 64 + 65 * 16]),
-            calls: RefCell::new(Vec::new()),
-        };
-        {
-            let mut bytes = source.bytes.borrow_mut();
-            bytes[16..24].copy_from_slice(&64_u64.to_le_bytes());
-            bytes[24..28].copy_from_slice(&65_u32.to_le_bytes());
-            bytes[28..32].copy_from_slice(&65_u32.to_le_bytes());
-            for index in 0..65 {
-                let at = 64 + index * 16;
-                bytes[at..at + 4].copy_from_slice(&(index as u32 + 1).to_le_bytes());
-            }
-        }
-        let mut snapshots = ModifierSnapshots::new(8, 65 * 16);
-        assert!(snapshots.lookup(&source, 16, 1).unwrap().is_ok());
-        source.bytes.borrow_mut()[64 + 64 * 16 + 8] = 1;
-        source.calls.borrow_mut().clear();
-        assert!(!snapshots.verify_and_clear(&source));
-        assert_eq!(
-            &*source.calls.borrow(),
-            &[(16, 16), (64, 1024), (1088, 16), (16, 16)]
-        );
-        assert_eq!(snapshots.used_len, 0);
-    }
-
-    #[test]
-    fn transport_memo_hits_are_exact_and_end_at_each_independent_pass() {
+    fn transport_memo_hits_are_exact_and_end_at_each_pass() {
         let mut memo = TransportMemo::new(8);
         let calls = Cell::new(0);
         for _ in 0..4 {
@@ -4207,12 +3647,7 @@ mod tests {
             );
         }
         assert_eq!(calls.get(), 1);
-        assert!(memo.verify_and_clear(|owner, region| {
-            assert_eq!((owner, region), (u32::MAX, 0x1000));
-            calls.set(calls.get() + 1);
-            Ok(i64::MIN)
-        }));
-        assert_eq!(calls.get(), 2);
+        memo.clear();
         assert_eq!(memo.used_len, 0);
         assert!(
             memo.entries
@@ -4220,11 +3655,10 @@ mod tests {
                 .all(|e| !e.occupied && e.region == 0 && e.owner == 0 && e.speed == 0)
         );
         assert_eq!(memo.resolve(u32::MAX, 0x1000, || Ok(17)), Ok(17));
-        assert!(memo.verify_and_clear(|_, _| Ok(17)));
     }
 
     #[test]
-    fn supply_memo_shares_true_and_false_only_until_independent_pass_verification() {
+    fn supply_memo_shares_true_and_false_only_within_one_pass() {
         for value in [false, true] {
             let mut memo = SupplyMemo::new(8);
             let calls = Cell::new(0);
@@ -4238,12 +3672,7 @@ mod tests {
                 );
             }
             assert_eq!(calls.get(), 1);
-            assert!(memo.verify_and_clear(|base, state, owner, area| {
-                assert_eq!((base, state, owner, area), (0, 16, u32::MAX, 0));
-                calls.set(calls.get() + 1);
-                Ok(value)
-            }));
-            assert_eq!(calls.get(), 2);
+            memo.clear();
             assert_eq!(memo.used_len, 0);
             assert!(memo.entries.iter().all(|e| !e.occupied
                 && e.base == 0
@@ -4255,7 +3684,6 @@ mod tests {
                 memo.resolve(0, 16, u32::MAX, 0, || Ok(!value)),
                 Some(Ok(!value))
             );
-            assert!(memo.verify_and_clear(|_, _, _, _| Ok(!value)));
         }
     }
 
@@ -4422,84 +3850,12 @@ mod tests {
             Some(Ok(true))
         );
         assert_eq!(memo.used_len, 1);
-        assert!(memo.verify_and_clear(|base, state, owner, area| {
-            assert_eq!((base, state, owner, area), (8, 16, 1, 32));
-            Ok(true)
-        }));
         let mut empty = SupplyMemo::new(0);
         assert_eq!(
             empty.resolve(0, 0, 0, 0, || panic!("zero capacity must fall back")),
             None
         );
         assert_eq!(empty.used_len, 0);
-    }
-
-    #[test]
-    fn supply_memo_verifies_all_retained_keys_after_mutation_fault_or_failed_miss() {
-        for fault in [false, true] {
-            let mut memo = SupplyMemo::new(8);
-            assert_eq!(memo.resolve(0, 0, 1, 8, || Ok(true)), Some(Ok(true)));
-            assert_eq!(memo.resolve(0, 0, 1, 16, || Ok(false)), Some(Ok(false)));
-            assert_eq!(
-                memo.resolve(0, 0, 1, 24, || Err("walk failed")),
-                Some(Err("walk failed"))
-            );
-            let mut calls = 0;
-            assert!(!memo.verify_and_clear(|_, _, _, area| {
-                calls += 1;
-                if area == 8 {
-                    if fault {
-                        Err("verify fault")
-                    } else {
-                        Ok(false)
-                    }
-                } else {
-                    assert_eq!(area, 16);
-                    Ok(false)
-                }
-            }));
-            assert_eq!(calls, 2);
-            assert_eq!(memo.used_len, 0);
-            assert!(
-                memo.entries
-                    .iter()
-                    .all(|entry| !entry.occupied && entry.area == 0)
-            );
-        }
-    }
-
-    #[test]
-    fn supply_memo_direct_verification_covers_small_read_collisions() {
-        let source = Observed::new();
-        let cache = RefCell::new(SmallReadCache::new(1));
-        let memory = CacheRef {
-            source: &source,
-            cache: &cache,
-            modifiers: None,
-            supply: None,
-            air_defense: None,
-            primary: None,
-        };
-        let mut memo = SupplyMemo::new(1);
-        assert_eq!(
-            memo.resolve(0, 0, 1, 8, || {
-                let a = engine::read::<u8>(&memory, 32).ok_or("a")?;
-                let b = engine::read::<u8>(&memory, 64).ok_or("b")?;
-                Ok(a < b)
-            }),
-            Some(Ok(true))
-        );
-        source.bytes.borrow_mut()[64] = 0;
-        assert_eq!(
-            memo.resolve(0, 0, 1, 8, || panic!("memo hit")),
-            Some(Ok(true))
-        );
-        assert!(!memo.verify_and_clear(|_, _, _, _| {
-            let a = engine::read::<u8>(&source, 32).ok_or("a")?;
-            let b = engine::read::<u8>(&source, 64).ok_or("b")?;
-            Ok(a < b)
-        }));
-        assert!(cache.borrow_mut().verify_and_clear(&source));
     }
 
     #[test]
@@ -4512,7 +3868,7 @@ mod tests {
         assert!(bytes >= 8 * (size_of::<SupplyEntry>() + size_of::<usize>()));
         for _ in 0..3 {
             assert_eq!(memo.resolve(0, 0, 1, 8, || Ok(false)), Some(Ok(false)));
-            assert!(memo.verify_and_clear(|_, _, _, _| Ok(false)));
+            memo.clear();
             assert_eq!((memo.entries.as_ptr(), memo.used.as_ptr()), pointers);
             assert_eq!(memo.allocated_bytes(), bytes);
         }
@@ -4524,7 +3880,7 @@ mod tests {
     }
 
     #[test]
-    fn supply_capability_runs_real_native_reader_and_final_check_bypasses_its_hit() {
+    fn supply_capability_runs_real_native_reader_and_shares_only_within_a_pass() {
         struct Source {
             bytes: RefCell<Vec<u8>>,
             calls: Cell<usize>,
@@ -4588,31 +3944,20 @@ mod tests {
             engine::ccountry::has_core_supply_access(&memory, 0, 0x1000, 1, 0),
             Ok(true)
         );
-        assert!(
-            !supply
-                .borrow_mut()
-                .verify_and_clear(|base, state, owner, area| {
-                    engine::ccountry::has_core_supply_access_direct(
-                        &source, base, state, owner, area,
-                    )
-                })
+        // The next pass starts cold and reads the changed capital.
+        supply.borrow_mut().clear();
+        assert_ne!(
+            engine::ccountry::has_core_supply_access(&memory, 0, 0x1000, 1, 0),
+            Ok(true)
         );
-        assert_eq!(supply.borrow().used_len, 0);
         assert!(source.calls.get() > calls);
         source.bytes.borrow_mut()[capital..capital + 4].fill(0);
+        supply.borrow_mut().clear();
         assert_eq!(
             engine::ccountry::has_core_supply_access(&memory, 0, 0x1000, 1, 0),
             Ok(true)
         );
-        assert!(
-            supply
-                .borrow_mut()
-                .verify_and_clear(|base, state, owner, area| {
-                    engine::ccountry::has_core_supply_access_direct(
-                        &source, base, state, owner, area,
-                    )
-                })
-        );
+        supply.borrow_mut().clear();
         for _ in 0..2 {
             assert!(engine::ccountry::has_core_supply_access(&memory, 0, 0x1000, 0, 0).is_err());
             assert_eq!(supply.borrow().used_len, 0);
@@ -4654,65 +3999,6 @@ mod tests {
             Ok(11)
         );
         assert_eq!(memo.used_len, 1);
-        assert!(memo.verify_and_clear(|owner, region| {
-            assert_eq!((owner, region), (1, 8));
-            Ok(11)
-        }));
-    }
-
-    #[test]
-    fn transport_verification_checks_all_results_after_change_or_fault_and_clears_keys() {
-        for fault in [false, true] {
-            let mut memo = TransportMemo::new(8);
-            assert_eq!(memo.resolve(1, 8, || Ok(11)), Ok(11));
-            assert_eq!(memo.resolve(1, 16, || Ok(22)), Ok(22));
-            let mut calls = 0;
-            assert!(!memo.verify_and_clear(|_, region| {
-                calls += 1;
-                if region == 8 {
-                    if fault { Err("verify fault") } else { Ok(12) }
-                } else {
-                    Ok(22)
-                }
-            }));
-            assert_eq!(calls, 2);
-            assert_eq!(memo.used_len, 0);
-            assert!(memo.entries.iter().all(|e| !e.occupied && e.region == 0));
-        }
-    }
-
-    #[test]
-    fn transport_direct_verification_covers_operands_not_retained_by_small_read_cache() {
-        let source = Observed::new();
-        let cache = RefCell::new(SmallReadCache::new(1));
-        let cached = CacheRef {
-            source: &source,
-            cache: &cache,
-            modifiers: None,
-            supply: None,
-            air_defense: None,
-            primary: None,
-        };
-        // The first operand occupies the sole read-cache slot. The derived
-        // speed's second operand collides, so small-read verification alone
-        // cannot discover its later change.
-        let mut memo = TransportMemo::new(1);
-        assert_eq!(
-            memo.resolve(7, 8, || {
-                let a = engine::read::<u8>(&cached, 32).ok_or("a")?;
-                let b = engine::read::<u8>(&cached, 64).ok_or("b")?;
-                Ok(i64::from(a) + i64::from(b))
-            }),
-            Ok(96)
-        );
-        source.bytes.borrow_mut()[64] = 65;
-        assert_eq!(memo.resolve(7, 8, || panic!("expected memo hit")), Ok(96));
-        assert!(!memo.verify_and_clear(|_, _| {
-            let a = engine::read::<u8>(&source, 32).ok_or("a")?;
-            let b = engine::read::<u8>(&source, 64).ok_or("b")?;
-            Ok(i64::from(a) + i64::from(b))
-        }));
-        assert!(cache.borrow_mut().verify_and_clear(&source));
     }
 
     #[test]
@@ -4727,7 +4013,7 @@ mod tests {
         assert!(bytes >= 2 * (size_of::<TransportEntry>() + size_of::<usize>()));
         for _ in 0..3 {
             assert_eq!(memo.resolve(0, 0, || Ok(9)), Ok(9));
-            assert!(memo.verify_and_clear(|_, _| Ok(9)));
+            memo.clear();
             assert_eq!(memo.entries.as_ptr(), entry_pointer);
             assert_eq!(memo.used.as_ptr(), used_pointer);
         }
@@ -4739,7 +4025,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_small_reads_share_only_within_one_verified_pass() {
+    fn exact_small_reads_share_only_within_one_pass() {
         let source = Observed::new();
         let cache = RefCell::new(SmallReadCache::new(8));
         let memory = CacheRef {
@@ -4757,8 +4043,7 @@ mod tests {
         assert_eq!(bytes, [64, 65, 66, 67, 68, 69, 70, 71]);
         assert_eq!(source.calls.borrow().as_slice(), &[(64, 8)]);
         assert!(memory.immutable_view(64, 8).is_none());
-        assert!(cache.borrow_mut().verify_and_clear(&source));
-        assert_eq!(source.calls.borrow().as_slice(), &[(64, 8), (64, 8)]);
+        end_pass(&cache);
         assert_eq!(cache.borrow().used_len, 0);
         assert!(
             cache
@@ -4777,8 +4062,7 @@ mod tests {
         source.bytes.borrow_mut()[64] = 17;
         assert!(memory.copy(64, &mut bytes));
         assert_eq!(bytes[0], 17);
-        assert_eq!(source.calls.borrow().len(), 3);
-        assert!(cache.borrow_mut().verify_and_clear(&source));
+        assert_eq!(source.calls.borrow().len(), 2);
     }
 
     #[test]
@@ -4880,7 +4164,7 @@ mod tests {
             let allocated = cache.borrow().allocated_bytes();
             assert!(memory.copy(64, &mut [0; 8]));
             assert!(memory.copy(64, &mut [0; 8]));
-            assert!(cache.borrow_mut().verify_and_clear(&source));
+            end_pass(&cache);
             let cache = cache.borrow();
             assert_eq!(
                 (
@@ -4942,7 +4226,7 @@ mod tests {
             let mut hit = [0; 8];
             assert!(memory.copy(32, &mut hit));
             assert_eq!(hit, first);
-            assert!(!cache.borrow_mut().verify_and_clear(&source));
+            end_pass(&cache);
             assert_eq!(cache.borrow().used_len, 0);
             assert!(cache.borrow().keys.iter().all(|key| key.len == 0));
             assert!(
@@ -5001,20 +4285,19 @@ mod tests {
                 }
             }
             assert!(memory.read_witness_complete(witness));
-            assert!(cache.borrow_mut().verify_and_clear(&source));
-            assert_eq!(source.calls.borrow().len(), 2 * (10 - retained));
+            end_pass(&cache);
+            assert_eq!(source.calls.borrow().len(), 10 - retained);
             assert_eq!(cache.borrow().allocated_bytes(), allocated);
             assert!(!memory.read_witness_complete(witness));
             source.bytes.borrow_mut()[address] ^= 1;
             let mut bytes = [0; 8];
             assert!(memory.copy(address, &mut bytes));
             assert_eq!(bytes[0], source.bytes.borrow()[address]);
-            assert!(cache.borrow_mut().verify_and_clear(&source));
         }
     }
 
     #[test]
-    fn probed_failed_insertion_stays_empty_and_final_fault_checks_every_retained_key() {
+    fn probed_failed_insertion_stays_empty_and_breaks_the_witness() {
         let source = Observed::new();
         let cache = RefCell::new(SmallReadCache::with_witness(8, 8, 64));
         let memory = CacheRef {
@@ -5037,15 +4320,6 @@ mod tests {
         assert_eq!(cache.borrow().used_len, 4);
         // Failed acquisition cannot become a complete witness after recovery.
         assert!(!memory.read_witness_complete(witness));
-        source.fault.set(Some(32));
-        let before = source.calls.borrow().len();
-        assert!(!cache.borrow_mut().verify_and_clear(&source));
-        assert_eq!(
-            &source.calls.borrow()[before..],
-            &[(32, 8), (34, 8), (35, 8), (33, 8)]
-        );
-        assert_eq!(cache.borrow().used_len, 0);
-        assert!(cache.borrow().keys.iter().all(|key| key.len == 0));
     }
 
     #[test]
@@ -5069,7 +4343,7 @@ mod tests {
             assert_eq!(&bytes[..len], &source.bytes.borrow()[64..64 + len]);
         }
         assert_eq!(source.calls.borrow().len(), 7);
-        assert!(cache.borrow_mut().verify_and_clear(&source));
+        end_pass(&cache);
         let witness = memory.read_witness().unwrap();
         for address in 32..36 {
             assert!(memory.copy(address, &mut [0; 8]));
@@ -5082,12 +4356,6 @@ mod tests {
         assert_eq!(direct[7], source.bytes.borrow()[43]);
         assert!(!memory.read_witness_complete(witness));
         assert_eq!(cache.borrow().witness.required_entries, 2);
-        let before = source.calls.borrow().len();
-        assert!(!cache.borrow_mut().verify_and_clear(&source));
-        assert_eq!(
-            &source.calls.borrow()[before..],
-            &[(36, 8), (32, 8), (33, 8), (34, 8), (35, 8)]
-        );
     }
 
     #[test]
@@ -5115,12 +4383,10 @@ mod tests {
         assert_eq!(cache.borrow().used_len, 1);
         assert_eq!(cache.borrow().keys[0].address, 64);
         assert_eq!(cache.borrow().keys[0].len, 8);
-        assert!(cache.borrow_mut().verify_and_clear(&source));
-        assert_eq!(source.calls.borrow().last(), Some(&(64, 8)));
     }
 
     #[test]
-    fn failed_initial_reads_are_not_cached_and_verification_faults_fail_the_pass() {
+    fn failed_initial_reads_are_not_cached() {
         let source = Observed::new();
         let cache = RefCell::new(SmallReadCache::new(8));
         let memory = CacheRef {
@@ -5138,11 +4404,8 @@ mod tests {
         source.fault.set(None);
         assert!(memory.copy(32, &mut [0; 8]));
         assert!(memory.copy(40, &mut [0; 8]));
-        source.fault.set(Some(32));
-        assert!(!cache.borrow_mut().verify_and_clear(&source));
-        // Verification must still inspect the second retained span after the
-        // first faults, and must clear both before another independent pass.
-        assert_eq!(&source.calls.borrow()[4..], &[(32, 8), (40, 8)]);
+        assert_eq!(cache.borrow().used_len, 2);
+        end_pass(&cache);
         assert_eq!(cache.borrow().used_len, 0);
         assert!(cache.borrow().keys.iter().all(|e| e.len == 0));
         assert!(
@@ -5152,29 +4415,6 @@ mod tests {
                 .iter()
                 .all(|bytes| *bytes == [0; SMALL_READ_BYTES])
         );
-    }
-
-    #[test]
-    fn final_direct_reread_exposes_a_mutation_hidden_by_an_intermediate_cache_hit() {
-        let source = Observed::new();
-        let cache = RefCell::new(SmallReadCache::new(8));
-        let memory = CacheRef {
-            source: &source,
-            cache: &cache,
-            modifiers: None,
-            supply: None,
-            air_defense: None,
-            primary: None,
-        };
-        let mut bytes = [0; 8];
-        assert!(memory.copy(32, &mut bytes));
-        source.bytes.borrow_mut()[32] ^= 1;
-        assert!(memory.copy(32, &mut bytes));
-        assert_eq!(bytes[0], 32);
-        assert!(!cache.borrow_mut().verify_and_clear(&source));
-        assert!(memory.copy(32, &mut bytes));
-        assert_eq!(bytes[0], 33);
-        assert!(cache.borrow_mut().verify_and_clear(&source));
     }
 
     #[test]
@@ -5199,7 +4439,7 @@ mod tests {
         cache.borrow_mut().clear();
         assert_eq!(cache.borrow().used_len, 0);
         assert!(memory.copy(32, &mut [0; 8]));
-        assert!(cache.borrow_mut().verify_and_clear(&source));
+        end_pass(&cache);
         assert_eq!(cache.borrow().allocated_bytes(), allocated);
     }
 

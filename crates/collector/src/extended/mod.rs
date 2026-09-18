@@ -2002,7 +2002,7 @@ mod tests {
             assert!(captured.eta_report.is_none());
             if let Some(reason) = terminal {
                 for pass in 0..2 {
-                    range.fail(reason, pass, true);
+                    range.fail(reason, pass);
                 }
             } else {
                 let mut workspace = division_eta::Workspace::with_capacities(
@@ -2020,12 +2020,11 @@ mod tests {
                         Outcome::Rows { len: 0 },
                         pass,
                     );
-                    range.verify_pass(&mut workspace, &memory, 0, 0x1000, pass);
                 }
                 assert_eq!(
                     memory.0.get(),
-                    4,
-                    "each cold pass independently acquires and verifies its province root"
+                    2,
+                    "each cold pass reads its province root once"
                 );
             }
             captured.restore_eta_range(0, range);
@@ -2097,7 +2096,7 @@ mod tests {
                 0x5678
             );
             for pass in 0..=usize::from(checked) {
-                range.fail("synthetic terminal ETA", pass, true);
+                range.fail("synthetic terminal ETA", pass);
             }
             captured.restore_eta_range(0, range);
             captured.finish_eta_ranges();

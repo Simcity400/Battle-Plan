@@ -1926,7 +1926,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                             } else {
                                 None
                             },
-                            phase: acquisition::EtaPhase::Acquire { pass: 0 },
+                            pass: 0,
                         })));
                 } else if let Some(workspace) = workspace.take() {
                     decode::recycle_eta_workspace(workspace);
@@ -2883,38 +2883,23 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 .acquisition_wait_ns
                 .load(Ordering::Relaxed)
                 .saturating_sub(wait_at_setup);
-            // A structural verification cannot overlap a still-running acquisition pass.
-            // All ranges cross each barrier together, including the independent cold pass.
+            // All ranges cross each pass barrier together.
             let mut eta_requests: [Option<acquisition::EtaRequest>;
                 extended::division_eta::MAX_RANGES] = std::array::from_fn(|_| None);
             let mut eta_failed = [false; extended::division_eta::MAX_RANGES];
-            let phases = [
-                acquisition::EtaPhase::Acquire { pass: 0 },
-                acquisition::EtaPhase::Verify { pass: 0 },
-                acquisition::EtaPhase::Acquire { pass: 1 },
-                acquisition::EtaPhase::Verify { pass: 1 },
-            ];
-            // Open window: two observations, each acquire+verify (the running
-            // proof). Closed: a single acquire; the block is quiescent so the
-            // verify re-read would be byte-identical (owner ruling).
-            let eta_phase_count = if eta_checked { 4 } else { 1 };
-            for (phase_index, phase) in phases.into_iter().take(eta_phase_count).enumerate() {
-                if phase_index != 0 {
+            // One acquisition per observation; the second runs only while the
+            // DivisionEta window is open.
+            for pass in 0..=usize::from(eta_checked) {
+                if pass != 0 {
                     for index in 0..eta_ranges {
                         let mut request = eta_requests[index]
                             .take()
-                            .expect("previous ETA phase returned");
-                        request.phase = phase;
+                            .expect("previous ETA pass returned");
+                        request.pass = pass;
                         if eta_failed[index] {
-                            let (pass, acquisition) = match phase {
-                                acquisition::EtaPhase::Acquire { pass } => (pass, true),
-                                acquisition::EtaPhase::Verify { pass } => (pass, false),
-                            };
-                            request.payload.fail(
-                                "ETA acquisition did not complete",
-                                pass,
-                                acquisition,
-                            );
+                            request
+                                .payload
+                                .fail("ETA acquisition did not complete", pass);
                             eta_requests[index] = Some(request);
                         } else {
                             eta_pending[index] = Some(queue!(acquisition::Job::Eta(request)));
@@ -2925,11 +2910,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     if let Some(pending) = eta_pending[index].take() {
                         let (mut request, _report, failure) = completed!(pending, Eta);
                         if let Some(reason) = failure {
-                            let (pass, acquisition) = match phase {
-                                acquisition::EtaPhase::Acquire { pass } => (pass, true),
-                                acquisition::EtaPhase::Verify { pass } => (pass, false),
-                            };
-                            request.payload.fail(reason, pass, acquisition);
+                            request.payload.fail(reason, pass);
                             eta_failed[index] = true;
                         }
                         eta_requests[index] = Some(request);
