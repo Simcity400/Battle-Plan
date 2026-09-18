@@ -392,6 +392,9 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
                             return Err(invalid("duplicate full railway construction handle"));
                         }
                     }
+                    // CRailwayGunRepairLine: no construction table records
+                    // it; its position still counts toward later ordinals.
+                    Some(b"railway_gun") => {}
                     _ => {
                         return Err(invalid(
                             "unsupported saved construction line kind; queue order cannot be compared",
@@ -597,6 +600,7 @@ mod tests {
         let saved = pack(r#"
             countries={GER={production={general_lines={
                 building={id={id=4 type=59} cost=1 priority=-8 amount=1 created_date=1936.1.1.12 building={template=factory location=3}}
+                railway_gun={id={id=1 type=76} priority=1 amount=0 cost=0 created_date="1944.8.26.17" railway_gun={id=1 type=74}}
                 rail_way={id={id=4 type=4713} cost=2 priority=-9 amount=1 created_date=1936.1.1.12 base=-1 target=3 current_province=-1 remaining_hours=-0.00001 rail_way={8 3 8}}
             }}}}
             states={3={buildings={factory={level=-32768 healthy_levels=-2 partial_health=-90071992547.40993} port={level=1 healthy_levels=1 partial_health=0}} resistance={}}}
@@ -614,7 +618,7 @@ mod tests {
                 .unwrap()
                 .production
                 .queue_ordinal,
-            1
+            2
         );
         let state = &saved.state_buildings[&(3, b"factory".to_vec())];
         assert_eq!(state.level, i16::MIN);
