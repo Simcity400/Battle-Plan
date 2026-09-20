@@ -1,11 +1,11 @@
-import { useCallback, useId, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties } from 'react';
 import DateTimePicker from '../analytics/DateTimePicker';
 import PlaybackSpeed from './PlaybackSpeed';
 import { formatDateTime } from '../analytics/calendar';
 import { recordingName } from '../api';
 import { Icon } from '../Icons';
-import type { BoundTrack, DashboardTemplate, WidgetSpec, WidgetTime } from './model';
+import type { BoundTrack, DashboardTemplate, WidgetSpec } from './model';
 import type { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import { resolveWidgetCampaign } from './campaigns';
@@ -63,41 +63,39 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   </section>;
 }
 
-export function WidgetSettings({ widget, template, tracks, client, onApply, onRemove, onLive, defaultRoleId }: {
+export function WidgetSettings({ widget, template, tracks, client, onChange, defaultRoleId }: {
   widget: WidgetSpec; template: DashboardTemplate; tracks: BoundTrack[]; client: DashboardClient;
-  onApply: (widget: WidgetSpec) => void; onRemove: () => void;
-  onLive: (time: WidgetTime) => void; defaultRoleId: string | null;
+  onChange: (widget: WidgetSpec) => void; defaultRoleId: string | null;
 }) {
-  const [draft, setDraft] = useState(widget);
-  const effective = resolveWidgetCampaign(draft, template, defaultRoleId);
+  // Keep incomplete title edits local; other controls always use current settings.
+  const [title, setTitle] = useState(widget.title);
+  useEffect(() => setTitle(widget.title), [widget.title]);
+  const effective = resolveWidgetCampaign(widget, template, defaultRoleId);
   const reference = tracks.find(track => track.id === effective.trackIds[0]);
   const defaultCountryTag = reference?.selectedTag ?? reference?.source.metadata.countries.find(country => country.id === reference.source.metadata.playerCountryId)?.tag ?? null;
   const definition = widgetDefinition(widget.kind);
   const linked = widget.time.mode === 'follow';
-  const error = !draft.title.trim() ? 'Give this view a title.' : null;
-  return <form className="widget-settings-content" onSubmit={event => {
-    event.preventDefault();
-    if (!error) onApply({ ...draft, title: draft.title.trim() });
-  }}>
+  return <div className="widget-settings-content">
     <button type="button" className="widget-live-toggle" aria-pressed={linked} disabled={!definition?.timeModes.includes('follow') || !definition.timeModes.includes('campaign')}
-      onClick={() => { const time: WidgetTime = { mode: linked ? 'campaign' : 'follow' }; setDraft({ ...draft, time }); onLive(time); }}>
+      onClick={() => onChange({ ...widget, time: { mode: linked ? 'campaign' : 'follow' } })}>
       <Icon name="link" /><span>Live playback</span><strong>{linked ? 'On' : 'Off'}</strong></button>
-    <label className="field"><span>Title</span><input value={draft.title} maxLength={160} onChange={event => setDraft({ ...draft, title: event.currentTarget.value })} /></label>
-    <label className="field"><span>Campaign</span><select aria-label="Widget campaign" value={draft.campaign === 'default' ? '__default' : template.tracks.find(track => track.id === draft.trackIds[0])?.roleId ?? '__missing'} onChange={event => {
+    <label className="field"><span>Title</span><input value={title} maxLength={160} onBlur={() => setTitle(widget.title)} onChange={event => {
+      const value = event.currentTarget.value;
+      setTitle(value);
+      if (value.trim()) onChange({ ...widget, title: value.trim() });
+    }} /></label>
+    <label className="field"><span>Campaign</span><select aria-label="Widget campaign" value={widget.campaign === 'default' ? '__default' : template.tracks.find(track => track.id === widget.trackIds[0])?.roleId ?? '__missing'} onChange={event => {
       const roleId = event.currentTarget.value;
       const track = template.tracks.find(item => item.roleId === roleId);
-      setDraft({ ...draft, campaign: roleId === '__default' ? 'default' : 'tracks', trackIds: track ? [track.id] : draft.trackIds,
-        time: draft.time.mode === 'pin' ? { mode: definition?.defaultTime ?? 'campaign' } : draft.time });
+      onChange({ ...widget, campaign: roleId === '__default' ? 'default' : 'tracks', trackIds: track ? [track.id] : widget.trackIds,
+        time: widget.time.mode === 'pin' ? { mode: definition?.defaultTime ?? 'campaign' } : widget.time });
     }}>
       <option value="__default">Default campaign</option>
       {template.roles.map(role => <option key={role.id} value={role.id}>{tracks.find(track => track.roleId === role.id) ? recordingName(tracks.find(track => track.roleId === role.id)!.source.path) : `${role.label} - unavailable`}</option>)}
     </select></label>
-    {draft.kind !== 'placeholder' && <CountryPicker field key={reference?.source.id ?? 'unbound'} source={reference?.source} client={client}
+    {widget.kind !== 'placeholder' && <CountryPicker field key={reference?.source.id ?? 'unbound'} source={reference?.source} client={client}
       countries={reference?.source.metadata.countries ?? []} playerCountryId={reference?.source.metadata.playerCountryId ?? null}
-      selectedTag={draft.countries.kind === 'tags' ? draft.countries.tags[0] ?? null : defaultCountryTag}
-      onChange={tag => setDraft({ ...draft, countries: tag && tag !== defaultCountryTag ? { kind: 'tags', tags: [tag] } : { kind: 'selected' } })} />}
-    {error && <p className="dash-inline-warning" role="alert">{error}</p>}
-    <div className="widget-settings-actions"><button type="button" className="button quiet" aria-label="Delete widget" data-tooltip="Delete widget" onClick={onRemove}><Icon name="trash" /></button>
-      <button type="submit" className="button quiet" aria-label="Apply widget settings" data-tooltip="Apply" disabled={!!error}><Icon name="check" /></button></div>
-  </form>;
+      selectedTag={widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : defaultCountryTag}
+      onChange={tag => onChange({ ...widget, countries: tag && tag !== defaultCountryTag ? { kind: 'tags', tags: [tag] } : { kind: 'selected' } })} />}
+  </div>;
 }

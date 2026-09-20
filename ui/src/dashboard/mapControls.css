@@ -1,8 +1,6 @@
 .map-controls-trigger { flex: 0 0 36px; width: 36px; height: 36px; min-height: 36px; padding: 8px; }
 .map-controls-trigger[aria-expanded='true'] { border-color: var(--accent); color: var(--accent); }
 .map-controls-menu { width: 328px; font-size: 12px; }
-.map-menu-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 24px; padding: 0 2px 5px; }
-.map-menu-heading strong { font-size: 12px; }
 .map-menu-section { display: grid; gap: 5px; padding: 8px 0; border-top: 1px solid var(--border); }
 .map-option-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 30px; padding: 0 4px; }
 .map-option-row > span { flex-shrink: 0; }

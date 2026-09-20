@@ -1,4 +1,4 @@
-import { Popover, usePopover } from '../ui/Popover';
+import { Popover, PopoverHeading, usePopover } from '../ui/Popover';
 import MapAppearance from './MapAppearance';
 import type { DashboardClient, DashboardSource } from './client';
 import type { ReactNode } from 'react';
@@ -9,8 +9,8 @@ import { formatDateTime } from '../analytics/calendar';
 import { Icon } from '../Icons';
 import './mapControls.css';
 
-export default function MapControls({ source, client, metadata, branchId, onBranch, options, onOptions, compact = false, viewId, children }: {
-  compact?: boolean; viewId?: string; children?: ReactNode;
+export default function MapControls({ source, client, metadata, branchId, onBranch, options, onOptions, compact = false, viewId, children, onRemove, onReset }: {
+  compact?: boolean; viewId?: string; children?: ReactNode; onRemove?: () => void; onReset?: () => void;
   source: DashboardSource | null; client: DashboardClient;
   metadata: ReplayMetadata | null; branchId: string | null; onBranch: (id: string) => void;
   options: MapOptions; onOptions: (options: MapOptions) => void;
@@ -33,7 +33,7 @@ export default function MapControls({ source, client, metadata, branchId, onBran
     <button ref={trigger} type="button" className={compact ? "dash-icon-button map-controls-trigger is-compact" : "button quiet map-controls-trigger"} popoverTarget={id}
       aria-label="Map settings" data-tooltip="Map settings" aria-haspopup="dialog" aria-expanded={open}><Icon name="settings" /></button>
     <Popover menu={menu} id={id} className="map-controls-menu" aria-label="Map settings">
-      <div className="map-menu-heading"><strong>Map settings</strong><button type="button" className="dash-icon-button" aria-label="Close map settings" onClick={menu.close}><Icon name="close" /></button></div>
+      <PopoverHeading title="Map settings" menu={menu} onDelete={onRemove} onReset={onReset} />
       <div className="map-menu-section">
         <label className="map-option-row"><span>Fog of war</span><input type="checkbox" role="switch" disabled={!source} checked={options.fog} onChange={event => onOptions({ ...options, fog: event.currentTarget.checked })} /></label>
       </div>

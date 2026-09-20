@@ -6,3 +6,8 @@
   box-shadow: 0 12px 35px var(--shadow);
 }
 .ui-popover:not(:popover-open) { display: none; }
+.ui-popover-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; font-size: 12px; }
+.ui-popover-actions { display: flex; align-items: center; gap: 2px; }
+.ui-popover-action { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 30px; width: 30px; height: 30px; padding: 5px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); }
+.ui-popover-action > svg { width: 17px; height: 17px; }
+.ui-popover-action:hover:not(:disabled) { background: var(--border); color: var(--text); }

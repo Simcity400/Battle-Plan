@@ -4,7 +4,8 @@ import type { Layout, ResponsiveLayouts } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { Icon } from '../Icons';
-import { GRID_COLUMNS } from './model';
+import { createWidget, GRID_COLUMNS } from './model';
+import { widgetDefinition } from './definitions';
 import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import MapControls from './MapControls';
 import { WidgetSettings } from './controls';
@@ -61,6 +62,10 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     return () => observer.disconnect();
   }, []);
   const [mapOptions, setMapOptions] = useState<MapOptions>({ country: null, fog: true });
+  const reset = widgetDefinition(widget.kind) ? () => {
+    onApply(createWidget(widget.kind, template.tracks[0].id, widget.id));
+    setMapOptions({ country: null, fog: true });
+  } : undefined;
   const resolved = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);
   const mapTrack = runtime.tracks.find(track => track.id === resolved.trackIds[0]);
   const missing = widget.trackIds.filter((id) => !runtime.tracks.some((track) => track.id === id));
@@ -71,12 +76,12 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
       <div className="dash-widget-title"><h2 data-tooltip={widget.title}>{widget.title}{widget.kind === 'national-focus' && <span ref={setHeaderSlot} />}</h2>
         {widget.kind !== 'placeholder' && <span>{widget.trackIds.map((id) => template.tracks.find((track) => track.id === id)?.label ?? 'Missing track').join(' + ')}</span>}</div>
       {widget.kind === 'map' ? <MapControls compact viewId={widget.id} source={mapTrack?.source ?? null} client={runtime.client} metadata={mapTrack?.source.metadata ?? null}
-        branchId={mapTrack?.branch.id ?? null} onBranch={id => { if (mapTrack) runtime.onMapBranch(mapTrack.id, id); }} options={mapOptions} onOptions={setMapOptions}>
+        branchId={mapTrack?.branch.id ?? null} onBranch={id => { if (mapTrack) runtime.onMapBranch(mapTrack.id, id); }} options={mapOptions} onOptions={setMapOptions} onRemove={editing ? () => onRemove(widget.id) : undefined} onReset={reset}>
         <details className="map-menu-section map-widget-options"><summary>Widget settings</summary>
           <WidgetSettings widget={widget} template={template} tracks={runtime.tracks} client={runtime.client} defaultRoleId={runtime.defaultRoleId}
-            onLive={time => onApply({ ...widget, time })} onApply={onApply} onRemove={() => onRemove(widget.id)} />
+            onChange={onApply} />
         </details>
-      </MapControls> : <WidgetSettingsMenu diagnostics={editing ? diagnostics : []} widget={widget} template={template} runtime={runtime} onApply={onApply} onRemove={() => onRemove(widget.id)} />}
+      </MapControls> : <WidgetSettingsMenu diagnostics={editing ? diagnostics : []} widget={widget} template={template} runtime={runtime} onApply={onApply} onRemove={editing ? () => onRemove(widget.id) : undefined} onReset={reset} />}
     </header>
     {missing.length > 0 && runtime.tracks.some((track) => widget.trackIds.includes(track.id)) && <div className="dash-inline-warning">{missing.map((id) => template.tracks.find((track) => track.id === id)?.label ?? id).join(', ')} unavailable. Ready tracks remain visible.</div>}
     <div className="dash-widget-content"><WidgetBody widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} onDiagnostics={setDiagnostics} /></div>

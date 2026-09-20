@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ComponentProps } from 'react';
 import { createPortal } from 'react-dom';
+import { Icon } from '../Icons';
 import './Popover.css';
 
 /** Keep a native popover hidden until its complete contents have been positioned. */
@@ -63,4 +64,15 @@ export function Popover({ menu, portal = true, className = '', onToggle, childre
       }
     }}>{children}</div>;
   return portal ? createPortal(panel, document.body) : panel;
+}
+
+export function PopoverHeading({ title, menu, onDelete, onReset }: {
+  title: string; menu: ReturnType<typeof usePopover>; onDelete?: () => void; onReset?: () => void;
+}) {
+  return <div className="ui-popover-heading"><strong>{title}</strong><div className="ui-popover-actions">
+    {onReset && <button type="button" className="ui-popover-action" aria-label="Reset widget settings" data-tooltip="Reset to defaults" onClick={onReset}><Icon name="refresh" /></button>}
+    {onDelete && <button type="button" className="ui-popover-action" aria-label="Delete widget" data-tooltip="Delete widget"
+      onClick={() => { menu.close(); onDelete(); }}><Icon name="trash" /></button>}
+    <button type="button" className="ui-popover-action" aria-label={`Close ${title.toLowerCase()}`} onClick={menu.close}><Icon name="close" /></button>
+  </div></div>;
 }
