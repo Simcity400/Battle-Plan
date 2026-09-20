@@ -99,7 +99,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     <span className={field ? undefined : 'sr-only'}>Country</span>
     <button ref={trigger} type="button" className={field ? 'widget-country-trigger' : 'header-country-trigger'} disabled={!source} popoverTarget={id}
       aria-label={field ? 'Widget country' : 'Choose country'} aria-haspopup="dialog" aria-expanded={open}>
-      {(!field || selectedTag != null) && <CountryFlag image={headerFlag.key === headerKey ? headerFlag.image : undefined} />}<span>{field && selectedTag == null ? 'Follow selected country' : selected?.name || selected?.tag || selectedTag || 'Choose country'}</span>
+      <CountryFlag image={headerFlag.key === headerKey ? headerFlag.image : undefined} /><span>{selected?.name || selected?.tag || selectedTag || 'Choose country'}</span>
       {field && <Icon name="chevron-down" />}
     </button>
     <Popover menu={menu} portal={!field} id={id} aria-label="Choose country" className="country-picker"
@@ -115,9 +115,8 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
           const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
           buttons[next]?.focus();
         }}>
-          {field && !query && <button type="button" aria-pressed={selectedTag == null} onClick={() => choose(null)}>Follow selected country</button>}
-          {filtered.map((country) => <button type="button" key={country.tag} aria-pressed={(!field || selectedTag != null) && selected?.tag === country.tag} onClick={() => choose(country.tag)}>
-            <CountryFlag image={flagImages[country.tag]} /><span>{country.name || country.tag}</span><small>{country.tag}</small>{(!field || selectedTag != null) && selected?.tag === country.tag && <span className="country-selected-mark">{'\u2713'}</span>}
+          {filtered.map((country) => <button type="button" key={country.tag} aria-pressed={selected?.tag === country.tag} onClick={() => choose(country.tag)}>
+            <CountryFlag image={flagImages[country.tag]} /><span>{country.name || country.tag}</span><small>{country.tag}</small>{selected?.tag === country.tag && <span className="country-selected-mark">{'\u2713'}</span>}
           </button>)}
           {flagError && !Object.keys(flagImages).length && <div className="country-picker-note"><span>Flags unavailable</span><button type="button" onClick={retryCountries}>Retry</button></div>}
           {loading && <p className="country-picker-empty" role="status">Finding countries that owned land…</p>}

@@ -71,6 +71,7 @@ export function WidgetSettings({ widget, template, tracks, client, onApply, onRe
   const [draft, setDraft] = useState(widget);
   const effective = resolveWidgetCampaign(draft, template, defaultRoleId);
   const reference = tracks.find(track => track.id === effective.trackIds[0]);
+  const defaultCountryTag = reference?.selectedTag ?? reference?.source.metadata.countries.find(country => country.id === reference.source.metadata.playerCountryId)?.tag ?? null;
   const definition = widgetDefinition(widget.kind);
   const linked = widget.time.mode === 'follow';
   const error = !draft.title.trim() ? 'Give this view a title.' : null;
@@ -93,8 +94,8 @@ export function WidgetSettings({ widget, template, tracks, client, onApply, onRe
     </select></label>
     {draft.kind !== 'placeholder' && <CountryPicker field key={reference?.source.id ?? 'unbound'} source={reference?.source} client={client}
       countries={reference?.source.metadata.countries ?? []} playerCountryId={reference?.source.metadata.playerCountryId ?? null}
-      selectedTag={draft.countries.kind === 'tags' ? draft.countries.tags[0] ?? null : null}
-      onChange={tag => setDraft({ ...draft, countries: tag ? { kind: 'tags', tags: [tag] } : { kind: 'selected' } })} />}
+      selectedTag={draft.countries.kind === 'tags' ? draft.countries.tags[0] ?? null : defaultCountryTag}
+      onChange={tag => setDraft({ ...draft, countries: tag && tag !== defaultCountryTag ? { kind: 'tags', tags: [tag] } : { kind: 'selected' } })} />}
     {error && <p className="dash-inline-warning" role="alert">{error}</p>}
     <div className="widget-settings-actions"><button type="button" className="button quiet" aria-label="Delete widget" data-tooltip="Delete widget" onClick={onRemove}><Icon name="trash" /></button>
       <button type="submit" className="button primary" aria-label="Apply widget settings" data-tooltip="Apply" disabled={!!error}><Icon name="check" /></button></div>

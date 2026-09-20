@@ -25,7 +25,9 @@
 .widget-live-toggle svg { width: 15px; height: 15px; }.widget-live-toggle span { flex: 1; }.widget-live-toggle strong { font-size: 10px; font-weight: 500; color: var(--muted); }
 .widget-live-toggle[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent); }.widget-live-toggle[aria-pressed='true'] strong { color: var(--accent); }
 .widget-settings-content .field { gap: 4px; }.widget-settings-content .field input, .widget-settings-content .field select { height: 29px; padding: 3px 7px; font-size: 11px; }
-.widget-settings-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }.widget-settings-actions .button { width: 30px; height: 30px; min-height: 30px; padding: 6px; }
+.widget-settings-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.widget-settings-actions .button { flex: 0 0 30px; width: 30px; height: 30px; min-width: 30px; min-height: 30px; padding: 5px; }
+.widget-settings-actions .button > svg { flex: none; width: 18px; height: 18px; }
 .widget-advanced { font-size: 11px; }.widget-advanced summary { cursor: pointer; padding: 6px 0; color: var(--muted); }.widget-advanced > div { display: flex; flex-direction: column; gap: 10px; padding-top: 6px; }.widget-advanced .dash-fieldset { padding: 8px; gap: 6px; }
 .dash-drag-grip { color: var(--accent); cursor: grab; font-size: 23px; padding: 0 2px; line-height: 1; touch-action: none; }
 .dash-drag-grip:active { cursor: grabbing; }
