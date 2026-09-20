@@ -12,20 +12,21 @@ import type { MapTarget, MapViewsStore } from './geometry';
 import type { DashboardClient } from './client';
 import { resolveWidgetCampaign } from './campaigns';
 import { widgetUnavailable } from './definitions';
+import NationalFocusWidget from './NationalFocusWidget';
 
 export interface WidgetRuntime {
   campaignTracks: TrackSpec[]; defaultRoleId: string | null; tracks: BoundTrack[]; clock: PlaybackController; queries: QueryStore; maps: MapViewsStore;
   onMapBranch: (trackId: string, branchId: string) => void;
   client: DashboardClient; alignment: Alignment; nativeHidden: boolean;
 }
-interface Props { widget: WidgetSpec; runtime: WidgetRuntime; active?: boolean; mapOptions?: MapOptions }
-const renderers: Readonly<Record<string, (props: Props) => React.ReactNode>> = { map: MapWidget, placeholder: Placeholder };
-export function WidgetBody({ widget, runtime, active = true, mapOptions }: Props) {
+interface Props { widget: WidgetSpec; runtime: WidgetRuntime; active?: boolean; mapOptions?: MapOptions; headerSlot?: HTMLElement | null; onDiagnostics?: (warnings: string[]) => void }
+const renderers: Readonly<Record<string, (props: Props) => React.ReactNode>> = { map: MapWidget, placeholder: Placeholder, 'national-focus': NationalFocusWidget };
+export function WidgetBody({ widget, runtime, active = true, mapOptions, headerSlot, onDiagnostics }: Props) {
   const resolved = useMemo(() => resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId), [widget, runtime.campaignTracks, runtime.defaultRoleId]);
   const unavailable = widgetUnavailable(widget);
   const Renderer = Object.hasOwn(renderers, widget.kind) ? renderers[widget.kind] : undefined;
   if (unavailable || !Renderer) return <div className="dash-empty" role="status">{unavailable ?? 'Widget renderer unavailable.'}</div>;
-  return <Renderer widget={resolved} runtime={runtime} active={active} mapOptions={mapOptions} />;
+  return <Renderer widget={resolved} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} onDiagnostics={onDiagnostics} />;
 }
 function Placeholder() {
   return <div className="placeholder-panel"><span className="placeholder-cross" aria-hidden="true">+</span><span>Widget placeholder</span><small>Ready for your design</small></div>;

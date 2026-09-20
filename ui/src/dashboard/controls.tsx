@@ -106,10 +106,10 @@ export function WidgetSettings({ widget, template, tracks, clock, onApply, onRem
       {template.roles.map((role) => <option key={role.id} value={role.id}>{tracks.find((track) => track.roleId === role.id) ? recordingName(tracks.find((track) => track.roleId === role.id)!.source.path) : `${role.label} - unavailable`}</option>)}
     </select></label>
     {draft.kind !== 'placeholder' && <details className="widget-advanced"><summary>More options</summary><div>
-    {draft.kind !== 'placeholder' && <fieldset className="dash-fieldset"><legend>{draft.kind === 'map' ? 'Map track' : 'Compare tracks'}</legend>
+    {draft.kind !== 'placeholder' && <fieldset className="dash-fieldset"><legend>{(draft.kind === 'map' || draft.kind === 'national-focus') ? 'Campaign track' : 'Compare tracks'}</legend>
       {template.tracks.map((track) => <label className="dash-check" key={track.id}>
-        <input type={draft.kind === 'map' ? 'radio' : 'checkbox'} name="widget-tracks" checked={effective.trackIds.includes(track.id)} onChange={(event) => {
-          const trackIds = draft.kind === 'map' ? [track.id] : event.currentTarget.checked ? [...effective.trackIds, track.id] : effective.trackIds.filter((id) => id !== track.id);
+        <input type={(draft.kind === 'map' || draft.kind === 'national-focus') ? 'radio' : 'checkbox'} name="widget-tracks" checked={effective.trackIds.includes(track.id)} onChange={(event) => {
+          const trackIds = (draft.kind === 'map' || draft.kind === 'national-focus') ? [track.id] : event.currentTarget.checked ? [...effective.trackIds, track.id] : effective.trackIds.filter((id) => id !== track.id);
           if (trackIds.length) setDraft({ ...draft, campaign: 'tracks', trackIds });
         }} /><span>{track.label}<small>{tracks.some((item) => item.id === track.id) ? template.roles.find((role) => role.id === track.roleId)?.label : 'Source, branch or anchor unavailable'}</small></span>
       </label>)}
@@ -117,9 +117,10 @@ export function WidgetSettings({ widget, template, tracks, clock, onApply, onRem
     {draft.kind !== 'map' && draft.kind !== 'placeholder' && <>
       <label className="field"><span>Countries</span><select value={draft.countries.kind} onChange={(event) => setDraft({ ...draft, countries: event.currentTarget.value === 'tags'
         ? { kind: 'tags', tags } : { kind: event.currentTarget.value as 'selected' | 'all' } })}>
-        <option value="selected">Selected country from each source</option><option value="all">All observed countries</option><option value="tags">Choose country tags</option>
+        <option value="selected">Selected country from each source</option>{draft.kind !== 'national-focus' && <option value="all">All observed countries</option>}<option value="tags">Choose country tags</option>
       </select></label>
-      {draft.countries.kind === 'tags' && <label className="field"><span>Country tags, separated by commas</span><input value={tagText} placeholder="GER, ENG, SOV" maxLength={2048} onChange={(event) => setTagText(event.currentTarget.value.toUpperCase())} /></label>}
+      {draft.countries.kind === 'tags' && draft.kind === 'national-focus' && <label className="field"><span>Country</span><select value={tags[0] ?? ''} onChange={event => setTagText(event.currentTarget.value)}><option value="">Choose a country</option>{reference?.source.metadata.countries.filter((country, index, all) => all.findIndex(c => c.tag === country.tag) === index).map(country => <option key={country.tag} value={country.tag}>{country.name || country.tag} ({country.tag})</option>)}</select></label>}
+      {draft.countries.kind === 'tags' && draft.kind !== 'national-focus' && <label className="field"><span>Country tags, separated by commas</span><input value={tagText} placeholder="GER, ENG, SOV" maxLength={2048} onChange={(event) => setTagText(event.currentTarget.value.toUpperCase())} /></label>}
       <p className="dash-help">Country selections rebind when a recording changes. Missing countries remain explicitly unavailable.</p>
     </>}
     {draft.kind === 'history' && <label className="field"><span>Metric</span><select value={draft.metric} onChange={(event) => setDraft({ ...draft, metric: event.currentTarget.value as WidgetSpec['metric'] })}>

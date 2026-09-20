@@ -6,6 +6,7 @@ pub mod buildings;
 pub mod cities;
 pub mod content;
 mod fields;
+pub mod focus;
 pub mod fonts;
 pub mod gfx;
 pub mod gui;

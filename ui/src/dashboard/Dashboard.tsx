@@ -6,8 +6,8 @@ import type { MapOptions, ReplayMetadata } from '../api';
 import MapControls from './MapControls';
 import { Icon } from '../Icons';
 import type { DashboardClient, DashboardSource } from './client';
-import { addGridItem, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, GRID_COLUMNS } from './model';
-import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
+import { addGridItem, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate } from './model';
+import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { loadLayouts, MAX_LAYOUTS, parseTemplate, saveLayouts } from './storage';
 import { PlaybackController } from './playback';
 import { QueryStore } from './queries';
@@ -259,31 +259,6 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
   }, [campaigns, roles.bindings]);
   useEffect(() => { if (hasOpened.current && (defaultSource?.path ?? null) !== path) onPrimaryPath?.(defaultSource?.path ?? null); }, [defaultSource, path, onPrimaryPath, campaigns.length]);
 
-  const move = useCallback((id: string, direction: 'up' | 'down' | 'wider' | 'narrower') => {
-    update((previous) => {
-      const layouts: GridLayouts = {};
-      for (const breakpoint of Object.keys(GRID_COLUMNS) as Breakpoint[]) {
-        const cols = GRID_COLUMNS[breakpoint];
-        const layout = (previous.layouts[breakpoint] ?? []).map((item) => ({ ...item }));
-        const selected = layout.find((item) => item.i === id);
-        if (!selected) continue;
-        if (direction === 'wider' || direction === 'narrower') selected.w = Math.max(selected.minW ?? 1, Math.min(cols - selected.x, selected.w + (direction === 'wider' ? 1 : -1)));
-        else {
-          const ordered = [...layout].sort((a, b) => a.y - b.y || a.x - b.x);
-          const index = ordered.findIndex((item) => item.i === id);
-          const other = ordered[index + (direction === 'up' ? -1 : 1)];
-          if (other) {
-            const oldY = selected.y;
-            selected.y = other.y;
-            other.y = oldY === other.y ? selected.y + selected.h : oldY;
-          }
-        }
-        layouts[breakpoint] = layout;
-      }
-      return { ...previous, layouts };
-    });
-  }, [update]);
-
   const onMapBranch = useCallback((trackId: string, branchId: string) => {
     const source = tracks.find(track => track.id === trackId)?.source;
     const index = source?.metadata.branches.findIndex(branch => branch.id === branchId) ?? -1;
@@ -351,7 +326,7 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
       <button type="button" className="dash-icon-button" aria-label="Dismiss notice" onClick={() => { setActionError(null); setWarning(null); }}><Icon name="close" /></button></div>}
     {saved && <div className="layout-saved" role="status">{saved}</div>}
     <div className="dash-grid-scroll" ref={viewport}>
-      {active && <DashboardGrid template={template} runtime={runtime} editing={editing} onLayouts={layoutsChanged} onApply={applyWidget} onRemove={removeWidget} onMove={move} />}
+      {active && <DashboardGrid template={template} runtime={runtime} editing={editing} onLayouts={layoutsChanged} onApply={applyWidget} onRemove={removeWidget} />}
       {template.widgets.length === 0 && <div className="dash-empty dash-empty-dashboard"><Icon name="grid" /><h2>Make room for your campaign</h2><p>Choose Edit, then use the plus button to add a campaign map or a placeholder panel.</p></div>}
 
     </div>

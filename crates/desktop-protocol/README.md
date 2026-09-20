@@ -27,3 +27,7 @@ Map preferences use the cancellable data service with an explicit global, campai
 Map view targets carry optional viewing-country/fog options, defaulting to the recorded country with fog enabled for older callers. Export actions may include a validated viewId to address a dashboard map; omission retains standalone export. Host and viewer must be rebuilt together for these additions.
 
 Unloading a campaign sends its canonical path to retire any matching standalone map, including a hidden cached map. It cancels earlier queued opens/seeks for that path. A later open is still allowed; other recordings and dashboard views retain their own ownership.
+
+National-focus history requests carry a source/revision, branch and country tag. Replies echo that identity and carry compact disjoint history segments and a bounded localised artwork catalogue through the same cancellable response channel. Focus icons use PNG data URLs; country flags retain their separate pixel contract. Playback selects an exact covered hour locally and never carries a segment over a gap. The generated analytics contract owns the completion data types.
+
+Focus entries carry nullable first-observed completion bounds; initial completions have no invented date. Artwork entries include the game-localisation description and nullable base duration in days. Consumers display date-only bounds and expandable inline details, distinguishing base duration from elapsed campaign time.

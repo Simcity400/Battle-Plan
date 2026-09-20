@@ -383,8 +383,8 @@ The frontend implementation starts at `ui/src/dashboard/Dashboard.tsx`.
 Pure frontend tests cover source/time bindings, saved widget versions, shared
 cancellation, stale replies, independent readiness and result pressure.
 `client.ts` is its native-independent interface; `nativeClient.ts` adapts that
-interface to the wire protocol. The current visual prototype keeps the campaign
-map and empty placeholder panels; the earlier current-value and history
+interface to the wire protocol. The dashboard now includes the national focus widget described in the [frontend guide](../ui/README.md#national-focus-widget), alongside the campaign
+map and remaining placeholder panels; the earlier current-value and history
 renderers have been removed pending widget design. The exact-window and history
 query framework remains available for those future widgets. Source catalogues are
 observations, not a guaranteed census of every country throughout the campaign.

@@ -95,7 +95,7 @@ fn flag_candidates(tag: &str, cosmetic: Option<&str>, ideology: Option<&str>) ->
 
 pub(crate) struct FlagContext {
     options: ResolveOptions,
-    content: ResolvedContent,
+    content: Arc<ResolvedContent>,
     choices: Vec<FlagChoice>,
     branch_id: String,
     hour: i32,
@@ -113,6 +113,7 @@ impl FlagContext {
 
     pub(crate) fn load(
         replay: Arc<replay::container::Replay>,
+        content: Arc<ResolvedContent>,
         options: ResolveOptions,
         allow_unverified: bool,
         request: &CountryFlagRequest,
@@ -144,7 +145,6 @@ impl FlagContext {
         if request.hour < first || request.hour > last {
             return Err(crate::invalid("Flag hour unavailable"));
         }
-        let content = installed_content::resolve(&replay.identity, &options)?;
         if cancelled.load(Ordering::Acquire) {
             return Err(crate::invalid("Flag request cancelled"));
         }

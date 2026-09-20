@@ -91,3 +91,5 @@ The `dashboard_country_flags` command forwards cancellable flag requests through
 The native export dialog accepts an optional dashboard view ID and carries it through the map action. The frontend uses this from the shared map menu in widget headers; standalone export omits the ID.
 
 Map-settings requests forward a global, campaign or widget target through the existing bounded service. Global requests require no recording; campaign/widget requests retain source/revision validation.
+
+`dashboard_focus_order` forwards national-focus requests over the shared data channel. The native loader projects completion order and resolves game artwork; the host does not decode replay tables or resolve assets itself.

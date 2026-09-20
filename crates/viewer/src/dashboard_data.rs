@@ -8,8 +8,8 @@ use analytics::{
 };
 use desktop_protocol::{
     dashboard_data::{
-        CountryFlagReply, CountryFlagRequest, DataCommand, DataEvent, LandOwnersReply,
-        MAX_REPLY_BYTES, ReplyChunks, SourceReply,
+        CountryFlagReply, CountryFlagRequest, DataCommand, DataEvent, FocusReply, FocusRequest,
+        LandOwnersReply, MAX_REPLY_BYTES, ReplyChunks, SourceReply,
     },
     replay_revision,
 };
@@ -60,6 +60,14 @@ impl Request {
 
 pub struct SharedSource {
     flags: Mutex<Option<crate::country_flags::FlagContext>>,
+    focuses: Mutex<Option<crate::focus_artwork::Context>>,
+    focus_history: Mutex<analytics::FocusCache>,
+    content: Mutex<
+        Option<(
+            installed_content::ResolveOptions,
+            Arc<installed_content::content::ResolvedContent>,
+        )>,
+    >,
     land_owners: Mutex<Option<analytics::LandOwners>>,
     handle: SourceHandle,
     key: SourceKey,
@@ -68,6 +76,27 @@ pub struct SharedSource {
 }
 
 impl SharedSource {
+    fn content(
+        &self,
+        options: &installed_content::ResolveOptions,
+    ) -> io::Result<Arc<installed_content::content::ResolvedContent>> {
+        let mut cache = self
+            .content
+            .lock()
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        if !cache.as_ref().is_some_and(|(old, _)| {
+            old.game_dir == options.game_dir
+                && old.user_dir == options.user_dir
+                && old.cache_dir == options.cache_dir
+        }) {
+            *cache = Some((
+                options.clone(),
+                Arc::new(installed_content::resolve(&self.replay().identity, options)?),
+            ));
+        }
+        Ok(Arc::clone(&cache.as_ref().unwrap().1))
+    }
+
     pub fn replay(&self) -> Arc<replay::container::Replay> {
         self.handle.replay()
     }
@@ -113,6 +142,7 @@ enum Payload {
     Source(Box<SourceReply>),
     Query(QueryResultHandle),
     Flags(CountryFlagReply),
+    Focus(FocusReply),
     LandOwners(LandOwnersReply),
     MapSettings(crate::map_settings::Reply),
 }
@@ -123,6 +153,7 @@ impl Payload {
             Self::Source(source) => bounded_json(source, &request.cancelled),
             Self::Query(result) => bounded_json(&**result, &request.cancelled),
             Self::Flags(result) => bounded_json(result, &request.cancelled),
+            Self::Focus(result) => bounded_json(result, &request.cancelled),
             Self::MapSettings(result) => bounded_json(result, &request.cancelled),
             Self::LandOwners(result) => bounded_json(result, &request.cancelled),
         }
@@ -318,6 +349,9 @@ impl Inner {
             .map_err(|error| error.to_string())?;
         let source = Arc::new(SharedSource {
             flags: Mutex::new(None),
+            focuses: Mutex::new(None),
+            focus_history: Mutex::new(analytics::FocusCache::default()),
+            content: Mutex::new(None),
             land_owners: Mutex::new(None),
             handle,
             key,
@@ -421,6 +455,13 @@ enum LoadJob {
         source_id: String,
         source: Arc<SharedSource>,
     },
+    Focus {
+        request: Arc<Request>,
+        query: FocusRequest,
+        source: Arc<SharedSource>,
+        options: installed_content::ResolveOptions,
+        allow_unverified: bool,
+    },
     Flags {
         request: Arc<Request>,
         query: CountryFlagRequest,
@@ -446,7 +487,7 @@ impl Drop for ThreadExit {
 
 impl Service {
     pub fn new(emit: Arc<dyn Fn(DataEvent) -> bool + Send + Sync>) -> io::Result<Arc<Self>> {
-        let (loader, jobs) = mpsc::sync_channel::<LoadJob>(4);
+        let (loader, jobs) = mpsc::sync_channel::<LoadJob>(MAX_PENDING);
         let inner = Arc::new(Inner {
             lease_namespace: uuid::Uuid::new_v4(),
             map_settings: Mutex::new(crate::map_settings::Store::open()),
@@ -646,6 +687,62 @@ impl Service {
                             load_inner.signal.notify();
                             continue;
                         }
+                        LoadJob::Focus {
+                            request,
+                            query,
+                            source,
+                            options,
+                            allow_unverified,
+                        } => {
+                            if request.cancelled() {
+                                continue;
+                            }
+                            let result = (|| -> Result<FocusReply, String> {
+                                let mut cache =
+                                    source.focuses.lock().map_err(|error| error.to_string())?;
+                                if !cache
+                                    .as_ref()
+                                    .is_some_and(|cached| cached.matches(&options, allow_unverified))
+                                {
+                                    *cache = Some(
+                                        crate::focus_artwork::Context::load(
+                                            &source.replay(),
+                                            source.content(&options).map_err(|e| e.to_string())?,
+                                            options,
+                                            allow_unverified,
+                                        )
+                                        .map_err(|error| error.to_string())?,
+                                    );
+                                }
+                                let branch = query.branch_id.parse().map_err(|_| "Invalid focus branch")?;
+                                let mut history = source.focus_history.lock().map_err(|error| error.to_string())?;
+                                let history = history.get(&source.replay(), branch, &query.tag, &request.cancelled).map_err(|e| e.to_string())?;
+                                cache
+                                    .as_mut()
+                                    .ok_or("Focus artwork unavailable")?
+                                    .reply(&query, history, &request.cancelled)
+                                    .map_err(|error| error.to_string())
+                            })();
+                            let mut pending = load_inner
+                                .pending
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner());
+                            if pending.current(&request)
+                                && !load_inner.closed.load(Ordering::Acquire)
+                            {
+                                match result {
+                                    Ok(reply) => {
+                                        pending.ready.push_back((request, Payload::Focus(reply)))
+                                    }
+                                    Err(error) => pending
+                                        .errors
+                                        .push_back((request, bounded_text(&error, 2048))),
+                                }
+                            }
+                            drop(pending);
+                            load_inner.signal.notify();
+                            continue;
+                        }
                         LoadJob::Flags {
                             request,
                             query,
@@ -666,6 +763,7 @@ impl Service {
                                     *cache = Some(
                                         crate::country_flags::FlagContext::load(
                                             source.replay(),
+                                            source.content(&options).map_err(|e| e.to_string())?,
                                             options,
                                             allow_unverified,
                                             &query,
@@ -988,6 +1086,57 @@ impl Service {
                     self.inner.error(
                         request,
                         "Country discovery is busy. Retry the country picker.".into(),
+                    );
+                }
+            }
+            DataCommand::FocusHistory { id, request: query } => {
+                let Some(request) = self.inner.begin(id) else {
+                    return;
+                };
+                if let Err(error) = query.validate() {
+                    self.inner.error(request, error.into());
+                    return;
+                }
+                let source = match self.source(&query.source_id) {
+                    Ok(source) if source.key().revision == query.revision => source,
+                    _ => {
+                        self.inner
+                            .error(request, "Focus source is unavailable or changed".into());
+                        return;
+                    }
+                };
+                let Some((options, allow_unverified)) = self
+                    .inner
+                    .flag_options
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone()
+                else {
+                    self.inner.error(
+                        request,
+                        "Choose the game and user folders in the native viewer to load focus artwork"
+                            .into(),
+                    );
+                    return;
+                };
+                let job = LoadJob::Focus {
+                    request: Arc::clone(&request),
+                    query,
+                    source,
+                    options,
+                    allow_unverified,
+                };
+                let accepted = self
+                    .inner
+                    .loader
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .as_ref()
+                    .is_some_and(|loader| loader.try_send(job).is_ok());
+                if !accepted {
+                    self.inner.error(
+                        request,
+                        "The asset loader is busy. Retry the focus widget.".into(),
                     );
                 }
             }
@@ -1432,6 +1581,9 @@ pub(crate) mod tests {
             .unwrap();
         Arc::new(SharedSource {
             flags: Mutex::new(None),
+            focuses: Mutex::new(None),
+            focus_history: Mutex::new(analytics::FocusCache::default()),
+            content: Mutex::new(None),
             land_owners: Mutex::new(None),
             handle,
             key,

@@ -1,0 +1,28 @@
+.national-focus { display: flex; flex-direction: column; height: 100%; min-height: 0; container-type: inline-size; color: var(--text); }
+.focus-scroll { flex: 1; min-height: 0; overflow: auto; padding: 0 12px; scrollbar-gutter: stable; }
+.focus-list { padding: 0; margin: 0; list-style: none; }
+.focus-row { width: 100%; box-sizing: border-box; border: 0; border-radius: 3px; background: transparent; text-align: left; display: flex; align-items: center; gap: 12px; min-height: 80px; position: relative; padding: 8px 4px; cursor: pointer; list-style: none; }
+.focus-row::-webkit-details-marker { display: none; }
+.focus-entry + .focus-entry { border-top: 1px solid var(--border); }
+.focus-number { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 20px; text-align: center; }
+.focus-art { width: 66px; height: 64px; flex: 0 0 66px; display: grid; place-items: center; }
+.focus-art img { width: auto; height: auto; max-width: 66px; max-height: 64px; object-fit: contain; border: 0; border-radius: 0; outline: none; box-shadow: none; }
+.focus-missing-art { font-size: 28px; color: var(--muted); opacity: .5; }
+.focus-label { display: grid; gap: 5px; min-width: 0; flex: 1; }
+.focus-label strong { font-size: 13px; line-height: 1.4; font-weight: 550; overflow-wrap: anywhere; }
+.focus-active-list { border-top: 1px solid var(--border); }
+.focus-current .focus-number, .focus-current .focus-label > span { color: var(--accent); }
+.focus-empty { padding: 14px 0; font-size: 12px; color: var(--muted); }
+
+.focus-header-count { color: var(--muted); font-weight: 400; letter-spacing: 0; text-transform: none; }
+.focus-row:hover, .focus-row:focus-visible { background: var(--accent-soft); }
+.focus-row:focus-visible { outline-offset: -2px; }
+.focus-label > span { color: var(--muted); font-size: 11px; }
+.focus-chevron { flex-shrink: 0; color: var(--muted); transition: transform 150ms ease; }
+.focus-chevron path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.focus-details[open] .focus-chevron { transform: rotate(180deg); }
+.focus-description { padding: 0 12px 18px 36px; }
+.focus-duration { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; }
+.focus-duration strong { color: var(--text); font-weight: 500; }
+.focus-description p { margin: 10px 0 0; font-size: 13px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) { .focus-chevron { transition: none; } }

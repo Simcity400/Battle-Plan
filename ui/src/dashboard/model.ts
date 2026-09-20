@@ -79,12 +79,12 @@ export function defaultTemplate(): DashboardTemplate {
     ['summary-3', 'Research', 6, 0, 3, 3],
     ['summary-4', 'Resources', 9, 0, 3, 3],
     ['map', 'Campaign map', 0, 3, 7, 12],
-    ['panel-1', 'Campaign trends', 7, 3, 5, 6],
-    ['panel-2', 'Military balance', 7, 9, 5, 6],
+    ['panel-1', 'National focus', 7, 3, 5, 12],
+    ['panel-2', 'Military balance', 7, 15, 5, 7],
     ['panel-3', 'Country comparison', 0, 15, 7, 7],
-    ['panel-4', 'Campaign notes', 7, 15, 5, 7],
+    ['panel-4', 'Campaign notes', 7, 22, 5, 7],
   ] as const;
-  const widgets = panels.map(([id, title]) => ({ ...createWidget(id === 'map' ? 'map' : 'placeholder', 'main', id), title }));
+  const widgets = panels.map(([id, title]) => ({ ...createWidget(id === 'map' ? 'map' : id === 'panel-1' ? 'national-focus' : 'placeholder', 'main', id), title }));
   const wide = panels.map(([i, , x, y, w, h]) => ({ i, x, y, w, h, minW: i === 'map' ? 3 : 2, minH: i === 'map' ? 8 : 3 }));
   const narrow = (cols: number) => {
     let y = 0;

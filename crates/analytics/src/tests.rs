@@ -19,6 +19,260 @@ use crate::{
 
 const CAMPAIGN: &[u8] = b"analytics-test";
 
+fn focus_countries_frame(
+    branch: u64,
+    hour: i32,
+    germany: (u32, u32, &[&str]),
+    france: &[&str],
+) -> DecodedFrame {
+    use replay::rows::{CompletedFocusRow, FocusRow};
+    let mut frame = source(branch, hour, Some(1));
+    let (german_id, german_slot, german_tokens) = germany;
+    frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+        CountryRow {
+            id: german_id,
+            canonical_slot: german_slot,
+            tag: b"GER".to_vec(),
+            ..CountryRow::default()
+        },
+        CountryRow {
+            id: 10001,
+            canonical_slot: 9,
+            tag: b"FRA".to_vec(),
+            ..CountryRow::default()
+        },
+    ]));
+    frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        [
+            (11, german_slot),
+            (44, 9),
+            (german_id, german_slot),
+            (10001, 9),
+        ]
+        .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+        .to_vec(),
+    ));
+    frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(
+        [(11, german_tokens), (44, france)]
+            .map(|(country, tokens)| FocusRow {
+                country,
+                completed_count: tokens.len() as i32,
+                ..FocusRow::default()
+            })
+            .to_vec(),
+    ));
+    frame.tables[TableId::CompletedFocuses.index()] =
+        TableView::Complete(TableRows::CompletedFocuses(
+            [(11, german_tokens), (44, france)]
+                .into_iter()
+                .flat_map(|(country, tokens)| {
+                    tokens
+                        .iter()
+                        .enumerate()
+                        .map(move |(ordinal, token)| CompletedFocusRow {
+                            country,
+                            ordinal: ordinal as u32,
+                            token: token.as_bytes().to_vec(),
+                        })
+                })
+                .collect(),
+        ));
+    frame
+}
+
+#[test]
+fn focus_branch_cache_keeps_countries_branches_and_gaps_independent() {
+    let first = focus_countries_frame(1, 100, (9001, 7, &["a"]), &["f"]);
+    let next = focus_countries_frame(1, 101, (9001, 7, &["a", "b"]), &["f"]);
+    let mut unavailable = focus_countries_frame(1, 103, (9001, 7, &["a", "b"]), &["f"]);
+    unavailable.tables[TableId::CompletedFocuses.index()] = TableView::Unavailable {
+        reason: "synthetic missing focus sample".into(),
+    };
+    let last = focus_countries_frame(1, 104, (9001, 7, &["a", "b"]), &["f", "g"]);
+    let alternate = focus_countries_frame(2, 100, (9001, 7, &["other_branch"]), &[]);
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[
+            records(1, vec![first, next, unavailable, last]),
+            records(2, vec![alternate]),
+        ],
+    )
+    .unwrap();
+    let cancel = AtomicBool::new(false);
+    let projection = crate::focus_branch(&replay, 1, &cancel).unwrap();
+    assert_eq!(projection.countries.len(), 2);
+    let mut cache = crate::FocusCache::default();
+    for tag in ["GER", "FRA", "GER", "FRA"] {
+        let history = cache.get(&replay, 1, tag, &cancel).unwrap();
+        assert_eq!(history, projection.countries[tag]);
+        assert!(history.at(102).is_err());
+        assert!(history.at(103).is_err());
+        assert_eq!(history.at(100).unwrap().completed.len(), 1);
+        assert_eq!(history.at(104).unwrap().completed.len(), 2);
+    }
+    assert_eq!(
+        cache
+            .get(&replay, 1, "FRA", &cancel)
+            .unwrap()
+            .at(104)
+            .unwrap()
+            .completed[1]
+            .completed_by_hour,
+        Some(104)
+    );
+    assert_eq!(
+        cache
+            .get(&replay, 2, "GER", &cancel)
+            .unwrap()
+            .at(100)
+            .unwrap()
+            .completed[0]
+            .token,
+        "other_branch"
+    );
+    assert!(
+        cache
+            .get(&replay, 1, "GER", &AtomicBool::new(true))
+            .is_err()
+    );
+    assert_eq!(
+        cache.get(&replay, 1, "GER", &cancel).unwrap(),
+        projection.countries["GER"]
+    );
+}
+
+#[test]
+fn focus_dates_reset_when_list_shrinks_or_country_identity_changes() {
+    let snapshots = [
+        (100, 9001, 7, &[][..]),
+        (101, 9001, 7, &["a"][..]),
+        (102, 9001, 7, &["a", "b"][..]),
+        (103, 9001, 7, &["a"][..]),
+        (104, 9001, 7, &["a", "b"][..]),
+        (105, 9002, 7, &["a", "b"][..]),
+        (106, 9002, 8, &["a", "b", "c"][..]),
+        (107, 9002, 8, &["a", "b", "c", "d"][..]),
+    ];
+    let frames = snapshots
+        .into_iter()
+        .map(|(hour, id, slot, tokens)| focus_countries_frame(1, hour, (id, slot, tokens), &[]))
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let history = crate::focus_history(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    let dates = |hour| {
+        history
+            .at(hour)
+            .unwrap()
+            .completed
+            .into_iter()
+            .map(|entry| entry.completed_by_hour)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(dates(102), [Some(101), Some(102)]);
+    assert_eq!(dates(103), [None]);
+    assert_eq!(dates(104), [None, Some(104)]);
+    assert_eq!(dates(105), [None, None]);
+    assert_eq!(dates(106), [None, None, None]);
+    assert_eq!(dates(107), [None, None, None, Some(107)]);
+}
+
+#[test]
+fn focus_dates_preserve_unknown_start_repeats_gaps_and_as_of_history() {
+    use replay::rows::{CompletedFocusRow, FocusRow};
+    let snapshot = |hour, tokens: &[&str]| {
+        let mut frame = source(1, hour, Some(1));
+        frame.tables[TableId::Focus.index()] =
+            TableView::Complete(TableRows::Focus(vec![FocusRow {
+                country: 11,
+                completed_count: tokens.len() as i32,
+                ..FocusRow::default()
+            }]));
+        frame.tables[TableId::CompletedFocuses.index()] =
+            TableView::Complete(TableRows::CompletedFocuses(
+                tokens
+                    .iter()
+                    .enumerate()
+                    .map(|(ordinal, token)| CompletedFocusRow {
+                        country: 11,
+                        ordinal: ordinal as u32,
+                        token: token.as_bytes().to_vec(),
+                    })
+                    .collect(),
+            ));
+        frame
+    };
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                snapshot(100, &["old"]),
+                snapshot(101, &["old", "new"]),
+                snapshot(104, &["old", "new", "new"]),
+                snapshot(105, &["reset"]),
+            ],
+        )],
+    )
+    .unwrap();
+    let history = crate::focus_history(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    assert_eq!(history.at(100).unwrap().completed.len(), 1);
+    assert_eq!(
+        history.at(100).unwrap().completed[0].completed_by_hour,
+        None
+    );
+    assert_eq!(
+        history.at(101).unwrap().completed[1].completed_by_hour,
+        Some(101)
+    );
+    assert!(history.at(102).is_err());
+    let later = history.at(104).unwrap();
+    assert_eq!(
+        later
+            .completed
+            .iter()
+            .map(|r| r.completed_by_hour)
+            .collect::<Vec<_>>(),
+        [None, Some(101), Some(104)]
+    );
+    assert_eq!(
+        history.at(105).unwrap().completed[0].completed_by_hour,
+        None
+    );
+    assert!(history.at(106).is_err());
+}
+
+#[test]
+fn focus_order_uses_exact_branch_country_links_and_complete_tables() {
+    use replay::rows::{CompletedFocusRow, FocusRow};
+    let mut frame = source(1, 100, Some(1));
+    frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(vec![FocusRow {
+        country: 11,
+        current: Some(b"next".to_vec()),
+        completed_count: 1,
+        ..FocusRow::default()
+    }]));
+    frame.tables[TableId::CompletedFocuses.index()] =
+        TableView::Complete(TableRows::CompletedFocuses(vec![CompletedFocusRow {
+            country: 11,
+            ordinal: 0,
+            token: b"first".to_vec(),
+        }]));
+    let read = |frames| Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let replay = read(vec![frame.clone()]);
+    let cancel = AtomicBool::new(false);
+    let result = crate::focus_order(&replay, 1, 100, "GER", &cancel).unwrap();
+    assert_eq!(result.current.as_deref(), Some("next"));
+    assert_eq!(result.completed[0].token, "first");
+    assert!(crate::focus_order(&replay, 2, 100, "GER", &cancel).is_err());
+    assert!(crate::focus_order(&replay, 1, 101, "GER", &cancel).is_err());
+    assert!(crate::focus_order(&replay, 1, 100, "ABSENT", &cancel).is_err());
+    assert!(crate::focus_order(&replay, 1, 100, "GER", &AtomicBool::new(true)).is_err());
+    frame.tables[TableId::CompletedFocuses.index()] = TableView::Unavailable {
+        reason: "not captured".into(),
+    };
+    assert!(crate::focus_order(&read(vec![frame]), 1, 100, "GER", &cancel).is_err());
+}
+
 fn ownership_frame(branch: u64, hour: i32, owner: u32) -> DecodedFrame {
     let mut frame = source(branch, hour, Some(1));
     if let TableView::Complete(TableRows::Countries(rows)) =

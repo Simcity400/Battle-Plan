@@ -4,8 +4,8 @@ import { WidgetSettings } from './controls';
 import type { DashboardTemplate, WidgetSpec } from './model';
 import type { WidgetRuntime } from './widgets';
 
-export default function WidgetSettingsMenu({ widget, template, runtime, onApply, onRemove }: {
-  widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime;
+export default function WidgetSettingsMenu({ widget, template, runtime, onApply, onRemove, diagnostics = [] }: {
+  diagnostics?: string[]; widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime;
   onApply: (widget: WidgetSpec) => void; onRemove: () => void;
 }) {
   const id = useId();
@@ -39,6 +39,8 @@ export default function WidgetSettingsMenu({ widget, template, runtime, onApply,
       {open && <WidgetSettings widget={widget} template={template} tracks={runtime.tracks} clock={runtime.clock} defaultRoleId={runtime.defaultRoleId}
         onLive={(time) => onApply({ ...widget, time })}
         onApply={(next) => { onApply(next); close(); }} onRemove={() => { close(); onRemove(); }} />}
+      {open && diagnostics.length > 0 && <details className="widget-advanced"><summary>Data diagnostics ({diagnostics.length})</summary>
+        <div>{diagnostics.map((message, index) => <p key={index}>{message}</p>)}</div></details>}
     </div>
   </>;
 }

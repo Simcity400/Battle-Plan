@@ -175,6 +175,7 @@ fn main() {
             dashboard_service::dashboard_open_source,
             dashboard_service::dashboard_query,
             dashboard_service::dashboard_country_flags,
+            dashboard_service::dashboard_focus_history,
             dashboard_service::dashboard_land_owners,
             dashboard_service::dashboard_map_settings,
             dashboard_service::dashboard_cancel,

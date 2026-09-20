@@ -59,6 +59,10 @@ pub enum DataCommand {
         id: String,
         request: CountryFlagRequest,
     },
+    FocusHistory {
+        id: String,
+        request: FocusRequest,
+    },
     LandOwners {
         id: String,
         #[serde(rename = "sourceId")]
@@ -81,11 +85,57 @@ impl DataCommand {
             | Self::MapSettings { id, .. }
             | Self::Query { id, .. }
             | Self::CountryFlags { id, .. }
+            | Self::FocusHistory { id, .. }
             | Self::LandOwners { id, .. }
             | Self::Cancel { id } => Some(id),
             Self::Release { .. } => None,
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FocusRequest {
+    pub source_id: String,
+    pub revision: String,
+    pub branch_id: String,
+    pub tag: String,
+}
+
+impl FocusRequest {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        CountryFlagRequest {
+            source_id: self.source_id.clone(),
+            revision: self.revision.clone(),
+            branch_id: self.branch_id.clone(),
+            hour: 0,
+            tags: vec![self.tag.clone()],
+            size: CountryFlagSize::Full,
+        }
+        .validate()
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusArtwork {
+    pub token: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub base_duration_days: Option<f64>,
+    pub icon: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusReply {
+    pub source_id: String,
+    pub revision: String,
+    pub branch_id: String,
+    pub tag: String,
+    pub history: analytics::FocusHistory,
+    pub artwork: Vec<FocusArtwork>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

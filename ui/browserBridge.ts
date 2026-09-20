@@ -57,7 +57,9 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
   };
   const send = (command: Record<string, unknown>, signal: AbortSignal) => new Promise<unknown>((resolve, reject) => {
     if (signal.aborted) { reject(new Error('Request cancelled')); return; }
-    if (pending.size >= 16) { reject(new Error('The recording bridge is busy')); return; }
+    // Match the desktop service and native loader admission budget. A saved
+    // dashboard can have more concurrent consumers than the old browser limit.
+    if (pending.size >= 64) { reject(new Error('The recording bridge is busy')); return; }
     const process = start();
     const id = `browser-${++next}`;
     const cancel = () => {
@@ -170,7 +172,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             command = { type: 'mapSettings', sourceId: input.sourceId, revision: input.revision, settings: input.settings ?? null, target: input.target ?? { scope: 'campaign' } };
           } else if (input.type === 'landOwners') {
             command = { type: 'landOwners', sourceId: input.sourceId, revision: input.revision };
-          } else if (input.type === 'query' || input.type === 'countryFlags') {
+          } else if (input.type === 'query' || input.type === 'countryFlags' || input.type === 'focusHistory') {
             command = { type: input.type, request: input.request };
           } else if (input.type === 'release') {
             child?.stdin.write(`${JSON.stringify({ type: 'release', sourceId: input.sourceId })}\n`);

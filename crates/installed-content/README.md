@@ -28,6 +28,8 @@ Preserve palette indices and image origin in [BMP](src/image/bmp.rs), and author
 
 Use existing parser and synthetic input tests plus the [shared local checks](../../AGENTS.md). Changes affecting layer resolution must exercise order, replacement and identity failures. Asset interpretation changes also need review against the [viewer rendering rules](../viewer/README.md#rendering-rules).
 
+Localisation verifies and parses independent files with a fixed small worker pool, then merges results in the original layer/path order. Replace-file precedence and duplicate diagnostics remain unchanged; filenames never substitute for language-header parsing.
+
 Vanilla with the relevant DLC is the established first validation path; mod identity support is not proof that every mod combination has been tested. Live captures and large reference assets stay outside source control.
 
 ## Local cosmetic overrides
@@ -39,3 +41,5 @@ Cosmetic eligibility and renderer compatibility are separate: the initial overla
 Original layer hashes are verified before presentation overrides. Explicit selections remove supported recorded cosmetic layers from the presentation copy and overlay selected artwork in order; gameplay layers remain intact. Missing/invalid selected assets fail visibly. These overrides carry their own diagnostic warning and are not represented as recorded artwork.
 
 [settings.rs](src/settings.rs) provides bounded, read-only access to the configured user folder's settings.txt through the shared Clausewitz parser. The desktop and map use this for inherited preferences; it never modifies the game file or reads live game memory.
+
+`focus.rs` reads national/shared/joint/continuous focus presentation definitions with the shared parser and recorded layer ordering. It reports malformed files individually. It also reads authored costs and literal focus-day defines; scripted values remain unavailable rather than executing Lua. Conditional icon scripts remain unavailable unless a static icon is authored. `image/rgba.rs` expands the shared DDS reader's BC1/2/3 blocks for bounded UI artwork, preserving alpha and cropping partial blocks; native map uploads retain their compressed path.

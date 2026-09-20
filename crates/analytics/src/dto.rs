@@ -63,6 +63,40 @@ pub struct LandOwners {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusEntry {
+    pub ordinal: u32,
+    pub token: String,
+    /// First observed completion after an earlier readable focus list. This is
+    /// an upper bound, not an invented timestamp for pre-recording completions.
+    pub completed_by_hour: Option<i32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusOrder {
+    pub country_name: String,
+    pub completed: Vec<FocusEntry>,
+    pub current: Option<String>,
+    pub continuous: Option<String>,
+    pub paused: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusSegment {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub order: FocusOrder,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusHistory {
+    pub segments: Vec<FocusSegment>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountrySeriesRequest {
     pub branch_id: String,
@@ -193,6 +227,10 @@ pub fn typescript_contract() -> String {
         RecordingGap::decl(),
         CountryMetadata::decl(),
         LandOwners::decl(),
+        FocusEntry::decl(),
+        FocusOrder::decl(),
+        FocusSegment::decl(),
+        FocusHistory::decl(),
         CountrySeriesRequest::decl(),
         CountryValues::decl(),
         CountryMetricCounts::decl(),

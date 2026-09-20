@@ -21,6 +21,14 @@ opt-level = 2
 [profile.test.package.replay]
 opt-level = 2
 
+# Dashboard cold loads parse the verified content catalogue and compact replay
+# projections. Keep those CPU paths representative during interactive UI work.
+[profile.dev.package.installed-content]
+opt-level = 2
+
+[profile.dev.package.analytics]
+opt-level = 2
+
 # Replay loading decompresses large blocks. Keep the native codec optimized in
 # development too; compiling its C implementation at -O0 dominates load time.
 [profile.dev.package.zstd-sys]

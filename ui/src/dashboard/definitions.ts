@@ -9,12 +9,14 @@ export interface WidgetDefinition {
   timeModes: readonly WidgetTime['mode'][];
   defaultTime: WidgetTime['mode'] & ('follow' | 'campaign');
   scope: 'moment' | 'history';
-  data: 'native' | 'countries' | 'none';
+  data: 'native' | 'countries' | 'focus' | 'none';
   minSize: { w: number; h: number };
   defaultSize: { w: number; h: number };
 }
 
 const registered: WidgetDefinition[] = [
+  { kind: 'national-focus', version: 1, title: 'National focus', timeModes: ['campaign', 'follow', 'pin'],
+    defaultTime: 'campaign', scope: 'moment', data: 'focus', minSize: { w: 3, h: 5 }, defaultSize: { w: 5, h: 10 } },
   { kind: 'map', version: 1, title: 'Campaign map', timeModes: ['campaign', 'follow', 'pin'],
     defaultTime: 'follow', scope: 'moment', data: 'native', minSize: { w: 3, h: 8 }, defaultSize: { w: 7, h: 11 } },
   { kind: 'placeholder', version: 1, title: 'Untitled panel', timeModes: ['campaign', 'follow'],

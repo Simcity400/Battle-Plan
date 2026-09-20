@@ -7,6 +7,7 @@ mod dashboard_data;
 mod dashboard_maps;
 mod document;
 mod embedded;
+mod focus_artwork;
 mod hours;
 mod local_config;
 mod map;

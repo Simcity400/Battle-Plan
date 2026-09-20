@@ -8,6 +8,7 @@
 
 mod cache;
 mod dto;
+mod focus;
 mod job;
 mod land_owners;
 mod projection;
@@ -19,6 +20,7 @@ mod source;
 
 pub use cache::QueryResultHandle;
 pub use dto::*;
+pub use focus::{FocusBranch, FocusCache, focus_branch, focus_history, focus_order};
 pub use job::{CountryScan, ScanStep};
 pub use land_owners::land_owners;
 pub use query::*;

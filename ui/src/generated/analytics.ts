@@ -33,6 +33,15 @@ export type CountryMetadata = {
  */
 id: string, tag: string, name: string, observedBranchId: string, observedHour: number, };
 export type LandOwners = { countries: Array<CountryMetadata>, warnings: Array<string>, };
+export type FocusEntry = { ordinal: number, token: string,
+/**
+ * First observed completion after an earlier readable focus list. This is
+ * an upper bound, not an invented timestamp for pre-recording completions.
+ */
+completedByHour: number | null, };
+export type FocusOrder = { countryName: string, completed: Array<FocusEntry>, current: string | null, continuous: string | null, paused: boolean, };
+export type FocusSegment = { firstHour: number, lastHour: number, order: FocusOrder, };
+export type FocusHistory = { segments: Array<FocusSegment>, };
 export type CountrySeriesRequest = { branchId: string, countryId: string,
 /**
  * Defaults to 1200; requests outside 1..=1200 are rejected.

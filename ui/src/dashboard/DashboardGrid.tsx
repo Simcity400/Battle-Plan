@@ -21,10 +21,9 @@ interface Props {
   onLayouts: (layouts: GridLayouts) => void;
   onApply: (widget: WidgetSpec) => void;
   onRemove: (id: string) => void;
-  onMove: (id: string, direction: 'up' | 'down' | 'wider' | 'narrower') => void;
 }
 
-function DashboardGrid({ template, runtime, editing, onLayouts, onApply, onRemove, onMove }: Props) {
+function DashboardGrid({ template, runtime, editing, onLayouts, onApply, onRemove }: Props) {
   const { width, containerRef, mounted } = useContainerWidth({ initialWidth: 1200 });
   const changed = useCallback((_layout: Layout, layouts: ResponsiveLayouts<Breakpoint>) => {
     runtime.maps.schedule();
@@ -42,15 +41,17 @@ function DashboardGrid({ template, runtime, editing, onLayouts, onApply, onRemov
       resizeConfig={{ enabled: editing, handles: ['se'] }} onLayoutChange={changed}
       onDrag={runtime.maps.schedule} onDragStop={runtime.maps.schedule} onResize={runtime.maps.schedule} onResizeStop={runtime.maps.schedule}>
       {template.widgets.map((widget) => <div key={widget.id} className="dash-grid-cell">
-        <WidgetFrame widget={widget} template={template} runtime={runtime} editing={editing} onApply={onApply} onRemove={onRemove} onMove={onMove} />
+        <WidgetFrame widget={widget} template={template} runtime={runtime} editing={editing} onApply={onApply} onRemove={onRemove} />
       </div>)}
     </Responsive>}
   </div>;
 }
 
-function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove, onMove }: Omit<Props, 'onLayouts'> & { widget: WidgetSpec }) {
+function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: Omit<Props, 'onLayouts'> & { widget: WidgetSpec }) {
   const element = useRef<HTMLElement>(null);
   const [active, setActive] = useState(true);
+  const [diagnostics, setDiagnostics] = useState<string[]>([]);
+  const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(null);
   useEffect(() => {
     const target = element.current;
     if (!target) return;
@@ -67,7 +68,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove, on
     <header className="dash-widget-header">
       {editing && <span className="dash-drag-grip" data-tooltip="Drag to move this view" aria-hidden="true">⠿</span>}
       <Icon name={widget.kind === 'map' ? 'globe' : 'grid'} />
-      <div className="dash-widget-title"><h2 data-tooltip={widget.title}>{widget.title}</h2>
+      <div className="dash-widget-title"><h2 data-tooltip={widget.title}>{widget.title}{widget.kind === 'national-focus' && <span ref={setHeaderSlot} />}</h2>
         {widget.kind !== 'placeholder' && <span>{widget.trackIds.map((id) => template.tracks.find((track) => track.id === id)?.label ?? 'Missing track').join(' + ')}</span>}</div>
       {widget.kind === 'map' ? <MapControls compact viewId={widget.id} source={mapTrack?.source ?? null} client={runtime.client} metadata={mapTrack?.source.metadata ?? null}
         branchId={mapTrack?.branch.id ?? null} onBranch={id => { if (mapTrack) runtime.onMapBranch(mapTrack.id, id); }} options={mapOptions} onOptions={setMapOptions}>
@@ -75,12 +76,10 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove, on
           <WidgetSettings widget={widget} template={template} tracks={runtime.tracks} clock={runtime.clock} defaultRoleId={runtime.defaultRoleId}
             onLive={time => onApply({ ...widget, time })} onApply={onApply} onRemove={() => onRemove(widget.id)} />
         </details>
-      </MapControls> : <WidgetSettingsMenu widget={widget} template={template} runtime={runtime} onApply={onApply} onRemove={() => onRemove(widget.id)} />}
+      </MapControls> : <WidgetSettingsMenu diagnostics={diagnostics} widget={widget} template={template} runtime={runtime} onApply={onApply} onRemove={() => onRemove(widget.id)} />}
     </header>
-    {editing && <div className="dash-keyboard-layout"><span>Move / size</span>{(['up', 'down', 'narrower', 'wider'] as const).map((direction) => <button type="button" key={direction}
-      className="text-button" onClick={() => onMove(widget.id, direction)} aria-label={`${direction} ${widget.title}`}>{direction === 'up' ? '↑' : direction === 'down' ? '↓' : direction === 'narrower' ? '− width' : '+ width'}</button>)}</div>}
     {missing.length > 0 && runtime.tracks.some((track) => widget.trackIds.includes(track.id)) && <div className="dash-inline-warning">{missing.map((id) => template.tracks.find((track) => track.id === id)?.label ?? id).join(', ')} unavailable. Ready tracks remain visible.</div>}
-    <div className="dash-widget-content"><WidgetBody widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} /></div>
+    <div className="dash-widget-content"><WidgetBody widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} onDiagnostics={setDiagnostics} /></div>
   </article>;
 }
 

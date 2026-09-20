@@ -5365,6 +5365,7 @@ name = "viewer"
 version = "0.1.0"
 dependencies = [
  "analytics",
+ "base64 0.22.1",
  "bytemuck",
  "desktop-protocol",
  "eframe",

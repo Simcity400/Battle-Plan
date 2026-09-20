@@ -8,6 +8,8 @@ mod country_flags;
 #[path = "../dashboard_data.rs"]
 #[allow(dead_code)]
 mod dashboard_data;
+#[path = "../focus_artwork.rs"]
+mod focus_artwork;
 #[path = "../local_config.rs"]
 #[allow(dead_code)]
 mod local_config;

@@ -7,6 +7,7 @@
 
 pub mod bmp;
 pub mod dds;
+pub mod rgba;
 pub mod tga;
 
 use std::io;
