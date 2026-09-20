@@ -97,7 +97,7 @@ export function WidgetSettings({ widget, template, tracks, client, onApply, onRe
       selectedTag={draft.countries.kind === 'tags' ? draft.countries.tags[0] ?? null : defaultCountryTag}
       onChange={tag => setDraft({ ...draft, countries: tag && tag !== defaultCountryTag ? { kind: 'tags', tags: [tag] } : { kind: 'selected' } })} />}
     {error && <p className="dash-inline-warning" role="alert">{error}</p>}
-    <div className="widget-settings-actions"><button type="button" className="button primary" aria-label="Delete widget" data-tooltip="Delete widget" onClick={onRemove}><Icon name="trash" /></button>
-      <button type="submit" className="button primary" aria-label="Apply widget settings" data-tooltip="Apply" disabled={!!error}><Icon name="check" /></button></div>
+    <div className="widget-settings-actions"><button type="button" className="button quiet" aria-label="Delete widget" data-tooltip="Delete widget" onClick={onRemove}><Icon name="trash" /></button>
+      <button type="submit" className="button quiet" aria-label="Apply widget settings" data-tooltip="Apply" disabled={!!error}><Icon name="check" /></button></div>
   </form>;
 }
