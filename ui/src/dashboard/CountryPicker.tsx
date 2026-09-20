@@ -1,22 +1,21 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Popover, usePopover } from '../ui/Popover';
+import { useEffect, useId, useMemo, useState } from 'react';
 import type { CountryMetadata } from '../api';
 import { Icon } from '../Icons';
 import { CountryFlag } from './CountryFlag';
 import { countryData } from './countryData';
 import type { CountryFlagImage, DashboardClient, DashboardSource } from './client';
 
-export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client }: {
+export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false }: {
   countries: CountryMetadata[]; selectedTag: string | null; playerCountryId: string | null;
   onChange: (tag: string | null) => void; source: DashboardSource | null | undefined; client: DashboardClient;
-  onCountries: (sourceId: string, revision: string, countries: CountryMetadata[]) => void;
-  onReconnect: () => void;
+  onCountries?: (sourceId: string, revision: string, countries: CountryMetadata[]) => void;
+  onReconnect?: () => void; field?: boolean;
 }) {
   const id = useId();
   const data = countryData(client);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const popup = useRef<HTMLDivElement>(null);
-  const search = useRef<HTMLInputElement>(null);
-  const [open, setOpen] = useState(false);
+  const menu = usePopover();
+  const { trigger, popup, open } = menu;
   const [query, setQuery] = useState('');
   const [retry, setRetry] = useState(0);
   const sourceKey = source ? `${source.id}:${source.revision}` : '';
@@ -59,7 +58,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     void data.owners(source.id, source.revision, controller.signal).then(result => {
       if (!controller.signal.aborted) {
         setRoster({ key: sourceKey, countries: result.countries, error: null, warning: result.warnings.join('\n') || null });
-        onCountries(result.sourceId, result.revision, result.countries);
+        onCountries?.(result.sourceId, result.revision, result.countries);
       }
     }).catch(error => {
       if (!controller.signal.aborted) setRoster(previous => ({ key: sourceKey, countries: previous.key === sourceKey ? previous.countries : [], error: String(error), warning: null }));
@@ -92,38 +91,21 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     return () => controller.abort();
   }, [source, sourceKey, client, choices, retry]);
   const retryCountries = () => {
-    if ([roster.error, flagError].some(error => error?.includes('source is unavailable or changed'))) onReconnect();
+    if (onReconnect && [roster.error, flagError].some(error => error?.includes('source is unavailable or changed'))) onReconnect();
     else { if (source && flagError) data.retryFlags(source.id); setRetry(value => value + 1); }
   };
-  const choose = (tag: string | null) => { onChange(tag); popup.current?.hidePopover(); trigger.current?.focus(); };
-  useLayoutEffect(() => {
-    if (!open) return;
-    const position = () => {
-      if (!trigger.current || !popup.current) return;
-      const anchor = trigger.current.getBoundingClientRect();
-      const viewport = document.documentElement;
-      popup.current.style.maxHeight = `${Math.max(120, viewport.clientHeight - anchor.bottom - 20)}px`;
-      const { width, height } = popup.current.getBoundingClientRect();
-      popup.current.style.left = `${Math.max(12, Math.min(anchor.left, viewport.clientWidth - width - 12))}px`;
-      popup.current.style.top = `${Math.max(12, Math.min(anchor.bottom + 8, viewport.clientHeight - height - 12))}px`;
-    };
-    position(); search.current?.focus();
-    const observer = new ResizeObserver(position);
-    if (popup.current) observer.observe(popup.current);
-    window.addEventListener('resize', position);
-    window.addEventListener('scroll', position, true);
-    return () => { observer.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
-  }, [open]);
-  return <div className="header-control header-country">
-    <span className="sr-only">Country</span>
-    <button ref={trigger} type="button" className="header-country-trigger" disabled={!source} popoverTarget={id}
-      aria-label="Choose country" aria-haspopup="dialog" aria-expanded={open} data-tooltip={selected?.name || selectedTag || 'Open a recording to choose a country'}>
-      <CountryFlag image={headerFlag.key === headerKey ? headerFlag.image : undefined} /><span>{selected?.name || selected?.tag || selectedTag || 'Choose country'}</span>
+  const choose = (tag: string | null) => { onChange(tag); menu.close(); };
+  return <div className={field ? 'field widget-country-field' : 'header-control header-country'}>
+    <span className={field ? undefined : 'sr-only'}>Country</span>
+    <button ref={trigger} type="button" className={field ? 'widget-country-trigger' : 'header-country-trigger'} disabled={!source} popoverTarget={id}
+      aria-label={field ? 'Widget country' : 'Choose country'} aria-haspopup="dialog" aria-expanded={open}>
+      {(!field || selectedTag != null) && <CountryFlag image={headerFlag.key === headerKey ? headerFlag.image : undefined} />}<span>{field && selectedTag == null ? 'Follow selected country' : selected?.name || selected?.tag || selectedTag || 'Choose country'}</span>
+      {field && <Icon name="chevron-down" />}
     </button>
-    <div ref={popup} id={id} popover="auto" role="dialog" aria-label="Choose country" className="country-picker"
-      onToggle={(event) => { setOpen(event.newState === 'open'); if (event.newState === 'closed') setQuery(''); }}>
+    <Popover menu={menu} portal={!field} id={id} aria-label="Choose country" className="country-picker"
+      onToggle={(event) => { if (event.newState === 'closed') setQuery(''); }}>
       {open && <>
-        <div className="country-picker-search"><input ref={search} aria-label="Search countries" placeholder="Search countries or tags" value={query} onChange={(event) => setQuery(event.currentTarget.value)}
+        <div className="country-picker-search"><input data-popover-autofocus aria-label="Search countries" placeholder="Search countries or tags" value={query} onChange={(event) => setQuery(event.currentTarget.value)}
           onKeyDown={(event) => { if (event.key === 'ArrowDown') { event.preventDefault(); popup.current?.querySelector<HTMLButtonElement>('.country-picker-list button')?.focus(); } }} /><span>{choices.length}</span></div>
         <div className="country-picker-list" onKeyDown={(event) => {
           const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')];
@@ -133,8 +115,9 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
           const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
           buttons[next]?.focus();
         }}>
-          {filtered.map((country) => <button type="button" key={country.tag} aria-pressed={selected?.tag === country.tag} onClick={() => choose(country.tag)}>
-            <CountryFlag image={flagImages[country.tag]} /><span>{country.name || country.tag}</span><small>{country.tag}</small>{selected?.tag === country.tag && <span className="country-selected-mark">{'\u2713'}</span>}
+          {field && !query && <button type="button" aria-pressed={selectedTag == null} onClick={() => choose(null)}>Follow selected country</button>}
+          {filtered.map((country) => <button type="button" key={country.tag} aria-pressed={(!field || selectedTag != null) && selected?.tag === country.tag} onClick={() => choose(country.tag)}>
+            <CountryFlag image={flagImages[country.tag]} /><span>{country.name || country.tag}</span><small>{country.tag}</small>{(!field || selectedTag != null) && selected?.tag === country.tag && <span className="country-selected-mark">{'\u2713'}</span>}
           </button>)}
           {flagError && !Object.keys(flagImages).length && <div className="country-picker-note"><span>Flags unavailable</span><button type="button" onClick={retryCountries}>Retry</button></div>}
           {loading && <p className="country-picker-empty" role="status">Finding countries that owned land…</p>}
@@ -143,6 +126,6 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
           {!loading && !roster.error && !filtered.length && <p className="country-picker-empty">{query ? 'No matching countries' : 'No recorded land-owning countries'}</p>}
         </div>
       </>}
-    </div>
+    </Popover>
   </div>;
 }

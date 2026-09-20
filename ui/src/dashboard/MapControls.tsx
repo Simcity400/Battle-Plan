@@ -1,7 +1,8 @@
+import { Popover, usePopover } from '../ui/Popover';
 import MapAppearance from './MapAppearance';
 import type { DashboardClient, DashboardSource } from './client';
 import type { ReactNode } from 'react';
-import { useId, useLayoutEffect, useRef, useState } from 'react';
+import { useId, useState } from 'react';
 import { desktopAvailable, errorMessage, exportMap } from '../api';
 import type { MapOptions, ReplayMetadata } from '../api';
 import { formatDateTime } from '../analytics/calendar';
@@ -15,42 +16,24 @@ export default function MapControls({ source, client, metadata, branchId, onBran
   options: MapOptions; onOptions: (options: MapOptions) => void;
 }) {
   const id = useId();
-  const trigger = useRef<HTMLButtonElement>(null);
-  const popup = useRef<HTMLDivElement>(null);
-  const [open, setOpen] = useState(false);
+  const menu = usePopover();
+  const { trigger, open } = menu;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const branch = metadata?.branches.find(item => item.id === branchId);
   const sessions = [...new Set(metadata?.branches.map(item => item.sessionId) ?? [])];
-  useLayoutEffect(() => {
-    if (!open) return;
-    const position = () => {
-      if (!trigger.current || !popup.current) return;
-      const anchor = trigger.current.getBoundingClientRect();
-      const menu = popup.current.getBoundingClientRect();
-      popup.current.style.left = `${Math.max(8, Math.min(anchor.right - menu.width, window.innerWidth - menu.width - 8))}px`;
-      popup.current.style.top = `${Math.max(8, Math.min(anchor.bottom + 8, window.innerHeight - menu.height - 8))}px`;
-    };
-    position();
-    const observer = new ResizeObserver(position);
-    if (popup.current) observer.observe(popup.current);
-    window.addEventListener('resize', position);
-    window.addEventListener('scroll', position, true);
-    return () => { observer.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
-  }, [open]);
+
   const run = async (action: () => Promise<void>) => {
     setBusy(true); setError(null);
-    try { await action(); popup.current?.hidePopover(); trigger.current?.focus(); }
+    try { await action(); menu.close(); }
     catch (cause) { setError(errorMessage(cause)); }
     finally { setBusy(false); }
   };
   return <>
     <button ref={trigger} type="button" className={compact ? "dash-icon-button map-controls-trigger is-compact" : "button quiet map-controls-trigger"} popoverTarget={id}
       aria-label="Map settings" data-tooltip="Map settings" aria-haspopup="dialog" aria-expanded={open}><Icon name="settings" /></button>
-    <div ref={popup} id={id} popover="auto" className="map-controls-menu" role="dialog" aria-label="Map settings"
-      onToggle={event => { setOpen(event.newState === 'open'); }}
-      onKeyDown={event => { if (event.key === 'Escape') { popup.current?.hidePopover(); trigger.current?.focus(); } }}>
-      <div className="map-menu-heading"><strong>Map settings</strong><button type="button" className="dash-icon-button" aria-label="Close map settings" onClick={() => { popup.current?.hidePopover(); trigger.current?.focus(); }}><Icon name="close" /></button></div>
+    <Popover menu={menu} id={id} className="map-controls-menu" aria-label="Map settings">
+      <div className="map-menu-heading"><strong>Map settings</strong><button type="button" className="dash-icon-button" aria-label="Close map settings" onClick={menu.close}><Icon name="close" /></button></div>
       <div className="map-menu-section">
         <label className="map-option-row"><span>Fog of war</span><input type="checkbox" role="switch" disabled={!source} checked={options.fog} onChange={event => onOptions({ ...options, fog: event.currentTarget.checked })} /></label>
       </div>
@@ -71,6 +54,6 @@ export default function MapControls({ source, client, metadata, branchId, onBran
       {open && children}
       {!desktopAvailable && <p className="map-menu-note">Map display options apply in the desktop app.</p>}
       {error && <p className="map-menu-error" role="alert">{error}</p>}
-    </div>
+    </Popover>
   </>;
 }

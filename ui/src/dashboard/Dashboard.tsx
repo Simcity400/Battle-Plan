@@ -1,3 +1,4 @@
+import { Popover, usePopover } from '../ui/Popover';
 import { newId } from '../ids.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -50,10 +51,11 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
   const [savedTemplate, setSavedTemplate] = useState<DashboardTemplate | null>(null);
   const saved = savedTemplate === draftTemplate ? 'Layout saved on this device' : null;
   const [editing, setEditing] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const saveMenu = usePopover();
+  const saving = saveMenu.open;
   const [layoutName, setLayoutName] = useState('');
   const [saveError, setSaveError] = useState<string | null>(null);
-  const saveButton = useRef<HTMLButtonElement>(null);
+  const saveButton = saveMenu.trigger;
   const editButton = useRef<HTMLButtonElement>(null);
   const dirty = useMemo(() => JSON.stringify(includeCampaigns(draftTemplate, campaigns)) !== JSON.stringify(includeCampaigns(selectedLayout.template, campaigns)), [draftTemplate, selectedLayout.template, campaigns]);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -142,7 +144,7 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
     });
   }, [editing]);
 
-  const closeSave = () => { setSaving(false); saveButton.current?.focus(); };
+  const closeSave = saveMenu.close;
   const persistLayout = (asNew: boolean) => {
     const name = layoutName.trim();
     if (!name || name.length > 160) { setSaveError('Enter a layout name (up to 160 characters).'); return; }
@@ -158,7 +160,7 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
     const error = saveLayouts(next);
     setSaveError(error);
     if (error) return;
-    setLibrary(next); setTemplate(clean); setSavedTemplate(clean); setSaving(false); setEditing(false); setWarning(null);
+    setLibrary(next); setTemplate(clean); setSavedTemplate(clean); saveMenu.popup.current?.hidePopover(); setEditing(false); setWarning(null);
     editButton.current?.focus();
   };
 
@@ -290,36 +292,36 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
         {library.layouts.map((entry) => <option key={entry.id} value={entry.id}>{entry.template.name}</option>)}
       </select></label>
       <div className="dash-toolbar">
-        {editing && <WidgetPicker disabled={template.widgets.length >= 48} onOpen={() => setSaving(false)} onAdd={(kind) => {
+        {editing && <WidgetPicker disabled={template.widgets.length >= 48} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind) => {
           const widget = createWidget(kind, template.tracks[0].id);
           update((previous) => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItem(previous.layouts, widget) }));
         }} />}
         <button ref={editButton} type="button" className={`button${editing ? ' primary' : ' quiet'}`} aria-label={editing ? 'Done arranging' : 'Edit layout'} data-tooltip={editing ? 'Done arranging' : 'Edit layout'} aria-pressed={editing} onClick={() => {
-          setSaving(false);
+          saveMenu.popup.current?.hidePopover();
           setEditing(!editing);
         }}><Icon name="edit" />{editing ? 'Done' : 'Edit'}</button>
         {(editing || dirty) && <>
           <button type="button" className="button quiet" aria-label="Cancel layout changes" data-tooltip="Cancel layout changes" onClick={() => {
-            setTemplate(selectedLayout.template); setEditing(false); setSaving(false); editButton.current?.focus();
+            setTemplate(selectedLayout.template); setEditing(false); saveMenu.popup.current?.hidePopover(); editButton.current?.focus();
           }}><Icon name="close" /></button>
-          <button ref={saveButton} type="button" className="button primary" aria-label="Save layout" aria-expanded={saving} aria-controls="layout-save-menu" onClick={() => {
-            if (saving) { closeSave(); return; }
-            setLayoutName(template.name); setSaveError(null); setSaving(true);
+          <button ref={saveButton} type="button" className="button primary" aria-label="Save layout" aria-expanded={saving} aria-haspopup="dialog" popoverTarget="layout-save-menu" onClick={() => {
+            setLayoutName(template.name); setSaveError(null);
           }}><Icon name="save" />Save</button>
         </>}
         {editing && <button type="button" className="button quiet header-reset" aria-label="Reset layout" data-tooltip="Reset arrangement to default" onClick={() => {
-          update(() => ({ ...defaultTemplate(), name: template.name })); setSaving(false);
+          update(() => ({ ...defaultTemplate(), name: template.name })); saveMenu.popup.current?.hidePopover();
         }}><Icon name="refresh" /></button>}
       </div>
-      {saving && <form id="layout-save-menu" className="layout-save-menu" aria-label="Save layout options" onSubmit={(event) => { event.preventDefault(); persistLayout(false); }}
-        onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); closeSave(); } }}>
+      <Popover menu={saveMenu} id="layout-save-menu" className="layout-save-menu" aria-label="Save layout options">
+      {saving && <form onSubmit={event => { event.preventDefault(); persistLayout(false); }}>
         <div className="layout-save-heading"><strong>Save layout</strong><button type="button" className="dash-icon-button" aria-label="Close save options" onClick={closeSave}><Icon name="close" /></button></div>
-        <label className="field"><span>Layout name</span><input autoFocus aria-label="Layout name" value={layoutName} maxLength={160} onChange={(event) => { setLayoutName(event.currentTarget.value); setSaveError(null); }} /></label>
+        <label className="field"><span>Layout name</span><input data-popover-autofocus aria-label="Layout name" value={layoutName} maxLength={160} onChange={(event) => { setLayoutName(event.currentTarget.value); setSaveError(null); }} /></label>
         <p>Update this layout or keep it and save a new one.</p>
         {saveError && <p className="layout-save-error" role="alert">{saveError}</p>}
         <div className="layout-save-actions"><button type="submit" className="button" disabled={!layoutName.trim()}>Update layout</button>
           <button type="button" className="button primary" disabled={!layoutName.trim() || library.layouts.length >= MAX_LAYOUTS} onClick={() => persistLayout(true)}>Save as new</button></div>
       </form>}
+      </Popover>
     </div>}
     </div>, playbackHost)}
     {(warning || actionError) && <div className="dash-banner" role="alert"><span>{actionError ?? warning}</span>

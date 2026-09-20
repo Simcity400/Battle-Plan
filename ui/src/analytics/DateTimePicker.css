@@ -9,12 +9,7 @@
 .date-time-trigger > svg:last-child { width: 12px; height: 12px; color: var(--quiet); }
 .date-time-value { display: flex; flex: 1; align-items: center; justify-content: space-between; gap: 8px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .date-time-hour { color: var(--muted); font-size: 11px; }
-.date-time-popover {
-  position: fixed; inset: auto; margin: 0; padding: 8px; width: 252px;
-  max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow: auto;
-  background: var(--surface); color: var(--text); border: 1px solid var(--border);
-  border-radius: 4px; box-shadow: 0 8px 24px var(--shadow); scrollbar-width: thin;
-}
+.date-time-popover { width: 252px; scrollbar-width: thin; }
 .calendar-navigation { display: grid; grid-template-columns: 24px minmax(0, 1fr) 58px 24px; gap: 4px; align-items: center; }
 .calendar-navigation .calendar-arrow { display: grid; place-items: center; width: 24px; height: 26px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--text); }
 .calendar-navigation .calendar-arrow:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }

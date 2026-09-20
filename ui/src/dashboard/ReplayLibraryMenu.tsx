@@ -1,4 +1,5 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { Popover, usePopover } from '../ui/Popover';
+import { useEffect, useId, useState } from 'react';
 import type { DashboardClient, ReplayFile } from './client';
 import type { Campaign } from './campaigns';
 import { campaignSlots, sameCampaignPath } from './campaigns';
@@ -17,10 +18,8 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   onOpenReady?: (open: (() => void) | null) => void;
 }) {
   const id = useId();
-  const trigger = useRef<HTMLButtonElement>(null);
-  const popup = useRef<HTMLDivElement>(null);
-  const search = useRef<HTMLInputElement>(null);
-  const [open, setOpen] = useState(false);
+  const menu = usePopover('start');
+  const { trigger, popup, open } = menu;
   const [query, setQuery] = useState('');
   const [pickedFiles, setPickedFiles] = useState<ReplayFile[]>([]);
   const [picking, setPicking] = useState(false);
@@ -43,22 +42,6 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
     finally { setPicking(false); }
   };
   useEffect(() => { onOpenReady?.(() => popup.current?.showPopover()); return () => onOpenReady?.(null); }, [onOpenReady]);
-  useLayoutEffect(() => {
-    if (!open) return;
-    const position = () => {
-      if (!popup.current || !trigger.current) return;
-      const anchor = trigger.current.getBoundingClientRect();
-      const viewport = document.documentElement;
-      popup.current.style.maxHeight = `${Math.max(160, viewport.clientHeight - anchor.bottom - 20)}px`;
-      const rect = popup.current.getBoundingClientRect();
-      popup.current.style.left = `${Math.max(10, Math.min(anchor.left, viewport.clientWidth - rect.width - 10))}px`;
-      popup.current.style.top = `${Math.max(10, Math.min(anchor.bottom + 8, viewport.clientHeight - rect.height - 10))}px`;
-    };
-    position(); search.current?.focus();
-    const observer = new ResizeObserver(position); if (popup.current) observer.observe(popup.current);
-    window.addEventListener('resize', position);
-    return () => { observer.disconnect(); window.removeEventListener('resize', position); };
-  }, [open]);
   const files: ReplayFile[] = [...pickedFiles.filter(picked => !library.files.some(file => sameCampaignPath(file.path, picked.path))), ...library.files];
   for (const campaign of campaigns) if (!files.some(file => sameCampaignPath(file.path, campaign.path)) && bindings[campaign.id]?.source) {
     files.unshift({ path: campaign.path, name: campaign.label, folder: '' });
@@ -72,11 +55,11 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
     <div className="loaded-campaigns">{campaigns.filter(campaign => bindings[campaign.id]?.source).map(campaign => <div className="loaded-campaign" key={campaign.id}>
       <span className="campaign-loaded-dot" aria-label="Loaded" /><ReplayFilename className="campaign-name" path={campaign.path} />{defaultButton(campaign)}
     </div>)}</div>
-    <div ref={popup} id={id} popover="auto" className="replay-library-menu" role="dialog" aria-label="Recordings"
-      onToggle={event => { const next = event.newState === 'open'; setOpen(next); if (next) void library.refresh(); else setQuery(''); }}>
+    <Popover menu={menu} id={id} className="replay-library-menu" aria-label="Recordings"
+      onToggle={event => { const next = event.newState === 'open'; if (next) void library.refresh(); else setQuery(''); }}>
       {open && <>
         <div className="replay-library-tools">
-          <input ref={search} className="replay-library-search" aria-label="Search recordings" placeholder="Find a campaign…" value={query} onChange={event => setQuery(event.currentTarget.value)} />
+          <input data-popover-autofocus className="replay-library-search" aria-label="Search recordings" placeholder="Find a campaign…" value={query} onChange={event => setQuery(event.currentTarget.value)} />
           <button type="button" className="replay-browse" aria-label="Browse for a recording" data-tooltip="Browse for a recording" disabled={picking || !canLoad || !client.chooseRecording} onClick={() => { void pickRecording(); }}>
             {picking ? <span className="spinner" /> : <Icon name="folder" />}
           </button>
@@ -105,6 +88,6 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
         </>}
         {!library.folder && <><p className="replay-library-empty">Choose the folder where you keep your replays.</p><ReplayFolderSetting library={library} client={client} /></>}
       </>}
-    </div>
+    </Popover>
   </div>;
 }

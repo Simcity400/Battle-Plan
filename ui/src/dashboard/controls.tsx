@@ -3,19 +3,16 @@ import type { CSSProperties } from 'react';
 import DateTimePicker from '../analytics/DateTimePicker';
 import PlaybackSpeed from './PlaybackSpeed';
 import { formatDateTime } from '../analytics/calendar';
-import { metrics, parseRange } from '../analytics/model';
 import { recordingName } from '../api';
 import { Icon } from '../Icons';
-import { pinTime, resolveWindow } from './model';
 import type { BoundTrack, DashboardTemplate, WidgetSpec, WidgetTime } from './model';
 import type { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import { resolveWidgetCampaign } from './campaigns';
 import { timelineGaps } from './timelineGaps';
+import CountryPicker from './CountryPicker';
+import type { DashboardClient } from './client';
 
-export const timeLabels: Record<WidgetTime['mode'], string> = {
-  follow: 'Follow playback', campaign: 'Whole campaign', range: 'Selected period', pin: 'Pinned',
-};
 
 export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   clock: PlaybackController; tracks: BoundTrack[]; alignment: DashboardTemplate['alignment']; defaultRoleId: string | null;
@@ -66,93 +63,40 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   </section>;
 }
 
-export function WidgetSettings({ widget, template, tracks, clock, onApply, onRemove, onLive, defaultRoleId }: {
-  widget: WidgetSpec; template: DashboardTemplate; tracks: BoundTrack[]; clock: PlaybackController; onApply: (widget: WidgetSpec) => void; onRemove: () => void;
+export function WidgetSettings({ widget, template, tracks, client, onApply, onRemove, onLive, defaultRoleId }: {
+  widget: WidgetSpec; template: DashboardTemplate; tracks: BoundTrack[]; client: DashboardClient;
+  onApply: (widget: WidgetSpec) => void; onRemove: () => void;
   onLive: (time: WidgetTime) => void; defaultRoleId: string | null;
 }) {
   const [draft, setDraft] = useState(widget);
   const effective = resolveWidgetCampaign(draft, template, defaultRoleId);
-  const reference = tracks.find((track) => track.id === effective.trackIds[0]);
-  const initial = reference ? resolveWindow(resolveWidgetCampaign(widget, template, defaultRoleId), reference, tracks, clock.getHour()) : null;
-  const [from, setFrom] = useState<number | null>(initial?.firstHour ?? reference?.branch.firstHour ?? null);
-  const [to, setTo] = useState<number | null>(initial?.lastHour ?? reference?.branch.lastHour ?? null);
-  const [tagText, setTagText] = useState(widget.countries.kind === 'tags' ? widget.countries.tags.join(', ') : '');
-  const help = useId();
-  const range = reference ? parseRange(String(from ?? ''), String(to ?? ''), reference.branch) : null;
-  const rangeError = draft.time.mode === 'range' && (!range || typeof range === 'string') ? typeof range === 'string' ? range : 'Connect the first track before choosing a period.' : null;
-  const tags = tagText.split(/[\s,]+/).map((tag) => tag.trim()).filter(Boolean);
-  const error = !draft.title.trim() ? 'Give this view a title.' : rangeError ?? (draft.countries.kind === 'tags' && !tags.length ? 'Choose at least one country tag.' : null);
+  const reference = tracks.find(track => track.id === effective.trackIds[0]);
   const definition = widgetDefinition(widget.kind);
   const linked = widget.time.mode === 'follow';
-  return <form className="widget-settings-content" onSubmit={(event) => {
+  const error = !draft.title.trim() ? 'Give this view a title.' : null;
+  return <form className="widget-settings-content" onSubmit={event => {
     event.preventDefault();
-    if (error) return;
-    let time = draft.time;
-    if (time.mode === 'range' && reference && range && typeof range !== 'string') time = { mode: 'range', firstOffset: range.firstHour - reference.branch.firstHour, lastOffset: range.lastHour - reference.branch.firstHour };
-    onApply({ ...draft, ...(time.mode === 'pin' ? { campaign: 'tracks', trackIds: effective.trackIds.length ? effective.trackIds : draft.trackIds } : {}), title: draft.title.trim(), time,
-      countries: draft.countries.kind === 'tags' ? { kind: 'tags', tags: [...new Set(tags)] } : draft.countries });
+    if (!error) onApply({ ...draft, title: draft.title.trim() });
   }}>
     <button type="button" className="widget-live-toggle" aria-pressed={linked} disabled={!definition?.timeModes.includes('follow') || !definition.timeModes.includes('campaign')}
       onClick={() => { const time: WidgetTime = { mode: linked ? 'campaign' : 'follow' }; setDraft({ ...draft, time }); onLive(time); }}>
       <Icon name="link" /><span>Live playback</span><strong>{linked ? 'On' : 'Off'}</strong></button>
-    <label className="field"><span>Title</span><input value={draft.title} maxLength={160} onChange={(event) => setDraft({ ...draft, title: event.currentTarget.value })} /></label>
-    <label className="field"><span>Campaign</span><select aria-label="Widget campaign" value={draft.campaign === 'default' ? '__default' : template.tracks.find((track) => track.id === draft.trackIds[0])?.roleId ?? '__missing'} onChange={(event) => {
+    <label className="field"><span>Title</span><input value={draft.title} maxLength={160} onChange={event => setDraft({ ...draft, title: event.currentTarget.value })} /></label>
+    <label className="field"><span>Campaign</span><select aria-label="Widget campaign" value={draft.campaign === 'default' ? '__default' : template.tracks.find(track => track.id === draft.trackIds[0])?.roleId ?? '__missing'} onChange={event => {
       const roleId = event.currentTarget.value;
-      const track = template.tracks.find((item) => item.roleId === roleId);
+      const track = template.tracks.find(item => item.roleId === roleId);
       setDraft({ ...draft, campaign: roleId === '__default' ? 'default' : 'tracks', trackIds: track ? [track.id] : draft.trackIds,
         time: draft.time.mode === 'pin' ? { mode: definition?.defaultTime ?? 'campaign' } : draft.time });
     }}>
       <option value="__default">Default campaign</option>
-      {template.roles.map((role) => <option key={role.id} value={role.id}>{tracks.find((track) => track.roleId === role.id) ? recordingName(tracks.find((track) => track.roleId === role.id)!.source.path) : `${role.label} - unavailable`}</option>)}
+      {template.roles.map(role => <option key={role.id} value={role.id}>{tracks.find(track => track.roleId === role.id) ? recordingName(tracks.find(track => track.roleId === role.id)!.source.path) : `${role.label} - unavailable`}</option>)}
     </select></label>
-    {draft.kind !== 'placeholder' && <details className="widget-advanced"><summary>More options</summary><div>
-    {draft.kind !== 'placeholder' && <fieldset className="dash-fieldset"><legend>{(draft.kind === 'map' || draft.kind === 'national-focus') ? 'Campaign track' : 'Compare tracks'}</legend>
-      {template.tracks.map((track) => <label className="dash-check" key={track.id}>
-        <input type={(draft.kind === 'map' || draft.kind === 'national-focus') ? 'radio' : 'checkbox'} name="widget-tracks" checked={effective.trackIds.includes(track.id)} onChange={(event) => {
-          const trackIds = (draft.kind === 'map' || draft.kind === 'national-focus') ? [track.id] : event.currentTarget.checked ? [...effective.trackIds, track.id] : effective.trackIds.filter((id) => id !== track.id);
-          if (trackIds.length) setDraft({ ...draft, campaign: 'tracks', trackIds });
-        }} /><span>{track.label}<small>{tracks.some((item) => item.id === track.id) ? template.roles.find((role) => role.id === track.roleId)?.label : 'Source, branch or anchor unavailable'}</small></span>
-      </label>)}
-    </fieldset>}
-    {draft.kind !== 'map' && draft.kind !== 'placeholder' && <>
-      <label className="field"><span>Countries</span><select value={draft.countries.kind} onChange={(event) => setDraft({ ...draft, countries: event.currentTarget.value === 'tags'
-        ? { kind: 'tags', tags } : { kind: event.currentTarget.value as 'selected' | 'all' } })}>
-        <option value="selected">Selected country from each source</option>{draft.kind !== 'national-focus' && <option value="all">All observed countries</option>}<option value="tags">Choose country tags</option>
-      </select></label>
-      {draft.countries.kind === 'tags' && draft.kind === 'national-focus' && <label className="field"><span>Country</span><select value={tags[0] ?? ''} onChange={event => setTagText(event.currentTarget.value)}><option value="">Choose a country</option>{reference?.source.metadata.countries.filter((country, index, all) => all.findIndex(c => c.tag === country.tag) === index).map(country => <option key={country.tag} value={country.tag}>{country.name || country.tag} ({country.tag})</option>)}</select></label>}
-      {draft.countries.kind === 'tags' && draft.kind !== 'national-focus' && <label className="field"><span>Country tags, separated by commas</span><input value={tagText} placeholder="GER, ENG, SOV" maxLength={2048} onChange={(event) => setTagText(event.currentTarget.value.toUpperCase())} /></label>}
-      <p className="dash-help">Country selections rebind when a recording changes. Missing countries remain explicitly unavailable.</p>
-    </>}
-    {draft.kind === 'history' && <label className="field"><span>Metric</span><select value={draft.metric} onChange={(event) => setDraft({ ...draft, metric: event.currentTarget.value as WidgetSpec['metric'] })}>
-      {metrics.map((metric) => <option key={metric.key} value={metric.key}>{metric.label}</option>)}
-    </select></label>}
-    {draft.kind !== 'placeholder' && <><label className="field"><span>Time mode</span><select value={draft.time.mode} onChange={(event) => {
-      const mode = event.currentTarget.value as WidgetTime['mode'];
-      const candidate = effective.time.mode === 'range' && reference && range && typeof range !== 'string'
-        ? { ...effective, time: { mode: 'range' as const, firstOffset: range.firstHour - reference.branch.firstHour, lastOffset: range.lastHour - reference.branch.firstHour } }
-        : effective;
-      const time: WidgetTime = mode === 'pin' ? pinTime(candidate, tracks, clock.getHour())
-        : mode === 'range' ? { mode, firstOffset: 0, lastOffset: reference ? reference.branch.lastHour - reference.branch.firstHour : 0 } : { mode };
-      if (mode === 'range' && reference) { setFrom(reference.branch.firstHour); setTo(reference.branch.lastHour); }
-      setDraft({ ...draft, time });
-    }}>{Object.entries(timeLabels).filter(([mode]) => widgetDefinition(draft.kind)?.timeModes.includes(mode as WidgetTime['mode']) || mode === draft.time.mode)
-      .map(([mode, label]) => <option key={mode} value={mode}>{label}</option>)}</select></label>
-    <p className="dash-help">{draft.time.mode === 'follow' ? draft.kind === 'history' ? 'Shows the trailing seven days ending at shared playback, with exact hourly buckets.' : 'Shows the state at shared playback.'
-      : draft.time.mode === 'campaign' ? draft.kind === 'history' ? 'Keeps the whole branch in view while playback continues.' : 'Shows the state at the branch’s final hour.'
-        : draft.time.mode === 'pin' ? 'Keeps the currently resolved window for each selected track. Changing playback will not change its data.'
-          : draft.kind === 'history' ? 'Uses this fixed period. Date browsing does not issue queries.' : 'Shows the state at the ending hour of this fixed period.'}</p>
-    {draft.time.mode === 'range' && <div className="dash-range-fields">
-      <DateTimePicker label="From" value={from} otherValue={to} min={reference?.branch.firstHour ?? 0} max={reference?.branch.lastHour ?? 0}
-        disabled={!reference} onChange={setFrom} invalid={!!rangeError} describedBy={help} />
-      <DateTimePicker label="To" value={to} otherValue={from} min={reference?.branch.firstHour ?? 0} max={reference?.branch.lastHour ?? 0}
-        disabled={!reference} onChange={setTo} invalid={!!rangeError} describedBy={help} />
-      <p id={help} className="dash-help">Dates use {reference?.label ?? 'the first selected track'}. Both endpoints are inclusive.</p>
-    </div>}
-    {draft.time.mode === 'pin' && <button type="button" className="button small" disabled={!reference} onClick={() => setDraft({ ...draft, time: pinTime({ ...effective, time: { mode: 'follow' } }, tracks, clock.getHour()) })}>Pin current playback time</button>}
-    </>}
-    </div></details>}
+    {draft.kind !== 'placeholder' && <CountryPicker field key={reference?.source.id ?? 'unbound'} source={reference?.source} client={client}
+      countries={reference?.source.metadata.countries ?? []} playerCountryId={reference?.source.metadata.playerCountryId ?? null}
+      selectedTag={draft.countries.kind === 'tags' ? draft.countries.tags[0] ?? null : null}
+      onChange={tag => setDraft({ ...draft, countries: tag ? { kind: 'tags', tags: [tag] } : { kind: 'selected' } })} />}
     {error && <p className="dash-inline-warning" role="alert">{error}</p>}
-    <div className="widget-settings-actions"><button type="button" className="button quiet" onClick={onRemove}>Remove widget</button>
-      <button type="submit" className="button primary" disabled={!!error}>Apply</button></div>
+    <div className="widget-settings-actions"><button type="button" className="button quiet" aria-label="Delete widget" data-tooltip="Delete widget" onClick={onRemove}><Icon name="trash" /></button>
+      <button type="submit" className="button primary" aria-label="Apply widget settings" data-tooltip="Apply" disabled={!!error}><Icon name="check" /></button></div>
   </form>;
 }

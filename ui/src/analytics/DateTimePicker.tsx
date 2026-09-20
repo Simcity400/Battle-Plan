@@ -1,3 +1,4 @@
+import { Popover, usePopover } from '../ui/Popover';
 import { useId, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { Icon } from '../Icons';
@@ -26,15 +27,14 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 export default function DateTimePicker({ label, hideLabel = false, value, min, max, otherValue, disabled, invalid, describedBy = 'date-range-help range-error', id: suppliedId, onChange }: Props) {
   const generatedId = useId();
   const id = suppliedId ?? generatedId;
-  const trigger = useRef<HTMLButtonElement>(null);
-  const popup = useRef<HTMLDivElement>(null);
+  const menu = usePopover('start');
+  const { trigger, popup, open } = menu;
   const focusDay = useRef(false);
   const selected = value == null ? null : gameDate(value);
   const minimum = gameDate(Math.max(min, HOUR_EPOCH));
   const maximum = gameDate(max);
   const available = !disabled && minimum != null && maximum != null && min <= max;
   const initial = selected ?? minimum;
-  const [open, setOpen] = useState(false);
   const [focusRequest, setFocusRequest] = useState(0);
   const [viewMonth, setViewMonth] = useState(() => initial ? monthIndex(initial) : 0);
   const [focusedDay, setFocusedDay] = useState(initial?.day ?? 1);
@@ -51,30 +51,6 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
   const rangeFirst = value != null && otherValue != null ? Math.min(value, otherValue) : null;
   const rangeLast = value != null && otherValue != null ? Math.max(value, otherValue) : null;
 
-  useLayoutEffect(() => {
-    if (!open) return;
-    const position = () => {
-      if (!trigger.current || !popup.current) return;
-      const anchor = trigger.current.getBoundingClientRect();
-      const { width, height } = popup.current.getBoundingClientRect();
-      const viewport = document.documentElement;
-      const below = anchor.bottom + 8;
-      const top = below + height <= viewport.clientHeight - 12 ? below : anchor.top - height - 8;
-      popup.current.style.left = `${clamp(anchor.left, 12, viewport.clientWidth - width - 12)}px`;
-      popup.current.style.top = `${clamp(top, 12, viewport.clientHeight - height - 12)}px`;
-    };
-    position();
-    const observer = new ResizeObserver(position);
-    if (popup.current) observer.observe(popup.current);
-    if (trigger.current) observer.observe(trigger.current);
-    window.addEventListener('resize', position);
-    window.addEventListener('scroll', position, true);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', position);
-      window.removeEventListener('scroll', position, true);
-    };
-  }, [open]);
 
   useLayoutEffect(() => {
     if (!open || !focusDay.current) return;
@@ -152,21 +128,13 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
       </span>
       <Icon name="chevron-down" />
     </button>
-    <div ref={popup} id={`${id}-popup`} popover="auto" className="date-time-popover"
-      role="dialog" aria-label={`${label} date and time`} onKeyDown={(event) => {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          event.stopPropagation();
-          popup.current?.hidePopover();
-          trigger.current?.focus();
-        }
-      }} onToggle={(event) => {
+    <Popover menu={menu} id={`${id}-popup`} className="date-time-popover"
+      aria-label={`${label} date and time`} onToggle={(event) => {
         const isOpen = event.newState === 'open';
         if (isOpen && initial) {
           showMonth(monthIndex(initial), true);
           setFocusedDay(initial.day);
         }
-        setOpen(isOpen);
       }}>
       <div className="calendar-navigation">
         <button type="button" className="calendar-arrow" aria-label="Previous month" disabled={viewMonth <= firstMonth}
@@ -219,9 +187,9 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
           <button type="button" className="text-button" data-tooltip="Select the first available date" onClick={() => choose(Math.max(min, HOUR_EPOCH))}>First date</button>
           <button type="button" className="text-button" data-tooltip="Select the last available date" onClick={() => choose(max)}>Last date</button>
         </div>
-        <button type="button" className="button primary small" onClick={() => { popup.current?.hidePopover(); trigger.current?.focus(); }}>Done</button>
+        <button type="button" className="button primary small" onClick={menu.close}>Done</button>
       </div>
       <span className="sr-only" aria-live="polite">{value != null ? formatDateTime(value) : 'Choose a date'}</span>
-    </div>
+    </Popover>
   </div>;
 }
