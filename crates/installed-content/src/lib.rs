@@ -19,6 +19,7 @@ pub mod raids;
 pub mod railways;
 pub mod regions;
 pub mod save;
+pub mod settings;
 pub mod states;
 pub mod terrain;
 

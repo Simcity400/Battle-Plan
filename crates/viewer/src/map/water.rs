@@ -5,7 +5,7 @@ use std::io;
 use eframe::wgpu;
 
 use super::{
-    scene::{DEPTH_FORMAT, SAMPLE_COUNT, Targets, module, sampler_entry, texture_entry},
+    scene::{DEPTH_FORMAT, Targets, module, sampler_entry, texture_entry},
     textures::{Bound, Samplers},
 };
 
@@ -40,6 +40,7 @@ pub struct WaterPass {
 impl WaterPass {
     pub fn new(
         device: &wgpu::Device,
+        samples: u32,
         globals: &wgpu::BindGroupLayout,
         format: wgpu::TextureFormat,
     ) -> io::Result<Self> {
@@ -98,7 +99,7 @@ impl WaterPass {
                 bias: Default::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: SAMPLE_COUNT,
+                count: samples,
                 ..Default::default()
             },
             fragment: Some(wgpu::FragmentState {

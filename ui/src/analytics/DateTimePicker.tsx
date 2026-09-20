@@ -9,19 +9,23 @@ import './DateTimePicker.css';
 
 interface Props {
   label: string;
+  hideLabel?: boolean;
   value: number | null;
   min: number;
   max: number;
   otherValue: number | null;
   disabled?: boolean;
   invalid?: boolean;
+  describedBy?: string;
+  id?: string;
   onChange: (hour: number) => void;
 }
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-export default function DateTimePicker({ label, value, min, max, otherValue, disabled, invalid, onChange }: Props) {
-  const id = useId();
+export default function DateTimePicker({ label, hideLabel = false, value, min, max, otherValue, disabled, invalid, describedBy = 'date-range-help range-error', id: suppliedId, onChange }: Props) {
+  const generatedId = useId();
+  const id = suppliedId ?? generatedId;
   const trigger = useRef<HTMLButtonElement>(null);
   const popup = useRef<HTMLDivElement>(null);
   const focusDay = useRef(false);
@@ -135,11 +139,11 @@ export default function DateTimePicker({ label, value, min, max, otherValue, dis
   }
 
   return <div className="field date-time-field">
-    <span id={`${id}-label`}>{label}</span>
+    <span id={`${id}-label`} className={hideLabel ? 'sr-only' : undefined}>{label}</span>
     <button type="button" ref={trigger} className="date-time-trigger" disabled={!available}
-      aria-labelledby={`${id}-label ${id}-value`} aria-describedby="date-range-help range-error"
+      aria-labelledby={`${id}-label ${id}-value`} aria-describedby={describedBy}
       aria-haspopup="dialog" aria-expanded={open} aria-invalid={invalid}
-      title={!available && value != null ? 'This part of the recording has no calendar date.' : undefined}
+      data-tooltip={!available && value != null ? 'This part of the recording has no calendar date.' : undefined}
       popoverTarget={`${id}-popup`}>
       <Icon name="calendar" />
       <span id={`${id}-value`} className="date-time-value">
@@ -212,8 +216,8 @@ export default function DateTimePicker({ label, value, min, max, otherValue, dis
       </div>
       <div className="calendar-footer">
         <div className="calendar-shortcuts">
-          <button type="button" className="text-button" onClick={() => choose(Math.max(min, HOUR_EPOCH))}>{min < HOUR_EPOCH ? 'First calendar date' : 'Branch start'}</button>
-          <button type="button" className="text-button" onClick={() => choose(max)}>Branch end</button>
+          <button type="button" className="text-button" data-tooltip="Select the first available date" onClick={() => choose(Math.max(min, HOUR_EPOCH))}>First date</button>
+          <button type="button" className="text-button" data-tooltip="Select the last available date" onClick={() => choose(max)}>Last date</button>
         </div>
         <button type="button" className="button primary small" onClick={() => { popup.current?.hidePopover(); trigger.current?.focus(); }}>Done</button>
       </div>

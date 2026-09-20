@@ -117,9 +117,37 @@ pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
 /// headroom several times over.
 pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
     let limits = adapter.limits();
+    let features = adapter.features()
+        & (wgpu::Features::TEXTURE_COMPRESSION_BC
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
+    let sample_mask = [1, 2, 4, 8]
+        .into_iter()
+        .filter(|&count| {
+            [
+                crate::map::scene::SCENE_FORMAT,
+                crate::map::scene::OUTPUT_FORMAT,
+                crate::map::scene::DEPTH_FORMAT,
+            ]
+            .into_iter()
+            .all(|format| {
+                let flags = if features
+                    .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+                {
+                    adapter.get_texture_format_features(format).flags
+                } else {
+                    format.guaranteed_format_features(features).flags
+                };
+                flags.sample_count_supported(count)
+                    && (count == 1
+                        || format == crate::map::scene::DEPTH_FORMAT
+                        || flags.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE))
+            })
+        })
+        .fold(0, |mask, count| mask | count);
+    crate::map_settings::set_sample_counts(sample_mask);
     wgpu::DeviceDescriptor {
         label: Some("Battle Plan viewer"),
-        required_features: adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_BC,
+        required_features: features,
         required_limits: wgpu::Limits {
             max_texture_dimension_1d: limits.max_texture_dimension_1d,
             max_texture_dimension_2d: limits.max_texture_dimension_2d,
@@ -363,7 +391,7 @@ pub fn dump_png(
             .request_device(&device_descriptor(&adapter))
             .await
             .map_err(io::Error::other)?;
-        let mut scene = Scene::new(&device, &queue, assets, icons)?;
+        let mut scene = Scene::new(&device, &queue, assets, icons, Default::default())?;
         // political fill + borders
         let textures = &layers.political.textures;
         scene.set_gradient_textures(

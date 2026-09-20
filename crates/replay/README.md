@@ -22,6 +22,8 @@ Value equality and sample freshness are separate:
 
 Keep those distinctions through encoding, decoding, inspection, analytics and oracle joins. Do not infer freshness from a sibling table or the current frame's hour. Startup, branch/load transitions and keyframes must retain the full-refresh and self-contained-baseline behavior required by the format.
 
+Consumers that need only a few tables can use `FrameDecoder::for_tables`. It applies the same baseline and recovery rules to those tables and reports omitted tables as unavailable. The selection is fixed for the decoder lifetime; ordinary `FrameDecoder::new` still reconstructs every table. `Replay::read_block_selected` complements this by retaining only selected updates during parsing. All updates still go through the existing versioned decoder and validation before unselected ones are discarded; frame ordering, bounds, keyframe and compression checks remain shared with the full reader. The decompression buffer reserves the bounded size from the block index once. Neither selection API changes the recording format.
+
 ## Compatibility and recovery
 
 A format change updates all affected writers, readers and consumers together. Preserve deliberately supported finalized formats, including their historical cadence and provenance semantics. A table that predates its format is not applicable, not recorded-zero. Unsupported formats, incompatible spool records and unsupported old-file appends must fail explicitly. Removing a live field must not break consumption, alignment or validation of that field in a supported legacy payload.

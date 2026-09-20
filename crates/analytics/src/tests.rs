@@ -19,6 +19,198 @@ use crate::{
 
 const CAMPAIGN: &[u8] = b"analytics-test";
 
+fn ownership_frame(branch: u64, hour: i32, owner: u32) -> DecodedFrame {
+    let mut frame = source(branch, hour, Some(1));
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut frame.tables[TableId::Countries.index()]
+    {
+        for (id, slot, tag) in [(44, 8, b"FRA"), (55, 9, b"CTL"), (66, 10, b"MOD")] {
+            rows.push(CountryRow {
+                id,
+                canonical_slot: slot,
+                tag: tag.to_vec(),
+                name: tag.to_vec(),
+                ..CountryRow::default()
+            });
+        }
+        rows.sort_by_key(|row| row.id);
+    }
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut frame.tables[TableId::CountryLinks.index()]
+    {
+        rows.extend(
+            [(44, 8), (55, 9), (66, 10)]
+                .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot }),
+        );
+        rows.sort_by_key(|row| row.id);
+    }
+    frame.tables[TableId::States.index()] =
+        TableView::Complete(TableRows::States(vec![replay::rows::StateRow {
+            id: 1,
+            owner,
+            controller: 55,
+        }]));
+    frame
+}
+
+#[test]
+fn land_owners_include_transient_and_other_branch_owners_but_not_controllers() {
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[
+            records(
+                1,
+                vec![
+                    ownership_frame(1, 100, 11),
+                    ownership_frame(1, 101, 44),
+                    ownership_frame(1, 1000, 11),
+                ],
+            ),
+            records(2, vec![ownership_frame(2, 90, 66)]),
+        ],
+    )
+    .unwrap();
+    let result = crate::land_owners(&replay, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        result
+            .countries
+            .iter()
+            .map(|country| country.tag.as_str())
+            .collect::<Vec<_>>(),
+        ["FRA", "GER", "MOD"]
+    );
+    let france = result
+        .countries
+        .iter()
+        .find(|country| country.tag == "FRA")
+        .unwrap();
+    assert_eq!((france.id.as_str(), france.observed_hour), ("8", 101));
+    assert_eq!(
+        result
+            .countries
+            .iter()
+            .find(|country| country.tag == "MOD")
+            .unwrap()
+            .observed_branch_id,
+        "2"
+    );
+}
+
+#[test]
+fn land_owners_report_dangling_owners_and_missing_country_identity() {
+    for missing in ["link", "row", "tag"] {
+        let mut frame = ownership_frame(1, 101, 44);
+        match missing {
+            "link" => {
+                if let TableView::Complete(TableRows::CountryLinks(rows)) =
+                    &mut frame.tables[TableId::CountryLinks.index()]
+                {
+                    rows.retain(|row| row.id != 44);
+                }
+            }
+            "row" => {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut frame.tables[TableId::Countries.index()]
+                {
+                    rows.retain(|row| row.id != 44);
+                }
+            }
+            _ => {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut frame.tables[TableId::Countries.index()]
+                {
+                    rows.iter_mut()
+                        .find(|row| row.id == 44)
+                        .unwrap()
+                        .tag
+                        .clear();
+                }
+            }
+        }
+        let replay = Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, vec![ownership_frame(1, 100, 11), frame])],
+        )
+        .unwrap();
+        let result = crate::land_owners(&replay, &AtomicBool::new(false)).unwrap();
+        assert_eq!(
+            result
+                .countries
+                .iter()
+                .map(|country| country.tag.as_str())
+                .collect::<Vec<_>>(),
+            ["GER"],
+            "{missing}"
+        );
+        assert!(!result.warnings.is_empty(), "{missing}");
+    }
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, vec![ownership_frame(1, 100, 0)])],
+    )
+    .unwrap();
+    let result = crate::land_owners(&replay, &AtomicBool::new(false)).unwrap();
+    assert!(result.countries.is_empty());
+    assert!(result.warnings.is_empty());
+}
+
+#[test]
+fn land_owners_keep_partial_positive_evidence_and_do_not_reuse_lost_baselines() {
+    let mut partial = ownership_frame(1, 102, 66);
+    partial.tables[TableId::States.index()] = TableView::Truncated {
+        rows: TableRows::States(vec![replay::rows::StateRow {
+            id: 1,
+            owner: 66,
+            controller: 55,
+        }]),
+        missing: 1,
+    };
+    let mut input = records(
+        1,
+        vec![
+            ownership_frame(1, 100, 11),
+            ownership_frame(1, 101, 44),
+            partial,
+        ],
+    );
+    if let Record::Frame(frame) = &mut input[3] {
+        frame.tables[TableId::States.index()] = TableUpdate::Unchanged { baseline: 99 };
+    }
+    let replay = Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
+    let result = crate::land_owners(&replay, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        result
+            .countries
+            .iter()
+            .map(|country| country.tag.as_str())
+            .collect::<Vec<_>>(),
+        ["GER", "MOD"]
+    );
+    assert!(!result.warnings.is_empty());
+}
+
+#[test]
+fn land_owner_scan_honors_cancellation_and_block_budget() {
+    let mut replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, vec![ownership_frame(1, 100, 11)])],
+    )
+    .unwrap();
+    assert_eq!(
+        crate::land_owners(&replay, &AtomicBool::new(true))
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::Interrupted
+    );
+    replay.index[0].raw_length = crate::QueryLimits::default().max_block_raw_bytes as u64 + 1;
+    assert!(
+        crate::land_owners(&replay, &AtomicBool::new(false))
+            .unwrap_err()
+            .to_string()
+            .contains("memory budget")
+    );
+}
+
 fn session(id: u64) -> SessionStart {
     SessionStart {
         id,
@@ -337,6 +529,14 @@ fn recovered_frames_override_overlapping_loss_diagnostics() {
     let mut analytics = open(vec![input]);
     assert_eq!(analytics.metadata().branches[0].first_hour, 98);
     assert_eq!(analytics.metadata().branches[0].last_hour, 103);
+    assert_eq!(
+        analytics.metadata().branches[0].gaps,
+        vec![crate::RecordingGap {
+            first_hour: 98,
+            last_hour: 103,
+            reason: "failed flush".into(),
+        }]
+    );
     let result = analytics
         .country_series(&request(1, None), &AtomicBool::new(false))
         .unwrap();
@@ -559,4 +759,488 @@ fn ranged_queries_decode_prefixes_but_return_only_requested_hours() {
             .is_err()
     );
     assert_eq!(analytics.scans, 2);
+}
+
+fn dashboard_request(first: i32, last: i32) -> crate::QueryRequest {
+    crate::QueryRequest {
+        scope_id: "current".into(),
+        generation: "1".into(),
+        source_id: "source".into(),
+        revision: "snapshot".into(),
+        branch_id: "1".into(),
+        country_ids: vec!["7".into()],
+        first_hour: first,
+        last_hour: last,
+        kind: crate::QueryKind::ExactWindow,
+        max_points: None,
+        priority: crate::QueryPriority::Current,
+    }
+}
+
+fn query_replay(frames: Vec<DecodedFrame>) -> std::sync::Arc<Replay> {
+    std::sync::Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap())
+}
+
+fn finish_scan(scan: &mut crate::CountryScan) -> crate::QueryResult {
+    loop {
+        match scan
+            .advance(
+                std::num::NonZeroUsize::new(1).unwrap(),
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+        {
+            crate::ScanStep::Yielded => {}
+            crate::ScanStep::Ready(result) => return result,
+        }
+    }
+}
+
+#[test]
+fn projected_chunks_reuse_decoding_across_countries_ranges_and_plot_density() {
+    let replay = query_replay(vec![
+        source(1, 100, Some(10)),
+        source(1, 102, Some(90)),
+        source(1, 103, Some(20)),
+    ]);
+    let runtime = crate::AnalyticsRuntime::new(crate::RuntimeLimits::default()).unwrap();
+    let mut request = dashboard_request(100, 103);
+    let source = runtime
+        .register_source(
+            request.source_key(),
+            "synthetic.battleplan".into(),
+            std::sync::Arc::clone(&replay),
+        )
+        .unwrap();
+    request.kind = crate::QueryKind::History;
+    request.max_points = Some(1);
+    let history = runtime.request(request.clone()).unwrap().recv().unwrap();
+    assert_eq!(
+        history.series[0].points[0].max.political_power.as_deref(),
+        Some("90")
+    );
+    assert_eq!(runtime.stats().block_reads, 1);
+
+    request = dashboard_request(100, 101);
+    request.country_ids.push("99".into());
+    let exact = runtime.request(request.clone()).unwrap().recv().unwrap();
+    let expected = finish_scan(
+        &mut crate::CountryScan::start(
+            std::sync::Arc::clone(&replay),
+            &request,
+            crate::QueryLimits::default(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(*exact, expected);
+    assert_eq!(
+        exact.series[0].points[0].max.political_power.as_deref(),
+        Some("10")
+    );
+    assert_eq!(exact.series[0].points[1].status, PointStatus::Gap);
+    assert_eq!(exact.series[1].points[0].status, PointStatus::Absent);
+    assert_eq!(runtime.stats().block_reads, 1);
+    assert_eq!(runtime.stats().projection_hits, 1);
+    assert!(runtime.stats().projection_bytes > 0);
+    runtime.close_source(source.key());
+    assert_eq!(runtime.stats().projection_bytes, 0);
+}
+
+#[test]
+fn projected_chunks_preserve_unavailable_tables_and_never_cross_source_revisions() {
+    let first = source(1, 100, Some(0));
+    let mut failed = source(1, 101, Some(42));
+    failed.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "synthetic table failure".into(),
+    };
+    let replay = query_replay(vec![first, failed, source(1, 102, None)]);
+    let runtime = crate::AnalyticsRuntime::new(crate::RuntimeLimits::default()).unwrap();
+    let mut request = dashboard_request(100, 102);
+    let original = runtime
+        .register_source(
+            request.source_key(),
+            "one.battleplan".into(),
+            std::sync::Arc::clone(&replay),
+        )
+        .unwrap();
+    runtime.request(request.clone()).unwrap().recv().unwrap();
+    request.first_hour = 101;
+    let cached = runtime.request(request.clone()).unwrap().recv().unwrap();
+    let cold = finish_scan(
+        &mut crate::CountryScan::start(
+            std::sync::Arc::clone(&replay),
+            &request,
+            crate::QueryLimits::default(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(*cached, cold);
+    assert_eq!(cached.series[0].points[0].status, PointStatus::Unavailable);
+    assert_eq!(runtime.stats().block_reads, 1);
+    request.revision = "replacement".into();
+    let replacement = runtime
+        .register_source(request.source_key(), "two.battleplan".into(), replay)
+        .unwrap();
+    runtime.request(request).unwrap().recv().unwrap();
+    assert_eq!(runtime.stats().block_reads, 2);
+    drop((original, replacement));
+}
+
+#[test]
+fn projection_pressure_falls_back_without_changing_exact_results() {
+    let replay = query_replay(vec![source(1, 100, Some(i64::MIN)), source(1, 101, None)]);
+    let limits = crate::RuntimeLimits {
+        projection_bytes: 1,
+        ..Default::default()
+    };
+    let runtime = crate::AnalyticsRuntime::new(limits).unwrap();
+    let request = dashboard_request(100, 101);
+    let _source = runtime
+        .register_source(
+            request.source_key(),
+            "synthetic.battleplan".into(),
+            std::sync::Arc::clone(&replay),
+        )
+        .unwrap();
+    let result = runtime.request(request.clone()).unwrap().recv().unwrap();
+    let cold = finish_scan(
+        &mut crate::CountryScan::start(replay, &request, crate::QueryLimits::default()).unwrap(),
+    );
+    assert_eq!(*result, cold);
+    assert_eq!(runtime.stats().projection_bytes, 0);
+}
+
+#[test]
+fn evicting_a_projection_does_not_release_a_scans_live_byte_charge() {
+    use crate::projection::{ProjectedBlock, ProjectionCache};
+    let cache = ProjectionCache::new(8192);
+    let replay = query_replay(vec![source(1, 100, Some(10))]);
+    let key = dashboard_request(100, 100).source_key();
+    let frame = cache.capture(&source(1, 100, Some(10))).unwrap();
+    let bytes = cache.bytes();
+    cache.insert(
+        key.clone(),
+        &replay,
+        0,
+        ProjectedBlock {
+            frames: vec![frame],
+            through: 100,
+        },
+    );
+    let held = cache.get(&key, &replay, 0, 100).unwrap();
+    cache.retain_sources(|_| false);
+    assert_eq!(cache.bytes(), bytes);
+    assert!(cache.get(&key, &replay, 0, 100).is_none());
+    drop(held);
+    assert_eq!(cache.bytes(), 0);
+}
+
+#[test]
+fn multi_country_exact_windows_share_gap_boundaries_and_preserve_native_values() {
+    let mut frames: Vec<_> = [100, 101, 103]
+        .into_iter()
+        .map(|hour| source(1, hour, Some(i64::from(hour))))
+        .collect();
+    for frame in &mut frames {
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut frame.tables[TableId::Countries.index()]
+        {
+            let mut second = rows[0].clone();
+            second.id = 10001;
+            second.canonical_slot = 9;
+            second.tag = b"SOV".to_vec();
+            second.name = b"Soviet Union".to_vec();
+            second.political_power_raw = Some(i64::MIN);
+            rows.push(second);
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut frame.tables[TableId::CountryLinks.index()]
+        {
+            rows.push(CountryLinkRow {
+                id: 10001,
+                canonical_slot: 9,
+            });
+        }
+    }
+    let replay = query_replay(frames);
+    let mut request = dashboard_request(100, 103);
+    request.country_ids = vec!["9".into(), "7".into(), "9".into()];
+    let mut scan =
+        crate::CountryScan::start(replay, &request, crate::QueryLimits::default()).unwrap();
+    let result = finish_scan(&mut scan);
+    assert_eq!(result.country_ids, ["7", "9"]);
+    assert_eq!(result.series.len(), 2);
+    assert_eq!(result.sample_provenance, crate::SampleProvenance::Unknown);
+    for series in &result.series {
+        assert!(!series.downsampled);
+        assert_eq!(series.coverage.recorded_hours, 3);
+        assert_eq!(series.coverage.gap_hours, 1);
+        assert_eq!(series.points[2].status, PointStatus::Gap);
+        assert!(series.points[2].first.is_none());
+        for point in &series.points {
+            assert_eq!(point.first_hour, point.last_hour);
+        }
+    }
+    assert_eq!(
+        result.series[1].points[0]
+            .first
+            .as_ref()
+            .unwrap()
+            .values
+            .political_power
+            .as_deref(),
+        Some("-9223372036854775808")
+    );
+    let json = serde_json::to_string(&result).unwrap();
+    assert_eq!(
+        serde_json::from_str::<crate::QueryResult>(&json).unwrap(),
+        result
+    );
+}
+
+#[test]
+fn exact_windows_do_not_use_history_envelope_endpoints_for_interior_values() {
+    let replay = query_replay(vec![
+        source(1, 100, Some(10)),
+        source(1, 101, Some(999)),
+        source(1, 102, Some(20)),
+    ]);
+    let mut request = dashboard_request(100, 102);
+    request.kind = crate::QueryKind::History;
+    request.max_points = Some(1);
+    let mut history = crate::CountryScan::start(
+        std::sync::Arc::clone(&replay),
+        &request,
+        crate::QueryLimits::default(),
+    )
+    .unwrap();
+    let result = finish_scan(&mut history);
+    let point = &result.series[0].points[0];
+    assert_eq!(
+        point
+            .first
+            .as_ref()
+            .unwrap()
+            .values
+            .political_power
+            .as_deref(),
+        Some("10")
+    );
+    assert_eq!(
+        point
+            .last
+            .as_ref()
+            .unwrap()
+            .values
+            .political_power
+            .as_deref(),
+        Some("20")
+    );
+    assert_eq!(point.max.political_power.as_deref(), Some("999"));
+    let request = dashboard_request(101, 101);
+    let mut exact =
+        crate::CountryScan::start(replay, &request, crate::QueryLimits::default()).unwrap();
+    let result = finish_scan(&mut exact);
+    assert_eq!(result.series[0].points[0].first.as_ref().unwrap().hour, 101);
+    assert_eq!(
+        result.series[0].points[0]
+            .first
+            .as_ref()
+            .unwrap()
+            .values
+            .political_power
+            .as_deref(),
+        Some("999")
+    );
+}
+
+#[test]
+fn cooperative_query_cancellation_does_not_publish_or_reset_partial_progress() {
+    let replay = query_replay(vec![
+        source(1, 100, Some(1)),
+        source(1, 101, Some(2)),
+        source(1, 102, Some(3)),
+    ]);
+    let mut scan = crate::CountryScan::start(
+        replay,
+        &dashboard_request(100, 102),
+        crate::QueryLimits::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        scan.advance(
+            std::num::NonZeroUsize::new(1).unwrap(),
+            &AtomicBool::new(false)
+        ),
+        Ok(crate::ScanStep::Yielded)
+    ));
+    let error = scan
+        .advance(
+            std::num::NonZeroUsize::new(1).unwrap(),
+            &AtomicBool::new(true),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(error.code, crate::QueryErrorCode::Cancelled);
+    let result = finish_scan(&mut scan);
+    assert_eq!(result.series[0].coverage.recorded_hours, 3);
+    assert_eq!(result.series[0].points.len(), 3);
+}
+
+#[test]
+fn oversized_exact_requests_and_small_output_or_block_budgets_fail_explicitly() {
+    let replay = query_replay(vec![source(1, 100, Some(1)), source(1, 1300, Some(2))]);
+    let error = crate::CountryScan::start(
+        std::sync::Arc::clone(&replay),
+        &dashboard_request(100, 1300),
+        crate::QueryLimits::default(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.code, crate::QueryErrorCode::ResourceLimit);
+    let mut limits = crate::QueryLimits {
+        max_result_bytes: 1,
+        ..Default::default()
+    };
+    let error = crate::CountryScan::start(
+        std::sync::Arc::clone(&replay),
+        &dashboard_request(100, 100),
+        limits.clone(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.code, crate::QueryErrorCode::ResourceLimit);
+    limits.max_result_bytes = crate::QueryLimits::default().max_result_bytes;
+    limits.max_block_raw_bytes = 1;
+    let mut scan = crate::CountryScan::start(replay, &dashboard_request(100, 100), limits).unwrap();
+    let error = scan
+        .advance(
+            std::num::NonZeroUsize::new(1).unwrap(),
+            &AtomicBool::new(false),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(error.code, crate::QueryErrorCode::ResourceLimit);
+}
+
+#[test]
+fn shared_runtime_subscriptions_survive_other_scopes_and_obsolete_cancellation() {
+    let replay = query_replay(vec![source(1, 100, Some(1)), source(1, 101, Some(2))]);
+    let runtime = crate::AnalyticsRuntime::new(crate::RuntimeLimits::default()).unwrap();
+    let first = dashboard_request(100, 101);
+    let source = runtime
+        .register_source(first.source_key(), "memory.battleplan".into(), replay)
+        .unwrap();
+    let old = runtime.request(first.clone()).unwrap();
+    let mut second = first.clone();
+    second.scope_id = "other-widget".into();
+    let second = runtime.request(second).unwrap();
+    let mut replacement = first.clone();
+    replacement.generation = "2".into();
+    let replacement = runtime.request(replacement).unwrap();
+    runtime.cancel(&first.ticket());
+    drop(old);
+    let a = second.recv().unwrap();
+    let b = replacement.recv().unwrap();
+    assert!(a.shares_result(&b));
+    assert_eq!(a.series[0].coverage.recorded_hours, 2);
+    assert_eq!(runtime.stats().scans_started, 1);
+    assert_eq!(runtime.stats().completed_scans, 1);
+    assert_eq!(runtime.stats().subscriptions, 0);
+    assert_eq!(source.metadata().countries[0].id, "7");
+    runtime.shutdown();
+}
+
+#[test]
+fn cache_eviction_does_not_uncharge_results_pinned_by_their_consumers() {
+    let limits = crate::RuntimeLimits {
+        output_bytes: 64 * 1024,
+        query: crate::QueryLimits {
+            max_result_bytes: 64 * 1024,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let runtime = crate::AnalyticsRuntime::new(limits).unwrap();
+    let request = dashboard_request(100, 100);
+    let source = runtime
+        .register_source(
+            request.source_key(),
+            "memory.battleplan".into(),
+            query_replay(vec![source(1, 100, Some(1)), source(1, 101, Some(2))]),
+        )
+        .unwrap();
+    let held = runtime.request(request.clone()).unwrap().recv().unwrap();
+    let bytes = held.retained_bytes();
+    assert_eq!(runtime.stats().output_bytes, bytes);
+    let mut next = dashboard_request(101, 101);
+    next.scope_id = "new-query".into();
+    let error = runtime.request(next).unwrap().recv().err().unwrap();
+    assert_eq!(error.code, crate::QueryErrorCode::ResourceLimit);
+    assert_eq!(runtime.stats().cache_entries, 0);
+    assert_eq!(runtime.stats().output_bytes, bytes);
+    runtime.close_source(source.key());
+    assert_eq!(runtime.stats().output_bytes, bytes);
+    drop(held);
+    assert_eq!(runtime.stats().output_bytes, 0);
+}
+
+#[test]
+fn source_handles_share_backing_and_keep_closed_map_pins_accounted() {
+    let runtime = crate::AnalyticsRuntime::new(crate::RuntimeLimits::default()).unwrap();
+    let replay = query_replay(vec![source(1, 100, Some(1))]);
+    let key = dashboard_request(100, 100).source_key();
+    let handle = runtime
+        .register_source(
+            key.clone(),
+            "memory.battleplan".into(),
+            std::sync::Arc::clone(&replay),
+        )
+        .unwrap();
+    let map = handle.replay();
+    assert!(std::sync::Arc::ptr_eq(&replay, &map));
+    let bytes = runtime.stats().source_bytes;
+    runtime.close_source(&key);
+    assert!(runtime.source(&key).is_none());
+    drop(handle);
+    drop(replay);
+    assert_eq!(runtime.stats().retired_sources, 1);
+    assert_eq!(runtime.stats().source_bytes, bytes);
+    drop(map);
+    assert_eq!(runtime.stats().retired_sources, 0);
+    assert_eq!(runtime.stats().source_bytes, 0);
+}
+
+#[test]
+fn source_cancellation_is_checked_before_io_and_between_catalogue_frames() {
+    let runtime = crate::AnalyticsRuntime::new(crate::RuntimeLimits::default()).unwrap();
+    let key = dashboard_request(100, 100).source_key();
+    let error = runtime
+        .open_source_cancellable(
+            key,
+            "unused-nonexistent.battleplan".into(),
+            &AtomicBool::new(true),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(error.code, crate::QueryErrorCode::Cancelled);
+    assert_eq!(runtime.stats().opening_bytes, 0);
+    let replay = query_replay(vec![source(1, 100, Some(1))]);
+    let checks = std::cell::Cell::new(0);
+    let result = Analytics::from_shared_checked(replay, "memory.battleplan".into(), 100, || {
+        checks.set(checks.get() + 1);
+        if checks.get() == 3 {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled at frame",
+            ))
+        } else {
+            Ok(())
+        }
+    });
+    assert_eq!(
+        result.err().unwrap().kind(),
+        std::io::ErrorKind::Interrupted
+    );
+    assert_eq!(checks.get(), 3);
 }

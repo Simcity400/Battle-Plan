@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use replay::{
@@ -16,7 +19,7 @@ use replay::{
 use crate::{
     BranchMetadata, CountryMetadata, CountrySeries, CountrySeriesRequest, MAX_POINTS, PointStatus,
     ReplayMetadata,
-    reduce::{Reducer, Values, short_text},
+    reduce::{Reducer, short_text},
 };
 
 const MAX_WARNINGS: usize = 32;
@@ -25,7 +28,7 @@ const MAX_WARNINGS: usize = 32;
 /// Shared decoding retains its existing whole-file compressed backing and one
 /// decoded block at a time. No map/game assets, database, or per-hour output cache.
 pub struct Analytics {
-    replay: Replay,
+    replay: Arc<Replay>,
     metadata: ReplayMetadata,
     cache: Option<(CountrySeriesRequest, CountrySeries)>,
     #[cfg(test)]
@@ -52,7 +55,26 @@ impl Analytics {
         path: PathBuf,
         cancel: &AtomicBool,
     ) -> io::Result<Self> {
-        check_cancel(cancel)?;
+        Self::from_shared(Arc::new(replay), path, cancel)
+    }
+
+    /// Hosts can share the immutable compressed backing with native map views.
+    /// Initial country catalogue discovery is blocking; call off the UI thread.
+    pub fn from_shared(
+        replay: Arc<Replay>,
+        path: PathBuf,
+        cancel: &AtomicBool,
+    ) -> io::Result<Self> {
+        Self::from_shared_checked(replay, path, usize::MAX, || check_cancel(cancel))
+    }
+
+    pub(crate) fn from_shared_checked(
+        replay: Arc<Replay>,
+        path: PathBuf,
+        max_catalogue_entries: usize,
+        check: impl Fn() -> io::Result<()>,
+    ) -> io::Result<Self> {
+        check()?;
         let branches = replay
             .branches
             .iter()
@@ -76,7 +98,7 @@ impl Analytics {
             warn(&mut metadata.warnings, "The recorder did not verify the content identity. Analytics reads recorded values only and does not verify local game assets.".into());
         }
         for branch in &replay.branches {
-            check_cancel(cancel)?;
+            check()?;
             let mut catalogue = Catalogue::default();
             let Some(block) = replay.index.iter().find(|block| block.branch == branch.id) else {
                 continue;
@@ -85,7 +107,7 @@ impl Analytics {
                 Ok(frames) => {
                     let mut decoder = FrameDecoder::new();
                     for frame in frames {
-                        check_cancel(cancel)?;
+                        check()?;
                         let decoded = match decoder.advance(&frame).and_then(|decoded| {
                             validate_campaign(decoded, &replay)?;
                             Ok(decoded)
@@ -100,7 +122,13 @@ impl Analytics {
                             }
                         };
                         if let Ok((rows, links)) = country_tables(decoded) {
-                            catalogue.observe(rows, links, branch.id, frame.hour);
+                            catalogue.observe(
+                                rows,
+                                links,
+                                branch.id,
+                                frame.hour,
+                                max_catalogue_entries.saturating_sub(metadata.countries.len()),
+                            )?;
                             if metadata.player_country_id.is_none() {
                                 metadata.player_country_id =
                                     player_slot(decoded, links).map(|slot| slot.to_string());
@@ -117,7 +145,7 @@ impl Analytics {
             let countries = catalogue.finish(&mut metadata.warnings);
             merge_countries(&mut metadata, countries);
         }
-        check_cancel(cancel)?;
+        check()?;
         Ok(Self {
             replay,
             metadata,
@@ -129,6 +157,10 @@ impl Analytics {
 
     pub fn metadata(&self) -> &ReplayMetadata {
         &self.metadata
+    }
+
+    pub(crate) fn into_metadata(self) -> ReplayMetadata {
+        self.metadata
     }
 
     /// One sequential scan per uncached request. Keep this on a host worker;
@@ -172,154 +204,42 @@ impl Analytics {
         {
             return Ok(series.clone());
         }
-        let mut reducer = Reducer::new(first_hour, last_hour, max_points);
-        let mut catalogue = Catalogue::default();
-        let mut cursor = i64::from(first_hour);
+        let scan_key = crate::query::QueryKey {
+            source: crate::SourceKey {
+                source_id: "legacy".into(),
+                revision: "immutable".into(),
+            },
+            branch: branch_id,
+            countries: vec![country_id],
+            first: first_hour,
+            last: last_hour,
+            kind: crate::QueryKind::History,
+            max_points,
+        };
+        let mut scan = crate::CountryScan::from_key(
+            Arc::clone(&self.replay),
+            scan_key,
+            crate::QueryLimits {
+                max_countries: 1,
+                max_country_hours: u64::MAX,
+                max_result_bytes: usize::MAX / 4,
+                max_block_raw_bytes: replay::container::MAX_BLOCK_RAW_BYTES,
+            },
+        )?;
         #[cfg(test)]
         {
             self.scans += 1;
         }
-
-        for block in self.replay.index.iter().filter(|block| {
-            block.branch == branch_id
-                && block.last_hour >= first_hour
-                && block.first_hour <= last_hour
-        }) {
-            check_cancel(cancel)?;
-            let block_first = block.first_hour.max(first_hour);
-            let block_last = block.last_hour.min(last_hour);
-            if cursor < i64::from(block.first_hour) {
-                fill_hole(
-                    &self.replay,
-                    branch_id,
-                    &mut reducer,
-                    cursor as i32,
-                    block.first_hour - 1,
-                );
-                cursor = i64::from(block.first_hour);
+        let series = loop {
+            match scan.advance(std::num::NonZeroUsize::new(64).unwrap(), cancel)? {
+                crate::ScanStep::Yielded => {}
+                crate::ScanStep::Ready(mut result) => {
+                    break result
+                        .series
+                        .pop()
+                        .expect("single-country request has one series");
+                }
             }
-            let frames = match self.replay.read_block(block) {
-                Ok(frames) => frames,
-                Err(error) => {
-                    reducer.missing(
-                        block_first,
-                        block_last,
-                        PointStatus::Gap,
-                        &format!("unreadable block: {error}"),
-                    );
-                    cursor = i64::from(block_last) + 1;
-                    continue;
-                }
-            };
-            let mut decoder = FrameDecoder::new();
-            for frame in frames {
-                check_cancel(cancel)?;
-                if frame.hour > last_hour {
-                    break;
-                }
-                if cursor < i64::from(frame.hour) {
-                    fill_hole(
-                        &self.replay,
-                        branch_id,
-                        &mut reducer,
-                        cursor as i32,
-                        frame.hour - 1,
-                    );
-                }
-                let decoded = match decoder.advance(&frame).and_then(|decoded| {
-                    validate_campaign(decoded, &self.replay)?;
-                    Ok(decoded)
-                }) {
-                    Ok(decoded) => decoded,
-                    Err(error) => {
-                        // Match Replay::seek: a bad prefix invalidates the rest of
-                        // this block, even when a later campaign snapshot is valid.
-                        reducer.missing(
-                            frame.hour.max(first_hour),
-                            block_last,
-                            PointStatus::Gap,
-                            &format!("invalid frame baseline at hour {}: {error}", frame.hour),
-                        );
-                        cursor = i64::from(block_last) + 1;
-                        break;
-                    }
-                };
-                if frame.hour < first_hour {
-                    continue;
-                }
-                match country_tables(decoded) {
-                    Ok((rows, links)) => {
-                        catalogue.observe(rows, links, branch_id, frame.hour);
-                        match country_at(rows, links, country_id) {
-                            Ok(Some(row)) => reducer.record(frame.hour, Values::from_row(row)),
-                            Ok(None) => reducer.missing(
-                                frame.hour,
-                                frame.hour,
-                                PointStatus::Absent,
-                                "Country is absent from complete Countries and CountryLinks tables",
-                            ),
-                            Err(error) => reducer.missing(
-                                frame.hour,
-                                frame.hour,
-                                PointStatus::Unavailable,
-                                &error.to_string(),
-                            ),
-                        }
-                    }
-                    Err(error) => reducer.missing(
-                        frame.hour,
-                        frame.hour,
-                        PointStatus::Unavailable,
-                        &error.to_string(),
-                    ),
-                }
-                cursor = i64::from(frame.hour) + 1;
-            }
-            if cursor <= i64::from(block_last) {
-                fill_hole(
-                    &self.replay,
-                    branch_id,
-                    &mut reducer,
-                    cursor as i32,
-                    block_last,
-                );
-                cursor = i64::from(block_last) + 1;
-            }
-        }
-        if cursor <= i64::from(last_hour) {
-            fill_hole(
-                &self.replay,
-                branch_id,
-                &mut reducer,
-                cursor as i32,
-                last_hour,
-            );
-        }
-        check_cancel(cancel)?;
-        let (points, coverage) = reducer.finish();
-        let mut warnings = Vec::new();
-        if !self.metadata.content_verified {
-            warn(&mut warnings, "Unverified recorded content identity; no local game assets were loaded or verified.".into());
-        }
-        let countries = catalogue.finish(&mut warnings);
-        let country = countries
-            .iter()
-            .find(|country| country.id == request.country_id)
-            .cloned();
-        let series = CountrySeries {
-            branch_id: meta.id,
-            session_id: meta.session_id,
-            country_id: country_id.to_string(),
-            first_hour,
-            last_hour,
-            country,
-            countries,
-            points,
-            coverage,
-            downsampled: i64::from(last_hour) - i64::from(first_hour) + 1 > i64::from(max_points),
-            sample_boundary: meta.sample_boundary,
-            value_scale: "100000".into(),
-            warnings,
         };
         check_cancel(cancel)?;
         merge_countries(&mut self.metadata, series.countries.clone());
@@ -328,14 +248,16 @@ impl Analytics {
     }
 }
 
-fn country_tables(frame: &DecodedFrame) -> io::Result<(&[CountryRow], &[CountryLinkRow])> {
+pub(crate) fn country_tables(
+    frame: &DecodedFrame,
+) -> io::Result<(&[CountryRow], &[CountryLinkRow])> {
     Ok((
         frame.complete::<tables::Countries>()?,
         frame.complete::<tables::CountryLinks>()?,
     ))
 }
 
-fn mapped_slot(row: &CountryRow, links: &[CountryLinkRow]) -> io::Result<u32> {
+pub(crate) fn mapped_slot(row: &CountryRow, links: &[CountryLinkRow]) -> io::Result<u32> {
     let index = links
         .binary_search_by_key(&row.id, |link| link.id)
         .map_err(|_| invalid("Country has no recorded CountryLinks mapping"))?;
@@ -346,29 +268,6 @@ fn mapped_slot(row: &CountryRow, links: &[CountryLinkRow]) -> io::Result<u32> {
         ));
     }
     Ok(slot)
-}
-
-fn country_at<'a>(
-    rows: &'a [CountryRow],
-    links: &[CountryLinkRow],
-    slot: u32,
-) -> io::Result<Option<&'a CountryRow>> {
-    let mut found = None;
-    for row in rows {
-        let resolved = links
-            .binary_search_by_key(&row.id, |link| link.id)
-            .ok()
-            .map(|index| links[index].canonical_slot);
-        if row.canonical_slot == slot || resolved == Some(slot) {
-            mapped_slot(row, links)?;
-            if found.replace(row).is_some() {
-                return Err(invalid(
-                    "Multiple country rows resolve to the requested canonical slot",
-                ));
-            }
-        }
-    }
-    Ok(found)
 }
 
 /// The viewer's default perspective: the single player's country, else the
@@ -399,7 +298,7 @@ fn player_slot(frame: &DecodedFrame, links: &[CountryLinkRow]) -> Option<u32> {
 }
 
 /// Identical campaign guard to Replay::seek, including intermediate frames.
-fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()> {
+pub(crate) fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()> {
     if let TableView::Complete(rows) = &frame.tables[TableId::Campaign.index()]
         && rows
             .rows::<tables::Campaign>()
@@ -412,7 +311,7 @@ fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()> {
     Ok(())
 }
 
-fn branch_metadata(replay: &Replay, branch: &BranchStart) -> BranchMetadata {
+pub(crate) fn branch_metadata(replay: &Replay, branch: &BranchStart) -> BranchMetadata {
     let mut first = branch.first_hour;
     let mut last = first;
     for block in replay
@@ -447,10 +346,26 @@ fn branch_metadata(replay: &Replay, branch: &BranchStart) -> BranchMetadata {
         parent_id,
         parent_hour,
         sample_boundary,
+        gaps: replay
+            .gaps
+            .iter()
+            .filter(|gap| gap.branch == branch.id)
+            .map(|gap| crate::RecordingGap {
+                first_hour: gap.first_hour,
+                last_hour: gap.last_hour,
+                reason: gap.reason.clone(),
+            })
+            .collect(),
     }
 }
 
-fn fill_hole(replay: &Replay, branch: BranchId, reducer: &mut Reducer, first: i32, last: i32) {
+pub(crate) fn fill_hole(
+    replay: &Replay,
+    branch: BranchId,
+    reducer: &mut Reducer,
+    first: i32,
+    last: i32,
+) {
     // A recovered frame wins over a reported loss diagnostic. This function is
     // called only for actual holes, never over a successfully decoded frame.
     let diagnostic = replay
@@ -470,41 +385,60 @@ fn fill_hole(replay: &Replay, branch: BranchId, reducer: &mut Reducer, first: i3
 }
 
 #[derive(Default)]
-struct Catalogue {
+pub(crate) struct Catalogue {
     rows: BTreeMap<u32, CountryMetadata>,
     bad_mapping: bool,
 }
 
 impl Catalogue {
+    pub(crate) fn observe_mapped(
+        &mut self,
+        row: &CountryRow,
+        slot: Option<u32>,
+        branch: BranchId,
+        hour: i32,
+        max_entries: usize,
+    ) -> Result<(), crate::QueryError> {
+        let Some(slot) = slot else {
+            self.bad_mapping = true;
+            return Ok(());
+        };
+        if self.rows.contains_key(&slot) {
+            return Ok(());
+        }
+        if self.rows.len() >= max_entries {
+            return Err(crate::QueryError::limit(
+                "Country catalogue exceeds the query output budget",
+            ));
+        }
+        self.rows.insert(
+            slot,
+            CountryMetadata {
+                id: slot.to_string(),
+                tag: short_text(&String::from_utf8_lossy(&row.tag), 512),
+                name: short_text(&String::from_utf8_lossy(&row.name), 512),
+                observed_branch_id: branch.to_string(),
+                observed_hour: hour,
+            },
+        );
+        Ok(())
+    }
+
     fn observe(
         &mut self,
         rows: &[CountryRow],
         links: &[CountryLinkRow],
         branch: BranchId,
         hour: i32,
-    ) {
+        max_entries: usize,
+    ) -> io::Result<()> {
         for row in rows {
-            let Ok(slot) = mapped_slot(row, links) else {
-                self.bad_mapping = true;
-                continue;
-            };
-            if self.rows.contains_key(&slot) {
-                continue;
-            }
-            self.rows.insert(
-                slot,
-                CountryMetadata {
-                    id: slot.to_string(),
-                    tag: short_text(&String::from_utf8_lossy(&row.tag), 512),
-                    name: short_text(&String::from_utf8_lossy(&row.name), 512),
-                    observed_branch_id: branch.to_string(),
-                    observed_hour: hour,
-                },
-            );
+            self.observe_mapped(row, mapped_slot(row, links).ok(), branch, hour, max_entries)?;
         }
+        Ok(())
     }
 
-    fn finish(self, warnings: &mut Vec<String>) -> Vec<CountryMetadata> {
+    pub(crate) fn finish(self, warnings: &mut Vec<String>) -> Vec<CountryMetadata> {
         if self.bad_mapping {
             warn(warnings, "Some country rows have missing or conflicting CountryLinks mappings and are excluded from the catalogue.".into());
         }

@@ -1,5 +1,7 @@
 # viewer
 
+When embedded in the desktop shell, the web UI owns map controls and the timeline. Its bounded `MapAction` commands update the same viewing-country, fog and capture state as the standalone controls. The old embedded egui panels are omitted; on-demand diagnostics are returned to Settings through `MapDetails`. Native battle-marker/detail interaction is unchanged.
+
 The native map and playback application. It resolves the recording's game assets and renders its recorded state. The desktop host embeds this same viewer; there is not a separate web map renderer.
 
 ## Use and export
@@ -17,6 +19,14 @@ On first run, choose the game and Paradox user folders. Local settings are store
 `--perspective <TAG>|recorded` chooses the viewing country. `--fog on|off` controls fog; turning fog off does not remove the country perspective. Missing or mismatching covered content is refused. Some visual assets are outside the recorded hash policy; the [installed-content guide](../installed-content/README.md#asset-contracts) explains that warning. See `--help` for the full CLI.
 
 ## Rendering rules
+
+The `dashboard-bridge` binary is a development-only stdio adapter for browser UI iteration. It reuses `dashboard_data.rs`, playback, country flags, content verification and table access without constructing a renderer or accessing live game memory. Build it with `cargo build -p viewer --bin dashboard-bridge -j 1`; the [frontend guide](../../ui/README.md#real-recordings-in-the-development-browser) describes configuration and native file selection. Normal `cargo run -p viewer` continues to launch the viewer.
+
+The bridge also has an explicit single-use `--choose-folder` mode for the browser's native folder dialogs. Its local folder-configuration request validates and saves through `local_config::Config` before updating the running data service. Existing source leases remain valid; flag contexts match the configured content paths before reuse. Picker processes are owned and cancelled by the Vite middleware.
+
+In the desktop dashboard, `dashboard_maps.rs` owns map instances on the same graphics device and `dashboard_data.rs` owns recording leases shared with analytics. Map registry entries keep their renderer on the heap: moving inline renderer state through tree nodes can exhaust the Windows UI thread's stack. Scene permits remain charged through cancelled builds and deferred destruction. Source bytes and compatible CPU content are shared; mutable scenes and their graphics assets are still owned per map.
+
+Country-menu discovery runs on the data loader after source opening. Each SharedSource caches its bounded land-owner catalogue across leases and menu/default-campaign changes; cancelled scans do not publish partial results. The loader uses the analytics ownership scanner, with no game assets required. This small source-local catalogue cache is separate from analytics runtime source/result accounting.
 
 Use the source map below for implementation and the existing [reference captures](../../reference/) for matched comparisons. Native evidence and remaining assumptions live beside each pass, not in a separate rendering diary.
 
@@ -68,3 +78,19 @@ For local checks and the coordinated end-to-end smoke workflow, see [AGENTS.md](
 ## Historical evidence
 
 The [archived rendering notes](#) retain native traces, experimental scores, rejected candidates and their artifact paths. Those dated results are not an active work plan or proof about the current checkout. Keep lasting interpretations beside source and new captures/reports outside Git; do not rebuild the diary in this README.
+
+`country_flags.rs` shares flag candidate selection with combat UI and serves desktop country-picker artwork. It reads recorded cosmetic tags and ruling-party tokens, resolves the same verified content layers (including archive/folder mods and replace_path), and decodes actual game TGA artwork with the shared installed-content decoder. Full-size and miniature asset classes are requested separately: the header reads gfx/flags and menu rows read gfx/flags/small. Missing artwork stays unavailable within its requested class; the header never falls back to an enlarged miniature. Standard flags retain their original pixels, with oversized artwork bounded for transport. Visual asset bytes remain outside the content coverage policy and replies retain that warning. The picker requests the initial readable country snapshot rather than issuing flag queries on every playback tick. Contexts belong to source leases; a bounded loader queue keeps resolving/decoding off the UI thread. No static nation catalog or replacement flag artwork is used.
+
+## Campaign appearance
+
+The map pop-down keeps export, Fog of War and recording branches. Political fill always uses recorded controllers; the custom owner/controller toggle, its CLI option and the manual Fit map action have been removed. Initial camera framing remains automatic.
+
+Global, campaign and widget appearance travels through the bounded data service and is saved by scoped keys in LOCALAPPDATA/HOI4Replay/map-settings.json. Trees, shadows, rivers, city sprawl, buildings, 3D units and weather particles gate existing draws and matching shadow casters; they preserve native counters, battle interactions and terrain weather. Anti-aliasing selects Off or device-supported 2?/4?/8? MSAA across every world, post and overlay pass. Off renders directly into single-sample targets. Sample changes retire scenes while retaining compatible CPU content and cameras. Texture quality selects the game?s authored terrain texture variants and invalidates only maps using the changed artwork variant. New campaigns inherit global defaults imported from the configured user folder settings.txt; explicit campaign and widget overrides remain independent. VSync changes the root presentation surface without rebuilding map assets.
+
+The desktop graphics controls have been built and exercised on an isolated Windows desktop. High-quality shader variants, the game's full-map-resolution switch, water-reflection setting and gamma behavior still need verified renderer implementations; they are not presented as working controls.
+
+Installed visual mods use the installed-content cosmetic overlay checks. The recording's content is verified first; only explicitly selected compatible cosmetic artwork is then overlaid. Mod order is explicit, with later selections taking precedence. Changing artwork reloads affected maps; simple graphics switches do not rebuild assets. Original recorded artwork remains the default. Browser and desktop read the same scoped preferences through their native data adapter; a bridge rebuild is required after adding this command.
+
+Preferences resolve HOI4 -> global -> campaign -> widget inheritance. The legacy useGameGraphics field now means inherit graphics from the parent scope; missing markers in older saves remain explicit overrides. Null visual-mod selections inherit independently and ultimately preserve recorded artwork. Forms retain inheritance markers while renderer consumers get resolved values. Main Settings needs no open recording. Current game preferences refresh on source-open and loader settings jobs, never per frame; failed reads retain the last known values and report the error. Widget artwork cache keys include recording identity, ordered cosmetic layers and texture quality. Matching variants share immutable assets and decoders; differing variants cannot overwrite each other.
+
+Dashboard map targets set each viewer's perspective and fog independently. Widget PNG exports route by map-view ID into that child viewer's existing capture path; a missing/loading view is refused rather than exporting the standalone map. Per-widget export fidelity requires a matching rendered-view check; standalone exports alone do not establish it.

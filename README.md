@@ -2,7 +2,7 @@
 
 Record a Hearts of Iron IV campaign, replay it on an interactive map, and explore its statistics over time.
 
-The recorder reads the game's state without controlling the game. The desktop app has a native **Map** tab and a web-based **Analytics** tab. Both read the same `.battleplan` file; neither needs access to live game memory.
+The recorder reads the game's state without controlling the game. The desktop app has a native **Campaign map** tab and an **Overview** dashboard. The visual prototype retains the campaign map and uses placeholder panels for future analytics widgets. Recordings use `.battleplan` files; playback does not need access to live game memory.
 
 ## Start here
 
@@ -15,9 +15,11 @@ npm.cmd ci
 npm.cmd run dev
 ```
 
-Choose **Open recording** to load a `.battleplan`. The map also needs the matching game and user folders; Analytics can read the recording without map assets.
+Choose **Recordings**, set your replay folder when prompted (or in Settings), and load a campaign from the list. The map also needs the matching game and user folders; Analytics can read the recording without map assets.
 
 To make a recording, follow the [recorder guide](crates/recorder/README.md). For builds, launch arguments and desktop packaging, see the [desktop guide](crates/desktop/README.md).
+
+The [dashboard architecture and prototype plan](docs/analytics-dashboard.md) describes shared playback, whole-campaign analysis, comparisons and widget ownership.
 
 ## Find your way around
 

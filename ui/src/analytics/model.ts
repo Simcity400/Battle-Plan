@@ -1,5 +1,5 @@
-import type { CountryMetadata, CountrySample, CountrySeries, CountryValues, ReplayMetadata } from '../api';
-import { formatDateTime, isEngineHour } from './calendar';
+import type { CountryMetadata, CountrySample, CountrySeries, CountryValues } from '../api';
+import { formatDateTime, isEngineHour } from './calendar.ts';
 
 export type MetricKey = keyof CountryValues;
 
@@ -12,29 +12,6 @@ export const metrics: ReadonlyArray<{ key: MetricKey; label: string; multiplier:
 ];
 
 export interface HourRange { firstHour: number; lastHour: number }
-
-export interface AnalyticsMemory {
-  path: string | null;
-  metadata: ReplayMetadata | null;
-  branchId: string;
-  countryId: string;
-  metric: MetricKey;
-  fromInput: string;
-  toInput: string;
-  range: HourRange | null;
-  series: CountrySeries | null;
-  seriesKey: string | null;
-  selectedHour: number | null;
-  scrollTop: number;
-}
-
-export function emptyMemory(path: string | null): AnalyticsMemory {
-  return {
-    path, metadata: null, branchId: '', countryId: '', metric: 'politicalPower',
-    fromInput: '', toInput: '', range: null, series: null, seriesKey: null,
-    selectedHour: null, scrollTop: 0,
-  };
-}
 
 export const formatHour = (hour: number): string => hour.toLocaleString('en-US', { maximumFractionDigits: 0 });
 

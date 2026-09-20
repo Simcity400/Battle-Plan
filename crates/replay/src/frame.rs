@@ -284,6 +284,16 @@ impl Frame {
     /// recorded, and those tables are the leading entries of `TableId::ALL`,
     /// so an older version is decoded by reading a shorter prefix.
     pub fn decode(input: &mut Decoder<'_>, format: FormatVersion) -> io::Result<Self> {
+        Self::decode_selected(input, format, None)
+    }
+
+    /// Parse and validate every update, retaining only the requested tables.
+    /// Discarding unrelated rows immediately bounds their allocation lifetime.
+    pub(crate) fn decode_selected(
+        input: &mut Decoder<'_>,
+        format: FormatVersion,
+        selected: Option<&[TableId]>,
+    ) -> io::Result<Self> {
         let branch = input.u64()?;
         let hour = input.i32()?;
         let keyframe = input.bool()?;
@@ -357,7 +367,13 @@ impl Frame {
             {
                 return Err(invalid("keyframe contains a dependent or partial table"));
             }
-            tables.push(update);
+            tables.push(if selected.is_none_or(|tables| tables.contains(&table)) {
+                update
+            } else {
+                TableUpdate::Unavailable {
+                    reason: "Table not selected for reconstruction".into(),
+                }
+            });
         }
         // A table the file's version predates is reported through the same
         // unavailable path a table the collector could not read takes, so every
@@ -781,11 +797,25 @@ impl FrameEncoder {
 #[derive(Default)]
 pub struct FrameDecoder {
     current: Option<DecodedFrame>,
+    selected: Option<[bool; TABLE_COUNT]>,
 }
 
 impl FrameDecoder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Reconstruct only these tables, retaining the normal wire validation and
+    /// baseline rules. Omitted tables are explicitly unavailable, never empty.
+    pub fn for_tables(tables: &[TableId]) -> Self {
+        let mut selected = [false; TABLE_COUNT];
+        for table in tables {
+            selected[table.index()] = true;
+        }
+        Self {
+            current: None,
+            selected: Some(selected),
+        }
     }
 
     /// Decode an hour and return an owned copy for callers that retain it.
@@ -830,6 +860,15 @@ impl FrameDecoder {
             .unwrap_or_else(|| std::array::from_fn(|_| None));
         let tables = std::array::from_fn(|index| {
             let table = TableId::ALL[index];
+            if self
+                .selected
+                .as_ref()
+                .is_some_and(|selected| !selected[index])
+            {
+                return TableView::Unavailable {
+                    reason: "Table not selected for reconstruction".into(),
+                };
+            }
             match apply_table(
                 table,
                 &frame.tables[index],
@@ -909,6 +948,85 @@ fn apply_table(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selected_parsing_still_rejects_malformed_omitted_updates() {
+        let frame = FrameEncoder::new().encode(source(1, 0), true).unwrap();
+        let mut bytes = Vec::new();
+        frame.encode(&mut bytes).unwrap();
+        let selected = [TableId::Countries];
+        let projected = Frame::decode_selected(
+            &mut Decoder::new(&bytes),
+            FormatVersion::CURRENT,
+            Some(&selected),
+        )
+        .unwrap();
+        assert_eq!(
+            projected.tables[TableId::Countries.index()],
+            frame.tables[TableId::Countries.index()]
+        );
+        assert!(matches!(
+            projected.tables[TableId::Clock.index()],
+            TableUpdate::Unavailable { .. }
+        ));
+        // Walk the shared frame header to corrupt the first (omitted) update.
+        let mut header = Decoder::new(&bytes);
+        header.u64().unwrap();
+        header.i32().unwrap();
+        header.bool().unwrap();
+        header.u64().unwrap();
+        for _ in 0..FormatVersion::CURRENT.recorded_tables() {
+            header.u64().unwrap();
+        }
+        header.u64().unwrap();
+        header.u64().unwrap();
+        let offset = bytes.len() - header.remaining();
+        bytes[offset] = u8::MAX;
+        assert!(
+            Frame::decode_selected(
+                &mut Decoder::new(&bytes),
+                FormatVersion::CURRENT,
+                Some(&selected)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn selected_reconstruction_matches_full_decoder_through_baseline_loss() {
+        let mut encoder = super::FrameEncoder::new();
+        let mut full = super::FrameDecoder::new();
+        let selected = [
+            crate::rows::TableId::Countries,
+            crate::rows::TableId::Campaign,
+        ];
+        let mut projected = super::FrameDecoder::for_tables(&selected);
+        for hour in 0..8 {
+            let mut frame = encoder.encode(source(1, hour), hour == 6).unwrap();
+            if hour == 2 {
+                frame.tables[crate::rows::TableId::Countries.index()] =
+                    super::TableUpdate::Unavailable {
+                        reason: "lost baseline".into(),
+                    };
+            }
+            let expected = full.advance(&frame).unwrap();
+            let actual = projected.advance(&frame).unwrap();
+            for table in selected {
+                assert_eq!(actual.tables[table.index()], expected.tables[table.index()]);
+            }
+            assert!(matches!(
+                actual.tables[crate::rows::TableId::Clock.index()],
+                super::TableView::Unavailable { .. }
+            ));
+        }
+        let mut invalid = encoder.encode(source(1, 8), true).unwrap();
+        invalid.tables[crate::rows::TableId::Clock.index()] =
+            super::TableUpdate::Unchanged { baseline: 7 };
+        assert!(
+            projected.advance(&invalid).is_err(),
+            "omitted tables still obey frame-wide validation"
+        );
+    }
+
     use super::*;
     use crate::rows::{
         CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow, FactionMemberRow,

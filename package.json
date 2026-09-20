@@ -3,19 +3,22 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.12.0" },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "node tools/desktop.mjs dev",
     "dev:ui": "vite --config ui/vite.config.ts",
     "build:ui": "tsc -p ui/tsconfig.json && vite build --config ui/vite.config.ts",
     "check:ui": "tsc --noEmit -p ui/tsconfig.json",
+    "test:ui": "node --experimental-strip-types --test ui/src/dashboard/*.test.ts",
     "build:desktop": "node tools/desktop.mjs build"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
-    "echarts": "6.1.0",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "react-grid-layout": "2.2.4"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",

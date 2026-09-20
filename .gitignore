@@ -10,6 +10,7 @@ node_modules/
 # Local configuration and captures
 /collector.json
 /viewer.json
+/ui/.env.local
 *.battleplan
 *.hoi4replay
 *.battleplan.tmp

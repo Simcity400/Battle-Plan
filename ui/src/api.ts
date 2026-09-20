@@ -2,7 +2,6 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type {
   CountrySeries as GeneratedCountrySeries,
-  CountrySeriesRequest,
   ReplayMetadata as GeneratedReplayMetadata,
 } from './generated/analytics';
 
@@ -28,12 +27,21 @@ export interface ViewerState {
 }
 
 export interface DesktopState {
+  mapDetails?: MapDetails | null;
   running: boolean;
   ready: boolean;
   visible: boolean;
   viewer: ViewerState;
   error: string | null;
 }
+
+export interface MapOptions { country: string | null; fog: boolean }
+export interface ContentFolders { game: string; user: string; contentReady: boolean }
+export interface MapDetails extends ContentFolders { error: string | null; path: string | null; branch: string | null; hour: number | null; messages: string[] }
+export type MapAction = { kind: 'configure'; options: MapOptions } | { kind: 'inspect' } | { kind: 'folders'; game: string; user: string } | { kind: 'unload'; path: string };
+export function mapAction(action: MapAction): Promise<void> { requireDesktop(); return invoke('map_action', { action }); }
+export function exportMap(viewId?: string): Promise<void> { requireDesktop(); return invoke('export_map', { viewId: viewId ?? null }); }
+export function chooseContentFolder(kind: 'game' | 'user', initial: string): Promise<string | null> { requireDesktop(); return invoke('choose_content_folder', { kind, initial }); }
 
 export interface MapBounds {
   x: number;
@@ -63,11 +71,6 @@ export function onViewerState(callback: (state: DesktopState) => void) {
   return listen<DesktopState>('viewer-state', (event) => callback(event.payload));
 }
 
-export function chooseReplay(): Promise<string | null> {
-  requireDesktop();
-  return invoke<string | null>('choose_replay');
-}
-
 export function openReplay(path: string): Promise<void> {
   requireDesktop();
   return invoke<void>('open_replay', { path });
@@ -78,61 +81,17 @@ export function setMapView(view: MapView): Promise<void> {
   return invoke<void>('set_map_view', { visible: view.visible, bounds: view.bounds });
 }
 
+export function selectNativeView(dashboard: boolean): Promise<void> {
+  if (!desktopAvailable) return Promise.resolve();
+  return invoke<void>('select_native_view', { dashboard });
+}
+
 export function seekMap(path: string, revision: string, branch: string, hour: number): Promise<void> {
   requireDesktop();
   return invoke<void>('seek_map', { path, revision, branch, hour });
 }
 
-let analyticsGeneration = 0;
-async function analyticsRequest<T>(
-  command: string,
-  args: Record<string, unknown>,
-  signal: AbortSignal,
-): Promise<T> {
-  requireDesktop();
-  if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
-  const generation = ++analyticsGeneration;
-  const requestId = crypto.randomUUID();
-  const abort = () => {
-    // A previous tab's cleanup may arrive after a new query has started. The
-    // native worker cancels only this identity, leaving the new query intact.
-    void invoke<void>('cancel_analytics', { requestId }).catch(() => {});
-  };
-  signal.addEventListener('abort', abort, { once: true });
-
-  try {
-    const result = await invoke<T>(command, { ...args, requestId });
-    if (signal.aborted || generation !== analyticsGeneration) {
-      throw new DOMException('Request cancelled', 'AbortError');
-    }
-    return result;
-  } finally {
-    signal.removeEventListener('abort', abort);
-  }
-}
-
-export function getReplayMetadata(path: string, signal: AbortSignal): Promise<ReplayMetadata> {
-  return analyticsRequest<ReplayMetadata>('analytics_metadata', { path }, signal);
-}
-
-export function getCountrySeries(
-  path: string,
-  request: CountrySeriesRequest,
-  signal: AbortSignal,
-): Promise<CountrySeries> {
-  return analyticsRequest<CountrySeries>('analytics_series', { path, request }, signal);
-}
-
-export function requestCancelled(error: unknown): boolean {
-  return (error instanceof DOMException && error.name === 'AbortError')
-    || errorMessage(error) === 'Analytics request superseded';
-}
-
-export function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
-  return 'The request could not be completed. Please try again.';
-}
+export { errorMessage } from './errors';
 
 export function recordingName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;

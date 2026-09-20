@@ -1,11 +1,13 @@
 //! Hosts the existing native viewer, with a bounded pipe for control messages.
 
 use desktop_protocol::{
-    EVENT_PREFIX, MAX_MESSAGE_BYTES, NativeCommand, NativeEvent, ViewBounds, ViewerState,
-    replay_revision,
+    DashboardMapState, DashboardMapView, EVENT_PREFIX, MAX_MESSAGE_BYTES, NativeCommand,
+    NativeEvent, ViewBounds, ViewerState, dashboard_data::DataCommand, replay_revision,
+    validate_map_views,
 };
 use serde::Serialize;
 use std::{
+    collections::VecDeque,
     io::{BufRead, BufReader, Read, Write},
     process::{Child, Command, Stdio},
     sync::{Arc, Condvar, Mutex},
@@ -17,6 +19,7 @@ use tauri::{AppHandle, Emitter, WebviewWindow};
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostStatus {
+    pub map_details: Option<desktop_protocol::MapDetails>,
     pub running: bool,
     pub ready: bool,
     pub visible: bool,
@@ -52,16 +55,24 @@ impl SeekTarget {
 
 #[derive(Default)]
 struct Pending {
+    actions: VecDeque<desktop_protocol::MapAction>,
+    standalone: bool,
     bounds: Option<ViewBounds>,
     visibility: Option<bool>,
     open: Option<(String, String)>,
     seek: Option<SeekTarget>,
+    maps: Option<Vec<DashboardMapView>>,
+    data: VecDeque<(DataCommand, usize)>,
     close: bool,
 }
 
 impl Pending {
     fn can_send(&self, visible: bool) -> bool {
         self.close
+            || !self.actions.is_empty()
+            || self.standalone
+            || self.maps.is_some()
+            || !self.data.is_empty()
             || self.bounds.is_some()
             || self.visibility.is_some()
             || (visible && (self.open.is_some() || self.seek.is_some()))
@@ -73,6 +84,14 @@ impl Pending {
             return vec![NativeCommand::Close];
         }
         let mut commands = Vec::with_capacity(4);
+        commands.extend(
+            self.actions
+                .drain(..)
+                .map(|action| NativeCommand::MapAction { action }),
+        );
+        if std::mem::take(&mut self.standalone) {
+            commands.push(NativeCommand::Standalone);
+        }
         if let Some(bounds) = self.bounds.take() {
             commands.push(bounds.command());
         }
@@ -86,6 +105,17 @@ impl Pending {
         }
         if let Some(visible) = self.visibility.take() {
             commands.push(NativeCommand::Visibility { visible });
+        }
+        if let Some(views) = self.maps.take() {
+            commands.push(NativeCommand::MapViews { views });
+        }
+        // Drain a small amount per pass so another seek/layout can interrupt a
+        // batch of history demands. The queue itself has a byte/count ceiling.
+        for _ in 0..4 {
+            let Some((request, _)) = self.data.pop_front() else {
+                break;
+            };
+            commands.push(NativeCommand::Data { request });
         }
         commands
     }
@@ -106,6 +136,8 @@ struct Inner {
     requested_path: Option<String>,
     requested_revision: Option<String>,
     requested_seek: Option<SeekTarget>,
+    dashboard_views: Option<Vec<DashboardMapView>>,
+    active_dashboard: bool,
     shutting_down: bool,
     last_diagnostic: Option<String>,
 }
@@ -116,6 +148,133 @@ pub struct NativeHost {
 }
 
 impl NativeHost {
+    /// Select the geometry owner before the frontend mounts/unmounts that view.
+    /// Late cleanup from the other owner cannot hide the newly selected surface.
+    pub fn select_view(&self, dashboard: bool) -> Result<(), String> {
+        let mut inner = self.shared.0.lock().map_err(|error| error.to_string())?;
+        if inner.shutting_down {
+            return Err("The application is closing".into());
+        }
+        inner.active_dashboard = dashboard;
+        if dashboard {
+            inner.pending.standalone = false;
+            inner.pending.bounds = None;
+            inner.pending.visibility = None;
+            inner.pending.open = None;
+            inner.pending.seek = None;
+            inner.pending.maps = Some(inner.dashboard_views.clone().unwrap_or_default());
+        } else {
+            inner.pending.maps = None;
+            inner.pending.standalone = true;
+            inner.pending.bounds = inner.bounds;
+            inner.status.visible = true;
+            inner.pending.visibility = Some(true);
+        }
+        drop(inner);
+        self.shared.1.notify_all();
+        Ok(())
+    }
+
+    pub(crate) fn send_data(
+        &self,
+        window: &WebviewWindow,
+        request: DataCommand,
+    ) -> Result<(), String> {
+        let cleanup = matches!(
+            request,
+            DataCommand::Cancel { .. } | DataCommand::Release { .. }
+        );
+        if !cleanup {
+            // The data runtime starts without a visible map or game assets.
+            self.ensure_started(window)?;
+        }
+        self.enqueue_data(request)
+    }
+
+    /// Enqueue without creating a window/process. Request admission can hold its
+    /// own small lock across this operation without an OS-window callback.
+    pub(crate) fn enqueue_data(&self, request: DataCommand) -> Result<(), String> {
+        let cleanup = matches!(
+            request,
+            DataCommand::Cancel { .. } | DataCommand::Release { .. }
+        );
+        let length = serde_json::to_vec(&NativeCommand::Data {
+            request: request.clone(),
+        })
+        .map_err(|error| error.to_string())?
+        .len()
+            + 1;
+        if length > MAX_MESSAGE_BYTES {
+            return Err("Dashboard request exceeds the native control message budget".into());
+        }
+        let mut inner = self.shared.0.lock().map_err(|error| error.to_string())?;
+        if inner.shutting_down || inner.process.is_none() {
+            if cleanup {
+                return Ok(());
+            }
+            return Err("The native data connection closed".into());
+        }
+        if let DataCommand::Cancel { id } = &request {
+            // If a request has not left this queue, remove it entirely. A copy
+            // already taken by the writer precedes the queued Cancel on its pipe.
+            inner
+                .pending
+                .data
+                .retain(|(queued, _)| queued.request_id() != Some(id.as_str()));
+        }
+        let bytes: usize = inner.pending.data.iter().map(|(_, bytes)| *bytes).sum();
+        if inner.pending.data.len() >= 128 || bytes.saturating_add(length) > 2 * 1024 * 1024 {
+            return Err("Native dashboard request queue is full".into());
+        }
+        inner.pending.data.push_back((request, length));
+        drop(inner);
+        self.shared.1.notify_all();
+        Ok(())
+    }
+
+    /// One replacement snapshot for every native map, including hidden bodies.
+    /// The window and process remain shared regardless of the number of maps.
+    pub fn set_dashboard_views(
+        &self,
+        window: &WebviewWindow,
+        views: &[DashboardMapView],
+    ) -> Result<(), String> {
+        validate_map_views(views).map_err(str::to_owned)?;
+        let command = NativeCommand::MapViews {
+            views: views.to_vec(),
+        };
+        let bytes = serde_json::to_vec(&command).map_err(|error| error.to_string())?;
+        if bytes.len() + 1 > MAX_MESSAGE_BYTES {
+            return Err("The map layout exceeds the native control message budget".into());
+        }
+        {
+            let mut inner = self.shared.0.lock().map_err(|error| error.to_string())?;
+            if inner.shutting_down {
+                return Err("The application is closing".into());
+            }
+            inner.dashboard_views = Some(views.to_vec());
+            if !inner.active_dashboard {
+                return Ok(());
+            }
+            inner.status.visible = views
+                .iter()
+                .any(|view| view.visible && view.clip.width > 0 && view.clip.height > 0);
+            inner.pending.maps = Some(views.to_vec());
+            inner.pending.bounds = None;
+            inner.pending.visibility = None;
+            inner.pending.open = None;
+            inner.pending.seek = None;
+            inner.requested_path = None;
+            inner.requested_revision = None;
+            inner.requested_seek = None;
+        }
+        if !views.is_empty() {
+            self.ensure_started(window)?;
+        }
+        self.shared.1.notify_all();
+        Ok(())
+    }
+
     pub fn status(&self) -> HostStatus {
         self.shared
             .0
@@ -123,6 +282,30 @@ impl NativeHost {
             .unwrap_or_else(|e| e.into_inner())
             .status
             .clone()
+    }
+
+    pub fn map_action(&self, action: desktop_protocol::MapAction) -> Result<(), String> {
+        action.validate().map_err(str::to_owned)?;
+        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let desktop_protocol::MapAction::Unload { path } = &action
+            && inner.process.is_none()
+        {
+            inner.forget_recording(path);
+            return Ok(());
+        }
+        if !inner.status.ready || inner.shutting_down {
+            return Err("The native map is not ready".into());
+        }
+        if inner.pending.actions.len() >= 16 {
+            return Err("Map controls are busy; try again".into());
+        }
+        if let desktop_protocol::MapAction::Unload { path } = &action {
+            inner.forget_recording(path);
+        }
+        inner.pending.actions.push_back(action);
+        drop(inner);
+        self.shared.1.notify_all();
+        Ok(())
     }
 
     pub fn set_view(
@@ -135,6 +318,9 @@ impl NativeHost {
         {
             let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
             inner.bounds = Some(bounds);
+            if inner.active_dashboard {
+                return Ok(inner.status.clone());
+            }
             inner.status.visible = visible;
             inner.pending.bounds = Some(bounds);
             inner.pending.visibility = Some(visible);
@@ -152,6 +338,8 @@ impl NativeHost {
         }
         let revision = replay_revision(&path).map_err(|e| e.to_string())?;
         let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
+        inner.dashboard_views = None;
+        inner.pending.maps = None;
         inner.requested_path = Some(path.clone());
         inner.requested_revision = Some(revision.clone());
         inner.requested_seek = None;
@@ -174,6 +362,8 @@ impl NativeHost {
             return Err("The recording changed since this analysis. Refresh the analysis before viewing this sample on the map.".into());
         }
         let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
+        inner.dashboard_views = None;
+        inner.pending.maps = None;
         let current_matches = inner.status.viewer.path.as_ref() == Some(&path)
             && inner.status.viewer.revision.as_ref() == Some(&revision)
             && inner.requested_path.is_none();
@@ -195,11 +385,24 @@ impl NativeHost {
         Ok(())
     }
 
-    fn ensure_started(&self, window: &WebviewWindow) -> Result<(), String> {
+    pub(crate) fn ensure_started(&self, window: &WebviewWindow) -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         use tauri::Manager;
         use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
+        // Existing viewers need no disk reads. Preference resolution itself reads
+        // host status, so release this lock before it and recheck before spawning.
+        if self
+            .shared
+            .0
+            .lock()
+            .map_err(|e| e.to_string())?
+            .process
+            .is_some()
+        {
+            return Ok(());
+        }
+        let vsync = crate::video::current_vsync(window)?;
         let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
         if inner.process.is_some() {
             return Ok(());
@@ -255,8 +458,17 @@ impl NativeHost {
         inner.status.ready = false;
         inner.status.error = None;
         inner.last_diagnostic = None;
-        inner.pending.bounds = inner.bounds;
-        inner.pending.visibility = Some(inner.status.visible);
+        if inner.active_dashboard {
+            let views = inner.dashboard_views.clone().unwrap_or_default();
+            inner.pending.maps = Some(views);
+        } else {
+            inner.pending.bounds = inner.bounds;
+            inner.pending.visibility = Some(inner.status.visible);
+        }
+        inner
+            .pending
+            .actions
+            .push_back(desktop_protocol::MapAction::Vsync { enabled: vsync });
         inner.process = Some(Process { child, _job: job });
         drop(inner);
 
@@ -323,6 +535,10 @@ impl NativeHost {
                         generation,
                         app,
                     );
+                    crate::dashboard_service::disconnected(
+                        app,
+                        "The native data connection closed",
+                    );
                     return;
                 }
                 if close {
@@ -338,6 +554,41 @@ impl NativeHost {
             return;
         }
         match event {
+            NativeEvent::MapDetails { details } => inner.status.map_details = Some(details),
+            NativeEvent::Data { response } => {
+                drop(inner);
+                crate::dashboard_service::receive_data(app, response);
+                return;
+            }
+            NativeEvent::MapStates { mut states } => {
+                let Some(requested) = inner.dashboard_views.as_ref() else {
+                    return;
+                };
+                states.retain_mut(|state| {
+                    let Some(view) = requested.iter().find(|view| view.id == state.id) else {
+                        return false;
+                    };
+                    if state
+                        .source_id
+                        .as_ref()
+                        .is_some_and(|id| *id != view.source_id)
+                        || state
+                            .revision
+                            .as_ref()
+                            .is_some_and(|revision| *revision != view.revision)
+                    {
+                        return false;
+                    }
+                    if state.requested_sequence < view.sequence {
+                        state.requested_sequence = view.sequence;
+                        state.loading = true;
+                        state.error = None;
+                    }
+                    true
+                });
+                let _ = app.emit("dashboard-map-state", states);
+                return;
+            }
             NativeEvent::Ready { .. } => inner.status.ready = true,
             NativeEvent::State {
                 path,
@@ -396,6 +647,7 @@ impl NativeHost {
                         inner.generation += 1;
                         inner.status.running = false;
                         inner.status.ready = false;
+                        inner.pending.data.clear();
                         if !inner.shutting_down {
                             let reason = match result {
                                 Ok(Some(exit)) => format!("Native viewer exited ({exit})"),
@@ -408,9 +660,25 @@ impl NativeHost {
                             });
                         }
                         let _ = app.emit("viewer-state", inner.status.clone());
+                        if let Some(views) = &inner.dashboard_views {
+                            let states: Vec<_> = views
+                                .iter()
+                                .map(|view| DashboardMapState {
+                                    id: view.id.clone(),
+                                    requested_sequence: view.sequence,
+                                    error: inner.status.error.clone(),
+                                    ..Default::default()
+                                })
+                                .collect();
+                            let _ = app.emit("dashboard-map-state", states);
+                        }
                     }
                 }
             };
+            crate::dashboard_service::disconnected(
+                app,
+                "The native data runtime exited. Reopen the recording to restore its sources.",
+            );
             self.shared.1.notify_all();
             return;
         }
@@ -450,9 +718,47 @@ impl NativeHost {
 }
 
 impl Inner {
+    fn forget_recording(&mut self, path: &str) {
+        if self
+            .pending
+            .open
+            .as_ref()
+            .is_some_and(|(pending, _)| pending == path)
+        {
+            self.pending.open = None;
+        }
+        if self
+            .pending
+            .seek
+            .as_ref()
+            .is_some_and(|pending| pending.path == path)
+        {
+            self.pending.seek = None;
+        }
+        if self.requested_path.as_deref() == Some(path) {
+            self.requested_path = None;
+            self.requested_revision = None;
+        }
+        if self
+            .requested_seek
+            .as_ref()
+            .is_some_and(|pending| pending.path == path)
+        {
+            self.requested_seek = None;
+        }
+        if self.status.viewer.path.as_deref() == Some(path) {
+            self.status.viewer = ViewerState::default();
+        }
+    }
+
     /// Pending pipe slots may already have been sent when a process exits.
     /// Retain unacknowledged requests, otherwise reopen its last displayed hour.
     fn restore_commands(&mut self) {
+        if self.active_dashboard {
+            let views = self.dashboard_views.clone().unwrap_or_default();
+            self.pending.maps = Some(views);
+            return;
+        }
         let target = self
             .requested_path
             .clone()
@@ -587,6 +893,30 @@ mod tests {
         let mut lines = Vec::new();
         read_lines(input.as_slice(), |line| lines.push(line.to_owned()));
         assert_eq!(lines, ["valid"]);
+    }
+
+    #[test]
+    fn unload_forgets_only_its_recording_and_cannot_restore_it_after_restart() {
+        let mut inner = Inner {
+            requested_path: Some("A".into()),
+            requested_revision: Some("v1".into()),
+            status: HostStatus {
+                viewer: ViewerState {
+                    path: Some("A".into()),
+                    revision: Some("v1".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        inner.restore_commands();
+        inner.forget_recording("B");
+        assert!(inner.pending.open.is_some());
+        inner.forget_recording("A");
+        inner.restore_commands();
+        assert!(inner.pending.open.is_none());
+        assert!(inner.status.viewer.path.is_none());
     }
 
     #[test]

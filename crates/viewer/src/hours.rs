@@ -6,14 +6,14 @@
 //! unit models, battle plan, fog, snow and mud, names and icons on the frame
 //! that crosses into an hour stalled that frame for hundreds of milliseconds.
 //! Here none of that runs on the frame path. The window says what it wants
-//! ([`Want`]: the playhead, how far ahead it is heading, the perspective, the
-//! fill mode and the camera) and every frame takes whatever hours have
+//! ([`Want`]: the playhead, how far ahead it is heading, the perspective and
+//! the camera) and every frame takes whatever hours have
 //! finished ([`Built`]); the frame that shows an hour only uploads it.
 //!
-//! One coordinator thread owns the decoding: its own [`Playback`] over the
-//! shared replay, a short cache of the frames it decoded, and each branch's
-//! snow and mud display cache, whose hours must be walked in order. For each
-//! hour it decodes, it hands the independent parts of that hour to a pool of
+//! A coordinator uses its own [`Playback`] or a source-shared decoder. Maps
+//! using the same [`Resources`], replay and content also share each branch's
+//! snow and mud history, whose hours are walked in order. For each decoded
+//! hour, the coordinator hands the independent parts of that hour to a pool of
 //! worker threads and assembles them as they come back. Hours are dispatched
 //! in the order the window will need them — the playhead, the hours ahead of
 //! it, then the hours just behind it — and at most one pool's worth at a
@@ -36,7 +36,7 @@ use std::{
     io,
     ops::Range,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
     },
@@ -90,7 +90,6 @@ pub struct Want {
     /// Hours before the playhead to keep built, for a step back.
     pub behind: i32,
     pub perspective: perspective::Choice,
-    pub mode: political::Mode,
     pub view: View,
     /// The hours of this branch the window holds built, the one on screen
     /// included; the builders do not build them again.
@@ -121,10 +120,10 @@ impl Want {
 
     /// Whether a change from `self` to `next` invalidates what was built.
     fn invalidates(&self, next: &Want) -> bool {
-        self.perspective != next.perspective || self.mode != next.mode
+        self.perspective != next.perspective
     }
 
-    /// Old-generation hours cannot satisfy a changed perspective or fill mode.
+    /// Old-generation hours cannot satisfy a changed perspective.
     fn discard_stale_have(&mut self, previous: Option<&Self>) -> bool {
         let invalidates = previous.is_some_and(|old| old.invalidates(self));
         if invalidates {
@@ -359,7 +358,7 @@ impl Slots {
 
 enum Event {
     Shutdown,
-    Want(Box<Want>),
+    Want,
     Part {
         ticket: u64,
         epoch: u64,
@@ -378,13 +377,13 @@ type Job = Box<dyn FnOnce() + Send>;
 /// The order matters: a part waits only for the previous hour's part, which
 /// was submitted before it and so has already been taken by a thread.
 struct Pool {
-    jobs: Option<Sender<Job>>,
+    jobs: Option<mpsc::SyncSender<Job>>,
     threads: Vec<thread::JoinHandle<()>>,
 }
 
 impl Pool {
     fn new(count: usize) -> io::Result<Self> {
-        let (jobs, inbox) = mpsc::channel::<Job>();
+        let (jobs, inbox) = mpsc::sync_channel::<Job>(count.saturating_mul(8).max(16));
         let inbox = Arc::new(Mutex::new(inbox));
         let threads = (0..count)
             .map(|index| {
@@ -417,6 +416,15 @@ impl Pool {
             let _ = jobs.send(job);
         }
     }
+
+    fn try_submit(&self, job: Job) -> Result<(), Job> {
+        match &self.jobs {
+            Some(jobs) => jobs.try_send(job).map_err(|error| match error {
+                mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job) => job,
+            }),
+            None => Err(job),
+        }
+    }
 }
 
 impl Drop for Pool {
@@ -426,6 +434,170 @@ impl Drop for Pool {
             let _ = thread.join();
         }
     }
+}
+
+/// One worker budget for every map in a native root. Per-view coordinators
+/// retain independent cancellation and layer state, but do not multiply pools.
+pub struct Resources {
+    pool: Arc<Pool>,
+    decoders: Mutex<BTreeMap<usize, Weak<SharedDecoder>>>,
+    weather: Mutex<BTreeMap<(usize, usize), Weak<SharedWeather>>>,
+    pub dropper: Arc<Dropper>,
+}
+
+impl Resources {
+    pub fn new() -> io::Result<Arc<Self>> {
+        Ok(Arc::new(Self {
+            pool: Arc::new(Pool::new(builder_count())?),
+            decoders: Mutex::new(BTreeMap::new()),
+            weather: Mutex::new(BTreeMap::new()),
+            dropper: Arc::new(Dropper::new()?),
+        }))
+    }
+
+    /// A bounded nonblocking admission path for scene creation. The caller can
+    /// retry next frame when hour work already occupies the shared queue.
+    pub fn try_submit(&self, work: impl FnOnce() + Send + 'static) -> bool {
+        self.pool.try_submit(Box::new(work)).is_ok()
+    }
+
+    pub fn decoder(&self, replay: Arc<Replay>) -> io::Result<Arc<SharedDecoder>> {
+        let key = Arc::as_ptr(&replay) as usize;
+        let mut decoders = self.decoders.lock().map_err(|_| stopped())?;
+        decoders.retain(|_, decoder| decoder.strong_count() > 0);
+        if let Some(decoder) = decoders.get(&key).and_then(Weak::upgrade) {
+            return Ok(decoder);
+        }
+        // The decoder owns Replay, so its address cannot be reused while this
+        // weak entry can upgrade. No bytes or decoder are copied per map.
+        let decoder = Arc::new(SharedDecoder(Mutex::new(DecoderState {
+            playback: Playback::unloaded(replay)?,
+            frames: BTreeMap::new(),
+        })));
+        decoders.insert(key, Arc::downgrade(&decoder));
+        Ok(decoder)
+    }
+
+    fn weather(
+        &self,
+        content: Arc<Content>,
+        replay: Arc<Replay>,
+    ) -> io::Result<Arc<SharedWeather>> {
+        let key = (
+            Arc::as_ptr(&replay) as usize,
+            Arc::as_ptr(&content) as usize,
+        );
+        let mut histories = self.weather.lock().map_err(|_| stopped())?;
+        histories.retain(|_, history| history.strong_count() > 0);
+        if let Some(history) = histories.get(&key).and_then(Weak::upgrade) {
+            return Ok(history);
+        }
+        // The owner retains both Arcs, so neither address can be reused while
+        // this entry upgrades. Content identity also fixes the map and regions.
+        let history = Arc::new(SharedWeather::new(content, replay));
+        histories.insert(key, Arc::downgrade(&history));
+        Ok(history)
+    }
+}
+
+/// Ordered weather reconstruction for one immutable replay/content pair.
+/// Its lock is used on coordinators, before any raster jobs reach the pool;
+/// history reconstruction never waits for a pool job or a shared decoder.
+struct SharedWeather {
+    content: Arc<Content>,
+    replay: Arc<Replay>,
+    state: Mutex<WeatherState>,
+}
+
+struct WeatherState {
+    history: WeatherHistory,
+    // Share snapshots still held by coordinators or raster jobs. The registry
+    // retains no additional snapshot payloads beyond WeatherHistory's cache.
+    snapshots: BTreeMap<(BranchId, Hour), Weak<weather::Snapshot>>,
+}
+
+impl SharedWeather {
+    fn new(content: Arc<Content>, replay: Arc<Replay>) -> Self {
+        Self {
+            content,
+            replay,
+            state: Mutex::new(WeatherState {
+                history: WeatherHistory::new(),
+                snapshots: BTreeMap::new(),
+            }),
+        }
+    }
+
+    fn snapshot(&self, frame: &replay::frame::DecodedFrame) -> io::Result<Arc<weather::Snapshot>> {
+        let key = (frame.branch, frame.hour);
+        let mut state = self.state.lock().map_err(|_| stopped())?;
+        if let Some(snapshot) = state.snapshots.get(&key).and_then(Weak::upgrade) {
+            return Ok(snapshot);
+        }
+        let snapshot = Arc::new(state.history.snapshot(
+            &self.content.map,
+            &self.content.strategic_regions,
+            &self.replay,
+            frame,
+        )?);
+        // Only successful results enter the cache. Existing history errors and
+        // branch/load reconstruction rules stay with WeatherHistory.
+        state
+            .snapshots
+            .retain(|_, snapshot| snapshot.strong_count() > 0);
+        if state.snapshots.len() >= FRAME_CACHE {
+            state.snapshots.pop_first();
+        }
+        state.snapshots.insert(key, Arc::downgrade(&snapshot));
+        Ok(snapshot)
+    }
+}
+
+pub struct SharedDecoder(Mutex<DecoderState>);
+
+struct DecoderState {
+    playback: Playback,
+    // Weak entries share frames already held by visible/in-flight maps without
+    // retaining a second historical payload cache. One block/current per source
+    // is held by Playback; the registry itself owns only bounded metadata.
+    frames: BTreeMap<(BranchId, Hour), Weak<replay::frame::DecodedFrame>>,
+}
+
+impl SharedDecoder {
+    pub fn seed(&self, playback: Playback) -> io::Result<()> {
+        let mut decoder = self.0.lock().map_err(|_| stopped())?;
+        if let Current::Frame(frame) = playback.current() {
+            decoder
+                .frames
+                .insert((frame.branch, frame.hour), Arc::downgrade(frame));
+        }
+        decoder.playback = playback;
+        Ok(())
+    }
+
+    fn frame(&self, branch: BranchId, hour: Hour) -> io::Result<Current> {
+        let mut decoder = self.0.lock().map_err(|_| stopped())?;
+        if let Some(frame) = decoder.frames.get(&(branch, hour)).and_then(Weak::upgrade) {
+            return Ok(Current::Frame(frame));
+        }
+        decoder.playback.seek(branch, hour)?;
+        let current = decoder.playback.current().clone();
+        decoder.frames.retain(|_, frame| frame.strong_count() > 0);
+        if decoder.frames.len() >= FRAME_CACHE {
+            decoder.frames.pop_first();
+        }
+        if let Current::Frame(frame) = &current {
+            decoder.frames.insert((branch, hour), Arc::downgrade(frame));
+        }
+        Ok(current)
+    }
+}
+
+fn builder_count() -> usize {
+    thread::available_parallelism()
+        .map_or(4, |count| count.get())
+        .saturating_sub(8)
+        .max(2)
 }
 
 /// An hour dispatched and not yet assembled.
@@ -575,11 +747,12 @@ const FRAME_CACHE: usize = 96;
 
 struct Coordinator {
     content: Arc<Content>,
-    replay: Arc<Replay>,
     playback: Playback,
+    shared_decoder: Option<Arc<SharedDecoder>>,
+    requested: Arc<Mutex<Option<(u64, Want)>>>,
     frames: BTreeMap<(BranchId, Hour), Current>,
     order: VecDeque<(BranchId, Hour)>,
-    weather: WeatherHistory,
+    weather: Arc<SharedWeather>,
     strategic: Option<Arc<LayerPlane>>,
     want: Option<Want>,
     epoch: u64,
@@ -594,7 +767,7 @@ struct Coordinator {
     /// The shared parts of the hours last dispatched, which the neighbouring
     /// hours' parts compare with.
     slots: BTreeMap<(BranchId, Hour), Slots>,
-    pool: Pool,
+    pool: Arc<Pool>,
     parallel: usize,
     events: Sender<Event>,
     outbox: Sender<Built>,
@@ -620,7 +793,16 @@ impl Coordinator {
                     self.invalidate();
                     return;
                 }
-                Some(Event::Want(want)) => self.set_want(*want),
+                Some(Event::Want) => {
+                    let requested = self
+                        .requested
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .take();
+                    if let Some((epoch, want)) = requested {
+                        self.set_want(epoch, want);
+                    }
+                }
                 Some(Event::Part {
                     ticket,
                     epoch,
@@ -678,9 +860,11 @@ impl Coordinator {
         self.slots.clear();
     }
 
-    fn set_want(&mut self, mut want: Want) {
-        if want.discard_stale_have(self.want.as_ref()) {
+    fn set_want(&mut self, epoch: u64, mut want: Want) {
+        want.discard_stale_have(self.want.as_ref());
+        if self.epoch != epoch {
             self.invalidate();
+            self.epoch = epoch;
         }
         let range = self
             .playback
@@ -731,6 +915,9 @@ impl Coordinator {
     /// the decoder passes on its way are kept too, so the step back from a
     /// seek does not decode the block a second time.
     fn frame(&mut self, branch: BranchId, hour: Hour, behind: i32) -> io::Result<Current> {
+        if let Some(decoder) = &self.shared_decoder {
+            return decoder.frame(branch, hour);
+        }
         if let Some(current) = self.frames.get(&(branch, hour)) {
             return Ok(current.clone());
         }
@@ -814,24 +1001,15 @@ impl Coordinator {
             laps: vec![("decode", decode_ms)],
             view: want.view,
         };
-        // The snow and mud cache is walked in hour order, here; only its
-        // rasterisation goes to the pool.
+        // The source/content history is walked in order before submitting any
+        // pool work. Other maps can reuse this snapshot; rasterisation stays
+        // with each view's parts.
         let weather_started = Instant::now();
         let snapshot = match self.snapshots.get(&(branch, hour)) {
             Some(snapshot) => Ok(Arc::clone(snapshot)),
-            None => self
-                .weather
-                .snapshot(
-                    &self.content.map,
-                    &self.content.strategic_regions,
-                    &self.replay,
-                    &frame,
-                )
-                .map(|snapshot| {
-                    let snapshot = Arc::new(snapshot);
-                    self.snapshots.insert((branch, hour), Arc::clone(&snapshot));
-                    snapshot
-                }),
+            None => self.weather.snapshot(&frame).inspect(|snapshot| {
+                self.snapshots.insert((branch, hour), Arc::clone(snapshot));
+            }),
         };
         pending.laps.push((
             "snow_history",
@@ -899,7 +1077,6 @@ impl Coordinator {
                 });
             }));
         };
-        let mode = want.mode;
         {
             let fill = Fill(Arc::clone(&slots.political));
             let fill_borders = Fill(Arc::clone(&slots.borders));
@@ -909,13 +1086,12 @@ impl Coordinator {
                 "political",
                 Box::new(move |view| {
                     Part::Political((|| {
-                        let key = FrameKey::new(view.frame, mode)?;
+                        let key = FrameKey::new(view.frame)?;
                         let near = wait_all(near_political);
                         let political = match near.iter().find(|near| near.key == key) {
                             Some(same) => Arc::clone(same),
                             None => {
-                                let layers =
-                                    political::build(&view.map, view.frame, mode, &strategic)?;
+                                let layers = political::build(&view.map, view.frame, &strategic)?;
                                 let rows_from = near
                                     .iter()
                                     .filter_map(|near| {
@@ -1092,6 +1268,7 @@ pub struct Pipeline {
     want: Option<Want>,
     epoch: u64,
     received: std::cell::Cell<u64>,
+    requested: Arc<Mutex<Option<(u64, Want)>>>,
 }
 
 impl Pipeline {
@@ -1101,19 +1278,58 @@ impl Pipeline {
     /// machine this is eight builders, and more finished hours no sooner
     /// while spiking the frames they arrived on.
     pub fn new(content: Arc<Content>, replay: Arc<Replay>) -> io::Result<Self> {
-        let parallel = thread::available_parallelism()
-            .map_or(4, |count| count.get())
-            .saturating_sub(8)
-            .max(2);
+        let parallel = builder_count();
+        let weather = Arc::new(SharedWeather::new(
+            Arc::clone(&content),
+            Arc::clone(&replay),
+        ));
+        Self::start(
+            content,
+            replay,
+            Arc::new(Pool::new(parallel)?),
+            None,
+            weather,
+            parallel,
+        )
+    }
+
+    pub fn shared(
+        content: Arc<Content>,
+        replay: Arc<Replay>,
+        resources: &Resources,
+    ) -> io::Result<Self> {
+        let decoder = resources.decoder(Arc::clone(&replay))?;
+        let weather = resources.weather(Arc::clone(&content), Arc::clone(&replay))?;
+        // Dashboard maps ask for one absolute target, without per-map lookahead.
+        Self::start(
+            content,
+            replay,
+            Arc::clone(&resources.pool),
+            Some(decoder),
+            weather,
+            1,
+        )
+    }
+
+    fn start(
+        content: Arc<Content>,
+        replay: Arc<Replay>,
+        pool: Arc<Pool>,
+        shared_decoder: Option<Arc<SharedDecoder>>,
+        weather: Arc<SharedWeather>,
+        parallel: usize,
+    ) -> io::Result<Self> {
         let (events, inbox) = mpsc::channel();
         let (outbox, results) = mpsc::channel();
+        let requested = Arc::new(Mutex::new(None));
         let coordinator = Coordinator {
             content: Arc::clone(&content),
-            replay: Arc::clone(&replay),
-            playback: Playback::shared(Arc::clone(&replay))?,
+            playback: Playback::unloaded(Arc::clone(&replay))?,
+            shared_decoder,
+            requested: Arc::clone(&requested),
             frames: BTreeMap::new(),
             order: VecDeque::new(),
-            weather: WeatherHistory::new(),
+            weather,
             strategic: None,
             want: None,
             epoch: 0,
@@ -1122,7 +1338,7 @@ impl Pipeline {
             sends: 0,
             snapshots: BTreeMap::new(),
             slots: BTreeMap::new(),
-            pool: Pool::new(parallel)?,
+            pool,
             parallel,
             events: events.clone(),
             outbox,
@@ -1141,6 +1357,7 @@ impl Pipeline {
             want: None,
             epoch: 0,
             received: std::cell::Cell::new(0),
+            requested,
         })
     }
 
@@ -1150,7 +1367,7 @@ impl Pipeline {
     }
 
     /// Tells the builders what the window wants now. Returns the epoch the
-    /// window must keep built hours of: a new perspective or mode begins one.
+    /// window must keep built hours of: a new perspective begins one.
     pub fn want(&mut self, mut want: Want) -> io::Result<u64> {
         want.received = self.received.get();
         let invalidates = want.discard_stale_have(self.want.as_ref());
@@ -1158,10 +1375,13 @@ impl Pipeline {
             if invalidates {
                 self.epoch += 1;
             }
-            self.events
-                .0
-                .send(Event::Want(Box::new(want.clone())))
-                .map_err(|_| stopped())?;
+            let mut requested = self.requested.lock().map_err(|_| stopped())?;
+            let wake = requested.is_none();
+            *requested = Some((self.epoch, want.clone()));
+            drop(requested);
+            if wake {
+                self.events.0.send(Event::Want).map_err(|_| stopped())?;
+            }
             self.want = Some(want);
         }
         Ok(self.epoch)
@@ -1197,21 +1417,7 @@ impl Pipeline {
 /// of 15 to 100 ms with nothing in them but the wait. Below normal priority
 /// the window's thread runs as soon as it is ready and the builders take
 /// the rest.
-pub fn background_priority() {
-    #[cfg(windows)]
-    {
-        const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
-        unsafe extern "system" {
-            fn GetCurrentThread() -> *mut std::ffi::c_void;
-            fn SetThreadPriority(thread: *mut std::ffi::c_void, priority: i32) -> i32;
-        }
-        // SAFETY: GetCurrentThread returns the calling thread's pseudo handle,
-        // which needs no closing, and SetThreadPriority only reads it.
-        unsafe {
-            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-        }
-    }
-}
+pub use crate::worker_priority::background_priority;
 
 fn stopped() -> io::Error {
     io::Error::other("the hour builders stopped")
@@ -1335,24 +1541,19 @@ mod tests {
     }
 
     #[test]
-    fn perspective_and_mode_changes_discard_old_hour_acknowledgements() {
+    fn perspective_changes_discard_old_hour_acknowledgements() {
         let old = Want {
             branch: 1,
             hour: 10,
             ahead: 2,
             behind: 2,
             perspective: Default::default(),
-            mode: political::Mode::from_control(true),
             view: test_view(),
             have: vec![10, 11],
             received: 2,
         };
         let mut next = old.clone();
         next.perspective.fog = !next.perspective.fog;
-        assert!(next.discard_stale_have(Some(&old)));
-        assert!(next.have.is_empty());
-        let mut next = old.clone();
-        next.mode = political::Mode::from_control(false);
         assert!(next.discard_stale_have(Some(&old)));
         assert!(next.have.is_empty());
         let mut next = old.clone();

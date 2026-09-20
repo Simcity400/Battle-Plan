@@ -1,17 +1,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod analytics_service;
+mod dashboard_service;
 mod native;
+mod replay_library;
+mod video;
 
-use analytics_service::AnalyticsService;
-use desktop_protocol::ViewBounds;
+use dashboard_service::DashboardService;
+use desktop_protocol::{DashboardMapView, ViewBounds};
 use native::{HostStatus, NativeHost};
 use std::path::PathBuf;
 use tauri::{Manager, State, WebviewWindow};
 
 #[tauri::command]
-fn desktop_state(host: State<'_, NativeHost>) -> HostStatus {
-    host.status()
+fn desktop_state(window: WebviewWindow, host: State<'_, NativeHost>) -> Result<HostStatus, String> {
+    // Establish configuration/onboarding even before a recording makes the map visible.
+    host.ensure_started(&window)?;
+    Ok(host.status())
 }
 
 #[tauri::command]
@@ -25,20 +29,71 @@ fn set_map_view(
 }
 
 #[tauri::command]
-async fn choose_replay(window: WebviewWindow) -> Result<Option<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+fn select_native_view(host: State<'_, NativeHost>, dashboard: bool) -> Result<(), String> {
+    host.select_view(dashboard)
+}
+
+#[tauri::command]
+fn map_action(
+    host: State<'_, NativeHost>,
+    action: desktop_protocol::MapAction,
+) -> Result<(), String> {
+    host.map_action(action)
+}
+
+#[tauri::command]
+async fn export_map(host: State<'_, NativeHost>, view_id: Option<String>) -> Result<(), String> {
+    let path = tauri::async_runtime::spawn_blocking(|| {
         rfd::FileDialog::new()
-            .set_parent(&window)
-            .set_title("Open a campaign recording")
-            .add_filter("Battle Plan", &["battleplan", "hoi4replay"])
-            .pick_file()
-            .map(|path| {
-                replay_path(&path.to_string_lossy()).map(|path| path.to_string_lossy().into_owned())
-            })
-            .transpose()
+            .set_title("Export campaign map")
+            .add_filter("PNG image", &["png"])
+            .set_file_name("campaign-map.png")
+            .save_file()
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    if let Some(path) = path {
+        host.map_action(desktop_protocol::MapAction::Export {
+            path: path.to_string_lossy().into_owned(),
+            view_id,
+        })?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn choose_content_folder(
+    window: WebviewWindow,
+    kind: String,
+    initial: String,
+) -> Result<Option<String>, String> {
+    let title = match kind.as_str() {
+        "game" => "Choose your game installation",
+        "user" => "Choose your Paradox user folder",
+        _ => return Err("Unknown content folder type".into()),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut dialog = rfd::FileDialog::new().set_parent(&window).set_title(title);
+        if let Ok(directory) = std::fs::canonicalize(&initial)
+            && directory.is_dir()
+        {
+            dialog = dialog.set_directory(directory);
+        }
+        dialog
+            .pick_folder()
+            .map(|path| path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_dashboard_maps(
+    window: WebviewWindow,
+    host: State<'_, NativeHost>,
+    views: Vec<DashboardMapView>,
+) -> Result<(), String> {
+    host.set_dashboard_views(&window, &views)
 }
 
 fn replay_path(path: &str) -> Result<PathBuf, String> {
@@ -87,17 +142,43 @@ fn main() {
         return;
     }
     let app = tauri::Builder::default()
+        .manage(video::VideoState::default())
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main")
+                && let Err(error) = video::restore(&window)
+            {
+                *app.state::<video::VideoState>()
+                    .0
+                    .lock()
+                    .map_err(|e| std::io::Error::other(e.to_string()))? = Err(error);
+            }
+            Ok(())
+        })
         .manage(NativeHost::default())
-        .manage(AnalyticsService::default())
+        .manage(DashboardService::default())
         .invoke_handler(tauri::generate_handler![
+            video::video_settings,
+            video::set_video_settings,
             desktop_state,
             set_map_view,
-            choose_replay,
+            select_native_view,
+            map_action,
+            export_map,
+            choose_content_folder,
+            set_dashboard_maps,
+            replay_library::replay_library,
+            replay_library::set_replay_folder,
+            replay_library::choose_replay_folder,
+            replay_library::choose_recording,
             open_replay,
             seek_map,
-            analytics_service::analytics_metadata,
-            analytics_service::analytics_series,
-            analytics_service::cancel_analytics,
+            dashboard_service::dashboard_open_source,
+            dashboard_service::dashboard_query,
+            dashboard_service::dashboard_country_flags,
+            dashboard_service::dashboard_land_owners,
+            dashboard_service::dashboard_map_settings,
+            dashboard_service::dashboard_cancel,
+            dashboard_service::dashboard_release_source,
         ])
         .build(tauri::generate_context!())
         .expect("Could not initialize the replay desktop");
@@ -106,7 +187,7 @@ fn main() {
             event,
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
-            app.state::<AnalyticsService>().shutdown();
+            app.state::<DashboardService>().shutdown();
             app.state::<NativeHost>().shutdown();
         }
     });

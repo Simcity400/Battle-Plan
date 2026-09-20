@@ -58,7 +58,7 @@ use installed_content::{
 };
 
 use super::{
-    scene::{DEPTH_FORMAT, SAMPLE_COUNT, Targets, module, sampler_entry, texture_entry},
+    scene::{DEPTH_FORMAT, Targets, module, sampler_entry, texture_entry},
     textures::{Bound, ColorSpace, Samplers, upload},
 };
 
@@ -311,6 +311,7 @@ impl MapFramePass {
     /// Builds the pipeline and uploads the frame's textures.
     pub fn new(
         device: &wgpu::Device,
+        samples: u32,
         queue: &wgpu::Queue,
         globals: &wgpu::BindGroupLayout,
         format: wgpu::TextureFormat,
@@ -398,7 +399,7 @@ impl MapFramePass {
                 bias: Default::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: SAMPLE_COUNT,
+                count: samples,
                 ..Default::default()
             },
             fragment: Some(wgpu::FragmentState {

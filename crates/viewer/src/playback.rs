@@ -56,18 +56,27 @@ pub struct Playback {
 }
 
 impl Playback {
+    #[cfg(test)]
     pub fn new(replay: Replay) -> io::Result<Self> {
         Self::shared(Arc::new(replay))
     }
 
     /// A playback of its own over a replay another playback already holds.
     pub fn shared(replay: Arc<Replay>) -> io::Result<Self> {
+        let mut playback = Self::unloaded(replay)?;
+        playback.select_branch(playback.branch)?;
+        Ok(playback)
+    }
+
+    /// Presentation state without synchronous decoding. The hour coordinator
+    /// supplies exact frames through `present` before this state is rendered.
+    pub fn unloaded(replay: Arc<Replay>) -> io::Result<Self> {
         let first = replay.branches.first().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "replay contains no branches")
         })?;
         let branch = first.id;
         let hour = first.first_hour;
-        let mut playback = Self {
+        Ok(Self {
             replay,
             branch,
             hour,
@@ -77,9 +86,7 @@ impl Playback {
             copy_costs: Vec::new(),
             #[cfg(test)]
             block_loads: 0,
-        };
-        playback.select_branch(branch)?;
-        Ok(playback)
+        })
     }
 
     pub fn replay(&self) -> &Replay {
@@ -370,7 +377,7 @@ fn copy_frame(decoded: &DecodedFrame, costs: &mut Vec<f64>) -> DecodedFrame {
             .iter()
             .map(|(_, indices)| {
                 scope.spawn(move || {
-                    crate::hours::background_priority();
+                    crate::worker_priority::background_priority();
                     copy(indices)
                 })
             })

@@ -893,6 +893,7 @@ dependencies = [
 name = "desktop-protocol"
 version = "0.1.0"
 dependencies = [
+ "analytics",
  "serde",
  "serde_json",
 ]
@@ -3821,6 +3822,7 @@ version = "0.1.0"
 dependencies = [
  "analytics",
  "desktop-protocol",
+ "installed-content",
  "rfd",
  "serde",
  "serde_json",
@@ -5362,6 +5364,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "viewer"
 version = "0.1.0"
 dependencies = [
+ "analytics",
  "bytemuck",
  "desktop-protocol",
  "eframe",
@@ -5374,6 +5377,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "uuid",
  "windows-sys 0.61.2",
 ]
 

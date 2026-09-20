@@ -1,84 +1,141 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import {
-  chooseReplay,
   desktopAvailable,
   errorMessage,
   openReplay,
-  seekMap,
+  selectNativeView,
+  mapAction,
 } from './api';
 import { Icon } from './Icons';
 import { useDesktopState, useMapSurface } from './useNativeViewer';
-import type { AnalyticsMemory } from './analytics/model';
+import { nativeDashboardClient } from './dashboard/nativeClient';
+import { browserDashboardClient } from './dashboard/browserClient';
+import Settings from './Settings';
+import { useTheme } from './theme';
+import { useReplayLibrary } from './dashboard/replayLibrary';
+import type { ContentFolders, ReplayMetadata } from './api';
+import { hasMapOverlay, isMapOverlay } from './mapOverlays';
 
-const Analytics = lazy(() => import('./analytics/Analytics'));
-type Tab = 'map' | 'analytics';
-const tabs: Tab[] = ['map', 'analytics'];
+const browserRecordings = import.meta.env.DEV && !desktopAvailable;
+
+const Dashboard = lazy(() => import('./dashboard/Dashboard'));
+type Tab = 'map' | 'analytics' | 'settings';
+const tabs: Tab[] = ['analytics', 'map', 'settings'];
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('map');
+  const appearance = useTheme();
+  const client = browserRecordings ? browserDashboardClient : nativeDashboardClient;
+  const replayLibrary = useReplayLibrary(client);
+  const defaultChosen = useRef(false);
+  const [tab, setTab] = useState<Tab>(desktopAvailable ? 'map' : 'analytics');
+  const [playbackHost, setPlaybackHost] = useState<HTMLDivElement | null>(null);
+  const [campaignHost, setCampaignHost] = useState<HTMLDivElement | null>(null);
+  const [metadata, setMetadata] = useState<ReplayMetadata | null>(null);
+  const [browserFolders, setBrowserFolders] = useState<ContentFolders | null>(null);
+  const [folderError, setFolderError] = useState<string | null>(null);
+  const setupChecked = useRef(false);
+  const openCampaign = useRef<(() => void) | null>(null);
+  const registerOpen = useCallback((open: (() => void) | null) => { openCampaign.current = open; }, []);
   const [retry, setRetry] = useState(0);
   const [path, setPath] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  useEffect(() => {
+    const opening = (event: Event) => { if ('newState' in event && event.newState === 'open' && isMapOverlay(event.target)) setPopoverOpen(true); };
+    const toggled = () => setPopoverOpen(hasMapOverlay());
+    document.addEventListener('beforetoggle', opening, true);
+    document.addEventListener('toggle', toggled, true);
+    return () => { document.removeEventListener('beforetoggle', opening, true); document.removeEventListener('toggle', toggled, true); };
+  }, []);
   const pendingPath = useRef<string | null>(null);
+  const defaultRequest = useRef(0);
   const lastNativePath = useRef<string | null>(null);
-  const analyticsMemory = useRef<AnalyticsMemory | null>(null);
   const content = useRef<HTMLElement>(null);
   const native = useDesktopState(retry);
+  const folders = desktopAvailable ? native.state?.mapDetails ?? null : browserFolders;
+  useEffect(() => {
+    if (!client.contentFolders) return;
+    const controller = new AbortController();
+    void client.contentFolders(controller.signal).then(value => { if (!controller.signal.aborted) setBrowserFolders(value); })
+      .catch(cause => { if (!controller.signal.aborted) setFolderError(errorMessage(cause)); });
+    return () => controller.abort();
+  }, [client]);
+  useEffect(() => {
+    if (!desktopAvailable || !native.state?.ready) return;
+    let current = true;
+    void mapAction({ kind: 'inspect' }).catch(cause => { if (current) setFolderError(errorMessage(cause)); });
+    return () => { current = false; };
+  }, [native.state?.ready]);
+  useEffect(() => {
+    if (!folders || setupChecked.current) return;
+    setupChecked.current = true;
+    if (folders.contentReady) return;
+    let current = true;
+    void selectNativeView(true).then(() => {
+      if (current) { setTab('settings'); }
+    }).catch(cause => { if (current) setFolderError(errorMessage(cause)); });
+    return () => { current = false; };
+  }, [folders?.contentReady]);
   // Native load/configuration failures keep their existing controls reachable.
   // Only shell-owned failures need the child hidden for the web recovery panel.
   const shellError = actionError ?? native.error;
-  const boundsError = useMapSurface(content, tab === 'map' && !shellError, retry);
+  const boundsError = useMapSurface(content, tab === 'map' && !!path && !shellError && !popoverOpen, retry, tab === 'map');
   const nativePath = native.state?.viewer.path ?? null;
   const mapError = actionError ?? boundsError ?? native.error ?? native.state?.error ?? null;
 
   useEffect(() => {
     const changed = lastNativePath.current !== nativePath;
     lastNativePath.current = nativePath;
-    if (!nativePath) return;
+    // An initial command-line recording can finish opening after Analytics is
+    // selected. Adopt it only while no dashboard recording has been chosen.
+    if (path != null) { if (nativePath === pendingPath.current) pendingPath.current = null; return; }
+    if (!nativePath || defaultChosen.current) return;
     if (pendingPath.current && nativePath !== pendingPath.current) return;
     const acknowledged = pendingPath.current === nativePath;
     pendingPath.current = null;
-    if (changed || acknowledged) setPath(nativePath);
-  }, [nativePath, native.state?.viewer]);
+    if (changed || acknowledged || path == null) setPath(nativePath);
+  }, [nativePath, native.state?.viewer, tab, path]);
 
   useEffect(() => {
     if (native.state?.error) pendingPath.current = null;
   }, [native.state?.error]);
 
-  async function openRecording() {
-    if (opening || !desktopAvailable) return;
-    setOpening(true);
+  function openRecording() { openCampaign.current?.(); }
+  const setDefaultPath = useCallback((chosen: string | null) => {
+    defaultChosen.current = true;
+    setPath(chosen);
     setActionError(null);
+    const request = ++defaultRequest.current;
+    if (!chosen || !desktopAvailable || tab !== 'map' || (chosen === nativePath && !pendingPath.current)) { setOpening(false); return; }
+    pendingPath.current = chosen;
+    setOpening(true);
+    void openReplay(chosen).catch((cause) => {
+      if (request === defaultRequest.current) { pendingPath.current = null; setActionError(errorMessage(cause)); }
+    }).finally(() => { if (request === defaultRequest.current) setOpening(false); });
+  }, [tab, nativePath]);
+
+  async function changeTab(next: Tab) {
+    if (switching || next === tab) return;
+    setSwitching(true);
     try {
-      const chosen = await chooseReplay();
-      if (!chosen) return;
-      // Analytics can read the selected recording while native assets are loading.
-      // Only viewer-state establishes which recording the map actually displays.
-      pendingPath.current = chosen;
-      setPath(chosen);
-      await openReplay(chosen);
-    } catch (cause) {
-      pendingPath.current = null;
+      await selectNativeView(next !== 'map');
+      if (desktopAvailable && next === 'map' && path && path !== nativePath) {
+        pendingPath.current = path;
+        await openReplay(path);
+      }
+      setActionError(null);
+      setTab(next);
+      requestAnimationFrame(() => {
+        document.getElementById(`tab-${next}`)?.focus({ preventScroll: true });
+      });
+    } catch (cause: unknown) {
       setActionError(errorMessage(cause));
     } finally {
-      setOpening(false);
+      setSwitching(false);
     }
-  }
-
-  async function viewOnMap(branch: string, hour: number, revision: string) {
-    if (!path) throw new Error('Choose a recording before opening a map hour.');
-    pendingPath.current = path;
-    try {
-      await seekMap(path, revision, branch, hour);
-    } catch (cause) {
-      if (pendingPath.current === path) pendingPath.current = null;
-      throw cause;
-    }
-    setActionError(null);
-    setTab('map');
-    requestAnimationFrame(() => document.getElementById('tab-map')?.focus());
   }
 
   function moveTab(event: KeyboardEvent<HTMLButtonElement>, current: Tab) {
@@ -90,53 +147,47 @@ export default function App() {
     if (event.key === 'End') next = tabs.at(-1);
     if (!next) return;
     event.preventDefault();
-    setTab(next);
-    document.getElementById(`tab-${next}`)?.focus();
+    void changeTab(next);
   }
 
   const nativeReady = native.state?.ready && native.state.running;
-  const statusLabel = !desktopAvailable ? 'Browser' : mapError ? 'Issue' : nativeReady ? 'Ready' : 'Starting';
 
   return (
     <div className="app-shell">
+      <header className="shell-header">
+        <div className="shell-brand"><Icon name="globe" /><strong>Battle Plan</strong></div>
+        <div className="shell-campaign-controls" ref={setPlaybackHost} hidden={tab === 'settings'} />
+        {tab === 'settings' && <div className="shell-location"><strong>Settings</strong></div>}
+      </header>
       <aside className="side-rail" aria-label="Battle Plan navigation">
-        <div className="brand-mark" title="Battle Plan" aria-label="Battle Plan">H4<span /></div>
+        <span className="nav-section-label">Workspace</span>
         <div className="view-tabs" role="tablist" aria-label="Views" aria-orientation="vertical">
           {tabs.map((item) => (
             <button key={item} id={`tab-${item}`} type="button" role="tab"
               className="rail-button" aria-selected={tab === item} aria-controls={`panel-${item}`}
-              tabIndex={tab === item ? 0 : -1} onClick={() => setTab(item)}
+              tabIndex={tab === item ? 0 : -1} disabled={switching} onClick={() => void changeTab(item)}
               onKeyDown={(event) => moveTab(event, item)}>
-              <Icon name={item === 'map' ? 'map' : 'chart'} />
-              <span>{item === 'map' ? 'Map' : 'Analytics'}</span>
+              <Icon name={item === 'map' ? 'map' : item === 'settings' ? 'settings' : 'grid'} />
+              <span>{item === 'map' ? 'Campaign map' : item === 'settings' ? 'Settings' : 'Overview'}</span>
             </button>
           ))}
         </div>
         <div className="rail-divider" />
-        <button type="button" className="rail-button open-recording" disabled={!desktopAvailable || opening}
-          onClick={() => void openRecording()} aria-label="Open recording"
-          title={desktopAvailable ? 'Open a .battleplan recording' : 'Opening local recordings requires the desktop app'}>
-          {opening ? <span className="spinner" /> : <Icon name="folder" />}
-          <span>{opening ? 'Opening…' : <>Open<br />recording</>}</span>
-        </button>
-        <div className="rail-status" role="status"
-          title={!desktopAvailable ? 'Browser preview. Native commands require the desktop app.' : mapError ?? 'Native viewer status'}>
-          <span className={`status-dot ${mapError ? 'has-error' : nativeReady ? 'is-ready' : ''}`} />
-          <span>{statusLabel}</span>
-        </div>
+        <div className="sidebar-campaign-host" ref={setCampaignHost} />
       </aside>
 
       <main className="workspace" ref={content}>
+        <section id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" tabIndex={0} className="settings-panel" hidden={tab !== 'settings'}>
+          {tab === 'settings' && <Settings folders={folders} folderError={folderError} onFoldersChange={value => { setBrowserFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} library={replayLibrary} client={client} theme={appearance.theme} onChange={appearance.change} notice={appearance.notice} />}
+        </section>
         <section id="panel-map" role="tabpanel" aria-labelledby="tab-map" tabIndex={0}
           className="map-panel" hidden={tab !== 'map'}>
           <div className="map-placeholder">
             <div className="placeholder-icon"><Icon name="map" /></div>
             {!desktopAvailable ? (
               <>
-                <span className="eyebrow">Browser preview</span>
                 <h1>The map lives in the desktop app</h1>
                 <p>Open Battle Plan on your desktop to load a recording and explore its native map.</p>
-                <p className="subtle">The Map and Analytics tabs are available here to preview the interface.</p>
               </>
             ) : mapError ? (
               <div role="alert">
@@ -164,7 +215,7 @@ export default function App() {
               <>
                 <span className="eyebrow">Battle Plan</span>
                 <h1>{path ? 'Opening your recording' : 'Open a recording'}</h1>
-                <p>{path ? 'The native viewer is preparing the recorded map.' : 'Choose a .battleplan file to explore your campaign hour by hour.'}</p>
+                <p>{path ? 'The native viewer is preparing the recorded map.' : 'Choose a campaign from your replay folder to explore it hour by hour.'}</p>
                 {!path && <button type="button" className="button primary" disabled={opening} onClick={() => void openRecording()}>
                   <Icon name="folder" />Open recording
                 </button>}
@@ -175,14 +226,9 @@ export default function App() {
 
         <section id="panel-analytics" role="tabpanel" aria-labelledby="tab-analytics" tabIndex={0}
           className="analytics-panel" hidden={tab !== 'analytics'}>
-          {tab === 'analytics' && (
-            <Suspense fallback={<div className="panel-loading" role="status"><span className="spinner" />Loading analytics…</div>}>
-              <Analytics key={path ?? 'empty'} path={path} memory={analyticsMemory}
-                viewer={native.state?.viewer ?? null} viewerRunning={native.state?.running ?? false}
-                viewerReady={native.state?.ready ?? false} onOpen={() => void openRecording()}
-                opening={opening} openError={actionError} onViewOnMap={viewOnMap} />
-            </Suspense>
-          )}
+          <Suspense fallback={<div className="panel-loading" role="status"><span className="spinner" />Loading analytics…</div>}>
+            <Dashboard path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} onMetadata={setMetadata} onMapError={setActionError} playbackHost={playbackHost} />
+          </Suspense>
         </section>
       </main>
     </div>

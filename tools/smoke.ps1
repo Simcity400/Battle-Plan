@@ -37,8 +37,6 @@ GetForegroundWindow, GetActiveWindow and GetFocus imports from a shared control 
 Missing binaries are not an error; the driver falls back to the brief foreground borrow.
 ShimStatus prints the per-hook call counters and their one-second deltas. ShimMask -Mask <n>
 sets hook_mask (bit per hook, 0x7f enables all) to bisect what the click path depends on.
-.PARAMETER MapMode
-The renderer map mode matching the game screenshot, controller by default.
 .PARAMETER RecordHours
 Minimum live advance, rounded up to a 720-hour full-refresh boundary where the run stops.
 1440 reaches the reference hour 60835691 from the record23 save.
@@ -85,7 +83,6 @@ param(
     [ValidateLength(1, 512)][string]$Text,
     [string]$UiConfig,
     [switch]$WaitForUiReview,
-    [ValidateSet('owner', 'controller')][string]$MapMode = 'controller',
     [string]$Perspective = 'recorded',
     [ValidateRange(120, 10000)][int]$RecordHours = 120,
     [ValidateRange(300, 14400)][int]$TimeoutSeconds = 3600,
@@ -461,7 +458,7 @@ function Invoke-FullSmoke {
         $null=Run-Tool $cargo @('fmt','--all','--','--check') 'fmt' 120
         $null=Run-Tool $cargo @('build','--workspace','--release') 'release' 600
         foreach ($file in @('recorder.exe','collector.dll','viewer.exe')) { Copy-Item (Join-Path (Join-Path $repo '.cargo-target\release') $file) (Join-Path $bin $file) }
-        $report.map_mode=$MapMode; $report.perspective=$Perspective
+        $report.map_mode='controller'; $report.perspective=$Perspective
         $report.binaries=@(Get-ChildItem $bin -File | ForEach-Object { @{name=$_.Name;sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash;bytes=$_.Length} })
         $recorder=Join-Path $bin 'recorder.exe'; $viewer=Join-Path $bin 'viewer.exe'
         Stage 'launch-and-attach'
@@ -623,7 +620,7 @@ function Invoke-FullSmoke {
         $culture=[Globalization.CultureInfo]::InvariantCulture
         foreach ($reference in $references) {
             $cameraText=($reference.camera | ForEach-Object { ([double]$_).ToString('R',$culture) }) -join ','
-            $common=@($replay,'--hour',[string]$target,'--branch','1','--camera',$cameraText,'--width',[string]$reference.width,'--height',[string]$reference.height,'--perspective',$Perspective,'--mode',$MapMode,'--fog','on','--game-dir',(Split-Path -Parent $gamePath),'--user-dir',$userPath)
+            $common=@($replay,'--hour',[string]$target,'--branch','1','--camera',$cameraText,'--width',[string]$reference.width,'--height',[string]$reference.height,'--perspective',$Perspective,'--fog','on','--game-dir',(Split-Path -Parent $gamePath),'--user-dir',$userPath)
             $image=Join-Path $output ("reference-{0}-viewer.png" -f $reference.index)
             $null=Run-Tool $viewer (@('--dump')+$common+@('--out',$image)) ("render-{0}" -f $reference.index) 240
             $score=Join-Path $output ("reference-{0}-score.json" -f $reference.index)

@@ -7,12 +7,14 @@
 //! only this process's creation-context HWND a child, with host-owned geometry.
 
 use desktop_protocol::{
-    EVENT_PREFIX, MAX_MESSAGE_BYTES, NativeCommand, NativeEvent, ViewBounds, ViewerState,
+    DashboardMapState, DashboardMapView, EVENT_PREFIX, MAX_MESSAGE_BYTES, NativeCommand,
+    NativeEvent, ViewBounds, ViewerState, dashboard_data::DataEvent, validate_map_views,
 };
 use eframe::egui;
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io::{self, BufRead, Read as _, Write as _},
     os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle},
     path::{Path, PathBuf},
@@ -27,6 +29,7 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{GetLastError, HWND, LPARAM, LRESULT, RECT, SetLastError, WAIT_TIMEOUT, WPARAM},
+    Graphics::Gdi::*,
     System::Threading::{
         GetCurrentThreadId, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
     },
@@ -86,10 +89,13 @@ fn validate_snapshot(path: &str, revision: &str) -> Result<(), String> {
 /// a close is terminal, including if more input has already reached the pipe.
 #[derive(Default)]
 pub struct Pending {
+    pub actions: VecDeque<desktop_protocol::MapAction>,
+    pub standalone: bool,
     pub open: Option<OpenRequest>,
     pub seek: Option<Seek>,
     pub close: bool,
     pub error: Option<String>,
+    pub map_views: Option<Vec<DashboardMapView>>,
     bounds: Option<ViewBounds>,
     visibility: Option<bool>,
 }
@@ -97,6 +103,9 @@ pub struct Pending {
 impl Pending {
     fn is_empty(&self) -> bool {
         self.open.is_none()
+            && self.actions.is_empty()
+            && !self.standalone
+            && self.map_views.is_none()
             && self.seek.is_none()
             && !self.close
             && self.bounds.is_none()
@@ -109,6 +118,45 @@ impl Pending {
             return Ok(());
         }
         match command {
+            NativeCommand::MapAction { action } => {
+                action.validate().map_err(str::to_owned)?;
+                if self.actions.len() >= 16 {
+                    return Err("Map controls queue is full".into());
+                }
+                if let desktop_protocol::MapAction::Unload { path } = &action {
+                    let path = std::path::Path::new(path);
+                    if self
+                        .open
+                        .as_ref()
+                        .is_some_and(|pending| pending.path == path)
+                    {
+                        self.open = None;
+                    }
+                    if self
+                        .seek
+                        .as_ref()
+                        .is_some_and(|pending| pending.path == path)
+                    {
+                        self.seek = None;
+                    }
+                }
+                self.actions.push_back(action);
+            }
+            NativeCommand::Standalone => {
+                self.standalone = true;
+                self.map_views = None;
+            }
+            NativeCommand::MapViews { views } => {
+                validate_map_views(&views)?;
+                self.map_views = Some(views);
+                self.standalone = false;
+                self.open = None;
+                self.seek = None;
+                self.error = None;
+            }
+            NativeCommand::Data { .. } => {
+                return Err("Data requests must be dispatched by the control reader".into());
+            }
             NativeCommand::Visibility { visible } => self.visibility = Some(visible),
             NativeCommand::Bounds {
                 x,
@@ -207,14 +255,23 @@ impl ReportedState {
 
 #[derive(Default)]
 struct Outgoing {
+    details: Option<desktop_protocol::MapDetails>,
     ready: Option<String>,
     state: Option<ReportedState>,
     error: Option<String>,
+    maps: BTreeMap<String, DashboardMapState>,
+    map_order: VecDeque<String>,
+    data: VecDeque<DataEvent>,
 }
 
 impl Outgoing {
     fn is_empty(&self) -> bool {
-        self.ready.is_none() && self.state.is_none() && self.error.is_none()
+        self.ready.is_none()
+            && self.details.is_none()
+            && self.state.is_none()
+            && self.error.is_none()
+            && self.maps.is_empty()
+            && self.data.is_empty()
     }
 }
 
@@ -222,12 +279,35 @@ struct Shared {
     pending: Mutex<Pending>,
     outgoing: Mutex<Outgoing>,
     output_ready: Condvar,
+    output_space: Condvar,
     stopped: AtomicBool,
     terminal_error: AtomicBool,
     ctx: egui::Context,
 }
 
 impl Shared {
+    /// Only the service's response pump calls this. Rendering and command
+    /// intake never wait behind serialized analytics results.
+    fn data(&self, response: DataEvent) -> bool {
+        let mut outgoing = self
+            .outgoing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        while outgoing.data.len() >= 8 && !self.stopped.load(Ordering::Acquire) {
+            outgoing = self
+                .output_space
+                .wait(outgoing)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+        if self.stopped.load(Ordering::Acquire) {
+            return false;
+        }
+        outgoing.data.push_back(response);
+        drop(outgoing);
+        self.output_ready.notify_one();
+        true
+    }
+
     fn input(&self, command: NativeCommand) {
         let mut pending = self
             .pending
@@ -351,10 +431,17 @@ impl Parent {
             pending: Mutex::new(Pending::default()),
             outgoing: Mutex::new(Outgoing::default()),
             output_ready: Condvar::new(),
+            output_space: Condvar::new(),
             stopped: AtomicBool::new(false),
             terminal_error: AtomicBool::new(false),
             ctx: cc.egui_ctx.clone(),
         });
+        let output_target = Arc::downgrade(&shared);
+        let service = crate::dashboard_data::Service::new(Arc::new(move |event| {
+            output_target
+                .upgrade()
+                .is_some_and(|shared| shared.data(event))
+        }))?;
         let (output_finished, output_done) = mpsc::sync_channel::<()>(0);
         let controller = Controller {
             window,
@@ -363,6 +450,8 @@ impl Parent {
             last_report: None,
             closing: false,
             output_done,
+            service: Arc::clone(&service),
+            last_maps: None,
         };
         let input = Arc::clone(&shared);
         thread::Builder::new()
@@ -373,6 +462,10 @@ impl Parent {
                 while !input.stopped.load(Ordering::Acquire) {
                     match read_command(&mut stdin, &mut bytes) {
                         Ok(Some(command)) => {
+                            if let NativeCommand::Data { request } = command {
+                                service.dispatch(request);
+                                continue;
+                            }
                             let close = matches!(command, NativeCommand::Close);
                             input.input(command);
                             if close {
@@ -409,13 +502,34 @@ impl Parent {
                     if outgoing.is_empty() {
                         return;
                     }
-                    let batch = std::mem::take(&mut *outgoing);
-                    drop(outgoing);
+                    let map = outgoing
+                        .map_order
+                        .pop_front()
+                        .and_then(|id| outgoing.maps.remove(&id));
                     let events = [
-                        batch.ready.map(|hwnd| NativeEvent::Ready { hwnd }),
-                        batch.state.map(ReportedState::into_event),
-                        batch.error.map(|message| NativeEvent::Error { message }),
+                        outgoing
+                            .details
+                            .take()
+                            .map(|details| NativeEvent::MapDetails { details }),
+                        outgoing
+                            .ready
+                            .take()
+                            .map(|hwnd| NativeEvent::Ready { hwnd }),
+                        outgoing.state.take().map(ReportedState::into_event),
+                        outgoing
+                            .error
+                            .take()
+                            .map(|message| NativeEvent::Error { message }),
+                        map.map(|state| NativeEvent::MapStates {
+                            states: vec![state],
+                        }),
+                        outgoing
+                            .data
+                            .pop_front()
+                            .map(|response| NativeEvent::Data { response }),
                     ];
+                    drop(outgoing);
+                    output.output_space.notify_all();
                     for event in events.into_iter().flatten() {
                         if write_event(event).is_err() {
                             output.input(NativeCommand::Close);
@@ -476,9 +590,15 @@ pub struct Controller {
     last_report: Option<Instant>,
     closing: bool,
     output_done: mpsc::Receiver<()>,
+    service: Arc<crate::dashboard_data::Service>,
+    last_maps: Option<Vec<DashboardMapState>>,
 }
 
 impl Controller {
+    pub fn service(&self) -> Arc<crate::dashboard_data::Service> {
+        Arc::clone(&self.service)
+    }
+
     pub fn poll(&mut self, ctx: &egui::Context) -> Pending {
         let mut pending = std::mem::take(
             &mut *self
@@ -490,11 +610,17 @@ impl Controller {
         pending.close |= self.closing;
         if !pending.close {
             let applied = (|| {
+                if pending.standalone {
+                    self.window.clear_region()?;
+                }
                 if let Some(bounds) = pending.bounds {
                     self.window.bounds(bounds)?;
                 }
                 if let Some(visible) = pending.visibility {
                     self.window.visibility(visible);
+                }
+                if let Some(views) = &pending.map_views {
+                    self.window.map_views(views)?;
                 }
                 Ok::<_, io::Error>(())
             })();
@@ -513,6 +639,69 @@ impl Controller {
 
     pub fn visible(&self) -> bool {
         self.window.visible()
+    }
+
+    pub fn report_details(&self, mut details: desktop_protocol::MapDetails) {
+        // Keep diagnostic responses below the control pipe's frame budget.
+        // Budget escaped JSON bytes, not characters (which can expand sixfold).
+        let mut bytes = 0;
+        details.messages.retain(|message| {
+            bytes += serde_json::to_vec(message).map_or(MAX_MESSAGE_BYTES, |text| text.len());
+            bytes < 16_000
+        });
+        // Actual folder paths are short in practice. Refuse an oversized report
+        // rather than passing a truncated folder back to an editable form.
+        if serde_json::to_vec(&details).map_or(true, |text| text.len() > MAX_MESSAGE_BYTES - 256) {
+            self.error("Map diagnostic report exceeds its control budget");
+            return;
+        }
+        self.shared
+            .outgoing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .details = Some(details);
+        self.shared.output_ready.notify_one();
+    }
+
+    pub fn report_maps(&mut self, mut states: Vec<DashboardMapState>) {
+        for state in &mut states {
+            if let Some(error) = &mut state.error {
+                let mut end = error.len().min(256);
+                while !error.is_char_boundary(end) {
+                    end -= 1;
+                }
+                error.truncate(end);
+            }
+        }
+        if self.last_maps.as_ref() == Some(&states) {
+            return;
+        }
+        let mut outgoing = self
+            .shared
+            .outgoing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let ids: BTreeSet<_> = states.iter().map(|state| state.id.clone()).collect();
+        outgoing.maps.retain(|id, _| ids.contains(id));
+        outgoing.map_order.retain(|id| ids.contains(id));
+        for state in &states {
+            if self
+                .last_maps
+                .as_ref()
+                .is_some_and(|previous| previous.iter().any(|old| old == state))
+            {
+                continue;
+            }
+            // Updating a pending view preserves its FIFO position, so a fast
+            // clock cannot starve another map's first ready/error response.
+            if !outgoing.maps.contains_key(&state.id) {
+                outgoing.map_order.push_back(state.id.clone());
+            }
+            outgoing.maps.insert(state.id.clone(), state.clone());
+        }
+        self.last_maps = Some(states);
+        drop(outgoing);
+        self.shared.output_ready.notify_one();
     }
 
     fn error(&self, message: impl Into<String>) {
@@ -562,6 +751,12 @@ impl Drop for Controller {
             self.shared.stopped.store(true, Ordering::Release);
         }
         self.shared.output_ready.notify_one();
+        self.shared.output_space.notify_all();
+        let service = Arc::clone(&self.service);
+        // Runtime/file joins must not stall eframe's window destruction.
+        let _ = thread::Builder::new()
+            .name("dashboard shutdown".into())
+            .spawn(move || service.shutdown());
         // Let a healthy host receive the final error/state before exit, but
         // never hang shutdown on a peer that stopped draining stdout.
         let _ = self.output_done.recv_timeout(Duration::from_millis(100));
@@ -609,6 +804,7 @@ struct NativeWindow {
     parent: Parent,
     hwnd: usize,
     hook: Box<Hook>,
+    region: RefCell<Option<Vec<ViewBounds>>>,
 }
 
 impl NativeWindow {
@@ -644,6 +840,7 @@ impl NativeWindow {
             let window = Self {
                 parent,
                 hwnd: hwnd as usize,
+                region: RefCell::new(None),
                 hook: Box::new(Hook {
                     visible: Cell::new(false),
                     bounds: Cell::new(None),
@@ -752,6 +949,79 @@ impl NativeWindow {
         }
     }
 
+    fn map_views(&self, views: &[DashboardMapView]) -> io::Result<()> {
+        let mut client = RECT::default();
+        // SAFETY: this adapter owns the child HWND and has validated its parent.
+        if unsafe { GetClientRect(self.parent.hwnd as HWND, &mut client) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let root = ViewBounds {
+            x: 0,
+            y: 0,
+            width: (client.right - client.left).max(1) as u32,
+            height: (client.bottom - client.top).max(1) as u32,
+        };
+        let regions: Vec<_> = views
+            .iter()
+            .filter(|view| view.visible)
+            .filter_map(|view| intersect_bounds(view.bounds, view.clip))
+            .filter_map(|clip| intersect_bounds(clip, root))
+            .collect();
+        if self.hook.bounds.get() != Some(root) {
+            self.bounds(root)?;
+        }
+        if self.region.borrow().as_ref() != Some(&regions) {
+            // The window is borderless: client and window-relative origins agree.
+            // Windows owns the final HRGN only after SetWindowRgn succeeds.
+            unsafe {
+                let region = CreateRectRgn(0, 0, 0, 0);
+                if region.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                for clip in &regions {
+                    let part = CreateRectRgn(
+                        clip.x,
+                        clip.y,
+                        clip.x + clip.width as i32,
+                        clip.y + clip.height as i32,
+                    );
+                    if part.is_null() {
+                        DeleteObject(region);
+                        return Err(io::Error::last_os_error());
+                    }
+                    let combined = CombineRgn(region, region, part, RGN_OR);
+                    DeleteObject(part);
+                    if combined == 0 {
+                        DeleteObject(region);
+                        return Err(io::Error::other(
+                            "Cannot combine native map clipping regions",
+                        ));
+                    }
+                }
+                if SetWindowRgn(self.hwnd as HWND, region, 1) == 0 {
+                    DeleteObject(region);
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            *self.region.borrow_mut() = Some(regions.clone());
+        }
+        let visible = !regions.is_empty();
+        if self.hook.visible.get() != visible {
+            self.visibility(visible);
+        }
+        Ok(())
+    }
+
+    fn clear_region(&self) -> io::Result<()> {
+        if self.region.borrow().is_some() {
+            if unsafe { SetWindowRgn(self.hwnd as HWND, ptr::null_mut(), 1) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            *self.region.borrow_mut() = None;
+        }
+        Ok(())
+    }
+
     fn visible(&self) -> bool {
         self.hook.show()
             && self.hook.installed.get()
@@ -789,6 +1059,21 @@ impl Drop for NativeWindow {
             }
         }
     }
+}
+
+fn intersect_bounds(left: ViewBounds, right: ViewBounds) -> Option<ViewBounds> {
+    let x = i64::from(left.x).max(i64::from(right.x));
+    let y = i64::from(left.y).max(i64::from(right.y));
+    let end_x = (i64::from(left.x) + i64::from(left.width))
+        .min(i64::from(right.x) + i64::from(right.width));
+    let end_y = (i64::from(left.y) + i64::from(left.height))
+        .min(i64::from(right.y) + i64::from(right.height));
+    (end_x > x && end_y > y).then_some(ViewBounds {
+        x: x as i32,
+        y: y as i32,
+        width: (end_x - x).max(0) as u32,
+        height: (end_y - y).max(0) as u32,
+    })
 }
 
 unsafe fn set_style(hwnd: HWND, index: i32, style: u32) -> io::Result<()> {
@@ -883,6 +1168,30 @@ unsafe extern "system" fn window_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unload_cancels_an_earlier_open_but_allows_a_later_reopen() {
+        let mut pending = Pending::default();
+        let open = NativeCommand::Open {
+            path: "A".into(),
+            revision: "v1".into(),
+        };
+        pending.push(open.clone()).unwrap();
+        pending
+            .push(NativeCommand::MapAction {
+                action: desktop_protocol::MapAction::Unload { path: "B".into() },
+            })
+            .unwrap();
+        assert!(pending.open.is_some());
+        pending
+            .push(NativeCommand::MapAction {
+                action: desktop_protocol::MapAction::Unload { path: "A".into() },
+            })
+            .unwrap();
+        assert!(pending.open.is_none());
+        pending.push(open).unwrap();
+        assert!(pending.open.is_some());
+    }
 
     #[test]
     fn coalescing_preserves_open_seek_order_and_terminal_close() {

@@ -1,14 +1,23 @@
 mod app;
 mod combat;
 mod compare;
+mod content_verification;
+mod country_flags;
+mod dashboard_data;
+mod dashboard_maps;
 mod document;
 mod embedded;
 mod hours;
+mod local_config;
 mod map;
+mod map_settings;
 mod playback;
 mod render;
+mod table_access;
+mod worker_priority;
 
-use installed_content::ResolveOptions;
+use local_config::Config;
+
 use map::{camera::Camera, frame::DayNight, political};
 // names
 use map::{
@@ -16,7 +25,6 @@ use map::{
     scene::{Overlay, Request},
 };
 use replay::{BranchId, Hour};
-use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
     ffi::OsString,
@@ -27,7 +35,7 @@ use std::{
 
 const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
          division is extrapolated along its recorded route by its recorded ETA
-         --allow-unverified-content --mode owner|controller\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:\n             the fog-of-war noise and the entity animation\n           --map-time <seconds>, the map scene's own second clock: the selection\n             pulse, the river flow and the waves\n           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with device rectangles, sprite frames and text\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+         --allow-unverified-content\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:\n             the fog-of-war noise and the entity animation\n           --map-time <seconds>, the map scene's own second clock: the selection\n             pulse, the river flow and the waves\n           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with device rectangles, sprite frames and text\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -122,7 +130,6 @@ struct Options {
     hour_fraction: f32,
     branch: Option<BranchId>,
     allow_unverified: bool,
-    control: bool,
     // counters
     /// `--perspective` and `--fog`: the game's two map controls. `recorded`
     /// (the default) views the map as the hour's own human player and a tag as
@@ -337,7 +344,6 @@ impl Options {
                     | "--width"
                     | "--height"
                     | "--camera"
-                    | "--mode"
                     | "--perspective"
                     | "--fog"
                     | "--animation-time"
@@ -431,13 +437,6 @@ impl Options {
                                 center: [values[0], values[1]],
                                 height: values[2],
                             });
-                        }
-                        "--mode" => {
-                            options.control = match value.as_str() {
-                                "owner" => false,
-                                "controller" => true,
-                                _ => return Err(invalid("mode must be owner or controller")),
-                            }
                         }
                         // counters
                         "--perspective" => {
@@ -674,49 +673,6 @@ fn run_compare(options: &Options, paths: &[PathBuf; 2]) -> io::Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
-struct Config {
-    game_dir: PathBuf,
-    user_dir: PathBuf,
-}
-
-impl Config {
-    fn path() -> io::Result<PathBuf> {
-        Ok(std::env::current_exe()?
-            .parent()
-            .ok_or_else(|| invalid("viewer executable has no parent directory"))?
-            .join("viewer.json"))
-    }
-    fn load() -> io::Result<Self> {
-        match fs::read(Self::path()?) {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(error),
-        }
-    }
-    fn save(&self) -> io::Result<()> {
-        self.resolve_options()?;
-        fs::write(Self::path()?, serde_json::to_vec_pretty(self)?)
-    }
-    fn resolve_options(&self) -> io::Result<ResolveOptions> {
-        if !self.game_dir.join("hoi4.exe").is_file() || !self.user_dir.is_dir() {
-            return Err(invalid(
-                "Choose game folder and the Paradox user folder.",
-            ));
-        }
-        Ok(ResolveOptions {
-            game_dir: self.game_dir.clone(),
-            user_dir: self.user_dir.clone(),
-            cache_dir: PathBuf::from(
-                std::env::var_os("LOCALAPPDATA")
-                    .ok_or_else(|| invalid("LOCALAPPDATA is not set"))?,
-            )
-            .join("HOI4Replay")
-            .join("viewer"),
-        })
-    }
-}
-
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
@@ -760,6 +716,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 hour: options.hour,
                 hour_fraction: options.hour_fraction,
             },
+            None,
+            0,
         )?;
         let session = document.playback.session();
         if let Some(session) = document
@@ -797,10 +755,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Warning: {line}");
         }
         // political fill
-        let mode = political::Mode::from_control(options.control);
         // Layer 1, the strategic regions, is static content; the dump builds it once here.
         let strategic = political::strategic_layer(&document.map, &document.strategic_regions)?;
-        let mut layers = political::build(&document.map, document.frame()?, mode, &strategic)?;
+        let mut layers = political::build(&document.map, document.frame()?, &strategic)?;
         if options.debug_borders || options.layers.gradient {
             // The engine's `debug_borders` removes both the gradient fill and the border strips.
             // Channel 2's green is each layer's transparency, the factor the whole
@@ -1017,8 +974,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // political fill + borders
         let (filled, distinct) = layers.summary();
         println!(
-            "Political layer: {filled} provinces filled in {distinct} country colors ({}); gradient fields rebuilt in {:.0} ms",
-            mode.field(),
+            "Political layer: {filled} provinces filled in {distinct} country colors (controller); gradient fields rebuilt in {:.0} ms",
             layers.build.as_secs_f64() * 1000.0
         );
         let border_vertices: usize = document
@@ -1614,15 +1570,12 @@ mod tests {
             "frame.png",
             "--camera",
             "100,200,300",
-            "--mode",
-            "controller",
         ])
         .unwrap();
         assert_eq!(dump.replay, Some(PathBuf::from("campaign.battleplan")));
         assert_eq!(dump.out, Some(PathBuf::from("frame.png")));
         assert!(dump.headless_dump);
         assert_eq!(dump.hour, Some(60826315));
-        assert!(dump.control);
         assert!(dump.compare.is_none());
         assert_eq!(dump.camera.unwrap().center, [100.0, 200.0]);
         assert_eq!(dump.camera.unwrap().height, 300.0);
@@ -1776,8 +1729,6 @@ mod tests {
             "1279",
             "--height",
             "723",
-            "--mode",
-            "controller",
             "--postfx",
             "off",
         ])
@@ -1787,7 +1738,7 @@ mod tests {
         assert_eq!(options.out, Some(PathBuf::from("frame.png")));
         assert!(!options.headless_dump);
         assert_eq!(options.size, [1279, 723]);
-        assert!(options.control && !options.postfx);
+        assert!(!options.postfx);
         // It writes one frame and closes, so it needs somewhere to write it.
         assert!(parse(&["--window-dump", "campaign.battleplan", "--hour", "1"]).is_err());
         // Only one of the two paths can own the replay.

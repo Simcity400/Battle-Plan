@@ -20,6 +20,8 @@ use sha2::{Digest, Sha256};
 
 use crate::parser::{self, Document};
 
+pub mod visual;
+
 const ROOTS: [&str; 7] = [
     "map",
     "common",
@@ -96,6 +98,7 @@ struct Member {
 
 #[derive(Clone, Debug, Default)]
 pub struct ResolvedLayers {
+    visual: Vec<visual::VisualLayer>,
     pub layers: Vec<ResolvedLayer>,
     effective: BTreeMap<String, EffectiveFile>,
     /// Where uncovered paths resolved, so repeats skip the layer scan and its
@@ -552,6 +555,9 @@ impl ResolvedLayers {
 
     pub fn read(&self, relative: &str) -> io::Result<Vec<u8>> {
         let relative = normalize_relative(relative)?;
+        if let Some(bytes) = visual::read(&self.visual, &relative)? {
+            return Ok(bytes);
+        }
         if let Some(file) = self.effective.get(&relative.to_ascii_lowercase())
             && (!file.archive || file.path == relative)
         {
@@ -591,6 +597,9 @@ impl ResolvedLayers {
     /// [`ResolvedLayers::read`], which does verify it.
     pub fn read_uncovered(&self, relative: &str) -> io::Result<Vec<u8>> {
         let relative = normalize_relative(relative)?;
+        if let Some(bytes) = visual::read(&self.visual, &relative)? {
+            return Ok(bytes);
+        }
         if covered(&relative) {
             return self.read(&relative);
         }
@@ -1184,6 +1193,7 @@ fn gather_selected(
             layers: vec![vanilla],
             effective: BTreeMap::new(),
             uncovered_memo: Default::default(),
+            visual: Vec::new(),
         };
         let mut order_notes = Vec::new();
         if recorded.is_none() {
@@ -1674,6 +1684,7 @@ mod tests {
             ],
             effective: BTreeMap::new(),
             uncovered_memo: Default::default(),
+            visual: Vec::new(),
         };
         assert_eq!(layers.read_uncovered("gfx/fonts/hoi.fnt").unwrap(), b"over");
         layers.layers.pop();
@@ -1687,6 +1698,7 @@ mod tests {
             ],
             effective: BTreeMap::new(),
             uncovered_memo: Default::default(),
+            visual: Vec::new(),
         };
         assert_eq!(
             replacing

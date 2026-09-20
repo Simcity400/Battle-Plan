@@ -627,6 +627,23 @@ impl Replay {
 
     /// Decode one block for sequential playback, inspection, or history recovery.
     pub fn read_block(&self, index: &BlockIndex) -> io::Result<Vec<Frame>> {
+        self.read_block_inner(index, None)
+    }
+
+    /// Preserve full wire validation but do not retain unrelated table payloads.
+    pub fn read_block_selected(
+        &self,
+        index: &BlockIndex,
+        tables: &[crate::rows::TableId],
+    ) -> io::Result<Vec<Frame>> {
+        self.read_block_inner(index, Some(tables))
+    }
+
+    fn read_block_inner(
+        &self,
+        index: &BlockIndex,
+        selected: Option<&[crate::rows::TableId]>,
+    ) -> io::Result<Vec<Frame>> {
         if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
             return Err(invalid("block exceeds raw size limit"));
         }
@@ -653,7 +670,7 @@ impl Replay {
         }
         let mut decompressor = zstd::stream::read::Decoder::with_buffer(compressed)?.single_frame();
         decompressor.window_log_max(26)?;
-        let mut raw = Vec::new();
+        let mut raw = Vec::with_capacity(to_usize(index.raw_length)?);
         decompressor
             .take(index.raw_length + 1)
             .read_to_end(&mut raw)?;
@@ -671,7 +688,7 @@ impl Replay {
             let payload_length = decoder.u32()? as usize;
             let payload = decoder.take(payload_length)?;
             let mut frame_decoder = Decoder::new(payload);
-            let frame = Frame::decode(&mut frame_decoder, self.format)?;
+            let frame = Frame::decode_selected(&mut frame_decoder, self.format, selected)?;
             frame_decoder.finish()?;
             if frame.branch != index.branch
                 || frame.keyframe != (position == 0)
@@ -1946,6 +1963,29 @@ mod tests {
                         },
                         "{table:?} must be unavailable, not decoded"
                     );
+                }
+            }
+            // Selection preserves every retained update in every supported
+            // format, including explicit absence of a not-yet-recorded table.
+            let selected = [
+                TableId::Campaign,
+                TableId::States,
+                TableId::CountryLinks,
+                TableId::Countries,
+                TableId::CountryAppearance,
+            ];
+            for block in &old.index {
+                let full = old.read_block(block).unwrap();
+                let projected = old.read_block_selected(block, &selected).unwrap();
+                assert_eq!(full.len(), projected.len());
+                for (full, projected) in full.iter().zip(&projected) {
+                    assert_eq!(
+                        (full.branch, full.hour, full.keyframe),
+                        (projected.branch, projected.hour, projected.keyframe)
+                    );
+                    for table in selected {
+                        assert_eq!(full.tables[table.index()], projected.tables[table.index()]);
+                    }
                 }
             }
             // A file that predates a table is still a whole campaign.

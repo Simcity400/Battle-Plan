@@ -25,7 +25,7 @@ use installed_content::{ResolvedLayers, gfx, image::dds};
 use super::{
     // counters
     counters::CounterAssets,
-    scene::{SAMPLE_COUNT, Targets, sampler_entry, texture_entry},
+    scene::{Targets, sampler_entry, texture_entry},
     text,
     textures::{Bound, ColorSpace, upload},
 };
@@ -467,6 +467,7 @@ impl SpritePass {
     /// Builds the pipeline over already-uploaded icon pages.
     pub fn new(
         device: &wgpu::Device,
+        samples: u32,
         textures: &IconTextures,
         format: wgpu::TextureFormat,
     ) -> io::Result<Self> {
@@ -514,7 +515,7 @@ impl SpritePass {
             // priorities are a sort order inside the layer, not a depth test).
             depth_stencil: None,
             multisample: wgpu::MultisampleState {
-                count: SAMPLE_COUNT,
+                count: samples,
                 ..Default::default()
             },
             fragment: Some(wgpu::FragmentState {

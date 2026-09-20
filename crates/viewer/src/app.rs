@@ -3,13 +3,7 @@ use crate::{
     Options,
     document::{Document, InitialHour},
     hours,
-    map::{
-        camera::Camera,
-        frame::DayNight,
-        // political fill
-        political,
-        scene::Scene,
-    },
+    map::{camera::Camera, frame::DayNight, scene::Scene},
     // capture
     render,
 };
@@ -236,6 +230,9 @@ struct LoadedReplay {
     document: Document,
     scene: Scene,
     revision: Option<String>,
+    source: Option<Arc<crate::dashboard_data::SharedSource>>,
+    decoder: Option<Arc<hours::SharedDecoder>>,
+    config: Config,
 }
 
 fn seek_open_target(
@@ -252,6 +249,16 @@ fn seek_open_target(
 }
 
 pub struct Viewer {
+    dashboard: Option<Box<crate::dashboard_maps::DashboardMaps>>,
+    dashboard_active: bool,
+    dashboard_map: bool,
+    shared_resources: Option<Arc<hours::Resources>>,
+    source: Option<Arc<crate::dashboard_data::SharedSource>>,
+    source_decoder: Option<Arc<hours::SharedDecoder>>,
+    loaded_config: Option<Config>,
+    rendered: Option<Playhead>,
+    rendered_sequence: u64,
+    map_warnings: Vec<String>,
     embedded: Option<crate::embedded::Controller>,
     embedded_open: Option<crate::embedded::OpenRequest>,
     embedded_seek: Option<crate::embedded::Seek>,
@@ -273,7 +280,6 @@ pub struct Viewer {
     map_error: Option<String>,
     camera: Option<Camera>,
     camera_manual: bool,
-    control: bool,
     playing: bool,
     speed: u32,
     last_step: Instant,
@@ -284,6 +290,8 @@ pub struct Viewer {
     // colour
     /// Whether the map is graded through the engine's post chain.
     postfx: bool,
+    pub(crate) graphics: desktop_protocol::MapGraphics,
+    map_preferences_seen: Option<(String, Option<Vec<String>>, u32, u8)>,
     // hours
     /// The timeline's position; the map follows it as hours are built.
     playhead: Option<Playhead>,
@@ -300,7 +308,7 @@ pub struct Viewer {
     /// Which shared layers the scene holds.
     uploaded: Uploaded,
     /// Frees the hours the window let go of off the frame path.
-    dropper: Option<hours::Dropper>,
+    dropper: Option<Arc<hours::Dropper>>,
     // close zoom
     unit_models: Option<map::unit_models::PreparedModels>,
     unit_fraction: Option<(f32, bool, bool)>,
@@ -377,12 +385,13 @@ pub struct Viewer {
 /// meanwhile; paying the ~500 ms of pipeline and static-texture creation here
 /// leaves the frames data uploads only. Hour data still uploads per hour
 /// through the matching `set_*` as before, so pixels cannot change.
-fn load_scene(
+pub(crate) fn load_scene(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     document: &Document,
+    graphics: desktop_protocol::MapGraphics,
 ) -> std::io::Result<Scene> {
-    let mut scene = Scene::new(device, queue, &document.assets, &document.icons)?;
+    let mut scene = Scene::new(device, queue, &document.assets, &document.icons, graphics)?;
     scene.set_borders(
         device,
         queue,
@@ -411,6 +420,14 @@ fn load_scene(
 }
 
 impl Viewer {
+    fn configure_service(&self) {
+        if let Some(embedded) = &self.embedded {
+            embedded
+                .service()
+                .configure_flags(&self.config, self.options.allow_unverified);
+        }
+    }
+
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         config: Config,
@@ -421,6 +438,49 @@ impl Viewer {
         embedded: Option<crate::embedded::Controller>,
     ) -> Self {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
+        let mut viewer = Self::create(
+            config,
+            options,
+            error,
+            failure,
+            embedded,
+            cc.wgpu_render_state
+                .as_ref()
+                .map(|state| (state.device.clone(), state.queue.clone())),
+        );
+        if viewer.embedded.is_some() {
+            match hours::Resources::new() {
+                Ok(resources) => {
+                    viewer.dropper = Some(Arc::clone(&resources.dropper));
+                    viewer.shared_resources = Some(resources);
+                }
+                Err(error) => {
+                    viewer.error = Some(format!("Native map workers: {error}"));
+                    viewer.settings = true;
+                }
+            }
+        }
+        if !viewer.settings
+            && let Some(path) = viewer.options.replay.clone()
+        {
+            viewer.open(path, &cc.egui_ctx, None);
+        }
+        viewer
+    }
+
+    fn create(
+        config: Config,
+        options: Options,
+        error: Option<String>,
+        failure: Arc<Mutex<Option<String>>>,
+        embedded: Option<crate::embedded::Controller>,
+        gpu: Option<(wgpu::Device, wgpu::Queue)>,
+    ) -> Self {
+        if let Some(embedded) = &embedded {
+            embedded
+                .service()
+                .configure_flags(&config, options.allow_unverified);
+        }
         // capture: `--window-dump` arms the readback before the first frame, so
         // every frame it draws is a capture frame and the animation clock never
         // starts.
@@ -447,7 +507,17 @@ impl Viewer {
         // counters: the header's control starts where the command line put it.
         let perspective = options.perspective.clone();
         let hidden_since = embedded.as_ref().map(|_| Instant::now());
-        let mut viewer = Self {
+        Self {
+            dashboard: None,
+            dashboard_active: false,
+            dashboard_map: false,
+            shared_resources: None,
+            source: None,
+            source_decoder: None,
+            loaded_config: None,
+            rendered: None,
+            rendered_sequence: 0,
+            map_warnings: Vec::new(),
             embedded,
             embedded_open: None,
             embedded_seek: None,
@@ -460,11 +530,12 @@ impl Viewer {
             settings: config.resolve_options().is_err(),
             camera: options.camera,
             camera_manual: options.camera.is_some(),
-            control: options.control,
             // colour: `--postfx off` reaches the window too, so a window and a
             // dump of the same state can be the same frame; the checkbox starts
             // where the command line put it.
             postfx: options.postfx,
+            graphics: Default::default(),
+            map_preferences_seen: None,
             config,
             options,
             document: None,
@@ -511,27 +582,309 @@ impl Viewer {
             capture_note: None,
             failure,
             captures: 0,
-            gpu: cc
-                .wgpu_render_state
-                .as_ref()
-                .map(|state| (state.device.clone(), state.queue.clone())),
+            gpu,
             profile_frame: 0,
             laps: None,
-        };
-        if !viewer.settings
-            && let Some(path) = viewer.options.replay.clone()
-        {
-            viewer.open(path, &cc.egui_ctx, None);
         }
+    }
+
+    pub(crate) fn map_view(
+        config: Config,
+        mut options: Options,
+        gpu: Option<(wgpu::Device, wgpu::Queue)>,
+        resources: Arc<hours::Resources>,
+    ) -> Self {
+        options.replay = None;
+        options.window_dump = false;
+        options.headless_dump = false;
+        options.combat = None;
+        let mut viewer = Self::create(config, options, None, Arc::new(Mutex::new(None)), None, gpu);
+        viewer.dashboard_map = true;
+        viewer.dropper = Some(Arc::clone(&resources.dropper));
+        viewer.shared_resources = Some(resources);
+        viewer.settings = false;
         viewer
     }
 
-    fn embedded_logic(&mut self, ctx: &egui::Context) {
+    pub(crate) fn install_map(&mut self, document: Document, scene: Scene, revision: String) {
+        self.document = Some(document);
+        self.scene = Some(scene);
+        self.revision = Some(revision);
+        self.error = None;
+        self.map_error = None;
+        self.rendered = None;
+        self.uploaded = Uploaded::default();
+    }
+
+    pub(crate) fn has_map(&self) -> bool {
+        self.document.is_some() && self.scene.is_some()
+    }
+
+    pub(crate) fn retire_map<T: Send + 'static>(&mut self, frame: &eframe::Frame, permit: T) {
+        if let Some(texture) = self.texture.take()
+            && let Some(state) = frame.wgpu_render_state()
+        {
+            state.renderer.write().free_texture(&texture);
+        }
+        let retired = (
+            self.document.take(),
+            self.scene.take(),
+            self.hours.take(),
+            std::mem::take(&mut self.ready),
+            self.shown.take(),
+            self.overlay_tables.take(),
+            self.prepared_overlay.take(),
+            self.unit_models.take(),
+            permit,
+        );
+        if let Some(dropper) = &self.dropper {
+            dropper.drop_later(retired);
+        }
+        self.rendered = None;
+    }
+
+    pub(crate) fn retry_map(&mut self) {
+        self.error = None;
+        self.map_error = None;
+    }
+
+    fn unload_recording(&mut self, path: &std::path::Path) -> bool {
+        if self
+            .embedded_open
+            .as_ref()
+            .is_some_and(|pending| pending.path == path)
+        {
+            self.embedded_open = None;
+        }
+        if self
+            .embedded_seek
+            .as_ref()
+            .is_some_and(|pending| pending.path == path)
+        {
+            self.embedded_seek = None;
+        }
+        if self.options.replay.as_deref() != Some(path) {
+            return false;
+        }
+        self.options.replay = None;
+        self.source = None;
+        self.source_decoder = None;
+        self.loaded_config = None;
+        self.revision = None;
+        self.expected_revision = None;
+        self.map_preferences_seen = None;
+        self.playhead = None;
+        self.opened = None;
+        self.playing = false;
+        self.capture = None;
+        self.combat.close();
+        self.error = None;
+        self.map_error = None;
+        true
+    }
+
+    pub(crate) fn map_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        frame: &eframe::Frame,
+        target: &desktop_protocol::DashboardMapView,
+    ) {
+        self.perspective.country = target.options.country.clone().map_or(
+            map::perspective::Country::Recorded,
+            map::perspective::Country::Tag,
+        );
+        self.perspective.fog = target.options.fog;
+        let branch = target
+            .branch_id
+            .parse::<u64>()
+            .expect("validated map command");
+        let head = Playhead {
+            branch,
+            hour: target.hour,
+            fraction: target.fraction,
+        };
+        self.playing = false;
+        self.playhead = Some(head);
+        let valid = self
+            .document
+            .as_ref()
+            .and_then(|document| document.playback.range(branch));
+        self.error = match valid {
+            Some((first, last)) if (first..=last).contains(&target.hour) => None,
+            Some((first, last)) => Some(format!(
+                "Requested hour is outside this branch ({first}..{last})"
+            )),
+            None => Some("The requested branch is not present in this recording".into()),
+        };
+        if let Some(error) = &self.error {
+            self.rendered = None;
+            ui.centered_and_justified(|ui| {
+                ui.colored_label(egui::Color32::LIGHT_RED, error);
+            });
+            return;
+        }
+        if let Some(mut document) = self.document.take() {
+            if let Err(error) = self.map(ui, frame, &mut document) {
+                self.error = Some(error);
+                self.rendered = None;
+            }
+            self.document = Some(document);
+        }
+        if self.rendered == Some(head) && self.error.is_none() && self.map_error.is_none() {
+            self.rendered_sequence = target.sequence;
+        }
+    }
+
+    pub(crate) fn map_state(
+        &self,
+        target: &desktop_protocol::DashboardMapView,
+    ) -> desktop_protocol::DashboardMapState {
+        let error = self.error.clone().or_else(|| {
+            self.shown
+                .as_ref()
+                .filter(|shown| {
+                    shown.branch.to_string() == target.branch_id && shown.hour == target.hour
+                })
+                .and(self.map_error.clone())
+        });
+        let ready = self.rendered.is_some_and(|shown| {
+            shown.branch.to_string() == target.branch_id
+                && shown.hour == target.hour
+                && shown.fraction == target.fraction
+        }) && self.rendered_sequence == target.sequence;
+        desktop_protocol::DashboardMapState {
+            id: target.id.clone(),
+            source_id: Some(target.source_id.clone()),
+            revision: Some(target.revision.clone()),
+            branch_id: self.rendered.map(|shown| shown.branch.to_string()),
+            hour: self.rendered.map(|shown| shown.hour),
+            fraction: self.rendered.map(|shown| shown.fraction),
+            sequence: self.rendered_sequence,
+            requested_sequence: target.sequence,
+            loading: error.is_none() && !ready,
+            error,
+        }
+    }
+
+    pub(crate) fn map_warnings(&self) -> &[String] {
+        &self.map_warnings
+    }
+
+    fn embedded_logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let Some(embedded) = self.embedded.as_mut() else {
             return;
         };
         let pending = embedded.poll(ctx);
         if pending.close {
+            return;
+        }
+        if pending.standalone {
+            self.dashboard_active = false;
+            self.last_step = Instant::now();
+            self.last_frame = Instant::now();
+        }
+        if let Some(views) = pending.map_views {
+            self.dashboard_active = true;
+            self.playing = false;
+            if self.dashboard.is_none() {
+                let service = embedded.service();
+                let created = self
+                    .shared_resources
+                    .as_ref()
+                    .cloned()
+                    .ok_or_else(|| std::io::Error::other("Native map workers are unavailable"))
+                    .and_then(|resources| {
+                        crate::dashboard_maps::DashboardMaps::new(
+                            self.config.clone(),
+                            self.options.clone(),
+                            service,
+                            self.gpu.clone(),
+                            resources,
+                        )
+                    });
+                match created {
+                    Ok(dashboard) => {
+                        self.embedded_open = None;
+                        self.embedded_seek = None;
+                        self.dashboard = Some(Box::new(dashboard));
+                    }
+                    Err(error) => {
+                        self.error = Some(error.to_string());
+                        self.report_embedded(ctx);
+                        return;
+                    }
+                }
+            }
+            if let Some(dashboard) = &mut self.dashboard {
+                dashboard.update_config(&self.config, frame, ctx);
+                dashboard.set_views(views, frame, ctx);
+            }
+        }
+        if let Some(source) = self.source.clone() {
+            let replay = source.replay();
+            let preferences = self
+                .embedded
+                .as_ref()
+                .expect("embedded controller")
+                .service()
+                .map_settings(&replay);
+            self.graphics = preferences.graphics;
+            let selection = (
+                crate::map_settings::campaign_key(&replay),
+                preferences.visual_mods.clone(),
+                preferences.graphics.samples,
+                preferences.graphics.texture_quality,
+            );
+            if self.loading.is_none() && self.map_preferences_seen.as_ref() != Some(&selection) {
+                self.map_preferences_seen = Some(selection);
+                if self.document.as_ref().is_none_or(|document| {
+                    document.visual_mods != preferences.visual_mods
+                        || document.texture_quality != preferences.graphics.texture_quality
+                }) || self
+                    .scene
+                    .as_ref()
+                    .is_some_and(|scene| scene.samples() != preferences.graphics.samples)
+                {
+                    if let Some(document) = &self.document {
+                        self.options.branch = Some(document.playback.branch());
+                        self.options.hour = Some(document.playback.hour());
+                    }
+                    self.options.camera = self.camera;
+                    self.playing = false;
+                    self.open(
+                        source.path().to_path_buf(),
+                        ctx,
+                        Some(source.key().revision.clone()),
+                    );
+                    self.source = Some(source);
+                }
+            }
+        }
+        let actions = pending.actions;
+        // The web shell owns these controls; they call the same viewer state
+        // that the standalone egui controls use. Rendering is unchanged.
+        for action in actions {
+            self.host_map_action(action, ctx, frame);
+        }
+        if self.dashboard_active {
+            // Full-map loading may have started before the tab changed. Finish
+            // it once and lend its verified content to dashboard maps.
+            self.poll();
+        }
+        if self.dashboard_active
+            && let Some(dashboard) = &mut self.dashboard
+        {
+            dashboard.update_config(&self.config, frame, ctx);
+            dashboard.wait_for_source(self.loading.as_ref().and(self.options.replay.clone()));
+            if let (Some(source), Some(document), Some(config)) =
+                (&self.source, &self.document, &self.loaded_config)
+            {
+                dashboard.seed_content(Arc::clone(source), Arc::clone(&document.content), config);
+            }
+            dashboard.poll(ctx);
+            if let Some(embedded) = &mut self.embedded {
+                embedded.report_maps(dashboard.states());
+            }
             return;
         }
         if let Some(request) = pending.open {
@@ -633,6 +986,144 @@ impl Viewer {
         self.report_embedded(ctx);
     }
 
+    pub(crate) fn host_map_action(
+        &mut self,
+        action: desktop_protocol::MapAction,
+        ctx: &egui::Context,
+        frame: &mut eframe::Frame,
+    ) {
+        use desktop_protocol::MapAction;
+        match action {
+            MapAction::Unload { path } => {
+                if self.unload_recording(std::path::Path::new(&path)) {
+                    self.retire_map(frame, ());
+                }
+            }
+            MapAction::Vsync { enabled } => {
+                if let Some(mut config) = frame.wgpu_surface_config() {
+                    config.present_mode = if enabled {
+                        wgpu::PresentMode::AutoVsync
+                    } else {
+                        wgpu::PresentMode::AutoNoVsync
+                    };
+                    frame.set_wgpu_surface_config(config);
+                }
+            }
+            MapAction::Configure { options } => {
+                self.perspective.country = options.country.map_or(
+                    map::perspective::Country::Recorded,
+                    map::perspective::Country::Tag,
+                );
+                self.perspective.fog = options.fog;
+            }
+            MapAction::Export {
+                path,
+                view_id: Some(id),
+            } => {
+                self.error = match self.dashboard.as_mut() {
+                    Some(dashboard) => dashboard.export_view(&id, path, ctx, frame).err(),
+                    None => Some("The requested map widget is unavailable".into()),
+                };
+            }
+            MapAction::Export {
+                path,
+                view_id: None,
+            } => {
+                if self.document.is_none() || self.capture.is_some() {
+                    self.error = Some("Open a map and wait for any active export to finish".into());
+                } else {
+                    self.capture = Some(Capture {
+                        path: PathBuf::from(path),
+                        remaining: 0,
+                        pinned: None,
+                        exit: false,
+                        time: None,
+                        step: 0.0,
+                        frames: 1,
+                        index: 0,
+                    });
+                }
+            }
+            MapAction::Folders { game, user } => {
+                let config = Config {
+                    game_dir: PathBuf::from(game),
+                    user_dir: PathBuf::from(user),
+                };
+                match config.save() {
+                    Ok(()) => {
+                        self.config = config;
+                        self.configure_service();
+                        self.settings = false;
+                        self.error = None;
+                        if let Some(path) = self.options.replay.clone() {
+                            self.open(path, ctx, self.expected_revision.clone());
+                        }
+                    }
+                    Err(error) => self.error = Some(error.to_string()),
+                }
+                self.report_map_details();
+            }
+            MapAction::Inspect => self.report_map_details(),
+        }
+        ctx.request_repaint();
+    }
+
+    fn report_map_details(&self) {
+        let Some(embedded) = &self.embedded else {
+            return;
+        };
+        let mut messages = self.map_warnings.clone();
+        messages.extend(self.error.iter().cloned());
+        messages.extend(self.map_error.iter().cloned());
+        messages.extend(self.capture_note.iter().cloned());
+        if let Some(document) = &self.document {
+            messages.extend(document.warnings.iter().cloned());
+            match document.playback.current() {
+                crate::playback::Current::Gap { reason, .. } => {
+                    messages.push(format!("Gap: {reason}"))
+                }
+                crate::playback::Current::Frame(frame) => {
+                    for table in TableId::ALL {
+                        messages.push(match &frame.tables[table.index()] {
+                            TableView::Complete(rows) => format!("{table:?}: {} rows", rows.len()),
+                            TableView::Truncated { missing, .. } => {
+                                format!("{table:?}: truncated, {missing} missing")
+                            }
+                            TableView::Unavailable { reason } => {
+                                format!("{table:?}: unavailable ({reason})")
+                            }
+                        });
+                    }
+                    messages.push(format!(
+                        "Capture {:.3} ms",
+                        frame.metrics.total_ns as f64 / 1_000_000.0
+                    ));
+                }
+            }
+        }
+        if let Some(shown) = &self.shown {
+            messages.push(format!(
+                "Political layer build {:.1} ms",
+                shown.political_build.as_secs_f64() * 1000.0
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        messages.retain(|message| seen.insert(message.clone()));
+        embedded.report_details(desktop_protocol::MapDetails {
+            content_ready: self.config.resolve_options().is_ok(),
+            error: self.error.clone(),
+            game: self.config.game_dir.to_string_lossy().into_owned(),
+            user: self.config.user_dir.to_string_lossy().into_owned(),
+            path: self
+                .document
+                .as_ref()
+                .map(|d| d.source_path.to_string_lossy().into_owned()),
+            branch: self.rendered.map(|head| head.branch.to_string()),
+            hour: self.rendered.map(|head| head.hour),
+            messages,
+        });
+    }
+
     fn report_embedded(&mut self, ctx: &egui::Context) {
         let Some(embedded) = self.embedded.as_mut() else {
             return;
@@ -700,6 +1191,24 @@ impl Viewer {
         self.options.replay = Some(path.clone());
         let options = self.options.clone();
         let verify_revision = self.embedded.is_some();
+        let service = self
+            .embedded
+            .as_ref()
+            .map(crate::embedded::Controller::service);
+        let resources = self.shared_resources.clone();
+        let config = self.config.clone();
+        let mut content = self
+            .dashboard
+            .as_ref()
+            .map(|dashboard| dashboard.content_snapshot(&config))
+            .unwrap_or_default();
+        if let (Some(source), Some(document), Some(loaded)) =
+            (&self.source, &self.document, &self.loaded_config)
+            && loaded.game_dir == config.game_dir
+            && loaded.user_dir == config.user_dir
+        {
+            content.push((source.key().clone(), Arc::clone(&document.content)));
+        }
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
@@ -722,17 +1231,76 @@ impl Viewer {
                 } else {
                     None
                 };
-                let document = Document::load(&path, &resolve, options.allow_unverified, &initial)
-                    .map_err(|error| error.to_string())?;
+                let source = service
+                    .as_ref()
+                    .map(|service| service.open_map(&path, revision.as_deref()))
+                    .transpose()?;
+                let preferences = source
+                    .as_ref()
+                    .and_then(|source| {
+                        service
+                            .as_ref()
+                            .map(|service| service.map_settings(&source.replay()))
+                    })
+                    .unwrap_or_default();
+                let mut document = match &source {
+                    Some(source) => match content.iter().find(|(key, content)| {
+                        key == source.key()
+                            && content.visual_mods == preferences.visual_mods
+                            && content.texture_quality == preferences.graphics.texture_quality
+                    }) {
+                        Some((_, content)) => Document::from_shared_content(
+                            Arc::clone(content),
+                            source.replay(),
+                            &initial,
+                        ),
+                        None => Document::load_shared(
+                            &path,
+                            &resolve,
+                            options.allow_unverified,
+                            &initial,
+                            source.replay(),
+                            preferences.visual_mods.as_deref(),
+                            preferences.graphics.texture_quality,
+                        ),
+                    },
+                    None => {
+                        Document::load(&path, &resolve, options.allow_unverified, &initial, None, 0)
+                    }
+                }
+                .map_err(|error| error.to_string())?;
+                let decoder = resources
+                    .as_ref()
+                    .map(|resources| {
+                        let replay = document.playback.replay_handle();
+                        let decoder = resources
+                            .decoder(Arc::clone(&replay))
+                            .map_err(|error| error.to_string())?;
+                        let mut presented = crate::playback::Playback::unloaded(replay)
+                            .map_err(|error| error.to_string())?;
+                        presented.present(
+                            document.playback.branch(),
+                            document.playback.hour(),
+                            document.playback.current().clone(),
+                        );
+                        decoder
+                            .seed(std::mem::replace(&mut document.playback, presented))
+                            .map_err(|error| error.to_string())?;
+                        Ok::<_, String>(decoder)
+                    })
+                    .transpose()?;
                 // The builders need seconds for the first hour and the UI
                 // thread idles on the spinner meanwhile; the whole
                 // hour-independent scene is cheaper here than on any frame.
-                let scene =
-                    load_scene(&device, &queue, &document).map_err(|error| error.to_string())?;
+                let scene = load_scene(&device, &queue, &document, preferences.graphics)
+                    .map_err(|error| error.to_string())?;
                 Ok(LoadedReplay {
                     document,
                     scene,
                     revision,
+                    source,
+                    decoder,
+                    config,
                 })
             })();
             let _ = sender.send(result);
@@ -742,6 +1310,10 @@ impl Viewer {
         self.opened = Some(Instant::now());
         self.combat.close();
         self.document = None;
+        self.source = None;
+        self.source_decoder = None;
+        self.loaded_config = None;
+        self.rendered = None;
         self.revision = None;
         self.scene = None;
         // hours
@@ -786,7 +1358,7 @@ impl Viewer {
         let result = self.loading.as_ref().map(|receiver| receiver.try_recv());
         // An older loader may finish between logic and UI. Do not briefly
         // display or announce its replay after the host selected another.
-        if self.embedded_open.is_some()
+        if (self.embedded_open.is_some() || self.options.replay.is_none())
             && result
                 .as_ref()
                 .is_some_and(|result| !matches!(result, Err(mpsc::TryRecvError::Empty)))
@@ -799,8 +1371,14 @@ impl Viewer {
                 document,
                 scene,
                 revision,
+                source,
+                decoder,
+                config,
             }))) => {
                 self.revision = revision;
+                self.source = source;
+                self.source_decoder = decoder;
+                self.loaded_config = Some(config);
                 if self.embedded.is_some() {
                     self.error = None;
                 }
@@ -870,6 +1448,7 @@ impl Viewer {
             match config.save() {
                 Ok(()) => {
                     self.config = config;
+                    self.configure_service();
                     self.settings = false;
                     self.error = None;
                     if let Some(path) = self.options.replay.clone() {
@@ -1173,10 +1752,12 @@ impl Viewer {
             .as_ref()
             .is_none_or(|hours| !hours.serves(&document.content, &replay))
         {
-            self.hours = Some(hours::Pipeline::new(
-                std::sync::Arc::clone(&document.content),
-                replay,
-            )?);
+            self.hours = Some(match &self.shared_resources {
+                Some(resources) => {
+                    hours::Pipeline::shared(Arc::clone(&document.content), replay, resources)?
+                }
+                None => hours::Pipeline::new(Arc::clone(&document.content), replay)?,
+            });
             self.epoch = 0;
             self.ready.clear();
             self.shown = None;
@@ -1209,7 +1790,9 @@ impl Viewer {
         });
         // Playing, the builders reach far enough ahead to stay in front of the
         // clock; paused, a step either way is already built.
-        let (ahead, behind) = if self.playing {
+        let (ahead, behind) = if self.dashboard_map {
+            (0, 0)
+        } else if self.playing {
             ((self.speed as i32 * 3 / 4 + 2).min(96), 0)
         } else {
             (2, 2)
@@ -1220,7 +1803,6 @@ impl Viewer {
             ahead,
             behind,
             perspective: self.perspective.clone(),
-            mode: political::Mode::from_control(self.control),
             view,
             have: self
                 .ready
@@ -1244,7 +1826,7 @@ impl Viewer {
             self.ready.clear();
         }
         if self.dropper.is_none() {
-            self.dropper = Some(hours::Dropper::new()?);
+            self.dropper = Some(Arc::new(hours::Dropper::new()?));
         }
         let dropper = self.dropper.as_ref().expect("started above");
         for built in pipeline.take()? {
@@ -1645,11 +2227,7 @@ impl Viewer {
                 if let Some(time) = capture.time {
                     println!("Animation time: {time:.6} s");
                 }
-                println!(
-                    "Mode: {}; colour grading {}",
-                    if self.control { "controller" } else { "owner" },
-                    if self.postfx { "on" } else { "off" }
-                );
+                println!("Colour grading {}", if self.postfx { "on" } else { "off" });
                 self.capture_note = Some(format!("Saved {}", output.display()));
             }
             Err(error) => {
@@ -1719,6 +2297,7 @@ impl Viewer {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
         if let Some(error) = &self.map_error {
+            self.rendered = None;
             ui.centered_and_justified(|ui| {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
             });
@@ -1730,6 +2309,7 @@ impl Viewer {
             .filter(|shown| shown.epoch == self.epoch)
         else {
             // The first hour is still being built; keep polling for it.
+            self.rendered = None;
             ui.ctx().request_repaint();
             ui.centered_and_justified(|ui| {
                 ui.spinner();
@@ -1749,22 +2329,24 @@ impl Viewer {
         warnings.extend(document.warnings.iter().cloned());
         warnings.extend(self.combat.warnings());
         warnings.extend(shown.political_warnings.iter().cloned());
-        egui::ScrollArea::vertical()
-            .id_salt("warnings")
-            .max_height(ui.available_height() * WARNING_SHARE)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                for warning in &warnings {
-                    ui.colored_label(egui::Color32::YELLOW, warning);
-                }
-            });
-        let (filled, distinct) = shown.political_summary;
-        ui.weak(format!(
+        if !self.dashboard_map && self.embedded.is_none() {
+            egui::ScrollArea::vertical()
+                .id_salt("warnings")
+                .max_height(ui.available_height() * WARNING_SHARE)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for warning in &warnings {
+                        ui.colored_label(egui::Color32::YELLOW, warning);
+                    }
+                });
+            let (filled, distinct) = shown.political_summary;
+            ui.weak(format!(
             "Political layer: {filled} provinces filled in {distinct} country colors, rebuilt in {:.0} ms",
             shown.political_build.as_secs_f64() * 1000.0
         ));
-        // weather
-        ui.weak(&shown.snow_line);
+            // weather
+            ui.weak(&shown.snow_line);
+        }
         let size = ui.available_size().max(egui::vec2(1.0, 1.0));
         // capture: `--window-dump` renders at the size it was asked for rather
         // than at the size the panels left over, so the frame it writes does not
@@ -2075,6 +2657,7 @@ impl Viewer {
             .and_then(|c| c.time)
             .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
         let scene = self.scene.as_mut().unwrap();
+        scene.set_graphics(self.graphics);
         scene
             .render(
                 &state.device,
@@ -2148,6 +2731,7 @@ impl Viewer {
             ));
         }
         self.save_capture(state, document, camera, pixels, &warnings, ui.ctx());
+        self.map_warnings = warnings;
         self.profile_frame += 1;
         ui.painter().image(
             self.texture.unwrap(),
@@ -2158,13 +2742,18 @@ impl Viewer {
         // The water animates, so the window keeps drawing.
         ui.ctx().request_repaint();
         response.on_hover_text("Drag to pan · Scroll to zoom");
+        self.rendered = Some(Playhead {
+            branch: document.playback.branch(),
+            hour: document.playback.hour(),
+            fraction: document.hour_fraction,
+        });
         Ok(())
     }
 }
 
 impl eframe::App for Viewer {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.embedded_logic(ctx);
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.embedded_logic(ctx, frame);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -2175,6 +2764,15 @@ impl eframe::App for Viewer {
             .as_ref()
             .is_some_and(|embedded| !embedded.visible())
         {
+            return;
+        }
+        if self.dashboard_active
+            && let Some(dashboard) = &mut self.dashboard
+        {
+            dashboard.ui(ui, frame);
+            if let Some(embedded) = &mut self.embedded {
+                embedded.report_maps(dashboard.states());
+            }
             return;
         }
         let waited = if map::counter_move::profiling() && self.capture.is_some() {
@@ -2216,7 +2814,8 @@ impl eframe::App for Viewer {
             .unwrap_or_default();
         let (country_tags, viewing) = (&header.countries, &header.viewing);
         self.lap("header_tags");
-        egui::Panel::top("header").show(ui, |ui| {
+        if self.embedded.is_none() {
+            egui::Panel::top("header").show(ui, |ui| {
             ui.add_space(5.0);
             ui.horizontal(|ui| {
                 ui.heading("Battle Plan");
@@ -2234,17 +2833,6 @@ impl eframe::App for Viewer {
                     self.settings = true;
                 }
                 ui.separator();
-                // political fill
-                ui.selectable_value(&mut self.control, false, "Political")
-                    .on_hover_text("Fill each province in its owner's map colour");
-                ui.selectable_value(&mut self.control, true, "Control")
-                    .on_hover_text(
-                        "Fill each province in its controller's map colour, as the game's own political map does",
-                    );
-                if ui.button("Fit map").clicked() {
-                    self.camera = None;
-                    self.camera_manual = false;
-                }
                 // counters: the game's two map controls, a viewing country and
                 // the fog-of-war switch. The chooser lists every country the
                 // hour on screen holds; the recorded player is the default.
@@ -2304,65 +2892,75 @@ impl eframe::App for Viewer {
                 ui.weak(note);
             }
         });
+        }
         self.lap("header_panel");
-        self.paths(ui.ctx());
+        if self.embedded.is_none() {
+            self.paths(ui.ctx());
+        }
+        let central_panel = if self.embedded.is_some() {
+            egui::CentralPanel::default().frame(egui::Frame::NONE)
+        } else {
+            egui::CentralPanel::default()
+        };
         if let Some(mut document) = self.document.take() {
-            egui::Panel::bottom("timeline").show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.weak(
-                        document
-                            .source_path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy(),
-                    );
-                    if document.playback.frame().is_none() {
-                        ui.colored_label(egui::Color32::LIGHT_RED, "No recorded frame");
-                    }
-                });
-                self.timeline(ui, &mut document);
-                ui.add_space(4.0);
-                match document.playback.current() {
-                    crate::playback::Current::Gap { reason, .. } => {
-                        ui.colored_label(egui::Color32::LIGHT_RED, format!("Gap: {reason}"));
-                    }
-                    crate::playback::Current::Frame(frame) => {
-                        egui::ScrollArea::vertical()
-                            .id_salt("tables")
-                            .max_height(TABLE_LIST_HEIGHT)
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                ui.horizontal_wrapped(|ui| {
-                                    for table in TableId::ALL {
-                                        match &frame.tables[table.index()] {
-                                            TableView::Complete(rows) => {
-                                                ui.weak(format!("{table:?}: {}", rows.len()));
-                                            }
-                                            TableView::Truncated { missing, .. } => {
-                                                ui.colored_label(
+            if self.embedded.is_none() {
+                egui::Panel::bottom("timeline").show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.weak(
+                            document
+                                .source_path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy(),
+                        );
+                        if document.playback.frame().is_none() {
+                            ui.colored_label(egui::Color32::LIGHT_RED, "No recorded frame");
+                        }
+                    });
+                    self.timeline(ui, &mut document);
+                    ui.add_space(4.0);
+                    match document.playback.current() {
+                        crate::playback::Current::Gap { reason, .. } => {
+                            ui.colored_label(egui::Color32::LIGHT_RED, format!("Gap: {reason}"));
+                        }
+                        crate::playback::Current::Frame(frame) => {
+                            egui::ScrollArea::vertical()
+                                .id_salt("tables")
+                                .max_height(TABLE_LIST_HEIGHT)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        for table in TableId::ALL {
+                                            match &frame.tables[table.index()] {
+                                                TableView::Complete(rows) => {
+                                                    ui.weak(format!("{table:?}: {}", rows.len()));
+                                                }
+                                                TableView::Truncated { missing, .. } => {
+                                                    ui.colored_label(
                                                     egui::Color32::YELLOW,
                                                     format!(
                                                         "{table:?}: truncated, {missing} missing"
                                                     ),
                                                 );
-                                            }
-                                            TableView::Unavailable { reason } => {
-                                                ui.colored_label(
-                                                    egui::Color32::LIGHT_RED,
-                                                    format!("{table:?}: {reason}"),
-                                                );
+                                                }
+                                                TableView::Unavailable { reason } => {
+                                                    ui.colored_label(
+                                                        egui::Color32::LIGHT_RED,
+                                                        format!("{table:?}: {reason}"),
+                                                    );
+                                                }
                                             }
                                         }
-                                    }
-                                    ui.weak(format!(
-                                        "Capture {:.3} ms",
-                                        frame.metrics.total_ns as f64 / 1_000_000.0
-                                    ));
+                                        ui.weak(format!(
+                                            "Capture {:.3} ms",
+                                            frame.metrics.total_ns as f64 / 1_000_000.0
+                                        ));
+                                    });
                                 });
-                            });
+                        }
                     }
-                }
-            });
+                });
+            }
             if map::counter_move::profiling() && self.capture.is_some() {
                 // Deterministic diagnostic sweep, including at a replay's final
                 // hour. Ordinary playback continues to use the timeline clock.
@@ -2446,14 +3044,14 @@ impl eframe::App for Viewer {
                 }
             }
             self.lap("timeline_panel");
-            egui::CentralPanel::default().show(ui, |ui| {
+            central_panel.show(ui, |ui| {
                 if let Err(error) = self.map(ui, frame, &mut document) {
                     self.error = Some(error);
                 }
             });
             self.document = Some(document);
         } else {
-            egui::CentralPanel::default().show(ui, |ui| {
+            central_panel.show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(100.0);
                     if self.loading.is_some() {
@@ -2475,7 +3073,7 @@ impl eframe::App for Viewer {
     }
 }
 
-fn date(hour: i32) -> String {
+pub(crate) fn date(hour: i32) -> String {
     let value = i64::from(hour) - 43_800_000;
     if value < 0 {
         return format!("Hour {hour}");
@@ -2501,6 +3099,45 @@ fn date(hour: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unload_releases_standalone_admission_and_discards_a_late_loader() {
+        let runtime = Arc::new(
+            analytics::AnalyticsRuntime::new(analytics::RuntimeLimits {
+                max_sources: 1,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let path = PathBuf::from("memory.battleplan");
+        let mut viewer = Viewer::create(
+            Config::default(),
+            Options {
+                replay: Some(path.clone()),
+                ..Default::default()
+            },
+            None,
+            Arc::new(Mutex::new(None)),
+            None,
+            None,
+        );
+        viewer.source = Some(crate::dashboard_data::tests::source(&runtime));
+        assert!(runtime.stats().source_bytes > 0);
+        assert!(!viewer.unload_recording(std::path::Path::new("another.battleplan")));
+        assert_eq!(runtime.stats().sources, 1);
+        assert!(viewer.unload_recording(&path));
+        assert_eq!(runtime.stats().source_bytes, 0);
+        let replacement = crate::dashboard_data::tests::source(&runtime);
+        assert_eq!(runtime.stats().sources, 1);
+        drop(replacement);
+        let (send, receive) = mpsc::channel();
+        viewer.loading = Some(receive);
+        send.send(Err("obsolete load failure".into())).unwrap();
+        viewer.poll();
+        assert!(viewer.loading.is_none());
+        assert!(viewer.error.is_none());
+        assert!(viewer.options.replay.is_none());
+    }
 
     #[test]
     fn seek_from_stale_host_state_reopens_its_explicit_snapshot() {

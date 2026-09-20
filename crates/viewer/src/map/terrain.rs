@@ -6,7 +6,7 @@ use eframe::wgpu;
 
 use super::{
     camera::{Camera, MAP_SIZE_Y},
-    scene::{DEPTH_FORMAT, SAMPLE_COUNT, Targets, module, sampler_entry, texture_entry},
+    scene::{DEPTH_FORMAT, Targets, module, sampler_entry, texture_entry},
     shadow::BUFFER_FORMAT,
     textures::{Bound, Samplers},
 };
@@ -122,6 +122,7 @@ pub struct TerrainPass {
 impl TerrainPass {
     pub fn new(
         device: &wgpu::Device,
+        samples: u32,
         globals: &wgpu::BindGroupLayout,
         format: wgpu::TextureFormat,
     ) -> io::Result<Self> {
@@ -238,7 +239,7 @@ impl TerrainPass {
                 "terrain_main",
                 Some(wgpu::CompareFunction::LessEqual),
                 format,
-                SAMPLE_COUNT,
+                samples,
             ),
             underwater: pipeline(
                 "underwater",

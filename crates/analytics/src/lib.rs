@@ -1,15 +1,30 @@
-//! Country overview queries over the shared replay decoder, without map assets.
+//! Country projections over shared immutable replay sources, without map assets.
 //!
-//! Histories are reduced during one sequential branch scan to at most 1200
-//! envelopes. Only the last completed response is cached. Cancellation never
-//! publishes a partial result or replaces the completed cache.
+//! The dashboard runtime shares sources and completed results, bounds queued
+//! work and output bytes, and fairly advances exact-window and history scans.
+//! Cancellation belongs to a subscriber and never publishes a partial result.
+//! The legacy single-country facade uses the same scanner and retains its last
+//! completed response for existing callers.
 
+mod cache;
 mod dto;
+mod job;
+mod land_owners;
+mod projection;
+mod query;
 mod reduce;
+mod runtime;
 mod scan;
+mod source;
 
+pub use cache::QueryResultHandle;
 pub use dto::*;
+pub use job::{CountryScan, ScanStep};
+pub use land_owners::land_owners;
+pub use query::*;
+pub use runtime::{AnalyticsRuntime, QuerySubscription, RuntimeLimits, RuntimeStats};
 pub use scan::Analytics;
+pub use source::{SourceHandle, source_revision};
 
 pub const MAX_POINTS: u32 = 1200;
 

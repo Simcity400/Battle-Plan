@@ -103,6 +103,7 @@ export function useMapSurface(
   element: RefObject<HTMLElement | null>,
   visible: boolean,
   retry: number,
+  enabled = true,
 ): string | null {
   const [failure, setFailure] = useState<MapViewFailure | null>(null);
   // Successful hide calls cannot clear the failure and reveal the child again.
@@ -116,7 +117,7 @@ export function useMapSurface(
   );
 
   useLayoutEffect(() => {
-    if (!desktopAvailable || !element.current) return;
+    if (!desktopAvailable || !element.current || !enabled) return;
     mounted.current = true;
     const target = element.current;
     let frame = 0;
@@ -174,7 +175,7 @@ export function useMapSurface(
       resolution?.removeEventListener('change', resolutionChanged);
       queue.send({ visible: false, bounds: lastBounds }, retry);
     };
-  }, [element, surfaceVisible, retry, queue]);
+  }, [element, surfaceVisible, retry, queue, enabled]);
 
   return error;
 }
