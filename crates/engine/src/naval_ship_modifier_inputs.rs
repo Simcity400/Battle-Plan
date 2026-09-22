@@ -4,7 +4,6 @@
 use crate::{Memory, cnaval_combatant::field, cpdx_array::Array, msvc_string::Text};
 
 const LIMIT: u32 = 4096;
-pub const CAPACITY: &str = crate::cfex_member::DETAIL_ARENA_CAPACITY;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ContextRow {
@@ -54,9 +53,10 @@ pub struct ModifierTerm {
 }
 
 /// Independent caller-owned storage for active or retained influence sources.
+/// Worker capture grows these vectors from the original validated native counts.
 pub struct InfluenceBuffers<'a> {
-    pub sources: &'a mut [SourceRow],
-    pub terms: &'a mut [ModifierTerm],
+    pub sources: &'a mut Vec<SourceRow>,
+    pub terms: &'a mut Vec<ModifierTerm>,
     pub lengths: &'a mut [usize; 2],
     pub required: &'a mut [usize; 2],
 }
@@ -92,18 +92,13 @@ fn auth(memory: &impl Memory, base: usize, p: usize, rva: usize) -> Result<(), &
     }
     Ok(())
 }
-fn array(
-    memory: &impl Memory,
-    p: usize,
-    o: usize,
-    stride: usize,
-) -> Result<(Array, [u8; 16]), &'static str> {
+fn array(memory: &impl Memory, p: usize, o: usize, stride: usize) -> Result<Array, &'static str> {
     let header = field(memory, p, o)?;
     let a = Array::from_header(header, stride).ok_or("naval weapon array invalid")?;
     if a.count > 65536 {
         return Err("naval weapon array bound exceeded");
     }
-    Ok((a, header))
+    Ok(a)
 }
 fn element(a: Array, i: u32, stride: usize) -> Result<usize, &'static str> {
     a.element(i, stride)
@@ -139,10 +134,9 @@ impl<M: Memory> Capture<'_, '_, M> {
         if country == 0 || field::<i32>(memory, country, 0xe7c)? != 2 {
             return Ok(());
         }
-        let mut insufficient = false;
         for (lane, offset) in [0xf70, 0xf80, 0xfa0, 0xf90].into_iter().enumerate() {
             let definition = ptr(memory, country, offset)?;
-            match self.source(
+            self.source(
                 SourceRow {
                     scope: 12 + lane as u8,
                     index,
@@ -150,18 +144,9 @@ impl<M: Memory> Capture<'_, '_, M> {
                     ..Default::default()
                 },
                 Some(add(definition, 0xe0)?),
-            ) {
-                Ok(()) => {}
-                Err(CAPACITY) => insufficient = true,
-                Err(reason) => return Err(reason),
-            }
+            )?;
         }
-        if field::<u64>(memory, influence, 8)? != reference
-            || ptr(memory, wrapper, 0x40)? != influence
-        {
-            return Err("naval influence source changed");
-        }
-        if insufficient { Err(CAPACITY) } else { Ok(()) }
+        Ok(())
     }
     fn source(
         &mut self,
@@ -175,7 +160,7 @@ impl<M: Memory> Capture<'_, '_, M> {
         let data = accumulator
             .map(|p| array(self.memory, p, 0, 16))
             .transpose()?;
-        let count = data.map_or(0, |(a, _)| a.count as usize);
+        let count = data.map_or(0, |a| a.count as usize);
         self.buffers.required[1] = self.buffers.required[1]
             .checked_add(count)
             .ok_or("naval weapon term demand overflow")?;
@@ -183,11 +168,19 @@ impl<M: Memory> Capture<'_, '_, M> {
         let end = first
             .checked_add(count)
             .ok_or("naval weapon term length overflow")?;
-        if source >= self.buffers.sources.len() || end > self.buffers.terms.len() {
-            return Err(CAPACITY);
+        let sources_end = source
+            .checked_add(1)
+            .ok_or("naval weapon source length overflow")?;
+        if sources_end > self.buffers.sources.len() {
+            self.buffers
+                .sources
+                .resize(sources_end, SourceRow::default());
+        }
+        if end > self.buffers.terms.len() {
+            self.buffers.terms.resize(end, ModifierTerm::default());
         }
         row.terms = [first, count];
-        if let Some((entries, header)) = data {
+        if let Some(entries) = data {
             use crate::modifier_definition as md;
             let table = ptr(self.memory, self.base, md::TABLE_RVA)?;
             let mut previous = 0;
@@ -217,14 +210,9 @@ impl<M: Memory> Capture<'_, '_, M> {
                     };
                 }
             }
-            if field::<[u8; 16]>(self.memory, accumulator.unwrap(), 0)? != header
-                || ptr(self.memory, self.base, md::TABLE_RVA)? != table
-            {
-                return Err("naval weapon modifier source changed");
-            }
         }
         self.buffers.sources[source] = row;
-        *self.buffers.lengths = [source + 1, end];
+        *self.buffers.lengths = [sources_end, end];
         Ok(())
     }
     fn modifier(&mut self, scope: u8, p: usize) -> Result<(), &'static str> {
@@ -276,15 +264,12 @@ pub(crate) fn terrain_class(
         }
     }
     let value = if let Some(index) = selected {
-        let (a, _) = array(memory, terrain, 0x198, 0x110)?;
+        let a = array(memory, terrain, 0x198, 0x110)?;
         let entry = element(a, index, 0x110)?;
         (add(entry, 0x28)?, add(entry, 0xe8)?)
     } else {
         (add(terrain, 0xa8)?, add(terrain, 0x168)?)
     };
-    if field::<[u8; 17]>(memory, terrain, 0x1b8)? != header {
-        return Err("naval terrain class changed");
-    }
     Ok(value)
 }
 
@@ -302,7 +287,7 @@ pub(crate) fn terrain(
     // that key from the pinned module instead of assuming English content.
     let key: [u8; 5] = field(memory, base, 0x0296_2540)?;
     let root = ptr(memory, base, crate::cterrain_database::SINGLETON_RVA)?;
-    let (types, header) = array(memory, root, 0x40, 8)?;
+    let types = array(memory, root, 0x40, 8)?;
     let mut found = None;
     for index in 0..types.count {
         let p = ptr(memory, element(types, index, 8)?, 0)?;
@@ -315,11 +300,6 @@ pub(crate) fn terrain(
         if name.as_bytes() == key && found.replace(p).is_some() {
             return Err("naval terrain duplicate fallback");
         }
-    }
-    if field::<[u8; 16]>(memory, root, 0x40)? != header
-        || ptr(memory, base, crate::cterrain_database::SINGLETON_RVA)? != root
-    {
-        return Err("naval terrain database changed");
     }
     found.ok_or("naval terrain fallback absent")
 }
@@ -335,7 +315,7 @@ pub(crate) fn selected_class(
     } else {
         (0x130, 0x38, 0x160)
     };
-    let (a, header) = array(memory, leader, offset, stride)?;
+    let a = array(memory, leader, offset, stride)?;
     let mut found = None;
     let mut previous = None;
     for index in 0..a.count {
@@ -348,9 +328,6 @@ pub(crate) fn selected_class(
         if key == subunit as i32 {
             found = Some(add(p, 0x10)?);
         }
-    }
-    if field::<[u8; 16]>(memory, leader, offset)? != header {
-        return Err("naval commander class changed");
     }
     Ok(found.unwrap_or(add(leader, fallback)?))
 }
@@ -428,16 +405,6 @@ pub(crate) fn doctrine_keys(
     if !ended {
         return Err("naval doctrine modifier dictionary bound exceeded");
     }
-    if field::<u32>(memory, base, lexer::WRITER_FLAG_RVA)? != 0
-        || field::<[u8; 64]>(memory, base, lexer::INITIALIZED_RVA)? != witness
-        || ptr(memory, base, 0x0306_ebd8)? != head
-        || [
-            ptr(memory, base, 0x0337_2490)?,
-            ptr(memory, base, 0x0337_2488)?,
-        ] != generators
-    {
-        return Err("naval doctrine dictionary changed");
-    }
     Ok(result)
 }
 
@@ -451,9 +418,6 @@ impl<M: Memory> Capture<'_, '_, M> {
         let mut previous = None;
         for index in 0..LIMIT {
             if node == head {
-                if ptr(self.memory, task, 0x640)? != head {
-                    return Err("naval doctrine tree changed");
-                }
                 return Ok(());
             }
             if field::<u8>(self.memory, node, 0x19)? != 0 {
@@ -517,8 +481,7 @@ impl<M: Memory> Capture<'_, '_, M> {
     }
 }
 
-/// Called only for an authenticated live CShip. References, source selection
-/// and arrays are checked again before publishing the containing member row.
+/// Authenticates a live CShip and its selected sources before copying raw operands.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn read(
     memory: &impl Memory,
@@ -605,17 +568,11 @@ pub(crate) fn read(
             None,
         )?;
     }
-    if crate::cequipment_variant_pool::entries(memory, base, equipment)? != variants {
-        return Err("naval ship equipment variants changed");
-    }
     cap.modifier(0, add(country.pointer, 0x5a8)?)?;
     let pride = field::<u64>(memory, country.pointer, 0x250)?;
     if pride == field::<u64>(memory, ship, 8)? {
         let root = ptr(memory, base, 0x0331_7cc8)?;
         cap.modifier(1, ptr(memory, root, 0xb0)?)?;
-        if ptr(memory, base, 0x0331_7cc8)? != root {
-            return Err("naval pride modifier root changed");
-        }
     }
     cap.modifier(2, add(ship, 0x740)?)?;
     let experience = ptr(memory, ship, 0x8f8)?;
@@ -649,8 +606,7 @@ pub(crate) fn read(
             diplomacy,
             crate::cdiplomacy_status::VTABLE_RVA,
         )?;
-        let (relations, relations_header) =
-            array(memory, diplomacy, crate::cdiplomacy_status::RELATIONS, 8)?;
+        let relations = array(memory, diplomacy, crate::cdiplomacy_status::RELATIONS, 8)?;
         let relation = ptr(memory, element(relations, target_slot, 8)?, 0)?;
         if relation != 0 {
             auth(memory, base, relation, crate::crelation_status::VTABLE_RVA)?;
@@ -666,12 +622,6 @@ pub(crate) fn read(
                 },
                 Some(add(relation, 0x140)?),
             )?;
-        }
-        if field::<[u8; 16]>(memory, diplomacy, crate::cdiplomacy_status::RELATIONS)?
-            != relations_header
-            || ptr(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)? != diplomacy
-        {
-            return Err("naval weapon diplomacy source changed");
         }
         let definition = ptr(memory, location, 0xc8)?;
         let selected = terrain(memory, base, definition)?;
@@ -694,7 +644,7 @@ pub(crate) fn read(
         // Negative class delegates to an unweighted average of each task-force
         // ship's terrain adjuster (140D56980/140D56D60), not an opaque cache.
         if (row.ship_class as i32) < 0 {
-            let (ships, header) = array(memory, task, 0x348, 8)?;
+            let ships = array(memory, task, 0x348, 8)?;
             for index in 0..ships.count {
                 let p = ptr(memory, element(ships, index, 8)?, 0)?;
                 auth(memory, base, p, cship::VTABLE_RVA)?;
@@ -715,22 +665,19 @@ pub(crate) fn read(
                     None,
                 )?;
             }
-            if field::<[u8; 16]>(memory, task, 0x348)? != header {
-                return Err("naval terrain fleet list changed");
-            }
         }
         let weather = ptr(memory, game, crate::cgame_state::WEATHER_MANAGER)?;
         auth(memory, base, weather, crate::cweather_manager::VTABLE_RVA)?;
         let region = field::<u32>(memory, definition, 0x58)?;
-        let (regions, region_header) = array(memory, weather, 0x40, 0x160)?;
+        let regions = array(memory, weather, 0x40, 0x160)?;
         cap.modifier(6, add(element(regions, region, 0x160)?, 0x48)?)?;
-        let (provinces, province_header) = array(memory, weather, 0x370, 0x330)?;
+        let provinces = array(memory, weather, 0x370, 0x330)?;
         let p = element(provinces, province, 0x330)?;
         cap.modifier(7, add(p, 0x270)?)?;
         row.night = field(memory, p, 0x240)?;
         cap.modifier(8, add(task, 0x658)?)?;
         if leader != 0 {
-            let (a, header) = array(memory, leader, 0x248, 0x28)?;
+            let a = array(memory, leader, 0x248, 0x28)?;
             let terrain_index = field::<i32>(memory, selected, 0x88)?;
             let index = if terrain_index >= 0 && (terrain_index as u32) < a.count {
                 terrain_index as u32
@@ -750,16 +697,6 @@ pub(crate) fn read(
                 },
                 None,
             )?;
-            if field::<[u8; 16]>(memory, leader, 0x248)? != header {
-                return Err("naval commander terrain changed");
-            }
-        }
-        if field::<[u8; 16]>(memory, weather, 0x40)? != region_header
-            || field::<[u8; 16]>(memory, weather, 0x370)? != province_header
-            || ptr(memory, game, crate::cgame_state::WEATHER_MANAGER)? != weather
-            || ptr(memory, task, cunit::LOCATION)? != location
-        {
-            return Err("naval weapon weather location changed");
         }
     }
     if leader != 0 {
@@ -813,7 +750,7 @@ pub(crate) fn read(
             )?),
         )?;
     }
-    let (criticals, crit_header) = array(memory, ship, 0x918, 16)?;
+    let criticals = array(memory, ship, 0x918, 16)?;
     for index in 0..criticals.count {
         let p = element(criticals, index, 16)?;
         let definition = ptr(memory, p, 0)?;
@@ -827,7 +764,7 @@ pub(crate) fn read(
             Some(add(definition, 0x98)?),
         )?;
     }
-    let (influences, influence_header) = array(memory, task, 0x728, 8)?;
+    let influences = array(memory, task, 0x728, 8)?;
     for index in 0..influences.count {
         let wrapper = ptr(memory, element(influences, index, 8)?, 0)?;
         cap.influence(wrapper, index)?;
@@ -864,32 +801,29 @@ pub(crate) fn read(
         None,
     )?;
     row.sources = [start, cap.buffers.lengths[0] - start];
-    if field::<[u8; 16]>(memory, ship, 0x918)? != crit_header
-        || field::<[u8; 16]>(memory, task, 0x728)? != influence_header
-        || ptr(memory, ship, 0x728)? != task
-        || ptr(memory, ship, 0x8f8)? != experience
-        || field::<u64>(memory, task, cunit::HANDLE)? != task_ref
-        || field::<u32>(memory, task, cunit::ROSTER_OWNER)? != country_id
-    {
-        return Err("naval weapon source graph changed");
-    }
     Ok(row)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     const IMAGE: usize = 0x1000_0000;
     struct Fixture {
         bytes: Vec<u8>,
         calls: Cell<usize>,
         copied: Cell<usize>,
+        reads: RefCell<Vec<(usize, usize)>>,
+        fail: Option<usize>,
     }
     impl Memory for Fixture {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.calls.set(self.calls.get() + 1);
             self.copied.set(self.copied.get() + output.len());
+            self.reads.borrow_mut().push((address, output.len()));
+            if self.fail == Some(address) {
+                return false;
+            }
             if address == IMAGE + crate::modifier_definition::TABLE_RVA && output.len() == 8 {
                 output.copy_from_slice(&0x4000u64.to_le_bytes());
                 return true;
@@ -906,6 +840,8 @@ mod tests {
             bytes: vec![0; 0x7000],
             calls: Cell::new(0),
             copied: Cell::new(0),
+            reads: RefCell::default(),
+            fail: None,
         };
         let mut put =
             |p: usize, b: &[u8]| f.bytes[p - 0x1000..p - 0x1000 + b.len()].copy_from_slice(b);
@@ -925,10 +861,165 @@ mod tests {
         f
     }
     #[test]
-    fn native_modifier_sources_preserve_raw_values_metadata_and_exact_capacity_demand() {
-        let memory = fixture();
-        let mut sources = [SourceRow::default(); 1];
-        let mut terms = [ModifierTerm::default(); 2];
+    fn native_modifier_sources_grow_without_changing_values_occurrences_or_reads() {
+        use crate::modifier_definition as md;
+        let source_reads = [
+            (0x1800, 16),
+            (IMAGE + md::TABLE_RVA, 8),
+            (0x2000, 32),
+            (0x4000 + 0x2a * md::STRIDE + md::FLAGS, 12),
+            (0x4000 + 0x2b * md::STRIDE + md::FLAGS, 12),
+        ];
+        for (source_size, term_size) in [(0, 0), (1, 1), (2, 4), (4, 8)] {
+            let memory = fixture();
+            let mut sources = vec![SourceRow::default(); source_size];
+            let mut terms = vec![ModifierTerm::default(); term_size];
+            let mut lengths = [0; 2];
+            let mut required = [0; 2];
+            let mut cap = Capture {
+                memory: &memory,
+                base: IMAGE,
+                buffers: InfluenceBuffers {
+                    sources: &mut sources,
+                    terms: &mut terms,
+                    lengths: &mut lengths,
+                    required: &mut required,
+                },
+            };
+            for index in 0..2 {
+                cap.source(
+                    SourceRow {
+                        scope: 2,
+                        index,
+                        ..Default::default()
+                    },
+                    Some(0x1800),
+                )
+                .unwrap();
+            }
+            cap.source(SourceRow::default(), None).unwrap();
+            assert_eq!(lengths, [3, 4]);
+            assert_eq!(required, [3, 4]);
+            for (index, source) in sources[..2].iter().enumerate() {
+                assert_eq!(source.scope, 2);
+                assert_eq!(source.index, index as u32);
+                assert_eq!(source.terms, [index * 2, 2]);
+            }
+            assert_eq!(sources[2].terms, [4, 0]);
+            assert_eq!([terms[0].raw, terms[1].raw], [i64::MIN, i64::MAX]);
+            assert_eq!([terms[0].key, terms[1].key], [0x2a, 0x2b]);
+            assert_eq!(terms[0].metadata_flags, 0x81234567);
+            assert_eq!(&terms[..2], &terms[2..4]);
+            assert_eq!((memory.calls.get(), memory.copied.get()), (10, 160));
+            assert_eq!(*memory.reads.borrow(), source_reads.repeat(2));
+        }
+    }
+
+    #[test]
+    fn modifier_source_faults_stop_at_primary_prefix_and_leave_lengths_unpublished() {
+        use crate::modifier_definition as md;
+        for (fail, calls, copied, required_terms, reason) in [
+            (0x1800, 1, 16, 0, "naval field unreadable"),
+            (IMAGE + md::TABLE_RVA, 2, 24, 2, "naval field unreadable"),
+            (0x2000, 3, 56, 2, "naval weapon modifier bytes unreadable"),
+            (
+                0x4000 + 0x2a * md::STRIDE + md::FLAGS,
+                4,
+                68,
+                2,
+                "naval field unreadable",
+            ),
+            (
+                0x4000 + 0x2b * md::STRIDE + md::FLAGS,
+                5,
+                80,
+                2,
+                "naval field unreadable",
+            ),
+        ] {
+            let mut expected_reads = None;
+            for (source_size, term_size) in [(1, 2), (0, 0), (1, 1)] {
+                let mut memory = fixture();
+                memory.fail = Some(fail);
+                let mut sources = vec![SourceRow::default(); source_size];
+                let mut terms = vec![ModifierTerm::default(); term_size];
+                let mut lengths = [0; 2];
+                let mut required = [0; 2];
+                let mut cap = Capture {
+                    memory: &memory,
+                    base: IMAGE,
+                    buffers: InfluenceBuffers {
+                        sources: &mut sources,
+                        terms: &mut terms,
+                        lengths: &mut lengths,
+                        required: &mut required,
+                    },
+                };
+                assert_eq!(cap.source(SourceRow::default(), Some(0x1800)), Err(reason));
+                assert_eq!((memory.calls.get(), memory.copied.get()), (calls, copied));
+                assert_eq!(lengths, [0, 0]);
+                assert_eq!(required, [1, required_terms]);
+                assert!(sources.iter().all(|source| *source == SourceRow::default()));
+                let reads = memory.reads.into_inner();
+                assert_eq!(*expected_reads.get_or_insert_with(|| reads.clone()), reads);
+            }
+        }
+    }
+
+    #[test]
+    fn modifier_source_growth_keeps_checked_demand_and_native_count_bounds() {
+        for (mut lengths, mut required, calls, reason) in [
+            (
+                [0, 0],
+                [usize::MAX, 0],
+                0,
+                "naval weapon source demand overflow",
+            ),
+            (
+                [0, 0],
+                [0, usize::MAX],
+                1,
+                "naval weapon term demand overflow",
+            ),
+            (
+                [0, usize::MAX],
+                [0, 0],
+                1,
+                "naval weapon term length overflow",
+            ),
+            (
+                [usize::MAX, 0],
+                [0, 0],
+                1,
+                "naval weapon source length overflow",
+            ),
+        ] {
+            let memory = fixture();
+            let mut sources = Vec::new();
+            let mut terms = Vec::new();
+            let original_lengths = lengths;
+            let mut cap = Capture {
+                memory: &memory,
+                base: IMAGE,
+                buffers: InfluenceBuffers {
+                    sources: &mut sources,
+                    terms: &mut terms,
+                    lengths: &mut lengths,
+                    required: &mut required,
+                },
+            };
+            assert_eq!(cap.source(SourceRow::default(), Some(0x1800)), Err(reason));
+            assert_eq!(memory.calls.get(), calls);
+            assert_eq!(lengths, original_lengths);
+            assert!(sources.is_empty());
+            assert!(terms.is_empty());
+        }
+        let mut memory = fixture();
+        for at in [0x1808, 0x180c] {
+            memory.bytes[at - 0x1000..at - 0x1000 + 4].copy_from_slice(&65537u32.to_le_bytes());
+        }
+        let mut sources = Vec::new();
+        let mut terms = Vec::new();
         let mut lengths = [0; 2];
         let mut required = [0; 2];
         let mut cap = Capture {
@@ -941,48 +1032,14 @@ mod tests {
                 required: &mut required,
             },
         };
-        cap.source(
-            SourceRow {
-                scope: 2,
-                ..Default::default()
-            },
-            Some(0x1800),
-        )
-        .unwrap();
-        assert_eq!(lengths, [1, 2]);
-        assert_eq!(required, [1, 2]);
-        assert_eq!(sources[0].terms, [0, 2]);
-        assert_eq!([terms[0].raw, terms[1].raw], [i64::MIN, i64::MAX]);
-        assert_eq!(terms[0].metadata_flags, 0x81234567);
-        println!(
-            "naval weapon synthetic one source/two terms: {} copies/{} bytes; source+term pool {} bytes",
-            memory.calls.get(),
-            memory.copied.get(),
-            std::mem::size_of_val(&sources) + std::mem::size_of_val(&terms)
-        );
-        let mut lengths = [4, 3];
-        let mut required = [0; 2];
-        let before = memory.calls.get();
-        let mut cap = Capture {
-            memory: &memory,
-            base: IMAGE,
-            buffers: InfluenceBuffers {
-                sources: &mut [],
-                terms: &mut [],
-                lengths: &mut lengths,
-                required: &mut required,
-            },
-        };
         assert_eq!(
             cap.source(SourceRow::default(), Some(0x1800)),
-            Err(CAPACITY)
+            Err("naval weapon array bound exceeded")
         );
-        assert_eq!(required, [1, 2]);
-        assert_eq!(lengths, [4, 3]);
-        assert_eq!(
-            memory.calls.get() - before,
-            1,
-            "capacity preflight reads only source header"
-        );
+        assert_eq!(*memory.reads.borrow(), [(0x1800, 16)]);
+        assert_eq!(lengths, [0; 2]);
+        assert_eq!(required, [1, 0]);
+        assert!(sources.is_empty());
+        assert!(terms.is_empty());
     }
 }

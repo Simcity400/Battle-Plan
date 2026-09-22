@@ -2,35 +2,41 @@
 .SYNOPSIS
 Automated same-save throughput benchmark loop for recorder candidates.
 .DESCRIPTION
-Keeps one game open and, for every candidate in the plan: attaches the frozen
-recorder (if any), warms every consistency window to 200/0, reloads the
-benchmark save through the in-game Load menu, runs the game at native speed 4
-(displayed 5) for the planned seconds while sampling the game clock from
-outside the process, pauses, detaches, and records hours per second against the
-retained free-run baseline. A candidate with "frozen": null is a no-recorder
-baseline run. Runs are interleaved per repeat so drift affects every candidate
-alike. Timed windows refuse to start while build processes run and are marked
-contaminated if one appears mid-window.
+For every candidate in the plan: reloads the same benchmark save, attaches the
+frozen recorder (if any), runs the game at native speed 4 (displayed 5) while
+sampling its clock from outside the process, pauses and detaches. A screen ends
+at the planned seconds or max_hours, whichever comes first. An hour-capped
+screen is not a full-duration run. These are throughput screens, not correctness
+or performance acceptance. Every scheduled table is acquired once from hour 1;
+there are no consistency windows to warm.
+
+A candidate with "frozen": null is a matched no-recorder reference. The report
+uses clean references from this plan for its same-run percentage. An optional
+baseline_hours_per_s is labelled historical and does not establish current
+performance. Runs are interleaved per repeat. Timed windows refuse to start
+while build processes run and are marked contaminated if one appears mid-window.
 
 Plan JSON:
 {
   "save": "perf_takeover_baseline.hoi4",
   "expected_hour": 60826314, "expected_seed": 327447340,
-  "seconds": 30, "repeats": 1, "baseline_hours_per_s": 27.3873015897,
+  "seconds": 30, "max_hours": 420, "repeats": 1,
   "candidates": [
     { "name": "baseline", "frozen": null },
-    { "name": "notif482f", "frozen": "C:\\path\\to\\bin", "warm": true }
+    { "name": "candidate", "frozen": "C:\\path\\to\\bin" }
   ]
 }
-"frozen" is a directory holding recorder.exe and collector.dll. "warm" defaults
-to true for frozen candidates; false measures with the 200-check windows still
-running (only comparable against other unwarmed runs).
+"frozen" is a directory holding recorder.exe and collector.dll. "max_hours"
+defaults to 420; choose a cap above the expected progress for a full-duration run.
+Recorder candidates require -MetricsTool pointing to a reader built for their
+replay format. Missing or incomplete metrics, failed drains, drops and write
+errors fail the screen. Bare-game references do not need a metrics reader.
 A third candidate kind injects the synthetic cost-ladder DLL instead of the
 recorder: { "name": "spin4", "ladder": { "mode": "spin_ms", "param_ms": 4 } }
 (modes and parameters as documented in the ladder README; no warm-up; the DLL's
 own per-hour timings are folded into the results).
 .EXAMPLE
-powershell -File tools/bench.ps1 -Plan captures\perf_bench_20260917\plan.json -Out captures\perf_bench_20260917\run01
+powershell -File tools/bench.ps1 -Plan captures\bench\plan.json -Out captures\bench\run01 -MetricsTool captures\bench\metrics.exe
 #>
 [CmdletBinding()]
 param(
@@ -39,9 +45,8 @@ param(
     [string]$GameExe = 'X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe',
     [string]$UserDirectory = 'captures\m11_20260909\userdir',
     [string]$UiConfig = '',
-    [string]$MetricsTool = 'captures\performance_takeover_20260916\recperf2-metrics.exe',
+    [string]$MetricsTool = '',
     [string]$LadderDir = 'captures\perf_bench_20260917\builds\ladder',
-    [int]$WarmTimeoutSeconds = 900,
     [int]$AttachTimeoutSeconds = 300,
     # Default: keys posted, clicks borrow the foreground briefly (the UI needs real clicks),
     # PrintWindow screenshots, game pushed behind the previous window afterwards.
@@ -79,7 +84,15 @@ $expectedSeed = [int]$spec.expected_seed
 $seconds = if ($spec.seconds) { [int]$spec.seconds } else { 30 }
 $maxHours = $(if ($spec.PSObject.Properties['max_hours'] -and $spec.max_hours) { [int64]$spec.max_hours } else { 420 })
 $repeats = if ($spec.repeats) { [int]$spec.repeats } else { 1 }
-$baselineRate = if ($spec.baseline_hours_per_s) { [double]$spec.baseline_hours_per_s } else { 27.3873015897 }
+$historicalBaselineRate = if ($spec.PSObject.Properties['baseline_hours_per_s'] -and $spec.baseline_hours_per_s) { [double]$spec.baseline_hours_per_s } else { $null }
+foreach ($candidate in $spec.candidates) {
+    if (($candidate.PSObject.Properties['warm'] -and $candidate.warm) -or $candidate.PSObject.Properties['warm_gate']) {
+        throw 'Consistency warmup was retired. Remove warm=true and warm_gate from the benchmark plan.'
+    }
+    if ($candidate.frozen -and (-not $MetricsTool -or -not (Test-Path -LiteralPath $MetricsTool -PathType Leaf))) {
+        throw 'Recorder candidates require -MetricsTool with a reader built for their replay format.'
+    }
+}
 $buildNames = @('cargo', 'rustc', 'lld-link', 'clippy-driver', 'link', 'cl')
 $lock = Join-Path $env:TEMP 'claude\hoi4_game.lock'
 if (-not (Test-Path -LiteralPath (Join-Path $lock 'owner'))) { throw "Take the game lock first: $lock" }
@@ -363,7 +376,7 @@ function Invoke-Reload([string]$runDir, [bool]$attached = $false) {
     return $clock
 }
 
-# ---- recorder attach / warm / detach -----------------------------------------
+# ---- recorder attach / detach ------------------------------------------------
 function Convert-Win32Path([string]$path) {
     # The recorder reports canonical \\?\ paths; PowerShell 5.1 cmdlets cannot join them.
     if ($path.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) { return '\\' + $path.Substring(8) }
@@ -375,21 +388,6 @@ function Read-Status([string]$path) {
         try { return Get-Content -LiteralPath $path -Encoding UTF8 -Raw | ConvertFrom-Json } catch { Start-Sleep -Milliseconds 100 }
     }
     return $null
-}
-function Get-Gate($status, [string]$mode = 'strict') {
-    $checks = @($status.consistency.successful_checks.PSObject.Properties)
-    $mismatched = @($status.consistency.mismatches.PSObject.Properties | Where-Object { [int64]$_.Value -ne 0 } | ForEach-Object { $_.Name })
-    $ready = @($checks | Where-Object { [int64]$_.Value -ge 200 }).Count
-    [pscustomobject]@{
-        windows = $checks.Count; ready = $ready; mismatched = $mismatched
-        matrix = [int64]$status.war_matrix_checks; matrix_failures = [int64]$status.war_matrix_failures
-        dropped = [int64]$status.dropped_frames; write_errors = [int64]$status.write_errors
-        complete = $(switch ($mode) {
-            'lenient' { ($checks.Count -gt 0 -and $ready -ge $checks.Count - 1) }
-            'fast'    { ($checks.Count -gt 0 -and $ready -ge $checks.Count - 25 -and [int64]$status.war_matrix_checks -ge 200) }   # hourly windows only; staggered ones keep checking
-            default   { ($checks.Count -gt 0 -and $ready -eq $checks.Count -and [int64]$status.war_matrix_checks -ge 200) }
-        })
-    }
 }
 function Start-Candidate($candidate, [string]$runDir) {
     $frozen = [string]$candidate.frozen
@@ -435,33 +433,6 @@ function Start-Candidate($candidate, [string]$runDir) {
     Log "Attached $($candidate.name); collector $((Get-FileHash -LiteralPath (Join-Path $frozen 'collector.dll') -Algorithm SHA256).Hash.Substring(0,12))"
     $attached
 }
-function Invoke-Warm($attached, [string]$runDir, [string]$gateMode = 'strict') {
-    $status = Read-Status $attached.status
-    $gate = Get-Gate $status $gateMode
-    if ($gate.complete) { Log 'Warm gate already complete.'; return 0 }
-    Wait-Quiet
-    Set-Speed 4; Send-Move $ui.cursor_park
-    $identity = Set-Paused $false
-    $timer = [Diagnostics.Stopwatch]::StartNew()
-    try {
-        do {
-            Start-Sleep -Seconds 3
-            $clock = Read-Clock; Assert-Identity $clock $identity
-            if ($clock.paused -ne 0) { throw 'Game paused itself during warmup (event popup?).' }
-            $status = Read-Status $attached.status
-            if ($status) {
-                $gate = Get-Gate $status $gateMode
-                if ($gate.mismatched.Count -ne 0) { Write-Json (Join-Path $runDir 'warm_failed_status.json') $status; throw ('Consistency mismatches: ' + ($gate.mismatched -join ', ')) }
-                if ($gate.dropped -ne 0 -or $gate.write_errors -ne 0 -or $gate.matrix_failures -ne 0) { throw 'Drops, write errors or matrix failures during warmup.' }
-                if ([int]($timer.Elapsed.TotalSeconds) % 15 -lt 3) { Log ("warm {0:n0}s: hour {1}, windows {2}/{3}, matrix {4}" -f $timer.Elapsed.TotalSeconds, $clock.hour, $gate.ready, $gate.windows, $gate.matrix) }
-            }
-            if ($timer.Elapsed.TotalSeconds -gt $WarmTimeoutSeconds) { throw 'Warmup timed out.' }
-        } while (-not $gate.complete)
-    } finally { $null = Set-Paused $true }
-    Write-Json (Join-Path $runDir 'warm_status.json') (Read-Status $attached.status)
-    Log ("Warm complete in {0:n1}s" -f $timer.Elapsed.TotalSeconds)
-    return [math]::Round($timer.Elapsed.TotalSeconds, 1)
-}
 function Stop-Candidate($attached, [string]$runDir) {
     $recorderExe = Join-Path $attached.frozen 'recorder.exe'
     $detach = Start-Process -FilePath $recorderExe -ArgumentList @('detach', '--out', ('"' + $attached.recording + '"')) -WorkingDirectory $attached.frozen -WindowStyle Hidden -PassThru -Wait `
@@ -470,9 +441,19 @@ function Stop-Candidate($attached, [string]$runDir) {
     $script:game.Refresh()
     if (@($script:game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) { throw 'collector.dll remains loaded after detach.' }
     $completed = @(Get-ChildItem -LiteralPath $attached.recording -Filter completed.json -Recurse -ErrorAction SilentlyContinue)
-    $summary = $null
-    if ($completed.Count -eq 1) { $summary = Get-Content -LiteralPath $completed[0].FullName -Raw | ConvertFrom-Json }
-    Log ("Detached (exit {0}); drain_complete={1} partial={2}" -f $detach.ExitCode, $(if ($summary) { $summary.drain_complete } else { '?' }), $(if ($summary) { $summary.partial } else { '?' }))
+    if ($detach.ExitCode -ne 0 -or $attached.process.ExitCode -ne 0) { throw "Recorder detach/finalization failed: detach exit $($detach.ExitCode), recorder exit $($attached.process.ExitCode)." }
+    if ($completed.Count -ne 1) { throw "Expected one recording completion, found $($completed.Count)." }
+    $summary = Get-Content -LiteralPath $completed[0].FullName -Raw | ConvertFrom-Json
+    if ($summary.drain_complete -ne $true -or $summary.detached -ne $true -or $summary.partial -ne $false -or
+        -not $summary.PSObject.Properties['issues'] -or $null -eq $summary.issues -or @($summary.issues).Count -ne 0) {
+        throw 'Recording did not finish a complete, nonpartial drain with no issues.'
+    }
+    $status = Read-Status $attached.status
+    if (-not $status -or $null -eq $status.dropped_frames -or $status.dropped_frames -ne 0 -or
+        $null -eq $status.write_errors -or $status.write_errors -ne 0) {
+        throw 'Final recording status is missing or reports dropped frames or write errors.'
+    }
+    Log 'Detached and finalized: complete drain, no drops or write errors.'
     return $summary
 }
 function Start-Ladder($candidate, [string]$runDir) {
@@ -528,23 +509,38 @@ function Stop-Ladder($ladder, [string]$runDir) {
     }
 }
 function Get-ExactMetrics($attached, [string]$runDir, [int]$firstHour, [int]$lastHour) {
-    if (-not (Test-Path -LiteralPath $MetricsTool)) { return $null }
+    if (-not $MetricsTool -or -not (Test-Path -LiteralPath $MetricsTool -PathType Leaf)) { throw 'The required exact-metrics reader is missing.' }
     $replays = @(Get-ChildItem -LiteralPath $attached.recording -Filter '*.battleplan' -File -ErrorAction SilentlyContinue)
-    if ($replays.Count -ne 1) { return $null }
+    if ($replays.Count -ne 1) { throw "Expected one finalized replay for exact metrics, found $($replays.Count)." }
+    $expectedFrames = [int64]$lastHour - [int64]$firstHour
+    if ($expectedFrames -le 0) { throw 'The measurement contains no completed game hours.' }
+    $failures = @()
     foreach ($branch in @(2, 1, 3)) {
         try {
-            $text = & $MetricsTool $replays[0].FullName $branch $firstHour ($lastHour - 1) 2>$null | Out-String
+            $text = & $MetricsTool $replays[0].FullName $branch $firstHour ($lastHour - 1) 2>(Join-Path $runDir ('metrics_branch' + $branch + '.stderr.log')) | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "reader exit $LASTEXITCODE (see metrics_branch$branch.stderr.log)" }
             $metrics = $text | ConvertFrom-Json
-            if ($metrics.hours -gt 0 -and $metrics.observed_first -eq $firstHour) {
-                [IO.File]::WriteAllText((Join-Path $runDir ('exact_metrics_branch' + $branch + '.json')), $text, $utf8)
-                return [pscustomobject]@{ branch = $branch; frames = $metrics.hours; callback_mean_ms = [math]::Round($metrics.callback.mean_ns / 1e6, 3);
-                    callback_p50_ms = [math]::Round($metrics.callback.p50_ns / 1e6, 3); callback_p95_ms = [math]::Round($metrics.callback.p95_ns / 1e6, 3);
-                    callback_max_ms = [math]::Round($metrics.callback.max_ns / 1e6, 3); pool_bytes_max = $metrics.pool_bytes_max;
-                    failures = @($metrics.failures.PSObject.Properties).Count }
+            if ($metrics.hours -ne $expectedFrames -or $metrics.observed_first -ne $firstHour -or
+                $metrics.observed_last -ne ($lastHour - 1) -or $metrics.callback.samples -ne $expectedFrames) {
+                throw "incomplete metrics for requested hours $firstHour..$($lastHour - 1): frames=$($metrics.hours), first=$($metrics.observed_first), last=$($metrics.observed_last)"
             }
-        } catch { }
+            foreach ($field in @('mean_ns', 'p50_ns', 'p95_ns', 'max_ns')) {
+                $value = $metrics.callback.$field
+                if ($null -eq $value -or [double]::IsNaN([double]$value) -or [double]::IsInfinity([double]$value) -or [double]$value -lt 0) {
+                    throw "callback metric $field is missing or invalid"
+                }
+            }
+            if (-not $metrics.PSObject.Properties['failures'] -or $null -eq $metrics.failures -or @($metrics.failures.PSObject.Properties).Count -ne 0) {
+                throw 'exact metrics lack table-failure coverage or report unavailable/truncated tables'
+            }
+            [IO.File]::WriteAllText((Join-Path $runDir ('exact_metrics_branch' + $branch + '.json')), $text, $utf8)
+            return [pscustomobject]@{ branch = $branch; frames = $metrics.hours; callback_mean_ms = [math]::Round($metrics.callback.mean_ns / 1e6, 3);
+                callback_p50_ms = [math]::Round($metrics.callback.p50_ns / 1e6, 3); callback_p95_ms = [math]::Round($metrics.callback.p95_ns / 1e6, 3);
+                callback_max_ms = [math]::Round($metrics.callback.max_ns / 1e6, 3); pool_bytes_max = $metrics.pool_bytes_max;
+                failures = 0 }
+        } catch { $failures += "branch ${branch}: $($_.Exception.Message)" }
     }
-    return $null
+    throw ('Exact callback metrics could not be verified; check that -MetricsTool supports this replay format. ' + ($failures -join '; '))
 }
 
 # ---- timed screen --------------------------------------------------------------
@@ -562,9 +558,10 @@ function Invoke-Screen($attached, [string]$runDir) {
     $startQpc = [Hoi4ClockBaseline]::Qpc()
     $frequency = [double]$script:reader.Frequency
     $nextGuard = $startQpc
+    $stopReason = 'duration_limit'
     try {
         while (([Hoi4ClockBaseline]::Qpc() - $startQpc) / $frequency -lt $seconds) {
-            if ($null -ne $last -and ([int64]$last.hour - [int64]$first.hour) -ge $maxHours) { break }   # stay clear of the save's first player event
+            if ($null -ne $last -and ([int64]$last.hour - [int64]$first.hour) -ge $maxHours) { $stopReason = 'max_hours'; break }
             $qpcNow = [Hoi4ClockBaseline]::Qpc()
             if ($qpcNow -ge $nextGuard) {
                 foreach ($name in (Get-BuildProcesses)) { $contaminants[$name] = $true }
@@ -599,7 +596,9 @@ function Invoke-Screen($attached, [string]$runDir) {
     $result = [ordered]@{
         camera_moved = $cameraMoved; camera_start = $(if ($identity.eye) { @($identity.eye) } else { $null }); camera_end = $(if ($last.eye) { @($last.eye) } else { $null })
         first_hour = $first.hour; last_hour = $last.hour; hours = $hours; elapsed_s = [math]::Round($elapsed, 4)
-        hours_per_s = [math]::Round($rate, 4); baseline_fraction = [math]::Round($rate / $baselineRate, 4)
+        requested_seconds = $seconds; max_hours = $maxHours; stop_reason = $stopReason
+        hours_per_s = [math]::Round($rate, 4)
+        historical_baseline_fraction = $(if ($historicalBaselineRate) { [math]::Round($rate / $historicalBaselineRate, 4) } else { $null })
         valid_samples = $valid; missing_samples = $missing; contaminated_by = @($contaminants.Keys)
         load_signal = $identity.play_session_started_at
     }
@@ -624,7 +623,7 @@ Connect-Game
 $spec.candidates | ForEach-Object { if ($_.frozen -and -not (Test-Path -LiteralPath (Join-Path ([string]$_.frozen) 'collector.dll'))) { throw "Candidate $($_.name): collector.dll missing under $($_.frozen)" } }
 $resultsPath = Join-Path $Out 'results.jsonl'
 $rows = @()
-Log ("Plan: {0} candidates x {1} repeats, {2}s screens, save {3} ({4})" -f @($spec.candidates).Count, $repeats, $seconds, $spec.save, $saveSha.Substring(0, 12))
+Log ("Plan: {0} candidates x {1} repeats, screens capped at {2}s or {3} hours, save {4} ({5})" -f @($spec.candidates).Count, $repeats, $seconds, $maxHours, $spec.save, $saveSha.Substring(0, 12))
 for ($rep = 1; $rep -le $repeats; $rep++) {
     $index = 0
     foreach ($candidate in $spec.candidates) {
@@ -636,7 +635,7 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
         $attached = $null; $ladder = $null
         try {
             Log "=== $name (repeat $rep) ==="
-            # Unwarmed runs reload first (relaunch, no clicks) then attach; warmed recorders reload via the menu.
+            # Reload first, then attach; every candidate starts without a warmup.
             if ($candidate.PSObject.Properties['ladder'] -and $candidate.ladder) {
                 $null = Invoke-Reload $runDir $false
                 Wait-Quiet
@@ -644,21 +643,8 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
                 $row.ladder_config = $ladder.config
             } elseif ($candidate.frozen) {
                 $row.collector_sha256 = (Get-FileHash -LiteralPath (Join-Path ([string]$candidate.frozen) 'collector.dll') -Algorithm SHA256).Hash
-                $warm = $true
-                if ($candidate.PSObject.Properties['warm'] -and $null -ne $candidate.warm) { $warm = [bool]$candidate.warm }
-                $gateMode = 'strict'
-                if ($candidate.PSObject.Properties['warm_gate'] -and $candidate.warm_gate) { $gateMode = [string]$candidate.warm_gate }
-                if ($warm) {
-                    $null = Invoke-Reload $runDir $false                 # warm from the baseline hour
-                    $attached = Start-Candidate $candidate $runDir
-                    $row.warm_seconds = Invoke-Warm $attached $runDir $gateMode
-                    $row.warm_gate = $gateMode
-                    $null = Invoke-Reload $runDir $true                  # back to the baseline hour, recorder kept
-                } else {
-                    $row.warm_seconds = $null
-                    $null = Invoke-Reload $runDir $false
-                    $attached = Start-Candidate $candidate $runDir
-                }
+                $null = Invoke-Reload $runDir $false
+                $attached = Start-Candidate $candidate $runDir
             } else {
                 $null = Invoke-Reload $runDir $false
             }
@@ -667,9 +653,9 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
             foreach ($key in $screen.Keys) { $row[$key] = $screen[$key] }
             if ($attached) {
                 $row.completion = Stop-Candidate $attached $runDir
-                $exact = Get-ExactMetrics $attached $runDir ([int]$screen.first_hour) ([int]$screen.last_hour)
-                if ($exact) { $row.exact = $exact }
+                $completedCandidate = $attached
                 $attached = $null
+                $row.exact = Get-ExactMetrics $completedCandidate $runDir ([int]$screen.first_hour) ([int]$screen.last_hour)
             }
             if ($ladder) {
                 $row.ladder = Stop-Ladder $ladder $runDir
@@ -677,7 +663,7 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
             }
             $row.passed = ($screen.contaminated_by.Count -eq 0 -and -not $screen.camera_moved)
             if ($screen.camera_moved) { Log 'WARNING: the camera moved during the timed window (edge scroll?); run flagged.' }
-            Log ("{0}: {1} h/s = {2:p1} of baseline ({3} hours / {4}s){5}" -f $name, $screen.hours_per_s, $screen.baseline_fraction, $screen.hours, $screen.elapsed_s, $(if ($screen.contaminated_by.Count) { ' CONTAMINATED by ' + ($screen.contaminated_by -join ',') } else { '' }))
+            Log ("{0}: {1} h/s ({2} hours / {3}s; stopped at {4}){5}" -f $name, $screen.hours_per_s, $screen.hours, $screen.elapsed_s, $screen.stop_reason, $(if ($screen.contaminated_by.Count) { ' CONTAMINATED by ' + ($screen.contaminated_by -join ',') } else { '' }))
         } catch {
             $row.error = $_.Exception.Message
             Log "FAILED ${name}: $($_.Exception.Message)"
@@ -701,11 +687,13 @@ $table = foreach ($r in $rows) {
     $deltaCallback = if ($r.PSObject.Properties['status_delta'] -and $r.status_delta) { $r.status_delta.callback_mean_ms } elseif ($r.PSObject.Properties['ladder'] -and $r.ladder) { "{0} (p95 {1})" -f $r.ladder.own_mean_ms, $r.ladder.own_p95_ms } else { '' }
     $deltaTick = if ($r.PSObject.Properties['status_delta'] -and $r.status_delta) { $r.status_delta.native_tick_mean_ms } elseif ($r.PSObject.Properties['ladder'] -and $r.ladder) { "{0} (p95 {1})" -f $r.ladder.tick_mean_ms, $r.ladder.tick_p95_ms } else { '' }
     $err = if ($r.PSObject.Properties['error']) { $r.error } else { '' }
-    "| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} | {11} |" -f $r.name, $r.repeat, $(if ($r.PSObject.Properties['hours_per_s']) { $r.hours_per_s } else { '' }), $sameRun, $extraMs, $(if ($r.PSObject.Properties['baseline_fraction']) { ('{0:p1}' -f $r.baseline_fraction) } else { '' }), $deltaCallback, $deltaTick, $exactText, $(if ($r.PSObject.Properties['warm_seconds']) { $r.warm_seconds } else { '' }), $(if ($r.PSObject.Properties['contaminated_by'] -and $r.contaminated_by.Count) { 'yes' } else { '' }), $err
+    "| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} |" -f $r.name, $r.repeat, $(if ($r.PSObject.Properties['hours_per_s']) { $r.hours_per_s } else { '' }), $sameRun, $extraMs, $(if ($r.PSObject.Properties['historical_baseline_fraction'] -and $null -ne $r.historical_baseline_fraction) { ('{0:p1}' -f $r.historical_baseline_fraction) } else { '' }), $deltaCallback, $deltaTick, $exactText, $(if ($r.PSObject.Properties['elapsed_s']) { $r.elapsed_s } else { '' }), $(if ($r.PSObject.Properties['stop_reason']) { $r.stop_reason } else { '' }), $(if ($r.PSObject.Properties['contaminated_by'] -and $r.contaminated_by.Count) { 'yes' } else { '' }), $err
 }
 $baselineText = if ($sameRunBaseline) { ('same-run no-recorder baseline {0:n3} h/s (mean of {1})' -f $sameRunBaseline, $sameRunRates.Count) } else { 'no same-run baseline' }
-$md = @("# Benchmark $(Split-Path -Leaf $Out)", '', "Save $($spec.save) (SHA256 $saveSha), screens ${seconds}s at native speed 4; retained baseline $baselineRate h/s; $baselineText.", '',
-    '| candidate | rep | h/s | % same-run baseline | extra ms/game-hour | % retained baseline | callback own/mean ms | native tick mean ms | exact callback mean/p50/p95 ms | warm s | contaminated | error |',
-    '|---|---|---|---|---|---|---|---|---|---|---|---|') + $table
+$historicalText = if ($historicalBaselineRate) { "Optional historical reference $historicalBaselineRate h/s; it is not the matched baseline." } else { 'No historical reference supplied.' }
+$md = @("# Benchmark $(Split-Path -Leaf $Out)", '', "Save $($spec.save) (SHA256 $saveSha), screens capped at ${seconds}s or $maxHours game hours at native speed 4; $baselineText. $historicalText", '',
+    'Elapsed time and stop reason are reported per screen. max_hours runs are shorter diagnostic screens, including when requested_seconds is 120. This report does not establish correctness or performance acceptance.', '',
+    '| candidate | rep | h/s | % same-run baseline | extra ms/game-hour | % historical reference | callback own/mean ms | native tick mean ms | exact callback mean/p50/p95 ms | elapsed s | stop reason | contaminated | error |',
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|') + $table
 [IO.File]::WriteAllText((Join-Path $Out 'results.md'), ($md -join "`n") + "`n", $utf8)
 $md -join "`n"

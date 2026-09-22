@@ -2,16 +2,15 @@
 //!
 //! Jobs own their outputs and shared source leases. Dispatch cannot prove the
 //! foreign world's lifetime: the sole hourly callback (the game thread inside
-//! the hook) must collect every accepted ticket before terminal verification or
-//! the trampoline. While collecting, that callback executes its awaited job if
-//! queued. If the awaited job is already running, it helps the oldest other
-//! ready job before waiting again. Workers retain FIFO order for every unclaimed ready job.
+//! the hook) must collect every accepted ticket before the trampoline. While
+//! collecting, that callback can execute its awaited job if queued and admitted
+//! for caller execution. Worker-only jobs retain the same completion barrier.
 //! Runners must not submit, collect, stop, or drop this pool. Dependency barriers
 //! belong to the callback; a worker never waits for a job.
 
 use std::{
     collections::VecDeque,
-    mem::{offset_of, size_of, size_of_val},
+    mem::{size_of, size_of_val},
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
@@ -21,27 +20,15 @@ use std::{
 };
 
 use serde::Serialize;
-use windows_sys::Win32::{
-    Foundation::{ERROR_INSUFFICIENT_BUFFER, GetLastError},
-    System::{
-        SystemInformation::{
-            GROUP_AFFINITY, GetLogicalProcessorInformationEx, PROCESSOR_RELATIONSHIP,
-            RelationProcessorCore, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
-        },
-        Threading::{
-            GetCurrentProcess, GetCurrentThread, GetCurrentThreadId, GetProcessAffinityMask,
-            GetThreadGroupAffinity,
-        },
-    },
-};
+use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
-const MAX_WORKERS: usize = 7;
+const MAX_WORKERS: usize = 15;
 static NEXT_POOL_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Failure {
-    /// The owned request may contain partial observations. No report or
-    /// consistency credit is valid, and this request is never retried.
+    /// The owned request may contain partial observations. No report is valid,
+    /// and this request is never retried.
     Panicked,
     /// The accepted request was canceled before its runner began.
     Stopped,
@@ -50,6 +37,51 @@ pub(crate) enum Failure {
 pub(crate) struct Completion<J, R> {
     pub request: J,
     pub report: Result<R, Failure>,
+    pub table_reads: crate::read_accounting::TableCounts,
+    #[cfg(feature = "callback_profile")]
+    pub profile: Profile,
+}
+
+/// Diagnostic executor stages in raw QPC ticks. Zero timestamps mean that the
+/// stage was not reached, such as an unclaimed request canceled during shutdown.
+/// Publication, notification endpoints and collection are stamped under the
+/// existing queue mutex. Wake-end to collection also includes mutex acquisition.
+#[cfg(feature = "callback_profile")]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Profile {
+    pub queued_qpc: i64,
+    pub claimed_qpc: i64,
+    pub runner_begin_qpc: i64,
+    pub runner_end_qpc: i64,
+    pub runner_thread_id: u32,
+    /// The QPC runner interval also includes both diagnostic cycle queries.
+    pub runner_thread_cycles: Option<u64>,
+    pub submit_lock_wait_ticks: u64,
+    pub completion_lock_wait_ticks: u64,
+    /// Only the initial finish lock acquisition, excluding condition-variable waits.
+    pub finish_lock_wait_ticks: u64,
+    pub published_qpc: i64,
+    pub wake_begin_qpc: i64,
+    pub wake_end_qpc: i64,
+    pub collected_qpc: i64,
+}
+
+#[cfg(feature = "callback_profile")]
+fn profile_thread_cycles() -> Option<u64> {
+    unsafe extern "system" {
+        fn QueryThreadCycleTime(
+            thread: windows_sys::Win32::Foundation::HANDLE,
+            cycles: *mut u64,
+        ) -> i32;
+    }
+    let mut cycles = 0;
+    let ok = unsafe {
+        QueryThreadCycleTime(
+            windows_sys::Win32::System::Threading::GetCurrentThread(),
+            &mut cycles,
+        )
+    };
+    (ok != 0).then_some(cycles)
 }
 
 /// Pool and admission identity prevent stale tickets from consuming another
@@ -96,6 +128,9 @@ struct Counters {
     worker_executed: u64,
 }
 
+// Slots are preallocated. Keep completion counters inline to avoid a per-job
+// allocation; their storage is included in the pool's measured slot size.
+#[allow(clippy::large_enum_variant)]
 enum Payload<J, R> {
     Vacant,
     Queued(J),
@@ -105,7 +140,12 @@ enum Payload<J, R> {
 
 struct Slot<J, R> {
     generation: u64,
+    /// Claim order among queued jobs; lower first, equal keeps arrival order.
+    priority: u8,
+    worker_only: bool,
     payload: Payload<J, R>,
+    #[cfg(feature = "callback_profile")]
+    profile: Profile,
 }
 
 struct State<J, R> {
@@ -116,6 +156,7 @@ struct State<J, R> {
     started: usize,
     active: usize,
     stop: bool,
+    reserved_workers: usize,
     counters: Counters,
 }
 
@@ -135,7 +176,11 @@ impl<J, R> State<J, R> {
         for index in 0..capacity {
             slots.push(Slot {
                 generation: 0,
+                priority: 0,
+                worker_only: false,
                 payload: Payload::Vacant,
+                #[cfg(feature = "callback_profile")]
+                profile: Profile::default(),
             });
             free.push(capacity - index - 1);
         }
@@ -147,6 +192,7 @@ impl<J, R> State<J, R> {
             started: 0,
             active: 0,
             stop: false,
+            reserved_workers: 0,
             counters: Counters::default(),
         })
     }
@@ -154,7 +200,10 @@ impl<J, R> State<J, R> {
     fn take_ready(&mut self, awaited: Option<Ticket>) -> Option<(usize, J)> {
         let index = if let Some(ticket) = awaited {
             let slot = self.slots.get(ticket.slot)?;
-            if slot.generation != ticket.generation || !matches!(slot.payload, Payload::Queued(_)) {
+            if slot.generation != ticket.generation
+                || slot.worker_only
+                || !matches!(slot.payload, Payload::Queued(_))
+            {
                 return None;
             }
             // finish validates the pool identity before taking this lock.
@@ -168,8 +217,20 @@ impl<J, R> State<J, R> {
                 .remove(position)
                 .expect("checked acquisition ready position")
         } else {
-            self.ready.pop_front()?
+            let position = self
+                .ready
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, index)| self.slots[**index].priority)
+                .map(|(position, _)| position)?;
+            self.ready
+                .remove(position)
+                .expect("checked acquisition ready position")
         };
+        #[cfg(feature = "callback_profile")]
+        {
+            self.slots[index].profile.claimed_qpc = crate::sampling::qpc();
+        }
         let Payload::Queued(request) =
             std::mem::replace(&mut self.slots[index].payload, Payload::Running)
         else {
@@ -190,9 +251,16 @@ impl<J, R> State<J, R> {
             self.slots[index].payload = Payload::Complete(Completion {
                 request,
                 report: Err(Failure::Stopped),
+                table_reads: crate::read_accounting::ZERO,
+                #[cfg(feature = "callback_profile")]
+                profile: self.slots[index].profile,
             });
             self.counters.stopped = self.counters.stopped.saturating_add(1);
             self.counters.completed = self.counters.completed.saturating_add(1);
+            #[cfg(feature = "callback_profile")]
+            if let Payload::Complete(completion) = &mut self.slots[index].payload {
+                completion.profile.published_qpc = crate::sampling::qpc();
+            }
         }
     }
 
@@ -241,6 +309,13 @@ impl<J, R> Shared<J, R> {
     fn execute(&self, index: usize, mut request: J, caller: bool) {
         // Ownership stays outside the unwind guard. Locally constructed live
         // readers have dropped before either outcome is made collectable.
+        let reads = crate::read_accounting::Capture::new();
+        #[cfg(feature = "callback_profile")]
+        let runner_thread_id = unsafe { GetCurrentThreadId() };
+        #[cfg(feature = "callback_profile")]
+        let runner_begin_qpc = crate::sampling::qpc();
+        #[cfg(feature = "callback_profile")]
+        let runner_cycles_begin = profile_thread_cycles();
         let report = match catch_unwind(AssertUnwindSafe(|| (self.run)(&mut request))) {
             Ok(report) => Ok(report),
             Err(payload) => {
@@ -250,13 +325,39 @@ impl<J, R> Shared<J, R> {
                 Err(Failure::Panicked)
             }
         };
+        #[cfg(feature = "callback_profile")]
+        let runner_cycles_end = profile_thread_cycles();
+        #[cfg(feature = "callback_profile")]
+        let runner_end_qpc = crate::sampling::qpc();
+        let table_reads = reads.finish();
+        #[cfg(feature = "callback_profile")]
+        let completion_lock_begin = crate::sampling::qpc();
         let mut state = self.lock();
+        #[cfg(feature = "callback_profile")]
+        let completion_lock_wait_ticks = crate::sampling::qpc()
+            .saturating_sub(completion_lock_begin)
+            .max(0) as u64;
         let stopped = report.is_err();
         if stopped {
             state.counters.panicked = state.counters.panicked.saturating_add(1);
             state.stop();
         }
-        state.slots[index].payload = Payload::Complete(Completion { request, report });
+        state.slots[index].payload = Payload::Complete(Completion {
+            request,
+            report,
+            table_reads,
+            #[cfg(feature = "callback_profile")]
+            profile: Profile {
+                runner_begin_qpc,
+                runner_end_qpc,
+                runner_thread_id,
+                runner_thread_cycles: runner_cycles_begin
+                    .zip(runner_cycles_end)
+                    .and_then(|(begin, end)| end.checked_sub(begin)),
+                completion_lock_wait_ticks,
+                ..state.slots[index].profile
+            },
+        });
         state.active -= 1;
         state.counters.completed = state.counters.completed.saturating_add(1);
         if caller {
@@ -264,8 +365,20 @@ impl<J, R> Shared<J, R> {
         } else {
             state.counters.worker_executed = state.counters.worker_executed.saturating_add(1);
         }
-        drop(state);
+        #[cfg(feature = "callback_profile")]
+        if let Payload::Complete(completion) = &mut state.slots[index].payload {
+            completion.profile.published_qpc = crate::sampling::qpc();
+            completion.profile.wake_begin_qpc = crate::sampling::qpc();
+        }
+        // Publish the wake before unlocking: releasing a contended mutex may
+        // schedule another thread before this worker can notify the collector.
+        // Waiters still recheck their ticket and payload under this same mutex.
         self.changed.notify_all();
+        #[cfg(feature = "callback_profile")]
+        if let Payload::Complete(completion) = &mut state.slots[index].payload {
+            completion.profile.wake_end_qpc = crate::sampling::qpc();
+        }
+        drop(state);
         if stopped {
             self.work_ready.notify_all();
         }
@@ -289,7 +402,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
     ) -> Result<Self, String> {
         if worker_count > MAX_WORKERS || capacity == 0 {
-            return Err("acquisition pool requires 0..=7 workers and nonzero capacity".into());
+            return Err(format!(
+                "acquisition pool requires 0..={MAX_WORKERS} workers and nonzero capacity"
+            ));
         }
         let id = NEXT_POOL_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
@@ -353,16 +468,56 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     /// The callback must keep the foreign live-read lease valid until EVERY
     /// accepted ticket has been collected, even after another job fails.
     /// All jobs must own disjoint mutable outputs; immutable native seeds must
-    /// have their terminal checks after every consuming job has finished. The
+    /// remain inside the hourly lease until every consuming job finishes. The
     /// runner may execute on any worker or on the collecting acquisition
     /// thread, which cannot enter this pool recursively. One collector only.
+    #[cfg(test)]
     pub(crate) unsafe fn submit(&self, request: &mut Option<J>) -> Result<Ticket, SubmitError> {
+        // SAFETY: the caller's contract is unchanged.
+        unsafe { self.submit_with_priority(request, 0, false) }
+    }
+
+    /// Reserve existing slots for work that cannot run on the callback.
+    /// Called before admission begins; its worker is started before hook install.
+    pub(crate) fn reserve_worker_slots(&self, count: usize) -> Result<(), &'static str> {
         let mut state = self.shared.lock();
+        if self.shared.thread_ids.is_empty() || state.generation != 0 {
+            return Err("worker-only acquisition requires a worker before admission");
+        }
+        if count == 0 || count > state.slots.len() {
+            return Err("worker-only reservation exceeds available slots");
+        }
+        state.reserved_workers = count;
+        Ok(())
+    }
+
+    /// `submit` with a claim priority: queued jobs with a lower number run
+    /// first once a worker frees.
+    ///
+    /// # Safety
+    /// As `submit`.
+    pub(crate) unsafe fn submit_with_priority(
+        &self,
+        request: &mut Option<J>,
+        priority: u8,
+        worker_only: bool,
+    ) -> Result<Ticket, SubmitError> {
+        #[cfg(feature = "callback_profile")]
+        let submit_lock_begin = crate::sampling::qpc();
+        let mut state = self.shared.lock();
+        #[cfg(feature = "callback_profile")]
+        let submit_lock_wait_ticks = crate::sampling::qpc()
+            .saturating_sub(submit_lock_begin)
+            .max(0) as u64;
+        let free = state
+            .free
+            .iter()
+            .rposition(|index| (*index < state.reserved_workers) == worker_only);
         let rejection = if request.is_none() {
             Some(SubmitError::Empty)
         } else if state.stop {
             Some(SubmitError::Stopped)
-        } else if state.free.is_empty() {
+        } else if free.is_none() {
             Some(SubmitError::Full)
         } else if state.generation == u64::MAX {
             Some(SubmitError::Exhausted)
@@ -373,12 +528,22 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             state.counters.rejected = state.counters.rejected.saturating_add(1);
             return Err(rejection);
         }
-        let index = state.free.pop().expect("checked free acquisition slot");
+        let index = state
+            .free
+            .swap_remove(free.expect("checked free acquisition slot"));
         state.generation += 1;
         let generation = state.generation;
         state.slots[index] = Slot {
             generation,
+            priority,
+            worker_only,
             payload: Payload::Queued(request.take().expect("checked owned acquisition request")),
+            #[cfg(feature = "callback_profile")]
+            profile: Profile {
+                queued_qpc: crate::sampling::qpc(),
+                submit_lock_wait_ticks,
+                ..Profile::default()
+            },
         };
         state.ready.push_back(index);
         state.counters.accepted = state.counters.accepted.saturating_add(1);
@@ -391,15 +556,21 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         })
     }
 
-    /// Collects once, executing this ticket first if queued. While an in-flight
-    /// target runs elsewhere, the collector helps FIFO-ready work before waiting.
+    /// Collects once, executing this ticket if queued and caller execution was
+    /// admitted. Otherwise wait for its worker, including during unwind drain.
     /// Invalid, foreign, or consumed tickets return None without executing work.
     /// The submit safety contract continues through this method.
     pub(crate) fn finish(&self, ticket: Ticket) -> Option<Completion<J, R>> {
         if ticket.pool != self.shared.id {
             return None;
         }
+        #[cfg(feature = "callback_profile")]
+        let finish_lock_begin = crate::sampling::qpc();
         let mut state = self.shared.lock();
+        #[cfg(feature = "callback_profile")]
+        let finish_lock_wait_ticks = crate::sampling::qpc()
+            .saturating_sub(finish_lock_begin)
+            .max(0) as u64;
         loop {
             let slot = state.slots.get_mut(ticket.slot)?;
             if slot.generation != ticket.generation || matches!(slot.payload, Payload::Vacant) {
@@ -412,14 +583,21 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                     unreachable!("checked complete acquisition slot")
                 };
                 state.free.push(ticket.slot);
+                #[cfg(feature = "callback_profile")]
+                let completion = {
+                    let mut completion = completion;
+                    completion.profile.finish_lock_wait_ticks = finish_lock_wait_ticks;
+                    completion.profile.collected_qpc = crate::sampling::qpc();
+                    completion
+                };
                 return Some(completion);
             }
-            let awaited = if matches!(slot.payload, Payload::Running) {
-                None
-            } else {
-                Some(ticket)
-            };
-            if let Some((index, request)) = state.take_ready(awaited) {
+            // Run the awaited job here only while it is still queued. Once a
+            // worker has it, wait: taking another queued job would keep the
+            // game thread busy past the awaited completion and delay every
+            // later dispatch.
+            let queued = !matches!(slot.payload, Payload::Running);
+            if queued && let Some((index, request)) = state.take_ready(Some(ticket)) {
                 drop(state);
                 self.shared.execute(index, request, true);
                 state = self.shared.lock();
@@ -520,100 +698,17 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
     }
 }
 
-/// At most eight acquisition participants including the collecting callback. Query once
-/// before hook install; this neither pins threads nor changes game affinity.
-/// When Windows topology is unavailable, use its available logical count.
+/// One acquisition worker per hardware thread beyond the collecting callback.
+/// These reads are memory-latency bound, so SMT siblings add real throughput,
+/// and the game's own threads are parked for the whole block. Query once before
+/// hook install; this neither pins threads nor changes game affinity.
 pub(crate) fn recommended_worker_count() -> usize {
-    let available = std::thread::available_parallelism().map_or(1, usize::from);
-    worker_count_for_topology(physical_core_count(), available)
+    worker_count_for_topology(std::thread::available_parallelism().map_or(1, usize::from))
 }
 
-fn worker_count_for_topology(physical: Option<usize>, available: usize) -> usize {
-    physical
-        .unwrap_or(available)
-        .min(available)
-        .clamp(1, MAX_WORKERS + 1)
-        - 1
-}
-
-fn physical_core_count() -> Option<usize> {
-    let mut length = 0_u32;
-    let initial = unsafe {
-        GetLogicalProcessorInformationEx(RelationProcessorCore, std::ptr::null_mut(), &mut length)
-    };
-    if initial != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER || length == 0 {
-        return None;
-    }
-    // u64 storage meets Windows alignment, including trailing GROUP_AFFINITY.
-    let mut storage = vec![0_u64; (length as usize).div_ceil(size_of::<u64>())];
-    let capacity_bytes = storage.len() * size_of::<u64>();
-    let result = unsafe {
-        GetLogicalProcessorInformationEx(
-            RelationProcessorCore,
-            storage.as_mut_ptr().cast(),
-            &mut length,
-        )
-    };
-    if result == 0 || length as usize > capacity_bytes {
-        return None;
-    }
-    let mut affinity = GROUP_AFFINITY::default();
-    let mut process_mask = 0;
-    let mut system_mask = 0;
-    let allowed = unsafe {
-        if GetThreadGroupAffinity(GetCurrentThread(), &mut affinity) != 0 {
-            // Restrict to this startup thread's group. Multigroup processes
-            // can return zero process masks; current group affinity then
-            // remains the conservative bound.
-            if GetProcessAffinityMask(GetCurrentProcess(), &mut process_mask, &mut system_mask) != 0
-                && process_mask != 0
-            {
-                affinity.Mask &= process_mask;
-            }
-            Some((affinity.Group, affinity.Mask))
-        } else {
-            None
-        }
-    };
-    let bytes =
-        unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), length as usize) };
-    topology_core_count(bytes, allowed)
-}
-
-fn topology_core_count(bytes: &[u8], allowed: Option<(u16, usize)>) -> Option<usize> {
-    let processor_offset = offset_of!(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Anonymous);
-    let mut offset = 0_usize;
-    let mut count = 0;
-    while offset < bytes.len() {
-        let header = bytes.get(offset..offset.checked_add(8)?)?;
-        let relationship = i32::from_ne_bytes(header[..4].try_into().ok()?);
-        let size = u32::from_ne_bytes(header[4..8].try_into().ok()?) as usize;
-        let end = offset.checked_add(size)?;
-        if size < processor_offset + size_of::<PROCESSOR_RELATIONSHIP>()
-            || end > bytes.len()
-            || relationship != RelationProcessorCore
-        {
-            return None;
-        }
-        // Size and bounds checked; unaligned reads also admit synthetic test
-        // byte slices. Each physical core belongs to exactly one group.
-        let processor = unsafe {
-            bytes
-                .as_ptr()
-                .add(offset + processor_offset)
-                .cast::<PROCESSOR_RELATIONSHIP>()
-                .read_unaligned()
-        };
-        if processor.GroupCount != 1 {
-            return None;
-        }
-        let group = processor.GroupMask[0];
-        if allowed.is_none_or(|(id, mask)| group.Group == id && group.Mask & mask != 0) {
-            count += 1;
-        }
-        offset = end;
-    }
-    (count != 0).then_some(count)
+/// Hardware threads minus the callback, within the pool's admitted range.
+fn worker_count_for_topology(available: usize) -> usize {
+    available.saturating_sub(1).clamp(1, MAX_WORKERS)
 }
 
 #[cfg(test)]
@@ -621,17 +716,88 @@ mod tests {
     use super::*;
     use std::sync::{Barrier, mpsc};
 
+    #[cfg(feature = "callback_profile")]
+    #[test]
+    fn executor_profile_orders_reached_stages_and_marks_canceled_work() {
+        for workers in [0, 1] {
+            let pool =
+                Pool::start(workers, 1, |_: &mut u8| unsafe { GetCurrentThreadId() }).unwrap();
+            let mut job = Some(7);
+            let ticket = unsafe { pool.submit(&mut job) }.unwrap();
+            let completion = pool.finish(ticket).unwrap();
+            let profile = completion.profile;
+            assert_eq!(completion.report.unwrap(), profile.runner_thread_id);
+            assert_ne!(profile.runner_thread_id, 0);
+            let stages = [
+                profile.queued_qpc,
+                profile.claimed_qpc,
+                profile.runner_begin_qpc,
+                profile.runner_end_qpc,
+                profile.published_qpc,
+                profile.wake_begin_qpc,
+                profile.wake_end_qpc,
+                profile.collected_qpc,
+            ];
+            assert!(stages[0] > 0);
+            assert!(stages.windows(2).all(|pair| pair[0] <= pair[1]));
+        }
+        let pool = Pool::start(0, 1, |_: &mut u8| ()).unwrap();
+        let mut job = Some(7);
+        let ticket = unsafe { pool.submit(&mut job) }.unwrap();
+        pool.shutdown().unwrap();
+        let completion = pool.finish(ticket).unwrap();
+        assert_eq!(completion.report, Err(Failure::Stopped));
+        let profile = completion.profile;
+        assert!(profile.queued_qpc > 0);
+        assert_eq!(profile.claimed_qpc, 0);
+        assert_eq!(profile.runner_begin_qpc, 0);
+        assert_eq!(profile.runner_end_qpc, 0);
+        assert_eq!(profile.wake_begin_qpc, 0);
+        assert_eq!(profile.wake_end_qpc, 0);
+        assert_eq!(profile.runner_thread_id, 0);
+        assert_eq!(profile.runner_thread_cycles, None);
+        assert!(profile.published_qpc >= profile.queued_qpc);
+        assert!(profile.collected_qpc >= profile.published_qpc);
+    }
+
     struct Owned {
-        first: Vec<u8>,
-        second: Option<Vec<u8>>,
+        payload: Vec<u8>,
     }
 
     fn change_owned(request: &mut Owned) -> usize {
-        request.first[0] += 1;
-        if let Some(second) = request.second.as_mut() {
-            second[0] += 2;
-        }
-        request.first.len()
+        request.payload[0] += 1;
+        request.payload.len()
+    }
+
+    #[test]
+    fn reserved_worker_job_cannot_be_claimed_by_its_collector() {
+        let pool = Pool::start(1, 3, |_: &mut u8| std::thread::current().id()).unwrap();
+        assert!(pool.reserve_worker_slots(4).is_err());
+        pool.reserve_worker_slots(2).unwrap();
+        let ordinary = submit(&pool, &mut Some(1));
+        let mut rejected = Some(3);
+        assert_eq!(
+            unsafe { pool.submit(&mut rejected) },
+            Err(SubmitError::Full)
+        );
+        let mut request = Some(2);
+        let ticket = unsafe { pool.submit_with_priority(&mut request, 0, true) }.unwrap();
+        assert!(request.is_none());
+        let second = unsafe { pool.submit_with_priority(&mut Some(4), 0, true) }.unwrap();
+        assert!(pool.shared.lock().take_ready(Some(ticket)).is_none());
+        assert!(pool.shared.lock().take_ready(Some(second)).is_none());
+        assert_ne!(
+            pool.finish(ticket).unwrap().report.unwrap(),
+            std::thread::current().id()
+        );
+        assert!(pool.finish(ticket).is_none());
+        assert_ne!(
+            pool.finish(second).unwrap().report.unwrap(),
+            std::thread::current().id()
+        );
+        assert!(pool.finish(ordinary).is_some());
+        let stopped = Pool::start(0, 1, |_: &mut u8| ()).unwrap();
+        assert!(stopped.reserve_worker_slots(1).is_err());
     }
 
     fn submit<J: Send + 'static, R: Copy + Send + 'static>(
@@ -644,31 +810,26 @@ mod tests {
 
     #[test]
     fn owned_buffers_return_and_fixed_slots_reuse_without_replacement() {
-        for workers in [0, 2] {
+        for workers in [0, 2, MAX_WORKERS] {
             let pool = Pool::start(workers, 1, change_owned).unwrap();
-            let ids = pool.thread_ids();
+            let mut ids = pool.thread_ids();
             assert_eq!(ids.len(), workers);
             assert!(ids.iter().all(|&id| id != 0));
-            if workers == 2 {
-                assert_ne!(ids[0], ids[1]);
-            }
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), workers);
             let bytes = pool.allocated_bytes();
             let mut request = Some(Owned {
-                first: vec![1, 2, 3],
-                second: Some(vec![4, 5]),
+                payload: vec![1, 2, 3],
             });
-            let first_pointer = request.as_ref().unwrap().first.as_ptr();
-            let second_pointer = request.as_ref().unwrap().second.as_ref().unwrap().as_ptr();
+            let first_pointer = request.as_ref().unwrap().payload.as_ptr();
             for iteration in 0..3 {
                 let ticket = submit(&pool, &mut request);
                 assert!(request.is_none());
                 let done = pool.finish(ticket).unwrap();
                 assert_eq!(done.report, Ok(3));
-                assert_eq!(done.request.first, [2 + iteration, 2, 3]);
-                assert_eq!(done.request.first.as_ptr(), first_pointer);
-                let second = done.request.second.as_ref().unwrap();
-                assert_eq!(second.as_slice(), [6 + 2 * iteration, 5]);
-                assert_eq!(second.as_ptr(), second_pointer);
+                assert_eq!(done.request.payload, [2 + iteration, 2, 3]);
+                assert_eq!(done.request.payload.as_ptr(), first_pointer);
                 request = Some(done.request);
                 assert!(pool.finish(ticket).is_none());
                 assert_eq!(pool.allocated_bytes(), bytes);
@@ -712,44 +873,6 @@ mod tests {
     }
 
     #[test]
-    fn caller_helps_fifo_ready_job_while_awaited_target_is_running() {
-        let rendezvous = Arc::new(Barrier::new(3));
-        let worker_rendezvous = Arc::clone(&rendezvous);
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let pool = Arc::new(
-            Pool::start(1, 2, move |request: &mut u8| {
-                entered_tx.send(*request).unwrap();
-                worker_rendezvous.wait();
-                *request *= 10;
-                *request
-            })
-            .unwrap(),
-        );
-
-        let target = submit(&pool, &mut Some(1));
-        assert_eq!(entered_rx.recv().unwrap(), 1);
-        let helper = submit(&pool, &mut Some(2));
-
-        let collector_pool = Arc::clone(&pool);
-        let collector = std::thread::spawn(move || collector_pool.finish(target).unwrap());
-
-        // The single worker is blocked in the running target. This barrier can
-        // open only after finish enters the queued helper on the callback path.
-        rendezvous.wait();
-        let helped = entered_rx.recv().unwrap();
-        assert_eq!(helped, 2);
-
-        let target = collector.join().unwrap();
-        let helper = pool.finish(helper).unwrap();
-        assert_eq!((target.request, target.report), (10, Ok(10)));
-        assert_eq!((helper.request, helper.report), (20, Ok(20)));
-        let calibration = pool.calibration();
-        assert_eq!(calibration.worker_executed, 1);
-        assert_eq!(calibration.caller_executed, 1);
-        assert_eq!(calibration.uncollected, 0);
-    }
-
-    #[test]
     fn stale_foreign_and_exhausted_tickets_never_consume_another_request() {
         let first_pool = Pool::start(0, 1, |request: &mut u8| *request).unwrap();
         let other_pool = Pool::start(0, 1, |request: &mut u8| *request).unwrap();
@@ -773,27 +896,44 @@ mod tests {
 
     #[test]
     fn panic_returns_partial_request_cancels_queued_jobs_and_does_not_retry() {
+        use engine::{
+            Memory,
+            memory::{CountedMemory, ReadCounts, SliceMemory},
+        };
+        use replay::rows::TableId;
+
         let calls = Arc::new(AtomicU64::new(0));
         let count = Arc::clone(&calls);
         let pool = Pool::start(0, 2, move |request: &mut Owned| -> usize {
             count.fetch_add(1, Ordering::Relaxed);
-            request.first[0] = 42;
+            let _reads = crate::read_accounting::table(TableId::Divisions);
+            let memory = CountedMemory::new(SliceMemory {
+                base: 0x1000,
+                bytes: &request.payload,
+            });
+            assert!(memory.copy(0x1000, &mut [0]));
+            request.payload[0] = 42;
             panic!("synthetic acquisition failure");
         })
         .unwrap();
-        let make = || Owned {
-            first: vec![7],
-            second: Some(vec![8]),
-        };
+        let make = || Owned { payload: vec![7] };
         let first = submit(&pool, &mut Some(make()));
         let second = submit(&pool, &mut Some(make()));
         let failed = pool.finish(second).unwrap();
         let canceled = pool.finish(first).unwrap();
         assert_eq!(canceled.report, Err(Failure::Stopped));
-        assert_eq!(canceled.request.first, [7]);
+        assert_eq!(canceled.table_reads, crate::read_accounting::ZERO);
+        assert_eq!(canceled.request.payload, [7]);
         assert_eq!(failed.report, Err(Failure::Panicked));
-        assert_eq!(failed.request.first, [42]);
-        assert_eq!(failed.request.second.as_deref(), Some(&[8][..]));
+        let mut expected = crate::read_accounting::ZERO;
+        expected[TableId::Divisions.index()] = ReadCounts {
+            copy_calls: 1,
+            spans: 1,
+            bytes: 1,
+            ..ReadCounts::ZERO
+        };
+        assert_eq!(failed.table_reads, expected);
+        assert_eq!(failed.request.payload, [42]);
         let mut rejected = Some(failed.request);
         assert_eq!(
             unsafe { pool.submit(&mut rejected) },
@@ -816,6 +956,7 @@ mod tests {
         assert!(Arc::get_mut(&mut owner).is_none());
         let completion = pool.finish(ticket).unwrap();
         assert_eq!(completion.report, Err(Failure::Stopped));
+        assert_eq!(completion.table_reads, crate::read_accounting::ZERO);
         assert!(Arc::get_mut(&mut owner).is_none());
         drop(completion);
         assert!(Arc::get_mut(&mut owner).is_some());
@@ -1054,43 +1195,16 @@ mod tests {
     }
 
     #[test]
-    fn physical_cores_bound_participants_and_smt_is_not_a_second_core() {
-        assert_eq!(worker_count_for_topology(Some(8), 16), 7);
-        assert_eq!(worker_count_for_topology(Some(4), 8), 3);
-        assert_eq!(worker_count_for_topology(Some(8), 2), 1);
-        assert_eq!(worker_count_for_topology(Some(1), 2), 0);
-        assert_eq!(worker_count_for_topology(None, 32), 7);
-        assert_eq!(worker_count_for_topology(None, 0), 0);
-        let processor_offset = offset_of!(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Anonymous);
-        let size = processor_offset + size_of::<PROCESSOR_RELATIONSHIP>();
-        let mut bytes = vec![0_u8; size * 3];
-        for (index, (group, mask)) in [(0, 0b0011), (0, 0b1100), (1, 0b0011)]
-            .into_iter()
-            .enumerate()
-        {
-            let record = &mut bytes[index * size..(index + 1) * size];
-            record[..4].copy_from_slice(&RelationProcessorCore.to_ne_bytes());
-            record[4..8].copy_from_slice(&(size as u32).to_ne_bytes());
-            let mut processor = PROCESSOR_RELATIONSHIP {
-                GroupCount: 1,
-                ..Default::default()
-            };
-            processor.GroupMask[0].Group = group;
-            processor.GroupMask[0].Mask = mask;
-            unsafe {
-                record
-                    .as_mut_ptr()
-                    .add(processor_offset)
-                    .cast::<PROCESSOR_RELATIONSHIP>()
-                    .write_unaligned(processor);
-            }
-        }
-        assert_eq!(topology_core_count(&bytes, None), Some(3));
-        assert_eq!(topology_core_count(&bytes, Some((0, 0b1111))), Some(2));
-        assert_eq!(topology_core_count(&bytes, Some((0, 0b0011))), Some(1));
-        assert_eq!(topology_core_count(&bytes, Some((0, 0))), None);
-        assert_eq!(topology_core_count(&bytes[..bytes.len() - 1], None), None);
-        bytes[4..8].copy_from_slice(&0_u32.to_ne_bytes());
-        assert_eq!(topology_core_count(&bytes, None), None);
+    fn hardware_threads_size_the_pool_and_reserve_one_for_the_callback() {
+        assert_eq!(worker_count_for_topology(16), 15);
+        assert_eq!(worker_count_for_topology(8), 7);
+        assert_eq!(worker_count_for_topology(4), 3);
+        assert_eq!(worker_count_for_topology(2), 1);
+        // A single thread, and an unavailable count, still leave one worker.
+        assert_eq!(worker_count_for_topology(1), 1);
+        assert_eq!(worker_count_for_topology(0), 1);
+        // Wider boxes stop at the pool's cap.
+        assert_eq!(worker_count_for_topology(32), MAX_WORKERS);
+        assert!(Pool::start(MAX_WORKERS + 1, 1, |request: &mut u8| *request).is_err());
     }
 }

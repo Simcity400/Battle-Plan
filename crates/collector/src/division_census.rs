@@ -78,21 +78,14 @@ impl UnitInputs {
 pub(crate) struct Census {
     entries: Vec<Entry>,
     unit_inputs: Option<Arc<UnitInputs>>,
-    core_masks: Vec<u64>,
-    union_masks: Vec<u64>,
-    changed_masks: Vec<u64>,
     rows: Vec<carmy::Row>,
-    group_kinds: Vec<u64>,
     sources: Vec<DivisionSource>,
-    headers: Vec<[u8; 16]>,
-    country_roots: Vec<(u32, usize, u32, u32)>,
     census_result: Outcome,
     row_error: Option<&'static str>,
     core_root_error: Option<&'static str>,
     required: usize,
     pub overflowed: bool,
     bytes: u64,
-    roster_headers: usize,
     core_roots: Option<CoreRoots>,
     core_captured: bool,
 }
@@ -101,14 +94,8 @@ impl Default for Census {
         Self {
             entries: Vec::new(),
             unit_inputs: None,
-            core_masks: Vec::new(),
-            union_masks: Vec::new(),
-            changed_masks: Vec::new(),
             rows: Vec::new(),
-            group_kinds: Vec::new(),
             sources: Vec::new(),
-            headers: Vec::new(),
-            country_roots: Vec::new(),
             census_result: Outcome::Unavailable {
                 reason: "division census not captured",
             },
@@ -117,7 +104,6 @@ impl Default for Census {
             required: 0,
             overflowed: false,
             bytes: 0,
-            roster_headers: 0,
             core_roots: None,
             core_captured: false,
         }
@@ -128,14 +114,8 @@ impl Census {
         Self {
             entries: Vec::with_capacity(8192),
             unit_inputs: Some(Arc::new(UnitInputs::new(8192))),
-            core_masks: Vec::with_capacity(8192),
-            union_masks: Vec::with_capacity(8192),
-            changed_masks: Vec::with_capacity(8192),
             rows: Vec::with_capacity(8192),
-            group_kinds: Vec::with_capacity(8192),
             sources: Vec::with_capacity(8192),
-            headers: Vec::with_capacity(1024),
-            country_roots: Vec::with_capacity(1024),
             ..Self::default()
         }
     }
@@ -151,14 +131,8 @@ impl Census {
             };
             inputs.intel_outcome = inputs.outcome;
         }
-        self.core_masks.clear();
-        self.union_masks.clear();
-        self.changed_masks.clear();
         self.rows.clear();
-        self.group_kinds.clear();
         self.sources.clear();
-        self.headers.clear();
-        self.country_roots.clear();
         self.census_result = Outcome::Unavailable {
             reason: "division census not captured",
         };
@@ -167,7 +141,6 @@ impl Census {
         self.required = 0;
         self.overflowed = false;
         self.bytes = 0;
-        self.roster_headers = 0;
         self.core_roots = None;
         self.core_captured = false;
     }
@@ -177,14 +150,8 @@ impl Census {
                 crate::raw_memory::vector_bytes(&inputs.seeds)
                     + crate::raw_memory::vector_bytes(&inputs.roster_slots)
             })
-            + crate::raw_memory::vector_bytes(&self.core_masks)
-            + crate::raw_memory::vector_bytes(&self.union_masks)
-            + crate::raw_memory::vector_bytes(&self.changed_masks)
             + crate::raw_memory::vector_bytes(&self.rows)
             + crate::raw_memory::vector_bytes(&self.sources)
-            + crate::raw_memory::vector_bytes(&self.group_kinds)
-            + crate::raw_memory::vector_bytes(&self.headers)
-            + crate::raw_memory::vector_bytes(&self.country_roots)
     }
     pub fn payload_bytes(&self) -> u64 {
         self.bytes
@@ -192,39 +159,11 @@ impl Census {
     pub fn initialized(&self) -> bool {
         self.entries.capacity() != 0
     }
+    pub(crate) fn source_capacity(&self) -> usize {
+        self.sources.capacity()
+    }
     pub(crate) fn unit_inputs(&self) -> Option<&Arc<UnitInputs>> {
         self.unit_inputs.as_ref()
-    }
-    pub(crate) fn unit_inputs_equal(&self, other: &Self) -> bool {
-        self.intel_equal(other)
-    }
-    /// The callback invokes this once after every shared-input consumer joins.
-    /// Only fields demanded by those consumers are freshly checked. Core rows
-    /// also reject changes in their overlapping fields, without adding a full
-    /// hot core double read for fields no companion consumed.
-    pub(crate) fn verify_unit_inputs(
-        &mut self,
-        memory: &impl Memory,
-        consumers: &[&[u64]],
-    ) -> &[u64] {
-        self.union_masks.fill(0);
-        self.changed_masks.fill(0);
-        for masks in consumers {
-            for (union, mask) in self.union_masks.iter_mut().zip(*masks) {
-                *union |= mask;
-            }
-        }
-        if let Some(inputs) = &self.unit_inputs {
-            let counted = crate::division_detail::CountedMemory::new(memory);
-            carmy::verify_division_seed_fields(
-                &counted,
-                inputs.seeds(),
-                &self.union_masks,
-                &mut self.changed_masks,
-            );
-            self.bytes = self.bytes.saturating_add(counted.bytes());
-        }
-        &self.changed_masks
     }
     pub fn grow(&mut self) {
         let target = self
@@ -246,16 +185,8 @@ impl Census {
         } else {
             self.unit_inputs = Some(Arc::new(UnitInputs::new(target)));
         }
-        reserve(&mut self.core_masks, target);
-        reserve(&mut self.union_masks, target);
-        reserve(&mut self.changed_masks, target);
         reserve(&mut self.rows, target);
         reserve(&mut self.sources, target);
-        reserve(&mut self.group_kinds, target);
-        let headers = self.headers.capacity().saturating_mul(2).max(1024);
-        let countries = self.country_roots.capacity().saturating_mul(2).max(1024);
-        reserve(&mut self.headers, headers);
-        reserve(&mut self.country_roots, countries);
     }
     /// Grow retained storage only while the frame is off the callback.
     pub(crate) fn reserve_sources(&mut self, capacity: usize) {
@@ -272,6 +203,7 @@ impl Census {
     pub fn census_outcome(&self) -> Outcome {
         self.census_result
     }
+    #[cfg(test)]
     pub fn intel_sources(&self) -> engine::unit_viewer_entry::DivisionSources<'_> {
         self.unit_inputs.as_ref().map_or(
             engine::unit_viewer_entry::DivisionSources {
@@ -281,18 +213,11 @@ impl Census {
             |inputs| inputs.intel_sources(),
         )
     }
-    pub fn intel_equal(&self, other: &Self) -> bool {
-        matches!(
-            (self.census_result, other.census_result),
-            (Outcome::Rows { .. }, Outcome::Rows { .. })
-        ) && self.intel_sources().entries == other.intel_sources().entries
-            && self.country_roots == other.country_roots
-            && self.headers.get(..self.roster_headers) == other.headers.get(..other.roster_headers)
-    }
     pub fn sources(&self, capacity: usize) -> (&[DivisionSource], Outcome) {
         let outcome = self.outcome(capacity);
         (&self.sources[..outcome.len()], outcome)
     }
+    #[cfg(test)]
     pub fn rows(&self, capacity: usize) -> (&[carmy::Row], Outcome) {
         let outcome = self.outcome(capacity);
         (&self.rows[..outcome.len()], outcome)
@@ -320,50 +245,12 @@ impl Census {
             };
         }
         let len = self.entries.len().min(capacity);
-        if self
-            .changed_masks
-            .iter()
-            .zip(&self.core_masks)
-            .take(len)
-            .any(|(changed, consumed)| changed & consumed != 0)
-        {
-            return Outcome::Unavailable {
-                reason: "division shared fields changed or unreadable",
-            };
-        }
         if self.rows.len() < len {
             return Outcome::Unavailable {
                 reason: self.row_error.unwrap_or("division owned row not captured"),
             };
         }
         complete(len, self.entries.len() - len)
-    }
-    pub fn equal(&self, other: &Self, capacity: usize) -> bool {
-        matches!(self.outcome(capacity), Outcome::Rows { .. }) && self.same(other, capacity)
-    }
-    pub fn same(&self, other: &Self, capacity: usize) -> bool {
-        let (a, ao) = self.rows(capacity);
-        let (b, bo) = other.rows(capacity);
-        !matches!(ao, Outcome::Unavailable { .. })
-            && ao == bo
-            && a == b
-            && self.entries == other.entries
-            && self.headers == other.headers
-            && self.country_roots == other.country_roots
-            && self.intel_sources().entries == other.intel_sources().entries
-            && self
-                .unit_inputs
-                .as_ref()
-                .zip(other.unit_inputs.as_ref())
-                .is_some_and(|(first, second)| {
-                    first
-                        .seeds
-                        .iter()
-                        .zip(&second.seeds)
-                        .take(a.len())
-                        .all(|(a, b)| carmy::division_seed_fields_equal(a, b, (1 << 11) - 1))
-                })
-            && self.group_kinds.get(..a.len()) == other.group_kinds.get(..b.len())
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize, capacity: usize) {
         self.capture_inputs(memory, base, state);
@@ -455,7 +342,6 @@ impl Census {
         for slot in 1..countries.countries.count {
             let pointer = countries.pointer(memory, slot)?;
             if pointer == 0 {
-                self.root((slot, 0, 0, 0))?;
                 continue;
             }
             if read::<u64>(memory, pointer)
@@ -474,7 +360,6 @@ impl Census {
             if countries.pointer(memory, canonical)? != pointer {
                 return Err("canonical country slot points to a different object");
             }
-            self.root((slot, pointer, id, canonical))?;
             if slot != canonical {
                 continue;
             }
@@ -536,7 +421,6 @@ impl Census {
         self.census_result = Outcome::Rows {
             len: self.entries.len(),
         };
-        self.roster_headers = self.headers.len();
         let Some(shared) = &mut self.unit_inputs else {
             self.overflowed = true;
             return Err("division owned scalar capacity exhausted");
@@ -546,11 +430,7 @@ impl Census {
         inputs.intel_outcome = Outcome::Rows {
             len: inputs.roster_slots.len(),
         };
-        if self.entries.len() > inputs.seeds.capacity()
-            || self.entries.len() > self.core_masks.capacity()
-            || self.entries.len() > self.union_masks.capacity()
-            || self.entries.len() > self.changed_masks.capacity()
-        {
+        if self.entries.len() > inputs.seeds.capacity() {
             self.overflowed = true;
             return Err("division owned scalar capacity exhausted");
         }
@@ -565,9 +445,6 @@ impl Census {
             seed.division = seed.handle.unwrap_or(0);
         }
         inputs.outcome = self.census_result;
-        self.core_masks.resize(self.entries.len(), 0);
-        self.union_masks.resize(self.entries.len(), 0);
-        self.changed_masks.resize(self.entries.len(), 0);
         self.core_roots = Some(CoreRoots {
             base,
             state,
@@ -610,14 +487,12 @@ impl Census {
             }
         };
         let take = self.entries.len().min(capacity);
-        if take > self.rows.capacity()
-            || take > self.sources.capacity()
-            || take > self.group_kinds.capacity()
-        {
+        if take > self.rows.capacity() || take > self.sources.capacity() {
             self.overflowed = true;
             return Err("division owned scalar capacity exhausted");
         }
         let inputs = self.unit_inputs.as_ref().unwrap();
+        let mut identities = CoreIdentities::new(base, provinces);
         for (index, (entry, seed)) in self
             .entries
             .iter()
@@ -652,15 +527,7 @@ impl Census {
                     }
                 }
             }
-            let (row, group_kind) = project(
-                memory,
-                base,
-                &countries,
-                provinces,
-                *entry,
-                seed,
-                &mut self.core_masks[index],
-            )?;
+            let row = project(memory, &countries, *entry, seed, &mut identities)?;
             self.sources.push(DivisionSource {
                 pointer: entry.pointer,
                 division: row.id,
@@ -668,7 +535,6 @@ impl Census {
                 country: row.roster_owner,
             });
             self.rows.push(row);
-            self.group_kinds.push(group_kind);
         }
         Ok(())
     }
@@ -684,20 +550,7 @@ impl Census {
             .checked_add(offset)
             .and_then(|p| read::<[u8; 16]>(memory, p))
             .ok_or(reason)?;
-        if self.headers.len() == self.headers.capacity() {
-            self.overflowed = true;
-            return Err("division owned header capacity exhausted");
-        }
-        self.headers.push(bytes);
         Array::from_header(bytes, stride).ok_or(reason)
-    }
-    fn root(&mut self, root: (u32, usize, u32, u32)) -> Result<(), &'static str> {
-        if self.country_roots.len() == self.country_roots.capacity() {
-            self.overflowed = true;
-            return Err("division owned country capacity exhausted");
-        }
-        self.country_roots.push(root);
-        Ok(())
     }
 }
 
@@ -747,80 +600,56 @@ fn complete(len: usize, missing: usize) -> Outcome {
     }
 }
 
-fn project(
-    memory: &impl Memory,
+const CORE_IDENTITY_SLOTS: usize = 256;
+
+#[derive(Clone, Copy, Default)]
+struct CoreIdentity {
+    pointer: usize,
+    value: u64,
+}
+
+/// Successful child identities from this core walk only. The owning callback
+/// holds the game before its hourly update until every acquisition job joins;
+/// these pointers and their province registry cannot change during this walk.
+/// Null pointers are never inserted. A collision simply replaces a successful
+/// entry after the unchanged native validation; no error or partial read is kept.
+struct CoreIdentities {
     base: usize,
-    countries: &Countries,
     provinces: Array,
-    entry: Entry,
-    scalar: &carmy::DivisionSeed,
-    consumed: &mut u64,
-) -> Result<(carmy::Row, u64), &'static str> {
-    let primary = base
-        .checked_add(carmy::VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
-    let secondary = base
-        .checked_add(carmy::SECONDARY_VTABLE_RVA)
-        .ok_or("module address overflow")? as u64;
-    if consume(
-        scalar.primary_vtable,
-        consumed,
-        carmy::DivisionSeed::PRIMARY_VTABLE,
-        "division primary vtable mismatch",
-    )? != primary
-    {
-        return Err("division primary vtable mismatch");
+    locations: [CoreIdentity; CORE_IDENTITY_SLOTS],
+    templates: [CoreIdentity; CORE_IDENTITY_SLOTS],
+    groups: [CoreIdentity; CORE_IDENTITY_SLOTS],
+}
+
+impl CoreIdentities {
+    fn new(base: usize, provinces: Array) -> Self {
+        Self {
+            base,
+            provinces,
+            locations: [CoreIdentity::default(); CORE_IDENTITY_SLOTS],
+            templates: [CoreIdentity::default(); CORE_IDENTITY_SLOTS],
+            groups: [CoreIdentity::default(); CORE_IDENTITY_SLOTS],
+        }
     }
-    if consume(
-        scalar.secondary_vtable,
-        consumed,
-        carmy::DivisionSeed::SECONDARY_VTABLE,
-        "division secondary vtable mismatch",
-    )? != secondary
-    {
-        return Err("division secondary vtable mismatch");
+
+    fn slot(pointer: usize) -> usize {
+        let hash = (pointer >> 4).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        (hash ^ (hash >> 32)) & (CORE_IDENTITY_SLOTS - 1)
     }
-    let id = consume(
-        scalar.handle,
-        consumed,
-        carmy::DivisionSeed::HANDLE,
-        "division handle unreadable",
-    )?;
-    if id == 0 {
-        return Err("non-null division has null handle");
-    }
-    let roster_owner = consume(
-        scalar.roster_owner,
-        consumed,
-        carmy::DivisionSeed::ROSTER_OWNER,
-        "division roster owner unreadable",
-    )?;
-    if countries.canonical(memory, roster_owner)? != entry.canonical {
-        return Err("division owner differs from roster country");
-    }
-    let logical_owner = consume(
-        scalar.logical_owner,
-        consumed,
-        carmy::DivisionSeed::LOGICAL_OWNER,
-        "division logical owner unreadable",
-    )?;
-    let expeditionary_owner = consume(
-        scalar.expeditionary_owner,
-        consumed,
-        carmy::DivisionSeed::EXPEDITIONARY_OWNER,
-        "division expeditionary owner unreadable",
-    )?;
-    let location = consume(
-        scalar.location,
-        consumed,
-        carmy::DivisionSeed::LOCATION,
-        "division location pointer unreadable",
-    )?;
-    let province = if location == 0 {
-        0
-    } else {
+
+    fn province(&mut self, memory: &impl Memory, location: usize) -> Result<u32, &'static str> {
+        if location == 0 {
+            return Ok(0);
+        }
+        let slot = Self::slot(location);
+        if self.locations[slot].pointer == location {
+            return Ok(self.locations[slot].value as u32);
+        }
         if read::<u64>(memory, location)
-            != base.checked_add(cprovince::VTABLE_RVA).map(|p| p as u64)
+            != self
+                .base
+                .checked_add(cprovince::VTABLE_RVA)
+                .map(|p| p as u64)
         {
             return Err("division province vtable mismatch");
         }
@@ -831,26 +660,36 @@ fn project(
         if id == 0 {
             return Err("non-null division province has zero id");
         }
-        let registered = provinces
+        let registered = self
+            .provinces
             .element(id, 8)
             .and_then(|p| read::<u64>(memory, p))
             .ok_or("division province slot unreadable or out of range")?;
         if registered != location as u64 {
             return Err("division province differs from registered slot");
         }
-        id
-    };
-    let template_pointer = consume(
-        scalar.standard_template,
-        consumed,
-        carmy::DivisionSeed::STANDARD_TEMPLATE,
-        "division template pointer unreadable",
-    )?;
-    let template = if template_pointer == 0 {
-        0
-    } else {
+        self.locations[slot] = CoreIdentity {
+            pointer: location,
+            value: id as u64,
+        };
+        Ok(id)
+    }
+
+    fn template(
+        &mut self,
+        memory: &impl Memory,
+        template_pointer: usize,
+    ) -> Result<u64, &'static str> {
+        if template_pointer == 0 {
+            return Ok(0);
+        }
+        let slot = Self::slot(template_pointer);
+        if self.templates[slot].pointer == template_pointer {
+            return Ok(self.templates[slot].value);
+        }
         if read::<u64>(memory, template_pointer)
-            != base
+            != self
+                .base
                 .checked_add(creferenced_division_template::VTABLE_RVA)
                 .map(|p| p as u64)
         {
@@ -863,36 +702,30 @@ fn project(
         if handle == 0 {
             return Err("non-null division template has null handle");
         }
-        handle
-    };
-    let hit_points = consume(
-        scalar.strength,
-        consumed,
-        carmy::DivisionSeed::STRENGTH,
-        "division hit points unreadable",
-    )?;
-    let organisation = consume(
-        scalar.organisation,
-        consumed,
-        carmy::DivisionSeed::ORGANISATION,
-        "division organisation unreadable",
-    )?;
-    let group = consume(
-        scalar.orders_group,
-        consumed,
-        carmy::DivisionSeed::ORDERS_GROUP,
-        "division orders group pointer unreadable",
-    )?;
-    let (orders_group, group_kind) = if group == 0 {
-        (0, 0)
-    } else {
+        self.templates[slot] = CoreIdentity {
+            pointer: template_pointer,
+            value: handle,
+        };
+        Ok(handle)
+    }
+
+    fn group(&mut self, memory: &impl Memory, group: usize) -> Result<u64, &'static str> {
+        if group == 0 {
+            return Ok(0);
+        }
+        let slot = Self::slot(group);
+        if self.groups[slot].pointer == group {
+            return Ok(self.groups[slot].value);
+        }
         let identity =
             read::<[u8; 16]>(memory, group).ok_or("division orders group identity unreadable")?;
         let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
-        let normal = base
+        let normal = self
+            .base
             .checked_add(engine::corders_group::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let army = base
+        let army = self
+            .base
             .checked_add(engine::carmy_group::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         if vtable != normal && vtable != army {
@@ -902,32 +735,86 @@ fn project(
         if handle as u32 != engine::corders_group::REFERENCE_TYPE {
             return Err("division orders group reference type mismatch");
         }
-        (handle, vtable)
-    };
-    Ok((
-        carmy::Row {
-            id,
-            roster_owner,
-            logical_owner,
-            expeditionary_owner,
-            province,
-            template,
-            hit_points,
-            organisation,
-            orders_group,
-        },
-        group_kind,
-    ))
+        self.groups[slot] = CoreIdentity {
+            pointer: group,
+            value: handle,
+        };
+        Ok(handle)
+    }
 }
 
-fn consume<T>(
-    field: Option<T>,
-    consumed: &mut u64,
-    mask: u64,
-    reason: &'static str,
-) -> Result<T, &'static str> {
-    *consumed |= mask;
-    field.ok_or(reason)
+fn project(
+    memory: &impl Memory,
+    countries: &Countries,
+    entry: Entry,
+    scalar: &carmy::DivisionSeed,
+    identities: &mut CoreIdentities,
+) -> Result<carmy::Row, &'static str> {
+    let primary = identities
+        .base
+        .checked_add(carmy::VTABLE_RVA)
+        .ok_or("module address overflow")? as u64;
+    let secondary = identities
+        .base
+        .checked_add(carmy::SECONDARY_VTABLE_RVA)
+        .ok_or("module address overflow")? as u64;
+    if scalar
+        .primary_vtable
+        .ok_or("division primary vtable mismatch")?
+        != primary
+    {
+        return Err("division primary vtable mismatch");
+    }
+    if scalar
+        .secondary_vtable
+        .ok_or("division secondary vtable mismatch")?
+        != secondary
+    {
+        return Err("division secondary vtable mismatch");
+    }
+    let id = scalar.handle.ok_or("division handle unreadable")?;
+    if id == 0 {
+        return Err("non-null division has null handle");
+    }
+    let roster_owner = scalar
+        .roster_owner
+        .ok_or("division roster owner unreadable")?;
+    if countries.canonical(memory, roster_owner)? != entry.canonical {
+        return Err("division owner differs from roster country");
+    }
+    let logical_owner = scalar
+        .logical_owner
+        .ok_or("division logical owner unreadable")?;
+    let expeditionary_owner = scalar
+        .expeditionary_owner
+        .ok_or("division expeditionary owner unreadable")?;
+    let location = scalar
+        .location
+        .ok_or("division location pointer unreadable")?;
+    let province = identities.province(memory, location)?;
+    let template_pointer = scalar
+        .standard_template
+        .ok_or("division template pointer unreadable")?;
+    let template = identities.template(memory, template_pointer)?;
+    let hit_points = scalar.strength.ok_or("division hit points unreadable")?;
+    let organisation = scalar
+        .organisation
+        .ok_or("division organisation unreadable")?;
+    let group = scalar
+        .orders_group
+        .ok_or("division orders group pointer unreadable")?;
+    let orders_group = identities.group(memory, group)?;
+    Ok(carmy::Row {
+        id,
+        roster_owner,
+        logical_owner,
+        expeditionary_owner,
+        province,
+        template,
+        hit_points,
+        organisation,
+        orders_group,
+    })
 }
 
 #[cfg(test)]
@@ -1027,7 +914,7 @@ mod tests {
 
         let mut combined = Census::new();
         combined.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
-        assert!(staged.equal(&combined, 64));
+        assert_eq!(staged.rows(64), combined.rows(64));
         assert_eq!(staged.sources(64), combined.sources(64));
         assert_eq!(staged.payload_bytes(), combined.payload_bytes());
         let completed_reads = memory.reads.borrow().len();
@@ -1138,62 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_verification_is_field_and_consumer_capacity_scoped() {
-        let bytes = kit::fixture();
-        let mut changed = bytes.clone();
-        let mut census = Census::new();
-        census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
-        changed[kit::A1 + engine::cunit::CLASS..kit::A1 + engine::cunit::CLASS + 4]
-            .copy_from_slice(&2u32.to_le_bytes());
-        let masks = [carmy::DivisionSeed::CLASS, 0, 0];
-        let differences = census.verify_unit_inputs(&kit::memory(&changed), &[&masks]);
-        assert_eq!(differences[0], carmy::DivisionSeed::CLASS);
-        assert_eq!(census.rows(64).1, Outcome::Rows { len: 3 });
-
-        // A later source's shared location fault affects consumers that used
-        // that source, while an independently bounded core prefix stays valid.
-        let third = census.unit_inputs().unwrap().seeds()[2].pointer;
-        changed[third + engine::cunit::LOCATION..third + engine::cunit::LOCATION + 8]
-            .copy_from_slice(&0u64.to_le_bytes());
-        let masks = [0, 0, carmy::DivisionSeed::LOCATION];
-        let differences = census.verify_unit_inputs(&kit::memory(&changed), &[&masks]);
-        assert_eq!(differences[2], carmy::DivisionSeed::LOCATION);
-        assert_eq!(
-            census.rows(1).1,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 2
-            }
-        );
-        assert_eq!(
-            census.rows(64).1,
-            Outcome::Unavailable {
-                reason: "division shared fields changed or unreadable"
-            }
-        );
-    }
-
-    #[test]
-    fn unrelated_companion_fields_do_not_change_core_cold_witness() {
-        let bytes = kit::fixture();
-        let mut changed = bytes.clone();
-        changed[kit::A1 + engine::cunit::CLASS..kit::A1 + engine::cunit::CLASS + 4]
-            .copy_from_slice(&u32::MAX.to_le_bytes());
-        let mut first = Census::new();
-        let mut second = Census::new();
-        first.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
-        second.capture(&kit::memory(&changed), kit::BASE, kit::GAME_STATE, 64);
-        assert!(first.equal(&second, 64));
-        assert!(first.unit_inputs_equal(&second));
-        assert!(!carmy::division_seed_fields_equal(
-            &first.unit_inputs().unwrap().seeds()[0],
-            &second.unit_inputs().unwrap().seeds()[0],
-            carmy::DivisionSeed::CLASS,
-        ));
-    }
-
-    #[test]
-    fn core_lookahead_keeps_serial_observations_masks_and_every_failure_prefix() {
+    fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
         let mut bytes = kit::fixture();
         // Ten entries cross two four-seed boundaries, retaining repeated child
         // pointers and the fixture's independent null location/template/group.
@@ -1207,9 +1039,23 @@ mod tests {
                 .copy_from_slice(&(pointer as u64).to_le_bytes());
         }
         for capacity in [0, 1, 3, 4, 5, 8, 10] {
-            // One root plus at most seven scalar copies per admitted seed.
-            // Inject by ordinal so repeated addresses can fail in later groups.
-            for fault_at in std::iter::once(None).chain((0..1 + 7 * capacity).map(Some)) {
+            // A failure at any original source must remain the first failure.
+            // Successful repeated child reads are deliberately absent, so an
+            // injected fault on only a removed occurrence is not a source fault.
+            for fault in std::iter::once(None).chain(
+                [
+                    kit::GAME_STATE + cgame_state::PROVINCES,
+                    kit::LTAB + 4,
+                    kit::LTAB + 8,
+                    kit::P1,
+                    kit::P1 + cprovince::ID,
+                    kit::PTAB + 8,
+                    0x40000,
+                    0x40000 + creferenced_division_template::TYPE,
+                    0x41000,
+                ]
+                .map(Some),
+            ) {
                 let mut census = Census::new();
                 census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
                 let allocated = census.allocated_bytes();
@@ -1220,50 +1066,48 @@ mod tests {
                 let make_memory = || Observed {
                     bytes: &bytes,
                     reads: RefCell::new(Vec::new()),
-                    fault: None,
-                    fault_at,
+                    fault,
+                    fault_at: None,
                 };
                 let serial = make_memory();
                 let mut rows = Vec::new();
-                let mut kinds = Vec::new();
-                let mut masks = vec![0; seeds.len()];
-                // Reference: the unchanged scalar projector, with its own
-                // province-root observation and no lookahead path.
+                // A fresh identity set per row forces the original scalar
+                // child reads, including repeated addresses and their gates.
                 let expected = (|| {
                     let provinces =
                         Array::read(&serial, kit::GAME_STATE + cgame_state::PROVINCES, 8)
                             .ok_or("province array unreadable or invalid")?;
-                    for index in 0..capacity {
-                        let (row, kind) = project(
+                    for (index, seed) in seeds.iter().take(capacity).enumerate() {
+                        let row = project(
                             &serial,
-                            roots.base,
                             &roots.countries,
-                            provinces,
                             census.entries[index],
-                            &seeds[index],
-                            &mut masks[index],
+                            seed,
+                            &mut CoreIdentities::new(roots.base, provinces),
                         )?;
                         rows.push(row);
-                        kinds.push(kind);
                     }
                     Ok::<_, &'static str>(())
                 })();
 
                 let observed = make_memory();
                 census.capture_core(&observed, capacity);
-                assert_eq!(*observed.reads.borrow(), *serial.reads.borrow());
+                let actual_reads = observed.reads.borrow();
+                let serial_reads = serial.reads.borrow();
+                let mut remaining = serial_reads.iter();
+                for read in actual_reads.iter() {
+                    assert!(remaining.any(|original| original == read));
+                }
+                if expected.is_err() {
+                    assert_eq!(actual_reads.last(), serial_reads.last());
+                } else if capacity > 0 {
+                    // One root, one owner link per row, and exactly one complete
+                    // authentication of each shared child (3 + 2 + 1 calls).
+                    assert_eq!(actual_reads.len(), 1 + capacity + 6);
+                }
                 assert_eq!(census.rows, rows);
-                assert_eq!(census.group_kinds, kinds);
-                assert_eq!(census.core_masks, masks);
                 assert_eq!(census.sources.len(), rows.len());
                 assert_eq!(census.unit_inputs().unwrap().seeds(), seeds);
-                assert!(
-                    census
-                        .union_masks
-                        .iter()
-                        .chain(&census.changed_masks)
-                        .all(|&m| m == 0)
-                );
                 assert_eq!(census.allocated_bytes(), allocated);
                 assert_eq!(
                     census.payload_bytes() - input_bytes,
@@ -1271,9 +1115,10 @@ mod tests {
                         .reads
                         .borrow()
                         .iter()
-                        .enumerate()
-                        .filter(|(index, _)| Some(*index) != fault_at)
-                        .map(|(_, &(_, len))| len as u64)
+                        .filter(|&&(address, len)| !fault.is_some_and(|fault| {
+                            address <= fault && address.saturating_add(len) > fault
+                        }))
+                        .map(|&(_, len)| len as u64)
                         .sum::<u64>()
                 );
                 assert_eq!(
@@ -1285,5 +1130,151 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn core_identity_collisions_failures_and_next_walk_use_original_sources() {
+        fn read_children(
+            memory: &impl Memory,
+            identities: &mut CoreIdentities,
+            pointers: [usize; 3],
+        ) -> Result<[u64; 3], &'static str> {
+            Ok([
+                identities.province(memory, pointers[0])? as u64,
+                identities.template(memory, pointers[1])?,
+                identities.group(memory, pointers[2])?,
+            ])
+        }
+        let mut bytes = kit::fixture();
+        let original = [kit::P1, 0x40000, 0x41000];
+        let collision = |pointer, range: std::ops::Range<usize>| {
+            range
+                .step_by(16)
+                .find(|&other| {
+                    other != pointer && CoreIdentities::slot(other) == CoreIdentities::slot(pointer)
+                })
+                .unwrap()
+        };
+        let colliding = [
+            collision(original[0], 0x60000..0x67000),
+            collision(original[1], 0x56000..0x59000),
+            collision(original[2], 0x5c000..0x5f000),
+        ];
+        let group_handle = (u32::MAX as u64) << 32 | engine::corders_group::REFERENCE_TYPE as u64;
+        for (address, value) in [
+            (colliding[0], cprovince::VTABLE_RVA as u64),
+            (kit::PTAB + 16, colliding[0] as u64),
+            (
+                colliding[1],
+                creferenced_division_template::VTABLE_RVA as u64,
+            ),
+            // The original core accepts any nonzero template handle. Do not
+            // strengthen that contract by borrowing a stricter engine helper.
+            (colliding[1] + creferenced_division_template::TYPE, u64::MAX),
+            (colliding[2], engine::carmy_group::VTABLE_RVA as u64),
+            (colliding[2] + 8, group_handle),
+        ] {
+            bytes[address..address + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        let province_id = colliding[0] + cprovince::ID;
+        bytes[province_id..province_id + 4].copy_from_slice(&2_u32.to_le_bytes());
+        for offset in [8, 12] {
+            let address = kit::GAME_STATE + cgame_state::PROVINCES + offset;
+            bytes[address..address + 4].copy_from_slice(&3_u32.to_le_bytes());
+        }
+        let provinces = Array {
+            data: kit::PTAB,
+            count: 3,
+        };
+        let memory = Observed {
+            bytes: &bytes,
+            reads: RefCell::new(Vec::new()),
+            fault: None,
+            fault_at: None,
+        };
+        let mut identities = CoreIdentities::new(kit::BASE, provinces);
+        assert_eq!(read_children(&memory, &mut identities, [0; 3]), Ok([0; 3]));
+        assert!(memory.reads.borrow().is_empty());
+        let expected_original = [
+            1,
+            0x3455_0000_0034,
+            (57_u64 << 32) | engine::corders_group::REFERENCE_TYPE as u64,
+        ];
+        let expected_collision = [2, u64::MAX, group_handle];
+        for (pointers, expected) in [
+            (original, expected_original),
+            (colliding, expected_collision),
+            (original, expected_original),
+        ] {
+            assert_eq!(
+                read_children(&memory, &mut identities, pointers),
+                Ok(expected)
+            );
+        }
+        assert_eq!(memory.reads.borrow().len(), 18);
+        assert_eq!(
+            read_children(&memory, &mut identities, original),
+            Ok(expected_original)
+        );
+        assert_eq!(memory.reads.borrow().len(), 18);
+
+        for fault in [
+            colliding[0],
+            province_id,
+            kit::PTAB + 16,
+            colliding[1],
+            colliding[1] + 8,
+            colliding[2],
+        ] {
+            let mut identities = CoreIdentities::new(kit::BASE, provinces);
+            assert_eq!(
+                read_children(&kit::memory(&bytes), &mut identities, original),
+                Ok(expected_original)
+            );
+            let failing = Observed {
+                bytes: &bytes,
+                reads: RefCell::new(Vec::new()),
+                fault: Some(fault),
+                fault_at: None,
+            };
+            let expected = read_children(
+                &failing,
+                &mut CoreIdentities::new(kit::BASE, provinces),
+                colliding,
+            )
+            .unwrap_err();
+            let expected_reads = failing.reads.take();
+            assert_eq!(
+                read_children(&failing, &mut identities, colliding),
+                Err(expected)
+            );
+            assert_eq!(*failing.reads.borrow(), expected_reads);
+            assert_eq!(
+                read_children(&kit::memory(&bytes), &mut identities, colliding),
+                Ok(expected_collision)
+            );
+        }
+
+        // Reusing Census storage begins a new core walk, even when all child
+        // addresses survive. It must observe the new identities and backlink.
+        let mut census = Census::new();
+        census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 3);
+        assert_eq!(census.rows[0].province, 1);
+        assert_eq!(census.rows[0].template, expected_original[1]);
+        assert_eq!(census.rows[0].orders_group, expected_original[2]);
+        for (address, value) in [
+            (kit::PTAB + 16, kit::P1 as u64),
+            (original[1] + 8, u64::MAX),
+            (original[2] + 8, group_handle),
+        ] {
+            bytes[address..address + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[kit::P1 + cprovince::ID..kit::P1 + cprovince::ID + 4]
+            .copy_from_slice(&2_u32.to_le_bytes());
+        census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 3);
+        assert_eq!(census.outcome(3), Outcome::Rows { len: 3 });
+        assert_eq!(census.rows[0].province, expected_collision[0] as u32);
+        assert_eq!(census.rows[0].template, expected_collision[1]);
+        assert_eq!(census.rows[0].orders_group, expected_collision[2]);
     }
 }

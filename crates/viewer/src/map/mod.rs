@@ -9,6 +9,7 @@ pub mod border_pass;
 pub mod borders;
 pub mod camera;
 // counters
+pub mod counter_eta;
 pub mod counter_groups;
 pub mod counter_inputs;
 pub mod counter_move;
@@ -18,6 +19,8 @@ pub mod counter_status;
 pub mod counters;
 // borders: the demilitarised-zone bucket bank
 pub mod demilitarized;
+// counters: the one ETA source, recorded or derived
+pub mod division_eta;
 pub mod entity_animation;
 pub mod entity_effects;
 pub mod frame;

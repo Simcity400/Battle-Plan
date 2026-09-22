@@ -500,7 +500,7 @@ fn compare_research(
             replay::rows::TableId::TechnologyDefinitions,
         ] {
             report.limitation(
-                "Research family refreshed every 4th hour; off-hours replay holds last refresh",
+                &format!("Research family {}", replay::cadence::STAGGER_LIMITATION),
                 format!(
                     "{table:?} refreshes on {} (oracle hour {})",
                     replay::cadence::refresh_text(table),
@@ -1453,7 +1453,7 @@ mod tests {
         };
         let frame = DecodedFrame {
             branch: 1,
-            hour: 2,
+            hour: 0,
             metrics: Metrics::default(),
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
@@ -2067,7 +2067,7 @@ mod tests {
     #[test]
     fn staggered_off_hours_skips_research_and_prints_refresh_hour() {
         let (mut frame, pack, country) = fixture();
-        frame.hour = 0;
+        frame.hour = 1;
         let mut report = Report::default();
         compare_research(
             &frame,

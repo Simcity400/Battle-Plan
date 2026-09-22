@@ -16,9 +16,10 @@
 
 use crate::{
     raw::RawLog,
-    sampling::{full_match, qpc},
+    read_accounting,
+    sampling::qpc,
     spooling::{table, unavailable},
-    table_capture::{Arena, CaptureRows, comparison, comparison_rows},
+    table_capture::{Arena, CaptureRows},
 };
 use engine::{
     Memory, cair_group, cair_theatre, cair_wing, cdominance_values, cgame_date, cgame_state,
@@ -54,24 +55,14 @@ pub const TABLES: [TableId; N] = [
     TableId::ArmyGroupMembers,
 ];
 
-/// Shared traversals are charged once to their first table; comparison costs
-/// and the separately acquired reverse censuses are included in these totals.
+/// Shared traversals are charged once to their first table. The separately
+/// acquired reverse censuses are included in these totals.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("railway state", 2, &[2, 3]),
     ("land and air theatres", 4, &[4, 5, 6, 7, 8, 9]),
     ("retained naval results", 10, &[10, 11, 12]),
     ("army order of battle", 14, &[14, 15, 16]),
 ];
-
-pub fn needs_order_sources(needed: &[bool]) -> bool {
-    // The shared authenticated registry census feeds both the theatre reverse
-    // membership and the order of battle, so any of them can request the second
-    // pass. A table that does not need it still keeps its own outcome.
-    needed[6] || needed[14] || needed[15] || needed[16]
-}
-pub fn needs_wing_sources(needed: &[bool]) -> bool {
-    needed[9]
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
@@ -114,21 +105,15 @@ pub struct Captured {
     groups: CaptureRows<corders_group::GroupRow>,
     group_members: CaptureRows<corders_group::MemberRow>,
     group_children: CaptureRows<corders_group::ChildRow>,
-    /// Second-pass outcomes of the order-of-battle read, kept beside the
-    /// primary CaptureRows outcomes so each table compares independently.
-    oob_second: [Outcome; 3],
-    oob_finished: [bool; 2],
+    oob_finished: bool,
     theatre_names: Arena<u8>,
     sunk_names: Arena<u8>,
     orders_sources: CaptureRows<ctheatre::OrdersMembership>,
     wing_sources: CaptureRows<ctheatre::WingMembership>,
-    orders_seen: Vec<u8>,
-    wings_seen: Vec<u8>,
-    orders_second: Outcome,
-    wings_second: Outcome,
-    orders_finished: [bool; 2],
-    wings_finished: [bool; 2],
+    orders_finished: bool,
+    wings_finished: bool,
     source_ticks: [u64; 3],
+    active: [bool; N],
     /// Raw-copy split gate for the hourly source-fed naval block (9 tables).
     /// Set by the game thread every hour with a valid raw payload; `capture`
     /// then skips the theatre/OOB walks and the decode worker replays them
@@ -148,46 +133,110 @@ pub struct Captured {
     pub(crate) sunk_raw_mode: bool,
 }
 
+const SKIPPED: Outcome = Outcome::Unavailable {
+    reason: replay::cadence::SKIPPED_REASON,
+};
+
+fn failed(active: bool, reason: &'static str) -> Outcome {
+    if active {
+        Outcome::Unavailable { reason }
+    } else {
+        SKIPPED
+    }
+}
+
 impl Captured {
-    pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
-        let theatre_success = *successful[4..10].iter().min().unwrap();
-        let rail_success = successful[2].min(successful[3]);
-        let result_success = *successful[10..13].iter().min().unwrap();
+    /// Late owns the residual typed walks; independent raw payloads keep their
+    /// gates and are installed normally after this terminal result.
+    pub(crate) fn fail_late_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.prepare_hour(hour, force_full);
+        if !self.supremacy_raw_mode {
+            self.supremacy.fail(failed(self.active[0], reason));
+        }
+        self.convoys.fail(failed(self.active[1], reason));
+        self.cooldowns.fail(failed(self.active[2], reason));
+        self.edges.fail(failed(self.active[3], reason));
+        if !self.raw_mode {
+            self.land.fail(failed(self.active[4], reason));
+            self.land_groups.fail(failed(self.active[5], reason));
+            self.land_members.fail(failed(self.active[6], reason));
+            self.air.fail(failed(self.active[7], reason));
+            self.air_groups.fail(failed(self.active[8], reason));
+            self.air_members.fail(failed(self.active[9], reason));
+            self.groups.fail(failed(self.active[14], reason));
+            self.group_members.fail(failed(self.active[15], reason));
+            self.group_children.fail(failed(self.active[16], reason));
+        }
+        self.results.fail(failed(self.active[10], reason));
+        self.result_members.fail(failed(self.active[11], reason));
+        self.result_countries.fail(failed(self.active[12], reason));
+        if !self.sunk_raw_mode {
+            self.sunk.fail(failed(self.active[13], reason));
+        }
+    }
+
+    /// Allocation-free placeholder while a worker owns the capture buffers.
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities {
+            rows: [0; N],
+            theatre_names: 0,
+            sunk_names: 0,
+            orders_sources: 0,
+            wing_sources: 0,
+        })
+    }
+
+    pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            supremacy: CaptureRows::new(capacity.rows[0], successful[0]),
-            convoys: CaptureRows::new(capacity.rows[1], successful[1]),
-            cooldowns: CaptureRows::new(capacity.rows[2], rail_success),
-            edges: CaptureRows::new(capacity.rows[3], rail_success),
-            land: CaptureRows::new(capacity.rows[4], theatre_success),
-            land_groups: CaptureRows::new(capacity.rows[5], theatre_success),
-            land_members: CaptureRows::new(capacity.rows[6], theatre_success),
-            air: CaptureRows::new(capacity.rows[7], theatre_success),
-            air_groups: CaptureRows::new(capacity.rows[8], theatre_success),
-            air_members: CaptureRows::new(capacity.rows[9], theatre_success),
-            results: CaptureRows::new(capacity.rows[10], result_success),
-            result_members: CaptureRows::new(capacity.rows[11], result_success),
-            result_countries: CaptureRows::new(capacity.rows[12], result_success),
-            sunk: CaptureRows::new(capacity.rows[13], successful[13]),
-            groups: CaptureRows::new(capacity.rows[14], successful[14]),
-            group_members: CaptureRows::new(capacity.rows[15], successful[15]),
-            group_children: CaptureRows::new(capacity.rows[16], successful[16]),
-            oob_second: [source_unavailable(); 3],
-            oob_finished: [false; 2],
-            theatre_names: Arena::new(capacity.theatre_names, theatre_success),
-            sunk_names: Arena::new(capacity.sunk_names, successful[13]),
-            orders_sources: CaptureRows::new(capacity.orders_sources, successful[6]),
-            wing_sources: CaptureRows::new(capacity.wing_sources, successful[9]),
-            orders_seen: comparison_rows(capacity.orders_sources, successful[6]),
-            wings_seen: comparison_rows(capacity.wing_sources, successful[9]),
-            orders_second: source_unavailable(),
-            wings_second: source_unavailable(),
-            orders_finished: [false; 2],
-            wings_finished: [false; 2],
+            supremacy: CaptureRows::new(capacity.rows[0]),
+            convoys: CaptureRows::new(capacity.rows[1]),
+            cooldowns: CaptureRows::new(capacity.rows[2]),
+            edges: CaptureRows::new(capacity.rows[3]),
+            land: CaptureRows::new(capacity.rows[4]),
+            land_groups: CaptureRows::new(capacity.rows[5]),
+            land_members: CaptureRows::new(capacity.rows[6]),
+            air: CaptureRows::new(capacity.rows[7]),
+            air_groups: CaptureRows::new(capacity.rows[8]),
+            air_members: CaptureRows::new(capacity.rows[9]),
+            results: CaptureRows::new(capacity.rows[10]),
+            result_members: CaptureRows::new(capacity.rows[11]),
+            result_countries: CaptureRows::new(capacity.rows[12]),
+            sunk: CaptureRows::new(capacity.rows[13]),
+            groups: CaptureRows::new(capacity.rows[14]),
+            group_members: CaptureRows::new(capacity.rows[15]),
+            group_children: CaptureRows::new(capacity.rows[16]),
+            oob_finished: false,
+            theatre_names: Arena::new(capacity.theatre_names),
+            sunk_names: Arena::new(capacity.sunk_names),
+            orders_sources: CaptureRows::new(capacity.orders_sources),
+            wing_sources: CaptureRows::new(capacity.wing_sources),
+            orders_finished: false,
+            wings_finished: false,
             source_ticks: [0; 3],
+            active: [true; N],
             raw_mode: false,
             supremacy_raw_mode: false,
             sunk_raw_mode: false,
         }
+    }
+
+    /// Freeze the requested tables before contexts and shared map callbacks.
+    pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
+        self.active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
+    }
+
+    pub(crate) fn theatres_active(&self) -> bool {
+        self.active[4]
+    }
+
+    fn skip_theatres(&mut self) {
+        self.land.outcome = SKIPPED;
+        self.land_groups.outcome = SKIPPED;
+        self.land_members.outcome = SKIPPED;
+        self.air.outcome = SKIPPED;
+        self.air_groups.outcome = SKIPPED;
+        self.air_members.outcome = SKIPPED;
+        self.theatre_names.reset();
     }
 
     /// Call before shared map acquisition; capture() preserves these source visits.
@@ -198,14 +247,11 @@ impl Captured {
         self.groups.reset();
         self.group_members.reset();
         self.group_children.reset();
-        self.oob_second = [source_unavailable(); 3];
-        self.oob_finished = [false; 2];
+        self.oob_finished = false;
         self.orders_sources.outcome = Outcome::Rows { len: 0 };
         self.wing_sources.outcome = Outcome::Rows { len: 0 };
-        self.orders_second = Outcome::Rows { len: 0 };
-        self.wings_second = Outcome::Rows { len: 0 };
-        self.orders_finished = [false; 2];
-        self.wings_finished = [false; 2];
+        self.orders_finished = false;
+        self.wings_finished = false;
         self.source_ticks = [0; 3];
         self.raw_mode = false;
     }
@@ -251,52 +297,30 @@ impl Captured {
             + self.sunk_names.allocated_bytes()
             + self.orders_sources.allocated_bytes()
             + self.wing_sources.allocated_bytes()
-            + self.orders_seen.capacity()
-            + self.wings_seen.capacity()
     }
 
-    pub fn grow(&mut self, capacity: &mut Capacities, successful: &[u16]) {
-        let theatre_success = *successful[4..10].iter().min().unwrap();
-        let rail_success = successful[2].min(successful[3]);
-        let result_success = *successful[10..13].iter().min().unwrap();
-        self.supremacy.grow(&mut capacity.rows[0], successful[0]);
-        self.convoys.grow(&mut capacity.rows[1], successful[1]);
-        self.cooldowns.grow(&mut capacity.rows[2], rail_success);
-        self.edges.grow(&mut capacity.rows[3], rail_success);
-        self.land.grow(&mut capacity.rows[4], theatre_success);
-        self.land_groups
-            .grow(&mut capacity.rows[5], theatre_success);
-        self.land_members
-            .grow(&mut capacity.rows[6], theatre_success);
-        self.air.grow(&mut capacity.rows[7], theatre_success);
-        self.air_groups.grow(&mut capacity.rows[8], theatre_success);
-        self.air_members
-            .grow(&mut capacity.rows[9], theatre_success);
-        self.results.grow(&mut capacity.rows[10], result_success);
-        self.result_members
-            .grow(&mut capacity.rows[11], result_success);
-        self.result_countries
-            .grow(&mut capacity.rows[12], result_success);
-        self.sunk.grow(&mut capacity.rows[13], successful[13]);
-        self.groups.grow(&mut capacity.rows[14], successful[14]);
-        self.group_members
-            .grow(&mut capacity.rows[15], successful[15]);
-        self.group_children
-            .grow(&mut capacity.rows[16], successful[16]);
-        self.theatre_names
-            .grow(&mut capacity.theatre_names, theatre_success);
-        self.sunk_names
-            .grow(&mut capacity.sunk_names, successful[13]);
-        self.orders_sources
-            .grow(&mut capacity.orders_sources, successful[6]);
-        self.wing_sources
-            .grow(&mut capacity.wing_sources, successful[9]);
-        comparison(
-            &mut self.orders_seen,
-            capacity.orders_sources,
-            successful[6],
-        );
-        comparison(&mut self.wings_seen, capacity.wing_sources, successful[9]);
+    pub fn grow(&mut self, capacity: &mut Capacities) {
+        self.supremacy.grow(&mut capacity.rows[0]);
+        self.convoys.grow(&mut capacity.rows[1]);
+        self.cooldowns.grow(&mut capacity.rows[2]);
+        self.edges.grow(&mut capacity.rows[3]);
+        self.land.grow(&mut capacity.rows[4]);
+        self.land_groups.grow(&mut capacity.rows[5]);
+        self.land_members.grow(&mut capacity.rows[6]);
+        self.air.grow(&mut capacity.rows[7]);
+        self.air_groups.grow(&mut capacity.rows[8]);
+        self.air_members.grow(&mut capacity.rows[9]);
+        self.results.grow(&mut capacity.rows[10]);
+        self.result_members.grow(&mut capacity.rows[11]);
+        self.result_countries.grow(&mut capacity.rows[12]);
+        self.sunk.grow(&mut capacity.rows[13]);
+        self.groups.grow(&mut capacity.rows[14]);
+        self.group_members.grow(&mut capacity.rows[15]);
+        self.group_children.grow(&mut capacity.rows[16]);
+        self.theatre_names.grow(&mut capacity.theatre_names);
+        self.sunk_names.grow(&mut capacity.sunk_names);
+        self.orders_sources.grow(&mut capacity.orders_sources);
+        self.wing_sources.grow(&mut capacity.wing_sources);
     }
 
     /// Already included in the pack's returned times, in
@@ -312,15 +336,17 @@ impl Captured {
         base: usize,
         roots: &[corders_group::Root],
         source: Outcome,
-        second: bool,
     ) {
+        if !self.theatres_active() {
+            self.orders_sources.outcome = SKIPPED;
+            self.orders_finished = true;
+            self.set_order_of_battle(memory, base, roots, source);
+            return;
+        }
+        let reads = read_accounting::table(TableId::LandTheatreMembers);
         let begin = qpc();
-        let output = if second {
-            &mut self.orders_sources.second
-        } else {
-            &mut self.orders_sources.rows
-        };
-        let outcome = match source {
+        let output = &mut self.orders_sources.rows;
+        self.orders_sources.outcome = match source {
             Outcome::Rows { len } if len <= roots.len() => {
                 let mut result = Outcome::Rows { len: 0 };
                 for root in &roots[..len] {
@@ -344,44 +370,29 @@ impl Captured {
                 reason: "orders registry census exceeds captured roots",
             },
         };
-        if second {
-            self.orders_second = outcome;
-        } else {
-            self.orders_sources.outcome = outcome;
-        }
-        self.orders_finished[usize::from(second)] = true;
+        self.orders_finished = true;
         self.source_ticks[0] = self.source_ticks[0].saturating_add(elapsed(begin));
-        self.set_order_of_battle(memory, base, roots, source, second);
+        drop(reads);
+        self.set_order_of_battle(memory, base, roots, source);
     }
 
-    /// Reads every group's identity, its ordered member vector and, for army
-    /// groups, its ordered child vector from the same authenticated census.
-    /// A truncated or unavailable registry cannot establish a complete order of
-    /// battle, so it fails all three tables with that reason.
+    /// All three tables use the same authenticated registry census.
     fn set_order_of_battle(
         &mut self,
         memory: &impl Memory,
         base: usize,
         roots: &[corders_group::Root],
         source: Outcome,
-        second: bool,
     ) {
+        let _reads = read_accounting::table(TableId::OrdersGroups);
         let begin = qpc();
         let outcomes = match source {
             Outcome::Rows { len } if len <= roots.len() => {
-                let (groups, members, children) = if second {
-                    (
-                        &mut self.groups.second,
-                        &mut self.group_members.second,
-                        &mut self.group_children.second,
-                    )
-                } else {
-                    (
-                        &mut self.groups.rows,
-                        &mut self.group_members.rows,
-                        &mut self.group_children.rows,
-                    )
-                };
+                let (groups, members, children) = (
+                    &mut self.groups.rows,
+                    &mut self.group_members.rows,
+                    &mut self.group_children.rows,
+                );
                 let capacity = [groups.len(), members.len(), children.len()];
                 let walk = corders_group::walk_order_of_battle(
                     memory,
@@ -411,57 +422,27 @@ impl Captured {
                 }; 3]
             }
         };
-        if second {
-            self.oob_second = outcomes;
-        } else {
-            self.groups.outcome = outcomes[0];
-            self.group_members.outcome = outcomes[1];
-            self.group_children.outcome = outcomes[2];
-        }
-        self.oob_finished[usize::from(second)] = true;
+        self.groups.outcome = outcomes[0];
+        self.group_members.outcome = outcomes[1];
+        self.group_children.outcome = outcomes[2];
+        self.oob_finished = true;
         self.source_ticks[2] = self.source_ticks[2].saturating_add(elapsed(begin));
     }
-
-    /// The order-of-battle tables are filled by the shared source callback, so
-    /// their comparisons and their dependence on a finished first pass are
-    /// settled here rather than inside a walker.
-    fn finish_order_of_battle(&mut self, needed: &[bool], matched: &mut [bool; N]) {
-        let others = if self.oob_finished[1] {
-            self.oob_second
-        } else {
-            [source_unavailable(); 3]
-        };
-        if needed[14] {
-            matched[14] = compare(&mut self.groups, others[0], true);
-        }
-        if needed[15] {
-            matched[15] = compare(&mut self.group_members, others[1], true);
-        }
-        if needed[16] {
-            matched[16] = compare(&mut self.group_children, others[2], true);
-        }
-        if !self.oob_finished[0] {
+    fn finish_order_of_battle(&mut self) {
+        if !self.oob_finished {
             self.groups.outcome = source_unavailable();
             self.group_members.outcome = source_unavailable();
             self.group_children.outcome = source_unavailable();
-            matched[14..17].fill(false);
         }
     }
-
-    pub fn visit_wing(
-        &mut self,
-        memory: &impl Memory,
-        _base: usize,
-        pointer: usize,
-        wing: &cair_wing::Row,
-        second: bool,
-    ) {
+    pub fn visit_wing(&mut self, memory: &impl Memory, pointer: usize, wing: &cair_wing::Row) {
+        if !self.theatres_active() {
+            self.wing_sources.outcome = SKIPPED;
+            return;
+        }
+        let _reads = read_accounting::table(TableId::AirTheatreMembers);
         let begin = qpc();
-        let (output, outcome) = if second {
-            (&mut self.wing_sources.second, &mut self.wings_second)
-        } else {
-            (&mut self.wing_sources.rows, &mut self.wing_sources.outcome)
-        };
+        let (output, outcome) = (&mut self.wing_sources.rows, &mut self.wing_sources.outcome);
         let row = if outcome.len() < output.len() {
             ctheatre::read_wing_membership(memory, pointer, wing)
         } else {
@@ -470,14 +451,14 @@ impl Captured {
         push(output, outcome, row);
         self.source_ticks[1] = self.source_ticks[1].saturating_add(elapsed(begin));
     }
-
-    pub fn finish_wings(&mut self, source: Outcome, second: bool) {
+    pub fn finish_wings(&mut self, source: Outcome) {
+        if !self.theatres_active() {
+            self.wing_sources.outcome = SKIPPED;
+            self.wings_finished = true;
+            return;
+        }
         let begin = qpc();
-        let outcome = if second {
-            &mut self.wings_second
-        } else {
-            &mut self.wing_sources.outcome
-        };
+        let outcome = &mut self.wing_sources.outcome;
         let read_count = match *outcome {
             Outcome::Rows { len } => Some(len),
             Outcome::Truncated { len, unread_rows } => len.checked_add(unread_rows as usize),
@@ -499,20 +480,19 @@ impl Captured {
             }
             _ => {}
         }
-        self.wings_finished[usize::from(second)] = true;
+        self.wings_finished = true;
         self.source_ticks[1] = self.source_ticks[1].saturating_add(elapsed(begin));
     }
-
-    /// Typed theatre fallback consumes the same map-admitted membership prefix
-    /// its visitor would have read; the raw theatre path uses the full source.
-    pub(crate) fn install_map_wings(&mut self, job: &super::air::AirWingJob, second: bool) {
+    /// Typed theatre fallback consumes the map-admitted membership prefix.
+    pub(crate) fn install_map_wings(&mut self, job: &super::air::AirWingJob) {
+        if !job.theatres_active {
+            self.wing_sources.outcome = SKIPPED;
+            self.wings_finished = true;
+            return;
+        }
         let begin = qpc();
         let sources = job.map_memberships();
-        let (output, outcome) = if second {
-            (&mut self.wing_sources.second, &mut self.wings_second)
-        } else {
-            (&mut self.wing_sources.rows, &mut self.wing_sources.outcome)
-        };
+        let (output, outcome) = (&mut self.wing_sources.rows, &mut self.wing_sources.outcome);
         *outcome = Outcome::Rows { len: 0 };
         for source in sources.iter().take(job.map_outcome.len()) {
             let row = match source.error {
@@ -522,7 +502,7 @@ impl Captured {
             push(output, outcome, row);
         }
         self.add_wing_source_ticks(job.membership_ticks.saturating_add(elapsed(begin)));
-        self.finish_wings(job.map_outcome, second);
+        self.finish_wings(job.map_outcome);
     }
 
     pub(crate) fn add_wing_source_ticks(&mut self, ticks: u64) {
@@ -535,34 +515,41 @@ impl Captured {
         base: usize,
         game_state: usize,
         current_hour: i32,
-        needed: &[bool],
-    ) -> ([bool; N], [u64; N]) {
+        force_full: bool,
+    ) -> [u64; N] {
+        self.prepare_hour(current_hour, force_full);
         self.reset_tables();
-        let mut matched = [false; N];
         let mut ticks = [0; N];
         // Hourly supremacy raw-copy split: on hours with a valid raw payload
         // the game thread stages bytes via `copy_supremacy_refresh` and the
         // decode worker fills the typed rows before the ready handoff, so
-        // the typed walk is skipped here. Matched flags and costs come from
-        // the raw compare, applied by the caller after this returns.
-        if self.supremacy_raw_mode {
+        // the typed walk is skipped here.
+        if !self.active[0] {
+            self.supremacy.outcome = SKIPPED;
+        } else if self.supremacy_raw_mode {
             // Refresh payload staged: leave the reset outcome for the decode
             // worker, which installs identical rows and outcomes.
-            matched[0] = false;
             ticks[0] = 0;
         } else {
             let begin = qpc();
-            matched[0] = capture_rows(&mut self.supremacy, needed[0], |rows| {
+            capture_rows(&mut self.supremacy, |rows| {
+                let _reads = read_accounting::table(TableId::NavalSupremacy);
                 cnaval_region_dominance::walk(memory, base, game_state, rows)
             });
             ticks[0] = elapsed(begin);
         }
-        let begin = qpc();
-        matched[1] = capture_rows(&mut self.convoys, needed[1], |rows| {
-            csunk_convoy_info::walk(memory, base, game_state, rows)
-        });
-        ticks[1] = elapsed(begin);
+        if self.active[1] {
+            let begin = qpc();
+            capture_rows(&mut self.convoys, |rows| {
+                let _reads = read_accounting::table(TableId::SunkConvoys);
+                csunk_convoy_info::walk(memory, base, game_state, rows)
+            });
+            ticks[1] = elapsed(begin);
+        } else {
+            self.convoys.outcome = SKIPPED;
+        }
 
+        let rail_reads = read_accounting::table(TableId::RailCooldowns);
         let begin = qpc();
         let first = crailway_manager::walk(
             memory,
@@ -573,33 +560,29 @@ impl Captured {
         );
         self.cooldowns.outcome = bounded(first.provinces, self.cooldowns.rows.len());
         self.edges.outcome = bounded(first.edges, self.edges.rows.len());
-        if needed[2] || needed[3] {
-            let second = crailway_manager::walk(
-                memory,
-                base,
-                game_state,
-                &mut self.cooldowns.second,
-                &mut self.edges.second,
-            );
-            matched[2] = compare(&mut self.cooldowns, second.provinces, needed[2]);
-            matched[3] = compare(&mut self.edges, second.edges, needed[3]);
-        }
         ticks[2] = elapsed(begin);
+        drop(rail_reads);
 
         // Raw-copy split (hourly source-fed naval block): the game thread
         // staged raw bytes and the decode worker replays theatres/OOB before
-        // the ready handoff. Skip those walks here; matched flags and costs
-        // install from the copy report in the tick.
+        // the ready handoff. Skip those walks here.
+        if !self.theatres_active() {
+            self.skip_theatres();
+        }
         if !self.raw_mode {
-            let begin = qpc();
-            self.capture_theatres(memory, base, game_state, needed, &mut matched);
-            ticks[4] = elapsed(begin);
-            ticks[6] = self.source_ticks[0];
-            ticks[9] = self.source_ticks[1];
+            if self.theatres_active() {
+                let _reads = read_accounting::table(TableId::LandTheatres);
+                let begin = qpc();
+                self.capture_theatres(memory, base, game_state);
+                ticks[4] = elapsed(begin);
+                ticks[6] = self.source_ticks[0];
+                ticks[9] = self.source_ticks[1];
+            }
             ticks[14] = self.source_ticks[2];
-            self.finish_order_of_battle(needed, &mut matched);
+            self.finish_order_of_battle();
         }
 
+        let result_reads = read_accounting::table(TableId::NavalResults);
         let begin = qpc();
         let first = cnaval_combat_results::walk(
             memory,
@@ -612,46 +595,29 @@ impl Captured {
         self.results.outcome = bounded(first.records, self.results.rows.len());
         self.result_members.outcome = bounded(first.members, self.result_members.rows.len());
         self.result_countries.outcome = bounded(first.countries, self.result_countries.rows.len());
-        if needed[10..13].iter().any(|&needed| needed) {
-            let second = cnaval_combat_results::walk(
-                memory,
-                base,
-                game_state,
-                &mut self.results.second,
-                &mut self.result_members.second,
-                &mut self.result_countries.second,
-            );
-            matched[10] = compare(&mut self.results, second.records, needed[10]);
-            matched[11] = compare(&mut self.result_members, second.members, needed[11]);
-            matched[12] = compare(&mut self.result_countries, second.countries, needed[12]);
-        }
         ticks[10] = elapsed(begin);
+        drop(result_reads);
 
-        let begin = qpc();
         // Hourly sunk-ships raw-copy split: on hours with a valid raw payload
         // the game thread stages bytes via `copy_sunk_refresh` and the decode
         // worker fills the typed rows before the ready handoff, so the typed
         // walk is skipped here.
-        if self.sunk_raw_mode {
+        if !self.active[13] {
+            self.sunk.outcome = SKIPPED;
+        } else if self.sunk_raw_mode {
             // Refresh payload staged: leave the reset outcome for the decode
             // worker, which installs identical rows and outcomes.
-            matched[13] = false;
             ticks[13] = 0;
         } else {
-            matched[13] = self.capture_sunk(memory, base, game_state, current_hour, needed[13]);
+            let _reads = read_accounting::table(TableId::SunkShips);
+            let begin = qpc();
+            self.capture_sunk(memory, base, game_state, current_hour);
             ticks[13] = elapsed(begin);
         }
-        (matched, ticks)
+        ticks
     }
 
-    fn capture_theatres(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        needed: &[bool],
-        matched: &mut [bool; N],
-    ) {
+    fn capture_theatres(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
         let first = ctheatre::walk(
             memory,
             base,
@@ -686,142 +652,11 @@ impl Captured {
         validate_named(&mut self.air_groups, first_names, |r| {
             (r.name_start, r.name_len)
         });
-        if needed[4..10].iter().any(|&needed| needed) {
-            let second = ctheatre::walk(
-                memory,
-                base,
-                game_state,
-                ctheatre::Buffers {
-                    land: &mut self.land.second,
-                    land_groups: &mut self.land_groups.second,
-                    land_members: &mut self.land_members.second,
-                    air: &mut self.air.second,
-                    air_groups: &mut self.air_groups.second,
-                    air_members: &mut self.air_members.second,
-                    names: &mut self.theatre_names.second,
-                },
-            );
-            self.theatre_names.required = self.theatre_names.required.max(second.names_required);
-            let second_names = self
-                .theatre_names
-                .second
-                .get(..second.names_len)
-                .filter(|_| second.names_required >= second.names_len);
-            matched[4] = compare(&mut self.land, second.land, needed[4]);
-            matched[5] = compare_named(
-                &mut self.land_groups,
-                second.land_groups,
-                needed[5],
-                first_names,
-                second_names,
-                |r| (r.name_start, r.name_len),
-                |r| {
-                    let mut r = *r;
-                    r.name_start = 0;
-                    r
-                },
-            );
-            matched[6] = compare(&mut self.land_members, second.land_members, needed[6]);
-            matched[7] = compare_named(
-                &mut self.air,
-                second.air,
-                needed[7],
-                first_names,
-                second_names,
-                |r| (r.name_start, r.name_len),
-                |r| {
-                    let mut r = *r;
-                    r.name_start = 0;
-                    r
-                },
-            );
-            matched[8] = compare_named(
-                &mut self.air_groups,
-                second.air_groups,
-                needed[8],
-                first_names,
-                second_names,
-                |r| (r.name_start, r.name_len),
-                |r| {
-                    let mut r = *r;
-                    r.name_start = 0;
-                    r
-                },
-            );
-            matched[9] = compare(&mut self.air_members, second.air_members, needed[9]);
-        }
-        // During the finite consistency window, both complete forward/backlink
-        // relationships are checked too. Only copied census rows are sorted;
-        // pooled seen bytes detect duplicates and omitted memberships exactly.
-        if needed[6] {
-            let other = if self.orders_finished[1] {
-                self.orders_second
-            } else {
-                source_unavailable()
-            };
-            let source_match = compare(&mut self.orders_sources, other, true);
-            self.land_members.mismatches += self.orders_sources.mismatches;
-            matched[6] &= source_match && self.orders_finished[0];
-            if matched[6] {
-                let agrees = checked_membership(
-                    self.land_members.outcome,
-                    &self.land_members.rows,
-                    |r| (r.orders_group, r.theater_group),
-                    self.orders_sources.outcome,
-                    &mut self.orders_sources.rows,
-                    |r| (r.orders_group, r.theater_group),
-                    &mut self.orders_seen,
-                ) && checked_membership(
-                    self.land_members.outcome,
-                    &self.land_members.second,
-                    |r| (r.orders_group, r.theater_group),
-                    self.orders_second,
-                    &mut self.orders_sources.second,
-                    |r| (r.orders_group, r.theater_group),
-                    &mut self.orders_seen,
-                );
-                self.land_members.mismatches += usize::from(!agrees);
-                matched[6] = agrees;
-            }
-        }
-        if needed[9] {
-            let other = if self.wings_finished[1] {
-                self.wings_second
-            } else {
-                source_unavailable()
-            };
-            let source_match = compare(&mut self.wing_sources, other, true);
-            self.air_members.mismatches += self.wing_sources.mismatches;
-            matched[9] &= source_match && self.wings_finished[0];
-            if matched[9] {
-                let agrees = checked_membership(
-                    self.air_members.outcome,
-                    &self.air_members.rows,
-                    |r| (r.wing, r.group),
-                    self.wing_sources.outcome,
-                    &mut self.wing_sources.rows,
-                    |r| (r.wing, r.group),
-                    &mut self.wings_seen,
-                ) && checked_membership(
-                    self.air_members.outcome,
-                    &self.air_members.second,
-                    |r| (r.wing, r.group),
-                    self.wings_second,
-                    &mut self.wing_sources.second,
-                    |r| (r.wing, r.group),
-                    &mut self.wings_seen,
-                );
-                self.air_members.mismatches += usize::from(!agrees);
-                matched[9] = agrees;
-            }
-        }
-        if !complete_source(&self.orders_sources, self.orders_finished[0]) {
+        if !complete_source(&self.orders_sources, self.orders_finished) {
             self.land_members.outcome = source_unavailable();
-            matched[6] = false;
         }
-        if !complete_source(&self.wing_sources, self.wings_finished[0]) {
+        if !complete_source(&self.wing_sources, self.wings_finished) {
             self.air_members.outcome = source_unavailable();
-            matched[9] = false;
         }
     }
 
@@ -831,8 +666,7 @@ impl Captured {
         base: usize,
         game_state: usize,
         current_hour: i32,
-        needed: bool,
-    ) -> bool {
+    ) {
         let first = csunk_ship_info::walk(
             memory,
             base,
@@ -853,83 +687,38 @@ impl Captured {
         ) {
             self.sunk.outcome = invalid_names();
         }
-        if !needed {
-            return false;
-        }
-        self.sunk.checked = true;
-        let second = csunk_ship_info::walk(
-            memory,
-            base,
-            game_state,
-            current_hour,
-            &mut self.sunk.second,
-            &mut self.sunk_names.second,
-        );
-        let mut outcome = bounded(second.outcome, self.sunk.second.len());
-        if !valid_sunk(
-            outcome,
-            &self.sunk.second,
-            &self.sunk_names.second,
-            second.bytes_len,
-            second.required_bytes,
-        ) {
-            outcome = invalid_names();
-        }
-        self.sunk.compare(outcome);
-        self.sunk.mismatches += usize::from(
-            !self
-                .sunk_names
-                .compare(second.bytes_len, second.required_bytes),
-        );
-        full_match(self.sunk.outcome, outcome, self.sunk.mismatches)
-    }
-
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [
-            self.supremacy.mismatches,
-            self.convoys.mismatches,
-            self.cooldowns.mismatches,
-            self.edges.mismatches,
-            self.land.mismatches,
-            self.land_groups.mismatches,
-            self.land_members.mismatches,
-            self.air.mismatches,
-            self.air_groups.mismatches,
-            self.air_members.mismatches,
-            self.results.mismatches,
-            self.result_members.mismatches,
-            self.result_countries.mismatches,
-            self.sunk.mismatches,
-            self.groups.mismatches,
-            self.group_members.mismatches,
-            self.group_children.mismatches,
-        ]
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
         let mut result = [
-            effective(&self.supremacy),
-            effective(&self.convoys),
-            effective(&self.cooldowns),
-            effective(&self.edges),
-            effective(&self.land),
-            effective(&self.land_groups),
-            effective(&self.land_members),
-            effective(&self.air),
-            effective(&self.air_groups),
-            effective(&self.air_members),
-            effective(&self.results),
-            effective(&self.result_members),
-            effective(&self.result_countries),
-            effective(&self.sunk),
-            effective(&self.groups),
-            effective(&self.group_members),
-            effective(&self.group_children),
+            self.supremacy.outcome,
+            self.convoys.outcome,
+            self.cooldowns.outcome,
+            self.edges.outcome,
+            self.land.outcome,
+            self.land_groups.outcome,
+            self.land_members.outcome,
+            self.air.outcome,
+            self.air_groups.outcome,
+            self.air_members.outcome,
+            self.results.outcome,
+            self.result_members.outcome,
+            self.result_countries.outcome,
+            self.sunk.outcome,
+            self.groups.outcome,
+            self.group_members.outcome,
+            self.group_children.outcome,
         ];
-        if !complete_source(&self.orders_sources, self.orders_finished[0]) {
+        if self.theatres_active()
+            && !matches!(result[6], Outcome::Unavailable { .. })
+            && !complete_source(&self.orders_sources, self.orders_finished)
+        {
             result[6] = source_unavailable();
         }
-        if !complete_source(&self.wing_sources, self.wings_finished[0]) {
+        if self.theatres_active()
+            && !matches!(result[9], Outcome::Unavailable { .. })
+            && !complete_source(&self.wing_sources, self.wings_finished)
+        {
             result[9] = source_unavailable();
         }
         // The list has one replay row. A partial native list omits that whole row.
@@ -944,7 +733,7 @@ impl Captured {
             outcomes[6],
             &self.land_members.rows,
             |r| (r.orders_group, r.theater_group),
-            effective(&self.orders_sources),
+            self.orders_sources.outcome,
             &self.orders_sources.rows,
             |r| (r.orders_group, r.theater_group),
         ) {
@@ -954,7 +743,7 @@ impl Captured {
             outcomes[9],
             &self.air_members.rows,
             |r| (r.wing, r.group),
-            effective(&self.wing_sources),
+            self.wing_sources.outcome,
             &self.wing_sources.rows,
             |r| (r.wing, r.group),
         ) {
@@ -1141,7 +930,7 @@ impl Captured {
     }
 
     fn sunk_table(&self) -> TableView {
-        let outcome = effective(&self.sunk);
+        let outcome = self.sunk.outcome;
         match singleton_outcome(outcome) {
             Outcome::Unavailable { reason } => return unavailable(reason),
             Outcome::Truncated { .. } => {
@@ -1219,17 +1008,8 @@ fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
         outcome
     }
 }
-fn effective<R>(captured: &CaptureRows<R>) -> Outcome {
-    if captured.checked && captured.mismatches != 0 {
-        Outcome::Unavailable {
-            reason: "table changed during double read",
-        }
-    } else {
-        captured.outcome
-    }
-}
 fn complete_source<R>(captured: &CaptureRows<R>, finished: bool) -> bool {
-    finished && matches!(effective(captured), Outcome::Rows { len } if len <= captured.rows.len())
+    finished && matches!(captured.outcome, Outcome::Rows { len } if len <= captured.rows.len())
 }
 fn singleton_outcome(outcome: Outcome) -> Outcome {
     match outcome {
@@ -1241,28 +1021,8 @@ fn singleton_outcome(outcome: Outcome) -> Outcome {
         other => other,
     }
 }
-fn compare<R: Default + Clone + PartialEq>(
-    captured: &mut CaptureRows<R>,
-    other: Outcome,
-    needed: bool,
-) -> bool {
-    if !needed {
-        return false;
-    }
-    captured.checked = true;
-    captured.compare(bounded(other, captured.second.len()))
-}
-fn capture_rows<R: Default + Clone + PartialEq>(
-    captured: &mut CaptureRows<R>,
-    needed: bool,
-    mut walk: impl FnMut(&mut [R]) -> Outcome,
-) -> bool {
+fn capture_rows<R>(captured: &mut CaptureRows<R>, walk: impl FnOnce(&mut [R]) -> Outcome) {
     captured.outcome = bounded(walk(&mut captured.rows), captured.rows.len());
-    if !needed {
-        return false;
-    }
-    let other = bounded(walk(&mut captured.second), captured.second.len());
-    compare(captured, other, true)
 }
 fn push<R>(rows: &mut [R], outcome: &mut Outcome, row: Result<R, &'static str>) {
     if matches!(*outcome, Outcome::Unavailable { .. }) {
@@ -1322,40 +1082,6 @@ fn validate_named<R>(
     if !valid_named(captured.outcome, &captured.rows, bytes, name) {
         captured.outcome = invalid_names();
     }
-}
-fn compare_named<R: PartialEq>(
-    captured: &mut CaptureRows<R>,
-    other: Outcome,
-    needed: bool,
-    first_bytes: Option<&[u8]>,
-    other_bytes: Option<&[u8]>,
-    name: impl Fn(&R) -> (usize, usize),
-    without_offset: impl Fn(&R) -> R,
-) -> bool {
-    if !needed {
-        return false;
-    }
-    captured.checked = true;
-    let mut other = bounded(other, captured.second.len());
-    if !valid_named(other, &captured.second, other_bytes, &name) {
-        other = invalid_names();
-    }
-    captured.mismatches = if captured.outcome != other {
-        1
-    } else {
-        captured.rows[..captured.outcome.len()]
-            .iter()
-            .zip(&captured.second[..other.len()])
-            .filter(|(a, b)| {
-                let (a_start, a_len) = name(a);
-                let (b_start, b_len) = name(b);
-                without_offset(a) != without_offset(b)
-                    || first_bytes.and_then(|bytes| range(bytes, a_start, a_len))
-                        != other_bytes.and_then(|bytes| range(bytes, b_start, b_len))
-            })
-            .count()
-    };
-    full_match(captured.outcome, other, captured.mismatches)
 }
 fn valid_sunk(
     outcome: Outcome,
@@ -1432,52 +1158,6 @@ fn membership_issue<A, B>(
     None
 }
 
-/// Finite consistency checks only. O(n log n), caller-owned buffers, exact keys.
-fn checked_membership<A, B>(
-    forward: Outcome,
-    rows: &[A],
-    member: impl Fn(&A) -> (u64, u64),
-    reverse: Outcome,
-    sources: &mut [B],
-    backlink: impl Fn(&B) -> (u64, u64),
-    seen: &mut [u8],
-) -> bool {
-    let (Outcome::Rows { len }, Outcome::Rows { len: source_len }) = (forward, reverse) else {
-        return false;
-    };
-    let Some(rows) = rows.get(..len) else {
-        return false;
-    };
-    let Some(sources) = sources.get_mut(..source_len) else {
-        return false;
-    };
-    let Some(seen) = seen.get_mut(..source_len) else {
-        return false;
-    };
-    sources.sort_unstable_by_key(|source| backlink(source).0);
-    if sources
-        .windows(2)
-        .any(|pair| backlink(&pair[0]).0 == backlink(&pair[1]).0)
-    {
-        return false;
-    }
-    seen.fill(0);
-    for row in rows {
-        let (id, group) = member(row);
-        let Ok(index) = sources.binary_search_by_key(&id, |source| backlink(source).0) else {
-            return false;
-        };
-        if group == 0 || backlink(&sources[index]).1 != group || seen[index] != 0 {
-            return false;
-        }
-        seen[index] = 1;
-    }
-    sources
-        .iter()
-        .zip(seen)
-        .all(|(source, seen)| (*seen != 0) == (backlink(source).1 != 0))
-}
-
 pub(crate) const NAVAL_PACK_N: usize = 9;
 /// Fault-attribution masks in closure order: [LandTheatres,
 /// LandTheatreGroups, LandTheatreMembers, AirTheatres, AirTheatreGroups,
@@ -1494,6 +1174,7 @@ const OOB_MASK: u32 = 0x1C0;
 pub(crate) struct NavalJob {
     pub log: RawLog<NAVAL_PACK_N>,
     pub game_state: usize,
+    theatres_active: bool,
     wing_sources: Vec<ctheatre::WingMembership>,
     wing_outcome: Option<Outcome>,
     wing_required: usize,
@@ -1503,6 +1184,13 @@ pub(crate) struct NavalJob {
 impl NavalJob {
     /// Callback-owned values from the one shared complete wing census.
     pub(crate) fn install_wings(&mut self, job: &super::air::AirWingJob) -> u64 {
+        self.theatres_active = job.theatres_active;
+        if !job.theatres_active {
+            self.wing_sources.clear();
+            self.wing_outcome = Some(SKIPPED);
+            self.wing_required = 0;
+            return 0;
+        }
         let begin = qpc();
         self.wing_sources.clear();
         let (source, rows) = job.memberships();
@@ -1553,6 +1241,7 @@ impl NavalJob {
         let mut job = Self {
             log: RawLog::new(1 << 17, 4 << 20),
             game_state: 0,
+            theatres_active: false,
             wing_sources: Vec::with_capacity(4096),
             wing_outcome: None,
             wing_required: 0,
@@ -1565,6 +1254,7 @@ impl NavalJob {
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
+        self.theatres_active = false;
         self.wing_sources.clear();
         self.wing_outcome = None;
         self.wing_required = 0;
@@ -1608,7 +1298,6 @@ impl NavalJob {
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct NavalCopyReport {
     pub raw_ok: bool,
-    pub matched: [bool; NAVAL_PACK_N],
     pub copy_ticks: [u64; NAVAL_PACK_N],
     pub raw_bytes: [u64; NAVAL_PACK_N],
 }
@@ -1617,6 +1306,8 @@ pub(crate) struct NavalCopyReport {
 pub(crate) struct NavalCopyContext {
     pub base: usize,
     pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
 }
 
 fn npool_u64(log: &RawLog<NAVAL_PACK_N>, start: usize) -> u64 {
@@ -2218,16 +1909,19 @@ fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, base: usize)
             }
             // Order-membership reverse census for this root: theatre-group
             // pointer plus target identity when non-zero.
-            let theater_group = nspan(
-                log,
-                memory,
-                pointer.checked_add(corders_group::THEATER_GROUP),
-                8,
-                OOB_MASK,
-            )
-            .and_then(|s| usize::try_from(npool_u64(log, s)).ok());
-            if let Some(theater_group) = theater_group.filter(|&p| p != 0) {
-                let _ = nspan(log, memory, Some(theater_group), 16, OOB_MASK);
+            if job.theatres_active {
+                let _reads = read_accounting::table(TableId::LandTheatreMembers);
+                let theater_group = nspan(
+                    log,
+                    memory,
+                    pointer.checked_add(corders_group::THEATER_GROUP),
+                    8,
+                    THEATRE_MASK,
+                )
+                .and_then(|s| usize::try_from(npool_u64(log, s)).ok());
+                if let Some(theater_group) = theater_group.filter(|&p| p != 0) {
+                    let _ = nspan(log, memory, Some(theater_group), 16, THEATRE_MASK);
+                }
             }
             if log.overflowed {
                 return;
@@ -2247,62 +1941,37 @@ fn copy_naval_pass(
     // Shared wing values were installed before this independent raw phase.
     job.log.clear();
     job.game_state = game_state;
-    let started = qpc();
-    copy_naval_theatres(&mut job.log, memory, base, game_state);
-    ticks[0] += qpc().saturating_sub(started).max(0) as u64;
-    if job.log.overflowed {
-        return;
+    if job.theatres_active {
+        let started = qpc();
+        read_accounting::with_table(TableId::LandTheatres, || {
+            copy_naval_theatres(&mut job.log, memory, base, game_state)
+        });
+        ticks[0] += qpc().saturating_sub(started).max(0) as u64;
+        if job.log.overflowed {
+            return;
+        }
     }
     let started = qpc();
-    copy_naval_oob(job, memory, base);
+    read_accounting::with_table(TableId::OrdersGroups, || copy_naval_oob(job, memory, base));
     ticks[6] += qpc().saturating_sub(started).max(0) as u64;
 }
 
 pub(crate) fn copy_naval_refresh(
-    memory: &impl engine::Memory,
+    memory: &impl Memory,
     ctx: NavalCopyContext,
-    first: &mut NavalJob,
-    mut second: Option<&mut NavalJob>,
+    job: &mut NavalJob,
 ) -> NavalCopyReport {
-    if first.wing_outcome.is_none()
-        || second
-            .as_deref()
-            .is_some_and(|job| job.wing_outcome.is_none())
-    {
+    job.theatres_active =
+        replay::cadence::should_walk(TableId::LandTheatres, ctx.hour, ctx.force_full);
+    if job.theatres_active && job.wing_outcome.is_none() {
         return NavalCopyReport::default();
     }
     let mut ticks = [0u64; NAVAL_PACK_N];
-    copy_naval_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
-    let mut matched = [true; NAVAL_PACK_N];
-    if let Some(second_job) = second.as_deref_mut() {
-        let mut second_ticks = [0u64; NAVAL_PACK_N];
-        copy_naval_pass(
-            second_job,
-            memory,
-            ctx.base,
-            ctx.game_state,
-            &mut second_ticks,
-        );
-        for (total, extra) in ticks.iter_mut().zip(second_ticks) {
-            *total += extra;
-        }
-        // Per-table partitions: shared theatre/order roots gate their
-        // dependents, private spans only their own table.
-        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-        for (slot, matched) in matched.iter_mut().enumerate() {
-            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-        }
-        matched[5] &= matches!(first.wing_outcome, Some(Outcome::Rows { .. }))
-            && first.wing_outcome == second_job.wing_outcome
-            && first.wing_sources == second_job.wing_sources;
-    }
-    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    copy_naval_pass(job, memory, ctx.base, ctx.game_state, &mut ticks);
     NavalCopyReport {
-        raw_ok,
-        matched,
+        raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
-        raw_bytes: first.log.raw_bytes,
+        raw_bytes: job.log.raw_bytes,
     }
 }
 
@@ -2310,17 +1979,11 @@ impl Captured {
     /// Finish an accepted theatre/OOB acquisition failure after independent
     /// capture. The separately acquired wing census and other naval families
     /// retain their outcomes; no raw payload or typed retry may follow this.
-    pub(crate) fn fail_naval_capture(
-        &mut self,
-        needed: [bool; NAVAL_PACK_N],
-        reason: &'static str,
-    ) {
+    pub(crate) fn fail_naval_capture(&mut self, reason: &'static str) {
         macro_rules! reject {
             ($($field:ident = $slot:literal),+ $(,)?) => {
                 $({
-                    self.$field.outcome = Outcome::Unavailable { reason };
-                    self.$field.checked = needed[$slot];
-                    self.$field.mismatches = usize::from(needed[$slot]);
+                    self.$field.outcome = failed($slot >= 6 || self.theatres_active(), reason);
                 })+
             };
         }
@@ -2346,6 +2009,7 @@ pub(crate) fn decode_naval_payload(
     job: &NavalJob,
     decode_ticks: &mut [u64; NAVAL_PACK_N],
 ) {
+    captured.active[4..10].fill(job.theatres_active);
     let recorded = crate::raw::Recorded::build(&job.log);
     let started = qpc();
     // Order roots replay (worker-side, grows until the registry fits so the
@@ -2364,7 +2028,15 @@ pub(crate) fn decode_naval_payload(
     };
     // Order sources + OOB through the existing setters (identical rows,
     // outcomes and ticks to the game thread's source callbacks).
-    captured.set_order_sources(&recorded, base, &roots, roots_outcome, false);
+    captured.set_order_sources(&recorded, base, &roots, roots_outcome);
+    if !job.theatres_active {
+        captured.skip_theatres();
+        captured.wing_sources.outcome = SKIPPED;
+        captured.wings_finished = true;
+        decode_ticks[6] += qpc().saturating_sub(started).max(0) as u64;
+        captured.raw_mode = false;
+        return;
+    }
     // Theatre walk replay into pooled buffers with names.
     let first = ctheatre::walk(
         &recorded,
@@ -2416,7 +2088,7 @@ pub(crate) fn decode_naval_payload(
         Some(outcome) => outcome,
         None => source_unavailable(),
     };
-    captured.wings_finished[0] = true;
+    captured.wings_finished = true;
     decode_ticks[0] += qpc().saturating_sub(started).max(0) as u64;
     captured.raw_mode = false;
 }
@@ -2453,6 +2125,7 @@ const SUPREMACY_MIRROR_BATCH: usize = 32;
 pub(crate) struct SupremacyJob {
     pub log: RawLog<SUPREMACY_N>,
     pub game_state: usize,
+    active: bool,
 }
 
 impl SupremacyJob {
@@ -2463,12 +2136,14 @@ impl SupremacyJob {
             // overflows (see the worst-case caps test).
             log: RawLog::new(1 << 12, 1 << 20),
             game_state: 0,
+            active: false,
         }
     }
 
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
+        self.active = false;
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -2486,7 +2161,6 @@ pub(crate) struct SupremacyCopyReport {
     /// walk (identical rows through the existing path) and enqueues no
     /// payload.
     pub raw_ok: bool,
-    pub matched: [bool; SUPREMACY_N],
     pub copy_ticks: [u64; SUPREMACY_N],
     pub raw_bytes: [u64; SUPREMACY_N],
 }
@@ -2495,7 +2169,8 @@ pub(crate) struct SupremacyCopyReport {
 pub(crate) struct SupremacyCopyContext {
     pub base: usize,
     pub game_state: usize,
-    pub needed: [bool; SUPREMACY_N],
+    pub hour: i32,
+    pub force_full: bool,
 }
 
 fn supremacy_pool_u64(log: &RawLog<SUPREMACY_N>, start: usize) -> u64 {
@@ -2524,10 +2199,12 @@ fn copy_supremacy_pass(
     game_state: usize,
     ticks: &mut [u64; SUPREMACY_N],
 ) {
+    let _reads = read_accounting::table(TableId::NavalSupremacy);
     job.clear();
+    job.active = true;
     job.game_state = game_state;
     // Value vectors are bulk spans (see above); the flag is set up front so
-    // both passes serve enclosed chunks identically.
+    // owned replay serves enclosed chunks identically.
     job.log.has_bulk = true;
     let started = qpc();
     copy_supremacy_tables(job, memory, base, game_state);
@@ -2709,64 +2386,29 @@ fn copy_supremacy_tables(
     }
 }
 
-/// Acquire an owned hourly supremacy payload and independent cold observation.
-/// The caller installs the report after joining; overflow retains typed fallback.
+/// Acquire one owned hourly supremacy payload.
 pub(crate) fn copy_supremacy_refresh(
     memory: &impl Memory,
     ctx: SupremacyCopyContext,
-    first: &mut SupremacyJob,
-    mut second: Option<&mut SupremacyJob>,
+    job: &mut SupremacyJob,
 ) -> SupremacyCopyReport {
-    let mut ticks = [0u64; SUPREMACY_N];
-    copy_supremacy_pass(first, memory, ctx.base, ctx.game_state, &mut ticks);
-    let mut matched = [true; SUPREMACY_N];
-    if let Some(second_job) = second.as_deref_mut() {
-        let mut second_ticks = [0u64; SUPREMACY_N];
-        copy_supremacy_pass(
-            second_job,
-            memory,
-            ctx.base,
-            ctx.game_state,
-            &mut second_ticks,
-        );
-        for (total, extra) in ticks.iter_mut().zip(second_ticks) {
-            *total += extra;
-        }
-        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-        for (slot, matched) in matched.iter_mut().enumerate() {
-            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-        }
+    if !replay::cadence::should_walk(TableId::NavalSupremacy, ctx.hour, ctx.force_full) {
+        job.clear();
+        return SupremacyCopyReport::default();
     }
-    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    let mut ticks = [0u64; SUPREMACY_N];
+    copy_supremacy_pass(job, memory, ctx.base, ctx.game_state, &mut ticks);
     SupremacyCopyReport {
-        raw_ok,
-        matched,
+        raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
-        raw_bytes: first.log.raw_bytes,
+        raw_bytes: job.log.raw_bytes,
     }
 }
 
 impl Captured {
-    /// Install checked bookkeeping without changing acquired rows or outcomes.
-    pub(crate) fn apply_supremacy_report(
-        &mut self,
-        needed: [bool; SUPREMACY_N],
-        report: &SupremacyCopyReport,
-    ) {
-        self.supremacy.checked = needed[0];
-        self.supremacy.mismatches = usize::from(needed[0] && !report.matched[0]);
-    }
-
     /// Finish an accepted failure after independent capture without live retry.
-    pub(crate) fn fail_supremacy_capture(
-        &mut self,
-        needed: [bool; SUPREMACY_N],
-        reason: &'static str,
-    ) {
-        self.supremacy.outcome = Outcome::Unavailable { reason };
-        self.supremacy.checked = needed[0];
-        self.supremacy.mismatches = usize::from(needed[0]);
+    pub(crate) fn fail_supremacy_capture(&mut self, reason: &'static str) {
+        self.supremacy.outcome = failed(self.active[0], reason);
         self.supremacy_raw_mode = false;
     }
 
@@ -2780,6 +2422,11 @@ impl Captured {
         job: &SupremacyJob,
         decode_ticks: &mut [u64; SUPREMACY_N],
     ) {
+        self.active[0] = job.active;
+        if !job.active {
+            self.fail_supremacy_capture(replay::cadence::SKIPPED_REASON);
+            return;
+        }
         let recorded = crate::raw::Recorded::build(&job.log);
         let started = qpc();
         let walked = cnaval_region_dominance::walk(
@@ -2823,6 +2470,7 @@ pub(crate) struct SunkJob {
     pub log: RawLog<SUNK_N>,
     pub game_state: usize,
     pub hour: i32,
+    active: bool,
 }
 
 impl SunkJob {
@@ -2834,6 +2482,7 @@ impl SunkJob {
             log: RawLog::new(1 << 13, 2 << 20),
             game_state: 0,
             hour: 0,
+            active: false,
         }
     }
 
@@ -2841,6 +2490,7 @@ impl SunkJob {
         self.log.clear();
         self.game_state = 0;
         self.hour = 0;
+        self.active = false;
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -2858,7 +2508,6 @@ pub(crate) struct SunkCopyReport {
     /// walk (identical rows through the existing path) and enqueues no
     /// payload.
     pub raw_ok: bool,
-    pub matched: [bool; SUNK_N],
     pub copy_ticks: [u64; SUNK_N],
     pub raw_bytes: [u64; SUNK_N],
 }
@@ -2868,7 +2517,7 @@ pub(crate) struct SunkCopyContext {
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
-    pub needed: [bool; SUNK_N],
+    pub force_full: bool,
 }
 
 fn sunk_pool_u64(log: &RawLog<SUNK_N>, start: usize) -> u64 {
@@ -3102,7 +2751,9 @@ fn copy_sunk_pass(
     current_hour: i32,
     ticks: &mut [u64; SUNK_N],
 ) {
+    let _reads = read_accounting::table(TableId::SunkShips);
     job.clear();
+    job.active = true;
     job.game_state = game_state;
     job.hour = current_hour;
     let started = qpc();
@@ -3161,64 +2812,29 @@ fn copy_sunk_tables(
     }
 }
 
-/// Acquire an owned hourly sunk-ships payload and independent cold observation.
-/// The caller installs the report after joining; overflow retains typed fallback.
+/// Acquire one owned hourly sunk-ships payload.
 pub(crate) fn copy_sunk_refresh(
     memory: &impl Memory,
     ctx: SunkCopyContext,
-    first: &mut SunkJob,
-    mut second: Option<&mut SunkJob>,
+    job: &mut SunkJob,
 ) -> SunkCopyReport {
-    let mut ticks = [0u64; SUNK_N];
-    copy_sunk_pass(
-        first,
-        memory,
-        ctx.base,
-        ctx.game_state,
-        ctx.hour,
-        &mut ticks,
-    );
-    let mut matched = [true; SUNK_N];
-    if let Some(second_job) = second.as_deref_mut() {
-        let mut second_ticks = [0u64; SUNK_N];
-        copy_sunk_pass(
-            second_job,
-            memory,
-            ctx.base,
-            ctx.game_state,
-            ctx.hour,
-            &mut second_ticks,
-        );
-        for (total, extra) in ticks.iter_mut().zip(second_ticks) {
-            *total += extra;
-        }
-        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-        for (slot, matched) in matched.iter_mut().enumerate() {
-            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-        }
+    if !replay::cadence::should_walk(TableId::SunkShips, ctx.hour, ctx.force_full) {
+        job.clear();
+        return SunkCopyReport::default();
     }
-    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    let mut ticks = [0u64; SUNK_N];
+    copy_sunk_pass(job, memory, ctx.base, ctx.game_state, ctx.hour, &mut ticks);
     SunkCopyReport {
-        raw_ok,
-        matched,
+        raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
-        raw_bytes: first.log.raw_bytes,
+        raw_bytes: job.log.raw_bytes,
     }
 }
 
 impl Captured {
-    /// Install checked bookkeeping without changing acquired rows or outcomes.
-    pub(crate) fn apply_sunk_report(&mut self, needed: [bool; SUNK_N], report: &SunkCopyReport) {
-        self.sunk.checked = needed[0];
-        self.sunk.mismatches = usize::from(needed[0] && !report.matched[0]);
-    }
-
     /// Finish an accepted failure after independent capture without live retry.
-    pub(crate) fn fail_sunk_capture(&mut self, needed: [bool; SUNK_N], reason: &'static str) {
-        self.sunk.outcome = Outcome::Unavailable { reason };
-        self.sunk.checked = needed[0];
-        self.sunk.mismatches = usize::from(needed[0]);
+    pub(crate) fn fail_sunk_capture(&mut self, reason: &'static str) {
+        self.sunk.outcome = failed(self.active[13], reason);
         self.sunk_names.reset();
         self.sunk_raw_mode = false;
     }
@@ -3233,6 +2849,11 @@ impl Captured {
         job: &SunkJob,
         decode_ticks: &mut [u64; SUNK_N],
     ) {
+        self.active[13] = job.active;
+        if !job.active {
+            self.fail_sunk_capture(replay::cadence::SKIPPED_REASON);
+            return;
+        }
         let recorded = crate::raw::Recorded::build(&job.log);
         let started = qpc();
         let first = csunk_ship_info::walk(
@@ -3265,142 +2886,93 @@ mod tests {
     use super::*;
 
     fn owned_failure_fixture() -> Captured {
-        Captured::with_capacities(
-            &Capacities {
-                rows: [1; N],
-                theatre_names: 8,
-                sunk_names: 8,
-                orders_sources: 1,
-                wing_sources: 1,
-            },
-            &[0; N],
-        )
+        Captured::with_capacities(&Capacities {
+            rows: [1; N],
+            theatre_names: 8,
+            sunk_names: 8,
+            orders_sources: 1,
+            wing_sources: 1,
+        })
     }
 
     #[test]
-    fn owned_supremacy_and_sunk_reports_and_failures_are_table_local() {
-        for needed in [false, true] {
-            for matched in [false, true] {
-                let mut captured = owned_failure_fixture();
-                captured.raw_mode = true;
-                captured.supremacy_raw_mode = true;
-                captured.sunk_raw_mode = true;
-                captured.supremacy.outcome = Outcome::Rows { len: 1 };
-                captured.sunk.outcome = Outcome::Rows { len: 1 };
-                captured.convoys.outcome = Outcome::Rows { len: 1 };
-                captured.sunk_names.len = 4;
-                captured.sunk_names.required = 9;
-                let bytes = captured.allocated_bytes();
-                captured.apply_supremacy_report(
-                    [needed],
-                    &SupremacyCopyReport {
-                        matched: [matched],
-                        ..Default::default()
-                    },
-                );
-                captured.apply_sunk_report(
-                    [needed],
-                    &SunkCopyReport {
-                        matched: [matched],
-                        ..Default::default()
-                    },
-                );
-                assert_eq!(captured.supremacy.outcome, Outcome::Rows { len: 1 });
-                assert_eq!(captured.sunk.outcome, Outcome::Rows { len: 1 });
-                assert_eq!(captured.supremacy.checked, needed);
-                assert_eq!(captured.sunk.checked, needed);
-                assert_eq!(
-                    captured.supremacy.mismatches,
-                    usize::from(needed && !matched)
-                );
-                assert_eq!(captured.sunk.mismatches, usize::from(needed && !matched));
-                assert!(captured.raw_mode && captured.supremacy_raw_mode && captured.sunk_raw_mode);
-
-                captured.fail_supremacy_capture([needed], "supremacy worker failed");
-                assert_eq!(
-                    captured.supremacy.outcome,
-                    Outcome::Unavailable {
-                        reason: "supremacy worker failed"
-                    }
-                );
-                assert_eq!(captured.supremacy.checked, needed);
-                assert_eq!(captured.supremacy.mismatches, usize::from(needed));
-                assert!(!captured.supremacy_raw_mode);
-                assert!(captured.sunk_raw_mode && captured.raw_mode);
-                assert_eq!(captured.sunk.outcome, Outcome::Rows { len: 1 });
-
-                captured.fail_sunk_capture([needed], "sunk worker failed");
-                assert_eq!(
-                    captured.sunk.outcome,
-                    Outcome::Unavailable {
-                        reason: "sunk worker failed"
-                    }
-                );
-                assert_eq!(captured.sunk.checked, needed);
-                assert_eq!(captured.sunk.mismatches, usize::from(needed));
-                assert_eq!(captured.sunk_names.len, 0);
-                assert_eq!(captured.sunk_names.required, 0);
-                assert!(!captured.sunk_raw_mode);
-                assert!(captured.raw_mode);
-                assert_eq!(captured.convoys.outcome, Outcome::Rows { len: 1 });
-                assert_eq!(captured.allocated_bytes(), bytes);
+    fn owned_supremacy_and_sunk_failures_are_table_local() {
+        let mut captured = owned_failure_fixture();
+        captured.raw_mode = true;
+        captured.supremacy_raw_mode = true;
+        captured.sunk_raw_mode = true;
+        captured.supremacy.outcome = Outcome::Rows { len: 1 };
+        captured.sunk.outcome = Outcome::Rows { len: 1 };
+        captured.convoys.outcome = Outcome::Rows { len: 1 };
+        captured.sunk_names.len = 4;
+        captured.sunk_names.required = 9;
+        let bytes = captured.allocated_bytes();
+        captured.fail_supremacy_capture("supremacy worker failed");
+        assert_eq!(
+            captured.supremacy.outcome,
+            Outcome::Unavailable {
+                reason: "supremacy worker failed"
             }
-        }
+        );
+        assert!(!captured.supremacy_raw_mode);
+        assert!(captured.sunk_raw_mode && captured.raw_mode);
+        assert_eq!(captured.sunk.outcome, Outcome::Rows { len: 1 });
+        captured.fail_sunk_capture("sunk worker failed");
+        assert_eq!(
+            captured.sunk.outcome,
+            Outcome::Unavailable {
+                reason: "sunk worker failed"
+            }
+        );
+        assert_eq!(
+            (captured.sunk_names.len, captured.sunk_names.required),
+            (0, 0)
+        );
+        assert!(!captured.sunk_raw_mode && captured.raw_mode);
+        assert_eq!(captured.convoys.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(captured.allocated_bytes(), bytes);
     }
 
     #[test]
     fn owned_naval_failure_preserves_independent_sources_and_other_families() {
-        for needed in [
-            [false; NAVAL_PACK_N],
-            std::array::from_fn(|slot| slot % 2 == 0),
-            [true; NAVAL_PACK_N],
-        ] {
-            let mut captured = owned_failure_fixture();
-            captured.raw_mode = true;
-            captured.supremacy_raw_mode = true;
-            captured.sunk_raw_mode = true;
-            captured.supremacy.outcome = Outcome::Rows { len: 1 };
-            captured.convoys.outcome = Outcome::Rows { len: 1 };
-            captured.cooldowns.outcome = Outcome::Rows { len: 1 };
-            captured.edges.outcome = Outcome::Rows { len: 1 };
-            captured.results.outcome = Outcome::Rows { len: 1 };
-            captured.result_members.outcome = Outcome::Rows { len: 1 };
-            captured.result_countries.outcome = Outcome::Rows { len: 1 };
-            captured.sunk.outcome = Outcome::Rows { len: 1 };
-            captured.orders_sources.outcome = Outcome::Rows { len: 1 };
-            captured.wing_sources.outcome = Outcome::Rows { len: 1 };
-            captured.orders_finished = [true; 2];
-            captured.wings_finished = [true; 2];
-            captured.source_ticks = [17, 23, 29];
-            captured.theatre_names.len = 4;
-            captured.theatre_names.required = 9;
-            let mut outcomes = captured.outcomes();
-            let mut mismatches = captured.checked_mismatches();
-            let bytes = captured.allocated_bytes();
-            captured.fail_naval_capture(needed, "naval worker failed");
-            for (index, needed) in [4, 5, 6, 7, 8, 9, 14, 15, 16].into_iter().zip(needed) {
-                outcomes[index] = Outcome::Unavailable {
-                    reason: if needed {
-                        "table changed during double read"
-                    } else {
-                        "naval worker failed"
-                    },
-                };
-                mismatches[index] = usize::from(needed);
-            }
-            assert_eq!(captured.outcomes(), outcomes);
-            assert_eq!(captured.checked_mismatches(), mismatches);
-            assert_eq!(captured.orders_sources.outcome, Outcome::Rows { len: 1 });
-            assert_eq!(captured.wing_sources.outcome, Outcome::Rows { len: 1 });
-            assert_eq!(captured.orders_finished, [true; 2]);
-            assert_eq!(captured.wings_finished, [true; 2]);
-            assert_eq!(captured.source_ticks, [17, 23, 29]);
-            assert_eq!(captured.theatre_names.len, 0);
-            assert_eq!(captured.theatre_names.required, 0);
-            assert!(!captured.raw_mode);
-            assert!(captured.supremacy_raw_mode && captured.sunk_raw_mode);
-            assert_eq!(captured.allocated_bytes(), bytes);
+        let mut captured = owned_failure_fixture();
+        captured.raw_mode = true;
+        captured.supremacy_raw_mode = true;
+        captured.sunk_raw_mode = true;
+        captured.supremacy.outcome = Outcome::Rows { len: 1 };
+        captured.convoys.outcome = Outcome::Rows { len: 1 };
+        captured.cooldowns.outcome = Outcome::Rows { len: 1 };
+        captured.edges.outcome = Outcome::Rows { len: 1 };
+        captured.results.outcome = Outcome::Rows { len: 1 };
+        captured.result_members.outcome = Outcome::Rows { len: 1 };
+        captured.result_countries.outcome = Outcome::Rows { len: 1 };
+        captured.sunk.outcome = Outcome::Rows { len: 1 };
+        captured.orders_sources.outcome = Outcome::Rows { len: 1 };
+        captured.wing_sources.outcome = Outcome::Rows { len: 1 };
+        captured.orders_finished = true;
+        captured.wings_finished = true;
+        captured.source_ticks = [17, 23, 29];
+        captured.theatre_names.len = 4;
+        captured.theatre_names.required = 9;
+        let mut outcomes = captured.outcomes();
+        let bytes = captured.allocated_bytes();
+        captured.fail_naval_capture("naval worker failed");
+        for index in [4, 5, 6, 7, 8, 9, 14, 15, 16] {
+            outcomes[index] = Outcome::Unavailable {
+                reason: "naval worker failed",
+            };
         }
+        assert_eq!(captured.outcomes(), outcomes);
+        assert_eq!(captured.orders_sources.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(captured.wing_sources.outcome, Outcome::Rows { len: 1 });
+        assert!(captured.orders_finished);
+        assert!(captured.wings_finished);
+        assert_eq!(captured.source_ticks, [17, 23, 29]);
+        assert_eq!(captured.theatre_names.len, 0);
+        assert_eq!(captured.theatre_names.required, 0);
+        assert!(!captured.raw_mode);
+        assert!(captured.supremacy_raw_mode && captured.sunk_raw_mode);
+        assert_eq!(captured.allocated_bytes(), bytes);
     }
 
     #[test]
@@ -3438,13 +3010,15 @@ mod tests {
         naval.wing_sources.reserve_exact(1);
         let mut wings = AirWingJob::new();
         let context = AirWingCopyContext {
+            hour: 0,
+            force_full: true,
             base: kit::BASE,
             game_state: kit::GAME_STATE,
-            needed: [false; 2],
+
             limits: [2, 3, 2],
-            naval_limits: [naval.wing_limit(); 2],
+            naval_limit: naval.wing_limit(),
         };
-        assert!(crate::extended::air::copy_air_refresh(&memory, context, &mut wings, None).raw_ok);
+        assert!(crate::extended::air::copy_air_refresh(&memory, context, &mut wings).raw_ok);
         naval.install_wings(&wings);
         assert_eq!(naval.wing_sources.len(), 1);
         assert_eq!(
@@ -3468,16 +3042,18 @@ mod tests {
         let mut job = NavalJob::new();
         kit::stage_wings(&memory, &mut job);
         let context = NavalCopyContext {
+            hour: 0,
+            force_full: true,
             base: kit::BASE,
             game_state: kit::GAME_STATE,
         };
-        assert!(super::copy_naval_refresh(&memory, context, &mut job, None).raw_ok);
+        assert!(super::copy_naval_refresh(&memory, context, &mut job).raw_ok);
         job.wing_sources.resize(2, Default::default());
         let capacity = Capacities {
             wing_sources: 1,
             ..Default::default()
         };
-        let mut captured = Captured::with_capacities(&capacity, &[0; N]);
+        let mut captured = Captured::with_capacities(&capacity);
         for missing in [0, 3] {
             job.wing_outcome = Some(if missing == 0 {
                 Outcome::Rows { len: 2 }
@@ -3506,18 +3082,20 @@ mod tests {
         let memory = kit::memory(&bytes);
         let mut wings = AirWingJob::new();
         let context = AirWingCopyContext {
+            hour: 0,
+            force_full: true,
             base: kit::BASE,
             game_state: kit::GAME_STATE,
-            needed: [false; 2],
+
             limits: [2, 3, 2],
-            naval_limits: [0; 2],
+            naval_limit: 0,
         };
-        assert!(crate::extended::air::copy_air_refresh(&memory, context, &mut wings, None).raw_ok);
+        assert!(crate::extended::air::copy_air_refresh(&memory, context, &mut wings).raw_ok);
         wings.membership_ticks = 101;
         let mut captured = small();
         captured.add_wing_source_ticks(17);
         assert_eq!(captured.source_ticks[1], 17);
-        captured.install_map_wings(&wings, false);
+        captured.install_map_wings(&wings);
         assert!(captured.source_ticks[1] >= 118);
         assert_eq!(captured.wing_sources.outcome, Outcome::Rows { len: 2 });
         let first_ticks = captured.source_ticks[1];
@@ -3528,20 +3106,17 @@ mod tests {
     use engine::memory::SliceMemory;
 
     fn small() -> Captured {
-        Captured::with_capacities(
-            &Capacities {
-                rows: [2; N],
-                theatre_names: 32,
-                sunk_names: 32,
-                orders_sources: 2,
-                wing_sources: 2,
-            },
-            &[0; N],
-        )
+        Captured::with_capacities(&Capacities {
+            rows: [2; N],
+            theatre_names: 32,
+            sunk_names: 32,
+            orders_sources: 2,
+            wing_sources: 2,
+        })
     }
 
     #[test]
-    fn both_membership_checks_reject_omissions_duplicates_and_incomplete_censuses() {
+    fn primary_membership_rejects_omissions_duplicates_and_incomplete_censuses() {
         let link = |row: &(u64, u64)| *row;
         let first_id = 0x1234_5678_0000_0035;
         let second_id = 0x9abc_def0_0000_0035;
@@ -3551,15 +3126,6 @@ mod tests {
         let full = Outcome::Rows { len: 2 };
         let census = Outcome::Rows { len: 3 };
         assert!(membership_issue(full, &rows, link, census, &sources, link).is_none());
-        assert!(checked_membership(
-            full,
-            &rows,
-            link,
-            census,
-            &mut { sources },
-            link,
-            &mut [0; 3]
-        ));
         for bad in [
             vec![(first_id, group)],
             vec![(first_id, group), (first_id, group)],
@@ -3567,42 +3133,15 @@ mod tests {
         ] {
             let outcome = Outcome::Rows { len: bad.len() };
             assert!(membership_issue(outcome, &bad, link, census, &sources, link).is_some());
-            assert!(!checked_membership(
-                outcome,
-                &bad,
-                link,
-                census,
-                &mut { sources },
-                link,
-                &mut [0; 3]
-            ));
         }
         let partial = Outcome::Truncated {
             len: 2,
             unread_rows: 1,
         };
         assert!(membership_issue(full, &rows, link, partial, &sources, link).is_some());
-        assert!(!checked_membership(
-            full,
-            &rows,
-            link,
-            partial,
-            &mut { sources },
-            link,
-            &mut [0; 3]
-        ));
         assert!(
             membership_issue(full, &rows, link, Outcome::Rows { len: 4 }, &sources, link).is_some()
         );
-        assert!(!checked_membership(
-            full,
-            &rows,
-            link,
-            census,
-            &mut { sources },
-            link,
-            &mut [0; 2]
-        ));
     }
 
     #[test]
@@ -3621,15 +3160,15 @@ mod tests {
             id: 0xfedc_ba98_0000_0009,
             ..Default::default()
         };
-        captured.visit_wing(&memory, 0, 0x1000, &wing, false);
+        captured.visit_wing(&memory, 0x1000, &wing);
         assert!(!complete_source(
             &captured.wing_sources,
-            captured.wings_finished[0]
+            captured.wings_finished
         ));
-        captured.finish_wings(Outcome::Rows { len: 1 }, false);
+        captured.finish_wings(Outcome::Rows { len: 1 });
         assert!(complete_source(
             &captured.wing_sources,
-            captured.wings_finished[0]
+            captured.wings_finished
         ));
         assert_eq!(
             captured.wing_sources.rows[0],
@@ -3639,21 +3178,18 @@ mod tests {
             }
         );
         captured.reset();
-        captured.visit_wing(&memory, 0, 0x1000, &wing, false);
-        captured.finish_wings(
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 2,
-            },
-            false,
-        );
+        captured.visit_wing(&memory, 0x1000, &wing);
+        captured.finish_wings(Outcome::Truncated {
+            len: 1,
+            unread_rows: 2,
+        });
         assert!(!complete_source(
             &captured.wing_sources,
-            captured.wings_finished[0]
+            captured.wings_finished
         ));
         captured.reset();
-        captured.visit_wing(&memory, 0, 0x1000, &wing, false);
-        captured.finish_wings(Outcome::Rows { len: 2 }, false);
+        captured.visit_wing(&memory, 0x1000, &wing);
+        captured.finish_wings(Outcome::Rows { len: 2 });
         assert!(matches!(
             captured.wing_sources.outcome,
             Outcome::Unavailable { .. }
@@ -3661,8 +3197,8 @@ mod tests {
     }
 
     #[test]
-    fn name_checks_compare_only_the_table_bytes_and_refuse_invalid_ranges() {
-        let mut rows = CaptureRows::<ctheater_group::Row>::new(1, 0);
+    fn primary_name_ranges_preserve_bytes_and_refuse_invalid_extents() {
+        let mut rows = CaptureRows::<ctheater_group::Row>::new(1);
         rows.outcome = Outcome::Rows { len: 1 };
         rows.rows[0] = ctheater_group::Row {
             id: u64::MAX,
@@ -3671,43 +3207,11 @@ mod tests {
             name_len: 2,
             ..Default::default()
         };
-        rows.second[0] = rows.rows[0];
-        rows.second[0].name_start = 3;
-        let name = |r: &ctheater_group::Row| (r.name_start, r.name_len);
-        let normalize = |r: &ctheater_group::Row| {
-            let mut r = *r;
-            r.name_start = 0;
-            r
-        };
-        assert!(compare_named(
-            &mut rows,
-            Outcome::Rows { len: 1 },
-            true,
-            Some(b"ab"),
-            Some(b"xyzab"),
-            name,
-            normalize
-        ));
-        assert!(!compare_named(
-            &mut rows,
-            Outcome::Rows { len: 1 },
-            true,
-            Some(b"ab"),
-            Some(b"xyzac"),
-            name,
-            normalize
-        ));
-        rows.second[0].name_start = usize::MAX;
-        assert!(!compare_named(
-            &mut rows,
-            Outcome::Rows { len: 1 },
-            true,
-            Some(b"ab"),
-            Some(b"xyzab"),
-            name,
-            normalize
-        ));
-        assert!(rows.mismatches > 0);
+        let name = |row: &ctheater_group::Row| (row.name_start, row.name_len);
+        assert!(valid_named(rows.outcome, &rows.rows, Some(b"ab"), name));
+        assert!(!valid_named(rows.outcome, &rows.rows, Some(b"a"), name));
+        rows.rows[0].name_start = usize::MAX;
+        assert!(!valid_named(rows.outcome, &rows.rows, Some(b"ab"), name));
     }
 
     #[test]
@@ -3754,33 +3258,122 @@ mod tests {
     }
 
     #[test]
-    fn shared_theatre_comparison_storage_survives_until_every_dependent_check_finishes() {
-        let mut capacity = Capacities {
-            rows: [1; N],
-            theatre_names: 8,
-            sunk_names: 8,
-            orders_sources: 1,
-            wing_sources: 1,
-        };
-        let mut successful = [crate::sampling::CONSISTENCY_TARGET; N];
-        successful[9] = 0;
-        let mut captured = Captured::with_capacities(&capacity, &successful);
-        assert_eq!(captured.land_groups.second.len(), 1);
-        assert_eq!(captured.theatre_names.second.len(), 8);
-        assert_eq!(captured.wings_seen.len(), 1);
-        successful[9] = crate::sampling::CONSISTENCY_TARGET;
-        captured.grow(&mut capacity, &successful);
-        assert!(captured.land_groups.second.is_empty());
-        assert!(captured.theatre_names.second.is_empty());
-        assert!(captured.wing_sources.second.is_empty());
-        assert!(captured.wings_seen.is_empty());
-        assert_eq!(captured.land_groups.rows.len(), 1);
+    fn hourly_order_of_battle_needs_no_theatre_census_or_wing_storage() {
+        use super::naval_test_kit as kit;
+        struct NoTheatreCensus<'a>(engine::memory::SliceMemory<'a>);
+        impl Memory for NoTheatreCensus<'_> {
+            fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
+                assert_ne!(address, kit::GAME_STATE + cgame_state::COUNTRIES);
+                self.0.copy(address, bytes)
+            }
+        }
+        let bytes = kit::fixture();
+        let expected = kit::direct(&kit::memory(&bytes));
+        let memory = NoTheatreCensus(kit::memory(&bytes));
+        let mut job = NavalJob::new();
+        job.wing_sources = Vec::new();
+        let mut captured = Captured::with_capacities(&Capacities {
+            rows: [8; N],
+            theatre_names: 0,
+            sunk_names: 0,
+            orders_sources: 0,
+            wing_sources: 0,
+        });
+        for hour in (0..24).filter(|hour| *hour != 13) {
+            job.clear();
+            captured.prepare_hour(hour, false);
+            let copy = copy_naval_refresh(
+                &memory,
+                NavalCopyContext {
+                    base: kit::BASE,
+                    game_state: kit::GAME_STATE,
+                    hour,
+                    force_full: false,
+                },
+                &mut job,
+            );
+            assert!(copy.raw_ok && !job.grow_for_next());
+            assert_eq!(&copy.copy_ticks[..6], &[0; 6]);
+            assert_eq!(&copy.raw_bytes[..6], &[0; 6]);
+            let mut ticks = [0; NAVAL_PACK_N];
+            decode_naval_payload(&mut captured, kit::BASE, &job, &mut ticks);
+            assert_eq!(&captured.outcomes()[4..10], &[SKIPPED; 6]);
+            assert_eq!(&ticks[..6], &[0; 6]);
+            assert_eq!(captured.groups.outcome, expected.oob_groups_outcome);
+            assert_eq!(captured.group_members.outcome, expected.oob_members_outcome);
+            assert_eq!(
+                captured.group_children.outcome,
+                expected.oob_children_outcome
+            );
+            let len = captured.groups.outcome.len();
+            assert_eq!(&captured.groups.rows[..len], &expected.oob_groups[..len]);
+            captured.fail_naval_capture("worker failed");
+            assert_eq!(&captured.outcomes()[4..10], &[SKIPPED; 6]);
+            assert_eq!(
+                captured.groups.outcome,
+                Outcome::Unavailable {
+                    reason: "worker failed"
+                }
+            );
+        }
     }
 
     #[test]
-    fn naval_pack_tables_are_hourly_tier_h_with_no_refresh_gate() {
+    fn supremacy_and_sunk_offslot_jobs_skip_reads_and_decoding() {
+        struct NoReads;
+        impl Memory for NoReads {
+            fn copy(&self, address: usize, _: &mut [u8]) -> bool {
+                panic!("inactive naval read at {address:#x}");
+            }
+        }
+        let mut supremacy = SupremacyJob::default();
+        let mut sunk = SunkJob::default();
+        let mut captured = owned_failure_fixture();
+        for hour in 0..24 {
+            captured.prepare_hour(hour, false);
+            if hour != 23 {
+                let report = copy_supremacy_refresh(
+                    &NoReads,
+                    SupremacyCopyContext {
+                        base: 0,
+                        game_state: 1,
+                        hour,
+                        force_full: false,
+                    },
+                    &mut supremacy,
+                );
+                assert!(!report.raw_ok && !supremacy.grow_for_next());
+                assert_eq!((report.copy_ticks, report.raw_bytes), ([0], [0]));
+                captured.fail_supremacy_capture("worker failed");
+                let mut ticks = [0];
+                captured.decode_supremacy_payload(0, &supremacy, &mut ticks);
+                assert_eq!((captured.supremacy.outcome, ticks), (SKIPPED, [0]));
+            }
+            if hour != 19 {
+                let report = copy_sunk_refresh(
+                    &NoReads,
+                    SunkCopyContext {
+                        base: 0,
+                        game_state: 1,
+                        hour,
+                        force_full: false,
+                    },
+                    &mut sunk,
+                );
+                assert!(!report.raw_ok && !sunk.grow_for_next());
+                assert_eq!((report.copy_ticks, report.raw_bytes), ([0], [0]));
+                captured.fail_sunk_capture("worker failed");
+                let mut ticks = [0];
+                captured.decode_sunk_payload(0, &sunk, &mut ticks);
+                assert_eq!((captured.sunk.outcome, ticks), (SKIPPED, [0]));
+            }
+        }
+    }
+
+    #[test]
+    fn theatres_use_slot_13_and_order_of_battle_remains_hourly() {
         use replay::rows::TableId;
-        for table in [
+        for (slot, table) in [
             TableId::LandTheatres,
             TableId::LandTheatreGroups,
             TableId::LandTheatreMembers,
@@ -3790,11 +3383,15 @@ mod tests {
             TableId::OrdersGroups,
             TableId::OrdersGroupMembers,
             TableId::ArmyGroupMembers,
-        ] {
-            assert!(!replay::cadence::is_staggered(table), "{table:?}");
-            for hour in [0, 1, 2, 3, 60_820_531] {
-                assert!(
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(replay::cadence::is_staggered(table), slot < 6, "{table:?}");
+            for hour in -24_i32..48 {
+                assert_eq!(
                     replay::cadence::is_refresh(table, hour),
+                    slot >= 6 || hour.rem_euclid(24) == 13,
                     "{table:?} at {hour}"
                 );
             }
@@ -3809,7 +3406,6 @@ mod tests {
         let direct = kit::direct(&memory);
         let (split, report, _) = kit::split(&memory);
         assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 9]);
         kit::assert_matches_direct(&split, &direct);
         assert_eq!(split.land_outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.members_outcome, Outcome::Rows { len: 2 });
@@ -3843,12 +3439,14 @@ mod tests {
             sizes: std::cell::RefCell::new(BTreeSet::new()),
         };
         let ctx = NavalCopyContext {
+            hour: 0,
+            force_full: true,
             base: kit::BASE,
             game_state: kit::GAME_STATE,
         };
         let mut first = NavalJob::new();
         kit::stage_wings(&memory, &mut first);
-        let report = super::copy_naval_refresh(&memory, ctx, &mut first, None);
+        let report = super::copy_naval_refresh(&memory, ctx, &mut first);
         assert!(report.raw_ok);
         let sizes = memory.sizes.borrow().clone();
         for required in [4, 8, 16] {
@@ -3884,7 +3482,6 @@ mod tests {
             let direct = kit::direct_with(&memory, &capacity);
             let (split, report, _) = kit::split_with(&memory, &capacity);
             assert!(report.raw_ok, "rows={rows:?}");
-            assert_eq!(report.matched, [true; 9], "rows={rows:?}");
             kit::assert_matches_direct(&split, &direct);
         }
         // Exact-fit arm pins Rows on land/groups with both members present.
@@ -3908,7 +3505,6 @@ mod tests {
         let direct = kit::direct_truncated(&memory);
         let (split, report, _) = kit::split_truncated(&memory);
         assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 9]);
         kit::assert_matches_direct(&split, &direct);
     }
 
@@ -3931,19 +3527,10 @@ mod tests {
                 self.memory.copy(address, output)
             }
         }
-        for (fault, matched) in [
-            (
-                kit::GAME_STATE + engine::cgame_state::COUNTRIES,
-                [false, false, false, false, false, false, true, true, true],
-            ),
-            (
-                kit::THEATRE,
-                [false, false, false, false, false, false, true, true, true],
-            ),
-            (
-                kit::GROUP,
-                [false, false, false, false, false, false, true, true, true],
-            ),
+        for fault in [
+            kit::GAME_STATE + engine::cgame_state::COUNTRIES,
+            kit::THEATRE,
+            kit::GROUP,
         ] {
             let bytes = kit::fixture();
             let memory = Fault {
@@ -3957,29 +3544,7 @@ mod tests {
             let (split, report, _) = kit::split(&memory);
             assert!(report.raw_ok, "fault={fault:x}");
             kit::assert_matches_direct(&split, &direct);
-            assert_eq!(report.matched, matched, "fault={fault:x}");
         }
-    }
-
-    #[test]
-    fn naval_double_copy_compare_blocks_checks_on_tearing() {
-        use super::naval_test_kit as kit;
-        use super::{NavalCopyContext, NavalJob};
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let ctx = NavalCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-        };
-        let mut first = NavalJob::new();
-        let mut second = NavalJob::new();
-        kit::stage_wings(&memory, &mut first);
-        kit::stage_wings(&memory, &mut second);
-        let report = super::copy_naval_refresh(&memory, ctx, &mut first, Some(&mut second));
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 9]);
-        second.log.bytes[100] ^= 0xff;
-        assert!(!first.log.logs_equal(&second.log));
     }
 
     #[test]
@@ -3989,6 +3554,8 @@ mod tests {
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
         let ctx = NavalCopyContext {
+            hour: 0,
+            force_full: true,
             base: kit::BASE,
             game_state: kit::GAME_STATE,
         };
@@ -3998,7 +3565,7 @@ mod tests {
             ..Default::default()
         };
         kit::stage_wings(&memory, &mut tiny);
-        let report = super::copy_naval_refresh(&memory, ctx, &mut tiny, None);
+        let report = super::copy_naval_refresh(&memory, ctx, &mut tiny);
         assert!(!report.raw_ok);
     }
 
@@ -4017,28 +3584,80 @@ mod tests {
     }
 
     #[test]
-    fn supremacy_tables_are_hourly_tier_h_with_no_refresh_gate() {
+    fn supremacy_uses_slot_23() {
         use replay::rows::TableId;
-        assert!(!replay::cadence::is_staggered(TableId::NavalSupremacy));
-        for hour in [0, 1, 2, 3, 60_820_531] {
-            assert!(replay::cadence::is_refresh(TableId::NavalSupremacy, hour));
+        assert!(replay::cadence::is_staggered(TableId::NavalSupremacy));
+        for hour in -24_i32..48 {
+            assert_eq!(
+                replay::cadence::is_refresh(TableId::NavalSupremacy, hour),
+                hour.rem_euclid(24) == 23
+            );
         }
     }
 
     #[test]
     fn supremacy_split_copy_matches_direct_walk() {
         use super::supremacy_test_kit as kit;
+        use engine::memory::{CountedMemory, ReadCounts};
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
         let direct = kit::direct(&memory);
-        let (split, report, _) = kit::split(&memory);
+        let memory = CountedMemory::new(memory);
+        let capture = read_accounting::Capture::new();
+        let (split, report, mut job) = kit::split(&memory);
+        let counts = capture.finish();
         assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 1]);
         kit::assert_matches_direct(&split, &direct);
         assert_eq!(split.outcome, Outcome::Rows { len: 2 });
         assert_eq!(split.rows[0].country, u32::MAX);
         assert_eq!(split.rows[0].current, 1000);
         assert_eq!(split.rows[1].country, 1);
+        let anchor = TableId::NavalSupremacy;
+        let mut expected = read_accounting::ZERO;
+        // Header, two slots, three region fields, owner, entries header,
+        // and one 160-byte value vector: nine scalar requests, 260 bytes.
+        expected[anchor.index()] = ReadCounts {
+            copy_calls: 9,
+            spans: 9,
+            bytes: 260,
+            ..ReadCounts::ZERO
+        };
+        assert_eq!(counts, expected);
+        let mut refreshes = 0;
+        for hour in 0..24 {
+            if replay::cadence::is_refresh(anchor, hour) {
+                refreshes += 1;
+                continue;
+            }
+            let capture = read_accounting::Capture::new();
+            let skipped = copy_supremacy_refresh(
+                &memory,
+                SupremacyCopyContext {
+                    base: kit::BASE,
+                    game_state: kit::GAME_STATE,
+                    hour,
+                    force_full: false,
+                },
+                &mut job,
+            );
+            assert_eq!(capture.finish(), read_accounting::ZERO);
+            assert!(!skipped.raw_ok && !job.grow_for_next());
+            assert_eq!((skipped.copy_ticks, skipped.raw_bytes), ([0], [0]));
+        }
+        assert_eq!(refreshes, 1);
+        let measured = counts[anchor.index()];
+        let per_refresh = [
+            measured.copy_calls,
+            measured.scattered_calls,
+            measured.record_calls,
+            measured.plan_calls,
+            measured.spans,
+            measured.bytes,
+        ];
+        println!(
+            "daily_fixture cohort=supremacy_split_copy_matches_direct_walk anchor={anchor:?} counters=[copy,scattered,records,plans,spans,bytes] per_refresh={per_refresh:?} before_24h={:?} after_24h={per_refresh:?} basis=unchanged_refresh_x_24_legacy_hourly_vs_1_daily",
+            per_refresh.map(|value| value * 24)
+        );
     }
 
     #[test]
@@ -4054,7 +3673,6 @@ mod tests {
             let direct = kit::direct_with(&memory, cap);
             let (split, report, _) = kit::split_with(&memory, cap);
             assert!(report.raw_ok, "cap={cap}");
-            assert_eq!(report.matched, [true; 1], "cap={cap}");
             kit::assert_matches_direct(&split, &direct);
         }
         let direct = kit::direct_with(&memory, 2);
@@ -4098,37 +3716,7 @@ mod tests {
             let (split, report, _) = kit::split(&memory);
             assert!(report.raw_ok, "fault={fault:x}");
             kit::assert_matches_direct(&split, &direct);
-            assert_eq!(report.matched, [false; 1], "fault={fault:x}");
         }
-    }
-
-    #[test]
-    fn supremacy_double_copy_compare_blocks_checks_on_tearing() {
-        use super::supremacy_test_kit as kit;
-        use super::{SupremacyCopyContext, SupremacyJob};
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let ctx = SupremacyCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed: [true; 1],
-        };
-        let capacities = super::Capacities::default();
-        let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let mut first = SupremacyJob::new();
-        let report = super::copy_supremacy_refresh(&memory, ctx, &mut first, None);
-        captured.apply_supremacy_report(ctx.needed, &report);
-        assert!(report.raw_ok);
-        let mut torn = bytes.clone();
-        torn[kit::DOMINANCE + 0x100] ^= 0xff;
-        let torn_memory = kit::memory(&torn);
-        let mut second = SupremacyJob::new();
-        let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let torn_report = super::copy_supremacy_refresh(&torn_memory, ctx, &mut second, None);
-        captured2.apply_supremacy_report(ctx.needed, &torn_report);
-        assert!(torn_report.raw_ok);
-        assert!(!first.log.partition_equal(&second.log, 0));
-        assert!(!first.log.logs_equal(&second.log));
     }
 
     #[test]
@@ -4138,18 +3726,17 @@ mod tests {
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
         let ctx = SupremacyCopyContext {
+            hour: 0,
+            force_full: true,
             base: kit::BASE,
             game_state: kit::GAME_STATE,
-            needed: [true; 1],
         };
         let mut tiny = SupremacyJob {
             log: crate::raw::RawLog::new(1, 1),
             game_state: 0,
+            ..Default::default()
         };
-        let capacities = super::Capacities::default();
-        let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let report = super::copy_supremacy_refresh(&memory, ctx, &mut tiny, None);
-        captured.apply_supremacy_report(ctx.needed, &report);
+        let report = super::copy_supremacy_refresh(&memory, ctx, &mut tiny);
         assert!(!report.raw_ok);
     }
 
@@ -4211,23 +3798,29 @@ mod tests {
     }
 
     #[test]
-    fn sunk_tables_are_hourly_tier_h_with_no_refresh_gate() {
+    fn sunk_ships_use_slot_19() {
         use replay::rows::TableId;
-        assert!(!replay::cadence::is_staggered(TableId::SunkShips));
-        for hour in [0, 1, 2, 3, 60_820_531] {
-            assert!(replay::cadence::is_refresh(TableId::SunkShips, hour));
+        assert!(replay::cadence::is_staggered(TableId::SunkShips));
+        for hour in -24_i32..48 {
+            assert_eq!(
+                replay::cadence::is_refresh(TableId::SunkShips, hour),
+                hour.rem_euclid(24) == 19
+            );
         }
     }
 
     #[test]
     fn sunk_split_copy_matches_direct_walk() {
         use super::sunk_test_kit as kit;
+        use engine::memory::{CountedMemory, ReadCounts};
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
         let direct = kit::direct(&memory);
-        let (split, report, _) = kit::split(&memory);
+        let memory = CountedMemory::new(memory);
+        let capture = read_accounting::Capture::new();
+        let (split, report, mut job) = kit::split(&memory);
+        let counts = capture.finish();
         assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 1]);
         kit::assert_matches_direct(&split, &direct);
         // Two retained records: one with attribution class and province,
         // one minimal with a long inline name and heap attribution name.
@@ -4238,6 +3831,52 @@ mod tests {
         assert_eq!(split.rows[1].victim_country, 5);
         assert_eq!(split.rows[1].province_present, 0);
         assert_eq!(split.rows[1].attribution_class_present, 0);
+        let anchor = TableId::SunkShips;
+        let mut expected = read_accounting::ZERO;
+        // Header + two slots/records + three class headers + seven strings
+        // (terminator and content each) + province identity: 24 requests, 585 bytes.
+        expected[anchor.index()] = ReadCounts {
+            copy_calls: 24,
+            spans: 24,
+            bytes: 585,
+            ..ReadCounts::ZERO
+        };
+        assert_eq!(counts, expected);
+        let mut refreshes = 0;
+        for hour in kit::HOUR..kit::HOUR + 24 {
+            if replay::cadence::is_refresh(anchor, hour) {
+                refreshes += 1;
+                continue;
+            }
+            let capture = read_accounting::Capture::new();
+            let skipped = copy_sunk_refresh(
+                &memory,
+                SunkCopyContext {
+                    base: kit::BASE,
+                    game_state: kit::GAME_STATE,
+                    hour,
+                    force_full: false,
+                },
+                &mut job,
+            );
+            assert_eq!(capture.finish(), read_accounting::ZERO);
+            assert!(!skipped.raw_ok && !job.grow_for_next());
+            assert_eq!((skipped.copy_ticks, skipped.raw_bytes), ([0], [0]));
+        }
+        assert_eq!(refreshes, 1);
+        let measured = counts[anchor.index()];
+        let per_refresh = [
+            measured.copy_calls,
+            measured.scattered_calls,
+            measured.record_calls,
+            measured.plan_calls,
+            measured.spans,
+            measured.bytes,
+        ];
+        println!(
+            "daily_fixture cohort=sunk_split_copy_matches_direct_walk anchor={anchor:?} counters=[copy,scattered,records,plans,spans,bytes] per_refresh={per_refresh:?} before_24h={:?} after_24h={per_refresh:?} basis=unchanged_refresh_x_24_legacy_hourly_vs_1_daily",
+            per_refresh.map(|value| value * 24)
+        );
     }
 
     #[test]
@@ -4252,7 +3891,6 @@ mod tests {
             let direct = kit::direct_with(&memory, rows, names);
             let (split, report, _) = kit::split_with(&memory, rows, names);
             assert!(report.raw_ok, "rows={rows} names={names}");
-            assert_eq!(report.matched, [true; 1], "rows={rows} names={names}");
             kit::assert_matches_direct(&split, &direct);
         }
         let direct = kit::direct_with(&memory, 2, 64);
@@ -4297,38 +3935,7 @@ mod tests {
             let (split, report, _) = kit::split(&memory);
             assert!(report.raw_ok, "fault={fault:x}");
             kit::assert_matches_direct(&split, &direct);
-            assert_eq!(report.matched, [false; 1], "fault={fault:x}");
         }
-    }
-
-    #[test]
-    fn sunk_double_copy_compare_blocks_checks_on_tearing() {
-        use super::sunk_test_kit as kit;
-        use super::{SunkCopyContext, SunkJob};
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let ctx = SunkCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            hour: kit::HOUR,
-            needed: [true; 1],
-        };
-        let capacities = super::Capacities::default();
-        let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let mut first = SunkJob::new();
-        let report = super::copy_sunk_refresh(&memory, ctx, &mut first, None);
-        captured.apply_sunk_report(ctx.needed, &report);
-        assert!(report.raw_ok);
-        let mut torn = bytes.clone();
-        torn[kit::FIRST + engine::csunk_ship_info::VICTIM_COUNTRY] ^= 0xff;
-        let torn_memory = kit::memory(&torn);
-        let mut second = SunkJob::new();
-        let mut captured2 = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let torn_report = super::copy_sunk_refresh(&torn_memory, ctx, &mut second, None);
-        captured2.apply_sunk_report(ctx.needed, &torn_report);
-        assert!(torn_report.raw_ok);
-        assert!(!first.log.partition_equal(&second.log, 0));
-        assert!(!first.log.logs_equal(&second.log));
     }
 
     #[test]
@@ -4338,20 +3945,18 @@ mod tests {
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
         let ctx = SunkCopyContext {
+            force_full: true,
             base: kit::BASE,
             game_state: kit::GAME_STATE,
             hour: kit::HOUR,
-            needed: [true; 1],
         };
         let mut tiny = SunkJob {
             log: crate::raw::RawLog::new(1, 1),
             game_state: 0,
             hour: 0,
+            ..Default::default()
         };
-        let capacities = super::Capacities::default();
-        let mut captured = super::Captured::with_capacities(&capacities, &[0; 17]);
-        let report = super::copy_sunk_refresh(&memory, ctx, &mut tiny, None);
-        captured.apply_sunk_report(ctx.needed, &report);
+        let report = super::copy_sunk_refresh(&memory, ctx, &mut tiny);
         assert!(!report.raw_ok);
     }
 
@@ -4426,13 +4031,15 @@ pub(crate) mod naval_test_kit {
     pub(crate) fn stage_wings(memory: &impl Memory, job: &mut NavalJob) {
         let mut wings = crate::extended::air::AirWingJob::new();
         let context = crate::extended::air::AirWingCopyContext {
+            hour: 0,
+            force_full: true,
             base: BASE,
             game_state: GAME_STATE,
-            needed: [false; 2],
+
             limits: [0; 3],
-            naval_limits: [job.wing_limit(); 2],
+            naval_limit: job.wing_limit(),
         };
-        assert!(crate::extended::air::copy_air_refresh(memory, context, &mut wings, None).raw_ok);
+        assert!(crate::extended::air::copy_air_refresh(memory, context, &mut wings).raw_ok);
         job.install_wings(&wings);
     }
 
@@ -4653,7 +4260,7 @@ pub(crate) mod naval_test_kit {
     }
 
     fn collect(memory: &impl Memory, capacity: &Capacities) -> Split {
-        let mut captured = Captured::with_capacities(capacity, &[0; 17]);
+        let mut captured = Captured::with_capacities(capacity);
         // Typed reference: theatre walk + OOB via roots, single pass (no
         // double-read). Mirrors the game thread's capture order.
         let first = engine::ctheatre::walk(
@@ -4714,16 +4321,16 @@ pub(crate) mod naval_test_kit {
 
     pub(crate) fn split(memory: &impl Memory) -> (Split, NavalCopyReport, NavalJob) {
         let ctx = NavalCopyContext {
+            hour: 0,
+            force_full: true,
             base: BASE,
             game_state: GAME_STATE,
         };
         let mut first = NavalJob::new();
-        let mut second = NavalJob::new();
         stage_wings(memory, &mut first);
-        stage_wings(memory, &mut second);
-        let report = super::copy_naval_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = super::copy_naval_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
-        let mut captured = Captured::with_capacities(&Capacities::default(), &[0; 17]);
+        let mut captured = Captured::with_capacities(&Capacities::default());
         let mut ticks = [0u64; 9];
         super::decode_naval_payload(&mut captured, BASE, &first, &mut ticks);
         (
@@ -4755,16 +4362,16 @@ pub(crate) mod naval_test_kit {
         capacity: &Capacities,
     ) -> (Split, NavalCopyReport, NavalJob) {
         let ctx = NavalCopyContext {
+            hour: 0,
+            force_full: true,
             base: BASE,
             game_state: GAME_STATE,
         };
         let mut first = NavalJob::new();
-        let mut second = NavalJob::new();
         stage_wings(memory, &mut first);
-        stage_wings(memory, &mut second);
-        let report = super::copy_naval_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = super::copy_naval_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
-        let mut captured = Captured::with_capacities(capacity, &[0; 17]);
+        let mut captured = Captured::with_capacities(capacity);
         let mut ticks = [0u64; 9];
         super::decode_naval_payload(&mut captured, BASE, &first, &mut ticks);
         (
@@ -4800,14 +4407,14 @@ pub(crate) mod naval_test_kit {
 
     pub(crate) fn split_truncated(memory: &impl Memory) -> (Split, NavalCopyReport, NavalJob) {
         let ctx = NavalCopyContext {
+            hour: 0,
+            force_full: true,
             base: BASE,
             game_state: GAME_STATE,
         };
         let mut first = NavalJob::new();
-        let mut second = NavalJob::new();
         stage_wings(memory, &mut first);
-        stage_wings(memory, &mut second);
-        let report = super::copy_naval_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = super::copy_naval_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
         let capacity = Capacities {
             rows: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
@@ -4816,7 +4423,7 @@ pub(crate) mod naval_test_kit {
             orders_sources: 1,
             wing_sources: 1,
         };
-        let mut captured = Captured::with_capacities(&capacity, &[0; 17]);
+        let mut captured = Captured::with_capacities(&capacity);
         let mut ticks = [0u64; 9];
         super::decode_naval_payload(&mut captured, BASE, &first, &mut ticks);
         (
@@ -5058,11 +4665,12 @@ pub(crate) mod naval_test_kit {
             let (replayed, report, _) = split(&memory);
             assert_matches_direct(&replayed, &direct);
             assert!(report.raw_ok, "{name}");
-            let mut matched = [true; 9];
             if required_fault {
-                matched[6..].fill(false);
+                assert!(matches!(
+                    replayed.oob_groups_outcome,
+                    Outcome::Unavailable { .. }
+                ));
             }
-            assert_eq!(report.matched, matched, "{name}");
             let reads = memory.reads.borrow();
             let visits_children = flag != 0 && fault != Some(flag_address);
             assert_eq!(
@@ -5082,7 +4690,7 @@ pub(crate) mod naval_test_kit {
                             == OOB_GROUP + corders_group::THEATER_GROUP
                             && len == 8)
                         .count(),
-                    4,
+                    2,
                     "{name}"
                 );
             }
@@ -5254,7 +4862,7 @@ pub(crate) mod supremacy_test_kit {
         use engine::cnaval_region_dominance;
         let mut capacities = Capacities::default();
         capacities.rows[0] = cap;
-        let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
+        let mut captured = Captured::with_capacities(&capacities);
         let walked =
             cnaval_region_dominance::walk(memory, BASE, GAME_STATE, &mut captured.supremacy.rows);
         captured.supremacy.outcome = super::bounded(walked, captured.supremacy.rows.len());
@@ -5269,17 +4877,16 @@ pub(crate) mod supremacy_test_kit {
         cap: usize,
     ) -> (Split, SupremacyCopyReport, SupremacyJob) {
         let ctx = SupremacyCopyContext {
+            hour: 0,
+            force_full: true,
             base: BASE,
             game_state: GAME_STATE,
-            needed: [true; 1],
         };
         let mut capacities = Capacities::default();
         capacities.rows[0] = cap;
-        let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
+        let mut captured = Captured::with_capacities(&capacities);
         let mut first = SupremacyJob::new();
-        let mut second = SupremacyJob::new();
-        let report = super::copy_supremacy_refresh(memory, ctx, &mut first, Some(&mut second));
-        captured.apply_supremacy_report(ctx.needed, &report);
+        let report = super::copy_supremacy_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
         let mut ticks = [0u64; 1];
         captured.decode_supremacy_payload(BASE, &first, &mut ticks);
@@ -5518,7 +5125,7 @@ pub(crate) mod sunk_test_kit {
         let mut capacities = Capacities::default();
         capacities.rows[13] = rows_cap;
         capacities.sunk_names = names_cap;
-        let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
+        let mut captured = Captured::with_capacities(&capacities);
         let walked = csunk_ship_info::walk(
             memory,
             BASE,
@@ -5553,19 +5160,17 @@ pub(crate) mod sunk_test_kit {
         names_cap: usize,
     ) -> (Split, SunkCopyReport, SunkJob) {
         let ctx = SunkCopyContext {
+            force_full: true,
             base: BASE,
             game_state: GAME_STATE,
             hour: HOUR,
-            needed: [true; 1],
         };
         let mut capacities = Capacities::default();
         capacities.rows[13] = rows_cap;
         capacities.sunk_names = names_cap;
-        let mut captured = Captured::with_capacities(&capacities, &[0; 17]);
+        let mut captured = Captured::with_capacities(&capacities);
         let mut first = SunkJob::new();
-        let mut second = SunkJob::new();
-        let report = super::copy_sunk_refresh(memory, ctx, &mut first, Some(&mut second));
-        captured.apply_sunk_report(ctx.needed, &report);
+        let report = super::copy_sunk_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
         let mut ticks = [0u64; 1];
         captured.decode_sunk_payload(BASE, &first, &mut ticks);

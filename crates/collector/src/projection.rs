@@ -4,6 +4,8 @@
 //! payloads, after the caller's acquisition and arena checks, with the encoder's
 //! complete baseline. A stable permutation avoids repeatedly sorting the same
 //! census; every use verifies its order against the current native keys.
+//! Portrait acquisition may retain owned descriptors certified current by its
+//! native mutation observer; this is distinct from carrying an older sample.
 
 use crate::spooling::{table, unavailable};
 use engine::walk::Outcome;
@@ -20,6 +22,8 @@ struct Ordering {
     compared: u64,
     reused: u64,
     converted: u64,
+    updated: u64,
+    updated_rows: u64,
     sorted: u64,
 }
 
@@ -44,6 +48,8 @@ impl ProjectionScratch {
                 "compared": order.compared,
                 "reused": order.reused,
                 "converted": order.converted,
+                "updated": order.updated,
+                "updated_rows": order.updated_rows,
                 "sorted": order.sorted,
                 "ordering_capacity_bytes": order.indices.capacity() * std::mem::size_of::<usize>(),
             })).collect::<Vec<_>>(),
@@ -129,6 +135,35 @@ impl<'a> Projection<'a> {
                     .comparison_baseline::<S>(self.branch, self.hour, self.force)
         {
             order.compared = order.compared.saturating_add(1);
+            if token.allows_row_updates() && source.len() == baseline.len() {
+                let mut indices = Vec::new();
+                let same_keys = baseline.iter().enumerate().all(|(index, previous)| {
+                    let current = at(index);
+                    if key(current) != previous.key() {
+                        return false;
+                    }
+                    if !equal(current, previous) {
+                        indices.push(index);
+                    }
+                    true
+                });
+                if same_keys {
+                    if indices.is_empty() {
+                        order.reused = order.reused.saturating_add(1);
+                        return TableInput::ComparedEqual(token);
+                    }
+                    let rows = TableRows::from_rows::<S>(
+                        indices.iter().map(|&index| convert(at(index))).collect(),
+                    );
+                    order.updated = order.updated.saturating_add(1);
+                    order.updated_rows = order.updated_rows.saturating_add(indices.len() as u64);
+                    return TableInput::ComparedChanges {
+                        token,
+                        indices,
+                        rows,
+                    };
+                }
+            }
             if source.len() == baseline.len()
                 && baseline.iter().enumerate().all(|(index, previous)| {
                     let current = at(index);
@@ -241,6 +276,7 @@ mod tests {
             id,
             owner,
             controller: owner + 1,
+            movement_infrastructure: 0,
         };
         let mut rows = vec![state(3, 30), state(1, 10), state(2, 20)];
         for hour in 0..8 {
@@ -262,7 +298,13 @@ mod tests {
             assert_eq!(matches!(current, TableInput::ComparedEqual(_)), reused);
             assert_eq!(
                 conversions.get() - before,
-                if reused { 0 } else { rows.len() }
+                if reused {
+                    0
+                } else if hour == 4 {
+                    1
+                } else {
+                    rows.len()
+                }
             );
             let baseline = table::<tables::States, _>(outcome, &rows, Clone::clone);
             let actual = projected.encode_input(input(hour, current), false).unwrap();
@@ -286,11 +328,13 @@ mod tests {
                 id: 3,
                 owner: 7,
                 controller: 9,
+                movement_infrastructure: 0,
             },
             StateRow {
                 id: 1,
                 owner: 2,
                 controller: 4,
+                movement_infrastructure: 0,
             },
         ];
         let complete = Outcome::Rows { len: 2 };
@@ -350,6 +394,7 @@ mod tests {
             id: 1,
             owner: 2,
             controller: 4,
+            movement_infrastructure: 0,
         }];
         let outcome = Outcome::Rows { len: 1 };
         let first = project(&encoder, &mut scratch, 0, outcome, &rows, &conversions);

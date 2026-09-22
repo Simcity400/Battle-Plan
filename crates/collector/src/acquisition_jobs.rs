@@ -1,17 +1,15 @@
 //! Owned acquisition requests executed within the hour's live-read lease.
-//! Job dependencies and the final shared-country verdict belong to the
-//! callback, which schedules any ready job on a worker or runs it itself while
-//! waiting;
-//! no family owns a dedicated thread.
+//! Job dependencies and the shared-country lease belong to the
+//! callback, which dispatches jobs and joins their results. A join can execute
+//! only its own queued job when caller execution is allowed; no family owns a
+//! dedicated thread.
 
 pub(crate) use crate::acquisition_countries::{
     Report as CountriesReport, Request as CountriesRequest,
 };
-pub(crate) use crate::acquisition_gather::{
-    Buffers as GatherBuffers, Report as GatherReport, Request as GatherRequest,
-};
+pub(crate) use crate::acquisition_gather::{Report as GatherReport, Request as GatherRequest};
 use crate::extended::{
-    air, character_portraits, characters, construction, division_eta, division_presentation,
+    air, character_portraits, characters, construction, division_eta_inputs, division_presentation,
     economy, fog, governance, intel, lexical, naval_history, production, projects,
     province_unit_order, session, ship_models, supply_trains, weather,
 };
@@ -19,7 +17,7 @@ use crate::{
     acquisition, acquisition_factions, acquisition_states, acquisition_wars, map_capture, sampling,
 };
 pub(crate) use acquisition::{Completion, Failure, SubmitError, Ticket};
-use engine::memory::LiveMemory;
+use engine::memory::{CountedMemory, LiveMemory};
 use serde::Serialize;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -32,22 +30,23 @@ use std::{
 pub(crate) struct RawRequest<J, C> {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: C,
-    pub first: J,
-    pub second: Option<J>,
+    pub payload: J,
 }
 
-pub(crate) struct WorldPair<J, C> {
+pub(crate) struct WorldPart<J, C> {
     pub context: C,
-    pub first: J,
-    pub second: Option<J>,
+    pub payload: J,
 }
+/// Supply runs every hour; daily parts own a payload only when scheduled.
 pub(crate) struct WorldRequest {
     pub countries: Arc<engine::country_memory::Cache>,
-    pub economy: WorldPair<economy::EconomyRestJob, economy::EconomyRestCopyContext>,
-    pub construction:
-        WorldPair<construction::ConstructionRestJob, construction::ConstructionRestCopyContext>,
-    pub production: WorldPair<production::ProductionRestJob, production::ProductionRestCopyContext>,
-    pub focus: WorldPair<governance::FocusJob, governance::FocusCopyContext>,
+    pub economy: WorldPart<economy::EconomyRestJob, economy::EconomyRestCopyContext>,
+    pub construction: Option<
+        WorldPart<construction::ConstructionRestJob, construction::ConstructionRestCopyContext>,
+    >,
+    pub production:
+        Option<WorldPart<production::ProductionRestJob, production::ProductionRestCopyContext>>,
+    pub focus: Option<WorldPart<governance::FocusJob, governance::FocusCopyContext>>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct WorldReport {
@@ -61,22 +60,122 @@ pub(crate) struct GovernanceRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: governance::CaptureContext,
     pub captured: governance::Captured,
+    pub registry: crate::extended::Registry,
+    pub variants: production::Variants,
+    pub buildings: construction::Buildings,
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct GovernanceReport {
+    pub governance: governance::CaptureReport,
+    pub variants: [u64; production::N],
+    pub buildings: u64,
+}
+impl GovernanceRequest {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.captured.allocated_bytes()
+            + self.registry.allocated_bytes()
+            + self.variants.allocated_bytes()
+            + self.buildings.allocated_bytes()
+    }
+
+    pub(crate) fn fail(&mut self, reason: &'static str) -> GovernanceReport {
+        self.captured.fail_owned_capture(self.context, reason);
+        self.registry.fail(reason);
+        self.variants
+            .fail(reason, self.context.hour, self.context.force_full);
+        self.buildings.fail(reason);
+        GovernanceReport::default()
+    }
 }
 pub(crate) struct IntelResidualRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: intel::CaptureContext,
     pub captured: intel::Captured,
 }
+/// One country-slot share of the supply node census; part 0 also walks the
+/// train inventory.
 pub(crate) struct SupplyTrainsRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: supply_trains::CaptureContext,
-    pub captured: supply_trains::Captured,
+    pub part: usize,
+    pub nodes: supply_trains::Part,
+    pub trains: Option<supply_trains::Trains>,
 }
+/// One contiguous share of the character roster.
 pub(crate) struct CharacterPortraitsRequest {
-    pub countries: Arc<engine::country_memory::Cache>,
     pub context: character_portraits::CaptureContext,
-    pub captured: character_portraits::Captured,
+    pub part: usize,
+    pub captured: character_portraits::Part,
+    pub census: Option<Arc<engine::ccharacter_manager::PortraitCensus>>,
 }
+pub(crate) struct OrdinaryRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub packs: Box<crate::extended::OrdinaryPacks>,
+}
+impl OrdinaryRequest {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.packs.allocated_bytes()
+    }
+
+    pub(crate) fn fail(&mut self, reason: &'static str) -> OrdinaryReport {
+        self.packs.fail(reason);
+        OrdinaryReport
+    }
+}
+pub(crate) struct SlowRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    pub packs: Box<crate::extended::SlowPacks>,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SlowReport;
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OrdinaryReport;
+pub(crate) struct LateRequest {
+    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    pub packs: Box<crate::extended::LatePacks>,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LateReport;
+/// The army order census and its plan operands. No inputs, so it runs from
+/// the first dispatch burst; the Late job reads the roots it leaves.
+pub(crate) struct OrdersRequest {
+    pub base: usize,
+    pub orders: crate::map_capture::Orders,
+    pub plans: crate::extended::plans::Captured,
+}
+impl OrdersRequest {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.orders.allocated_bytes() + self.plans.allocated_bytes()
+    }
+
+    pub(crate) fn fail(&mut self, reason: &'static str) -> OrdersReport {
+        self.orders.fail(reason);
+        self.plans.fail(reason);
+        OrdersReport
+    }
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OrdersReport;
+/// The raw-gated packs, dispatched once every raw-copy verdict is in.
+pub(crate) struct GatedRequest {
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    pub packs: Box<crate::extended::GatedPacks>,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct GatedReport;
 pub(crate) struct ProvinceUnitOrderRequest {
     pub context: province_unit_order::CaptureContext,
     pub captured: province_unit_order::Captured,
@@ -88,38 +187,46 @@ pub(crate) type ProvincesReport = GatherReport;
 pub(crate) struct ShipModelsRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: ship_models::CaptureContext,
+    pub game_state: usize,
     pub captured: ship_models::Captured,
+    /// Walked first; its ships seed the model details.
+    pub census: crate::map_capture::ShipCensus,
 }
 pub(crate) struct PresentationRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub captured: division_presentation::Captured,
-    pub first: Option<Arc<crate::division_census::UnitInputs>>,
-    pub second: Option<Arc<crate::division_census::UnitInputs>>,
+    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
 }
-pub(crate) struct EtaRequest {
+impl PresentationRequest {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.captured.allocated_bytes()
+    }
+
+    pub(crate) fn fail(&mut self, reason: &'static str) -> division_presentation::CaptureReport {
+        self.captured.fail_owned_capture(reason)
+    }
+}
+/// One contiguous range of the per-leg ETA operands over the shared division
+/// census. Every range is dispatched with Presentation, so the route scan runs
+/// on several workers at once instead of one.
+pub(crate) struct EtaInputsRequest {
     pub countries: Arc<engine::country_memory::Cache>,
-    pub base: usize,
-    pub state: usize,
-    pub payload: division_eta::RangeCaptured,
-    pub workspace: Box<division_eta::Workspace>,
-    pub first: Option<Arc<crate::division_census::UnitInputs>>,
-    pub second: Option<Arc<crate::division_census::UnitInputs>>,
-    pub pass: usize,
+    pub context: division_eta_inputs::CaptureContext,
+    pub captured: division_eta_inputs::RangeCaptured,
+    pub range: usize,
+    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
 }
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct EtaReport;
 pub(crate) struct IntelRequest {
     pub countries: Arc<engine::country_memory::Cache>,
     pub context: fog::IntelCopyContext,
-    pub first: fog::IntelJob,
-    pub second: Option<fog::IntelJob>,
-    pub divisions_first: Option<Arc<crate::division_census::UnitInputs>>,
-    pub divisions_second: Option<Arc<crate::division_census::UnitInputs>>,
-    pub divisions_matched: bool,
+    pub payload: fog::IntelJob,
+    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
 }
-pub(crate) type CharactersRequest =
-    RawRequest<characters::CharactersJob, characters::CharactersCopyContext>;
+pub(crate) struct CharactersRequest {
+    pub context: characters::CharactersCopyContext,
+    pub payload: characters::CharactersJob,
+}
 pub(crate) type RelationsRequest = RawRequest<intel::RelationsJob, intel::RelationsCopyContext>;
 pub(crate) type AirWingRequest = RawRequest<air::AirWingJob, air::AirWingCopyContext>;
 pub(crate) type AirStatsRequest = RawRequest<air::AirStatsJob, air::AirStatsCopyContext>;
@@ -164,13 +271,18 @@ pub(crate) enum Job {
     Divisions(DivisionsRequest),
     World(WorldRequest),
     Governance(GovernanceRequest),
-    Eta(EtaRequest),
     Intel(IntelRequest),
     Presentation(PresentationRequest),
+    EtaInputs(EtaInputsRequest),
     IntelResidual(IntelResidualRequest),
     SupplyTrains(SupplyTrainsRequest),
     CharacterPortraits(CharacterPortraitsRequest),
     ProvinceUnitOrder(ProvinceUnitOrderRequest),
+    Ordinary(OrdinaryRequest),
+    Slow(SlowRequest),
+    Late(LateRequest),
+    Orders(OrdersRequest),
+    Gated(GatedRequest),
     ShipModels(ShipModelsRequest),
     Provinces(ProvincesRequest),
     Factions(acquisition_factions::Request),
@@ -199,14 +311,19 @@ pub(crate) enum Report {
     Radar(fog::RadarCopyReport),
     Divisions(sampling::DivisionsCopyReport),
     World(WorldReport),
-    Governance(governance::CaptureReport),
-    Eta(EtaReport),
+    Governance(GovernanceReport),
     Intel(fog::IntelCopyReport),
     Presentation(division_presentation::CaptureReport),
+    EtaInputs(division_eta_inputs::CaptureReport),
     IntelResidual(intel::CaptureReport),
     SupplyTrains(supply_trains::CaptureReport),
     CharacterPortraits(character_portraits::CaptureReport),
     ProvinceUnitOrder(province_unit_order::CaptureReport),
+    Ordinary(OrdinaryReport),
+    Slow(SlowReport),
+    Late(LateReport),
+    Orders(OrdersReport),
+    Gated(GatedReport),
     ShipModels(ship_models::CaptureReport),
     Provinces(ProvincesReport),
     Factions(acquisition_factions::Report),
@@ -219,6 +336,9 @@ pub(crate) enum Report {
 #[repr(usize)]
 pub(crate) enum Role {
     Characters,
+    CountryLeaderRoles,
+    AdvisorRoles,
+    CharacterTraits,
     Relations,
     AirWing,
     AirStats,
@@ -237,13 +357,18 @@ pub(crate) enum Role {
     Divisions,
     World,
     Governance,
-    Eta,
     Intel,
     Presentation,
+    EtaInputs,
     IntelResidual,
     SupplyTrains,
     CharacterPortraits,
     ProvinceUnitOrder,
+    Ordinary,
+    Slow,
+    Late,
+    Orders,
+    Gated,
     ShipModels,
     Provinces,
     Factions,
@@ -251,9 +376,119 @@ pub(crate) enum Role {
     Wars,
     States,
 }
-const ROLE_COUNT: usize = 32;
-const ROLES: [Role; ROLE_COUNT] = [
+
+impl Role {
+    fn worker_only(self) -> bool {
+        matches!(
+            self,
+            Self::Governance | Self::Orders | Self::Ordinary | Self::Presentation
+        )
+    }
+    /// Shared native work follows an hourly consumer in mixed families. Detail
+    /// acquisition opens nested scopes when it reads its own sources.
+    fn read_anchor(self) -> replay::rows::TableId {
+        use replay::rows::TableId as T;
+        match self {
+            Self::Characters => T::Characters,
+            Self::CountryLeaderRoles => T::CountryLeaderRoles,
+            Self::AdvisorRoles => T::AdvisorRoles,
+            Self::CharacterTraits => T::UnitLeaderTraits,
+            Self::Relations => T::RelationTuples,
+            Self::AirWing => T::AirWings,
+            Self::AirStats => T::AirStatistics,
+            Self::AirBases => T::AirBases,
+            Self::AirHistory => T::AirRegionHistory,
+            Self::Naval => T::OrdersGroups,
+            Self::Supremacy => T::NavalSupremacy,
+            Self::Sunk => T::SunkShips,
+            Self::Capitulation => T::Capitulation,
+            Self::Players => T::Players,
+            Self::Projects => T::ProjectPrograms,
+            Self::Lexical => T::LexicalTokens,
+            Self::Session => T::WorldTension,
+            Self::Weather => T::WeatherLimits,
+            Self::Radar => T::RadarCoverage,
+            Self::Divisions => T::Divisions,
+            Self::World => T::ProvinceSupply,
+            Self::Governance => T::Politics,
+            Self::Intel => T::UnitIntel,
+            Self::Presentation => T::DivisionMovement,
+            Self::EtaInputs => T::DivisionEtaInputs,
+            Self::IntelResidual => intel::TABLES[0],
+            Self::SupplyTrains => supply_trains::TABLES[0],
+            Self::CharacterPortraits => character_portraits::TABLES[0],
+            Self::ProvinceUnitOrder => province_unit_order::TABLES[0],
+            Self::Ordinary => T::LandCombatDetails,
+            Self::Slow => T::LeaderPortraits,
+            Self::Late => T::WingEquipment,
+            Self::Orders => T::ArmyOrders,
+            Self::Gated => T::VolunteerHosts,
+            Self::ShipModels => T::ShipModels,
+            Self::Provinces => T::Provinces,
+            Self::Factions => T::Factions,
+            Self::Countries => T::Countries,
+            Self::Wars => T::WarRelations,
+            Self::States => T::States,
+        }
+    }
+}
+
+impl Role {
+    /// Claim order when workers are scarce: the block segment that joins the
+    /// role, lower first. ShipModels is dispatched first anyway.
+    pub(crate) fn priority(self) -> u8 {
+        match self {
+            Self::World => 0,
+            Self::AirWing => 1,
+            Self::Divisions
+            | Self::Intel
+            | Self::IntelResidual
+            | Self::AirBases
+            | Self::AirStats
+            | Self::AirHistory
+            | Self::Supremacy
+            | Self::Sunk
+            | Self::Radar
+            | Self::Weather
+            | Self::Capitulation
+            | Self::Projects
+            | Self::Lexical
+            | Self::Session
+            | Self::Players => 2,
+            // The roster supplies portraits. Start its independent role jobs early
+            // too, so their long pointer walks overlap later map/pack dispatch.
+            Self::Characters
+            | Self::CountryLeaderRoles
+            | Self::AdvisorRoles
+            | Self::CharacterTraits
+            | Self::Naval => 3,
+            Self::Orders
+            | Self::Provinces
+            | Self::States
+            | Self::Countries
+            | Self::Wars
+            | Self::Factions => 4,
+            Self::Governance
+            | Self::SupplyTrains
+            | Self::CharacterPortraits
+            | Self::ProvinceUnitOrder
+            | Self::Relations
+            | Self::Ordinary
+            | Self::Slow
+            | Self::Gated => 5,
+            Self::Presentation | Self::EtaInputs => 6,
+            Self::Late => 7,
+            Self::ShipModels => 8,
+        }
+    }
+}
+
+pub(crate) const ROLE_COUNT: usize = 40;
+pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
+    Role::CountryLeaderRoles,
+    Role::AdvisorRoles,
+    Role::CharacterTraits,
     Role::Relations,
     Role::AirWing,
     Role::AirStats,
@@ -272,13 +507,18 @@ const ROLES: [Role; ROLE_COUNT] = [
     Role::Divisions,
     Role::World,
     Role::Governance,
-    Role::Eta,
     Role::Intel,
     Role::Presentation,
+    Role::EtaInputs,
     Role::IntelResidual,
     Role::SupplyTrains,
     Role::CharacterPortraits,
     Role::ProvinceUnitOrder,
+    Role::Ordinary,
+    Role::Slow,
+    Role::Late,
+    Role::Orders,
+    Role::Gated,
     Role::ShipModels,
     Role::Provinces,
     Role::Factions,
@@ -289,7 +529,12 @@ const ROLES: [Role; ROLE_COUNT] = [
 impl Job {
     pub(crate) fn role(&self) -> Role {
         match self {
-            Self::Characters(..) => Role::Characters,
+            Self::Characters(request) => [
+                Role::Characters,
+                Role::CountryLeaderRoles,
+                Role::AdvisorRoles,
+                Role::CharacterTraits,
+            ][request.payload.part],
             Self::Relations(..) => Role::Relations,
             Self::AirWing(..) => Role::AirWing,
             Self::AirStats(..) => Role::AirStats,
@@ -308,13 +553,18 @@ impl Job {
             Self::Divisions(..) => Role::Divisions,
             Self::World(..) => Role::World,
             Self::Governance(..) => Role::Governance,
-            Self::Eta(..) => Role::Eta,
             Self::Intel(..) => Role::Intel,
             Self::Presentation(..) => Role::Presentation,
+            Self::EtaInputs(..) => Role::EtaInputs,
             Self::IntelResidual(..) => Role::IntelResidual,
             Self::SupplyTrains(..) => Role::SupplyTrains,
             Self::CharacterPortraits(..) => Role::CharacterPortraits,
             Self::ProvinceUnitOrder(..) => Role::ProvinceUnitOrder,
+            Self::Ordinary(..) => Role::Ordinary,
+            Self::Slow(..) => Role::Slow,
+            Self::Late(..) => Role::Late,
+            Self::Orders(..) => Role::Orders,
+            Self::Gated(..) => Role::Gated,
             Self::ShipModels(..) => Role::ShipModels,
             Self::Provinces(..) => Role::Provinces,
             Self::Factions(..) => Role::Factions,
@@ -345,76 +595,38 @@ pub(crate) struct RoleCalibration {
 #[derive(Serialize)]
 pub(crate) struct Calibration {
     pub executor: acquisition::Calibration,
-    pub roles: [RoleCalibration; ROLE_COUNT],
-    pub eta_country_cache: EtaCountryCacheCalibration,
+    pub roles: Vec<RoleCalibration>,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
-pub(crate) enum EtaCountryCacheSeed {
+pub(crate) enum CountryCacheSeed {
     Ready { entries: usize },
     Capacity { required_cells: usize },
     Unavailable { reason: &'static str },
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
-pub(crate) struct EtaCountryCacheCalibration {
+pub(crate) struct CountryCacheCalibration {
     pub ready: u64,
     pub capacity_fallbacks: u64,
     pub unavailable_fallbacks: u64,
-    pub latest: Option<EtaCountryCacheSeed>,
-    // Shares the ETA role calibration lock; World leaves this empty.
-    // Published separately from country authentication to keep scopes distinct.
-    #[serde(skip)]
-    pub read_witness: EtaReadCalibration,
+    pub latest: Option<CountryCacheSeed>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize)]
-pub(crate) struct EtaReadCalibration {
-    pub captures: u64,
-    pub stages: division_eta::StageDiagnostics,
-    pub hits: u64,
-    pub retained_misses: u64,
-    pub direct_reads: u64,
-    pub witness_skips: u64,
-    pub witness_fallbacks: u64,
-    pub witness_entries_peak: usize,
-    pub witness_bytes_peak: usize,
-    pub witness_entries_required: usize,
-    pub witness_bytes_required: usize,
-}
-impl EtaReadCalibration {
-    fn observe(&mut self, next: division_eta::CacheDiagnostics) {
-        self.captures = self.captures.saturating_add(1);
-        self.stages.absorb(next.stages);
-        self.hits = self.hits.saturating_add(next.hits);
-        self.retained_misses = self.retained_misses.saturating_add(next.retained_misses);
-        self.direct_reads = self.direct_reads.saturating_add(next.direct_reads);
-        self.witness_skips = self.witness_skips.saturating_add(next.witness_skips);
-        self.witness_fallbacks = self
-            .witness_fallbacks
-            .saturating_add(next.witness_fallbacks);
-        self.witness_entries_peak = self.witness_entries_peak.max(next.witness_entries_peak);
-        self.witness_bytes_peak = self.witness_bytes_peak.max(next.witness_bytes_peak);
-        self.witness_entries_required = self
-            .witness_entries_required
-            .max(next.witness_entries_required);
-        self.witness_bytes_required = self.witness_bytes_required.max(next.witness_bytes_required);
-    }
-}
-impl EtaCountryCacheCalibration {
+impl CountryCacheCalibration {
     fn observe(&mut self, seed: engine::country_memory::SeedStatus, entries: usize) {
         self.latest = Some(match seed {
             engine::country_memory::SeedStatus::Ready => {
                 self.ready = self.ready.saturating_add(1);
-                EtaCountryCacheSeed::Ready { entries }
+                CountryCacheSeed::Ready { entries }
             }
             engine::country_memory::SeedStatus::Capacity { required_cells } => {
                 self.capacity_fallbacks = self.capacity_fallbacks.saturating_add(1);
-                EtaCountryCacheSeed::Capacity { required_cells }
+                CountryCacheSeed::Capacity { required_cells }
             }
             engine::country_memory::SeedStatus::Unavailable { reason } => {
                 self.unavailable_fallbacks = self.unavailable_fallbacks.saturating_add(1);
-                EtaCountryCacheSeed::Unavailable { reason }
+                CountryCacheSeed::Unavailable { reason }
             }
         });
     }
@@ -422,7 +634,7 @@ impl EtaCountryCacheCalibration {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct WorldCalibration {
-    pub country_cache: EtaCountryCacheCalibration,
+    pub country_cache: CountryCacheCalibration,
     pub acquisition_ticks: u64,
     pub last_error: Option<&'static str>,
 }
@@ -487,14 +699,12 @@ fn catch_failure<R>(work: impl FnOnce() -> R) -> Result<R, Failure> {
 
 struct SharedCalibration {
     roles: [Counters; ROLE_COUNT],
-    eta: Mutex<EtaCountryCacheCalibration>,
     world: Mutex<WorldCalibration>,
 }
 impl Default for SharedCalibration {
     fn default() -> Self {
         Self {
             roles: std::array::from_fn(|_| Counters::default()),
-            eta: Mutex::new(EtaCountryCacheCalibration::default()),
             world: Mutex::new(WorldCalibration::default()),
         }
     }
@@ -505,30 +715,33 @@ pub(crate) fn run_world(
     production_memory: &impl engine::Memory,
 ) -> WorldReport {
     let started = crate::sampling::qpc();
-    let production = production::copy_production_rest_refresh(
-        production_memory,
-        request.production.context,
-        &mut request.production.first,
-        request.production.second.as_mut(),
-    );
-    let construction = construction::copy_construction_rest_refresh(
-        memory,
-        request.construction.context,
-        &mut request.construction.first,
-        request.construction.second.as_mut(),
-    );
+    let production = request
+        .production
+        .as_mut()
+        .map_or_else(Default::default, |part| {
+            production::copy_production_rest_refresh(
+                production_memory,
+                part.context,
+                &mut part.payload,
+            )
+        });
+    let construction = request
+        .construction
+        .as_mut()
+        .map_or_else(Default::default, |part| {
+            construction::copy_construction_rest_refresh(memory, part.context, &mut part.payload)
+        });
     let economy = economy::copy_economy_rest_refresh(
         memory,
         request.economy.context,
-        &mut request.economy.first,
-        request.economy.second.as_mut(),
+        &mut request.economy.payload,
     );
-    let focus = governance::copy_focus_refresh(
-        memory,
-        request.focus.context,
-        &mut request.focus.first,
-        request.focus.second.as_mut(),
-    );
+    let focus = request
+        .focus
+        .as_mut()
+        .map_or_else(Default::default, |part| {
+            governance::copy_focus_refresh(memory, part.context, &mut part.payload)
+        });
     WorldReport {
         economy,
         construction,
@@ -549,8 +762,7 @@ fn run_world_shared(
     let seed = cached.seed_status();
     let entries = cached.cached_entries();
     let mut report = run_world(request, &cached, memory);
-    // The callback's Countries anchor owns preparation and terminal checking.
-    // No worker may publish or credit checks before that shared verdict.
+    // The callback owns preparation and retains the country lease through all jobs.
     report.ticks = crate::sampling::qpc().saturating_sub(started).max(0) as u64;
     let mut counters = calibration
         .lock()
@@ -560,45 +772,6 @@ fn run_world_shared(
     report
 }
 
-fn run_eta_with_memory(
-    request: &mut EtaRequest,
-    memory: &impl engine::Memory,
-    calibration: &Mutex<EtaCountryCacheCalibration>,
-) -> EtaReport {
-    let cached = request.countries.view(memory);
-    let pass = request.pass;
-    if pass == 0 {
-        calibration
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .observe(cached.seed_status(), cached.cached_entries());
-    }
-    let inputs = if pass == 0 {
-        request.first.as_ref()
-    } else {
-        request.second.as_ref()
-    };
-    let seeds = inputs.map_or(&[][..], |inputs| inputs.seeds());
-    let outcome = inputs.map_or(
-        engine::walk::Outcome::Unavailable {
-            reason: "division inputs unavailable",
-        },
-        |inputs| inputs.outcome(),
-    );
-    request.payload.acquire_pass(
-        &mut request.workspace,
-        &cached,
-        request.base,
-        request.state,
-        seeds,
-        outcome,
-        pass,
-    );
-    // The callback records the final range diagnostics once, after its last
-    // pass. Neither inputs nor the workspace may be released here.
-    EtaReport
-}
-
 fn run_with_memory(
     job: &mut Job,
     memory: &impl engine::Memory,
@@ -606,110 +779,98 @@ fn run_with_memory(
 ) -> Report {
     let started = sampling::qpc();
     let role = job.role();
+    let _reads = crate::read_accounting::table(role.read_anchor());
     let report = match job {
-        Job::Characters(request) => {
-            let cached = request.countries.view(memory);
-            Report::Characters(characters::copy_characters_refresh(
-                &cached,
-                request.context,
-                &mut request.first,
-                request.second.as_mut(),
-            ))
-        }
+        Job::Characters(request) => Report::Characters(characters::copy_characters_refresh(
+            memory,
+            request.context,
+            &mut request.payload,
+        )),
         Job::Relations(request) => {
             let cached = request.countries.view(memory);
             Report::Relations(intel::copy_relations_refresh(
                 &cached,
                 request.context,
-                &mut request.first,
-                request.second.as_mut(),
+                &mut request.payload,
             ))
         }
-        Job::AirWing(request) => Report::AirWing(air::copy_air_refresh(
-            memory,
-            request.context,
-            &mut request.first,
-            request.second.as_mut(),
-        )),
+        Job::AirWing(request) => {
+            let cached = request.countries.roster_view(memory);
+            Report::AirWing(air::copy_air_refresh(
+                &cached,
+                request.context,
+                &mut request.payload,
+            ))
+        }
         Job::AirStats(request) => Report::AirStats(air::copy_air_stats_refresh(
             memory,
             request.context,
-            &mut request.first,
-            request.second.as_mut(),
+            &mut request.payload,
         )),
         Job::AirBases(request) => Report::AirBases(air::copy_air_bases_refresh(
             memory,
             request.context,
-            &mut request.first,
-            request.second.as_mut(),
+            &mut request.payload,
         )),
-        Job::AirHistory(request) => Report::AirHistory(air::copy_air_history_refresh(
-            memory,
-            request.context,
-            &mut request.first,
-            request.second.as_mut(),
-        )),
+        Job::AirHistory(request) => {
+            let cached = request.countries.roster_view(memory);
+            Report::AirHistory(air::copy_air_history_refresh(
+                &cached,
+                request.context,
+                &mut request.payload,
+            ))
+        }
         Job::Naval(request) => Report::Naval(naval_history::copy_naval_refresh(
             memory,
             request.context,
-            &mut request.first,
-            request.second.as_mut(),
+            &mut request.payload,
         )),
         Job::Supremacy(request) => Report::Supremacy(naval_history::copy_supremacy_refresh(
             memory,
             request.context,
-            &mut request.first,
-            request.second.as_mut(),
+            &mut request.payload,
         )),
         Job::Sunk(request) => Report::Sunk(naval_history::copy_sunk_refresh(
             memory,
             request.context,
-            &mut request.first,
-            request.second.as_mut(),
+            &mut request.payload,
         )),
         Job::Capitulation(request) => Report::Capitulation(intel::copy_capitulation_refresh(
             memory,
             request.context,
-            &mut request.first,
-            request.second.as_mut(),
+            &mut request.payload,
         )),
         Job::Players(request) => Report::Players(map_capture::copy_players_refresh(
             memory,
             request.context,
-            &mut request.first,
-            request.second.as_mut(),
+            &mut request.payload,
         )),
         Job::Projects(request) => Report::Projects(projects::copy_projects_refresh(
             memory,
             request.context,
-            &mut request.first,
-            request.second.as_mut(),
+            &mut request.payload,
         )),
         Job::Lexical(request) => Report::Lexical(lexical::copy_lexical_refresh(
             memory,
             request.context,
-            &mut request.first,
-            request.second.as_mut(),
+            &mut request.payload,
         )),
         Job::Session(request) => Report::Session(session::copy_session_refresh(
             memory,
             request.context,
-            &mut request.first,
-            request.second.as_mut(),
+            &mut request.payload,
         )),
         Job::Weather(request) => Report::Weather(weather::copy_weather_refresh(
             memory,
             request.context,
-            &mut request.first,
-            request.second.as_mut(),
+            &mut request.payload,
         )),
         Job::Radar(request) => {
             let cached = request.countries.view(memory);
             Report::Radar(fog::copy_radar_refresh(
                 &cached,
                 request.context,
-                &mut request.first,
-                request.second.as_mut(),
+                &mut request.payload,
             ))
         }
         Job::Divisions(request) => {
@@ -717,48 +878,154 @@ fn run_with_memory(
             Report::Divisions(sampling::copy_divisions_core_refresh(
                 &cached,
                 request.context,
-                &mut request.first,
-                request.second.as_mut(),
+                &mut request.payload,
             ))
         }
 
         Job::World(request) => Report::World(run_world_shared(request, memory, &calibration.world)),
         Job::Governance(request) => {
-            let cached = request.countries.view(memory);
-            Report::Governance(request.captured.capture_owned(&cached, request.context))
+            let cached = request.countries.roster_view(memory);
+            let context = request.context;
+            let governance = request.captured.capture_owned(&cached, context);
+            // The campaign registry includes variants absent from units,
+            // production and stockpiles. Keep all entries and duplicates.
+            let registry_ticks = if replay::cadence::should_walk(
+                replay::rows::TableId::VariantDefinitions,
+                context.hour,
+                context.force_full,
+            ) {
+                let begin = sampling::qpc();
+                request
+                    .registry
+                    .acquire(&cached, context.base, context.game_state);
+                sampling::qpc().saturating_sub(begin).max(0) as u64
+            } else {
+                request.registry.mark_skipped();
+                0
+            };
+            let mut variants = request.variants.capture(
+                &cached,
+                context.base,
+                request.registry.sources(),
+                context.hour,
+                context.force_full,
+            );
+            variants[3] = variants[3].saturating_add(registry_ticks);
+            let buildings = request.buildings.capture(
+                &cached,
+                context.base,
+                context.game_state,
+                context.hour,
+                context.force_full,
+            );
+            Report::Governance(GovernanceReport {
+                governance,
+                variants,
+                buildings,
+            })
         }
         Job::IntelResidual(request) => {
             let cached = request.countries.view(memory);
             Report::IntelResidual(request.captured.capture_residual(&cached, request.context))
         }
         Job::SupplyTrains(request) => {
-            let cached = request.countries.view(memory);
-            Report::SupplyTrains(request.captured.capture_owned(&cached, request.context))
+            let cached = request.countries.roster_view(memory);
+            let mut ticks = [0; supply_trains::N];
+            ticks[0] = request
+                .nodes
+                .capture(&cached, request.context, request.part);
+            if let Some(trains) = request.trains.as_mut() {
+                ticks[1] = trains.capture(&cached, request.context);
+            }
+            Report::SupplyTrains(supply_trains::CaptureReport { ticks })
         }
         Job::CharacterPortraits(request) => {
-            let cached = request.countries.view(memory);
-            Report::CharacterPortraits(request.captured.capture_owned(&cached, request.context))
+            Report::CharacterPortraits(character_portraits::CaptureReport {
+                ticks: [request.captured.capture(
+                    memory,
+                    request.context,
+                    request.part,
+                    request.census.as_deref(),
+                )],
+            })
         }
         Job::ProvinceUnitOrder(request) => {
             Report::ProvinceUnitOrder(request.captured.capture_owned(memory, request.context))
         }
+        Job::Ordinary(request) => {
+            let cached = request.countries.roster_view(memory);
+            request
+                .packs
+                .capture(&cached, request.base, request.game_state);
+            Report::Ordinary(OrdinaryReport)
+        }
+        Job::Slow(request) => {
+            let cached = request.countries.roster_view(memory);
+            request.packs.capture(
+                &cached,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.force_full,
+            );
+            Report::Slow(SlowReport)
+        }
+        Job::Late(request) => {
+            request.packs.capture(
+                memory,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.force_full,
+                request.inputs.as_deref(),
+            );
+            Report::Late(LateReport)
+        }
+        Job::Orders(request) => {
+            request.orders.walk(memory, request.base);
+            request.plans.visit(
+                memory,
+                request.base,
+                request.orders.roots(),
+                request.orders.visits(),
+                request.orders.root_outcome,
+                request.orders.rows.outcome,
+            );
+            Report::Orders(OrdersReport)
+        }
+        Job::Gated(request) => {
+            request.packs.capture(
+                memory,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.force_full,
+            );
+            Report::Gated(GatedReport)
+        }
         Job::ShipModels(request) => {
-            let cached = request.countries.view(memory);
+            let cached = request.countries.roster_view(memory);
+            request.census.walk(
+                &cached,
+                request.context.base,
+                request.game_state,
+                &mut request.captured,
+            );
             Report::ShipModels(request.captured.capture_owned(&cached, request.context))
         }
         Job::Provinces(request) => {
-            Report::Provinces(request.buffers.rows(request.needed, |rows, _| {
-                engine::cprovince::walk(memory, request.base, request.game_state, rows)
-            }))
+            let (base, game_state) = (request.base, request.game_state);
+            Report::Provinces(
+                request.run(|rows| engine::cprovince::walk(memory, base, game_state, rows)),
+            )
         }
         Job::Factions(request) => Report::Factions(acquisition_factions::run(request, memory)),
         Job::Countries(request) => Report::Countries(request.run(memory)),
         Job::Wars(request) => Report::Wars(request.run(memory)),
         Job::States(request) => Report::States(request.run(memory)),
         Job::Presentation(request) => {
-            let cached = request.countries.view(memory);
-            let first = request.first.as_deref();
-            let second = request.second.as_deref();
+            let cached = request.countries.roster_view(memory);
+            let inputs = request.inputs.as_deref();
             let missing = engine::walk::Outcome::Unavailable {
                 reason: "acquisition source not supplied",
             };
@@ -766,33 +1033,38 @@ fn run_with_memory(
                 &cached,
                 request.context,
                 production::Sources {
-                    first: first.map_or(&[], |inputs| inputs.seeds()),
-                    first_outcome: first.map_or(missing, |inputs| inputs.outcome()),
-                    second: second.map_or(&[], |inputs| inputs.seeds()),
-                    second_outcome: second.map_or(missing, |inputs| inputs.outcome()),
+                    rows: inputs.map_or(&[], |inputs| inputs.seeds()),
+                    outcome: inputs.map_or(missing, |inputs| inputs.outcome()),
                 },
             ))
         }
-        Job::Eta(request) => Report::Eta(run_eta_with_memory(request, memory, &calibration.eta)),
-        Job::Intel(request) => {
+        Job::EtaInputs(request) => {
             let cached = request.countries.view(memory);
-            let divisions =
-                request
-                    .divisions_first
-                    .as_ref()
-                    .map(|first| fog::IntelDivisionSources {
-                        first: first.intel_sources(),
-                        second: request
-                            .divisions_second
-                            .as_ref()
-                            .map(|second| second.intel_sources()),
-                        matched: request.divisions_matched,
-                    });
+            let inputs = request.inputs.as_deref();
+            let missing = engine::walk::Outcome::Unavailable {
+                reason: "acquisition source not supplied",
+            };
+            Report::EtaInputs(request.captured.capture_owned(
+                memory,
+                request.context,
+                production::Sources {
+                    rows: inputs.map_or(&[], |inputs| inputs.seeds()),
+                    outcome: inputs.map_or(missing, |inputs| inputs.outcome()),
+                },
+                engine::Memory::authenticated_countries(
+                    &cached,
+                    request.context.base,
+                    request.context.game_state,
+                ),
+            ))
+        }
+        Job::Intel(request) => {
+            let cached = request.countries.roster_view(memory);
+            let divisions = request.inputs.as_ref().map(|inputs| inputs.intel_sources());
             Report::Intel(fog::copy_intel_refresh_with_divisions(
                 &cached,
                 request.context,
-                &mut request.first,
-                request.second.as_mut(),
+                &mut request.payload,
                 divisions,
             ))
         }
@@ -804,6 +1076,8 @@ fn run_with_memory(
     report
 }
 
+const WORKER_ONLY_JOBS: usize = 4;
+
 pub(crate) struct Pool {
     executor: acquisition::Pool<Job, Report>,
     calibration: Arc<SharedCalibration>,
@@ -812,12 +1086,13 @@ impl Pool {
     pub(crate) fn start(worker_count: usize, capacity: usize) -> Result<Self, String> {
         let calibration = Arc::new(SharedCalibration::default());
         let runner_calibration = Arc::clone(&calibration);
-        let executor = acquisition::Pool::start(worker_count, capacity, move |job| {
+        let executor = acquisition::Pool::start(worker_count.max(1), capacity, move |job| {
             // SAFETY: submit's callback lease remains admitted until every
             // accepted request is collected, including on callback unwind.
-            let memory = unsafe { LiveMemory::new() };
+            let memory = CountedMemory::new(unsafe { LiveMemory::new() });
             run_with_memory(job, &memory, &runner_calibration)
         })?;
+        executor.reserve_worker_slots(WORKER_ONLY_JOBS)?;
         Ok(Self {
             executor,
             calibration,
@@ -832,7 +1107,13 @@ impl Pool {
     ) -> Result<Ticket, acquisition::SubmitError> {
         let role = request.as_ref().map(Job::role);
         // SAFETY: the caller retains the admitted callback lease.
-        let result = unsafe { self.executor.submit(request) };
+        let result = unsafe {
+            self.executor.submit_with_priority(
+                request,
+                role.map_or(0, Role::priority),
+                role.is_some_and(Role::worker_only),
+            )
+        };
         if let Some(role) = role {
             note_dispatch(&self.calibration.roles[role as usize], result.is_ok());
         }
@@ -840,6 +1121,7 @@ impl Pool {
     }
     pub(crate) fn finish(&self, ticket: Ticket) -> Option<Completion<Job, Report>> {
         let completed = self.executor.finish(ticket)?;
+        crate::read_accounting::merge(completed.table_reads);
         let role = completed.request.role();
         note_completion(&self.calibration.roles[role as usize], &completed.report);
         if role == Role::World
@@ -862,26 +1144,31 @@ impl Pool {
     /// # Safety
     /// The admitted callback lease must remain valid throughout this call.
     pub(crate) unsafe fn run_inline(&self, mut request: Job) -> Completion<Job, Report> {
+        assert!(
+            !request.role().worker_only(),
+            "acquisition requires a worker"
+        );
         let role = request.role();
+        let reads = crate::read_accounting::Capture::new();
         let report = catch_failure(|| {
             // SAFETY: the caller retains the callback's live-read lease.
-            let memory = unsafe { LiveMemory::new() };
+            let memory = CountedMemory::new(unsafe { LiveMemory::new() });
             run_with_memory(&mut request, &memory, &self.calibration)
         });
+        let table_reads = reads.finish();
+        crate::read_accounting::merge(table_reads);
         let counters = &self.calibration.roles[role as usize];
         counters.inline_completed.fetch_add(1, Ordering::Relaxed);
         if report.is_err() {
             counters.inline_panicked.fetch_add(1, Ordering::Relaxed);
         }
-        Completion { request, report }
-    }
-    pub(crate) fn observe_eta_diagnostics(&self, diagnostics: division_eta::CacheDiagnostics) {
-        self.calibration
-            .eta
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .read_witness
-            .observe(diagnostics);
+        Completion {
+            request,
+            report,
+            table_reads,
+            #[cfg(feature = "callback_profile")]
+            profile: Default::default(),
+        }
     }
     pub(crate) fn thread_ids(&self) -> Vec<u32> {
         self.executor.thread_ids()
@@ -902,15 +1189,14 @@ impl Pool {
     pub(crate) fn calibration(&self) -> Calibration {
         Calibration {
             executor: self.executor.calibration(),
-            roles: std::array::from_fn(|index| RoleCalibration {
-                role: ROLES[index],
-                counters: self.calibration.roles[index].snapshot(),
-            }),
-            eta_country_cache: *self
-                .calibration
-                .eta
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
+            roles: ROLES
+                .iter()
+                .enumerate()
+                .map(|(index, role)| RoleCalibration {
+                    role: *role,
+                    counters: self.calibration.roles[index].snapshot(),
+                })
+                .collect(),
         }
     }
     pub(crate) fn shutdown(&self) -> Result<(), String> {
@@ -938,7 +1224,13 @@ impl<'a> Batch<'a> {
         &mut self,
         request: &mut Option<Job>,
     ) -> Result<Ticket, SubmitError> {
-        let Some(slot) = self.tickets.iter_mut().find(|ticket| ticket.is_none()) else {
+        let worker_only = request.as_ref().is_some_and(|job| job.role().worker_only());
+        let slots = if worker_only {
+            &mut self.tickets[..WORKER_ONLY_JOBS]
+        } else {
+            &mut self.tickets[WORKER_ONLY_JOBS..]
+        };
+        let Some(slot) = slots.iter_mut().find(|ticket| ticket.is_none()) else {
             if let Some(request) = request.as_ref() {
                 note_dispatch(&self.pool.calibration.roles[request.role() as usize], false);
             }
@@ -978,7 +1270,30 @@ impl Drop for Batch<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::read_accounting::{self, Capture};
     use characters::CharactersCopyContext;
+    use engine::memory::ReadCounts;
+    use replay::rows::TableId;
+
+    fn accounted_read(owner: TableId, len: usize) {
+        read_accounting::with_table(owner, || {
+            let source = [7; 8];
+            let memory = CountedMemory::new(engine::memory::SliceMemory {
+                base: 0x1000,
+                bytes: &source,
+            });
+            assert!(engine::Memory::copy(&memory, 0x1000, &mut [0; 8][..len]));
+        });
+    }
+
+    fn one_copy(bytes: u64) -> ReadCounts {
+        ReadCounts {
+            copy_calls: 1,
+            spans: 1,
+            bytes,
+            ..ReadCounts::ZERO
+        }
+    }
 
     fn country_snapshot(
         memory: &impl engine::Memory,
@@ -992,13 +1307,13 @@ mod tests {
         country_snapshot(
             &engine::memory::SliceMemory {
                 base: 0,
-                bytes: &empty_eta_memory(),
+                bytes: &empty_memory(),
             },
             64,
         )
     }
 
-    fn empty_eta_memory() -> Vec<u8> {
+    fn empty_memory() -> Vec<u8> {
         let mut bytes = vec![0; 0x3000];
         for (offset, pointer) in [
             (engine::cgame_state::COUNTRIES, 0x2000_u64),
@@ -1013,229 +1328,57 @@ mod tests {
         bytes
     }
 
-    fn world_request(checked: bool) -> WorldRequest {
+    fn world_request() -> WorldRequest {
         let mut request = WorldRequest {
             countries: empty_country_snapshot(),
-            economy: WorldPair {
+            economy: WorldPart {
                 context: economy::EconomyRestCopyContext {
                     base: 0,
                     game_state: 0x1000,
-                    needed: [checked; 10],
                     resource_rows: [0; 3],
-                    resource_second: [0; 3],
                     resource_scratch: 0,
+                    resources_active: true,
+                    other_active: true,
                 },
-                first: Default::default(),
-                second: checked.then(Default::default),
+                payload: Default::default(),
             },
-            construction: WorldPair {
+            construction: Some(WorldPart {
                 context: construction::ConstructionRestCopyContext {
                     base: 0,
                     game_state: 0x1000,
-                    needed: [checked; 10],
                 },
-                first: Default::default(),
-                second: checked.then(Default::default),
-            },
-            production: WorldPair {
+                payload: Default::default(),
+            }),
+            production: Some(WorldPart {
                 context: production::ProductionRestCopyContext {
                     base: 0,
                     game_state: 0x1000,
-                    needed: [checked; 8],
                 },
-                first: Default::default(),
-                second: checked.then(Default::default),
-            },
-            focus: WorldPair {
-                context: governance::Captured::with_capacities(
-                    &Default::default(),
-                    &[0; governance::N],
-                )
-                .focus_copy_context(0, 0x1000, [checked; 2]),
-                first: Default::default(),
-                second: checked.then(Default::default),
-            },
+                payload: Default::default(),
+            }),
+            focus: Some(WorldPart {
+                context: governance::Captured::with_capacities(&Default::default())
+                    .focus_copy_context(0, 0x1000, true),
+                payload: governance::FocusJob::new(),
+            }),
         };
-        macro_rules! provision {
-            ($pair:expr) => {{
-                $pair.first.log = crate::raw::RawLog::new(512, 65536);
-                if let Some(second) = &mut $pair.second {
-                    second.log = crate::raw::RawLog::new(512, 65536);
-                }
-            }};
-        }
-        provision!(request.economy);
-        provision!(request.construction);
-        provision!(request.production);
-        request.focus.first = governance::FocusJob::new();
-        request.focus.second = checked.then(governance::FocusJob::new);
+        request.economy.payload.log = crate::raw::RawLog::new(512, 65536);
+        request.construction.as_mut().unwrap().payload.log = crate::raw::RawLog::new(512, 65536);
+        request.production.as_mut().unwrap().payload.log = crate::raw::RawLog::new(512, 65536);
         request
     }
 
-    #[test]
-    fn world_owned_worker_matches_direct_copy_partitions_and_returns_both_passes() {
-        for checked in [false, true] {
-            let bytes = empty_eta_memory();
-            let mut direct = world_request(checked);
-            let direct_memory = engine::memory::SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            };
-            let direct_report = run_world(&mut direct, &direct_memory, &direct_memory);
-            let calibration = Arc::new(Mutex::new(WorldCalibration::default()));
-            let worker_calibration = Arc::clone(&calibration);
-            let worker = acquisition::Pool::start(1, 1, move |request| {
-                run_world_shared(
-                    request,
-                    &engine::memory::SliceMemory {
-                        base: 0,
-                        bytes: &bytes,
-                    },
-                    &worker_calibration,
-                )
-            })
-            .unwrap();
-            let mut request = Some(world_request(checked));
-            let capacity = request.as_ref().unwrap().economy.first.log.spans.capacity();
-            let ticket = unsafe { worker.submit(&mut request) }.unwrap();
-            assert!(request.is_none());
-            let completed = worker.finish(ticket).unwrap();
-            let report = completed.report.unwrap();
-            assert_eq!(calibration.lock().unwrap().country_cache.ready, 1);
-            assert_eq!(
-                completed.request.economy.first.log.spans.capacity(),
-                capacity
-            );
-            macro_rules! compare {
-                ($family:ident, $n:expr) => {{
-                    assert_eq!(report.$family.raw_ok, direct_report.$family.raw_ok);
-                    assert_eq!(report.$family.matched, direct_report.$family.matched);
-                    assert_eq!(report.$family.raw_bytes, direct_report.$family.raw_bytes);
-                    assert_eq!(completed.request.$family.second.is_some(), checked);
-                    for slot in 0..$n {
-                        assert!(
-                            completed
-                                .request
-                                .$family
-                                .first
-                                .log
-                                .partition_equal(&direct.$family.first.log, slot)
-                        );
-                    }
-                }};
-            }
-            compare!(economy, 10);
-            compare!(construction, 10);
-            compare!(production, 8);
-            assert_eq!(report.focus.raw_ok, direct_report.focus.raw_ok);
-            assert_eq!(report.focus.matched, direct_report.focus.matched);
-            assert_eq!(report.focus.mismatches, direct_report.focus.mismatches);
-            assert_eq!(report.focus.raw_bytes, direct_report.focus.raw_bytes);
-            assert_eq!(completed.request.focus.second.is_some(), checked);
-            let decoded_focus = |job: &governance::FocusJob| {
-                assert!(job.is_provisioned());
-                let mut captured =
-                    governance::Captured::with_capacities(&Default::default(), &[0; governance::N]);
-                captured.decode_focus_payload(0, job, &mut [0; 2]);
-                captured.tables()[..2].to_vec()
-            };
-            assert_eq!(
-                decoded_focus(&completed.request.focus.first),
-                decoded_focus(&direct.focus.first),
-            );
-            if let Some(second) = &completed.request.focus.second {
-                assert_eq!(
-                    decoded_focus(second),
-                    decoded_focus(direct.focus.second.as_ref().unwrap())
-                );
-            }
-            worker.shutdown().unwrap();
-            let mut rejected = Some(completed.request);
-            assert!(unsafe { worker.submit(&mut rejected) }.is_err());
-            let bytes = empty_eta_memory();
-            let fallback_memory = engine::memory::SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            };
-            let fallback = run_world(
-                rejected.as_mut().unwrap(),
-                &fallback_memory,
-                &fallback_memory,
-            );
-            assert_eq!(fallback.economy.raw_bytes, direct_report.economy.raw_bytes);
-            assert_eq!(fallback.economy.matched, direct_report.economy.matched);
+    fn synthetic_pool(run: impl Fn(&mut Job) -> Report + Send + Sync + 'static) -> Pool {
+        Pool {
+            executor: acquisition::Pool::start(0, MAX_JOBS, run).unwrap(),
+            calibration: Arc::new(SharedCalibration::default()),
         }
     }
 
     #[test]
-    fn world_shared_country_fault_is_detected_at_outer_barrier_and_capacity_is_observable() {
-        struct Changed {
-            bytes: Vec<u8>,
-            reads: std::cell::Cell<usize>,
-        }
-        impl engine::Memory for Changed {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if !engine::Memory::copy(
-                    &engine::memory::SliceMemory {
-                        base: 0,
-                        bytes: &self.bytes,
-                    },
-                    address,
-                    output,
-                ) {
-                    return false;
-                }
-                if address == 0x1000 + engine::cgame_state::COUNTRIES {
-                    self.reads.set(self.reads.get() + 1);
-                    if self.reads.get() > 1 {
-                        output[0] ^= 1;
-                    }
-                }
-                true
-            }
-        }
-        let changed = Changed {
-            bytes: empty_eta_memory(),
-            reads: std::cell::Cell::new(0),
-        };
-        let calibration = Mutex::new(WorldCalibration::default());
-        let mut request = world_request(true);
-        request.countries = country_snapshot(&changed, 64);
-        assert_eq!(changed.reads.get(), 1, "one shared authentication pass");
-        run_world_shared(&mut request, &changed, &calibration);
-        assert_eq!(
-            changed.reads.get(),
-            3,
-            "ProductionRest reads two fresh passes; other World families reuse the shared authentication"
-        );
-        assert!(
-            request.countries.view(&changed).verify().is_err(),
-            "the outer barrier must reject shared source mutation before publishing rows"
-        );
-        assert_eq!(calibration.lock().unwrap().last_error, None);
-        let bytes = empty_eta_memory();
-        let memory = engine::memory::SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        };
-        let mut request = world_request(false);
-        request.countries = country_snapshot(&memory, 0);
-        run_world_shared(&mut request, &memory, &calibration);
-        assert_eq!(
-            calibration.lock().unwrap().country_cache.capacity_fallbacks,
-            1
-        );
-        let mut overflow = world_request(false);
-        overflow.economy.first.log = Default::default();
-        let report = run_world(&mut overflow, &memory, &memory);
-        assert!(!report.economy.raw_ok);
-        assert!(report.focus.raw_ok);
-    }
-
-    #[test]
-    fn eta_country_cache_calibration_distinguishes_each_seed_and_retains_fallback_counts() {
+    fn country_cache_calibration_distinguishes_each_seed_and_retains_fallback_counts() {
         use engine::country_memory::SeedStatus;
-        let mut calibration = EtaCountryCacheCalibration::default();
+        let mut calibration = CountryCacheCalibration::default();
         assert!(calibration.latest.is_none());
         calibration.observe(SeedStatus::Ready, 10);
         assert_eq!(
@@ -1269,1019 +1412,487 @@ mod tests {
     }
 
     #[test]
-    fn eta_read_calibration_sums_work_and_retains_peak_demand_separately() {
-        let mut calibration = EtaCountryCacheCalibration::default();
-        calibration
-            .read_witness
-            .observe(division_eta::CacheDiagnostics {
-                hits: 5,
-                retained_misses: 2,
-                direct_reads: 3,
-                witness_skips: 4,
-                witness_fallbacks: 1,
-                witness_entries_peak: 8,
-                witness_bytes_peak: 100,
-                witness_entries_required: 10,
-                witness_bytes_required: 140,
-                stages: division_eta::StageDiagnostics {
-                    walk: division_eta::StageCost {
-                        calls: 1,
-                        ticks: 11,
-                    },
-                    supply_builds: 2,
-                    ..Default::default()
-                },
-            });
-        calibration
-            .read_witness
-            .observe(division_eta::CacheDiagnostics {
-                hits: 7,
-                retained_misses: 1,
-                direct_reads: 2,
-                witness_skips: 3,
-                witness_fallbacks: 2,
-                witness_entries_peak: 6,
-                witness_bytes_peak: 120,
-                witness_entries_required: 12,
-                witness_bytes_required: 130,
-                stages: division_eta::StageDiagnostics {
-                    walk: division_eta::StageCost {
-                        calls: 2,
-                        ticks: 17,
-                    },
-                    supply_builds: 3,
-                    ..Default::default()
-                },
-            });
-        assert_eq!(
-            serde_json::to_value(calibration.read_witness).unwrap(),
-            serde_json::json!({
-                "captures": 2, "hits": 12, "retained_misses": 3,
-                "direct_reads": 5, "witness_skips": 7, "witness_fallbacks": 3,
-                "witness_entries_peak": 8, "witness_bytes_peak": 120,
-                "witness_entries_required": 12, "witness_bytes_required": 140,
-                "stages": division_eta::StageDiagnostics {
-                    walk: division_eta::StageCost { calls: 3, ticks: 28 },
-                    supply_builds: 5,
-                    ..Default::default()
-                },
-            })
-        );
-        // Worker read diagnostics are not mislabeled as country authentication.
-        assert!(
-            serde_json::to_value(calibration)
-                .unwrap()
-                .get("read_witness")
-                .is_none()
-        );
-    }
+    fn intel_roster_view_preserves_aliases_native_reads_and_first_faults() {
+        use engine::{Memory, ccountry, cgame_state, cunit, unit_viewer_entry, walk::Outcome};
+        use fog::intel_test_kit as kit;
+        use std::cell::RefCell;
 
-    fn empty_eta_request(checked: bool) -> (EtaRequest, division_eta::Captured) {
-        let first = Arc::new(crate::division_census::UnitInputs::empty_rows());
-        let mut captured = division_eta::Captured::empty();
-        captured.prepare_ranges(
-            &production::Sources {
-                first: first.seeds(),
-                first_outcome: first.outcome(),
-                second: first.seeds(),
-                second_outcome: first.outcome(),
-            },
-            checked,
-            1,
-        );
-        let workspace = Box::new(division_eta::Workspace::with_capacities(
-            &captured.workspace_capacities(),
-            checked,
-        ));
-        let request = EtaRequest {
-            countries: empty_country_snapshot(),
-            base: 0,
-            state: 0x1000,
-            payload: captured.take_range(0).unwrap(),
-            workspace,
-            first: Some(Arc::clone(&first)),
-            second: checked.then_some(first),
-            pass: 0,
+        struct Traced<'a> {
+            source: engine::memory::SliceMemory<'a>,
+            reads: &'a RefCell<Vec<(usize, usize)>>,
+            faults: &'a [usize],
+        }
+        impl Memory for Traced<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                self.reads.borrow_mut().push((address, destination.len()));
+                if self
+                    .faults
+                    .iter()
+                    .any(|&fault| fault >= address && fault - address < destination.len())
+                {
+                    return false;
+                }
+                self.source.copy(address, destination)
+            }
+        }
+        fn decoded(job: &fog::IntelJob) -> (Outcome, replay::frame::TableView) {
+            let mut captured = fog::Captured::with_capacities(&fog::Capacities {
+                rows: [0, 0, 0, 0, 4, 0],
+                radar_provinces: 0,
+                area_provinces: 0,
+                wings: 0,
+            });
+            captured.decode_intel_payload(job, &mut [0]);
+            (captured.outcomes()[4], captured.tables()[4].clone())
+        }
+
+        let mut bytes = kit::fixture();
+        // The object's raw ID lies beyond the two-slot roster. Its link is
+        // authenticated by the census, while UnitIntel only calls Reader::at.
+        bytes[kit::C0 + ccountry::ID..kit::C0 + ccountry::ID + 4]
+            .copy_from_slice(&2_u32.to_le_bytes());
+        let links = engine::read::<u64>(
+            &kit::memory(&bytes),
+            kit::GAME_STATE + cgame_state::COUNTRY_LINKS,
+        )
+        .unwrap() as usize;
+        bytes[links + 8..links + 12].copy_from_slice(&1_u32.to_le_bytes());
+        // A changed, signed ordinary payload value must reach the native source.
+        bytes[kit::VIEWERS + unit_viewer_entry::LEVEL] = (-7_i8) as u8;
+        let context = fog::IntelCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            row_limit: 4,
         };
-        (request, captured)
+        for cells in [0, 64] {
+            let reads = RefCell::new(Vec::new());
+            let seed = Traced {
+                source: kit::memory(&bytes),
+                reads: &reads,
+                faults: &[],
+            };
+            let mut storage = Arc::new(engine::country_memory::Cache::with_capacity(cells));
+            let countries = engine::country_memory::Cache::prepare_shared(
+                &mut storage,
+                &seed,
+                kit::BASE,
+                kit::GAME_STATE,
+            )
+            .unwrap();
+            let authentication = reads.take();
+            let cached = countries.view(&seed);
+            assert_eq!(
+                cached
+                    .authenticated_countries(kit::BASE, kit::GAME_STATE)
+                    .is_some(),
+                cells != 0
+            );
+            let reader = ccountry::Reader::new(&cached, kit::BASE, kit::GAME_STATE).unwrap();
+            assert_eq!(reader.count(), 2);
+            assert_eq!(reader.at(1).unwrap().unwrap().id, 2);
+            reads.borrow_mut().clear();
+
+            for shared in [false, true] {
+                let inputs = shared.then(|| {
+                    Arc::new(crate::division_census::UnitInputs::fixture(
+                        vec![engine::carmy::DivisionSeed {
+                            pointer: kit::DIVISION,
+                            roster_owner: Some(1),
+                            ..Default::default()
+                        }],
+                        Outcome::Rows { len: 1 },
+                    ))
+                });
+                for faults in [
+                    &[][..],
+                    &[kit::VIEWERS][..],
+                    &[kit::DIVISION + cunit::HANDLE, kit::VIEWERS][..],
+                ] {
+                    let source = CountedMemory::new(Traced {
+                        source: kit::memory(&bytes),
+                        reads: &reads,
+                        faults,
+                    });
+                    let mut previous = fog::IntelJob::new();
+                    let capture = Capture::new();
+                    let expected = fog::copy_intel_refresh_with_divisions(
+                        &countries.view(&source),
+                        context,
+                        &mut previous,
+                        inputs.as_ref().map(|inputs| inputs.intel_sources()),
+                    );
+                    let expected_counts = capture.finish();
+                    let expected_reads = reads.take();
+                    let mut job = Job::Intel(IntelRequest {
+                        countries: Arc::clone(&countries),
+                        context,
+                        payload: fog::IntelJob::new(),
+                        inputs: inputs.clone(),
+                    });
+                    let capture = Capture::new();
+                    let Report::Intel(actual) =
+                        run_with_memory(&mut job, &source, &SharedCalibration::default())
+                    else {
+                        unreachable!();
+                    };
+                    let counts = capture.finish();
+                    let actual_reads = reads.take();
+                    let Job::Intel(request) = job else {
+                        unreachable!();
+                    };
+                    assert!(expected.raw_ok && actual.raw_ok);
+                    assert_eq!(actual.raw_bytes, expected.raw_bytes);
+                    assert_eq!(counts, expected_counts);
+                    assert_eq!(actual_reads, expected_reads);
+                    assert_eq!(decoded(&request.payload), decoded(&previous));
+                    let native = counts[TableId::UnitIntel.index()];
+                    assert!(native.spans > 0);
+                    assert_eq!(native.record_calls > 0, shared);
+                    let mut attributed = read_accounting::ZERO;
+                    attributed[TableId::UnitIntel.index()] = native;
+                    assert_eq!(counts, attributed);
+                    assert_eq!(
+                        actual_reads
+                            .iter()
+                            .any(|span| authentication.contains(span)),
+                        cells == 0,
+                        "ready rosters must not repeat native country authentication",
+                    );
+                    let (outcome, table) = decoded(&request.payload);
+                    match faults.first() {
+                        None => {
+                            assert_eq!(outcome, Outcome::Rows { len: 2 });
+                            let replay::frame::TableView::Complete(rows) = table else {
+                                unreachable!();
+                            };
+                            assert_eq!(
+                                rows.rows::<replay::rows::tables::UnitIntel>().unwrap()[0].level,
+                                -7
+                            );
+                            assert!(
+                                actual_reads
+                                    .contains(&(kit::VIEWERS, 2 * unit_viewer_entry::STRIDE,))
+                            );
+                        }
+                        Some(&fault) => {
+                            let reason = if fault == kit::VIEWERS {
+                                "unit viewer entry block unreadable"
+                            } else {
+                                "unit handle or viewer vector header unreadable"
+                            };
+                            assert_eq!(outcome, Outcome::Unavailable { reason });
+                            assert_eq!(actual_reads.last().unwrap().0, fault);
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    /// A single acquisition publishes the table; no later phase is required.
     #[test]
-    fn eta_owned_worker_publishes_after_one_acquisition_per_pass_and_can_be_reused() {
-        let bytes = empty_eta_memory();
-        let calibration = Arc::new(Mutex::new(EtaCountryCacheCalibration::default()));
-        let worker_calibration = Arc::clone(&calibration);
-        let pool = acquisition::Pool::start(1, 1, move |request| {
-            run_eta_with_memory(
+    fn world_single_payload_matches_direct_copy_and_returns_storage() {
+        let bytes = empty_memory();
+        let memory = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let mut direct = world_request();
+        let expected = run_world_shared(
+            &mut direct,
+            &memory,
+            &Mutex::new(WorldCalibration::default()),
+        );
+        let pool = acquisition::Pool::start(1, 1, move |request: &mut WorldRequest| {
+            run_world_shared(
                 request,
                 &engine::memory::SliceMemory {
                     base: 0,
                     bytes: &bytes,
                 },
-                &worker_calibration,
+                &Mutex::new(WorldCalibration::default()),
             )
         })
         .unwrap();
-        for checked in [false, true] {
-            let (mut request, mut captured) = empty_eta_request(checked);
-            let workspace_address = (&*request.workspace) as *const division_eta::Workspace;
-            for pass in 0..=usize::from(checked) {
-                request.pass = pass;
-                let mut pending = Some(request);
-                let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
-                assert!(pending.is_none());
-                let completion = pool.finish(ticket).unwrap();
-                assert!(completion.report.is_ok());
-                request = completion.request;
-                assert_eq!(
-                    (&*request.workspace) as *const division_eta::Workspace,
-                    workspace_address
-                );
-                assert!(request.first.is_some(), "source leases survive every pass");
-                assert_eq!(request.second.is_some(), checked);
-            }
-            captured.restore_range(0, request.payload);
-            assert_eq!(captured.finish_ranges().matched, checked);
-            assert_eq!(
-                captured.outcomes(),
-                [engine::walk::Outcome::Rows { len: 0 }]
-            );
-        }
-        pool.shutdown().unwrap();
-        assert_eq!(calibration.lock().unwrap().ready, 2);
-        let (request, mut captured) = empty_eta_request(true);
+        let request = world_request();
+        let pointer = request.economy.payload.log.bytes.as_ptr();
         let mut pending = Some(request);
-        assert!(unsafe { pool.submit(&mut pending) }.is_err());
-        let mut request = pending.unwrap();
-        let bytes = empty_eta_memory();
-        let memory = engine::memory::SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        };
-        for pass in 0..2 {
-            request.pass = pass;
-            run_eta_with_memory(&mut request, &memory, &calibration);
-        }
-        captured.restore_range(0, request.payload);
-        assert!(captured.finish_ranges().matched);
-        assert_eq!(calibration.lock().unwrap().ready, 3);
-    }
-
-    #[test]
-    fn eta_shared_country_mutation_is_rejected_by_outer_verification() {
-        use std::cell::Cell;
-        struct Changed {
-            bytes: Vec<u8>,
-            root_reads: Cell<usize>,
-        }
-        impl engine::Memory for Changed {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                if !engine::Memory::copy(
-                    &engine::memory::SliceMemory {
-                        base: 0,
-                        bytes: &self.bytes,
-                    },
-                    address,
-                    destination,
-                ) {
-                    return false;
-                }
-                if address == 0x1000 + engine::cgame_state::COUNTRIES {
-                    self.root_reads.set(self.root_reads.get() + 1);
-                    if self.root_reads.get() > 1 {
-                        destination[0] ^= 1;
-                    }
-                }
-                true
-            }
-        }
-        let memory = Changed {
-            bytes: empty_eta_memory(),
-            root_reads: Cell::new(0),
-        };
-        let (mut request, mut captured) = empty_eta_request(true);
-        request.countries = country_snapshot(&memory, 64);
-        let calibration = Mutex::new(EtaCountryCacheCalibration::default());
-        for pass in 0..2 {
-            request.pass = pass;
-            run_eta_with_memory(&mut request, &memory, &calibration);
-        }
-        captured.restore_range(0, request.payload);
-        assert!(
-            captured.finish_ranges().matched,
-            "table checks await the shared outer verdict"
-        );
-        assert_eq!(memory.root_reads.get(), 1, "ETA must not reseed countries");
-        assert!(request.countries.view(&memory).verify().is_err());
-        assert!(request.first.is_some());
-        assert!(request.second.is_some());
-    }
-
-    #[test]
-    fn eta_panic_and_pre_run_cancellation_recover_owned_buffers_without_a_success_report() {
-        let pool = acquisition::Pool::start(0, 1, |request: &mut EtaRequest| -> EtaReport {
-            request.payload.fail("partial acquisition result", 0);
-            panic!("synthetic ETA panic");
-        })
-        .unwrap();
-        let (request, mut captured) = empty_eta_request(true);
-        let workspace = (&*request.workspace) as *const division_eta::Workspace;
-        let mut pending = Some(request);
+        // SAFETY: synthetic inputs and all destinations are owned until collection.
         let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
-        let completion = pool.finish(ticket).unwrap();
-        assert!(matches!(completion.report, Err(Failure::Panicked)));
+        let completed = pool.finish(ticket).unwrap();
+        let report = completed.report.unwrap();
         assert_eq!(
-            (&*completion.request.workspace) as *const division_eta::Workspace,
-            workspace
+            completed.request.economy.payload.log.bytes.as_ptr(),
+            pointer
         );
-        assert!(completion.request.first.is_some());
-        assert!(completion.request.second.is_some());
-        let mut pending = Some(completion.request);
-        assert!(matches!(
-            unsafe { pool.submit(&mut pending) },
-            Err(SubmitError::Stopped)
-        ));
-        pool.shutdown().unwrap();
-        let canceled = acquisition::Pool::start(0, 1, |_: &mut EtaRequest| -> EtaReport {
-            panic!("canceled request must not execute");
-        })
-        .unwrap();
-        let ticket = unsafe { canceled.submit(&mut pending) }.unwrap();
-        canceled.shutdown().unwrap();
-        let completion = canceled.finish(ticket).unwrap();
-        assert!(matches!(completion.report, Err(Failure::Stopped)));
-        assert!(completion.request.second.is_some());
-        captured.restore_range(0, completion.request.payload);
-        assert!(!captured.finish_ranges().matched);
-        assert!(matches!(
-            captured.outcomes(),
-            [engine::walk::Outcome::Unavailable { .. }]
-        ));
-    }
-
-    #[test]
-    fn country_snapshot_leases_return_after_success_panic_and_rejected_dispatch() {
-        for panics in [false, true] {
-            let bytes = empty_eta_memory();
-            let memory = engine::memory::SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            };
-            let mut owner = Arc::new(engine::country_memory::Cache::with_capacity(64));
-            let snapshot =
-                engine::country_memory::Cache::prepare_shared(&mut owner, &memory, 0, 0x1000)
-                    .unwrap();
-            let mut request = world_request(false);
-            request.countries = snapshot;
-            let pool = acquisition::Pool::start(1, 1, move |_: &mut WorldRequest| {
-                assert!(!panics, "synthetic acquisition failure");
-            })
-            .unwrap();
-            let mut pending = Some(request);
-            let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
-            let completed = pool.finish(ticket).unwrap();
-            assert_eq!(completed.report.is_err(), panics);
-            assert!(
-                engine::country_memory::Cache::prepare_shared(&mut owner, &memory, 0, 0x1000)
-                    .is_err()
-            );
-            pool.shutdown().unwrap();
-            let mut rejected = Some(completed.request);
-            assert!(unsafe { pool.submit(&mut rejected) }.is_err());
-            assert!(Arc::get_mut(&mut owner).is_none());
-            assert!(
-                rejected
-                    .as_ref()
-                    .unwrap()
-                    .countries
-                    .view(&memory)
-                    .verify()
-                    .is_ok()
-            );
-            drop(rejected);
-            assert!(
-                engine::country_memory::Cache::prepare_shared(&mut owner, &memory, 0, 0x1000)
-                    .is_ok()
-            );
-        }
-    }
-
-    fn synthetic_pool(run: impl Fn(&mut Job) -> Report + Send + Sync + 'static) -> Pool {
-        Pool {
-            executor: acquisition::Pool::start(0, MAX_JOBS, run).unwrap(),
-            calibration: Arc::new(SharedCalibration::default()),
-        }
-    }
-
-    fn hourly_family_jobs(
-        countries: &Arc<engine::country_memory::Cache>,
-        needed: [bool; 4],
-    ) -> [Job; 3] {
-        let successful = needed.map(|needed| {
-            if needed {
-                0
-            } else {
-                sampling::CONSISTENCY_TARGET
-            }
-        });
-        [
-            Job::SupplyTrains(SupplyTrainsRequest {
-                countries: Arc::clone(countries),
-                context: supply_trains::CaptureContext {
-                    base: 0,
-                    game_state: 0x1000,
-                    needed: [needed[0], needed[1]],
-                },
-                captured: supply_trains::Captured::with_capacities(
-                    &Default::default(),
-                    &successful[..2],
-                ),
-            }),
-            Job::CharacterPortraits(CharacterPortraitsRequest {
-                countries: Arc::clone(countries),
-                context: character_portraits::CaptureContext {
-                    base: 0,
-                    game_state: 0x1000,
-                    needed: [needed[2]],
-                },
-                captured: character_portraits::Captured::with_capacities(
-                    &Default::default(),
-                    &successful[2..3],
-                ),
-            }),
-            Job::ProvinceUnitOrder(ProvinceUnitOrderRequest {
-                context: province_unit_order::CaptureContext {
-                    base: 0,
-                    game_state: 0x1000,
-                    needed: [needed[3]],
-                },
-                captured: province_unit_order::Captured::with_capacities(
-                    &Default::default(),
-                    &successful[3..],
-                ),
-            }),
-        ]
-    }
-
-    // Empty supply countries and one exact, non-UTF-8 portrait descriptor.
-    fn hourly_family_memory() -> Vec<u8> {
-        use engine::{
-            ccharacter, ccharacter_manager, cgame_state, character_portrait_entry, cprovince,
-            csupply_system, msvc_string,
-        };
-        fn put<const N: usize>(bytes: &mut [u8], at: usize, value: [u8; N]) {
-            bytes[at..at + N].copy_from_slice(&value);
-        }
-        fn array(bytes: &mut [u8], at: usize, data: u64, count: u32) {
-            put(bytes, at, data.to_le_bytes());
-            put(bytes, at + 8, count.to_le_bytes());
-            put(bytes, at + 12, count.to_le_bytes());
-        }
-        let mut bytes = empty_eta_memory();
-        bytes.resize(0x10000, 0);
-        put(&mut bytes, 0x2208, 0x6000_u64.to_le_bytes());
-        put(
-            &mut bytes,
-            0x6000,
-            (cprovince::VTABLE_RVA as u64).to_le_bytes(),
+        assert_eq!(report.economy.raw_ok, expected.economy.raw_ok);
+        assert_eq!(report.economy.raw_bytes, expected.economy.raw_bytes);
+        assert_eq!(
+            completed.request.economy.payload.log.bytes,
+            direct.economy.payload.log.bytes
         );
-        put(&mut bytes, 0x6000 + cprovince::ID, 1_u32.to_le_bytes());
-        array(&mut bytes, 0x6000 + cprovince::OCCUPANTS, 0, 0);
-        array(&mut bytes, 0x6000 + cprovince::NAVAL_OCCUPANTS, 0, 0);
-        put(
-            &mut bytes,
-            0x1000 + cgame_state::SUPPLY_SYSTEM,
-            0x8000_u64.to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            0x8000,
-            (csupply_system::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            0x8008,
-            (csupply_system::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
-        );
-        array(
-            &mut bytes,
-            0x8000 + csupply_system::COUNTRY_SYSTEM_DATA,
-            0x9000,
-            2,
-        );
-        array(
-            &mut bytes,
-            0x8000 + csupply_system::COUNTRY_COMPANION_DATA,
-            0xa000,
-            2,
-        );
-        put(
-            &mut bytes,
-            0x1000 + cgame_state::CHARACTER_MANAGER,
-            0xc000_u64.to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            0xc000,
-            (ccharacter_manager::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        array(
-            &mut bytes,
-            0xc000 + ccharacter_manager::HISTORICAL_CHARACTERS,
-            0xd000,
-            1,
-        );
-        put(&mut bytes, 0xd000, 0xe000_u64.to_le_bytes());
-        put(
-            &mut bytes,
-            0xe000,
-            (ccharacter::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(&mut bytes, 0xe008, ccharacter::REFERENCE_TYPE.to_le_bytes());
-        put(&mut bytes, 0xe000 + ccharacter::ID, 73_u32.to_le_bytes());
-        array(&mut bytes, 0xe000 + ccharacter::PORTRAIT_DATA, 0xf000, 1);
-        put(
-            &mut bytes,
-            0xf000 + character_portrait_entry::ROLE,
-            9_u32.to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            0xf000 + character_portrait_entry::SIZE,
-            2_u32.to_le_bytes(),
-        );
-        bytes[0xf000 + character_portrait_entry::IS_SET] = 255;
-        put(
-            &mut bytes,
-            0xf000 + character_portrait_entry::KIND,
-            1_u32.to_le_bytes(),
-        );
-        let text = 0xf000 + character_portrait_entry::IDENTITY;
-        put(&mut bytes, text, [b'g', 0, 0xff]);
-        put(&mut bytes, text + msvc_string::LENGTH, 3_u64.to_le_bytes());
-        put(
-            &mut bytes,
-            text + msvc_string::CAPACITY,
-            15_u64.to_le_bytes(),
-        );
-        bytes
-    }
-
-    #[test]
-    fn hourly_owned_jobs_match_direct_rows_and_keep_independent_cold_checks() {
-        use engine::{memory::SliceMemory, walk::Outcome};
-        for needed in [
-            [false, false, false, false],
-            [true, false, true, false],
-            [false, true, false, true],
-            [true, true, true, true],
-        ] {
-            let bytes = hourly_family_memory();
-            let memory = SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            };
-            let countries = country_snapshot(&memory, 64);
-            let mut direct = hourly_family_jobs(&countries, needed);
-            let calibration = SharedCalibration::default();
-            let reports = direct
-                .each_mut()
-                .map(|job| run_with_memory(job, &memory, &calibration));
-            let calibration = Arc::new(SharedCalibration::default());
-            let runner_calibration = Arc::clone(&calibration);
-            let pool = Pool {
-                executor: acquisition::Pool::start(0, 3, move |job| {
-                    run_with_memory(
-                        job,
-                        &SliceMemory {
-                            base: 0,
-                            bytes: &bytes,
-                        },
-                        &runner_calibration,
-                    )
-                })
-                .unwrap(),
-                calibration,
-            };
-            let [supply, portraits, province_order] = hourly_family_jobs(&countries, needed);
-            let mut supply = Some(supply);
-            let mut portraits = Some(portraits);
-            let mut province_order = Some(province_order);
-            let mut batch = Batch::new(&pool);
-            let first = unsafe { batch.submit(&mut supply) }.unwrap();
-            let second = unsafe { batch.submit(&mut portraits) }.unwrap();
-            let third = unsafe { batch.submit(&mut province_order) }.unwrap();
-            assert!(supply.is_none() && portraits.is_none() && province_order.is_none());
-            let province_order = batch.finish(third).unwrap();
-            let portraits = batch.finish(second).unwrap();
-            let supply = batch.finish(first).unwrap();
-            for ((completed, expected), expected_report) in [supply, portraits, province_order]
-                .into_iter()
-                .zip(direct)
-                .zip(reports)
-            {
-                match (
-                    completed.request,
-                    expected,
-                    completed.report.unwrap(),
-                    expected_report,
-                ) {
-                    (
-                        Job::SupplyTrains(actual),
-                        Job::SupplyTrains(expected),
-                        Report::SupplyTrains(report),
-                        Report::SupplyTrains(reference),
-                    ) => {
-                        assert_eq!(actual.captured.tables(), expected.captured.tables());
-                        assert_eq!(actual.captured.outcomes(), [Outcome::Rows { len: 0 }; 2]);
-                        assert_eq!(
-                            actual.captured.allocated_bytes(),
-                            expected.captured.allocated_bytes()
-                        );
-                        assert_eq!(report.matched, reference.matched);
-                        assert_eq!(report.matched, [needed[0], needed[1]]);
-                        assert!(Arc::ptr_eq(&actual.countries, &countries));
-                    }
-                    (
-                        Job::CharacterPortraits(actual),
-                        Job::CharacterPortraits(expected),
-                        Report::CharacterPortraits(report),
-                        Report::CharacterPortraits(reference),
-                    ) => {
-                        assert_eq!(actual.captured.tables(), expected.captured.tables());
-                        assert_eq!(actual.captured.outcomes(), [Outcome::Rows { len: 1 }]);
-                        assert_eq!(
-                            actual.captured.allocated_bytes(),
-                            expected.captured.allocated_bytes()
-                        );
-                        assert_eq!(report.matched, reference.matched);
-                        assert_eq!(report.matched, [needed[2]]);
-                        assert!(Arc::ptr_eq(&actual.countries, &countries));
-                        let [
-                            replay::frame::TableView::Complete(
-                                replay::rows::TableRows::CharacterPortraits(rows),
-                            ),
-                        ] = actual.captured.tables()
-                        else {
-                            panic!("one complete portrait row");
-                        };
-                        assert_eq!(rows[0].character, 73);
-                        assert_eq!(rows[0].portraits[0].identity, [b'g', 0, 0xff]);
-                        assert_eq!(rows[0].portraits[0].is_set, 255);
-                    }
-                    (
-                        Job::ProvinceUnitOrder(actual),
-                        Job::ProvinceUnitOrder(expected),
-                        Report::ProvinceUnitOrder(report),
-                        Report::ProvinceUnitOrder(reference),
-                    ) => {
-                        assert_eq!(actual.captured.tables(), expected.captured.tables());
-                        assert_eq!(actual.captured.outcomes(), [Outcome::Rows { len: 1 }]);
-                        assert_eq!(
-                            actual.captured.allocated_bytes(),
-                            expected.captured.allocated_bytes()
-                        );
-                        assert_eq!(report.matched, reference.matched);
-                        assert_eq!(report.matched, [needed[3]]);
-                    }
-                    _ => panic!("owned hourly request/report family changed"),
-                }
-            }
-            assert_eq!(Arc::strong_count(&countries), 1);
-            for role in [
-                Role::SupplyTrains,
-                Role::CharacterPortraits,
-                Role::ProvinceUnitOrder,
-            ] {
-                assert_eq!(pool.calibration().roles[role as usize].counters.accepted, 1);
+        macro_rules! compare {
+            ($family:ident) => {{
+                assert_eq!(report.$family.raw_ok, expected.$family.raw_ok);
+                assert_eq!(report.$family.raw_bytes, expected.$family.raw_bytes);
                 assert_eq!(
-                    pool.calibration().roles[role as usize].counters.completed,
-                    1
+                    completed
+                        .request
+                        .$family
+                        .as_ref()
+                        .unwrap()
+                        .payload
+                        .log
+                        .bytes,
+                    direct.$family.as_ref().unwrap().payload.log.bytes
                 );
-            }
-            assert_eq!(pool.calibration().executor.uncollected, 0);
-            pool.shutdown().unwrap();
+            }};
         }
+        compare!(construction);
+        compare!(production);
+        assert_eq!(report.focus.raw_ok, expected.focus.raw_ok);
+        assert_eq!(report.focus.raw_bytes, expected.focus.raw_bytes);
+        assert_eq!(pool.calibration().uncollected, 0);
     }
 
     #[test]
-    fn hourly_owned_rejection_keeps_request_for_one_inline_completion() {
-        struct NoReads;
-        impl engine::Memory for NoReads {
-            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-                panic!("overflowed roots must fail before reading memory");
-            }
-        }
-        for first_index in 0..3 {
-            let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
-            let mut jobs = hourly_family_jobs(&countries, [false, true, true, true]).map(Some);
-            for job in jobs.iter_mut().flatten() {
-                // The real inline path constructs LiveMemory, but these roots
-                // overflow before any family can ask its provider to read.
-                match job {
-                    Job::SupplyTrains(request) => request.context.game_state = usize::MAX,
-                    Job::CharacterPortraits(request) => request.context.game_state = usize::MAX,
-                    Job::ProvinceUnitOrder(request) => request.context.game_state = usize::MAX,
-                    _ => unreachable!(),
-                }
-            }
-            let calibration = Arc::new(SharedCalibration::default());
-            let runner_calibration = Arc::clone(&calibration);
-            let pool = Pool {
-                executor: acquisition::Pool::start(0, 1, move |job| {
-                    run_with_memory(job, &NoReads, &runner_calibration)
-                })
-                .unwrap(),
-                calibration,
+    fn absent_world_parts_preserve_only_the_economy_attempt_and_owned_storage() {
+        for workers in [0, 1] {
+            let bytes = empty_memory();
+            let make = || {
+                let mut request = world_request();
+                request.production = None;
+                request.construction = None;
+                request.focus = None;
+                request
             };
-            let roles = [
-                Role::SupplyTrains,
-                Role::CharacterPortraits,
-                Role::ProvinceUnitOrder,
-            ];
-            let rejected = (first_index + 1) % jobs.len();
-            let mut batch = Batch::new(&pool);
-            let ticket = unsafe { batch.submit(&mut jobs[first_index]) }.unwrap();
-            assert!(matches!(
-                unsafe { batch.submit(&mut jobs[rejected]) },
-                Err(SubmitError::Full)
-            ));
-            assert!(jobs[first_index].is_none() && jobs[rejected].is_some());
-            let accepted = batch.finish(ticket).unwrap();
-            let inline = unsafe { batch.run_inline(jobs[rejected].take().unwrap()) };
-            assert!(accepted.report.is_ok() && inline.report.is_ok());
-            assert_eq!(accepted.request.role(), roles[first_index]);
-            assert_eq!(inline.request.role(), roles[rejected]);
-            for (index, job) in jobs.iter().enumerate() {
-                assert_eq!(job.is_some(), index != first_index && index != rejected);
-            }
-            let counters = pool.calibration().roles;
-            assert_eq!(counters[roles[first_index] as usize].counters.completed, 1);
-            assert_eq!(counters[roles[rejected] as usize].counters.accepted, 0);
-            assert_eq!(counters[roles[rejected] as usize].counters.rejected, 1);
-            assert_eq!(
-                counters[roles[rejected] as usize].counters.inline_completed,
-                1
+            let mut direct = make();
+            let memory = CountedMemory::new(engine::memory::SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            });
+            let reads = Capture::new();
+            let expected = economy::copy_economy_rest_refresh(
+                &direct.countries.view(&memory),
+                direct.economy.context,
+                &mut direct.economy.payload,
             );
-            drop((accepted, inline));
-            drop(jobs);
-            assert_eq!(Arc::strong_count(&countries), 1);
-            pool.shutdown().unwrap();
-        }
-    }
-
-    #[test]
-    fn hourly_owned_panic_and_cancellation_return_storage_and_country_leases() {
-        struct PanicMemory(Arc<AtomicU64>);
-        impl engine::Memory for PanicMemory {
-            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-                self.0.fetch_add(1, Ordering::Relaxed);
-                panic!("synthetic hourly family read failure");
-            }
-        }
-        for family in 0..3 {
-            for canceled in [false, true] {
-                let reads = Arc::new(AtomicU64::new(0));
-                let worker_reads = Arc::clone(&reads);
-                let calibration = Arc::new(SharedCalibration::default());
-                let runner_calibration = Arc::clone(&calibration);
-                let pool = Pool {
-                    executor: acquisition::Pool::start(0, 1, move |job| {
-                        run_with_memory(
-                            job,
-                            &PanicMemory(Arc::clone(&worker_reads)),
-                            &runner_calibration,
-                        )
-                    })
-                    .unwrap(),
-                    calibration,
-                };
-                let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
-                let job = hourly_family_jobs(&countries, [false, true, true, true])
-                    .into_iter()
-                    .nth(family)
-                    .unwrap();
-                let allocated = match &job {
-                    Job::SupplyTrains(request) => request.captured.allocated_bytes(),
-                    Job::CharacterPortraits(request) => request.captured.allocated_bytes(),
-                    Job::ProvinceUnitOrder(request) => request.captured.allocated_bytes(),
-                    _ => unreachable!(),
-                };
-                let mut pending = Some(job);
-                let mut batch = Batch::new(&pool);
-                let ticket = unsafe { batch.submit(&mut pending) }.unwrap();
-                if canceled {
-                    pool.shutdown().unwrap();
-                }
-                let completion = batch.finish(ticket).unwrap();
-                assert!(
-                    matches!(completion.report, Err(failure) if failure == if canceled { Failure::Stopped } else { Failure::Panicked })
-                );
-                match completion.request {
-                    Job::SupplyTrains(mut request) => {
-                        assert_eq!(request.captured.allocated_bytes(), allocated);
-                        assert!(Arc::ptr_eq(&request.countries, &countries));
-                        let report = request
-                            .captured
-                            .fail_owned_capture(request.context, "terminal supply failure");
-                        assert_eq!(report.matched, [false; 2]);
-                        assert_eq!(report.ticks, [0; 2]); // Unmeasured failure cost.
-                        assert_eq!(request.captured.checked_mismatches(), [0, 1]);
-                        assert_eq!(request.captured.allocated_bytes(), allocated);
-                    }
-                    Job::CharacterPortraits(mut request) => {
-                        assert_eq!(request.captured.allocated_bytes(), allocated);
-                        assert!(Arc::ptr_eq(&request.countries, &countries));
-                        let report = request
-                            .captured
-                            .fail_owned_capture(request.context, "terminal portraits failure");
-                        assert_eq!(report.matched, [false]);
-                        assert_eq!(report.ticks, [0]); // Unmeasured failure cost.
-                        assert_eq!(request.captured.checked_mismatches(), [1]);
-                        assert_eq!(request.captured.allocated_bytes(), allocated);
-                    }
-                    Job::ProvinceUnitOrder(mut request) => {
-                        assert_eq!(request.captured.allocated_bytes(), allocated);
-                        let report = request
-                            .captured
-                            .fail_owned_capture(request.context, "terminal province order failure");
-                        assert_eq!(report.matched, [false]);
-                        assert_eq!(report.ticks, [0]); // Unmeasured failure cost.
-                        assert_eq!(request.captured.checked_mismatches(), [1]);
-                        assert_eq!(request.captured.allocated_bytes(), allocated);
-                    }
-                    _ => unreachable!(),
-                }
-                assert_eq!(reads.load(Ordering::Relaxed), u64::from(!canceled));
-                assert_eq!(Arc::strong_count(&countries), 1);
-                assert_eq!(pool.calibration().executor.uncollected, 0);
-                pool.shutdown().unwrap();
-            }
-        }
-    }
-
-    #[test]
-    fn intel_residual_failure_preserves_owned_buffers_country_lease_and_delegated_slots() {
-        struct PanicMemory(Arc<AtomicU64>);
-        impl engine::Memory for PanicMemory {
-            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-                self.0.fetch_add(1, Ordering::Relaxed);
-                panic!("synthetic residual Intel source failure");
-            }
-        }
-        let reads = Arc::new(AtomicU64::new(0));
-        let worker_reads = Arc::clone(&reads);
-        let calibration = Arc::new(SharedCalibration::default());
-        let runner_calibration = Arc::clone(&calibration);
-        let pool = Pool {
-            executor: acquisition::Pool::start(0, 1, move |job| {
-                run_with_memory(
-                    job,
-                    &PanicMemory(Arc::clone(&worker_reads)),
-                    &runner_calibration,
+            let expected_reads = reads.finish();
+            let pool = acquisition::Pool::start(workers, 1, move |request: &mut WorldRequest| {
+                run_world_shared(
+                    request,
+                    &CountedMemory::new(engine::memory::SliceMemory {
+                        base: 0,
+                        bytes: &bytes,
+                    }),
+                    &Mutex::new(WorldCalibration::default()),
                 )
             })
-            .unwrap(),
-            calibration,
-        };
-        // A cache without cells uses the same direct-reader fallback and keeps
-        // its immutable lease owned until the entire request has returned.
-        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
-        let captured = intel::Captured::with_capacities(&Default::default(), &[0; intel::N]);
-        let allocated = captured.allocated_bytes();
-        let mut pending = Some(Job::IntelResidual(IntelResidualRequest {
-            countries: Arc::clone(&countries),
-            context: intel::CaptureContext {
-                base: 0,
-                game_state: 0x1000,
-                hour: 0,
-                force_full: true,
-                needed: [true; intel::N],
-            },
-            captured,
-        }));
-        let mut batch = Batch::new(&pool);
-        let ticket = unsafe { batch.submit(&mut pending) }.unwrap();
-        let completion = batch.finish(ticket).unwrap();
-        assert!(matches!(completion.report, Err(Failure::Panicked)));
-        let Job::IntelResidual(mut request) = completion.request else {
-            panic!("residual Intel request type changed");
-        };
-        assert_eq!(request.captured.allocated_bytes(), allocated);
-        assert!(Arc::ptr_eq(&request.countries, &countries));
-        assert_eq!(Arc::strong_count(&countries), 2);
-        let before = request.captured.outcomes();
-        let failure = request
-            .captured
-            .fail_residual_capture(request.context, "residual Intel acquisition failed");
-        let after = request.captured.outcomes();
-        for index in (1..=12).chain(std::iter::once(15)) {
-            assert!(matches!(
-                after[index],
-                engine::walk::Outcome::Unavailable { .. }
-            ));
-            assert!(!failure.matched[index]);
-        }
-        for index in [0, 13, 14] {
-            assert_eq!(after[index], before[index]);
-        }
-        assert_eq!(
-            reads.load(Ordering::Relaxed),
-            1,
-            "terminal failure never retries source reads"
-        );
-        assert_eq!(
-            pool.calibration().roles[Role::IntelResidual as usize]
-                .counters
-                .panicked,
-            1
-        );
-        drop(request);
-        assert_eq!(Arc::strong_count(&countries), 1);
-    }
-
-    #[test]
-    fn presentation_failure_returns_owned_capture_and_both_independent_source_leases() {
-        struct PanicMemory;
-        impl engine::Memory for PanicMemory {
-            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-                panic!("synthetic presentation source failure");
+            .unwrap();
+            let request = make();
+            let pointer = request.economy.payload.log.bytes.as_ptr();
+            let mut pending = Some(request);
+            // SAFETY: the runner owns its source and collection retains every output.
+            let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
+            let completed = pool.finish(ticket).unwrap();
+            let report = completed.report.unwrap();
+            assert!(completed.request.production.is_none());
+            assert!(completed.request.construction.is_none());
+            assert!(completed.request.focus.is_none());
+            assert_eq!(
+                completed.request.economy.payload.log.bytes.as_ptr(),
+                pointer
+            );
+            assert_eq!(
+                completed.request.economy.payload.log.bytes,
+                direct.economy.payload.log.bytes
+            );
+            assert_eq!(report.economy.raw_ok, expected.raw_ok);
+            assert_eq!(report.economy.raw_bytes, expected.raw_bytes);
+            assert_eq!(completed.table_reads, expected_reads);
+            macro_rules! empty {
+                ($part:ident) => {{
+                    assert!(!report.$part.raw_ok);
+                    assert!(report.$part.copy_ticks.iter().all(|&value| value == 0));
+                    assert!(report.$part.raw_bytes.iter().all(|&value| value == 0));
+                }};
             }
+            empty!(production);
+            empty!(construction);
+            empty!(focus);
+            assert!(!report.production.plan_failed);
+            assert_eq!(pool.calibration().uncollected, 0);
         }
-        let calibration = Arc::new(SharedCalibration::default());
-        let runner_calibration = Arc::clone(&calibration);
-        let pool = Pool {
-            executor: acquisition::Pool::start(0, 1, move |job| {
-                run_with_memory(job, &PanicMemory, &runner_calibration)
-            })
-            .unwrap(),
-            calibration,
-        };
-        let countries = empty_country_snapshot();
-        let first = Arc::new(crate::division_census::UnitInputs::empty_rows());
-        let second = Arc::new(crate::division_census::UnitInputs::new(0));
-        let captured = division_presentation::Captured::with_capacities(
-            &Default::default(),
-            &[0; division_presentation::N],
-        );
-        let allocated = captured.allocated_bytes();
-        let mut pending = Some(Job::Presentation(PresentationRequest {
-            countries: Arc::clone(&countries),
-            context: division_presentation::CaptureContext {
-                base: 0,
-                game_state: 0x1000,
-                needed: [true; 2],
-            },
-            captured,
-            first: Some(Arc::clone(&first)),
-            second: Some(Arc::clone(&second)),
-        }));
-        let mut batch = Batch::new(&pool);
-        let ticket = unsafe { batch.submit(&mut pending) }.unwrap();
-        let completion = batch.finish(ticket).unwrap();
-        assert!(matches!(completion.report, Err(Failure::Panicked)));
-        let Job::Presentation(mut request) = completion.request else {
-            panic!("presentation request type changed");
-        };
-        assert_eq!(request.captured.allocated_bytes(), allocated);
-        assert!(Arc::ptr_eq(request.first.as_ref().unwrap(), &first));
-        assert!(Arc::ptr_eq(request.second.as_ref().unwrap(), &second));
-        assert_ne!(first.outcome(), second.outcome());
-        request
-            .captured
-            .fail_owned_capture(request.context, "presentation acquisition failed");
-        assert!(
-            request
-                .captured
-                .outcomes()
-                .iter()
-                .all(|outcome| matches!(outcome, engine::walk::Outcome::Unavailable { .. }))
-        );
-        assert_eq!(
-            pool.calibration().roles[Role::Presentation as usize]
-                .counters
-                .panicked,
-            1
-        );
-        drop(request);
-        assert_eq!(Arc::strong_count(&countries), 1);
-        assert_eq!(Arc::strong_count(&first), 1);
-        assert_eq!(Arc::strong_count(&second), 1);
     }
 
     #[test]
-    fn characters_and_world_requests_share_executor_without_mixing_reports() {
+    fn single_requests_share_executor_without_mixing_reports() {
+        let capture = Capture::new();
+        accounted_read(TableId::Clock, 1);
         let pool = synthetic_pool(|job| match job {
-            Job::World(_) => Report::World(WorldReport::default()),
-            Job::Characters(_) => Report::Characters(characters::CharactersCopyReport::default()),
+            Job::World(_) => {
+                accounted_read(TableId::ProductionLines, 3);
+                Report::World(WorldReport::default())
+            }
+            Job::Characters(_) => {
+                accounted_read(TableId::Characters, 2);
+                Report::Characters(characters::CharactersCopyReport::default())
+            }
             _ => panic!("unexpected test job"),
         });
         let mut batch = Batch::new(&pool);
-        let mut world = Some(Job::World(world_request(true)));
+        let mut world = Some(Job::World(world_request()));
         let mut characters = Some(Job::Characters(CharactersRequest {
-            countries: empty_country_snapshot(),
             context: CharactersCopyContext {
                 base: 0,
                 game_state: 0x1000,
                 trait_rows: [0; 2],
                 trait_bytes: [0; 2],
+                active: [true; 6],
             },
-            first: Default::default(),
-            second: None,
+            payload: Default::default(),
         }));
-        let a = unsafe { batch.submit(&mut world) }.unwrap();
-        let b = unsafe { batch.submit(&mut characters) }.unwrap();
-        let first = batch.finish(b).unwrap();
-        assert!(matches!(first.request, Job::Characters(_)));
-        assert!(matches!(first.report, Ok(Report::Characters(_))));
-        let second = batch.finish(a).unwrap();
-        assert!(matches!(second.report, Ok(Report::World(_))));
-        let Job::World(request) = second.request else {
-            panic!("wrong request")
-        };
-        assert!(request.economy.second.is_some());
+        // SAFETY: these runners do not access native memory and both jobs are drained.
+        let world_ticket = unsafe { batch.submit(&mut world) }.unwrap();
+        let characters_ticket = unsafe { batch.submit(&mut characters) }.unwrap();
+        let completed = batch.finish(characters_ticket).unwrap();
+        assert!(matches!(completed.request, Job::Characters(_)));
+        assert!(matches!(completed.report, Ok(Report::Characters(_))));
+        let mut expected = read_accounting::ZERO;
+        expected[TableId::Characters.index()] = one_copy(2);
+        assert_eq!(completed.table_reads, expected);
+        expected[TableId::Clock.index()] = one_copy(1);
+        assert_eq!(read_accounting::snapshot(), expected);
+        assert!(matches!(
+            batch.finish(world_ticket).unwrap().report,
+            Ok(Report::World(_))
+        ));
         let roles = pool.calibration().roles;
         for role in [Role::World, Role::Characters] {
             assert_eq!(roles[role as usize].counters.accepted, 1);
             assert_eq!(roles[role as usize].counters.completed, 1);
         }
-        assert_eq!(roles[Role::Eta as usize].counters.accepted, 0);
+        assert_eq!(roles[Role::Intel as usize].counters.accepted, 0);
+        expected[TableId::ProductionLines.index()] = one_copy(3);
+        assert_eq!(read_accounting::snapshot(), expected);
+        assert!(batch.finish(characters_ticket).is_none());
+        assert!(batch.finish(world_ticket).is_none());
+        drop(batch);
+        assert_eq!(capture.finish(), expected);
     }
 
     #[test]
-    fn world_panic_recovers_owned_bundle_without_retry_and_separate_counters_do_not_mix() {
-        let calls = Arc::new(AtomicU64::new(0));
-        let worker_calls = Arc::clone(&calls);
-        let pool = synthetic_pool(move |_request| {
-            worker_calls.fetch_add(1, Ordering::Relaxed);
-            panic!("synthetic World acquisition panic");
-        });
-        let mut request = Some(Job::World(world_request(true)));
-        let mut batch = Batch::new(&pool);
-        let ticket = unsafe { batch.submit(&mut request) }.unwrap();
-        let completion = batch.finish(ticket).unwrap();
-        assert!(matches!(completion.report, Err(Failure::Panicked)));
-        let Job::World(recovered) = completion.request else {
-            panic!("wrong request")
-        };
-        assert!(recovered.focus.second.is_some());
-        pool.shutdown().unwrap();
-        let mut rejected = Some(Job::World(recovered));
-        assert!(unsafe { batch.submit(&mut rejected) }.is_err());
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
-        let roles = pool.calibration().roles;
-        assert_eq!(roles[Role::World as usize].counters.accepted, 1);
-        assert_eq!(roles[Role::World as usize].counters.completed, 1);
-        assert_eq!(roles[Role::World as usize].counters.panicked, 1);
-        assert_eq!(roles[Role::World as usize].counters.rejected, 1);
-        assert_eq!(roles[Role::Characters as usize].counters.accepted, 0);
+    fn rejected_single_payload_runs_inline_once_and_returns_its_storage() {
+        for workers in [0, 1] {
+            // This immutable fixture outlives every accepted and inline read.
+            // Its empty header stops the walk before any pointer can be followed.
+            let source = vec![0_u8; engine::cgame_state::PROVINCES + 16];
+            for (game_state, reason, reads) in [
+                (
+                    usize::MAX,
+                    "province array unreadable or invalid",
+                    ReadCounts::ZERO,
+                ),
+                (
+                    source.as_ptr() as usize,
+                    "province table has no province slots",
+                    one_copy(16),
+                ),
+            ] {
+                let capture = Capture::new();
+                accounted_read(TableId::Clock, 3);
+                let pool = Pool::start(workers, WORKER_ONLY_JOBS + 1).unwrap();
+                let make = || {
+                    Job::Provinces(ProvincesRequest {
+                        base: 0,
+                        game_state,
+                        payload: vec![engine::cprovince::Row::default(); 2],
+                    })
+                };
+                let mut accepted = Some(make());
+                let mut retained = Some(make());
+                let pointer = match retained.as_ref().unwrap() {
+                    Job::Provinces(request) => request.payload.as_ptr(),
+                    _ => unreachable!(),
+                };
+                let mut batch = Batch::new(&pool);
+                // SAFETY: roots overflow or read the owned header; Batch drains
+                // all accepted jobs before the fixture can be dropped.
+                let ticket = unsafe { batch.submit(&mut accepted) }.unwrap();
+                assert_eq!(
+                    unsafe { batch.submit(&mut retained) },
+                    Err(SubmitError::Full)
+                );
+                assert!(accepted.is_none() && retained.is_some());
+                let inline = unsafe { batch.run_inline(retained.take().unwrap()) };
+                let Job::Provinces(request) = &inline.request else {
+                    panic!("province request routing changed");
+                };
+                assert_eq!(request.payload.as_ptr(), pointer);
+                let mut job_reads = read_accounting::ZERO;
+                job_reads[TableId::Provinces.index()] = reads;
+                let mut expected = job_reads;
+                expected[TableId::Clock.index()] = one_copy(3);
+                // Accepted work stays isolated until its separate collection.
+                assert_eq!(read_accounting::snapshot(), expected);
+                for completed in [inline, batch.finish(ticket).unwrap()] {
+                    assert_eq!(completed.table_reads, job_reads);
+                    let Ok(Report::Provinces(report)) = completed.report else {
+                        panic!("province report routing changed");
+                    };
+                    assert_eq!(report.result, engine::walk::Outcome::Unavailable { reason });
+                }
+                let calibration = pool.calibration();
+                let counts = calibration.roles[Role::Provinces as usize].counters;
+                assert_eq!(counts.accepted, 1);
+                assert_eq!(counts.completed, 1);
+                assert_eq!(counts.rejected, 1);
+                assert_eq!(counts.inline_completed, 1);
+                assert_eq!(calibration.executor.uncollected, 0);
+                drop(batch);
+                expected[TableId::Provinces.index()] += reads;
+                assert_eq!(capture.finish(), expected);
+            }
+        }
     }
 
     #[test]
-    fn callback_unwind_drains_every_accepted_job_and_releases_country_leases() {
+    fn callback_unwind_drains_jobs_and_releases_single_country_leases() {
+        let capture = Capture::new();
+        accounted_read(TableId::Clock, 2);
         let calls = Arc::new(AtomicU64::new(0));
-        let worker_calls = Arc::clone(&calls);
+        let observed = Arc::clone(&calls);
         let pool = synthetic_pool(move |_| {
-            let call = worker_calls.fetch_add(1, Ordering::Relaxed);
-            assert_ne!(call, 0, "first job fails during callback unwind");
-            Report::World(WorldReport::default())
+            observed.fetch_add(1, Ordering::Relaxed);
+            accounted_read(TableId::ProductionLines, 3);
+            accounted_read(TableId::Focus, 4);
+            panic!("synthetic acquisition panic");
         });
         let countries = empty_country_snapshot();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             let mut batch = Batch::new(&pool);
             for _ in 0..3 {
-                let mut request = world_request(false);
+                let mut request = world_request();
                 request.countries = Arc::clone(&countries);
-                let mut request = Some(Job::World(request));
-                unsafe { batch.submit(&mut request) }.unwrap();
-            }
-            for request in hourly_family_jobs(&countries, [false, true, true, true]) {
-                let mut request = Some(request);
-                unsafe { batch.submit(&mut request) }.unwrap();
+                let mut pending = Some(Job::World(request));
+                // SAFETY: every accepted synthetic request is drained by Batch on unwind.
+                unsafe { batch.submit(&mut pending) }.unwrap();
             }
             panic!("synthetic callback unwind");
         }));
         assert!(outcome.is_err());
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         assert_eq!(Arc::strong_count(&countries), 1);
-        let calibration = pool.calibration();
-        assert_eq!(calibration.executor.active, 0);
-        assert_eq!(calibration.executor.uncollected, 0);
-        assert_eq!(
-            calibration.roles[Role::World as usize].counters.completed,
-            3
-        );
-        assert_eq!(calibration.roles[Role::World as usize].counters.panicked, 1);
-        assert_eq!(calibration.roles[Role::World as usize].counters.stopped, 2);
-        for role in [
-            Role::SupplyTrains,
-            Role::CharacterPortraits,
-            Role::ProvinceUnitOrder,
-        ] {
-            assert_eq!(calibration.roles[role as usize].counters.completed, 1);
-            assert_eq!(calibration.roles[role as usize].counters.stopped, 1);
-        }
+        let stats = pool.calibration();
+        assert_eq!(stats.executor.active, 0);
+        assert_eq!(stats.executor.uncollected, 0);
+        assert_eq!(stats.roles[Role::World as usize].counters.completed, 3);
+        assert_eq!(stats.roles[Role::World as usize].counters.panicked, 1);
+        assert_eq!(stats.roles[Role::World as usize].counters.stopped, 2);
+        let mut expected = read_accounting::ZERO;
+        expected[TableId::Clock.index()] = one_copy(2);
+        expected[TableId::ProductionLines.index()] = one_copy(3);
+        expected[TableId::Focus.index()] = one_copy(4);
+        assert_eq!(capture.finish(), expected);
     }
 
     #[test]

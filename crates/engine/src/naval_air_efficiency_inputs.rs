@@ -69,13 +69,13 @@ fn array(
     offset: usize,
     stride: usize,
     limit: u32,
-) -> Result<(Array, [u8; 16]), &'static str> {
+) -> Result<Array, &'static str> {
     let header = field(memory, pointer, offset)?;
     let array = Array::from_header(header, stride).ok_or("naval air array invalid")?;
     if array.count > limit {
         return Err("naval air array bound exceeded");
     }
-    Ok((array, header))
+    Ok(array)
 }
 fn element(array: Array, index: u32, stride: usize) -> Result<usize, &'static str> {
     array
@@ -135,7 +135,7 @@ pub fn read(
     if ptr(memory, plane, 8)? != group {
         return Err("naval air group mismatch");
     }
-    let (wings, wing_header) = array(memory, plane, 0x40, 8, WING_LIMIT as u32)?;
+    let wings = array(memory, plane, 0x40, 8, WING_LIMIT as u32)?;
     let mut row = Row::default();
     if wings.count == 0 {
         return Ok(row);
@@ -193,11 +193,6 @@ pub fn read(
             row.first_wing = reference;
             row.pool_type_flags =
                 field(memory, definition, crate::csub_unit_definition::AIR_FLAGS)?;
-            if ptr(memory, primary, crate::cair_wing::POOL)? != pool
-                || ptr(memory, pool, crate::cair_wing_pool::DEFINITION)? != definition
-            {
-                return Err("naval air wing pool changed");
-            }
             break;
         }
     }
@@ -229,7 +224,7 @@ pub fn read(
     let province_id = field::<u32>(memory, province, crate::cprovince::ID)?;
     let weather = ptr(memory, game, crate::cgame_state::WEATHER_MANAGER)?;
     auth(memory, base, weather, crate::cweather_manager::VTABLE_RVA)?;
-    let (weather_provinces, weather_header) = array(memory, weather, 0x370, 0x330, 65536)?;
+    let weather_provinces = array(memory, weather, 0x370, 0x330, 65536)?;
     row.modifiers[2] = modifier(
         memory,
         add(element(weather_provinces, province_id, 0x330)?, 0x280)?,
@@ -241,7 +236,7 @@ pub fn read(
     } else {
         countries.resolve(crowd_country)?.canonical_slot
     };
-    let (containers, container_header) = array(
+    let containers = array(
         memory,
         air_base,
         crate::cair_base::COUNTRY_CONTAINERS,
@@ -280,21 +275,6 @@ pub fn read(
         return Err("naval air modifier callback unsupported");
     };
     row.feature_flags = field(memory, base, md::TRADE_FEATURE_FLAGS_RVA)?;
-    if field::<[u8; 16]>(memory, plane, 0x40)? != wing_header
-        || field::<[u8; 16]>(memory, air_base, crate::cair_base::COUNTRY_CONTAINERS)?
-            != container_header
-        || field::<[u8; 16]>(memory, weather, 0x370)? != weather_header
-        || ptr(memory, combat, 0xb0)? != combat_weather
-        || ptr(memory, combat, crate::cnaval_combat::PROVINCE)? != province
-        || ptr(memory, carrier, crate::cship::TASK_FORCE)? != task
-        || field::<u64>(memory, air_base, crate::cair_base::HOST_REFERENCE)? != row.carrier
-        || field::<u64>(memory, plane, 0x1c)? != base_reference
-        || ptr(memory, base, 0x0332_0968)? != mission_factors
-        || ptr(memory, base, md::TABLE_RVA)? != definitions
-        || ptr(memory, game, crate::cgame_state::WEATHER_MANAGER)? != weather
-    {
-        return Err("naval air efficiency source changed");
-    }
     Ok(row)
 }
 
@@ -325,17 +305,17 @@ fn capture_kills(
     demand: &mut usize,
 ) -> Result<[usize; 2], &'static str> {
     auth(memory, base, plane, crate::cfex_air::VTABLE_RVA)?;
-    let (wings, header) = array(memory, plane, 0x40, 8, WING_LIMIT as u32)?;
-    let mut sources = [(0usize, 0u64, Array { data: 0, count: 0 }, [0u8; 16]); WING_LIMIT];
+    let wings = array(memory, plane, 0x40, 8, WING_LIMIT as u32)?;
+    let mut sources = [None; WING_LIMIT];
     let mut required = 0usize;
     for index in 0..wings.count {
         let reference = field(memory, element(wings, index, 8)?, 0)?;
         if let Some(primary) = wing(memory, base, reference)? {
-            let (kills, header) = array(memory, primary, 0x9f8, 16, KILL_LIMIT)?;
+            let kills = array(memory, primary, 0x9f8, 16, KILL_LIMIT)?;
             required = required
                 .checked_add(kills.count as usize)
                 .ok_or("naval air kill demand overflow")?;
-            sources[index as usize] = (primary, reference, kills, header);
+            sources[index as usize] = Some((reference, kills));
         }
     }
     *demand = demand
@@ -350,11 +330,7 @@ fn capture_kills(
     }
     let mut length = start;
     let mut bytes = [0u8; 64 * 16];
-    for (primary, reference, kills, source_header) in sources.into_iter().take(wings.count as usize)
-    {
-        if primary == 0 {
-            continue;
-        }
+    for (reference, kills) in sources.into_iter().take(wings.count as usize).flatten() {
         for index in (0..kills.count as usize).step_by(64) {
             let count = (kills.count as usize - index).min(64);
             if !crate::read_slice(
@@ -374,14 +350,6 @@ fn capture_kills(
                 length += 1;
             }
         }
-        if field::<[u8; 16]>(memory, primary, 0x9f8)? != source_header
-            || field::<u64>(memory, primary, crate::cair_wing::REFERENCE_TYPE)? != reference
-        {
-            return Err("naval air wing kill source changed");
-        }
-    }
-    if field::<[u8; 16]>(memory, plane, 0x40)? != header {
-        return Err("naval air kill wing list changed");
     }
     *used = end;
     Ok([start, required])
@@ -390,6 +358,7 @@ fn capture_kills(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::read_census::ReadCensus;
     const PLANE: usize = 0x1000;
     const COMBAT: usize = 0x6000;
     const WING: usize = 0x4000;
@@ -466,13 +435,15 @@ mod tests {
     #[test]
     fn kills_preserve_full_wing_category_duplicates_and_signed_counts() {
         let fixture = Fixture::new();
+        let census = ReadCensus::new(&fixture);
         let mut rows = [WingKill::default(); 2];
         let (mut used, mut required) = (0, 0);
         assert_eq!(
-            capture_kills(&fixture, 0, PLANE, &mut rows, &mut used, &mut required),
+            capture_kills(&census, 0, PLANE, &mut rows, &mut used, &mut required),
             Ok([0, 2])
         );
         assert_eq!((used, required), (2, 2));
+        assert_eq!((census.calls(), census.bytes()), (12, 154));
         for (index, count) in [i32::MIN, i32::MAX].into_iter().enumerate() {
             assert_eq!(
                 rows[index],
@@ -488,25 +459,54 @@ mod tests {
     #[test]
     fn pressure_preserves_whole_plane_and_invalid_wing_is_a_failure() {
         let mut fixture = Fixture::new();
+        let census = ReadCensus::new(&fixture);
         let mut rows = [WingKill::default(); 1];
         let (mut used, mut required) = (0, 0);
         assert_eq!(
-            capture_kills(&fixture, 0, PLANE, &mut rows, &mut used, &mut required),
+            capture_kills(&census, 0, PLANE, &mut rows, &mut used, &mut required),
             Err(crate::cfex_member::DETAIL_ARENA_CAPACITY)
         );
         assert_eq!((used, required), (0, 2));
         assert_eq!(rows, [WingKill::default()]);
+        assert_eq!((census.calls(), census.bytes()), (11, 122));
         fixture.q(WING, 0);
-        assert!(capture_kills(&fixture, 0, PLANE, &mut [], &mut 0, &mut 0).is_err());
+        let census = ReadCensus::new(&fixture);
+        assert_eq!(
+            capture_kills(&census, 0, PLANE, &mut [], &mut 0, &mut 0),
+            Err("naval air source identity mismatch")
+        );
+        assert_eq!((census.calls(), census.bytes()), (8, 90));
+
+        let mut fixture = Fixture::new();
+        fixture.bytes.truncate(0x5000 + 31);
+        let census = ReadCensus::new(&fixture);
+        let mut rows = [WingKill::default(); 2];
+        let (mut used, mut required) = (0, 0);
+        assert_eq!(
+            capture_kills(&census, 0, PLANE, &mut rows, &mut used, &mut required),
+            Err("naval air kill entries unreadable")
+        );
+        assert_eq!((used, required), (0, 2));
+        assert_eq!(rows, [WingKill::default(); 2]);
+        assert_eq!((census.calls(), census.bytes()), (12, 122));
     }
     #[test]
     fn no_active_wings_and_no_base_are_distinct_native_branches() {
         let mut fixture = Fixture::new();
-        assert_eq!(read(&fixture, 0, 0, PLANE, 0, COMBAT).unwrap().source, 1);
+        let census = ReadCensus::new(&fixture);
+        assert_eq!(read(&census, 0, 0, PLANE, 0, COMBAT).unwrap().source, 1);
+        assert_eq!((census.calls(), census.bytes()), (5, 48));
         fixture.array(PLANE + 0x40, 0, 0);
-        assert_eq!(read(&fixture, 0, 0, PLANE, 0, COMBAT), Ok(Row::default()));
+        let census = ReadCensus::new(&fixture);
+        assert_eq!(read(&census, 0, 0, PLANE, 0, COMBAT), Ok(Row::default()));
+        assert_eq!((census.calls(), census.bytes()), (4, 40));
         fixture.q(PLANE, 0);
-        assert!(read(&fixture, 0, 0, PLANE, 0, COMBAT).is_err());
+        let census = ReadCensus::new(&fixture);
+        assert_eq!(
+            read(&census, 0, 0, PLANE, 0, COMBAT),
+            Err("naval air source identity mismatch")
+        );
+        assert_eq!((census.calls(), census.bytes()), (1, 8));
     }
     #[test]
     fn modifiers_preserve_raw_values_and_absence_before_ui_clamping() {

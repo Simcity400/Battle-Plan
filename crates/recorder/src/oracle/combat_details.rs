@@ -223,18 +223,7 @@ fn hq_unit(
 
 fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatDetails>()?;
-    let formations = if r
-        .recorded_format
-        .is_some_and(|format| format.version() < 25)
-    {
-        r.limitation(
-            "HQ badge operands were not recorded before format 25",
-            "LandCombatDetails",
-        );
-        None
-    } else {
-        Some(hq_formations(save)?)
-    };
+    let formations = hq_formations(save)?;
     let mut seen = BTreeSet::new();
     for row in rows {
         if !seen.insert(row.combat) {
@@ -295,9 +284,7 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 (actual.tactic_kind == 2).then_some(actual.tactic_id),
                 side.tactic,
             );
-            if let Some(formations) = &formations {
-                hq_unit(r, &label, actual, formations);
-            }
+            hq_unit(r, &label, actual, &formations);
             positive_decimal(
                 r,
                 &format!("{label} anti_air_attack"),

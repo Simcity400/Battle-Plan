@@ -234,15 +234,9 @@ pub(crate) fn read(
             )
             .ok_or("naval plane wing unreadable")?;
         }
-        if Array::read(memory, address, 8) != Some(array) {
-            return Err("naval plane wings changed");
-        }
     }
     for (index, value) in row.cached_values.iter_mut().enumerate() {
         *value = field(memory, pointer, 0xc0 + index * 8)?;
-    }
-    if field::<u64>(memory, pointer, 8)? != group as u64 {
-        return Err("naval plane group changed");
     }
     Ok(row)
 }

@@ -1,9 +1,8 @@
 //! The callback copies bounded, exact roster bytes; the spool worker verifies IDs.
 
 use engine::{
+    Memory,
     cdlc_manager::{self, Descriptor},
-    memory::LiveMemory,
-    read,
     walk::Outcome,
 };
 use replay::identity::{Identity, Roster as IdentityRoster, Verification};
@@ -72,27 +71,25 @@ impl Pass {
 }
 
 pub struct Roster {
-    passes: [Pass; 2],
+    pass: Pass,
     sampled: bool,
     hour: Option<i32>,
-    mount_root_stable: bool,
     pub ticks: i64,
 }
 
 impl Roster {
-    /// Allocate both passes on the worker before exposing this buffer to the hook.
+    /// Allocate the sample on the worker before exposing this buffer to the hook.
     pub fn new() -> Self {
         Self {
-            passes: std::array::from_fn(|_| Pass::new()),
+            pass: Pass::new(),
             sampled: false,
             hour: None,
-            mount_root_stable: false,
             ticks: 0,
         }
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        size_of::<Self>() + self.passes.iter().map(Pass::allocated_bytes).sum::<usize>()
+        size_of::<Self>() + self.pass.allocated_bytes()
     }
 
     pub fn sampled(&self) -> bool {
@@ -100,30 +97,24 @@ impl Roster {
     }
 
     /// No allocation, normalization, or I/O occurs in this once-only callback read.
-    pub fn sample(&mut self, memory: &LiveMemory, base: usize, hour: Option<i32>) {
+    pub fn sample(&mut self, memory: &impl Memory, base: usize, hour: Option<i32>) {
         if self.sampled {
             return;
         }
         let start = qpc();
         self.hour = hour;
-        let root_address = base.checked_add(cdlc_manager::SEARCH_PATH_RVA);
-        let root_before = root_address.and_then(|at| read::<u64>(memory, at));
-        for pass in &mut self.passes {
-            pass.observation = cdlc_manager::observe(
-                memory,
-                base,
-                cdlc_manager::Buffers {
-                    dlc_filter_strings: &mut pass.dlc_filter_strings,
-                    requested_mods: &mut pass.requested_mods,
-                    dlcs: &mut pass.dlcs,
-                    mods: &mut pass.mods,
-                },
-            );
-            pass.mount_outcome = cdlc_manager::observe_search_path(memory, base, &mut pass.mounts);
-        }
-        let root_after = root_address.and_then(|at| read::<u64>(memory, at));
-        self.mount_root_stable =
-            root_before.is_some_and(|root| root != 0) && root_before == root_after;
+        let pass = &mut self.pass;
+        pass.observation = cdlc_manager::observe(
+            memory,
+            base,
+            cdlc_manager::Buffers {
+                dlc_filter_strings: &mut pass.dlc_filter_strings,
+                requested_mods: &mut pass.requested_mods,
+                dlcs: &mut pass.dlcs,
+                mods: &mut pass.mods,
+            },
+        );
+        pass.mount_outcome = cdlc_manager::observe_search_path(memory, base, &mut pass.mounts);
         self.sampled = true;
         self.ticks = qpc() - start;
     }
@@ -146,77 +137,31 @@ impl Roster {
         } else if self.hour.is_none() {
             reasons.push("content roster sample had no readable hour".to_owned());
         }
-        if !self.mount_root_stable {
-            reasons.push(
-                "successful content mount root changed or was unreadable across both reads"
-                    .to_owned(),
-            );
-        }
-        for (index, pass) in self.passes.iter().enumerate() {
-            for (name, outcome) in NAMES.into_iter().zip(pass.outcomes()) {
-                match outcome {
-                    Outcome::Rows { .. } => {}
-                    Outcome::Truncated { len, unread_rows } => reasons.push(format!(
-                        "{name} pass {} truncated after {len} rows; {unread_rows} rows unread",
-                        index + 1,
-                    )),
-                    Outcome::Unavailable { reason } => {
-                        reasons.push(format!("{name} pass {} unavailable: {reason}", index + 1));
-                    }
+        let pass = &self.pass;
+        for (name, outcome) in NAMES.into_iter().zip(pass.outcomes()) {
+            match outcome {
+                Outcome::Rows { .. } => {}
+                Outcome::Truncated { len, unread_rows } => reasons.push(format!(
+                    "{name} truncated after {len} rows; {unread_rows} rows unread",
+                )),
+                Outcome::Unavailable { reason } => {
+                    reasons.push(format!("{name} unavailable: {reason}"));
                 }
-            }
-        }
-        let [left, right] = &self.passes;
-        let matches = [
-            equal_rows(
-                &left.dlc_filter_strings,
-                &right.dlc_filter_strings,
-                left.observation.dlc_filter_strings,
-                right.observation.dlc_filter_strings,
-            ),
-            equal_rows(
-                &left.requested_mods,
-                &right.requested_mods,
-                left.observation.requested_mods,
-                right.observation.requested_mods,
-            ),
-            equal_rows(
-                &left.dlcs,
-                &right.dlcs,
-                left.observation.dlcs,
-                right.observation.dlcs,
-            ),
-            equal_rows(
-                &left.mods,
-                &right.mods,
-                left.observation.mods,
-                right.observation.mods,
-            ),
-            equal_rows(
-                &left.mounts,
-                &right.mounts,
-                left.mount_outcome,
-                right.mount_outcome,
-            ),
-        ];
-        for (name, matching) in NAMES.into_iter().zip(matches) {
-            if !matching {
-                reasons.push(format!("{name} changed between roster reads"));
             }
         }
 
         let mut memory = IdentityRoster {
             dlc: observed_ids(
-                &left.dlcs,
-                left.observation.dlcs,
+                &pass.dlcs,
+                pass.observation.dlcs,
                 dlc_id,
                 "DLC",
                 true,
                 &mut reasons,
             ),
             mods: observed_ids(
-                &left.mods,
-                left.observation.mods,
+                &pass.mods,
+                pass.observation.mods,
                 mod_id,
                 "mod",
                 false,
@@ -225,7 +170,7 @@ impl Roster {
         };
         if !memory.mods.is_empty()
             || !launcher.mods.is_empty()
-            || !left.observation.requested_mods.is_empty()
+            || !pass.observation.requested_mods.is_empty()
         {
             reasons.push(
                 "mod descriptor to content ID mapping is not proven by this collector".to_owned(),
@@ -236,10 +181,10 @@ impl Roster {
         {
             reasons.push("launcher and in-memory content membership differ".to_owned());
         }
-        if !mounts_match(&left.mounts[..left.mount_outcome.len()], expected_mounts) {
+        if !mounts_match(&pass.mounts[..pass.mount_outcome.len()], expected_mounts) {
             reasons.push(format!(
                 "successful content mounts differ in membership or priority order (observed {}, expected {})",
-                left.mount_outcome.len(), expected_mounts.len(),
+                pass.mount_outcome.len(), expected_mounts.len(),
             ));
         }
         if let Some(note) = content_order_note {
@@ -295,11 +240,14 @@ impl Roster {
                 })
                 .collect()
         }
-        let passes: Vec<_> = self.passes.iter().enumerate().map(|(index, pass)| {
-            let outcomes: serde_json::Map<_, _> = NAMES.into_iter().zip(pass.outcomes())
-                .map(|(name, read)| (name.to_owned(), outcome(read))).collect();
+        let sample = {
+            let pass = &self.pass;
+            let outcomes: serde_json::Map<_, _> = NAMES
+                .into_iter()
+                .zip(pass.outcomes())
+                .map(|(name, read)| (name.to_owned(), outcome(read)))
+                .collect();
             json!({
-                "pass": index + 1,
                 "outcomes": outcomes,
                 "mount_paths": pass.mounts[..pass.mount_outcome.len()].iter()
                     .map(|path| bytes(path.as_bytes())).collect::<Vec<_>>(),
@@ -308,7 +256,7 @@ impl Roster {
                 "requested_mods": pass.requested_mods[..pass.observation.requested_mods.len()].iter()
                     .map(|path| bytes(path.as_bytes())).collect::<Vec<_>>(),
             })
-        }).collect();
+        };
         let verification = match verification {
             Verification::Unchecked => json!({ "state": "unchecked" }),
             Verification::Verified { .. } => json!({ "state": "verified" }),
@@ -320,9 +268,8 @@ impl Roster {
             "sampled": self.sampled,
             "hour": self.hour,
             "callback_ticks": self.ticks,
-            "mount_root_stable": self.mount_root_stable,
             "expected_mounts": expected_mounts,
-            "passes": passes,
+            "sample": sample,
             "verification": verification,
         })
     }
@@ -332,10 +279,6 @@ fn qpc() -> i64 {
     let mut ticks = 0;
     unsafe { QueryPerformanceCounter(&mut ticks) };
     ticks
-}
-
-fn equal_rows<T: PartialEq>(left: &[T], right: &[T], a: Outcome, b: Outcome) -> bool {
-    a == b && left[..a.len()] == right[..b.len()]
 }
 
 fn same_membership(a: &[String], b: &[String]) -> bool {
@@ -488,7 +431,6 @@ mod tests {
         let mut roster = Roster::new();
         roster.sampled = true;
         roster.hour = Some(100);
-        roster.mount_root_stable = true;
         let ids: BTreeSet<_> = descriptors.iter().filter_map(|d| dlc_id(d).ok()).collect();
         let paths: Vec<_> = ids
             .iter()
@@ -496,7 +438,8 @@ mod tests {
             .map(|id| format!("F:/game/dlc/{id}"))
             .chain(std::iter::once("F:/game".to_owned()))
             .collect();
-        for pass in &mut roster.passes {
+        {
+            let pass = &mut roster.pass;
             pass.mount_outcome = Outcome::Rows { len: paths.len() };
             for (row, path) in pass.mounts.iter_mut().zip(&paths) {
                 *row = text(path.as_bytes());
@@ -551,32 +494,22 @@ mod tests {
     }
 
     #[test]
-    fn partial_and_changed_observations_cannot_verify() {
+    fn partial_observations_cannot_verify() {
         let mut roster = captured(&[b"dlc/dlc_a/a.dlc"]);
-        roster.passes[1].observation.dlcs = Outcome::Truncated {
+        roster.pass.observation.dlcs = Outcome::Truncated {
             len: 1,
             unread_rows: 7,
         };
         let mut value = identity(&["dlc_a"]);
         let reason = check(&roster, &mut value, None).unwrap_err();
         assert!(reason.contains("7 rows unread"));
-        assert!(reason.contains("changed between roster reads"));
         value.validate().unwrap();
-        roster.passes[1].observation.dlcs = Outcome::Rows { len: 1 };
-        roster.passes[1].dlcs[0].name = text(b"different");
-        assert!(
-            check(&roster, &mut value, None)
-                .unwrap_err()
-                .contains("changed between roster reads")
-        );
     }
 
     #[test]
     fn inactive_descriptor_cannot_hide_a_swapped_active_descriptor() {
         let mut roster = captured(&[b"dlc/dlc_a/a.dlc", b"dlc/dlc_a/b.dlc"]);
-        for pass in &mut roster.passes {
-            pass.dlcs[0].reported_active = false;
-        }
+        roster.pass.dlcs[0].reported_active = false;
         let mut value = identity(&["dlc_a"]);
         assert!(
             check(&roster, &mut value, None)
@@ -610,11 +543,9 @@ mod tests {
     #[test]
     fn mods_and_failed_reads_remain_explicitly_unverified() {
         let mut roster = captured(&[]);
-        for pass in &mut roster.passes {
-            pass.observation.mods = Outcome::Rows { len: 1 };
-            pass.mods[0].descriptor = text(b"mod/ugc_123.mod");
-            pass.mods[0].reported_active = true;
-        }
+        roster.pass.observation.mods = Outcome::Rows { len: 1 };
+        roster.pass.mods[0].descriptor = text(b"mod/ugc_123.mod");
+        roster.pass.mods[0].reported_active = true;
         let mut value = identity(&[]);
         assert!(
             check(&roster, &mut value, None)
@@ -622,7 +553,7 @@ mod tests {
                 .contains("mapping is not proven")
         );
         value.validate().unwrap();
-        roster.passes[0].observation.requested_mods = Outcome::Unavailable {
+        roster.pass.observation.requested_mods = Outcome::Unavailable {
             reason: "bad pointer",
         };
         assert!(
@@ -638,12 +569,10 @@ mod tests {
     }
 
     #[test]
-    fn extra_changed_or_truncated_mounts_cannot_verify_or_leak_paths() {
+    fn extra_or_truncated_mounts_cannot_verify_or_leak_paths() {
         let mut roster = captured(&[]);
-        for pass in &mut roster.passes {
-            pass.mounts[1] = text(b"C:/private/user/interface-override");
-            pass.mount_outcome = Outcome::Rows { len: 2 };
-        }
+        roster.pass.mounts[1] = text(b"C:/private/user/interface-override");
+        roster.pass.mount_outcome = Outcome::Rows { len: 2 };
         let mut value = identity(&[]);
         let reason = check(&roster, &mut value, None).unwrap_err();
         assert!(reason.contains("observed 2, expected 1"));
@@ -651,15 +580,11 @@ mod tests {
         value.validate().unwrap();
         let diagnostics = roster.diagnostics(&["F:/game".to_owned()], &value.verification);
         assert_eq!(
-            diagnostics["passes"][0]["mount_paths"][1],
-            "C:/private/user/interface-override"
-        );
-        assert_eq!(
-            diagnostics["passes"][1]["mount_paths"][1],
+            diagnostics["sample"]["mount_paths"][1],
             "C:/private/user/interface-override"
         );
         assert_eq!(diagnostics["verification"]["state"], "unverified");
-        roster.passes[1].mount_outcome = Outcome::Truncated {
+        roster.pass.mount_outcome = Outcome::Truncated {
             len: 2,
             unread_rows: 3,
         };
@@ -669,11 +594,13 @@ mod tests {
                 .contains("3 rows unread")
         );
         roster = captured(&[]);
-        roster.mount_root_stable = false;
+        roster.pass.mount_outcome = Outcome::Unavailable {
+            reason: "mount root unreadable",
+        };
         assert!(
             check(&roster, &mut value, None)
                 .unwrap_err()
-                .contains("mount root changed")
+                .contains("mount root unreadable")
         );
         assert!(mounts_match(&[text(b"F:/game")], &["F:\\game".to_owned()]));
         assert!(!mounts_match(&[text(b"F:/game")], &["F:/GAME".to_owned()]));

@@ -6,7 +6,9 @@
 //! gathers. Root topology, row order, truncation and field-failure prefixes
 //! survive without retaining unused dense-array padding or rendering bytes.
 
-use crate::{raw::RawLog, sampling::qpc, spooling::table, table_capture::CaptureRows};
+use crate::{
+    raw::RawLog, read_accounting, sampling::qpc, spooling::table, table_capture::CaptureRows,
+};
 use engine::{
     Memory, cweather_manager,
     memory::{RecordLayout, RecordSources},
@@ -26,7 +28,7 @@ pub const TABLES: [TableId; N] = [
 ];
 
 /// Manager authentication is charged once to limits for each acquisition pass.
-/// The two dense arrays retain their own read/comparison times and outcomes.
+/// The two dense arrays retain their own read times and outcomes.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] =
     &[("weather manager and dense tables", 0, &[0, 1, 2])];
 
@@ -57,11 +59,11 @@ pub struct Captured {
 }
 
 impl Captured {
-    pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
+    pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            limits: CaptureRows::new(capacity.rows[0], successful[0]),
-            regions: CaptureRows::new(capacity.rows[1], successful[1]),
-            provinces: CaptureRows::new(capacity.rows[2], successful[2]),
+            limits: CaptureRows::new(capacity.rows[0]),
+            regions: CaptureRows::new(capacity.rows[1]),
+            provinces: CaptureRows::new(capacity.rows[2]),
             raw_mode: false,
         }
     }
@@ -78,37 +80,23 @@ impl Captured {
             + self.provinces.allocated_bytes()
     }
 
-    pub fn grow(&mut self, capacity: &mut Capacities, successful: &[u16]) {
-        self.limits.grow(&mut capacity.rows[0], successful[0]);
-        self.regions.grow(&mut capacity.rows[1], successful[1]);
-        self.provinces.grow(&mut capacity.rows[2], successful[2]);
+    pub fn grow(&mut self, capacity: &mut Capacities) {
+        self.limits.grow(&mut capacity.rows[0]);
+        self.regions.grow(&mut capacity.rows[1]);
+        self.provinces.grow(&mut capacity.rows[2]);
     }
 
-    /// The manager is resolved afresh for the second pass. Every primary walk
-    /// still runs after its own consistency window completes. No allocation,
-    /// encoding or I/O occurs here; returned times are raw QPC ticks.
-    pub fn capture(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        needed: &[bool],
-    ) -> ([bool; N], [u64; N]) {
+    /// Acquire one manager snapshot and both independent dense tables.
+    pub fn capture(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> [u64; N] {
         self.reset();
-        // Raw-copy split (hourly weather family): every hour the game thread
-        // stages raw bytes via `copy_weather_refresh` and the decode worker
-        // fills the typed rows before the ready handoff, so both typed passes
-        // skip here. Matched flags and costs come from the raw compare,
-        // applied by the caller after this returns.
         if self.raw_mode {
-            // Refresh payload staged: leave the reset outcomes for the decode
-            // worker, which installs identical rows and outcomes.
-            return ([false; N], [0; N]);
+            return [0; N];
         }
-        let mut matched = [false; N];
         let mut ticks = [0; N];
         let begin = qpc();
-        let first = cweather_manager::Reader::new(memory, base, game_state);
+        let first = read_accounting::with_table(TableId::WeatherLimits, || {
+            cweather_manager::Reader::new(memory, base, game_state)
+        });
         ticks[0] = elapsed(begin);
         let first = match first {
             Ok(reader) => reader,
@@ -116,11 +104,12 @@ impl Captured {
                 self.limits.outcome = Outcome::Unavailable { reason };
                 self.regions.outcome = Outcome::Unavailable { reason };
                 self.provinces.outcome = Outcome::Unavailable { reason };
-                return (matched, ticks);
+                return ticks;
             }
         };
         macro_rules! primary {
             ($index:literal, $field:ident) => {{
+                let _reads = read_accounting::table(TABLES[$index]);
                 let begin = qpc();
                 self.$field.outcome =
                     bounded(first.$field(&mut self.$field.rows), self.$field.rows.len());
@@ -130,48 +119,14 @@ impl Captured {
         primary!(0, limits);
         primary!(1, regions);
         primary!(2, provinces);
-
-        if needed[..N].iter().any(|needed| *needed) {
-            let begin = qpc();
-            let second = cweather_manager::Reader::new(memory, base, game_state);
-            ticks[0] = ticks[0].saturating_add(elapsed(begin));
-            macro_rules! check {
-                ($index:literal, $field:ident) => {
-                    if needed[$index] {
-                        let begin = qpc();
-                        self.$field.checked = true;
-                        let outcome = match &second {
-                            Ok(reader) => bounded(
-                                reader.$field(&mut self.$field.second),
-                                self.$field.second.len(),
-                            ),
-                            Err(reason) => Outcome::Unavailable { reason },
-                        };
-                        matched[$index] = self.$field.compare(outcome);
-                        ticks[$index] = ticks[$index].saturating_add(elapsed(begin));
-                    }
-                };
-            }
-            check!(0, limits);
-            check!(1, regions);
-            check!(2, provinces);
-        }
-        (matched, ticks)
-    }
-
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [
-            self.limits.mismatches,
-            self.regions.mismatches,
-            self.provinces.mismatches,
-        ]
+        ticks
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
         [
-            effective(&self.limits),
-            effective(&self.regions),
-            effective(&self.provinces),
+            self.limits.outcome,
+            self.regions.outcome,
+            self.provinces.outcome,
         ]
     }
 
@@ -229,16 +184,6 @@ fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
         }
     } else {
         outcome
-    }
-}
-
-fn effective<R>(captured: &CaptureRows<R>) -> Outcome {
-    if captured.checked && captured.mismatches != 0 {
-        Outcome::Unavailable {
-            reason: "table changed during double read",
-        }
-    } else {
-        captured.outcome
     }
 }
 
@@ -320,20 +265,11 @@ impl WeatherJob {
             ..Default::default()
         });
     }
-
-    fn partition_equal(&self, other: &Self, slot: usize) -> bool {
-        self.log.partition_equal(&other.log, slot)
-            && match slot {
-                1 => self.regions.equal(&other.regions),
-                2 => self.provinces.equal(&other.provinces),
-                _ => true,
-            }
-    }
 }
 
 /// Exact declared fields only, not an address-space substitute. Skipped native
-/// padding, rendering bytes and modifier contents no longer participate in raw
-/// equality; every recorded field, identity and full custom-array header does.
+/// padding, rendering bytes and modifier contents are omitted; every recorded
+/// field, identity and full custom-array header is retained.
 /// The first failed field is retained as a prefix, never retried or zero-filled.
 #[derive(Debug, Default)]
 struct DensePayload {
@@ -371,12 +307,6 @@ impl DensePayload {
             self.bytes
                 .resize(self.required.max(self.bytes.len().saturating_mul(2)), 0);
         }
-    }
-    fn equal(&self, other: &Self) -> bool {
-        self.array == other.array
-            && self.copied_fields == other.copied_fields
-            && self.copied_bytes == other.copied_bytes
-            && self.bytes.get(..self.copied_bytes) == other.bytes.get(..other.copied_bytes)
     }
     fn capture(
         &mut self,
@@ -480,9 +410,6 @@ pub(crate) struct WeatherCopyReport {
     /// the caller can safely run the typed walk. A source-fault/capacity pair
     /// instead retains an explicit terminal-unavailable payload without retry.
     pub raw_ok: bool,
-    /// Per-table raw equality gated by live-fault conservatism, in family
-    /// order [limits, regions, provinces].
-    pub matched: [bool; 3],
     pub copy_ticks: [u64; 3],
     pub raw_bytes: [u64; 3],
 }
@@ -492,7 +419,6 @@ pub(crate) struct WeatherCopyReport {
 pub(crate) struct WeatherCopyContext {
     pub base: usize,
     pub game_state: usize,
-    pub needed: [bool; 3],
 }
 
 fn w_pool_u64(log: &RawLog<3>, start: usize) -> u64 {
@@ -523,10 +449,10 @@ fn wsbulk(
     log.take_bulk(memory, addr?, len, mask)
 }
 
-/// Acquire each pass's manager topology once before any dense fields. The
-/// caller preflights both tables in BOTH passes before starting dense reads.
+/// Acquire the manager topology once and preflight both dense destinations.
 fn prepare_weather_pass(memory: &impl Memory, game_state: usize, job: &mut WeatherJob) {
     use engine::{cgame_state, cpdx_array::Array, cweather_manager};
+    let _reads = read_accounting::table(TableId::WeatherLimits);
     let log = &mut job.log;
     log.has_bulk = true;
     let Some(ptr_start) = wspan(
@@ -585,14 +511,16 @@ fn copy_weather_dense(memory: &impl Memory, job: &mut WeatherJob) {
     debug_assert!(!job.log.overflowed);
     let log = &mut job.log;
     // A bad array header is table-local. Capacity was checked for every
-    // table/pass before these reads, so a later shortage cannot cause a typed
+    // table before these reads, so a later shortage cannot cause a typed
     // retry after an earlier read consumed a PAGE_GUARD or otherwise failed.
+    let mut reads = read_accounting::table(TableId::WeatherRegions);
     log.overflowed |= !job.regions.capture(
         memory,
         job.regions.array,
         sweather_per_region::STRIDE,
         &REGIONS_LAYOUT,
     );
+    reads.select(TableId::WeatherProvinces);
     log.overflowed |= !job.provinces.capture(
         memory,
         job.provinces.array,
@@ -614,100 +542,47 @@ fn copy_weather_pass(memory: &impl Memory, _base: usize, game_state: usize, job:
     }
 }
 
-/// Acquire a refresh into owned jobs and compare independent raw passes.
-/// The caller applies the report after acquisition has completed.
+/// Acquire one refresh into its owned payload.
 pub(crate) fn copy_weather_refresh(
     memory: &impl Memory,
     ctx: WeatherCopyContext,
-    first: &mut WeatherJob,
-    mut second: Option<&mut WeatherJob>,
+    job: &mut WeatherJob,
 ) -> WeatherCopyReport {
     let _ = ctx.base;
     let started = qpc();
-    first.clear();
-    first.game_state = ctx.game_state;
-    prepare_weather_pass(memory, ctx.game_state, first);
-    if let Some(second_job) = second.as_deref_mut() {
-        second_job.clear();
-        second_job.game_state = ctx.game_state;
-        prepare_weather_pass(memory, ctx.game_state, second_job);
-    }
-    preflight_weather(first);
-    if let Some(second_job) = second.as_deref_mut() {
-        preflight_weather(second_job);
-    }
-    let overflow = first.log.overflowed || second.as_ref().is_some_and(|job| job.log.overflowed);
-    let root_fault = first.log.fault.iter().any(|&fault| fault)
-        || second
-            .as_ref()
-            .is_some_and(|job| job.log.fault.iter().any(|&fault| fault));
-    // If even preflight encountered a real source failure, falling back
-    // would reread that failed source. Keep a terminal unavailable payload
-    // instead; its capacity still grows when recycled off the callback.
+    job.clear();
+    job.game_state = ctx.game_state;
+    prepare_weather_pass(memory, ctx.game_state, job);
+    preflight_weather(job);
+    let overflow = job.log.overflowed;
+    let root_fault = job.log.fault.iter().any(|&fault| fault);
+    // Keep a failed source terminal when storage is also exhausted; retrying
+    // the typed path would otherwise observe the failed native source again.
     if overflow && root_fault {
-        first.staging_failure = Some("weather staging unavailable after source read failure");
+        job.staging_failure = Some("weather staging unavailable after source read failure");
     }
     if !overflow {
-        copy_weather_dense(memory, first);
-        if let Some(second_job) = second.as_deref_mut() {
-            copy_weather_dense(memory, second_job);
-        }
+        copy_weather_dense(memory, job);
     }
-    let mut ticks = [0u64; 3];
-    ticks[0] = elapsed(started);
-    let mut matched = [true; 3];
-    if let Some(second_job) = second {
-        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-        for (slot, matched) in matched.iter_mut().enumerate() {
-            let equal = raw_ok_pair && first.partition_equal(second_job, slot);
-            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-        }
-    }
-    if first.staging_failure.is_some() {
-        matched = [false; N];
-    }
-    let raw_ok = !overflow || first.staging_failure.is_some();
     WeatherCopyReport {
-        raw_ok,
-        matched,
-        copy_ticks: ticks,
-        raw_bytes: first.log.raw_bytes,
+        raw_ok: !overflow || job.staging_failure.is_some(),
+        copy_ticks: [elapsed(started), 0, 0],
+        raw_bytes: job.log.raw_bytes,
     }
 }
 
 impl Captured {
-    /// Apply completed acquisition checks without changing rows or outcomes.
-    pub(crate) fn apply_weather_report(
-        &mut self,
-        ctx: WeatherCopyContext,
-        report: &WeatherCopyReport,
-    ) {
-        self.limits.checked = ctx.needed[0];
-        self.limits.mismatches = usize::from(ctx.needed[0] && !report.matched[0]);
-        self.regions.checked = ctx.needed[1];
-        self.regions.mismatches = usize::from(ctx.needed[1] && !report.matched[1]);
-        self.provinces.checked = ctx.needed[2];
-        self.provinces.mismatches = usize::from(ctx.needed[2] && !report.matched[2]);
-    }
-
     /// Mark an accepted acquisition failure without retrying live memory.
-    pub(crate) fn fail_weather_capture(&mut self, ctx: WeatherCopyContext, reason: &'static str) {
+    pub(crate) fn fail_weather_capture(&mut self, reason: &'static str) {
         self.limits.outcome = Outcome::Unavailable { reason };
-        self.limits.checked = ctx.needed[0];
-        self.limits.mismatches = usize::from(ctx.needed[0]);
         self.regions.outcome = Outcome::Unavailable { reason };
-        self.regions.checked = ctx.needed[1];
-        self.regions.mismatches = usize::from(ctx.needed[1]);
         self.provinces.outcome = Outcome::Unavailable { reason };
-        self.provinces.checked = ctx.needed[2];
-        self.provinces.mismatches = usize::from(ctx.needed[2]);
         self.raw_mode = false;
     }
 
     /// Decode-worker interpretation of a raw hourly payload into the pooled
     /// typed rows. Outcomes match the typed walk exactly because the
-    /// identical row parser consumes the exact-field prefix; checked/mismatches
-    /// set by the raw compare survive. Clears `raw_mode` so the next capture
+    /// identical row parser consumes the exact-field prefix. Clears `raw_mode` so the next capture
     /// starts clean.
     pub(crate) fn decode_weather_payload(
         &mut self,
@@ -768,8 +643,10 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sampling::CONSISTENCY_TARGET;
-    use engine::{cgame_state, memory::SliceMemory};
+    use engine::{
+        cgame_state,
+        memory::{CountedMemory, ReadCounts, SliceMemory},
+    };
     use replay::rows::TableSchema;
     use std::cell::Cell;
 
@@ -847,7 +724,7 @@ mod tests {
 
     fn small() -> (Capacities, Captured) {
         let capacities = Capacities { rows: [2; N] };
-        let captured = Captured::with_capacities(&capacities, &[0; N]);
+        let captured = Captured::with_capacities(&capacities);
         (capacities, captured)
     }
 
@@ -866,9 +743,7 @@ mod tests {
             base: 0x1000,
             bytes: &bytes,
         };
-        let (matched, _) = captured.capture(&memory, 0, 0x1000, &[true; N]);
-        assert_eq!(matched, [true; N]);
-        assert_eq!(captured.checked_mismatches(), [0; N]);
+        let _ticks = captured.capture(&memory, 0, 0x1000);
         let tables = captured.tables();
         assert_eq!(
             complete::<tables::WeatherLimits>(&tables[0]),
@@ -901,10 +776,10 @@ mod tests {
     }
 
     #[test]
-    fn table_faults_and_truncation_remain_independent_and_do_not_earn_checks() {
+    fn table_faults_and_truncation_remain_independent() {
         let (mut capacities, _) = small();
         capacities.rows[2] = 0;
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let mut captured = Captured::with_capacities(&capacities);
         let mut bytes = fixture();
         put(
             &mut bytes,
@@ -915,8 +790,7 @@ mod tests {
             base: 0x1000,
             bytes: &bytes,
         };
-        let (matched, _) = captured.capture(&memory, 0, 0x1000, &[true; N]);
-        assert_eq!(matched, [true, false, false]);
+        let _ticks = captured.capture(&memory, 0, 0x1000);
         assert!(matches!(
             captured.outcomes()[1],
             Outcome::Unavailable { .. }
@@ -931,7 +805,7 @@ mod tests {
         let tables = captured.tables();
         assert!(matches!(tables[1], TableView::Unavailable { .. }));
         assert!(matches!(tables[2], TableView::Truncated { missing: 1, .. }));
-        captured.grow(&mut capacities, &[0; N]);
+        captured.grow(&mut capacities);
         assert!(!captured.provinces.rows.is_empty());
         put(
             &mut bytes,
@@ -942,10 +816,7 @@ mod tests {
             base: 0x1000,
             bytes: &bytes,
         };
-        assert_eq!(
-            captured.capture(&memory, 0, 0x1000, &[true; N]).0,
-            [false; N]
-        );
+        captured.capture(&memory, 0, 0x1000);
         assert!(
             captured
                 .outcomes()
@@ -954,92 +825,24 @@ mod tests {
         );
     }
 
-    struct ChangingWater<'a> {
-        bytes: &'a [u8],
-        copies: Cell<usize>,
-    }
-    impl Memory for ChangingWater<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if !(SliceMemory {
-                base: 0x1000,
-                bytes: self.bytes,
-            })
-            .copy(address, output)
-            {
-                return false;
-            }
-            if address == 0x4000 + sweather_per_province::WATER {
-                let copies = self.copies.get();
-                self.copies.set(copies + 1);
-                if copies != 0 {
-                    output[0] ^= 1;
-                }
-            }
-            true
-        }
-    }
-
-    #[test]
-    fn changed_table_is_unavailable_and_finished_windows_release_independently() {
-        let (mut capacities, mut captured) = small();
-        let bytes = fixture();
-        let memory = ChangingWater {
-            bytes: &bytes,
-            copies: Cell::new(0),
-        };
-        assert_eq!(
-            captured.capture(&memory, 0, 0x1000, &[true; N]).0,
-            [true, true, false]
-        );
-        assert_eq!(captured.checked_mismatches(), [0, 0, 1]);
-        assert!(matches!(
-            captured.tables()[2],
-            TableView::Unavailable { .. }
-        ));
-        let before = captured.allocated_bytes();
-        captured.grow(
-            &mut capacities,
-            &[CONSISTENCY_TARGET, 0, CONSISTENCY_TARGET],
-        );
-        assert!(captured.limits.second.is_empty() && captured.provinces.second.is_empty());
-        assert!(!captured.regions.second.is_empty());
-        assert!(captured.allocated_bytes() < before);
-        let memory = SliceMemory {
-            base: 0x1000,
-            bytes: &bytes,
-        };
-        assert_eq!(
-            captured
-                .capture(&memory, 0, 0x1000, &[false, true, false])
-                .0,
-            [false, true, false]
-        );
-        assert_eq!(captured.checked_mismatches(), [0; N]);
-        assert_eq!(captured.outcomes(), [Outcome::Rows { len: 1 }; N]);
-    }
-
     fn split_capacities() -> Capacities {
         Capacities { rows: [2, 8, 8] }
     }
 
     fn direct(memory: &SliceMemory<'_>, capacities: &Capacities) -> Captured {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
-        let (matched, _) = captured.capture(memory, 0, 0x1000, &[true; N]);
-        assert_eq!(matched, [true; N]);
+        let mut captured = Captured::with_capacities(capacities);
+        let _ticks = captured.capture(memory, 0, 0x1000);
         captured
     }
 
     fn split(memory: &SliceMemory<'_>, capacities: &Capacities) -> (Captured, WeatherCopyReport) {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+        let mut captured = Captured::with_capacities(capacities);
         let ctx = WeatherCopyContext {
             base: 0,
             game_state: 0x1000,
-            needed: [true; N],
         };
         let mut first = WeatherJob::new();
-        let mut second = WeatherJob::new();
-        let report = copy_weather_refresh(memory, ctx, &mut first, Some(&mut second));
-        captured.apply_weather_report(ctx, &report);
+        let report = copy_weather_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
         captured.raw_mode = report.raw_ok;
         let mut ticks = [0u64; 3];
@@ -1099,17 +902,15 @@ mod tests {
     }
 
     fn assert_packed_matches(memory: &impl Memory, capacities: &Capacities) -> WeatherJob {
-        let mut direct = Captured::with_capacities(capacities, &[0; N]);
-        direct.capture(memory, 0, 0x1000, &[false; N]);
-        let mut packed = Captured::with_capacities(capacities, &[0; N]);
+        let mut direct = Captured::with_capacities(capacities);
+        direct.capture(memory, 0, 0x1000);
+        let mut packed = Captured::with_capacities(capacities);
         let mut job = WeatherJob::new();
         let ctx = WeatherCopyContext {
             base: 0,
             game_state: 0x1000,
-            needed: [false; N],
         };
-        let report = copy_weather_refresh(memory, ctx, &mut job, None);
-        packed.apply_weather_report(ctx, &report);
+        let report = copy_weather_refresh(memory, ctx, &mut job);
         assert!(report.raw_ok);
         packed.decode_weather_payload(0, &job, &mut [0; N]);
         assert_matches_direct(&packed, &direct);
@@ -1250,6 +1051,14 @@ mod tests {
 
     #[test]
     fn packed_weather_omits_unused_bytes_but_keeps_topology_and_every_declared_field() {
+        fn payload(job: &WeatherJob, table: usize) -> &[u8] {
+            let dense = if table == 1 {
+                &job.regions
+            } else {
+                &job.provinces
+            };
+            &dense.bytes[..dense.copied_bytes]
+        }
         let bytes = fixture();
         let mut first = WeatherJob::new();
         copy_weather_pass(
@@ -1280,7 +1089,7 @@ mod tests {
                     0x1000,
                     &mut second,
                 );
-                assert!(first.partition_equal(&second, table));
+                assert_eq!(payload(&first, table), payload(&second, table));
             }
         }
         for (pointer, fields, table) in [
@@ -1301,8 +1110,8 @@ mod tests {
                         0x1000,
                         &mut second,
                     );
-                    assert!(!first.partition_equal(&second, table));
-                    assert!(first.partition_equal(&second, 3 - table));
+                    assert_ne!(payload(&first, table), payload(&second, table));
+                    assert_eq!(payload(&first, 3 - table), payload(&second, 3 - table));
                 }
             }
         }
@@ -1328,7 +1137,26 @@ mod tests {
             0x1000,
             &mut second,
         );
-        assert!((0..N).all(|slot| !first.partition_equal(&second, slot)));
+        assert_ne!(first.log.bytes, second.log.bytes);
+        // Capacity is retained in the raw header; Array describes data/count.
+        assert_eq!(first.provinces.array, second.provinces.array);
+        assert_eq!(payload(&first, 2), payload(&second, 2));
+        put(
+            &mut changed,
+            0x2000 + cweather_manager::PROVINCES + 12,
+            &2_u32.to_le_bytes(),
+        );
+        second.clear();
+        copy_weather_pass(
+            &SliceMemory {
+                base: 0x1000,
+                bytes: &changed,
+            },
+            0,
+            0x1000,
+            &mut second,
+        );
+        assert_ne!(first.provinces.array, second.provinces.array);
     }
 
     #[test]
@@ -1374,124 +1202,47 @@ mod tests {
     }
 
     #[test]
-    fn packed_weather_preflights_both_tables_and_both_passes_before_any_dense_fault() {
+    fn packed_weather_preflights_both_tables_before_any_dense_fault() {
         let bytes = fixture();
-        for short_pass in [0, 1] {
-            for short_table in [1, 2] {
-                for fault_table in [1, 2] {
-                    let memory = FaultReads {
-                        memory: SliceMemory {
-                            base: 0x1000,
-                            bytes: &bytes,
-                        },
-                        fault: if fault_table == 1 { 0x3000 } else { 0x4000 },
-                        failures: Cell::new(0),
-                    };
-                    let mut first = WeatherJob::new();
-                    let mut second = WeatherJob::new();
-                    let short = if short_pass == 0 {
-                        &mut first
-                    } else {
-                        &mut second
-                    };
-                    if short_table == 1 {
-                        short.regions.bytes.clear();
-                    } else {
-                        short.provinces.bytes.clear();
-                    }
-                    let mut captured =
-                        Captured::with_capacities(&Capacities { rows: [1; N] }, &[0; N]);
-                    let ctx = WeatherCopyContext {
-                        base: 0,
-                        game_state: 0x1000,
-                        needed: [true; N],
-                    };
-                    let report = copy_weather_refresh(&memory, ctx, &mut first, Some(&mut second));
-                    captured.apply_weather_report(ctx, &report);
-                    assert!(!report.raw_ok);
-                    assert_eq!(
-                        memory.failures.get(),
-                        0,
-                        "preflight must not consume the guard"
-                    );
-                    for job in [&first, &second] {
-                        assert_eq!(job.regions.copied_fields, 0);
-                        assert_eq!(job.provinces.copied_fields, 0);
-                        assert_eq!(job.log.raw_bytes, [520, 0, 0]);
-                    }
-                    // The admitted typed fallback is the first dense read,
-                    // not a retry of an earlier failed staging batch.
-                    captured.capture(&memory, 0, 0x1000, &[false; N]);
-                    assert_eq!(memory.failures.get(), 1);
+        for short_table in [1, 2] {
+            for fault_table in [1, 2] {
+                let memory = FaultReads {
+                    memory: SliceMemory {
+                        base: 0x1000,
+                        bytes: &bytes,
+                    },
+                    fault: if fault_table == 1 { 0x3000 } else { 0x4000 },
+                    failures: Cell::new(0),
+                };
+                let mut job = WeatherJob::new();
+                if short_table == 1 {
+                    job.regions.bytes.clear();
+                } else {
+                    job.provinces.bytes.clear();
                 }
+                let mut captured = Captured::with_capacities(&Capacities { rows: [1; N] });
+                let ctx = WeatherCopyContext {
+                    base: 0,
+                    game_state: 0x1000,
+                };
+                let report = copy_weather_refresh(&memory, ctx, &mut job);
+                assert!(!report.raw_ok);
+                assert_eq!(
+                    memory.failures.get(),
+                    0,
+                    "preflight must not consume the guard"
+                );
+                assert_eq!(job.regions.copied_fields, 0);
+                assert_eq!(job.provinces.copied_fields, 0);
+                assert_eq!(job.log.raw_bytes, [520, 0, 0]);
+                captured.capture(&memory, 0, 0x1000);
+                assert_eq!(memory.failures.get(), 1);
             }
         }
     }
 
     #[test]
-    fn packed_weather_second_header_growth_is_preflighted_before_first_dense_read() {
-        struct Growing<'a> {
-            memory: FaultReads<'a>,
-            headers: Cell<usize>,
-        }
-        impl Memory for Growing<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if !self.memory.copy(address, output) {
-                    return false;
-                }
-                if address == 0x2000 && output.len() == 0x200 {
-                    self.headers.set(self.headers.get() + 1);
-                    if self.headers.get() == 2 {
-                        output[cweather_manager::PROVINCES_COUNT
-                            ..cweather_manager::PROVINCES_COUNT + 4]
-                            .copy_from_slice(&2_u32.to_le_bytes());
-                    }
-                }
-                true
-            }
-        }
-        let bytes = fixture();
-        let memory = Growing {
-            memory: FaultReads {
-                memory: SliceMemory {
-                    base: 0x1000,
-                    bytes: &bytes,
-                },
-                fault: 0x3000,
-                failures: Cell::new(0),
-            },
-            headers: Cell::new(0),
-        };
-        let mut first = WeatherJob::new();
-        let mut second = WeatherJob::new();
-        second
-            .provinces
-            .bytes
-            .resize(sweather_per_province::RECORD_BYTES, 0);
-        let mut captured = Captured::with_capacities(&Capacities { rows: [1; N] }, &[0; N]);
-        let ctx = WeatherCopyContext {
-            base: 0,
-            game_state: 0x1000,
-            needed: [true; N],
-        };
-        let report = copy_weather_refresh(&memory, ctx, &mut first, Some(&mut second));
-        captured.apply_weather_report(ctx, &report);
-        assert!(!report.raw_ok);
-        assert_eq!(memory.headers.get(), 2);
-        assert_eq!(memory.memory.failures.get(), 0);
-        assert_eq!(
-            first.provinces.required,
-            sweather_per_province::RECORD_BYTES
-        );
-        assert_eq!(
-            second.provinces.required,
-            2 * sweather_per_province::RECORD_BYTES
-        );
-        assert!(second.grow_for_next());
-    }
-
-    #[test]
-    fn packed_weather_root_fault_and_other_pass_shortage_are_terminal_without_retry() {
+    fn packed_weather_first_root_fault_is_terminal_without_retry() {
         struct Guard<'a> {
             memory: SliceMemory<'a>,
             root_reads: Cell<usize>,
@@ -1508,32 +1259,36 @@ mod tests {
             }
         }
         let bytes = fixture();
-        let memory = Guard {
+        let memory = CountedMemory::new(Guard {
             memory: SliceMemory {
                 base: 0x1000,
                 bytes: &bytes,
             },
             root_reads: Cell::new(0),
-        };
+        });
         let mut first = WeatherJob::new();
-        let mut second = WeatherJob::new();
-        second.provinces.bytes.clear();
-        let mut captured = Captured::with_capacities(&Capacities { rows: [1; N] }, &[0; N]);
+        let mut captured = Captured::with_capacities(&Capacities { rows: [1; N] });
         let ctx = WeatherCopyContext {
             base: 0,
             game_state: 0x1000,
-            needed: [true; N],
         };
-        let report = copy_weather_refresh(&memory, ctx, &mut first, Some(&mut second));
-        captured.apply_weather_report(ctx, &report);
+        let counts = read_accounting::Capture::new();
+        let report = copy_weather_refresh(&memory, ctx, &mut first);
         assert!(report.raw_ok, "terminal payload forbids typed retry");
-        assert_eq!(report.matched, [false; N]);
-        assert!(first.staging_failure.is_some());
-        assert_eq!(memory.root_reads.get(), 2);
+        assert!(first.log.fault.iter().all(|fault| *fault));
+        assert_eq!(memory.0.root_reads.get(), 1);
         captured.raw_mode = report.raw_ok;
-        captured.capture(&memory, 0, 0x1000, &[true; N]);
+        captured.capture(&memory, 0, 0x1000);
         captured.decode_weather_payload(0, &first, &mut [0; N]);
-        assert_eq!(memory.root_reads.get(), 2);
+        assert_eq!(memory.0.root_reads.get(), 1);
+        let mut expected = read_accounting::ZERO;
+        expected[TableId::WeatherLimits.index()] = ReadCounts {
+            copy_calls: 1,
+            spans: 1,
+            bytes: 8,
+            ..ReadCounts::ZERO
+        };
+        assert_eq!(counts.finish(), expected);
         assert!(
             captured
                 .outcomes()
@@ -1554,9 +1309,54 @@ mod tests {
         };
         let direct = direct(&memory, &capacities);
         let (split, report) = split(&memory, &capacities);
-        assert_eq!(report.matched, [true; 3]);
+        assert!(report.raw_ok);
         assert_matches_direct(&split, &direct);
         assert_eq!(split.limits.outcome, Outcome::Rows { len: 1 });
+    }
+
+    #[test]
+    fn weather_read_accounting_partitions_native_gathers_and_excludes_owned_decode() {
+        let capacities = split_capacities();
+        let bytes = fixture();
+        let memory = CountedMemory::new(SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        });
+        let direct = direct(&memory.0, &capacities);
+        let mut captured = Captured::with_capacities(&capacities);
+        let mut job = WeatherJob::new();
+        let ctx = WeatherCopyContext {
+            base: 0,
+            game_state: 0x1000,
+        };
+        let counts = read_accounting::Capture::new();
+        let report = copy_weather_refresh(&memory, ctx, &mut job);
+        assert!(report.raw_ok);
+        let mut expected = read_accounting::ZERO;
+        expected[TableId::WeatherLimits.index()] = ReadCounts {
+            copy_calls: 2,
+            spans: 2,
+            bytes: 520,
+            ..ReadCounts::ZERO
+        };
+        expected[TableId::WeatherRegions.index()] = ReadCounts {
+            record_calls: 1,
+            spans: 9,
+            bytes: 30,
+            ..ReadCounts::ZERO
+        };
+        expected[TableId::WeatherProvinces.index()] = ReadCounts {
+            record_calls: 1,
+            spans: 6,
+            bytes: 62,
+            ..ReadCounts::ZERO
+        };
+        assert_eq!(read_accounting::snapshot(), expected);
+        captured.raw_mode = true;
+        assert_eq!(captured.capture(&memory, 0, 0x1000), [0; N]);
+        captured.decode_weather_payload(0, &job, &mut [0; N]);
+        assert_matches_direct(&captured, &direct);
+        assert_eq!(counts.finish(), expected);
     }
 
     #[test]
@@ -1567,19 +1367,15 @@ mod tests {
             base: 0x1000,
             bytes: &bytes,
         };
-        let mut direct = Captured::with_capacities(&capacities, &[0; N]);
-        let (matched, _) = direct.capture(&memory, 0, 0x1000, &[true; N]);
-        assert_eq!(matched, [true, true, false]);
-        let mut split = Captured::with_capacities(&capacities, &[0; N]);
+        let mut direct = Captured::with_capacities(&capacities);
+        let _ticks = direct.capture(&memory, 0, 0x1000);
+        let mut split = Captured::with_capacities(&capacities);
         let ctx = WeatherCopyContext {
             base: 0,
             game_state: 0x1000,
-            needed: [true; N],
         };
         let mut first = WeatherJob::new();
-        let mut second = WeatherJob::new();
-        let report = copy_weather_refresh(&memory, ctx, &mut first, Some(&mut second));
-        split.apply_weather_report(ctx, &report);
+        let report = copy_weather_refresh(&memory, ctx, &mut first);
         assert!(report.raw_ok);
         split.raw_mode = true;
         let mut ticks = [0u64; 3];
@@ -1601,23 +1397,17 @@ mod tests {
             base: 0x1000,
             bytes: &bytes,
         };
-        let mut direct = Captured::with_capacities(&capacities, &[0; N]);
-        let (matched, _) = direct.capture(&memory, 0, 0x1000, &[true; N]);
-        assert_eq!(matched, [false; N]);
-        let mut split = Captured::with_capacities(&capacities, &[0; N]);
+        let mut direct = Captured::with_capacities(&capacities);
+        let _ticks = direct.capture(&memory, 0, 0x1000);
+        let mut split = Captured::with_capacities(&capacities);
         let ctx = WeatherCopyContext {
             base: 0,
             game_state: 0x1000,
-            needed: [true; N],
         };
         let mut first = WeatherJob::new();
-        let mut second = WeatherJob::new();
-        let report = copy_weather_refresh(&memory, ctx, &mut first, Some(&mut second));
-        split.apply_weather_report(ctx, &report);
+        let report = copy_weather_refresh(&memory, ctx, &mut first);
         assert!(report.raw_ok);
-        // Both copies fail identically; raw-compare still matches (no live
-        // bytes differ), but the decode installs the identical Unavailable.
-        assert_eq!(report.matched, [true; 3]);
+        // The owned first fault decodes to the identical Unavailable outcome.
         split.raw_mode = true;
         let mut ticks = [0u64; 3];
         split.decode_weather_payload(0, &first, &mut ticks);
@@ -1625,92 +1415,21 @@ mod tests {
     }
 
     #[test]
-    fn weather_double_copy_compare_blocks_checks_on_tearing() {
-        let capacities = split_capacities();
-        let bytes = fixture();
-        let memory = SliceMemory {
-            base: 0x1000,
-            bytes: &bytes,
-        };
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = WeatherCopyContext {
-            base: 0,
-            game_state: 0x1000,
-            needed: [true; N],
-        };
-        let mut first = WeatherJob::new();
-        let mut second = WeatherJob::new();
-        let report = copy_weather_refresh(&memory, ctx, &mut first, Some(&mut second));
-        captured.apply_weather_report(ctx, &report);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 3]);
-        let mut torn = fixture();
-        put(
-            &mut torn,
-            0x4000 + sweather_per_province::WATER,
-            &9_u64.to_le_bytes(),
-        );
-        let mut after = WeatherJob::new();
-        copy_weather_pass(&memory, 0, 0x1000, &mut after);
-        let mut after_torn = WeatherJob::new();
-        copy_weather_pass(
-            &SliceMemory {
-                base: 0x1000,
-                bytes: &torn,
-            },
-            0,
-            0x1000,
-            &mut after_torn,
-        );
-        assert!(!after.partition_equal(&after_torn, 2));
-        assert!(after.partition_equal(&after_torn, 1));
-    }
-
-    #[test]
-    fn weather_partition_equal_isolates_provinces_private_bytes() {
-        let capacities = split_capacities();
-        let bytes = fixture();
-        let memory = SliceMemory {
-            base: 0x1000,
-            bytes: &bytes,
-        };
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = WeatherCopyContext {
-            base: 0,
-            game_state: 0x1000,
-            needed: [true; N],
-        };
-        let mut first = WeatherJob::new();
-        let mut second = WeatherJob::new();
-        let report = copy_weather_refresh(&memory, ctx, &mut first, Some(&mut second));
-        captured.apply_weather_report(ctx, &report);
-        assert!(report.raw_ok);
-        second.provinces.bytes[0] ^= 0xff;
-        assert!(first.partition_equal(&second, 0));
-        assert!(first.partition_equal(&second, 1));
-        assert!(!first.partition_equal(&second, 2));
-    }
-
-    #[test]
     fn weather_staging_overflow_falls_back_to_typed_walk() {
-        let capacities = split_capacities();
         let bytes = fixture();
         let memory = SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
         let ctx = WeatherCopyContext {
             base: 0,
             game_state: 0x1000,
-            needed: [true; N],
         };
         let mut tiny = WeatherJob {
             log: crate::raw::RawLog::new(8, 8),
             ..Default::default()
         };
-        let report = copy_weather_refresh(&memory, ctx, &mut tiny, None);
-        captured.apply_weather_report(ctx, &report);
+        let report = copy_weather_refresh(&memory, ctx, &mut tiny);
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());
@@ -1725,8 +1444,7 @@ mod tests {
             base: 0x1000,
             bytes: &bytes,
         };
-        let (matched, ticks) = captured.capture(&memory, 0, 0x1000, &[true; N]);
-        assert_eq!(matched, [false; N]);
+        let ticks = captured.capture(&memory, 0, 0x1000);
         assert_eq!(ticks, [0; N]);
     }
 
@@ -1739,18 +1457,15 @@ mod tests {
         };
         for rows in [[0, 0, 0], [1, 1, 1], [2, 8, 8], [8, 8, 8]] {
             let capacities = Capacities { rows };
-            let mut direct = Captured::with_capacities(&capacities, &[0; N]);
-            let _ = direct.capture(&memory, 0, 0x1000, &[true; N]);
-            let mut split = Captured::with_capacities(&capacities, &[0; N]);
+            let mut direct = Captured::with_capacities(&capacities);
+            let _ = direct.capture(&memory, 0, 0x1000);
+            let mut split = Captured::with_capacities(&capacities);
             let ctx = WeatherCopyContext {
                 base: 0,
                 game_state: 0x1000,
-                needed: [true; N],
             };
             let mut first = WeatherJob::new();
-            let mut second = WeatherJob::new();
-            let report = copy_weather_refresh(&memory, ctx, &mut first, Some(&mut second));
-            split.apply_weather_report(ctx, &report);
+            let report = copy_weather_refresh(&memory, ctx, &mut first);
             assert!(report.raw_ok, "rows={rows:?}");
             split.raw_mode = true;
             let mut ticks = [0u64; 3];

@@ -3812,6 +3812,7 @@ name = "replay"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "engine",
  "windows-sys 0.61.2",
  "zstd",
 ]

@@ -1,4 +1,4 @@
-//! Format23 saved portrait identities and province membership witnesses.
+//! Saved portrait identities and province membership witnesses.
 use super::*;
 fn eq<T: PartialEq + std::fmt::Debug>(r: &mut Report, label: &str, a: T, b: T) {
     r.scalar_checks += 1;
@@ -266,19 +266,5 @@ mod tests {
         characters(&frame, &saved, &mut report).unwrap();
         leaders(&frame, &saved, &mut report).unwrap();
         assert_eq!(report.differences.len(), 2);
-    }
-    #[test]
-    fn earlier_formats_mark_all_new_tables_not_applicable() {
-        let (frame, saved, _, _) = super::super::tests::fixture();
-        for format in FormatVersion::READABLE
-            .into_iter()
-            .filter(|f| f.version() < 23)
-        {
-            let mut report = Report::default();
-            report.record_tables(&frame, format);
-            compare(&frame, &saved, &mut report);
-            assert!(report.failed_comparisons.is_empty());
-            assert!(report.compared_tables.is_empty());
-        }
     }
 }

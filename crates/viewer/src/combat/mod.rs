@@ -17,6 +17,8 @@ use crate::{
 pub use assets::Assets;
 use assets::Sprite;
 use binding::Bindings;
+/// The one screen-rectangle hit test; the map's counter hits share it.
+pub(crate) use layout::contains;
 use layout::{Node, number, string};
 use std::{collections::BTreeMap, io};
 

@@ -917,6 +917,9 @@ mod tests {
                     TableId::CounterSettings => {
                         TableUpdate::Snapshot(TableRows::CounterSettings(vec![Default::default()]))
                     }
+                    TableId::MovementDefines => {
+                        TableUpdate::Snapshot(TableRows::MovementDefines(vec![Default::default()]))
+                    }
                     _ => TableUpdate::Snapshot(TableRows::empty(TableId::ALL[index])),
                 }),
             })

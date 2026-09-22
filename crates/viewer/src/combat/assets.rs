@@ -170,7 +170,6 @@ impl Assets {
         layers: &ResolvedLayers,
         declarations: &BTreeMap<String, gfx::SpriteType>,
         images: &mut Vec<dds::Texture>,
-        combat_details: bool,
     ) -> io::Result<Self> {
         // Combat widgets also reference the naval leader module's nested .gfx.
         let mut declarations = declarations.clone();
@@ -181,9 +180,10 @@ impl Assets {
         // Inventory literal portrait references once per content set, never by
         // decoding every historical hour. DDS compression stays intact on upload.
         let mut direct_portraits = BTreeSet::new();
-        for file in layers.paths().filter(|p| {
-            combat_details && p.starts_with("common/characters/") && p.ends_with(".txt")
-        }) {
+        for file in layers
+            .paths()
+            .filter(|p| p.starts_with("common/characters/") && p.ends_with(".txt"))
+        {
             portrait_paths(
                 &installed_content::parser::parse(&layers.read(file)?)?.items,
                 &mut direct_portraits,
@@ -281,9 +281,10 @@ impl Assets {
         }
         // Trait-tree connectors also start with GFX_trait_. Inventory actual
         // unit-leader definitions instead of loading that unrelated editor UI.
-        for file in layers.paths().filter(|p| {
-            combat_details && p.starts_with("common/unit_leader/") && p.ends_with(".txt")
-        }) {
+        for file in layers
+            .paths()
+            .filter(|p| p.starts_with("common/unit_leader/") && p.ends_with(".txt"))
+        {
             for item in installed_content::parser::parse(&layers.read(file)?)?.items {
                 if item.key.as_deref() != Some(b"leader_traits") {
                     continue;
@@ -306,11 +307,10 @@ impl Assets {
                     && (name.ends_with("_icon_medium") || name.ends_with("_icon_medium_black")))
                 || name.starts_with("combat_tactic:")
                 || name.starts_with("combat_portrait:")
-                || (combat_details
-                    && declarations[*name]
-                        .texture
-                        .as_ref()
-                        .is_some_and(|p| p.starts_with("gfx/leaders/")))
+                || declarations[*name]
+                    .texture
+                    .as_ref()
+                    .is_some_and(|p| p.starts_with("gfx/leaders/"))
                 || name == &"GFX_organization_texticon"
                 || name == &"GFX_strenght_texticon"
                 || name == &"GFX_modifiers_weather_icons"

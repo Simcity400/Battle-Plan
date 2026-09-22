@@ -105,8 +105,8 @@ fn values(memory: &impl Memory, address: usize) -> Result<[Modifier; 5], &'stati
     Ok(result)
 }
 
-/// Caller has authenticated combat and both side back-links. Recheck roots
-/// here and retain source words; this helper never calls engine code.
+/// Caller has authenticated combat and both side back-links. Retain source
+/// words without calling engine code.
 pub fn read(
     memory: &impl Memory,
     base: usize,
@@ -192,14 +192,6 @@ pub fn read(
         let region = field::<u64>(memory, province, crate::cprovince::STRATEGIC_REGION)? as usize;
         let terrain = crate::naval_ship_modifier_inputs::terrain(memory, base, region)?;
         row.modifiers[2] = values(memory, add(terrain, 0xb8)?)?;
-    }
-    if field::<u64>(memory, side, COUNTRIES)? as usize != head
-        || field::<i32>(memory, side, COUNTRY_COUNT)? != count
-        || field::<u64>(memory, side, cnaval_combatant::COMBAT)? as usize != combat
-        || field::<u64>(memory, side, cnaval_combatant::COMMANDER)? as usize != own
-        || field::<u64>(memory, opponent, cnaval_combatant::COMMANDER)? as usize != enemy
-    {
-        return Err("naval summary source changed");
     }
     Ok(row)
 }

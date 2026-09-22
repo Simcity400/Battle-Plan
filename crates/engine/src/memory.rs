@@ -1,5 +1,7 @@
 use std::mem::size_of;
 
+pub use crate::read_counts::{CountedMemory, ReadCounts};
+
 /// One exact source span and its position in each packed destination record.
 /// The same borrowed layout is reused for every source pointer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +82,7 @@ impl<'a> RecordLayout<'a> {
 
     /// Successful payload bytes for accounting, saturated if the sum overflows.
     /// The ordinary complete-row case does not scan the layout again.
+    #[inline(always)]
     pub fn completed_bytes(&self, completed: usize) -> usize {
         if self.fields.is_empty() {
             return 0;
@@ -93,8 +96,29 @@ impl<'a> RecordLayout<'a> {
             })
     }
 
+    /// Nonempty source requests in a field prefix; complete rows use the
+    /// geometry cached at construction, so accounting is O(1) on success.
+    #[inline(always)]
+    pub fn completed_spans(&self, completed: usize) -> usize {
+        if self.fields.is_empty() {
+            return 0;
+        }
+        (completed / self.fields.len())
+            .saturating_mul(self.nonempty)
+            .saturating_add(
+                self.fields[..completed % self.fields.len()]
+                    .iter()
+                    .filter(|field| field.len != 0)
+                    .count(),
+            )
+    }
+
     #[inline]
-    fn count(&self, sources: RecordSources<'_>, destination_len: usize) -> Option<usize> {
+    pub(crate) fn count(
+        &self,
+        sources: RecordSources<'_>,
+        destination_len: usize,
+    ) -> Option<usize> {
         let count = sources.len().checked_mul(self.fields.len())?;
         if sources.len().checked_mul(self.stride)? > destination_len {
             return None;
@@ -226,18 +250,24 @@ fn record_source_prefix(sources: RecordSources<'_>, layout: &RecordLayout<'_>) -
     completed
 }
 
-/// Opaque checkpoint in one adapter's independently verified read observations.
-/// It identifies recorder-owned storage, never a game object or a saved value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ReadWitness {
-    pub owner: usize,
-    pub generation: u64,
-    pub uncovered: u64,
-}
-
 /// Implementations fill the destination or return false; a failed copy may be partial.
 pub trait Memory {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool;
+
+    /// Advisory hint for an already selected source. No value is acquired;
+    /// recording adapters may retain the hint with its selecting dependencies.
+    #[inline]
+    fn prefetch(&self, address: usize, len: usize) {
+        crate::prefetch::span(address, len);
+    }
+
+    /// Acquire one value with the same observation and failure semantics as
+    /// `copy`. Adapters must retain their own caching, recording and accounting
+    /// before forwarding this operation. The default uses their existing copy.
+    #[inline]
+    fn read_scalar<T: Raw>(&self, address: usize) -> Option<T> {
+        copy_scalar(self, address)
+    }
 
     /// Execute prepared scalar reads and owned-control comparisons in order.
     /// The default preserves this adapter's `copy` observations. `None` means
@@ -252,38 +282,6 @@ pub trait Memory {
         plan.execute(self, destination)
     }
 
-    /// Optional checkpoint for deferring redundant derived-graph verification.
-    /// Every successful byte observation after this checkpoint must either be
-    /// retained for independent terminal comparison or make the checkpoint
-    /// incomplete. Derived capabilities must retain their own independent
-    /// verification obligations. No game read, allocation or observation-order
-    /// change is permitted here. Observation-recording wrappers must not forward
-    /// this capability; ordinary readers retain their original verifier.
-    fn read_witness(&self) -> Option<ReadWitness> {
-        None
-    }
-
-    /// True promises complete terminal verification for this exact adapter and
-    /// pass, including after a failed enclosing walk. It is not a completed
-    /// consistency check: publication still requires all terminal verifiers.
-    /// Capacity, faults, stale checkpoints and untracked dependencies return
-    /// false, preserving the caller's original graph-verification fallback.
-    fn read_witness_complete(&self, _witness: ReadWitness) -> bool {
-        false
-    }
-
-    /// Finish a bounded owned-dependency scope. `Some(Ok(()))` means every
-    /// observation is either directly compared and released here or remains
-    /// covered by the adapter's mandatory independent pass verification.
-    /// A mismatch/read fault must return `Some(Err(..))`, never a fallback.
-    /// Unsupported, foreign, stale or incomplete checkpoints return `None`
-    /// and require the original derived-graph verifier. A scope may release
-    /// observations only after comparing them, including on incomplete paths.
-    /// Observation-recording wrappers must not forward this capability.
-    fn finish_read_witness(&self, _witness: ReadWitness) -> Option<Result<(), &'static str>> {
-        None
-    }
-
     /// Optional immutable, already-owned bytes for this exact address range.
     /// Every contained nonempty read must equal `copy` without consuming any
     /// observation cursor. Implementations must exclude overriding failures,
@@ -296,7 +294,7 @@ pub trait Memory {
 
     /// Optional authentication derived from this callback's complete country
     /// census. The view must belong to the exact module/game-state pair and
-    /// remain covered by the source's final direct authentication verification.
+    /// retain its initial authentication only within the quiescent hourly lease.
     /// Observation-recording wrappers must not forward this capability: their
     /// readers still need every original byte request in order.
     fn authenticated_countries(
@@ -308,8 +306,8 @@ pub trait Memory {
     }
 
     /// Optional raw lookup from a complete, sorted accumulator snapshot owned
-    /// by this acquisition pass. Every header and entry byte must undergo final
-    /// direct verification before publication, including after a failed walk.
+    /// by this acquisition pass. Its header and entries come from the current
+    /// source acquisition and remain owned for the entire lookup.
     /// Absence of this capability preserves the ordinary live reader. This
     /// hook must not evaluate modifier metadata or escape its pass lifetime;
     /// observation-recording wrappers must not forward it.
@@ -322,9 +320,8 @@ pub trait Memory {
     }
 
     /// Optional exact core-supply predicate shared only within an acquisition
-    /// pass. Every retained key must be recomputed independently with fresh
-    /// source reads before publication, even after a failed walk. All keys and
-    /// results are cleared between passes; collisions/capacity use the ordinary
+    /// pass. All keys and results are acquired from the current source and
+    /// cleared between passes; collisions/capacity use the ordinary
     /// reader. Observation-recording wrappers must not forward this capability.
     fn core_supply_access(
         &self,
@@ -338,9 +335,9 @@ pub trait Memory {
 
     /// Optional primary-order membership dependency cache for one ETA pass.
     /// Own/parent first-match traversal, dirty/clean cache checks and read-lazy
-    /// prefixes must be preserved. All retained metadata, vector headers and
-    /// consumed chunks require independent terminal verification even after a
-    /// failed query, and must be cleared between passes. This is not has_order.
+    /// prefixes must be preserved. Retained metadata, vector headers and chunks
+    /// belong to the current acquisition and are cleared between passes.
+    /// This is not has_order.
     /// Observation-recording wrappers must not forward this capability.
     fn movement_primary_root(
         &self,
@@ -351,8 +348,8 @@ pub trait Memory {
     }
 
     /// Optional deterministic arithmetic memo, keyed by every raw scalar
-    /// argument. Callers must still acquire/authenticate those arguments and
-    /// perform their normal source verification on every invocation. This
+    /// argument. Callers must still acquire/authenticate those arguments on
+    /// every invocation. This
     /// capability never supplies game-derived inputs or changes lazy reads.
     /// Observation-recording wrappers must not forward it.
     fn movement_air_defense_value(
@@ -484,13 +481,53 @@ impl<const N: usize> Raw for [u8; N] {
     const ZERO: Self = [0; N];
 }
 
-pub fn read<T: Raw>(memory: &impl Memory, address: usize) -> Option<T> {
+#[inline]
+fn copy_scalar<T: Raw>(memory: &(impl Memory + ?Sized), address: usize) -> Option<T> {
     let mut value = T::ZERO;
     // SAFETY: Raw is sealed to initialized, padding-free, all-bit-pattern types.
     let bytes = unsafe {
         std::slice::from_raw_parts_mut((&mut value as *mut T).cast::<u8>(), size_of::<T>())
     };
-    read_slice(memory, address, bytes).then_some(value)
+    memory.copy(address, bytes).then_some(value)
+}
+
+/// The initialized exact bytes of a padding-free scalar or byte array.
+#[inline]
+pub fn scalar_bytes<T: Raw>(value: &T) -> &[u8] {
+    // SAFETY: Raw is sealed to initialized, padding-free, all-bit-pattern types.
+    unsafe { std::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }
+}
+
+/// Reconstruct a scalar without a numeric conversion or an extra observation.
+#[inline]
+pub fn scalar_from_bytes<T: Raw>(source: &[u8]) -> Option<T> {
+    if source.len() != size_of::<T>() {
+        return None;
+    }
+    let mut value = T::ZERO;
+    // SAFETY: Raw has no padding or invalid bit patterns; the exact destination
+    // is initialized, writable and cannot overlap the borrowed source.
+    let destination = unsafe {
+        std::slice::from_raw_parts_mut((&mut value as *mut T).cast::<u8>(), size_of::<T>())
+    };
+    destination.copy_from_slice(source);
+    Some(value)
+}
+
+#[inline]
+pub fn read<T: Raw>(memory: &impl Memory, address: usize) -> Option<T> {
+    let len = size_of::<T>();
+    if len == 0 {
+        return Some(T::ZERO);
+    }
+    if address == 0 || address.checked_add(len).is_none() {
+        return None;
+    }
+    if len == 4 {
+        memory.read_scalar(address)
+    } else {
+        copy_scalar(memory, address)
+    }
 }
 
 /// The caller owns the buffer. No allocation occurs, including on a read failure.
@@ -612,19 +649,42 @@ impl LiveMemory {
 
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 impl Memory for LiveMemory {
+    #[inline(always)]
+    fn read_scalar<T: Raw>(&self, address: usize) -> Option<T> {
+        if size_of::<T>() != 4 {
+            return copy_scalar(self, address);
+        }
+        if address == 0 || address.checked_add(4).is_none() || !is_canonical_range(address, 4) {
+            return None;
+        }
+        unsafe extern "C" {
+            fn seh_guarded_read4(src: *const u8) -> u64;
+        }
+        // SAFETY: C guards exactly the admitted four-byte foreign source. Its
+        // upper word is one on success and zero on failure, independently of
+        // every possible lower-word value. Failed loads publish no value.
+        let packed = unsafe { seh_guarded_read4(address as *const u8) };
+        if packed >> 32 == 0 {
+            return None;
+        }
+        scalar_from_bytes(&(packed as u32).to_ne_bytes())
+    }
+
     fn execute_read_plan(
         &self,
         plan: &crate::read_plan::PreparedPlan,
         destination: &mut [u8],
     ) -> Option<crate::read_plan::Outcome> {
-        use crate::read_plan::{Control, Outcome, Read};
+        use crate::read_plan::{NativeControl, NativeHint, NativeRead, Outcome};
 
         unsafe extern "C" {
             fn seh_execute_read_plan(
-                reads: *const Read,
+                reads: *const NativeRead,
                 read_count: usize,
-                controls: *const Control,
+                controls: *const NativeControl,
                 control_count: usize,
+                hints: *const NativeHint,
+                hint_count: usize,
                 expected: *const u8,
                 destination: *mut u8,
                 completed: *mut usize,
@@ -633,6 +693,9 @@ impl Memory for LiveMemory {
         if destination.len() < plan.destination_len() {
             return None;
         }
+        let Some(native) = plan.native() else {
+            return plan.execute(self, destination);
+        };
         let mut completed = 0;
         // SAFETY: PreparedPlan owns immutable repr(C) descriptors and expected
         // bytes; its constructor validates every source and destination bound.
@@ -640,10 +703,12 @@ impl Memory for LiveMemory {
         // active exact source copy and stops before every later read on failure.
         let result = unsafe {
             seh_execute_read_plan(
-                plan.reads().as_ptr(),
-                plan.reads().len(),
-                plan.controls().as_ptr(),
-                plan.controls().len(),
+                native.reads.as_ptr(),
+                native.reads.len(),
+                native.controls.as_ptr(),
+                native.controls.len(),
+                native.hints.as_ptr(),
+                native.hints.len(),
                 plan.expected().as_ptr(),
                 destination.as_mut_ptr(),
                 &mut completed,
@@ -665,6 +730,8 @@ impl Memory for LiveMemory {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         unsafe extern "C" {
             fn seh_guarded_copy(dst: *mut u8, src: *const u8, len: usize) -> i32;
+            fn seh_guarded_copy4(dst: *mut u8, src: *const u8) -> i32;
+            fn seh_guarded_copy8(dst: *mut u8, src: *const u8) -> i32;
         }
         if destination.is_empty() {
             return true;
@@ -681,11 +748,13 @@ impl Memory for LiveMemory {
         }
         // SAFETY: destination is writable; C catches faults in the foreign source range.
         unsafe {
-            seh_guarded_copy(
-                destination.as_mut_ptr(),
-                address as *const u8,
-                destination.len(),
-            ) != 0
+            // Inlined scalar readers fold this selection to a fixed-width call.
+            let copied = match destination.len() {
+                8 => seh_guarded_copy8(destination.as_mut_ptr(), address as *const u8),
+                4 => seh_guarded_copy4(destination.as_mut_ptr(), address as *const u8),
+                len => seh_guarded_copy(destination.as_mut_ptr(), address as *const u8, len),
+            };
+            copied != 0
         }
     }
 
@@ -980,6 +1049,7 @@ mod tests {
                 LAYOUT.completed_bytes(copied),
                 if fail_at == 0 { 4 } else { 0 }
             );
+            assert_eq!(LAYOUT.completed_spans(copied), usize::from(fail_at == 0));
         }
         let memory = TracedMemory {
             calls: RefCell::new(Vec::new()),
@@ -1417,6 +1487,10 @@ mod tests {
         assert_eq!(read::<u32>(&memory, 0x1002), None);
         assert_eq!(read::<u64>(&memory, usize::MAX - 3), None);
         assert_eq!(read::<u32>(&memory, 0), None);
+        assert_eq!(read::<[u8; 4]>(&memory, 0x1001), Some([255; 4]));
+        assert_eq!(read::<[u8; 0]>(&memory, 0), Some([]));
+        assert_eq!(scalar_from_bytes::<i32>(&[255; 4]), Some(-1));
+        assert_eq!(scalar_from_bytes::<u32>(&[255; 3]), None);
     }
 
     #[test]
@@ -1671,7 +1745,7 @@ mod tests {
         // inaccessible Windows null-page address faults inside the C SEH shim;
         // it is never dereferenced by Rust or returned as a Rust reference.
         let memory = unsafe { LiveMemory::new() };
-        for width in [1, 2, 4, 8, 12, 16, 24, 32, 48, 64] {
+        for width in [1, 2, 4, 8, 12, 16, 24, 26, 32, 48, 64] {
             let mut first = [0xa5; 64];
             let mut empty = [];
             let mut failed = [0xa5; 64];
@@ -1698,6 +1772,9 @@ mod tests {
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
     fn native_copy_widths_stop_at_exact_page_boundaries_and_keep_field_prefixes() {
         use std::ffi::c_void;
+        unsafe extern "C" {
+            fn seh_guarded_copy(dst: *mut u8, src: *const u8, len: usize) -> i32;
+        }
         #[link(name = "kernel32")]
         unsafe extern "system" {
             fn VirtualAlloc(
@@ -1738,15 +1815,56 @@ mod tests {
         // SAFETY: all inputs below are owned storage or the test's inaccessible
         // page, whose faults are contained by the same native guarded copies.
         let memory = unsafe { LiveMemory::new() };
-        for width in [1, 2, 4, 5, 8, 12, 13, 16, 24, 32, 48, 64] {
+        let zero = [0_u8; 5];
+        let all_bits = [255_u8; 5];
+        assert_eq!(read::<u32>(&memory, zero[1..].as_ptr() as usize), Some(0));
+        assert_eq!(
+            read::<i32>(&memory, all_bits[1..].as_ptr() as usize),
+            Some(-1)
+        );
+        for width in [1, 2, 4, 5, 8, 12, 13, 16, 24, 26, 32, 48, 64] {
             let valid = boundary - width;
             let crossing = valid + 1;
             let mut exact = [0xa5; 66];
             assert!(memory.copy(valid, &mut exact[1..1 + width]));
             assert_eq!(exact[1..1 + width], [0x6d; 64][..width]);
+            // The fixed-width entries also accept an unaligned source; the
+            // destination uses the same one-byte inset for both successful reads.
+            assert!(memory.copy(valid - 1, &mut exact[1..1 + width]));
+            assert_eq!(exact[1..1 + width], [0x6d; 64][..width]);
             assert_eq!(exact[0], 0xa5);
             assert!(exact[1 + width..].iter().all(|&byte| byte == 0xa5));
             assert!(!memory.copy(crossing, &mut exact[1..1 + width]));
+            assert_eq!(exact[0], 0xa5);
+            assert!(exact[1 + width..].iter().all(|&byte| byte == 0xa5));
+            if matches!(width, 4 | 8) {
+                // Direct generic FFI callers still accept these widths through
+                // memcpy after LiveMemory selects the dedicated scalar entries.
+                for (address, expected) in [(valid, 1), (valid - 1, 1), (crossing, 0)] {
+                    exact.fill(0xa5);
+                    // SAFETY: destination is owned writable storage; all source
+                    // bytes or faults belong to this test's guarded allocation.
+                    let result = unsafe {
+                        seh_guarded_copy(exact[1..].as_mut_ptr(), address as *const u8, width)
+                    };
+                    assert_eq!(result, expected);
+                    if expected != 0 {
+                        assert_eq!(exact[1..1 + width], [0x6d; 64][..width]);
+                    }
+                    assert_eq!(exact[0], 0xa5);
+                    assert!(exact[1 + width..].iter().all(|&byte| byte == 0xa5));
+                }
+            }
+            if width == 4 {
+                for address in [valid, valid - 1] {
+                    assert_eq!(read::<u32>(&memory, address), Some(0x6d6d_6d6d));
+                    assert_eq!(read::<i32>(&memory, address), Some(0x6d6d_6d6d));
+                    assert_eq!(read::<[u8; 4]>(&memory, address), Some([0x6d; 4]));
+                }
+                assert_eq!(read::<u32>(&memory, crossing), None);
+                assert_eq!(read::<i32>(&memory, crossing), None);
+                assert_eq!(read::<[u8; 4]>(&memory, crossing), None);
+            }
 
             let mut first = [0xa5; 64];
             let mut failed = [0xa5; 64];
@@ -1781,6 +1899,14 @@ mod tests {
             assert_eq!(records[..width], [0x6d; 64][..width]);
             assert!(records[width * 2..].iter().all(|&byte| byte == 0xa5));
         }
+        // A guard-page exception is the first failed scalar observation too;
+        // there is no retry after the operating system consumes that guard.
+        // SAFETY: page two belongs to this test and no Rust reference covers it.
+        assert_ne!(
+            unsafe { VirtualProtect(boundary as *mut c_void, 4096, 0x104, &mut old) },
+            0
+        );
+        assert_eq!(read::<u32>(&memory, boundary - 3), None);
     }
 
     #[test]
@@ -1942,6 +2068,9 @@ mod tests {
         // exercises the C `-1` branch directly.
         unsafe extern "C" {
             fn seh_guarded_copy(dst: *mut u8, src: *const u8, len: usize) -> i32;
+            fn seh_guarded_copy4(dst: *mut u8, src: *const u8) -> i32;
+            fn seh_guarded_copy8(dst: *mut u8, src: *const u8) -> i32;
+            fn seh_guarded_read4(src: *const u8) -> u64;
         }
         let mut dst = [0xa5; 8];
         // SAFETY: destination is valid stack memory; the noncanonical source
@@ -1950,6 +2079,19 @@ mod tests {
             unsafe { seh_guarded_copy(dst.as_mut_ptr(), 0x0072_6f74_6361_665f as *const u8, 8) };
         assert_eq!(result, 0);
         assert_eq!(dst, [0xa5; 8]);
+        for copy in [seh_guarded_copy4, seh_guarded_copy8] {
+            // SAFETY: each entry writes at most eight valid destination bytes;
+            // its identical SEH filter contains the noncanonical source fault.
+            let result = unsafe { copy(dst.as_mut_ptr(), 0x0072_6f74_6361_665f as *const u8) };
+            assert_eq!(result, 0);
+            assert_eq!(dst, [0xa5; 8]);
+        }
+        // SAFETY: the value-return entry retains identical noncanonical source
+        // containment, without exposing any failed partial value.
+        assert_eq!(
+            unsafe { seh_guarded_read4(0x0072_6f74_6361_665f as *const u8) },
+            0
+        );
     }
 
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
@@ -2050,7 +2192,7 @@ mod tests {
             // SAFETY: the fixture owns all readable and deliberately protected
             // source pages. Only the native guarded copy may dereference them.
             let memory = unsafe { LiveMemory::new() };
-            for width in [1, 2, 4, 8, 12, 16, 24, 32, 48, 64] {
+            for width in [1, 2, 4, 8, 12, 16, 24, 26, 32, 48, 64] {
                 for offset in [0, 61, PAGE - 4] {
                     let addresses =
                         std::array::from_fn::<_, ROWS, _>(|row| pages.at(row * 2) + offset);
@@ -2576,6 +2718,321 @@ mod tests {
                         let source_start = row * 32 + field.source_offset;
                         expected[start..start + field.len]
                             .copy_from_slice(&source[source_start..source_start + field.len]);
+                    }
+                }
+                assert_eq!(output, expected);
+            }
+        }
+
+        fn packed_two_fields(offsets: [usize; 2]) -> [RecordField; 2] {
+            [
+                RecordField {
+                    source_offset: offsets[0],
+                    destination_offset: 0,
+                    len: 2,
+                },
+                RecordField {
+                    source_offset: offsets[1],
+                    destination_offset: 8,
+                    len: 8,
+                },
+            ]
+        }
+
+        #[test]
+        fn packed_two_dynamic_offsets_duplicates_and_every_metadata_prefix() {
+            const ROWS: usize = 65;
+            let metadata = Pages::new(2);
+            metadata.protect(1, NOACCESS);
+            let layouts = Pages::new(2);
+            layouts.protect(1, NOACCESS);
+            let layout_start = layouts.at(1) - 2 * size_of::<RecordField>();
+            let row_offsets = [61, 4, 61, 127, 4, 61, 0, 63, 61];
+            // SAFETY: every live source below belongs to the owned source array.
+            let memory = unsafe { LiveMemory::new() };
+            for epoch in 0..2 {
+                let source: [u8; 1024] =
+                    std::array::from_fn(|index| (index * 37 + epoch * 73) as u8);
+                for offsets in [[7, 74], [7, 7], [7, 8], [31, 3], [0x158, 8]] {
+                    let layout = packed_two_fields(offsets);
+                    for (index, field) in layout.iter().enumerate() {
+                        // SAFETY: exactly two initialized aligned fields fit
+                        // before the owned inaccessible metadata suffix.
+                        unsafe { (layout_start as *mut RecordField).add(index).write(*field) };
+                    }
+                    // SAFETY: only the two initialized readable fields are borrowed.
+                    let fields = unsafe {
+                        std::slice::from_raw_parts(layout_start as *const RecordField, 2)
+                    };
+                    for prefix in 0..=ROWS * 2 {
+                        let rows = prefix.div_ceil(2);
+                        let pointer_start = metadata.at(1) - rows * size_of::<usize>();
+                        for row in 0..rows {
+                            // SAFETY: only the exact metadata prefix is initialized,
+                            // including the final pointer of an odd partial row.
+                            unsafe {
+                                (pointer_start as *mut usize).add(row).write(
+                                    source.as_ptr() as usize + row_offsets[row % row_offsets.len()],
+                                );
+                            }
+                        }
+                        // SAFETY: exactly rows initialized pointer words are readable.
+                        let pointers = unsafe {
+                            std::slice::from_raw_parts(pointer_start as *const usize, rows)
+                        };
+                        let mut output = [0xa5; ROWS * 16 + 2];
+                        assert_eq!(
+                            gather(pointers, fields, prefix, 16, &mut output[1..1 + ROWS * 16]),
+                            prefix
+                        );
+                        let mut expected = [0xa5; ROWS * 16 + 2];
+                        for index in 0..prefix {
+                            let row = index / 2;
+                            let field = fields[index % 2];
+                            let source_start =
+                                row_offsets[row % row_offsets.len()] + field.source_offset;
+                            let start = 1 + row * 16 + field.destination_offset;
+                            expected[start..start + field.len]
+                                .copy_from_slice(&source[source_start..source_start + field.len]);
+                        }
+                        assert_eq!(
+                            output, expected,
+                            "epoch={epoch} offsets={offsets:?} prefix={prefix}"
+                        );
+                    }
+                    // The same exact specialization also receives strided sources;
+                    // seven-byte rows overlap and make alignment vary on each row.
+                    for count in [0, 1, 2, 3, 4, 5, 63, 64, 65] {
+                        let mut output = [0xa5; ROWS * 16 + 2];
+                        assert_eq!(
+                            memory.copy_records(
+                                RecordSources::Strided {
+                                    base: source.as_ptr() as usize + 1,
+                                    stride: 7,
+                                    count,
+                                },
+                                &RecordLayout::new(fields, 16).unwrap(),
+                                &mut output[1..1 + ROWS * 16],
+                            ),
+                            count * 2
+                        );
+                        let mut expected = [0xa5; ROWS * 16 + 2];
+                        for row in 0..count {
+                            for field in fields {
+                                let source_start = 1 + row * 7 + field.source_offset;
+                                let start = 1 + row * 16 + field.destination_offset;
+                                expected[start..start + field.len].copy_from_slice(
+                                    &source[source_start..source_start + field.len],
+                                );
+                            }
+                        }
+                        assert_eq!(
+                            output, expected,
+                            "epoch={epoch} offsets={offsets:?} count={count}"
+                        );
+                    }
+                }
+            }
+            // SAFETY: zero admitted fields must inspect no metadata or output.
+            assert_eq!(
+                unsafe {
+                    seh_guarded_copy_records(
+                        metadata.at(1) as *const usize,
+                        0,
+                        0,
+                        0,
+                        layouts.at(1) as *const RecordField,
+                        2,
+                        16,
+                        metadata.at(1) as *mut u8,
+                    )
+                },
+                0
+            );
+        }
+
+        #[test]
+        fn packed_two_every_owned_source_fault_preserves_the_exact_prefix() {
+            const ROWS: usize = 9;
+            let pages = Pages::new(ROWS * 4);
+            let pointers: [usize; ROWS] = std::array::from_fn(|row| pages.at(row * 4));
+            let widths = [2, 8];
+            for last_byte in [false, true] {
+                let fields = packed_two_fields(std::array::from_fn(|field| {
+                    field * 2 * PAGE
+                        + if last_byte {
+                            PAGE - widths[field] + 1
+                        } else {
+                            61
+                        }
+                }));
+                for failed in 0..ROWS * 2 {
+                    let failed_page = failed / 2 * 4 + failed % 2 * 2 + usize::from(last_byte);
+                    for protection in [NOACCESS, READWRITE | GUARD] {
+                        for prefix in 0..=ROWS * 2 {
+                            pages.protect(failed_page, protection);
+                            let mut output = [0xa5; ROWS * 16 + 2];
+                            let complete = prefix.min(failed);
+                            assert_eq!(
+                                gather(
+                                    &pointers,
+                                    &fields,
+                                    prefix,
+                                    16,
+                                    &mut output[1..1 + ROWS * 16],
+                                ),
+                                complete,
+                                "last_byte={last_byte} failed={failed} prefix={prefix}"
+                            );
+                            assert_eq!(
+                                pages.protect(failed_page, READWRITE),
+                                if protection & GUARD != 0 && prefix > failed {
+                                    READWRITE
+                                } else {
+                                    protection
+                                },
+                                "unreached and odd-prefix excluded guards must remain armed"
+                            );
+                            let mut expected = [0xa5; ROWS * 16 + 2];
+                            for index in 0..complete {
+                                let row = index / 2;
+                                let field = fields[index % 2];
+                                for byte in 0..field.len {
+                                    expected[1 + row * 16 + field.destination_offset + byte] = 0x20
+                                        + (row * 4 + (field.source_offset + byte) / PAGE) as u8;
+                                }
+                            }
+                            if prefix > failed {
+                                // Only the failed field may be partial. Padding,
+                                // following fields and exterior canaries stay exact.
+                                let field = fields[failed % 2];
+                                let start = 1 + failed / 2 * 16 + field.destination_offset;
+                                output[start..start + field.len].fill(0xa5);
+                            }
+                            assert_eq!(output, expected);
+                        }
+                    }
+                }
+            }
+
+            // Every exact field ends at the last readable byte. Widening
+            // either the two-byte or eight-byte load must cross NOACCESS.
+            let fields = packed_two_fields(std::array::from_fn(|field| {
+                field * 2 * PAGE + PAGE - widths[field]
+            }));
+            for pair in 0..ROWS * 2 {
+                pages.protect(pair * 2 + 1, NOACCESS);
+            }
+            let mut output = [0xa5; ROWS * 16 + 2];
+            assert_eq!(
+                gather(
+                    &pointers,
+                    &fields,
+                    ROWS * 2,
+                    16,
+                    &mut output[1..1 + ROWS * 16],
+                ),
+                ROWS * 2
+            );
+            let mut expected = [0xa5; ROWS * 16 + 2];
+            for row in 0..ROWS {
+                for (index, field) in fields.iter().enumerate() {
+                    let start = 1 + row * 16 + field.destination_offset;
+                    expected[start..start + field.len].fill(0x20 + (row * 4 + index * 2) as u8);
+                }
+            }
+            assert_eq!(output, expected);
+            for pair in 0..ROWS * 2 {
+                assert_eq!(pages.protect(pair * 2 + 1, READWRITE), NOACCESS);
+            }
+        }
+
+        #[test]
+        fn packed_two_future_endpoint_hints_do_not_consume_guards() {
+            const ROWS: usize = 9;
+            let pages = Pages::new(ROWS * 2);
+            let pointers: [usize; ROWS] = std::array::from_fn(|row| pages.at(row * 2));
+            let fields = packed_two_fields([63, PAGE + 61]);
+            for (failed_row, future_row) in [(0, 1), (0, 4), (1, 5), (4, 8)] {
+                for failed_field in 0..2 {
+                    for future_field in 0..2 {
+                        let failed_page = failed_row * 2 + failed_field;
+                        let future_page = future_row * 2 + future_field;
+                        pages.protect(failed_page, NOACCESS);
+                        pages.protect(future_page, READWRITE | GUARD);
+                        let mut output = [0xa5; ROWS * 16];
+                        assert_eq!(
+                            gather(&pointers, &fields, ROWS * 2, 16, &mut output),
+                            failed_row * 2 + failed_field
+                        );
+                        assert_eq!(pages.protect(failed_page, READWRITE), NOACCESS);
+                        assert_eq!(pages.protect(future_page, READWRITE), READWRITE | GUARD);
+                        pages.protect(future_page, READWRITE | GUARD);
+                        // SAFETY: only an actual guarded source copy may consume
+                        // this owned guard; no protected page is Rust-borrowed.
+                        let memory = unsafe { LiveMemory::new() };
+                        let mut bytes = [0xa5; 8];
+                        assert!(!memory.copy(
+                            pointers[future_row] + fields[future_field].source_offset,
+                            &mut bytes[..fields[future_field].len],
+                        ));
+                        assert_eq!(bytes, [0xa5; 8]);
+                        assert_eq!(pages.protect(future_page, READWRITE), READWRITE);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn packed_two_layout_mismatches_keep_generic_order_and_padding() {
+            let source: [u8; 1024] = std::array::from_fn(|index| (index * 37) as u8);
+            let pointers = [
+                source.as_ptr() as usize + 13,
+                source.as_ptr() as usize + 513,
+            ];
+            let base = packed_two_fields([31, 3]);
+            let mut layouts = vec![(base.to_vec(), 16), (base.to_vec(), 17)];
+            for index in 0..2 {
+                let mut fields = base;
+                fields[index].len -= 1;
+                layouts.push((fields.to_vec(), 16));
+                let mut fields = base;
+                fields[index].destination_offset = if index == 0 { 1 } else { 7 };
+                layouts.push((fields.to_vec(), 16));
+            }
+            let mut overlap = base;
+            overlap[1].destination_offset = 1;
+            layouts.push((overlap.to_vec(), 16));
+            layouts.push((base[..1].to_vec(), 16));
+            layouts.push((vec![], 16));
+            let mut fields = base.to_vec();
+            fields.push(RecordField {
+                source_offset: usize::MAX,
+                destination_offset: 16,
+                len: 0,
+            });
+            layouts.push((fields, 16));
+            // SAFETY: every nonempty source belongs to the owned source array.
+            let memory = unsafe { LiveMemory::new() };
+            for (fields, stride) in layouts {
+                let mut output = [0xa5; 36];
+                assert_eq!(
+                    memory.copy_records(
+                        RecordSources::Pointers(&pointers),
+                        &RecordLayout::new(&fields, stride).expect("valid record layout"),
+                        &mut output[1..35],
+                    ),
+                    2 * fields.len()
+                );
+                let mut expected = [0xa5; 36];
+                for row in 0..2 {
+                    for field in &fields {
+                        if field.len != 0 {
+                            let source_start = [13, 513][row] + field.source_offset;
+                            let start = 1 + row * stride + field.destination_offset;
+                            expected[start..start + field.len]
+                                .copy_from_slice(&source[source_start..source_start + field.len]);
+                        }
                     }
                 }
                 assert_eq!(output, expected);

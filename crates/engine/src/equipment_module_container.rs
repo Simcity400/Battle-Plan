@@ -4,11 +4,12 @@
 
 use crate::{
     Memory, cequipment_module,
-    cequipment_variant::{self, Literal, TextOutcome, TextSpan, complete, text_failure},
+    cequipment_variant::{self, Literal, TextOutcome, TextSpan, text_failure},
     cpdx_array::Array,
     equipment_module_entry,
     memory::{RecordField, RecordLayout, RecordSources},
     read_slice,
+    walk::Outcome,
 };
 
 /// Candidate module-container identity word; read_compact_air_variant_modules compares it, but RTTI validation fails.
@@ -38,17 +39,16 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     variants: &[cequipment_variant::RegistryRow],
-    output: &mut [Row],
-    bytes: &mut [u8],
+    output: &mut Vec<Row>,
+    bytes: &mut Vec<u8>,
 ) -> TextOutcome {
     let result = (|| {
         let expected = base
             .checked_add(cequipment_module::VTABLE_RVA)
             .ok_or("module definition address overflow")?;
-        let mut len = 0;
+        let mut len = 0_usize;
         let mut bytes_len = 0_usize;
         let mut required_bytes = 0_usize;
-        let mut unread_rows = 0_u32;
         // One chunk's module entries are read with a single contiguous copy
         // whose failure is reported for the whole chunk, so this size is part
         // of the walker's error precedence rather than a free tuning knob.
@@ -115,6 +115,13 @@ pub fn walk(
                     ) {
                         return Err("module entry unreadable");
                     }
+                    let required = len.checked_add(count).ok_or("module row count overflow")?;
+                    if required > output.len() {
+                        output
+                            .try_reserve(required - output.len())
+                            .map_err(|_| "module row allocation failed")?;
+                        output.resize(required, Row::default());
+                    }
                     for (pointer, entry) in definitions
                         .iter_mut()
                         .zip(entries.chunks_exact(equipment_module_entry::STRIDE))
@@ -149,14 +156,12 @@ pub fn walk(
                         required_bytes = required_bytes
                             .checked_add(size)
                             .ok_or("module name size overflow")?;
-                        if len == output.len() || size > bytes.len() - bytes_len {
-                            name.validate_terminator(memory)?;
-                            unread_rows = unread_rows
-                                .checked_add(1)
-                                .ok_or("module omitted count overflow")?;
-                            continue;
-                        }
-                        name.copy(memory, &mut bytes[bytes_len..bytes_len + size])?;
+                        name.copy_growing(
+                            memory,
+                            bytes,
+                            bytes_len,
+                            "module name allocation failed",
+                        )?;
                         output[len] = Row {
                             variant,
                             source_ordinal: ordinal,
@@ -175,7 +180,7 @@ pub fn walk(
             }
         }
         Ok(TextOutcome {
-            outcome: complete(len, unread_rows),
+            outcome: Outcome::Rows { len },
             bytes_len,
             required_bytes,
         })
@@ -220,10 +225,38 @@ mod tests {
     }
 
     #[test]
+    fn module_native_count_does_not_allocate_before_entry_reads() {
+        let mut bytes = fixture();
+        bytes[0xb8..0xc0].copy_from_slice(&0x9000_u64.to_le_bytes());
+        for start in [0xc0, 0xc4] {
+            bytes[start..start + 4].copy_from_slice(&32_768_u32.to_le_bytes());
+        }
+        let mut rows = Vec::new();
+        let result = walk(
+            &SliceMemory {
+                base: 0x1000,
+                bytes: &bytes,
+            },
+            0,
+            &[source(&bytes)],
+            &mut rows,
+            &mut Vec::new(),
+        );
+        assert_eq!(
+            result.outcome,
+            Outcome::Unavailable {
+                reason: "module entry unreadable"
+            }
+        );
+        assert_eq!(rows.capacity(), 0);
+        assert_eq!(result.required_bytes, 0);
+    }
+
+    #[test]
     fn module_uses_real_variant_and_definition_authentication() {
         let bytes = fixture();
-        let mut rows = [Row::default(); 1];
-        let mut names = [0; 2];
+        let mut rows = vec![Row::default(); 1];
+        let mut names = vec![0; 2];
         let result = walk(
             &SliceMemory {
                 base: 0x1000,
@@ -253,16 +286,10 @@ mod tests {
             },
             0,
             &[source(&bytes)],
-            &mut [Row::default(); 1],
-            &mut [0; 1],
+            &mut vec![Row::default(); 1],
+            &mut vec![0; 1],
         );
-        assert_eq!(
-            result.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 1
-            }
-        );
+        assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!(result.required_bytes, 2);
         bytes[0x188..0x190].fill(0);
         assert!(matches!(
@@ -273,8 +300,8 @@ mod tests {
                 },
                 0,
                 &[source(&bytes)],
-                &mut [Row::default(); 1],
-                &mut [0; 8]
+                &mut vec![Row::default(); 1],
+                &mut vec![0; 8]
             )
             .outcome,
             Outcome::Unavailable { .. }
@@ -282,7 +309,21 @@ mod tests {
     }
 
     #[test]
-    fn module_batch_boundary_preserves_native_order_and_exact_omission_count() {
+    fn module_batch_boundary_grows_without_losing_native_order() {
+        struct Trace<'a> {
+            memory: SliceMemory<'a>,
+            reads: std::cell::RefCell<Vec<(usize, usize)>>,
+            blocked: Option<usize>,
+        }
+        impl Memory for Trace<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.reads.borrow_mut().push((address, output.len()));
+                !self
+                    .blocked
+                    .is_some_and(|blocked| address <= blocked && blocked - address < output.len())
+                    && self.memory.copy(address, output)
+            }
+        }
         const COUNT: usize = 33;
         let mut bytes = fixture();
         bytes.resize(0x400 + COUNT * equipment_module_entry::STRIDE, 0);
@@ -294,25 +335,36 @@ mod tests {
             bytes[start..start + 4].copy_from_slice(&(100 + index as u32).to_le_bytes());
             bytes[start + 8..start + 16].copy_from_slice(&0x1200_u64.to_le_bytes());
         }
-        let memory = SliceMemory {
-            base: 0x1000,
-            bytes: &bytes,
+        let mut memory = Trace {
+            memory: SliceMemory {
+                base: 0x1000,
+                bytes: &bytes,
+            },
+            reads: Default::default(),
+            blocked: None,
         };
         let variants = [source(&bytes)];
-        let mut rows = [Row::default(); COUNT];
-        let mut names = [0; COUNT * 2];
+        let mut rows = Vec::new();
+        let mut names = Vec::new();
         let result = walk(&memory, 0, &variants, &mut rows, &mut names);
         assert_eq!(result.outcome, Outcome::Rows { len: COUNT });
         assert_eq!((rows[32].source_ordinal, rows[32].slot), (32, 132));
         assert_eq!(&names[64..], &[0xff, b'M']);
-        let result = walk(&memory, 0, &variants, &mut rows[..32], &mut names[..64]);
+        let reads = memory.reads.take();
+        rows.truncate(32);
+        names.truncate(64);
+        let result = walk(&memory, 0, &variants, &mut rows, &mut names);
+        assert_eq!(result.outcome, Outcome::Rows { len: COUNT });
+        assert_eq!((result.bytes_len, result.required_bytes), (66, 66));
+        assert_eq!(memory.reads.take(), reads);
+        memory.blocked = Some(0x1400 + 32 * equipment_module_entry::STRIDE);
+        let mut failed_rows = Vec::new();
         assert_eq!(
-            result.outcome,
-            Outcome::Truncated {
-                len: 32,
-                unread_rows: 1
+            walk(&memory, 0, &variants, &mut failed_rows, &mut Vec::new()).outcome,
+            Outcome::Unavailable {
+                reason: "module entry unreadable"
             }
         );
-        assert_eq!((result.bytes_len, result.required_bytes), (64, 66));
+        assert_eq!(&failed_rows[..32], &rows[..32]);
     }
 }

@@ -143,7 +143,10 @@ pub(super) fn buildings(
     // Tier-4 slot3; cadence table is the single source of truth.
     if !report.refresh_is_current(table, hour) {
         report.limitation(
-            "StateBuildings/ProvinceBuildings refreshed every 4th hour; off-hours replay holds last refresh",
+            &format!(
+                "StateBuildings/ProvinceBuildings {}",
+                replay::cadence::STAGGER_LIMITATION
+            ),
             format!(
                 "{table:?} refreshes on {} (oracle hour {hour})",
                 replay::cadence::refresh_text(table)

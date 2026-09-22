@@ -144,7 +144,7 @@ fn copy_input_spans<const N: usize>(
 }
 
 /// The caller supplies the authenticated combat/side/role membership.
-/// Terminal checks retain CArmy/stat-block identities and formation leader link.
+/// CArmy, stat-block and formation leader identities are authenticated on entry.
 pub fn capture_stats(
     memory: &impl Memory,
     base: usize,
@@ -266,15 +266,6 @@ pub fn capture_stats(
         commander,
         scales: values(&scales),
     };
-    if bytes::<8>(memory, pointer, 0)? != identity
-        || bytes::<8>(memory, pointer, cunit::HANDLE)? != handle
-        || bytes::<8>(memory, pointer, cunit::STAT_BLOCK)? != stat_pointer
-        || bytes::<8>(memory, stat, 0)? != stat_identity
-        || bytes::<8>(memory, pointer, carmy::ORDERS_GROUP)? != group_pointer
-        || self::commander(memory, base, group)? != commander
-    {
-        return Err("land combat division identity changed");
-    }
     Ok(row)
 }
 
@@ -288,18 +279,18 @@ fn display_name(
         .filter(|p| *p != 0)
         .and_then(|p| p.checked_add(DISPLAY_NAME))
         .ok_or("land combat division name pointer invalid")?;
-    let header = bytes::<32>(memory, source, 0)?;
-    let descriptor = crate::msvc_string::Descriptor::read(memory, source)?;
+    let descriptor = crate::msvc_string::Descriptor::read(memory, source).map_err(|reason| {
+        if reason == "string header unreadable" {
+            "land combat division inputs unreadable"
+        } else {
+            reason
+        }
+    })?;
     let mut result = crate::msvc_string::Text {
         len: descriptor.len,
         ..Default::default()
     };
     descriptor.copy(memory, &mut result.bytes)?;
-    if bytes::<32>(memory, source, 0)? != header
-        || bytes::<8>(memory, pointer, DISPLAY_NAME_OWNER)? != owner
-    {
-        return Err("land combat division name source changed");
-    }
     Ok(result)
 }
 
@@ -350,12 +341,6 @@ pub fn capture_modifiers(
         }
     }
 
-    if bytes::<8>(memory, pointer, 0)? != identity
-        || bytes::<8>(memory, pointer, cunit::HANDLE)? != handle
-        || bytes::<16>(memory, pointer, cunit::COMBAT_MODIFIER_DATA)? != header
-    {
-        return Err("land combat division identity or modifier header changed");
-    }
     Ok(count)
 }
 
@@ -404,14 +389,17 @@ pub fn capture_manpower(
             amount: i32::from_le_bytes(input[4..].try_into().unwrap()),
         };
     }
-    if bytes::<8>(memory, pointer, 0)? != identity
-        || bytes::<8>(memory, pointer, cunit::HANDLE)? != handle
-        || bytes::<8>(memory, pointer, 0x3d8)? != container_identity
-        || bytes::<16>(memory, pointer, carmy::MANPOWER_DATA)? != header
-    {
-        return Err("land combat manpower identity or header changed");
-    }
     Ok(count)
+}
+
+/// Last complete country and leader modifier inputs within one acquisition
+/// pass. Construct a fresh value for every pass; no observation crosses hours.
+/// Each slot keeps only the three raw values and presence bits, never a partial
+/// census or error. Different accumulator addresses take the ordinary full walk.
+#[derive(Default)]
+pub struct ContextModifiers {
+    country: Option<(usize, [ContextModifier; 3])>,
+    leader: Option<(usize, [ContextModifier; 3])>,
 }
 
 /// Width composition and contextual reinforcement operands. Terms preserve
@@ -424,6 +412,7 @@ pub fn capture_context(
     pointer: usize,
     expected_handle: u64,
     terms: &mut [WidthTerm],
+    modifiers: &mut ContextModifiers,
 ) -> Result<ContextRow, &'static str> {
     use crate::{
         ccountry, creferenced_division_template as template, modifier_definition as metadata,
@@ -451,6 +440,7 @@ pub fn capture_context(
             .pointer
             .checked_add(ccountry::MODIFIER_ACCUMULATOR)
             .ok_or("land combat context country address overflow")?,
+        &mut modifiers.country,
     )?;
     let leader = crate::carmy_leader::movement_accumulator(memory, base, pointer)?;
     let leader_modifier_kind = if let Some(accumulator) = leader {
@@ -468,7 +458,7 @@ pub fn capture_context(
         0
     };
     let leader_modifiers = if let Some(accumulator) = leader {
-        context_modifiers(memory, accumulator)?
+        context_modifiers(memory, accumulator, &mut modifiers.leader)?
     } else {
         [ContextModifier::default(); 3]
     };
@@ -476,7 +466,7 @@ pub fn capture_context(
     if table == 0 {
         return Err("land combat context metadata table null");
     }
-    let mut metadata_witness = [[0; 12]; 3];
+    let mut metadata_bytes = [[0; 12]; 3];
     copy_input_spans(
         memory,
         CONTEXT_MODIFIER_KEYS.map(|key| {
@@ -488,9 +478,9 @@ pub fn capture_context(
                         .ok_or("land combat division inputs unreadable")
                 })
         }),
-        &mut metadata_witness.each_mut().map(|raw| raw.as_mut_slice()),
+        &mut metadata_bytes.each_mut().map(|raw| raw.as_mut_slice()),
     )?;
-    let modifier_metadata = metadata_witness.map(|raw| {
+    let modifier_metadata = metadata_bytes.map(|raw| {
         [
             u32::from_le_bytes(raw[..4].try_into().unwrap()),
             u32::from_le_bytes(raw[8..].try_into().unwrap()),
@@ -532,11 +522,9 @@ pub fn capture_context(
     let template_pointer =
         u64::from_le_bytes(bytes(memory, pointer, carmy::STANDARD_TEMPLATE)?) as usize;
     let mut template_handle = 0;
-    let mut template_identity = [0; 16];
-    let mut term_header = [0; 16];
     let mut count = 0;
     if template_pointer != 0 {
-        template_identity = bytes(memory, template_pointer, 0)?;
+        let template_identity = bytes::<16>(memory, template_pointer, 0)?;
         template_handle = u64::from_le_bytes(template_identity[8..].try_into().unwrap());
         if Some(u64::from_le_bytes(
             template_identity[..8].try_into().unwrap(),
@@ -546,7 +534,7 @@ pub fn capture_context(
         {
             return Err("land combat width template identity mismatch");
         }
-        term_header = bytes(memory, template_pointer, 0xc0)?;
+        let term_header = bytes(memory, template_pointer, 0xc0)?;
         let array =
             Array::from_header(term_header, 16).ok_or("land combat width term header invalid")?;
         count = array.count as usize;
@@ -576,42 +564,6 @@ pub fn capture_context(
                 count: i32::from_le_bytes(input[8..12].try_into().unwrap()),
                 width: i64::from_le_bytes(bytes(memory, subunit, 0x58)?),
             };
-            if bytes::<12>(memory, subunit, 0)? != raw {
-                return Err("land combat width subunit identity changed");
-            }
-        }
-        let mut terminal = [0; WIDTH_TERM_LIMIT * 16];
-        if !read_slice(memory, array.data, &mut terminal[..count * 16])
-            || terminal[..count * 16] != packed[..count * 16]
-        {
-            return Err("land combat width terms changed");
-        }
-    }
-    if bytes::<8>(memory, pointer, 0)? != identity
-        || bytes::<8>(memory, pointer, cunit::HANDLE)? != handle
-        || bytes::<8>(memory, pointer, cunit::ROSTER_OWNER)? != owners
-        || u64::from_le_bytes(bytes(memory, pointer, cunit::STAT_BLOCK)?) as usize != stat_pointer
-        || bytes::<8>(memory, stat_pointer, 0)? != stat_identity
-        || u64::from_le_bytes(bytes(memory, pointer, carmy::STANDARD_TEMPLATE)?) as usize
-            != template_pointer
-        || countries.resolve(owner)?.pointer != country.pointer
-        || crate::carmy_leader::movement_accumulator(memory, base, pointer)? != leader
-        || u64::from_le_bytes(bytes(memory, base, metadata::TABLE_RVA)?) as usize != table
-        || u64::from_le_bytes(bytes(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA)?) != callback
-        || u32::from_le_bytes(bytes(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA)?)
-            != feature_flags
-        || (template_pointer != 0
-            && (bytes::<16>(memory, template_pointer, 0)? != template_identity
-                || bytes::<16>(memory, template_pointer, 0xc0)? != term_header))
-    {
-        return Err("land combat division context identity changed");
-    }
-    for (index, key) in CONTEXT_MODIFIER_KEYS.into_iter().enumerate() {
-        let row = table
-            .checked_add(key as usize * metadata::STRIDE)
-            .ok_or("land combat context metadata address overflow")?;
-        if bytes::<12>(memory, row, metadata::FLAGS)? != metadata_witness[index] {
-            return Err("land combat context metadata changed");
         }
     }
     Ok(ContextRow {
@@ -633,7 +585,13 @@ pub fn capture_context(
 fn context_modifiers(
     memory: &impl Memory,
     pointer: usize,
+    retained: &mut Option<(usize, [ContextModifier; 3])>,
 ) -> Result<[ContextModifier; 3], &'static str> {
+    if let Some((address, values)) = *retained
+        && address == pointer
+    {
+        return Ok(values);
+    }
     let header = bytes::<16>(memory, pointer, 0)?;
     let array =
         Array::from_header(header, 16).ok_or("land combat context modifier header invalid")?;
@@ -669,9 +627,7 @@ fn context_modifiers(
             }
         }
     }
-    if bytes::<16>(memory, pointer, 0)? != header {
-        return Err("land combat context modifier header changed");
-    }
+    *retained = Some((pointer, output));
     Ok(output)
 }
 
@@ -848,20 +804,11 @@ mod tests {
             commander,
             scales: values(&bytes::<32>(memory, pointer, cunit::ATTACK_ACCUMULATOR)?),
         };
-        if bytes::<8>(memory, pointer, 0)? != identity
-            || bytes::<8>(memory, pointer, cunit::HANDLE)? != handle
-            || bytes::<8>(memory, pointer, cunit::STAT_BLOCK)? != stat_pointer
-            || bytes::<8>(memory, stat, 0)? != stat_identity
-            || bytes::<8>(memory, pointer, carmy::ORDERS_GROUP)? != group_pointer
-            || self::commander(memory, base, group)? != commander
-        {
-            return Err("land combat division identity changed");
-        }
         Ok(row)
     }
 
     #[test]
-    fn stats_scatter_matches_scalar_values_every_fault_and_changed_witness() {
+    fn stats_scatter_matches_scalar_first_values_and_every_fault() {
         let mut source = context_fixture();
         source.u64(0x0331_97d0, i64::MIN as u64);
         source.u64(0x10c0, 0xe000);
@@ -1030,13 +977,21 @@ mod tests {
     }
 
     #[test]
-    fn context_groups_keep_all_bytes_fault_prefixes_and_terminal_metadata_checks() {
+    fn context_groups_keep_first_bytes_and_fault_prefixes() {
         use crate::modifier_definition as md;
         let source = context_fixture();
         let baseline = Observed::new(&source);
         let mut terms = [WidthTerm::default(); 2];
-        let row =
-            capture_context(&baseline, 0, 0x5000, 0x1000, 0x1234_0000_0033, &mut terms).unwrap();
+        let row = capture_context(
+            &baseline,
+            0,
+            0x5000,
+            0x1000,
+            0x1234_0000_0033,
+            &mut terms,
+            &mut ContextModifiers::default(),
+        )
+        .unwrap();
         assert_eq!(row.defines, [1, 2, 3, 4, 5, 6, 7, 8]);
         let metadata: Vec<_> = CONTEXT_MODIFIER_KEYS
             .map(|key| (0x10000 + key as usize * md::STRIDE + md::FLAGS, 12))
@@ -1045,8 +1000,8 @@ mod tests {
         assert!(baseline.scatters.borrow().contains(&metadata));
         assert!(baseline.scatters.borrow().contains(&defines));
         let trace = baseline.reads.into_inner();
-        assert_eq!(trace.len(), 70);
-        assert_eq!(trace.iter().map(|(_, len)| len).sum::<usize>(), 704);
+        assert_eq!(trace.len(), 41);
+        assert_eq!(trace.iter().map(|(_, len)| len).sum::<usize>(), 428);
         for group in [&metadata, &defines] {
             let start = trace
                 .windows(group.len())
@@ -1057,7 +1012,15 @@ mod tests {
                 memory.fault = Some(ordinal);
                 let mut out = [WidthTerm::default(); 2];
                 assert_eq!(
-                    capture_context(&memory, 0, 0x5000, 0x1000, 0x1234_0000_0033, &mut out),
+                    capture_context(
+                        &memory,
+                        0,
+                        0x5000,
+                        0x1000,
+                        0x1234_0000_0033,
+                        &mut out,
+                        &mut ContextModifiers::default()
+                    ),
                     Err("land combat division inputs unreadable")
                 );
                 assert_eq!(*memory.reads.borrow(), trace[..=ordinal]);
@@ -1065,16 +1028,9 @@ mod tests {
             }
         }
         for span in &metadata {
-            let ordinal = trace.iter().rposition(|p| p == span).unwrap();
-            let mut memory = Observed::new(&source);
-            // The middle word is not projected but remains part of the witness.
-            memory.change = Some((ordinal, 4));
-            assert_eq!(
-                capture_context(&memory, 0, 0x5000, 0x1000, 0x1234_0000_0033, &mut terms),
-                Err("land combat context metadata changed")
-            );
-            assert_eq!(*memory.reads.borrow(), trace[..=ordinal]);
+            assert_eq!(trace.iter().filter(|p| *p == span).count(), 1);
         }
+        assert_eq!(trace.iter().filter(|p| **p == (0xc000, 32)).count(), 1);
     }
 
     #[test]
@@ -1101,7 +1057,15 @@ mod tests {
             source.put(first, &[0x17; 12]);
             let memory = Observed::new(&source);
             assert_eq!(
-                capture_context(&memory, 0, 0x5000, 0x1000, 0x1234_0000_0033, &mut []),
+                capture_context(
+                    &memory,
+                    0,
+                    0x5000,
+                    0x1000,
+                    0x1234_0000_0033,
+                    &mut [],
+                    &mut ContextModifiers::default()
+                ),
                 Err(reason)
             );
             let trace = memory.reads.into_inner();
@@ -1109,7 +1073,15 @@ mod tests {
             let mut failed = Observed::new(&source);
             failed.fault = Some(trace.len() - 1);
             assert_eq!(
-                capture_context(&failed, 0, 0x5000, 0x1000, 0x1234_0000_0033, &mut []),
+                capture_context(
+                    &failed,
+                    0,
+                    0x5000,
+                    0x1000,
+                    0x1234_0000_0033,
+                    &mut [],
+                    &mut ContextModifiers::default()
+                ),
                 Err("land combat division inputs unreadable")
             );
             assert_eq!(*failed.reads.borrow(), trace);
@@ -1183,8 +1155,8 @@ mod tests {
             }
         );
         assert_eq!(modifiers[1].id, 2);
-        assert_eq!(memory.copies.get(), 36);
-        assert_eq!(memory.bytes.get(), 505);
+        assert_eq!(memory.copies.get(), 25);
+        assert_eq!(memory.bytes.get(), 361);
         println!(
             "division stats/name plus two modifiers: {} logical copy observations / {} bytes",
             memory.copies.get(),
@@ -1328,8 +1300,16 @@ mod tests {
     fn width_context_preserves_order_signed_counts_and_raw_modifiers() {
         let memory = context_fixture();
         let mut terms = [WidthTerm::default(); 2];
-        let row =
-            capture_context(&memory, 0, 0x5000, 0x1000, 0x1234_0000_0033, &mut terms).unwrap();
+        let row = capture_context(
+            &memory,
+            0,
+            0x5000,
+            0x1000,
+            0x1234_0000_0033,
+            &mut terms,
+            &mut ContextModifiers::default(),
+        )
+        .unwrap();
         assert_eq!(row.width_term_count, 2);
         assert_eq!(
             terms,
@@ -1350,20 +1330,156 @@ mod tests {
         assert_eq!(row.leader_modifiers, [ContextModifier::default(); 3]);
         assert_eq!(row.defines, [1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(row.template, 1_u64 << 32 | 52);
-        assert_eq!(memory.copies.get(), 70);
-        assert_eq!(memory.copied.get(), 704);
+        assert_eq!(memory.copies.get(), 41);
+        assert_eq!(memory.copied.get(), 428);
+    }
+
+    #[test]
+    fn context_modifier_reuse_is_shared_only_within_the_current_pass() {
+        let mut memory = context_fixture();
+        let mut modifiers = ContextModifiers::default();
+        let mut terms = [WidthTerm::default(); 2];
+        let first = capture_context(
+            &memory,
+            0,
+            0x5000,
+            0x1000,
+            0x1234_0000_0033,
+            &mut terms,
+            &mut modifiers,
+        )
+        .unwrap();
+        let first_terms = terms;
+        let before = (memory.copies.get(), memory.copied.get());
+        let second = capture_context(
+            &memory,
+            0,
+            0x5000,
+            0x1000,
+            0x1234_0000_0033,
+            &mut terms,
+            &mut modifiers,
+        )
+        .unwrap();
+        assert_eq!(second, first);
+        assert_eq!(terms, first_terms);
+        // Only the complete three-entry country accumulator is reused: its
+        // 16-byte header and 48-byte contents. All other operands stay fresh.
+        assert_eq!(memory.copies.get() - before.0, before.0 - 2);
+        assert_eq!(memory.copied.get() - before.1, before.1 - 64);
+
+        memory.u64(0xa008, 170);
+        let mut next_pass = ContextModifiers::default();
+        let current = capture_context(
+            &memory,
+            0,
+            0x5000,
+            0x1000,
+            0x1234_0000_0033,
+            &mut terms,
+            &mut next_pass,
+        )
+        .unwrap();
+        assert_eq!(
+            current.country_modifiers[0],
+            ContextModifier {
+                raw: 170,
+                present: 1
+            }
+        );
+
+        // A different address never aliases the previous country observation.
+        memory.array(0xe000, 0xe100, 1);
+        memory.put(0xe100, &0x10f_u32.to_le_bytes());
+        memory.u64(0xe108, 999);
+        let before = memory.copies.get();
+        let other = context_modifiers(&memory, 0xe000, &mut next_pass.country).unwrap();
+        assert_eq!(other[0], ContextModifier::default());
+        assert_eq!(
+            other[1],
+            ContextModifier {
+                raw: 999,
+                present: 1
+            }
+        );
+        assert_eq!(memory.copies.get() - before, 2);
+        let country = 0x9000 + crate::ccountry::MODIFIER_ACCUMULATOR;
+        assert_eq!(
+            context_modifiers(&memory, country, &mut next_pass.country).unwrap(),
+            current.country_modifiers
+        );
+    }
+
+    #[test]
+    fn context_modifier_reuse_never_admits_failed_or_partial_censuses() {
+        let mut source = context_fixture();
+        let address = 0x9000 + crate::ccountry::MODIFIER_ACCUMULATOR;
+        let mut previous = None;
+        for ordinal in [0, 1] {
+            let mut observed = Observed::new(&source);
+            observed.fault = Some(ordinal);
+            assert!(context_modifiers(&observed, address, &mut previous).is_err());
+            assert!(previous.is_none());
+            assert_eq!(observed.reads.borrow().len(), ordinal + 1);
+        }
+        // The selected values are already in the first chunk. A malformed
+        // unselected suffix must still fail and must not install a cache hit.
+        source.array(address, 0x20000, 65);
+        for (index, key) in CONTEXT_MODIFIER_KEYS
+            .into_iter()
+            .chain(1003..1065)
+            .enumerate()
+        {
+            source.put(0x20000 + index * 16, &key.to_le_bytes());
+            source.u64(0x20008 + index * 16, index as u64 + 1);
+        }
+        source.put(0x20000 + 64 * 16, &1_u32.to_le_bytes());
+        for _ in 0..2 {
+            let before = source.copies.get();
+            assert_eq!(
+                context_modifiers(&source, address, &mut previous),
+                Err("land combat context modifier keys not increasing")
+            );
+            assert!(previous.is_none());
+            assert_eq!(source.copies.get() - before, 3);
+        }
+        source.put(0x20000 + 64 * 16, &1064_u32.to_le_bytes());
+        let values = context_modifiers(&source, address, &mut previous).unwrap();
+        assert_eq!(values.map(|value| value.raw), [1, 2, 3]);
+        let before = source.copies.get();
+        assert_eq!(
+            context_modifiers(&source, address, &mut previous),
+            Ok(values)
+        );
+        assert_eq!(source.copies.get(), before);
     }
 
     #[test]
     fn width_context_reports_short_arena_and_modifier_bound() {
         let mut memory = context_fixture();
         assert_eq!(
-            capture_context(&memory, 0, 0x5000, 0x1000, 0x1234_0000_0033, &mut []),
+            capture_context(
+                &memory,
+                0,
+                0x5000,
+                0x1000,
+                0x1234_0000_0033,
+                &mut [],
+                &mut ContextModifiers::default()
+            ),
             Err("land combat width term arena full")
         );
         memory.array(0x9000 + crate::ccountry::MODIFIER_ACCUMULATOR, 0xa000, 4097);
         assert_eq!(
-            capture_context(&memory, 0, 0x5000, 0x1000, 0x1234_0000_0033, &mut []),
+            capture_context(
+                &memory,
+                0,
+                0x5000,
+                0x1000,
+                0x1234_0000_0033,
+                &mut [],
+                &mut ContextModifiers::default()
+            ),
             Err("land combat context modifier bound exceeded")
         );
     }
@@ -1387,6 +1503,7 @@ mod tests {
             0x1000,
             0x1234_0000_0033,
             &mut [WidthTerm::default(); 2],
+            &mut ContextModifiers::default(),
         )
         .unwrap();
         assert_eq!(row.leader_modifier_kind, 1);
@@ -1442,8 +1559,8 @@ mod tests {
                 }
             ]
         );
-        assert_eq!(memory.copies.get(), 9);
-        assert_eq!(memory.bytes.get(), 96);
+        assert_eq!(memory.copies.get(), 5);
+        assert_eq!(memory.bytes.get(), 56);
         assert_eq!(
             capture_manpower(&memory, 0, 0x1000, 0x1234_0000_0033, &mut []),
             Err("land combat manpower arena full")

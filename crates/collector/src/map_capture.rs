@@ -1,84 +1,40 @@
-//! Pooled map-table reads. Only the spool thread grows or releases allocations.
+//! Pooled map-table reads. The spool grows reusable storage; the worker-only
+//! Orders job can also grow payloads from its original native observations.
 //!
-//! Combat, fleet, wing and order censuses fill typed pooled rows on the callback.
-//! Dependent Air/Naval consumers run only when their own raw payload did not stage;
-//! the Players/HumanControllers pair retains its independent worker split.
+//! Combat and wing censuses fill typed pooled rows on the callback; the ship
+//! census runs inside the ShipModels job and the order census inside the Orders
+//! job. Dependent Air/Naval consumers run only when their own raw payload did
+//! not stage; the Players/HumanControllers pair keeps its worker split.
 
 use crate::raw::RawLog;
-#[cfg(test)]
-use crate::sampling::CONSISTENCY_TARGET;
-use crate::sampling::{full_match, qpc};
-use crate::table_capture::{CaptureRows, comparison, comparison_rows, grow_capacity, grow_vec};
+use crate::sampling::qpc;
+use crate::table_capture::{CaptureRows, grow_capacity, grow_vec};
 use engine::{
     Memory, cair_wing, cfleet, chuman, cland_combat, cnaval_combat, cnaval_combatant,
     corder_instance, corders_group, cpdx_array::Array, cship, ctask_force, walk::Outcome,
 };
+use replay::rows::TableId;
 use std::mem::size_of;
 
 pub const MAP_TABLES: usize = 10;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SourceChecks {
-    pub land_combats: bool,
-    pub ships: bool,
-    pub air_wings: bool,
-    pub order_groups: bool,
-}
-
-impl SourceChecks {
-    fn retained(self, successful: &[u16]) -> [u16; MAP_TABLES] {
-        let mut retained: [u16; MAP_TABLES] = successful.try_into().expect("map comparison count");
-        for (index, needed) in [
-            (2, self.land_combats),
-            (5, self.ships),
-            (8, self.air_wings),
-            (9, self.order_groups),
-        ] {
-            if needed {
-                retained[index] = 0;
-            }
-        }
-        retained
-    }
-}
 
 /// Inline source consumers own their state and validation. Return raw QPC ticks
 /// attributed to extension tables so the map buckets do not charge them twice.
 /// The begin/finish pair runs even for an empty or failed source census; every
 /// dependent table must preserve that outcome instead of accepting its prefix.
 pub trait MapSources {
-    fn checks(&self) -> SourceChecks;
-    fn begin_land(&mut self, _second: bool) -> u64 {
+    fn begin_land(&mut self) -> u64 {
         0
     }
-    fn land(&mut self, _second: bool, _source: cland_combat::Source) -> u64 {
+    fn land(&mut self, _source: cland_combat::Source) -> u64 {
         0
     }
-    fn finish_land(&mut self, _second: bool, _outcome: Outcome) -> u64 {
+    fn finish_land(&mut self, _outcome: Outcome) -> u64 {
         0
     }
-    fn begin_ships(&mut self, second: bool) -> u64;
-    fn ship(&mut self, second: bool, pointer: usize, row: &cship::Row) -> u64;
-    fn finish_ships(&mut self, second: bool, outcome: Outcome) -> u64;
-    fn begin_air(&mut self, second: bool) -> u64;
-    fn air(&mut self, second: bool, pointer: usize, pool: usize, row: &cair_wing::Row) -> u64;
-    fn finish_air(&mut self, second: bool, outcome: Outcome) -> u64;
-    fn plans(
-        &mut self,
-        _second: bool,
-        _roots: &[corders_group::Root],
-        _visits: &[corder_instance::Visit],
-        _root_source: Outcome,
-        _order_source: Outcome,
-    ) -> u64 {
-        0
-    }
-    fn order_groups(
-        &mut self,
-        second: bool,
-        roots: &[corders_group::Root],
-        outcome: Outcome,
-    ) -> u64;
+    fn begin_air(&mut self) -> u64;
+    fn air(&mut self, pointer: usize, pool: usize, row: &cair_wing::Row) -> u64;
+    fn finish_air(&mut self, outcome: Outcome) -> u64;
 }
 
 #[cfg(test)]
@@ -86,28 +42,13 @@ struct NoSources;
 
 #[cfg(test)]
 impl MapSources for NoSources {
-    fn checks(&self) -> SourceChecks {
-        SourceChecks::default()
-    }
-    fn begin_ships(&mut self, _: bool) -> u64 {
+    fn begin_air(&mut self) -> u64 {
         0
     }
-    fn ship(&mut self, _: bool, _: usize, _: &cship::Row) -> u64 {
+    fn air(&mut self, _: usize, _: usize, _: &cair_wing::Row) -> u64 {
         0
     }
-    fn finish_ships(&mut self, _: bool, _: Outcome) -> u64 {
-        0
-    }
-    fn begin_air(&mut self, _: bool) -> u64 {
-        0
-    }
-    fn air(&mut self, _: bool, _: usize, _: usize, _: &cair_wing::Row) -> u64 {
-        0
-    }
-    fn finish_air(&mut self, _: bool, _: Outcome) -> u64 {
-        0
-    }
-    fn order_groups(&mut self, _: bool, _: &[corders_group::Root], _: Outcome) -> u64 {
+    fn finish_air(&mut self, _: Outcome) -> u64 {
         0
     }
 }
@@ -137,17 +78,201 @@ impl Default for MapCapacities {
     }
 }
 
+/// Fleets, task forces and ships. Walked inside the ShipModels job, whose
+/// details the ships seed, so the game thread never runs the census.
+pub struct ShipCensus {
+    pub fleets: CaptureRows<cfleet::Row>,
+    pub task_forces: CaptureRows<ctask_force::Row>,
+    pub ships: CaptureRows<cship::Row>,
+    /// Fleet, task force and ship walk ticks.
+    pub ticks: [u64; 3],
+}
+
+impl ShipCensus {
+    fn new(rows: &[usize]) -> Self {
+        Self {
+            fleets: CaptureRows::new(rows[0]),
+            task_forces: CaptureRows::new(rows[1]),
+            ships: CaptureRows::new(rows[2]),
+            ticks: [0; 3],
+        }
+    }
+    /// Placeholder while the job owns the buffers.
+    pub fn vacant() -> Self {
+        Self::new(&[0; 3])
+    }
+    fn reset(&mut self) {
+        self.fleets.reset();
+        self.task_forces.reset();
+        self.ships.reset();
+        self.ticks = [0; 3];
+    }
+    fn allocated_bytes(&self) -> usize {
+        self.fleets.allocated_bytes()
+            + self.task_forces.allocated_bytes()
+            + self.ships.allocated_bytes()
+    }
+    pub fn walk(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        models: &mut crate::extended::ship_models::Captured,
+    ) {
+        let tables = [TableId::Fleets, TableId::TaskForces, TableId::Ships];
+        let mut reads = crate::read_accounting::table(tables[0]);
+        let begin = qpc();
+        models.begin_sources();
+        let naval = cfleet::walk_timed_with(
+            memory,
+            base,
+            state,
+            &mut self.fleets.rows,
+            &mut self.task_forces.rows,
+            &mut self.ships.rows,
+            |phase| {
+                reads.select(tables[phase]);
+                qpc() as u64
+            },
+            |pointer, row| models.visit_source(pointer, row),
+        );
+        models.finish_sources(naval.capture.ships);
+        self.fleets.outcome = naval.capture.fleets;
+        self.task_forces.outcome = naval.capture.task_forces;
+        self.ships.outcome = naval.capture.ships;
+        self.ticks = naval.read_ticks;
+        self.ticks[2] = elapsed(begin)
+            .saturating_sub(self.ticks[0])
+            .saturating_sub(self.ticks[1]);
+    }
+    pub fn fail(&mut self, reason: &'static str) {
+        let outcome = Outcome::Unavailable { reason };
+        self.fleets.outcome = outcome;
+        self.task_forces.outcome = outcome;
+        self.ships.outcome = outcome;
+        self.ticks = [0; 3];
+    }
+}
+
+const NOT_WALKED: Outcome = Outcome::Unavailable {
+    reason: "army order census not acquired",
+};
+
+/// The army order census and its graph scratch. Walked inside the Orders job;
+/// the plans and the naval order sources read the roots and visits it leaves.
+pub struct Orders {
+    pub rows: CaptureRows<corder_instance::Row>,
+    pub geometry: Vec<u32>,
+    pub geometry_len: usize,
+    geometry_required: usize,
+    groups: Vec<corders_group::Root>,
+    groups_required: usize,
+    visits: Vec<corder_instance::Visit>,
+    visits_required: usize,
+    pub root_outcome: Outcome,
+    pub ticks: u64,
+}
+
+impl Orders {
+    fn new(capacity: &MapCapacities) -> Self {
+        Self {
+            rows: CaptureRows::new(capacity.rows[9]),
+            geometry: vec![0; capacity.order_geometry],
+            geometry_len: 0,
+            geometry_required: 0,
+            groups: vec![corders_group::Root::default(); capacity.order_groups],
+            groups_required: 0,
+            visits: vec![corder_instance::Visit::default(); capacity.order_visits],
+            visits_required: 0,
+            root_outcome: NOT_WALKED,
+            ticks: 0,
+        }
+    }
+    /// Placeholder while the job owns the buffers.
+    pub fn vacant() -> Self {
+        Self::new(&MapCapacities {
+            rows: [0; MAP_TABLES],
+            player_names: 0,
+            land_participants: 0,
+            order_geometry: 0,
+            order_groups: 0,
+            order_visits: 0,
+            naval_groups: 0,
+        })
+    }
+    fn reset(&mut self) {
+        self.rows.reset();
+        self.geometry_len = 0;
+        self.geometry_required = 0;
+        self.groups_required = 0;
+        self.visits_required = 0;
+        self.root_outcome = NOT_WALKED;
+        self.ticks = 0;
+    }
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.rows.allocated_bytes()
+            + self.geometry.capacity() * size_of::<u32>()
+            + self.groups.capacity() * size_of::<corders_group::Root>()
+            + self.visits.capacity() * size_of::<corder_instance::Visit>()
+    }
+    fn grow(&mut self, capacities: &mut MapCapacities) {
+        capacities.rows[9] = capacities.rows[9].max(self.rows.rows.capacity());
+        capacities.order_geometry = capacities.order_geometry.max(self.geometry.capacity());
+        capacities.order_visits = capacities.order_visits.max(self.visits.capacity());
+        self.rows.grow(&mut capacities.rows[9]);
+        grow_capacity(&mut capacities.order_geometry, self.geometry_required);
+        grow_capacity(&mut capacities.order_groups, self.groups_required);
+        grow_capacity(&mut capacities.order_visits, self.visits_required);
+        grow_vec(&mut self.geometry, capacities.order_geometry);
+        grow_vec(&mut self.groups, capacities.order_groups);
+        grow_vec(&mut self.visits, capacities.order_visits);
+    }
+    pub fn walk(&mut self, memory: &impl Memory, base: usize) {
+        let _reads = crate::read_accounting::table(TableId::ArmyOrders);
+        self.rows.outcome = NOT_WALKED;
+        let begin = qpc();
+        let walk = corder_instance::walk(
+            memory,
+            base,
+            &mut self.rows.rows,
+            &mut self.geometry,
+            &mut self.groups,
+            &mut self.visits,
+        );
+        self.rows.outcome = walk.outcome;
+        self.root_outcome = walk.root_outcome;
+        self.geometry_len = walk.geometry_len;
+        self.geometry_required = walk.required_geometry;
+        self.groups_required = walk.required_groups;
+        self.visits_required = walk.minimum_visits.max(walk.visited.saturating_mul(2));
+        self.ticks = elapsed(begin);
+    }
+    /// Terminal worker/admission failure; retain allocations and growth demand.
+    pub(crate) fn fail(&mut self, reason: &'static str) {
+        let outcome = Outcome::Unavailable { reason };
+        self.rows.outcome = outcome;
+        self.root_outcome = outcome;
+        self.geometry_len = 0;
+        self.ticks = 0;
+    }
+    /// The authenticated group roots of the last walk.
+    pub fn roots(&self) -> &[corders_group::Root] {
+        &self.groups[..self.root_outcome.len().min(self.groups.len())]
+    }
+    pub fn visits(&self) -> &[corder_instance::Visit] {
+        &self.visits
+    }
+}
+
 pub struct MapCaptured {
     pub players: CaptureRows<chuman::Row>,
     pub human_controllers: CaptureRows<chuman::ControllerRow>,
     pub land_combats: CaptureRows<cland_combat::Row>,
-    pub fleets: CaptureRows<cfleet::Row>,
-    pub task_forces: CaptureRows<ctask_force::Row>,
-    pub ships: CaptureRows<cship::Row>,
+    pub naval: ShipCensus,
     pub naval_combats: CaptureRows<cnaval_combat::Row>,
     pub naval_combat_participants: CaptureRows<cnaval_combatant::Row>,
     pub air_wings: CaptureRows<cair_wing::Row>,
-    pub army_orders: CaptureRows<corder_instance::Row>,
+    pub orders: Orders,
     /// Raw-copy split gate for the hourly players pair (Players,
     /// HumanControllers). Set by the game thread every hour with a valid raw
     /// payload; `sample` then skips both typed walks and the decode worker
@@ -156,26 +281,16 @@ pub struct MapCaptured {
     pub(crate) players_raw_mode: bool,
     /// Current callback's shared complete wing source already installed this
     /// independently bounded map projection; never a cross-hour cache.
-    owned_air_match: Option<bool>,
+    owned_air_captured: bool,
     /// An accepted wing acquisition failed this callback. Retain its terminal
     /// outcome until reset so neither the map nor its visitors retry the source.
     air_capture_failure: Option<&'static str>,
     pub player_names: Vec<u8>,
-    player_names_second: Vec<u8>,
     pub player_names_len: usize,
     player_names_required: usize,
     pub land_participants: Vec<u64>,
-    land_participants_second: Vec<u64>,
     pub land_participants_len: usize,
     land_participants_required: usize,
-    pub order_geometry: Vec<u32>,
-    order_geometry_second: Vec<u32>,
-    pub order_geometry_len: usize,
-    order_geometry_required: usize,
-    order_groups: Vec<corders_group::Root>,
-    order_groups_required: usize,
-    order_visits: Vec<corder_instance::Visit>,
-    order_visits_required: usize,
     naval_groups: Vec<usize>,
     naval_groups_required: usize,
 }
@@ -189,64 +304,41 @@ impl MapCaptured {
         let len = job.map_outcome.len();
         self.air_wings.rows[..len].copy_from_slice(&job.map_rows[..len]);
         self.air_wings.outcome = job.map_outcome;
-        self.owned_air_match = Some(job.map_matched);
+        self.owned_air_captured = true;
         qpc().saturating_sub(begin).max(0) as u64
     }
 
     /// Call before `sample` after an accepted wing acquisition fails. The
     /// terminal gate survives sampling and clears only at the next frame reset.
-    pub(crate) fn fail_air_capture(&mut self, needed: bool, reason: &'static str) {
+    pub(crate) fn fail_air_capture(&mut self, reason: &'static str) {
         self.air_capture_failure = Some(reason);
-        self.owned_air_match = None;
+        self.owned_air_captured = false;
         self.air_wings.outcome = Outcome::Unavailable { reason };
-        self.air_wings.checked = needed;
-        self.air_wings.mismatches = usize::from(needed);
     }
 
     #[cfg(test)]
     pub fn new() -> Self {
-        Self::with_capacities(
-            &MapCapacities::default(),
-            &[0; MAP_TABLES],
-            SourceChecks::default(),
-        )
+        Self::with_capacities(&MapCapacities::default())
     }
 
-    pub fn with_capacities(
-        capacity: &MapCapacities,
-        successful: &[u16],
-        sources: SourceChecks,
-    ) -> Self {
-        let successful = sources.retained(successful);
+    pub fn with_capacities(capacity: &MapCapacities) -> Self {
         Self {
-            players: CaptureRows::new(capacity.rows[0], successful[0]),
-            human_controllers: CaptureRows::new(capacity.rows[1], successful[1]),
-            land_combats: CaptureRows::new(capacity.rows[2], successful[2]),
-            fleets: CaptureRows::new(capacity.rows[3], successful[3]),
-            task_forces: CaptureRows::new(capacity.rows[4], successful[4]),
-            ships: CaptureRows::new(capacity.rows[5], successful[5]),
-            naval_combats: CaptureRows::new(capacity.rows[6], successful[6]),
-            naval_combat_participants: CaptureRows::new(capacity.rows[7], successful[7]),
-            air_wings: CaptureRows::new(capacity.rows[8], successful[8]),
-            owned_air_match: None,
+            players: CaptureRows::new(capacity.rows[0]),
+            human_controllers: CaptureRows::new(capacity.rows[1]),
+            land_combats: CaptureRows::new(capacity.rows[2]),
+            naval: ShipCensus::new(&capacity.rows[3..6]),
+            naval_combats: CaptureRows::new(capacity.rows[6]),
+            naval_combat_participants: CaptureRows::new(capacity.rows[7]),
+            air_wings: CaptureRows::new(capacity.rows[8]),
+            owned_air_captured: false,
             air_capture_failure: None,
-            army_orders: CaptureRows::new(capacity.rows[9], successful[9]),
+            orders: Orders::new(capacity),
             player_names: vec![0; capacity.player_names],
-            player_names_second: comparison_rows(capacity.player_names, successful[0]),
             player_names_len: 0,
             player_names_required: 0,
             land_participants: vec![0; capacity.land_participants],
-            land_participants_second: comparison_rows(capacity.land_participants, successful[2]),
             land_participants_len: 0,
             land_participants_required: 0,
-            order_geometry: vec![0; capacity.order_geometry],
-            order_geometry_second: comparison_rows(capacity.order_geometry, successful[9]),
-            order_geometry_len: 0,
-            order_geometry_required: 0,
-            order_groups: vec![corders_group::Root::default(); capacity.order_groups],
-            order_groups_required: 0,
-            order_visits: vec![corder_instance::Visit::default(); capacity.order_visits],
-            order_visits_required: 0,
             naval_groups: vec![0; capacity.naval_groups],
             naval_groups_required: 0,
             players_raw_mode: false,
@@ -258,21 +350,13 @@ impl MapCaptured {
         self.players.allocated_bytes()
             + self.human_controllers.allocated_bytes()
             + self.land_combats.allocated_bytes()
-            + self.fleets.allocated_bytes()
-            + self.task_forces.allocated_bytes()
-            + self.ships.allocated_bytes()
+            + self.naval.allocated_bytes()
             + self.naval_combats.allocated_bytes()
             + self.naval_combat_participants.allocated_bytes()
             + self.air_wings.allocated_bytes()
-            + self.army_orders.allocated_bytes()
+            + self.orders.allocated_bytes()
             + self.player_names.capacity()
-            + self.player_names_second.capacity()
-            + (self.land_participants.capacity() + self.land_participants_second.capacity())
-                * size_of::<u64>()
-            + (self.order_geometry.capacity() + self.order_geometry_second.capacity())
-                * size_of::<u32>()
-            + self.order_groups.capacity() * size_of::<corders_group::Root>()
-            + self.order_visits.capacity() * size_of::<corder_instance::Visit>()
+            + self.land_participants.capacity() * size_of::<u64>()
             + self.naval_groups.capacity() * size_of::<usize>()
     }
 
@@ -280,23 +364,17 @@ impl MapCaptured {
         self.players.reset();
         self.human_controllers.reset();
         self.land_combats.reset();
-        self.fleets.reset();
-        self.task_forces.reset();
-        self.ships.reset();
+        self.naval.reset();
         self.naval_combats.reset();
         self.naval_combat_participants.reset();
         self.air_wings.reset();
-        self.owned_air_match = None;
+        self.owned_air_captured = false;
         self.air_capture_failure = None;
-        self.army_orders.reset();
+        self.orders.reset();
         self.player_names_len = 0;
         self.player_names_required = 0;
         self.land_participants_len = 0;
         self.land_participants_required = 0;
-        self.order_geometry_len = 0;
-        self.order_geometry_required = 0;
-        self.order_groups_required = 0;
-        self.order_visits_required = 0;
         self.naval_groups_required = 0;
         self.players_raw_mode = false;
     }
@@ -306,156 +384,59 @@ impl MapCaptured {
             self.players.outcome,
             self.human_controllers.outcome,
             self.land_combats.outcome,
-            self.fleets.outcome,
-            self.task_forces.outcome,
-            self.ships.outcome,
+            self.naval.fleets.outcome,
+            self.naval.task_forces.outcome,
+            self.naval.ships.outcome,
             self.naval_combats.outcome,
             self.naval_combat_participants.outcome,
             self.air_wings.outcome,
-            self.army_orders.outcome,
-        ]
-    }
-
-    pub fn checked_mismatches(&self) -> [u64; MAP_TABLES] {
-        [
-            if self.players.checked {
-                self.players.mismatches as u64
-            } else {
-                0
-            },
-            if self.human_controllers.checked {
-                self.human_controllers.mismatches as u64
-            } else {
-                0
-            },
-            if self.land_combats.checked {
-                self.land_combats.mismatches as u64
-            } else {
-                0
-            },
-            if self.fleets.checked {
-                self.fleets.mismatches as u64
-            } else {
-                0
-            },
-            if self.task_forces.checked {
-                self.task_forces.mismatches as u64
-            } else {
-                0
-            },
-            if self.ships.checked {
-                self.ships.mismatches as u64
-            } else {
-                0
-            },
-            if self.naval_combats.checked {
-                self.naval_combats.mismatches as u64
-            } else {
-                0
-            },
-            if self.naval_combat_participants.checked {
-                self.naval_combat_participants.mismatches as u64
-            } else {
-                0
-            },
-            if self.air_wings.checked {
-                self.air_wings.mismatches as u64
-            } else {
-                0
-            },
-            if self.army_orders.checked {
-                self.army_orders.mismatches as u64
-            } else {
-                0
-            },
+            self.orders.rows.outcome,
         ]
     }
 
     /// Exclusive spool-thread ownership is required, including for scratch buffers.
-    pub fn grow(
-        &mut self,
-        capacities: &mut MapCapacities,
-        successful: &[u16],
-        sources: SourceChecks,
-    ) {
-        let successful = sources.retained(successful);
-        self.players.grow(&mut capacities.rows[0], successful[0]);
-        self.human_controllers
-            .grow(&mut capacities.rows[1], successful[1]);
-        self.land_combats
-            .grow(&mut capacities.rows[2], successful[2]);
-        self.fleets.grow(&mut capacities.rows[3], successful[3]);
-        self.task_forces
-            .grow(&mut capacities.rows[4], successful[4]);
-        self.ships.grow(&mut capacities.rows[5], successful[5]);
-        self.naval_combats
-            .grow(&mut capacities.rows[6], successful[6]);
-        self.naval_combat_participants
-            .grow(&mut capacities.rows[7], successful[7]);
-        self.air_wings.grow(&mut capacities.rows[8], successful[8]);
-        self.army_orders
-            .grow(&mut capacities.rows[9], successful[9]);
+    pub fn grow(&mut self, capacities: &mut MapCapacities) {
+        self.players.grow(&mut capacities.rows[0]);
+        self.human_controllers.grow(&mut capacities.rows[1]);
+        self.land_combats.grow(&mut capacities.rows[2]);
+        self.naval.fleets.grow(&mut capacities.rows[3]);
+        self.naval.task_forces.grow(&mut capacities.rows[4]);
+        self.naval.ships.grow(&mut capacities.rows[5]);
+        self.naval_combats.grow(&mut capacities.rows[6]);
+        self.naval_combat_participants.grow(&mut capacities.rows[7]);
+        self.air_wings.grow(&mut capacities.rows[8]);
+        self.orders.grow(capacities);
         grow_capacity(&mut capacities.player_names, self.player_names_required);
         grow_capacity(
             &mut capacities.land_participants,
             self.land_participants_required,
         );
-        grow_capacity(&mut capacities.order_geometry, self.order_geometry_required);
-        grow_capacity(&mut capacities.order_groups, self.order_groups_required);
-        grow_capacity(&mut capacities.order_visits, self.order_visits_required);
         grow_capacity(&mut capacities.naval_groups, self.naval_groups_required);
         grow_vec(&mut self.player_names, capacities.player_names);
-        comparison(
-            &mut self.player_names_second,
-            capacities.player_names,
-            successful[0],
-        );
         grow_vec(&mut self.land_participants, capacities.land_participants);
-        comparison(
-            &mut self.land_participants_second,
-            capacities.land_participants,
-            successful[2],
-        );
-        grow_vec(&mut self.order_geometry, capacities.order_geometry);
-        comparison(
-            &mut self.order_geometry_second,
-            capacities.order_geometry,
-            successful[9],
-        );
-        grow_vec(&mut self.order_groups, capacities.order_groups);
-        grow_vec(&mut self.order_visits, capacities.order_visits);
         grow_vec(&mut self.naval_groups, capacities.naval_groups);
     }
 
-    /// Returns independent match results and caller-clock ticks for the ten tables.
+    /// Returns caller-clock ticks for the ten tables.
     /// Numeric values and variable rows remain native; conversion happens in map_spool.
+    /// The fleet, task force and ship census. It reads live and seeds the ship
+    /// models job, so it runs first in the block and the job starts at once;
+    /// `sample` then reuses its outcome and ticks.
     pub fn sample(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
-        needed: &[bool],
         sources: &mut impl MapSources,
-    ) -> ([bool; MAP_TABLES], [u64; MAP_TABLES]) {
-        let source_checks = sources.checks();
-        let mut matched = [false; MAP_TABLES];
+    ) -> [u64; MAP_TABLES] {
         let mut ticks = [0; MAP_TABLES];
-        self.players.checked = needed[0];
-        self.human_controllers.checked = needed[1];
-        self.land_combats.checked = needed[2];
-        self.fleets.checked = needed[3];
-        self.task_forces.checked = needed[4];
-        self.ships.checked = needed[5];
-        self.naval_combats.checked = needed[6];
-        self.naval_combat_participants.checked = needed[7];
-        self.air_wings.checked = needed[8];
-        self.army_orders.checked = needed[9];
         // Raw-copy split (hourly players pair): every hour the game thread
         // stages raw bytes via `copy_players_refresh` and the decode worker
         // fills both rows before the ready handoff. Skip both typed walks
-        // here; matched flags and costs install from the copy report in the
-        // tick. The eight typed map walks below run independently.
+        // here; copy costs install from the report in the tick. The ship and
+        // order censuses run in their pool jobs, so their ticks stay zero here.
         if !self.players_raw_mode {
+            let mut reads = crate::read_accounting::table(TableId::Players);
             let begin = qpc();
             let names = chuman::walk(
                 memory,
@@ -467,143 +448,34 @@ impl MapCaptured {
             self.players.outcome = names.outcome;
             self.player_names_len = names.bytes_len;
             self.player_names_required = names.required_bytes;
-            if needed[0] {
-                let second = chuman::walk(
-                    memory,
-                    base,
-                    state,
-                    &mut self.players.second,
-                    &mut self.player_names_second,
-                );
-                self.players.compare(second.outcome);
-                self.players.mismatches += usize::from(
-                    names.bytes_len != second.bytes_len
-                        || names.required_bytes != second.required_bytes
-                        || self.player_names[..names.bytes_len]
-                            != self.player_names_second[..second.bytes_len],
-                );
-                matched[0] = full_match(names.outcome, second.outcome, self.players.mismatches);
-                self.player_names_required = self.player_names_required.max(second.required_bytes);
-            }
             ticks[0] = (qpc() - begin).max(0) as u64;
 
+            reads.select(TableId::HumanControllers);
             let begin = qpc();
             self.human_controllers.outcome =
                 chuman::walk_controllers(memory, base, state, &mut self.human_controllers.rows);
-            if needed[1] {
-                let second = chuman::walk_controllers(
-                    memory,
-                    base,
-                    state,
-                    &mut self.human_controllers.second,
-                );
-                matched[1] = self.human_controllers.compare(second);
-            }
             ticks[1] = (qpc() - begin).max(0) as u64;
         }
 
+        let mut reads = crate::read_accounting::table(TableId::LandCombats);
         let begin = qpc();
-        let mut nested = sources.begin_land(false);
+        let mut nested = sources.begin_land();
         let land = cland_combat::walk_with(
             memory,
             base,
             state,
             &mut self.land_combats.rows,
             &mut self.land_participants,
-            |source| nested = nested.saturating_add(sources.land(false, source)),
+            |source| nested = nested.saturating_add(sources.land(source)),
         );
-        nested = nested.saturating_add(sources.finish_land(false, land.outcome));
+        nested = nested.saturating_add(sources.finish_land(land.outcome));
         self.land_combats.outcome = land.outcome;
         self.land_participants_len = land.participants_len;
         self.land_participants_required = land.required_participants;
-        if needed[2] || source_checks.land_combats {
-            nested = nested.saturating_add(sources.begin_land(true));
-            let second = cland_combat::walk_with(
-                memory,
-                base,
-                state,
-                &mut self.land_combats.second,
-                &mut self.land_participants_second,
-                |source| nested = nested.saturating_add(sources.land(true, source)),
-            );
-            nested = nested.saturating_add(sources.finish_land(true, second.outcome));
-            if needed[2] {
-                self.land_combats.compare(second.outcome);
-                self.land_combats.mismatches += usize::from(
-                    land.participants_len != second.participants_len
-                        || land.required_participants != second.required_participants
-                        || self.land_participants[..land.participants_len]
-                            != self.land_participants_second[..second.participants_len],
-                );
-                matched[2] = full_match(land.outcome, second.outcome, self.land_combats.mismatches);
-            }
-            self.land_participants_required = self
-                .land_participants_required
-                .max(second.required_participants);
-        }
         ticks[2] = ((qpc() - begin).max(0) as u64).saturating_sub(nested);
 
-        let begin = qpc();
-        let mut nested = sources.begin_ships(false);
-        let naval = cfleet::walk_timed_with(
-            memory,
-            base,
-            state,
-            &mut self.fleets.rows,
-            &mut self.task_forces.rows,
-            &mut self.ships.rows,
-            || qpc() as u64,
-            |pointer, row| nested = nested.saturating_add(sources.ship(false, pointer, row)),
-        );
-        nested = nested.saturating_add(sources.finish_ships(false, naval.capture.ships));
-        self.fleets.outcome = naval.capture.fleets;
-        self.task_forces.outcome = naval.capture.task_forces;
-        self.ships.outcome = naval.capture.ships;
-        ticks[3..6].copy_from_slice(&naval.read_ticks);
-        ticks[5] = (qpc() - begin).max(0) as u64;
-        ticks[5] = ticks[5]
-            .saturating_sub(ticks[3])
-            .saturating_sub(ticks[4])
-            .saturating_sub(nested);
-        if needed[3..6].iter().any(|&value| value) || source_checks.ships {
-            let begin = qpc();
-            let mut nested = sources.begin_ships(true);
-            let second = cfleet::walk_timed_with(
-                memory,
-                base,
-                state,
-                &mut self.fleets.second,
-                &mut self.task_forces.second,
-                &mut self.ships.second,
-                || qpc() as u64,
-                |pointer, row| nested = nested.saturating_add(sources.ship(true, pointer, row)),
-            );
-            nested = nested.saturating_add(sources.finish_ships(true, second.capture.ships));
-            let mut second_ticks = second.read_ticks;
-            second_ticks[2] = ((qpc() - begin).max(0) as u64)
-                .saturating_sub(second_ticks[0])
-                .saturating_sub(second_ticks[1])
-                .saturating_sub(nested);
-            for (total, second) in ticks[3..6].iter_mut().zip(second_ticks) {
-                *total += second;
-            }
-            if needed[3] {
-                let begin = qpc();
-                matched[3] = self.fleets.compare(second.capture.fleets);
-                ticks[3] += (qpc() - begin).max(0) as u64;
-            }
-            if needed[4] {
-                let begin = qpc();
-                matched[4] = self.task_forces.compare(second.capture.task_forces);
-                ticks[4] += (qpc() - begin).max(0) as u64;
-            }
-            if needed[5] {
-                let begin = qpc();
-                matched[5] = self.ships.compare(second.capture.ships);
-                ticks[5] += (qpc() - begin).max(0) as u64;
-            }
-        }
-
+        let naval_tables = [TableId::NavalCombats, TableId::NavalCombatParticipants];
+        reads.select(naval_tables[0]);
         let naval = cnaval_combat::walk_timed(
             memory,
             base,
@@ -611,148 +483,35 @@ impl MapCaptured {
             &mut self.naval_combats.rows,
             &mut self.naval_combat_participants.rows,
             &mut self.naval_groups,
-            || qpc() as u64,
+            |phase| {
+                reads.select(naval_tables[phase]);
+                qpc() as u64
+            },
         );
         self.naval_combats.outcome = naval.capture.combats;
         self.naval_combat_participants.outcome = naval.capture.participants;
         self.naval_groups_required = naval.capture.required_group_capacity;
         ticks[6..8].copy_from_slice(&naval.read_ticks);
-        if needed[6] || needed[7] {
-            let second = cnaval_combat::walk_timed(
-                memory,
-                base,
-                state,
-                &mut self.naval_combats.second,
-                &mut self.naval_combat_participants.second,
-                &mut self.naval_groups,
-                || qpc() as u64,
-            );
-            self.naval_groups_required = self
-                .naval_groups_required
-                .max(second.capture.required_group_capacity);
-            for (total, second) in ticks[6..8].iter_mut().zip(second.read_ticks) {
-                *total += second;
-            }
-            if needed[6] {
-                let begin = qpc();
-                matched[6] = self.naval_combats.compare(second.capture.combats);
-                ticks[6] += (qpc() - begin).max(0) as u64;
-            }
-            if needed[7] {
-                let begin = qpc();
-                matched[7] = self
-                    .naval_combat_participants
-                    .compare(second.capture.participants);
-                ticks[7] += (qpc() - begin).max(0) as u64;
-            }
-        }
-
+        reads.select(TableId::AirWings);
         let begin = qpc();
         if let Some(reason) = self.air_capture_failure {
             self.air_wings.outcome = Outcome::Unavailable { reason };
-            self.air_wings.mismatches = usize::from(needed[8]);
-        } else if let Some(equal) = self.owned_air_match {
-            matched[8] = equal;
-            self.air_wings.mismatches = usize::from(needed[8] && !equal);
-        } else {
-            let mut nested = sources.begin_air(false);
+        } else if !self.owned_air_captured {
+            let mut nested = sources.begin_air();
             self.air_wings.outcome = cair_wing::walk_with(
                 memory,
                 base,
                 state,
                 &mut self.air_wings.rows,
                 |pointer, pool, row| {
-                    nested = nested.saturating_add(sources.air(false, pointer, pool, row))
+                    nested = nested.saturating_add(sources.air(pointer, pool, row))
                 },
             );
-            nested = nested.saturating_add(sources.finish_air(false, self.air_wings.outcome));
-            if needed[8] || source_checks.air_wings {
-                nested = nested.saturating_add(sources.begin_air(true));
-                let second = cair_wing::walk_with(
-                    memory,
-                    base,
-                    state,
-                    &mut self.air_wings.second,
-                    |pointer, pool, row| {
-                        nested = nested.saturating_add(sources.air(true, pointer, pool, row))
-                    },
-                );
-                nested = nested.saturating_add(sources.finish_air(true, second));
-                if needed[8] {
-                    matched[8] = self.air_wings.compare(second);
-                }
-            }
+            nested = nested.saturating_add(sources.finish_air(self.air_wings.outcome));
             ticks[8] = ((qpc() - begin).max(0) as u64).saturating_sub(nested);
         }
 
-        let begin = qpc();
-        let orders = corder_instance::walk(
-            memory,
-            base,
-            &mut self.army_orders.rows,
-            &mut self.order_geometry,
-            &mut self.order_groups,
-            &mut self.order_visits,
-        );
-        let mut nested = sources.order_groups(
-            false,
-            &self.order_groups[..orders.root_outcome.len()],
-            orders.root_outcome,
-        );
-        nested = nested.saturating_add(sources.plans(
-            false,
-            &self.order_groups[..orders.root_outcome.len()],
-            &self.order_visits,
-            orders.root_outcome,
-            orders.outcome,
-        ));
-        self.army_orders.outcome = orders.outcome;
-        self.order_geometry_len = orders.geometry_len;
-        self.order_geometry_required = orders.required_geometry;
-        self.order_groups_required = orders.required_groups;
-        self.order_visits_required = orders.minimum_visits.max(orders.visited.saturating_mul(2));
-        if needed[9] || source_checks.order_groups {
-            let second = corder_instance::walk(
-                memory,
-                base,
-                &mut self.army_orders.second,
-                &mut self.order_geometry_second,
-                &mut self.order_groups,
-                &mut self.order_visits,
-            );
-            nested = nested.saturating_add(sources.order_groups(
-                true,
-                &self.order_groups[..second.root_outcome.len()],
-                second.root_outcome,
-            ));
-            nested = nested.saturating_add(sources.plans(
-                true,
-                &self.order_groups[..second.root_outcome.len()],
-                &self.order_visits,
-                second.root_outcome,
-                second.outcome,
-            ));
-            if needed[9] {
-                self.army_orders.compare(second.outcome);
-                self.army_orders.mismatches += usize::from(
-                    orders.geometry_len != second.geometry_len
-                        || orders.required_geometry != second.required_geometry
-                        || self.order_geometry[..orders.geometry_len]
-                            != self.order_geometry_second[..second.geometry_len],
-                );
-                matched[9] =
-                    full_match(orders.outcome, second.outcome, self.army_orders.mismatches);
-            }
-            self.order_geometry_required =
-                self.order_geometry_required.max(second.required_geometry);
-            self.order_groups_required = self.order_groups_required.max(second.required_groups);
-            self.order_visits_required = self
-                .order_visits_required
-                .max(second.minimum_visits)
-                .max(second.visited.saturating_mul(2));
-        }
-        ticks[9] = ((qpc() - begin).max(0) as u64).saturating_sub(nested);
-        (matched, ticks)
+        ticks
     }
 }
 
@@ -824,9 +583,6 @@ pub(crate) struct PlayersCopyReport {
     /// False when staging overflowed: the caller falls back to the typed walk
     /// (identical rows through the existing path) and enqueues no payload.
     pub raw_ok: bool,
-    /// Whole-log raw equality gated by live-fault conservatism, in
-    /// [players, controllers] order.
-    pub matched: [bool; 2],
     pub copy_ticks: [u64; 2],
     pub raw_bytes: [u64; 2],
 }
@@ -836,7 +592,6 @@ pub(crate) struct PlayersCopyReport {
 pub(crate) struct PlayersCopyContext {
     pub base: usize,
     pub game_state: usize,
-    pub needed: [bool; 2],
 }
 
 fn ppool_u64(log: &RawLog<2>, start: usize) -> u64 {
@@ -1145,72 +900,39 @@ fn copy_players_pass(
     }
 }
 
-/// Raw copy for an hourly refresh. Copies `first` always and `second` while
-/// either players table still needs double-read checks, compares the per-table
-/// raw partitions, and records copy-only costs. Returns whether the payload is
-/// complete (`raw_ok`); on staging overflow the caller falls back to the typed
-/// walk and enqueues nothing.
+/// Copy one hourly players payload and record copy-only costs. Staging
+/// overflow falls back to the typed walk and enqueues no payload.
 pub(crate) fn copy_players_refresh(
     memory: &impl engine::Memory,
     ctx: PlayersCopyContext,
-    first: &mut PlayersJob,
-    mut second: Option<&mut PlayersJob>,
+    job: &mut PlayersJob,
 ) -> PlayersCopyReport {
+    // The shared raw payload is acquired once; its controller projection is owned work.
+    let _reads = crate::read_accounting::table(TableId::Players);
     let started = qpc();
-    first.clear();
-    first.game_state = ctx.game_state;
-    copy_players_pass(&mut first.log, memory, ctx.base, ctx.game_state);
-    let mut ticks = [0u64; 2];
-    ticks[0] = elapsed(started);
-    let mut matched = [true; 2];
-    if let Some(second_job) = second.as_deref_mut() {
-        let second_started = qpc();
-        second_job.clear();
-        second_job.game_state = ctx.game_state;
-        copy_players_pass(&mut second_job.log, memory, ctx.base, ctx.game_state);
-        ticks[0] += elapsed(second_started);
-        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-        for (slot, matched) in matched.iter_mut().enumerate() {
-            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-        }
-    }
-    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    job.clear();
+    job.game_state = ctx.game_state;
+    copy_players_pass(&mut job.log, memory, ctx.base, ctx.game_state);
     PlayersCopyReport {
-        raw_ok,
-        matched,
-        copy_ticks: ticks,
-        raw_bytes: first.log.raw_bytes,
+        raw_ok: !job.log.overflowed,
+        copy_ticks: [elapsed(started), 0],
+        raw_bytes: job.log.raw_bytes,
     }
 }
 
 impl MapCaptured {
-    pub(crate) fn apply_players_report(&mut self, needed: [bool; 2], report: &PlayersCopyReport) {
-        self.players.checked = needed[0];
-        // Binary per refresh: tearing detected (0/1), not a row count.
-        // Spool gates test `==0`/`!=0` only.
-        self.players.mismatches = usize::from(needed[0] && !report.matched[0]);
-        self.human_controllers.checked = needed[1];
-        self.human_controllers.mismatches = usize::from(needed[1] && !report.matched[1]);
-    }
-
     /// Apply a failed worker capture after `sample` has skipped the players
     /// walks with `players_raw_mode` set, preventing a retry on the callback.
-    pub(crate) fn fail_players_capture(&mut self, needed: [bool; 2], reason: &'static str) {
+    pub(crate) fn fail_players_capture(&mut self, reason: &'static str) {
         self.players.outcome = Outcome::Unavailable { reason };
-        self.players.checked = needed[0];
-        self.players.mismatches = usize::from(needed[0]);
         self.human_controllers.outcome = Outcome::Unavailable { reason };
-        self.human_controllers.checked = needed[1];
-        self.human_controllers.mismatches = usize::from(needed[1]);
         self.player_names_len = 0;
         self.players_raw_mode = false;
     }
 
     /// Decode-worker interpretation of a raw hourly payload into the pooled
     /// typed rows. Outcomes and arena bytes match the typed walks exactly
-    /// because the identical walks run against the recorded spans;
-    /// checked/mismatches set by the raw compare survive. Clears
+    /// because the identical walks run against the recorded spans. Clears
     /// `players_raw_mode` so the next capture starts clean.
     pub(crate) fn decode_players_payload(
         &mut self,
@@ -1246,8 +968,8 @@ impl MapCaptured {
 /// Hourly players split harness: one country with one inline player and one
 /// controller count, plus empty and fault-injection coverage.
 #[cfg(test)]
-pub(crate) mod players_split_tests {
-    use super::SourceChecks;
+mod players_split_tests {
+    use super::NoSources;
     use super::{
         MapCapacities, MapCaptured, PlayersCopyContext, PlayersCopyReport, PlayersJob,
         copy_players_refresh,
@@ -1325,71 +1047,22 @@ pub(crate) mod players_split_tests {
     }
 
     fn direct(memory: &SliceMemory<'_>) -> MapCaptured {
-        let mut captured = MapCaptured::with_capacities(
-            &capacities(),
-            &[0; super::MAP_TABLES],
-            SourceChecks::default(),
-        );
-        // Walk only players/controllers via sample with empty sources.
-        struct NoSources;
-        impl super::MapSources for NoSources {
-            fn checks(&self) -> super::SourceChecks {
-                super::SourceChecks::default()
-            }
-            fn begin_ships(&mut self, _: bool) -> u64 {
-                0
-            }
-            fn ship(&mut self, _: bool, _: usize, _: &engine::cship::Row) -> u64 {
-                0
-            }
-            fn finish_ships(&mut self, _: bool, _: Outcome) -> u64 {
-                0
-            }
-            fn begin_air(&mut self, _: bool) -> u64 {
-                0
-            }
-            fn air(&mut self, _: bool, _: usize, _: usize, _: &engine::cair_wing::Row) -> u64 {
-                0
-            }
-            fn finish_air(&mut self, _: bool, _: Outcome) -> u64 {
-                0
-            }
-            fn order_groups(
-                &mut self,
-                _: bool,
-                _: &[engine::corders_group::Root],
-                _: Outcome,
-            ) -> u64 {
-                0
-            }
-        }
-        let needed = [
-            true, true, false, false, false, false, false, false, false, false,
-        ];
-        let (matched, _) = captured.sample(memory, BASE, GS, &needed, &mut NoSources);
-        assert!(matched[0] && matched[1]);
+        let mut captured = MapCaptured::with_capacities(&capacities());
+        captured.sample(memory, BASE, GS, &mut NoSources);
         captured
     }
 
     fn split(memory: &SliceMemory<'_>) -> (MapCaptured, PlayersCopyReport) {
-        let mut captured = MapCaptured::with_capacities(
-            &capacities(),
-            &[0; super::MAP_TABLES],
-            SourceChecks::default(),
-        );
+        let mut captured = MapCaptured::with_capacities(&capacities());
         let ctx = PlayersCopyContext {
             base: BASE,
             game_state: GS,
-            needed: [true, true],
         };
-        let mut first = PlayersJob::new();
-        let mut second = PlayersJob::new();
-        let report = copy_players_refresh(memory, ctx, &mut first, Some(&mut second));
-        captured.apply_players_report(ctx.needed, &report);
+        let mut job = PlayersJob::new();
+        let report = copy_players_refresh(memory, ctx, &mut job);
         assert!(report.raw_ok);
         captured.players_raw_mode = true;
-        let mut ticks = [0u64; 2];
-        captured.decode_players_payload(BASE, &first, &mut ticks);
+        captured.decode_players_payload(BASE, &job, &mut [0; 2]);
         (captured, report)
     }
 
@@ -1402,7 +1075,7 @@ pub(crate) mod players_split_tests {
         };
         let direct = direct(&memory);
         let (split, report) = split(&memory);
-        assert_eq!(report.matched, [true, true]);
+        assert!(report.raw_ok);
         assert_eq!(split.players.outcome, direct.players.outcome);
         assert_eq!(
             split.human_controllers.outcome,
@@ -1424,70 +1097,26 @@ pub(crate) mod players_split_tests {
         // both the one-row and exact-fit arm, cap 0 the zero/overflow
         // (total 1 == cap+1)/massive arm. u32 unread saturation is not
         // reachable and is covered by the walk's own saturating arithmetic.
-        struct NoSources;
-        impl super::MapSources for NoSources {
-            fn checks(&self) -> super::SourceChecks {
-                super::SourceChecks::default()
-            }
-            fn begin_ships(&mut self, _: bool) -> u64 {
-                0
-            }
-            fn ship(&mut self, _: bool, _: usize, _: &engine::cship::Row) -> u64 {
-                0
-            }
-            fn finish_ships(&mut self, _: bool, _: Outcome) -> u64 {
-                0
-            }
-            fn begin_air(&mut self, _: bool) -> u64 {
-                0
-            }
-            fn air(&mut self, _: bool, _: usize, _: usize, _: &engine::cair_wing::Row) -> u64 {
-                0
-            }
-            fn finish_air(&mut self, _: bool, _: Outcome) -> u64 {
-                0
-            }
-            fn order_groups(
-                &mut self,
-                _: bool,
-                _: &[engine::corders_group::Root],
-                _: Outcome,
-            ) -> u64 {
-                0
-            }
-        }
         let bytes = fixture();
         let memory = SliceMemory {
             base: GS,
             bytes: &bytes,
         };
-        let needed = [
-            true, true, false, false, false, false, false, false, false, false,
-        ];
         for (players, controllers) in [(0, 0), (1, 1), (0, 1), (1, 0), (64, 64)] {
             let mut caps = capacities();
             caps.rows[0] = players;
             caps.rows[1] = controllers;
-            let mut direct = MapCaptured::with_capacities(
-                &caps,
-                &[0; super::MAP_TABLES],
-                SourceChecks::default(),
-            );
-            let _ = direct.sample(&memory, BASE, GS, &needed, &mut NoSources);
-            let mut captured = MapCaptured::with_capacities(
-                &caps,
-                &[0; super::MAP_TABLES],
-                SourceChecks::default(),
-            );
+            let mut direct = MapCaptured::with_capacities(&caps);
+            let _ = direct.sample(&memory, BASE, GS, &mut NoSources);
+            let mut captured = MapCaptured::with_capacities(&caps);
             let ctx = PlayersCopyContext {
                 base: BASE,
                 game_state: GS,
-                needed: [true, true],
             };
             let mut first = PlayersJob::new();
-            let mut second = PlayersJob::new();
-            let report = copy_players_refresh(&memory, ctx, &mut first, Some(&mut second));
-            captured.apply_players_report(ctx.needed, &report);
+
+            let report = copy_players_refresh(&memory, ctx, &mut first);
+
             assert!(report.raw_ok, "players={players} controllers={controllers}");
             captured.players_raw_mode = true;
             let mut ticks = [0u64; 2];
@@ -1510,9 +1139,8 @@ pub(crate) mod players_split_tests {
         let mut caps = capacities();
         caps.rows[0] = 1;
         caps.rows[1] = 1;
-        let mut direct =
-            MapCaptured::with_capacities(&caps, &[0; super::MAP_TABLES], SourceChecks::default());
-        let _ = direct.sample(&memory, BASE, GS, &needed, &mut NoSources);
+        let mut direct = MapCaptured::with_capacities(&caps);
+        let _ = direct.sample(&memory, BASE, GS, &mut NoSources);
         assert_eq!(direct.players.outcome, Outcome::Rows { len: 1 });
     }
 
@@ -1564,148 +1192,21 @@ pub(crate) mod players_split_tests {
         };
         let mut capacities = capacities();
         capacities.rows[0] = 0;
-        let mut direct = MapCaptured::with_capacities(
-            &capacities,
-            &[0; super::MAP_TABLES],
-            SourceChecks::default(),
-        );
-        struct NoSources;
-        impl super::MapSources for NoSources {
-            fn checks(&self) -> super::SourceChecks {
-                super::SourceChecks::default()
-            }
-            fn begin_ships(&mut self, _: bool) -> u64 {
-                0
-            }
-            fn ship(&mut self, _: bool, _: usize, _: &engine::cship::Row) -> u64 {
-                0
-            }
-            fn finish_ships(&mut self, _: bool, _: Outcome) -> u64 {
-                0
-            }
-            fn begin_air(&mut self, _: bool) -> u64 {
-                0
-            }
-            fn air(&mut self, _: bool, _: usize, _: usize, _: &engine::cair_wing::Row) -> u64 {
-                0
-            }
-            fn finish_air(&mut self, _: bool, _: Outcome) -> u64 {
-                0
-            }
-            fn order_groups(
-                &mut self,
-                _: bool,
-                _: &[engine::corders_group::Root],
-                _: Outcome,
-            ) -> u64 {
-                0
-            }
-        }
-        let needed = [
-            true, true, false, false, false, false, false, false, false, false,
-        ];
-        let (matched, _) = direct.sample(&memory, BASE, GS, &needed, &mut NoSources);
-        assert!(!matched[0]);
-        let mut captured = MapCaptured::with_capacities(
-            &capacities,
-            &[0; super::MAP_TABLES],
-            SourceChecks::default(),
-        );
+        let mut direct = MapCaptured::with_capacities(&capacities);
+        direct.sample(&memory, BASE, GS, &mut NoSources);
+        let mut captured = MapCaptured::with_capacities(&capacities);
         let ctx = PlayersCopyContext {
             base: BASE,
             game_state: GS,
-            needed: [true, true],
         };
         let mut first = PlayersJob::new();
-        let report = copy_players_refresh(&memory, ctx, &mut first, None);
-        captured.apply_players_report(ctx.needed, &report);
+        let report = copy_players_refresh(&memory, ctx, &mut first);
+
         assert!(report.raw_ok);
         captured.players_raw_mode = true;
         let mut ticks = [0u64; 2];
         captured.decode_players_payload(BASE, &first, &mut ticks);
         assert_eq!(captured.players.outcome, direct.players.outcome);
-    }
-
-    #[test]
-    fn players_double_copy_compare_blocks_checks_on_tearing() {
-        let bytes = fixture();
-        let memory = SliceMemory {
-            base: GS,
-            bytes: &bytes,
-        };
-        let mut captured = MapCaptured::with_capacities(
-            &capacities(),
-            &[0; super::MAP_TABLES],
-            SourceChecks::default(),
-        );
-        let ctx = PlayersCopyContext {
-            base: BASE,
-            game_state: GS,
-            needed: [true, true],
-        };
-        let mut first = PlayersJob::new();
-        let mut second = PlayersJob::new();
-        let report = copy_players_refresh(&memory, ctx, &mut first, Some(&mut second));
-        captured.apply_players_report(ctx.needed, &report);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true, true]);
-        let mut torn = fixture();
-        put(
-            &mut torn,
-            ROSTER + chuman::PLAYER_KEY,
-            &99_i32.to_le_bytes(),
-        );
-        let mut after = PlayersJob::new();
-        super::copy_players_pass(&mut after.log, &memory, BASE, GS);
-        let mut after_torn = PlayersJob::new();
-        super::copy_players_pass(
-            &mut after_torn.log,
-            &SliceMemory {
-                base: GS,
-                bytes: &torn,
-            },
-            BASE,
-            GS,
-        );
-        assert!(!after.log.logs_equal(&after_torn.log));
-    }
-
-    #[test]
-    fn players_partition_equal_isolates_players_private_bytes() {
-        // Tear exactly the players table's private bytes (P_PLAYERS 0x01):
-        // only slot 0 flips; controllers (0x02) stay true. The two walks
-        // share no census spans, so partitions are fully independent.
-        let bytes = fixture();
-        let memory = SliceMemory {
-            base: GS,
-            bytes: &bytes,
-        };
-        let mut captured = MapCaptured::with_capacities(
-            &capacities(),
-            &[0; super::MAP_TABLES],
-            SourceChecks::default(),
-        );
-        let ctx = PlayersCopyContext {
-            base: BASE,
-            game_state: GS,
-            needed: [true, true],
-        };
-        let mut first = PlayersJob::new();
-        let mut second = PlayersJob::new();
-        let report = copy_players_refresh(&memory, ctx, &mut first, Some(&mut second));
-        captured.apply_players_report(ctx.needed, &report);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true, true]);
-        let players_idx = second
-            .log
-            .spans
-            .iter()
-            .position(|span| span.ok && span.mask == 0x01)
-            .expect("players-private span");
-        let start = second.log.spans[players_idx].start as usize;
-        second.log.bytes[start] ^= 0xff;
-        assert!(!first.log.partition_equal(&second.log, 0));
-        assert!(first.log.partition_equal(&second.log, 1));
     }
 
     #[test]
@@ -1715,22 +1216,16 @@ pub(crate) mod players_split_tests {
             base: GS,
             bytes: &bytes,
         };
-        let mut captured = MapCaptured::with_capacities(
-            &capacities(),
-            &[0; super::MAP_TABLES],
-            SourceChecks::default(),
-        );
         let ctx = PlayersCopyContext {
             base: BASE,
             game_state: GS,
-            needed: [true, true],
         };
         let mut tiny = PlayersJob {
             log: crate::raw::RawLog::new(8, 8),
             game_state: 0,
         };
-        let report = copy_players_refresh(&memory, ctx, &mut tiny, None);
-        captured.apply_players_report(ctx.needed, &report);
+        let report = copy_players_refresh(&memory, ctx, &mut tiny);
+
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());
@@ -1749,41 +1244,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn downstream_checks_retain_only_required_source_comparison_storage() {
-        let mut capacities = MapCapacities::default();
-        let successful = [CONSISTENCY_TARGET; MAP_TABLES];
-        let sources = SourceChecks {
-            land_combats: false,
-            ships: true,
-            air_wings: true,
-            order_groups: true,
-        };
-        let mut captured = MapCaptured::with_capacities(&capacities, &successful, sources);
-        assert!(!captured.ships.second.is_empty());
-        assert!(!captured.air_wings.second.is_empty());
-        assert!(!captured.army_orders.second.is_empty());
-        assert!(!captured.order_geometry_second.is_empty());
-        assert!(captured.fleets.second.is_empty());
-        assert!(captured.task_forces.second.is_empty());
-        assert!(captured.land_combats.second.is_empty());
-        captured.grow(
-            &mut capacities,
-            &successful,
-            SourceChecks {
-                ships: true,
-                ..SourceChecks::default()
-            },
-        );
-        assert!(!captured.ships.second.is_empty());
-        assert!(captured.air_wings.second.is_empty());
-        assert!(captured.army_orders.second.is_empty());
-        assert!(captured.order_geometry_second.is_empty());
-        captured.grow(&mut capacities, &successful, NoSources.checks());
-        assert!(captured.ships.second.is_empty());
-    }
-
-    #[test]
-    fn downstream_requests_force_fresh_passes_and_receive_source_failures() {
+    fn downstream_consumers_receive_one_census_and_failed_air_is_not_retried() {
         #[derive(Default)]
         struct Unreadable(std::cell::Cell<usize>);
         impl Memory for Unreadable {
@@ -1794,90 +1255,48 @@ mod tests {
         }
         #[derive(Default)]
         struct Sources {
-            begins: [usize; 3],
-            finished: Vec<(usize, bool, Outcome)>,
+            begins: [usize; 2],
+            finished: Vec<(usize, Outcome)>,
         }
         impl MapSources for Sources {
-            fn checks(&self) -> SourceChecks {
-                SourceChecks {
-                    ships: true,
-                    air_wings: true,
-                    order_groups: true,
-                    land_combats: true,
-                }
-            }
-            fn begin_ships(&mut self, _: bool) -> u64 {
+            fn begin_air(&mut self) -> u64 {
                 self.begins[0] += 1;
                 0
             }
-            fn ship(&mut self, _: bool, _: usize, _: &cship::Row) -> u64 {
-                panic!("unreadable census visited ship")
+            fn air(&mut self, _: usize, _: usize, _: &cair_wing::Row) -> u64 {
+                panic!("unreadable census visited wing")
             }
-            fn finish_ships(&mut self, second: bool, outcome: Outcome) -> u64 {
-                self.finished.push((0, second, outcome));
+            fn finish_air(&mut self, outcome: Outcome) -> u64 {
+                self.finished.push((0, outcome));
                 0
             }
-            fn begin_air(&mut self, _: bool) -> u64 {
+            fn begin_land(&mut self) -> u64 {
                 self.begins[1] += 1;
                 0
             }
-            fn air(&mut self, _: bool, _: usize, _: usize, _: &cair_wing::Row) -> u64 {
-                panic!("unreadable census visited wing")
-            }
-            fn finish_air(&mut self, second: bool, outcome: Outcome) -> u64 {
-                self.finished.push((1, second, outcome));
-                0
-            }
-            fn begin_land(&mut self, _: bool) -> u64 {
-                self.begins[2] += 1;
-                0
-            }
-            fn land(&mut self, _: bool, _: cland_combat::Source) -> u64 {
+            fn land(&mut self, _: cland_combat::Source) -> u64 {
                 panic!("unreadable census visited combat")
             }
-            fn finish_land(&mut self, second: bool, outcome: Outcome) -> u64 {
-                self.finished.push((3, second, outcome));
-                0
-            }
-            fn order_groups(
-                &mut self,
-                second: bool,
-                roots: &[corders_group::Root],
-                outcome: Outcome,
-            ) -> u64 {
-                assert!(roots.is_empty());
-                self.finished.push((2, second, outcome));
+            fn finish_land(&mut self, outcome: Outcome) -> u64 {
+                self.finished.push((1, outcome));
                 0
             }
         }
         let mut sources = Sources::default();
-        let mut captured = MapCaptured::with_capacities(
-            &MapCapacities::default(),
-            &[CONSISTENCY_TARGET; MAP_TABLES],
-            sources.checks(),
-        );
+        let mut captured = MapCaptured::with_capacities(&MapCapacities::default());
         let memory = Unreadable::default();
-        let (matched, _) = captured.sample(&memory, 0, 0x1000, &[false; MAP_TABLES], &mut sources);
-        assert_eq!(matched, [false; MAP_TABLES]);
-        assert_eq!(sources.begins, [2, 2, 2]);
-        assert_eq!(sources.finished.len(), 8);
-        for source in 0..4 {
-            for second in [false, true] {
-                assert!(
-                    sources
-                        .finished
-                        .iter()
-                        .any(|&(kind, pass, outcome)| kind == source
-                            && pass == second
-                            && matches!(outcome, Outcome::Unavailable { .. }))
-                );
-            }
+        captured.sample(&memory, 0, 0x1000, &mut sources);
+        assert_eq!(sources.begins, [1, 1]);
+        assert_eq!(sources.finished.len(), 2);
+        for source in 0..2 {
+            assert!(
+                sources
+                    .finished
+                    .iter()
+                    .any(|&(kind, outcome)| kind == source
+                        && matches!(outcome, Outcome::Unavailable { .. }))
+            );
         }
-        assert!(
-            !captured.ships.checked && !captured.air_wings.checked && !captured.army_orders.checked
-        );
-        assert!(!captured.land_combats.checked);
-
         let ordinary_reads = memory.0.get();
         let ordinary_outcomes = captured.outcomes();
         memory.0.set(0);
@@ -1890,35 +1309,28 @@ mod tests {
         );
         let wing_reads = memory.0.get();
         assert!(wing_reads > 0);
-        for needed in [false, true] {
-            captured.reset();
-            let reason = "accepted wing worker failed";
-            captured.fail_air_capture(needed, reason);
-            memory.0.set(0);
-            let mut sources = Sources::default();
-            let mut checks = [false; MAP_TABLES];
-            checks[8] = needed;
-            let (matched, _) = captured.sample(&memory, 0, 0x1000, &checks, &mut sources);
-            assert!(!matched[8]);
-            assert_eq!(captured.air_wings.outcome, Outcome::Unavailable { reason });
-            assert_eq!(captured.air_wings.checked, needed);
-            assert_eq!(captured.air_wings.mismatches, usize::from(needed));
-            assert_eq!(memory.0.get(), ordinary_reads - 2 * wing_reads);
-            assert_eq!(sources.begins, [2, 0, 2]);
-            assert_eq!(sources.finished.len(), 6);
-            for (index, outcome) in captured.outcomes().into_iter().enumerate() {
-                if index != 8 {
-                    assert_eq!(outcome, ordinary_outcomes[index]);
-                }
+        captured.reset();
+        let reason = "accepted wing worker failed";
+        captured.fail_air_capture(reason);
+        memory.0.set(0);
+        let mut sources = Sources::default();
+        captured.sample(&memory, 0, 0x1000, &mut sources);
+        assert_eq!(captured.air_wings.outcome, Outcome::Unavailable { reason });
+        assert_eq!(memory.0.get(), ordinary_reads - wing_reads);
+        assert_eq!(sources.begins, [0, 1]);
+        assert_eq!(sources.finished.len(), 1);
+        for (index, outcome) in captured.outcomes().into_iter().enumerate() {
+            if index != 8 {
+                assert_eq!(outcome, ordinary_outcomes[index]);
             }
         }
-        // The terminal decision owns just this callback, never the next one.
+        // The failure belongs to this callback and clears at the next reset.
         captured.reset();
         memory.0.set(0);
         let mut sources = Sources::default();
-        captured.sample(&memory, 0, 0x1000, &[false; MAP_TABLES], &mut sources);
+        captured.sample(&memory, 0, 0x1000, &mut sources);
         assert_eq!(memory.0.get(), ordinary_reads);
-        assert_eq!(sources.begins, [2, 2, 2]);
+        assert_eq!(sources.begins, [1, 1]);
     }
 
     #[test]
@@ -1940,44 +1352,55 @@ mod tests {
     }
 
     #[test]
-    fn new_buffers_use_current_capacities_without_recreating_completed_comparisons() {
+    fn new_buffers_use_current_primary_capacities() {
         let mut capacity = MapCapacities::default();
         capacity.rows[5] += 31;
         capacity.player_names += 19;
         capacity.land_participants += 13;
         capacity.order_geometry += 17;
-        let mut successful = [CONSISTENCY_TARGET; MAP_TABLES];
-        successful[5] -= 1;
-        let captured =
-            MapCaptured::with_capacities(&capacity, &successful, SourceChecks::default());
-        assert_eq!(captured.ships.rows.len(), capacity.rows[5]);
-        assert_eq!(captured.ships.second.len(), capacity.rows[5]);
-        assert!(captured.players.second.is_empty());
-        assert!(captured.land_combats.second.is_empty());
-        assert!(captured.army_orders.second.is_empty());
+        let captured = MapCaptured::with_capacities(&capacity);
+        assert_eq!(captured.naval.ships.rows.len(), capacity.rows[5]);
         assert_eq!(captured.player_names.len(), capacity.player_names);
         assert_eq!(captured.land_participants.len(), capacity.land_participants);
-        assert_eq!(captured.order_geometry.len(), capacity.order_geometry);
-        assert!(captured.player_names_second.is_empty());
-        assert!(captured.land_participants_second.is_empty());
-        assert!(captured.order_geometry_second.is_empty());
-        let complete = MapCaptured::with_capacities(
-            &capacity,
-            &[CONSISTENCY_TARGET; MAP_TABLES],
-            SourceChecks::default(),
-        );
+        assert_eq!(captured.orders.geometry.len(), capacity.order_geometry);
+    }
+
+    #[test]
+    fn order_failure_keeps_storage_and_growth_demand_but_hides_sources() {
+        let mut orders = Orders::new(&MapCapacities::default());
+        orders.rows.outcome = Outcome::Rows { len: 1 };
+        orders.root_outcome = Outcome::Rows { len: 1 };
+        orders.geometry_len = 3;
+        orders.geometry_required = 17;
+        orders.groups_required = 23;
+        orders.visits_required = 41;
+        orders.ticks = 99;
+        let bytes = orders.allocated_bytes();
+        orders.fail("worker failed");
+        let unavailable = Outcome::Unavailable {
+            reason: "worker failed",
+        };
+        assert_eq!(orders.rows.outcome, unavailable);
+        assert_eq!(orders.root_outcome, unavailable);
+        assert!(orders.roots().is_empty());
+        assert_eq!((orders.geometry_len, orders.ticks), (0, 0));
         assert_eq!(
-            captured.allocated_bytes() - complete.allocated_bytes(),
-            capacity.rows[5] * size_of::<cship::Row>()
+            (
+                orders.geometry_required,
+                orders.groups_required,
+                orders.visits_required
+            ),
+            (17, 23, 41)
         );
+        assert_eq!(orders.allocated_bytes(), bytes);
     }
 
     #[test]
     fn pooled_growth_preserves_complete_rows_and_counts_whole_omissions() {
         let mut captured = MapCaptured::new();
         let mut capacity = MapCapacities::default();
-        captured.ships.rows[0].id = u64::MAX;
-        captured.ships.outcome = Outcome::Truncated {
+        captured.naval.ships.rows[0].id = u64::MAX;
+        captured.naval.ships.outcome = Outcome::Truncated {
             len: capacity.rows[5],
             unread_rows: 7,
         };
@@ -1987,113 +1410,83 @@ mod tests {
         };
         captured.land_participants_required = capacity.land_participants + 11;
         captured.player_names_required = capacity.player_names + 17;
-        captured.order_geometry_required = capacity.order_geometry + 23;
-        captured.grow(&mut capacity, &[0; MAP_TABLES], SourceChecks::default());
-        assert_eq!(captured.ships.rows.len(), 8192);
-        assert_eq!(captured.ships.second.len(), 8192);
-        assert_eq!(captured.ships.rows[0].id, u64::MAX);
+        captured.orders.geometry_required = capacity.order_geometry + 23;
+        captured.grow(&mut capacity);
+        assert_eq!(captured.naval.ships.rows.len(), 8192);
+
+        assert_eq!(captured.naval.ships.rows[0].id, u64::MAX);
         assert_eq!(captured.land_participants.len(), 16384);
-        assert_eq!(captured.land_participants_second.len(), 16384);
+
         assert_eq!(captured.player_names.len(), 8192);
-        assert_eq!(captured.player_names_second.len(), 8192);
-        assert_eq!(captured.order_geometry.len(), 32768);
-        assert_eq!(captured.order_geometry_second.len(), 32768);
+
+        assert_eq!(captured.orders.geometry.len(), 32768);
+
         let mut idle = MapCaptured::new();
-        idle.grow(&mut capacity, &[0; MAP_TABLES], SourceChecks::default());
+        idle.grow(&mut capacity);
         assert_eq!(idle.allocated_bytes(), captured.allocated_bytes());
     }
 
     #[test]
     fn gradually_growing_tables_fit_without_first_losing_an_hour() {
         let mut capacity = 8;
-        let mut table = CaptureRows::<u32>::new(capacity, CONSISTENCY_TARGET);
+        let mut table = CaptureRows::<u32>::new(capacity);
         for count in 1..=129 {
             assert!(count <= table.rows.len());
             table.rows[count - 1] = count as u32;
             table.outcome = Outcome::Rows { len: count };
-            table.grow(&mut capacity, CONSISTENCY_TARGET);
+            table.grow(&mut capacity);
             assert_eq!(table.rows[count - 1], count as u32);
-            assert!(table.second.is_empty());
         }
         assert!(capacity <= 129 * 3);
+    }
+
+    #[test]
+    fn worker_grown_order_visits_raise_the_shared_reuse_capacity() {
+        let mut capacity = MapCapacities::default();
+        let mut orders = Orders::new(&capacity);
+        orders
+            .visits
+            .resize(capacity.order_visits * 2, corder_instance::Visit::default());
+        let worker_capacity = orders.visits.capacity();
+        orders.grow(&mut capacity);
+        assert_eq!(capacity.order_visits, worker_capacity);
+        assert_eq!(Orders::new(&capacity).visits.len(), worker_capacity);
     }
 
     #[test]
     fn unavailable_scratch_walks_grow_without_inventing_truncated_row_counts() {
         let mut captured = MapCaptured::new();
         let mut capacity = MapCapacities::default();
-        captured.army_orders.outcome = Outcome::Unavailable {
+        captured.orders.rows.outcome = Outcome::Unavailable {
             reason: "orders scratch full",
         };
         let initial_group_capacity = capacity.order_groups;
-        captured.order_groups_required = initial_group_capacity + 1;
-        captured.order_visits_required = 4096;
+        captured.orders.groups_required = initial_group_capacity + 1;
+        captured.orders.visits_required = 4096;
         captured.naval_combat_participants.outcome = Outcome::Unavailable {
             reason: "naval groups scratch full",
         };
         captured.naval_groups_required = 129;
-        captured.grow(&mut capacity, &[0; MAP_TABLES], SourceChecks::default());
-        assert_eq!(captured.order_groups.len(), initial_group_capacity * 2);
-        assert_eq!(captured.order_visits.len(), 4096);
+        captured.grow(&mut capacity);
+        assert_eq!(captured.orders.groups.len(), initial_group_capacity * 2);
+        assert_eq!(captured.orders.visits.len(), 4096);
         assert_eq!(captured.naval_groups.len(), 256);
         // Slowly increasing native counts reuse headroom instead of making
         // every newly created group or order unavailable for another hour.
         let grown = capacity;
-        captured.order_groups_required = initial_group_capacity + 47;
-        captured.order_visits_required = 3500;
+        captured.orders.groups_required = initial_group_capacity + 47;
+        captured.orders.visits_required = 3500;
         captured.naval_groups_required = 201;
-        captured.grow(&mut capacity, &[0; MAP_TABLES], SourceChecks::default());
+        captured.grow(&mut capacity);
         assert!(capacity == grown);
         assert!(matches!(
-            captured.army_orders.outcome,
+            captured.orders.rows.outcome,
             Outcome::Unavailable { .. }
         ));
         assert!(matches!(
             captured.naval_combat_participants.outcome,
             Outcome::Unavailable { .. }
         ));
-    }
-
-    #[test]
-    fn completed_proofs_release_comparison_rows_and_arenas_without_losing_primary_data() {
-        let mut captured = MapCaptured::new();
-        let mut capacity = MapCapacities::default();
-        captured.player_names[0] = 0xff;
-        captured.land_participants[0] = u64::MAX;
-        captured.order_geometry[0] = u32::MAX;
-        let before = captured.allocated_bytes();
-        let mut successful = [CONSISTENCY_TARGET - 1; MAP_TABLES];
-        successful[0] = CONSISTENCY_TARGET;
-        captured.grow(&mut capacity, &successful, SourceChecks::default());
-        assert_eq!(captured.players.second.capacity(), 0);
-        assert_eq!(captured.player_names_second.capacity(), 0);
-        assert!(!captured.land_combats.second.is_empty());
-        assert!(!captured.army_orders.second.is_empty());
-        successful.fill(CONSISTENCY_TARGET);
-        captured.grow(&mut capacity, &successful, SourceChecks::default());
-        assert_eq!(captured.players.second.capacity(), 0);
-        assert_eq!(captured.human_controllers.second.capacity(), 0);
-        assert_eq!(captured.land_combats.second.capacity(), 0);
-        assert_eq!(captured.fleets.second.capacity(), 0);
-        assert_eq!(captured.task_forces.second.capacity(), 0);
-        assert_eq!(captured.ships.second.capacity(), 0);
-        assert_eq!(captured.naval_combats.second.capacity(), 0);
-        assert_eq!(captured.naval_combat_participants.second.capacity(), 0);
-        assert_eq!(captured.air_wings.second.capacity(), 0);
-        assert_eq!(captured.army_orders.second.capacity(), 0);
-        assert_eq!(captured.land_participants_second.capacity(), 0);
-        assert_eq!(captured.order_geometry_second.capacity(), 0);
-        captured.player_names_required = capacity.player_names + 1;
-        captured.land_participants_required = capacity.land_participants + 1;
-        captured.order_geometry_required = capacity.order_geometry + 1;
-        captured.grow(&mut capacity, &successful, SourceChecks::default());
-        assert_eq!(captured.player_names_second.capacity(), 0);
-        assert_eq!(captured.land_participants_second.capacity(), 0);
-        assert_eq!(captured.order_geometry_second.capacity(), 0);
-        assert_eq!(captured.player_names[0], 0xff);
-        assert_eq!(captured.land_participants[0], u64::MAX);
-        assert_eq!(captured.order_geometry[0], u32::MAX);
-        assert!(captured.allocated_bytes() < before);
     }
 
     #[test]
@@ -2118,68 +1511,6 @@ mod tests {
                     "{table:?} at {hour}"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn typed_map_keeps_its_own_checks_when_air_and_naval_payloads_are_staged() {
-        use crate::extended;
-        use replay::frame::TABLE_COUNT;
-        #[derive(Default)]
-        struct Reads(std::cell::RefCell<Vec<(usize, usize)>>);
-        impl engine::Memory for Reads {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                self.0.borrow_mut().push((address, destination.len()));
-                false
-            }
-        }
-        let mut extensions = extended::Captured::with_capacities(
-            &extended::Capacities::default(),
-            &[0; TABLE_COUNT],
-        );
-        let mut actual = MapCaptured::with_capacities(
-            &MapCapacities::default(),
-            &[0; MAP_TABLES],
-            SourceChecks::default(),
-        );
-        let mut reference = MapCaptured::with_capacities(
-            &MapCapacities::default(),
-            &[0; MAP_TABLES],
-            SourceChecks::default(),
-        );
-        // AirWings and ArmyOrders have their own core checks independent of
-        // the downstream consumers' already-staged raw jobs.
-        for (wings, orders) in [(false, false), (true, false), (false, true), (true, true)] {
-            actual.reset();
-            reference.reset();
-            extensions.reset();
-            let mut needed = [false; MAP_TABLES];
-            needed[8] = wings;
-            needed[9] = orders;
-            let memory = Reads::default();
-            let reference_memory = Reads::default();
-            let (expected, _) =
-                reference.sample(&reference_memory, 0, 0x1000, &needed, &mut NoSources);
-            let mut extension_checks = [true; TABLE_COUNT];
-            // This test isolates the already-staged air/naval consumers. The
-            // independent live combat-progress window is covered separately.
-            extension_checks[replay::rows::TableId::LandCombatProgress.index()] = false;
-            extension_checks[replay::rows::TableId::ShipModels.index()] = false;
-            for table in crate::extended::plans::TABLES {
-                extension_checks[table.index()] = false;
-            }
-            let (matched, _) = actual.sample(
-                &memory,
-                0,
-                0x1000,
-                &needed,
-                &mut extensions.sources(&memory, 0, &extension_checks, true, true),
-            );
-            assert_eq!(*memory.0.borrow(), *reference_memory.0.borrow());
-            assert_eq!(matched, expected);
-            assert_eq!(actual.outcomes(), reference.outcomes());
-            assert_eq!(actual.air_wings.checked, wings);
-            assert_eq!(actual.army_orders.checked, orders);
         }
     }
 }

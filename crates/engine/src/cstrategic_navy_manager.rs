@@ -35,15 +35,7 @@ fn with_navy<T>(
     let navy = read::<u64>(memory, slot)
         .filter(|&p| p != 0)
         .ok_or("country navy absent or unreadable")?;
-    let value = consume(navy as usize)?;
-    if read::<u64>(memory, root) != Some(manager as u64)
-        || read::<u64>(memory, manager) != Some(vtable)
-        || Array::read(memory, header, 8) != Some(array)
-        || read::<u64>(memory, slot) != Some(navy)
-    {
-        return Err("navy manager source changed");
-    }
-    Ok(value)
+    consume(navy as usize)
 }
 
 pub(crate) fn authenticate_owner(
@@ -66,5 +58,16 @@ pub(crate) fn regional_operand(
 ) -> Result<i64, &'static str> {
     with_navy(memory, base, state, country, |navy| {
         cstrategic_navy::regional_operand(memory, base, state, navy, country, region)
+    })
+}
+
+pub(crate) fn regional_inputs(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    country: ccountry::Country,
+) -> Result<Array, &'static str> {
+    with_navy(memory, base, state, country, |navy| {
+        cstrategic_navy::regional_inputs(memory, base, state, navy, country)
     })
 }

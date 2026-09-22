@@ -303,6 +303,7 @@ fn ownership_frame(branch: u64, hour: i32, owner: u32) -> DecodedFrame {
             id: 1,
             owner,
             controller: 55,
+            movement_infrastructure: 0,
         }]));
     frame
 }
@@ -416,6 +417,7 @@ fn land_owners_keep_partial_positive_evidence_and_do_not_reuse_lost_baselines() 
             id: 1,
             owner: 66,
             controller: 55,
+            movement_infrastructure: 0,
         }]),
         missing: 1,
     };

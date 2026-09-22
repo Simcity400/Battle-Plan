@@ -1,15 +1,16 @@
-//! The global dictionary is acquired once per callback with passive witnesses.
+//! The global dictionary is acquired once per refresh between passive writer witnesses.
 //! Growth, exceptional decoding and conversion allocate only off the game thread.
 
 use crate::{
     raw::RawLog,
+    read_accounting,
     sampling::qpc,
     spooling::table,
-    table_capture::{Arena, CaptureRows},
+    table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
 use engine::{Memory, cpdx_lexer, cpdx_lexer::TOKEN_NAME_STRIDE, walk::Outcome};
 use replay::{
-    frame::{TABLE_COUNT, TableInput, TableView},
+    frame::{TableInput, TableView},
     rows::{self, TableId, TableRows, tables},
 };
 
@@ -37,11 +38,10 @@ impl Default for Capacities {
 pub struct Captured {
     rows: CaptureRows<cpdx_lexer::Row>,
     text: Arena<u8>,
-    /// Raw-copy split gate for the Tier-4 slot-3 lexical table. Set by the
-    /// game thread on refresh hours with a valid raw payload; `capture` then
-    /// skips the typed walk and the decode worker fills these rows before
-    /// the ready handoff. Preserved across `reset` (set per refresh, cleared
-    /// by the worker after decode).
+    /// Raw-copy split gate for a scheduled lexical refresh. Set by the game thread
+    /// when a raw payload is staged; `capture` skips the typed walk and the decode
+    /// worker fills these rows before the ready handoff. Preserved across `reset`
+    /// and cleared by the worker after decode.
     pub(crate) raw_mode: bool,
 }
 
@@ -68,10 +68,10 @@ impl<'a> LexicalConversion<'a> {
 }
 
 impl Captured {
-    pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
+    pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            rows: CaptureRows::new(capacity.rows, successful[0]),
-            text: Arena::new(capacity.text, successful[0]),
+            rows: CaptureRows::new(capacity.rows),
+            text: Arena::new(capacity.text),
             raw_mode: false,
         }
     }
@@ -85,9 +85,14 @@ impl Captured {
         self.rows.allocated_bytes() + self.text.allocated_bytes()
     }
 
-    pub fn grow(&mut self, capacity: &mut Capacities, successful: &[u16]) {
-        self.rows.grow(&mut capacity.rows, successful[0]);
-        self.text.grow(&mut capacity.text, successful[0]);
+    pub fn grow(&mut self, capacity: &mut Capacities) {
+        // Decode may have sized this frame from a complete owned payload.
+        grow_capacity(&mut capacity.rows, self.rows.rows.len());
+        self.rows.grow(&mut capacity.rows);
+        // Text demand is either owned decode output or a freshly probed prefix.
+        // Do not round a foreign string's unacquired tail into the allocation.
+        capacity.text = capacity.text.max(self.text.first.len()).max(self.text.required);
+        grow_vec(&mut self.text.first, capacity.text);
     }
 
     pub fn capture(
@@ -95,59 +100,34 @@ impl Captured {
         memory: &impl Memory,
         base: usize,
         _game_state: usize,
-        needed: &[bool],
         hour: i32,
         force_full: bool,
-    ) -> ([bool; N], [u64; N]) {
+    ) -> [u64; N] {
         self.reset();
-        // Tier-4 fallback: witness cannot prove staleness-free static caching.
-        // Raw-copy split: on refresh hours the game thread stages raw bytes
-        // via `copy_lexical_refresh` and the decode worker fills the typed
-        // rows before the ready handoff, so the typed walk is skipped here.
-        // Matched flags and costs come from the raw compare, applied by the
-        // caller after this returns.
+        // An acquisition worker stages the refresh via `copy_lexical_refresh`.
+        // The decode worker fills typed rows before the ready handoff.
         if self.raw_mode {
             // Refresh payload staged: leave the reset outcomes for the decode
             // worker, which installs identical rows, outcomes and arenas.
-            return ([false], [0]);
+            return [0];
         }
         if !replay::cadence::should_walk(TableId::LexicalTokens, hour, force_full) {
             self.rows.outcome = Outcome::Unavailable {
                 reason: replay::cadence::SKIPPED_REASON,
             };
-            return ([false], [0]);
+            return [0];
         }
+        let _reads = read_accounting::table(TableId::LexicalTokens);
         let start = qpc();
         let first = cpdx_lexer::walk(memory, base, &mut self.rows.rows, &mut self.text.first);
         self.rows.outcome = first.outcome;
         self.text.len = first.text_len;
         self.text.required = first.text_required;
-        let mut matched = false;
-        if needed[0] {
-            self.rows.checked = true;
-            let second =
-                cpdx_lexer::walk(memory, base, &mut self.rows.second, &mut self.text.second);
-            matched = self.rows.compare(second.outcome);
-            if !self.text.compare(second.text_len, second.text_required) {
-                self.rows.mismatches = self.rows.mismatches.saturating_add(1);
-                matched = false;
-            }
-        }
-        ([matched], [qpc().saturating_sub(start).max(0) as u64])
-    }
-
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [self.rows.mismatches]
+        [elapsed(start)]
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
-        [if self.rows.checked && self.rows.mismatches != 0 {
-            Outcome::Unavailable {
-                reason: "lexical dictionary changed during double read",
-            }
-        } else {
-            self.rows.outcome
-        }]
+        [self.rows.outcome]
     }
 
     pub fn tables(&self) -> [TableView; N] {
@@ -166,7 +146,6 @@ impl Captured {
         };
         let source = self.source();
         if let Ok((Outcome::Rows { .. }, rows, bytes)) = &source
-            && self.rows.mismatches == 0
             && self.text.required == self.text.len
             && let Some(cached) = reuse.cached
             && let Some(previous) = cached.rows::<tables::LexicalTokens>()
@@ -238,11 +217,11 @@ fn elapsed(begin: i64) -> u64 {
 }
 
 // ===========================================================================
-// Tier-4 slot-3 raw-copy split (LexicalTokens).
+// Hourly raw-copy split (LexicalTokens).
 //
-// The game thread reads the writer witness as the copy gate, bulk-copies the
+// An acquisition worker reads the writer witness as the copy gate, bulk-copies the
 // contiguous token-header table in 64 KiB chunks, copies heap payloads and
-// terminators by header length, and closes with the witness-after pair. The
+// terminators by header length, then captures the closing writer witness. The
 // single FIFO decode worker directly decodes complete, valid packets with no
 // table/witness aliases. Exceptional outcomes reconstruct observations from
 // owned bytes and replay `cpdx_lexer::walk`, preserving exact-key arbitration,
@@ -386,9 +365,7 @@ impl LexicalJob {
             self.span_limit = self.span_limit.max(1).saturating_mul(2);
         }
         if self.required_bytes > self.bytes.capacity() {
-            let target = self
-                .required_bytes
-                .max(self.bytes.capacity().saturating_mul(2));
+            let target = self.required_bytes;
             self.bytes.reserve_exact(target - self.bytes.len());
         }
         let tokens = self.span_limit.saturating_add(1);
@@ -471,6 +448,35 @@ impl LexicalJob {
         self.bytes.get(start..start + 32)?.try_into().ok()
     }
 
+    fn take_payload(&mut self, memory: &impl Memory, address: usize, len: usize) -> Observation {
+        if self.overflowed || len > u32::MAX as usize || address == 0
+            || address.checked_add(len).is_none()
+            || !crate::raw::is_canonical_range(address, len)
+            || len <= self.bytes.capacity().saturating_sub(self.bytes.len())
+        {
+            return self.take(memory, address, len);
+        }
+        if self.spans == self.span_limit {
+            self.span_exhausted = true;
+            self.overflowed = true;
+            return Observation::Missing;
+        }
+        match cpdx_lexer::probe_growth_prefix(memory, address, len, self.bytes.len(), self.bytes.capacity()) {
+            Ok(required) => {
+                self.required_bytes = required;
+                self.overflowed = true;
+                Observation::Missing
+            }
+            Err(_) => {
+                // An unreadable subset proves that the original full request
+                // failed. Preserve that terminal failure for owned replay; it
+                // must not become raw overflow and trigger a typed live retry.
+                self.required_bytes = 0;
+                self.failed()
+            }
+        }
+    }
+
     fn witness(&self, packet: WitnessPacket) -> Option<cpdx_lexer::PreparedWitness> {
         let flag = packet.flag.start()?;
         let again = packet.again.start()?;
@@ -485,21 +491,22 @@ impl LexicalJob {
         .ok()
     }
 
-    fn equal(&self, other: &Self) -> bool {
-        !self.overflowed
-            && !other.overflowed
-            && self.base == other.base
-            && self.bytes == other.bytes
-            && self.before == other.before
-            && self.after == other.after
-            && self.chunks == other.chunks
-            && self.tokens == other.tokens
-            && self.has_bulk == other.has_bulk
+    fn matching_witnesses(&self) -> Result<cpdx_lexer::PreparedWitness, &'static str> {
+        let before = self
+            .witness(self.before)
+            .ok_or("lexer opening witness unavailable")?;
+        let after = self
+            .witness(self.after)
+            .ok_or("lexer closing witness unavailable")?;
+        if before != after {
+            return Err("lexer changed during copy");
+        }
+        Ok(before)
     }
 
     /// Enumerate the original observations, not worker requests. Repeated
     /// addresses retain order, failed bulk attempts are ordinary failed spans,
-    /// and absent closing witnesses are not invented.
+    /// preserving the first capture's exact fault positions.
     fn observations(&self, mut visit: impl FnMut(usize, usize, Observation, bool)) {
         let witness =
             |packet: WitnessPacket, visit: &mut dyn FnMut(usize, usize, Observation, bool)| {
@@ -599,23 +606,16 @@ impl LexicalJob {
         );
     }
 
-    /// FULL-result fast path only. Any absent/failed observation, invalid
-    /// semantic value, changed witness or storage shortage takes the owned-byte
-    /// reconstruction path. Thus earlier errors retain their original priority.
-    fn fast_decode(
-        &self,
-        rows: &mut [cpdx_lexer::Row],
-        output: &mut [u8],
-    ) -> Option<cpdx_lexer::Walk> {
+    /// Validate a complete owned packet before sizing its decode destinations.
+    /// Failed, incomplete, changed and aliased observations retain the
+    /// reconstruction path, preserving earlier token-error precedence.
+    fn complete_output_sizes(&self) -> Option<(usize, usize)> {
         if self.fault || self.overflowed {
             return None;
         }
-        let before = self.witness(self.before)?;
-        if self.witness(self.after)? != before {
-            return None;
-        }
+        let before = self.matching_witnesses().ok()?;
         let total = before.maximum() as usize + 1;
-        if self.tokens.len() != total || rows.len() < total {
+        if self.tokens.len() != total {
             return None;
         }
         let table_end = before
@@ -659,10 +659,17 @@ impl LexicalJob {
                 }
             }
             required = required.checked_add(text.len())?;
-            if required > output.len() {
-                return None;
-            }
         }
+        Some((total, required))
+    }
+
+    fn decode_complete(
+        &self,
+        total: usize,
+        rows: &mut [cpdx_lexer::Row],
+        output: &mut [u8],
+    ) -> Option<cpdx_lexer::Walk> {
+        let before = self.witness(self.before)?;
         let mut offset = 0;
         for (index, packet) in self.tokens.iter().enumerate() {
             let header = self.header(packet.header)?;
@@ -693,6 +700,18 @@ impl LexicalJob {
         })
     }
 
+    fn fast_decode(
+        &self,
+        rows: &mut [cpdx_lexer::Row],
+        output: &mut [u8],
+    ) -> Option<cpdx_lexer::Walk> {
+        let (total, required) = self.complete_output_sizes()?;
+        if rows.len() < total || output.len() < required {
+            return None;
+        }
+        self.decode_complete(total, rows, output)
+    }
+
     fn decode(
         &self,
         base: usize,
@@ -706,14 +725,28 @@ impl LexicalJob {
         }
         let log = self.reconstruct();
         let recorded = crate::raw::Recorded::build(&log);
-        cpdx_lexer::walk(&recorded, base, rows, text)
+        let walked = cpdx_lexer::walk(&recorded, base, rows, text);
+        // Recorded repeats its final exact observation after exhaustion. If
+        // acquisition stopped before the closing witness, a short destination
+        // can skip that later token fault and mistake the opening witness for
+        // closing evidence. Retain actual typed errors, but never publish a
+        // complete or truncated table without an explicitly acquired closure.
+        if !matches!(walked.outcome, Outcome::Unavailable { .. })
+            && let Err(reason) = self.matching_witnesses()
+        {
+            return cpdx_lexer::Walk {
+                outcome: Outcome::Unavailable { reason },
+                text_len: 0,
+                text_required: 0,
+            };
+        }
+        walked
     }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct LexicalCopyReport {
     pub raw_ok: bool,
-    pub matched: [bool; 1],
     pub copy_ticks: [u64; 1],
     pub raw_bytes: [u64; 1],
 }
@@ -721,7 +754,6 @@ pub(crate) struct LexicalCopyReport {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LexicalCopyContext {
     pub base: usize,
-    pub needed: [bool; TABLE_COUNT],
 }
 
 fn copy_witness(
@@ -765,7 +797,7 @@ fn copy_token_text(
     let inline = u64::from_le_bytes(header[24..].try_into().unwrap())
         == engine::msvc_string::INLINE_CAPACITY;
     if !text.is_empty() && !inline {
-        packet.payload = job.take(memory, text.source(), text.len());
+        packet.payload = job.take_payload(memory, text.source(), text.len());
         if packet.payload.start().is_none() {
             return false;
         }
@@ -776,6 +808,7 @@ fn copy_token_text(
 }
 
 fn copy_pass(memory: &impl Memory, base: usize, job: &mut LexicalJob) {
+    let _reads = read_accounting::table(TableId::LexicalTokens);
     job.clear();
     job.base = base;
     let (before, witness) = copy_witness(job, memory, base);
@@ -828,52 +861,25 @@ fn copy_pass(memory: &impl Memory, base: usize, job: &mut LexicalJob) {
     job.after = copy_witness(job, memory, base).0;
 }
 
-/// Acquire a refresh into owned jobs and compare independent raw passes.
-/// The caller applies the report after acquisition has completed.
+/// Acquire one refresh into its owned payload.
 pub(crate) fn copy_lexical_refresh(
     memory: &impl Memory,
     ctx: LexicalCopyContext,
-    first: &mut LexicalJob,
-    second: Option<&mut LexicalJob>,
+    job: &mut LexicalJob,
 ) -> LexicalCopyReport {
     let started = qpc();
-    copy_pass(memory, ctx.base, first);
-    let mut ticks = [elapsed(started)];
-    let mut matched = [true];
-    let mut raw_ok = !first.overflowed;
-    if let Some(second) = second {
-        let started = qpc();
-        copy_pass(memory, ctx.base, second);
-        ticks[0] += elapsed(started);
-        raw_ok &= !second.overflowed;
-        matched[0] = first.equal(second) && !first.fault && !second.fault;
-    }
+    copy_pass(memory, ctx.base, job);
     LexicalCopyReport {
-        raw_ok,
-        matched,
-        copy_ticks: ticks,
-        raw_bytes: [first.raw_bytes],
+        raw_ok: !job.overflowed,
+        copy_ticks: [elapsed(started)],
+        raw_bytes: [job.raw_bytes],
     }
 }
 
 impl Captured {
-    /// Apply completed acquisition checks without changing rows or outcomes.
-    pub(crate) fn apply_lexical_report(
-        &mut self,
-        ctx: LexicalCopyContext,
-        report: &LexicalCopyReport,
-    ) {
-        let needed = ctx.needed[TableId::LexicalTokens.index()];
-        self.rows.checked = needed;
-        self.rows.mismatches = usize::from(needed && !report.matched[0]);
-    }
-
     /// Mark an accepted acquisition failure without retrying live memory.
-    pub(crate) fn fail_lexical_capture(&mut self, ctx: LexicalCopyContext, reason: &'static str) {
-        let needed = ctx.needed[TableId::LexicalTokens.index()];
+    pub(crate) fn fail_lexical_capture(&mut self, reason: &'static str) {
         self.rows.outcome = Outcome::Unavailable { reason };
-        self.rows.checked = needed;
-        self.rows.mismatches = usize::from(needed);
         self.raw_mode = false;
     }
 
@@ -884,7 +890,26 @@ impl Captured {
         decode_ticks: &mut [u64; 1],
     ) {
         let started = qpc();
-        let walked = job.decode(base, &mut self.rows.rows, &mut self.text.first);
+        let walked = if base == job.base
+            && let Some((rows, text)) = job.complete_output_sizes()
+        {
+            // All native observations already belong to this payload. Grow only
+            // its owned destinations on the decode worker, before publishing the
+            // first hour, rather than discarding data until another live capture.
+            grow_vec(&mut self.rows.rows, rows);
+            grow_vec(&mut self.text.first, text);
+            job.decode_complete(rows, &mut self.rows.rows, &mut self.text.first)
+                .expect("validated complete lexical packet")
+        } else {
+            // Exceptional replay must consume successful heap observations at
+            // their original exact width, including strings larger than the
+            // growth probe chunk. Prefix probes cannot consume those repeated
+            // exact occurrences. Only already-owned storage sets this bound;
+            // foreign string lengths never size these allocations.
+            grow_vec(&mut self.rows.rows, job.tokens.len());
+            grow_vec(&mut self.text.first, job.bytes.len());
+            job.decode(base, &mut self.rows.rows, &mut self.text.first)
+        };
         self.rows.outcome = walked.outcome;
         self.text.len = walked.text_len;
         self.text.required = walked.text_required;
@@ -898,7 +923,7 @@ impl Captured {
 #[cfg(test)]
 pub(crate) mod lexical_test_kit {
     use super::{
-        Capacities, Captured, LexicalCopyContext, LexicalCopyReport, LexicalJob, N,
+        Capacities, Captured, LexicalCopyContext, LexicalCopyReport, LexicalJob,
         copy_lexical_refresh,
     };
     use engine::cpdx_lexer::{
@@ -907,8 +932,6 @@ pub(crate) mod lexical_test_kit {
         TOKEN_NAMES_RVA, WRITER_FLAG_RVA,
     };
     use engine::{cpdx_lexer, msvc_string};
-    use replay::frame::TABLE_COUNT;
-    use std::cell::Cell;
 
     pub(crate) const BASE: usize = 0x140000000;
     const TABLE_BASE: usize = 0x20000000;
@@ -917,13 +940,9 @@ pub(crate) mod lexical_test_kit {
     #[derive(Clone)]
     pub(crate) struct KitMemory {
         pub writer_before: u32,
-        pub writer_after: u32,
         pub header_before: [u8; 64],
-        pub header_after: [u8; 64],
         pub table: Vec<u8>,
         pub heap: Vec<u8>,
-        writer_reads: Cell<usize>,
-        header_reads: Cell<usize>,
     }
 
     impl KitMemory {
@@ -983,13 +1002,9 @@ pub(crate) mod lexical_test_kit {
             let header = Self::header(2, TABLE_BASE, 3);
             Self {
                 writer_before: 0,
-                writer_after: 0,
                 header_before: header,
-                header_after: header,
                 table,
                 heap,
-                writer_reads: Cell::new(0),
-                header_reads: Cell::new(0),
             }
         }
 
@@ -1008,25 +1023,11 @@ pub(crate) mod lexical_test_kit {
                 return true;
             }
             if address == BASE + WRITER_FLAG_RVA && destination.len() == 4 {
-                let reads = self.writer_reads.get();
-                self.writer_reads.set(reads + 1);
-                let value = if reads < 2 {
-                    self.writer_before
-                } else {
-                    self.writer_after
-                };
-                destination.copy_from_slice(&value.to_le_bytes());
+                destination.copy_from_slice(&self.writer_before.to_le_bytes());
                 return true;
             }
             if address == BASE + INITIALIZED_RVA && destination.len() == 64 {
-                let reads = self.header_reads.get();
-                self.header_reads.set(reads + 1);
-                let header = if reads == 0 {
-                    &self.header_before
-                } else {
-                    &self.header_after
-                };
-                destination.copy_from_slice(header);
+                destination.copy_from_slice(&self.header_before);
                 return true;
             }
             if address >= TABLE_BASE
@@ -1047,7 +1048,7 @@ pub(crate) mod lexical_test_kit {
 
     /// Reference typed walk with identical pooled buffers and arenas.
     pub(crate) fn direct(memory: &KitMemory, capacities: &Capacities) -> Captured {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+        let mut captured = Captured::with_capacities(capacities);
         let walked = cpdx_lexer::walk(
             memory,
             BASE,
@@ -1060,21 +1061,15 @@ pub(crate) mod lexical_test_kit {
         captured
     }
 
-    /// Raw-copy split: two raw passes compared, then the first payload
-    /// decoded into fresh pooled buffers of the same capacities.
+    /// Decode one raw payload into fresh buffers with identical capacities.
     pub(crate) fn split(
         memory: &KitMemory,
         capacities: &Capacities,
     ) -> (Captured, LexicalCopyReport, LexicalJob) {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
-        let ctx = LexicalCopyContext {
-            base: BASE,
-            needed: [true; TABLE_COUNT],
-        };
+        let mut captured = Captured::with_capacities(capacities);
+        let ctx = LexicalCopyContext { base: BASE };
         let mut first = LexicalJob::new();
-        let mut second = LexicalJob::new();
-        let report = copy_lexical_refresh(memory, ctx, &mut first, Some(&mut second));
-        captured.apply_lexical_report(ctx, &report);
+        let report = copy_lexical_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
         let mut ticks = [0u64; 1];
         captured.decode_lexical_payload(BASE, &first, &mut ticks);
@@ -1142,7 +1137,8 @@ mod tests {
         let reference_memory = traced(memory.clone());
         let packet_memory = traced(memory);
         let mut reference = RawLog::<1>::new(spans, bytes);
-        scalar_reference::copy_pass(&reference_memory, lexical_test_kit::BASE, &mut reference);
+        let terminal =
+            scalar_reference::copy_pass(&reference_memory, lexical_test_kit::BASE, &mut reference);
         let mut packet = LexicalJob::with_capacity(spans, bytes);
         copy_pass(&packet_memory, lexical_test_kit::BASE, &mut packet);
         assert_eq!(
@@ -1170,12 +1166,19 @@ mod tests {
             let mut expected_text = vec![0xcc; bytes];
             let mut actual_text = expected_text.clone();
             let recorded = crate::raw::Recorded::build(&reference);
-            let expected = cpdx_lexer::walk(
+            let mut expected = cpdx_lexer::walk(
                 &recorded,
                 lexical_test_kit::BASE,
                 &mut expected_rows,
                 &mut expected_text,
             );
+            if !matches!(expected.outcome, Outcome::Unavailable { .. }) && let Err(reason) = terminal {
+                expected = cpdx_lexer::Walk {
+                    outcome: Outcome::Unavailable { reason },
+                    text_len: 0,
+                    text_required: 0,
+                };
+            }
             let actual = packet.decode(lexical_test_kit::BASE, &mut actual_rows, &mut actual_text);
             assert_eq!(actual, expected, "rows={rows} text={bytes}");
             assert_eq!(actual_rows, expected_rows, "written rows");
@@ -1185,10 +1188,12 @@ mod tests {
             );
         }
         if packet.grow_for_next() {
+            let prior_bytes = packet.bytes.capacity();
             packet.grow();
             reference.grow();
             assert_eq!(packet.span_limit, reference.spans.capacity());
-            assert_eq!(packet.bytes.capacity(), reference.bytes.capacity());
+            assert!(packet.bytes.capacity() >= prior_bytes);
+            assert!(packet.bytes.capacity() <= reference.bytes.capacity());
         }
         packet
     }
@@ -1225,6 +1230,43 @@ mod tests {
         for bytes in 0..264 {
             assert_packet_trace(KitMemory::fixture(), &[], &[], 32, bytes);
         }
+    }
+
+    #[test]
+    fn packet_rejects_busy_or_changed_closing_witness_without_live_retry() {
+        use lexical_test_kit::{BASE, KitMemory};
+        // Fixture: three opening observations, a bulk header and four token
+        // observations, followed by flag/header/flag at ordinals 8/9/10.
+        for ordinal in [0, 2, 8, 10] {
+            let job = assert_packet_trace(
+                KitMemory::fixture(),
+                &[],
+                &[(ordinal, 1_u32.to_le_bytes().to_vec())],
+                32,
+                512,
+            );
+            assert!(job.complete_output_sizes().is_none());
+            let walked = job.decode(BASE, &mut [cpdx_lexer::Row::default(); 3], &mut [0; 32]);
+            assert!(matches!(walked.outcome, Outcome::Unavailable { .. }));
+        }
+        let mut changed = KitMemory::fixture().header_before;
+        let offset = TOKEN_NAMES_RVA - INITIALIZED_RVA;
+        changed[offset..offset + 8].copy_from_slice(&0x20010000_u64.to_le_bytes());
+        let job = assert_packet_trace(
+            KitMemory::fixture(),
+            &[],
+            &[(9, changed.to_vec())],
+            32,
+            512,
+        );
+        assert!(job.complete_output_sizes().is_none());
+        let walked = job.decode(BASE, &mut [cpdx_lexer::Row::default(); 3], &mut [0; 32]);
+        assert_eq!(
+            walked.outcome,
+            Outcome::Unavailable {
+                reason: "lexer changed during copy"
+            }
+        );
     }
 
     #[test]
@@ -1278,9 +1320,21 @@ mod tests {
         );
         assert_eq!(
             walked.outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 2
+            Outcome::Unavailable {
+                reason: "lexer closing witness unavailable"
+            }
+        );
+        assert_eq!((walked.text_len, walked.text_required), (0, 0));
+        // With room to visit the malformed token, its actual first error wins.
+        let walked = job.decode(
+            lexical_test_kit::BASE,
+            &mut [cpdx_lexer::Row::default(); 3],
+            &mut [0; 32],
+        );
+        assert_eq!(
+            walked.outcome,
+            Outcome::Unavailable {
+                reason: "lexer token string header invalid"
             }
         );
         let job = assert_packet_trace(KitMemory::fixture(), &[3], &[], 32, 512);
@@ -1358,7 +1412,6 @@ mod tests {
             KitMemory::inline(&mut memory.table, token, b"a");
         }
         memory.header_before = KitMemory::header(2048, 0x20000000, 2049);
-        memory.header_after = memory.header_before;
         let mut job = assert_packet_trace(memory, &[], &[], 4096, 100_000);
         assert_eq!(job.chunks.len(), 2);
         assert_eq!(job.chunks[1].count, 1);
@@ -1388,6 +1441,104 @@ mod tests {
         let before = job.reconstructions.get();
         assert!(job.fast_decode(&mut rows, &mut [0; 32]).is_some());
         assert_eq!(job.reconstructions.get(), before);
+    }
+
+    #[test]
+    fn exceptional_large_owned_payload_keeps_exact_observations_with_small_outputs() {
+        use lexical_test_kit::{BASE, KitMemory};
+        let mut memory = KitMemory::fixture();
+        memory.heap = vec![b'x'; 8192];
+        memory.heap.push(0);
+        heap_source(&mut memory, 0, 0x30000000, 8192);
+        // This separate heap token aliases the initial header at the same
+        // exact width, forcing owned reconstruction rather than fast decode.
+        heap_source(&mut memory, 1, BASE + INITIALIZED_RVA, 64);
+        let memory = TracedMemory {
+            inner: memory,
+            calls: Default::default(),
+            faults: vec![],
+            // Opening witness, bulk table, then token0 terminator/payload:
+            // token1's independent terminator is ordinal6.
+            replacements: vec![(6, vec![0])],
+        };
+        let mut job = LexicalJob::with_capacity(32, 16384);
+        copy_pass(&memory, BASE, &mut job);
+        assert!(!job.fault && !job.overflowed);
+        assert!(job.complete_output_sizes().is_none());
+        let calls = memory.calls.borrow().len();
+        let mut captured = Captured::with_capacities(&Capacities { rows: 0, text: 0 });
+        captured.decode_lexical_payload(BASE, &job, &mut [0]);
+        assert_eq!(memory.calls.borrow().len(), calls);
+        assert_eq!(captured.outcomes(), [Outcome::Rows { len: 3 }]);
+        assert_eq!(captured.text.len, 8192 + 64);
+        assert_eq!(&captured.text.first[..8192], &[b'x'; 8192]);
+        assert_eq!(&captured.text.first[8192..8192 + 64], &memory.inner.header_before);
+    }
+
+    #[test]
+    fn unacquired_huge_payload_requires_readable_prefix_before_any_growth() {
+        use lexical_test_kit::{BASE, KitMemory};
+        const HEAP: usize = 0x30000000;
+        const DECLARED: usize = 1 << 30;
+        struct Huge {
+            inner: KitMemory,
+            readable: usize,
+            probes: std::cell::Cell<usize>,
+        }
+        impl Memory for Huge {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address == HEAP + DECLARED && output.len() == 1 {
+                    output[0] = 0;
+                    return true;
+                }
+                if (HEAP..HEAP + DECLARED).contains(&address) {
+                    self.probes.set(self.probes.get() + 1);
+                    if address - HEAP + output.len() > self.readable {
+                        return false;
+                    }
+                    output.fill(b'x');
+                    return true;
+                }
+                self.inner.copy(address, output)
+            }
+        }
+        for readable in [0, 4096] {
+            let mut inner = KitMemory::fixture();
+            heap_source(&mut inner, 1, HEAP, DECLARED);
+            let memory = Huge { inner, readable, probes: std::cell::Cell::new(0) };
+            let mut job = LexicalJob::with_capacity(32, 512);
+            let mut capacities = Capacities { rows: 3, text: 32 };
+            let mut captured = Captured::with_capacities(&capacities);
+            for attempt in 0..3 {
+                memory.probes.set(0);
+                copy_pass(&memory, BASE, &mut job);
+                let may_grow = readable != 0 && attempt == 0;
+                assert_eq!(job.grow_for_next(), may_grow);
+                assert_eq!(job.overflowed, may_grow);
+                assert_eq!(job.fault, !may_grow);
+                assert_eq!(memory.probes.get(), if readable == 0 || attempt == 0 { 1 } else { 2 });
+                assert!(matches!(
+                    job.decode(BASE, &mut [cpdx_lexer::Row::default(); 3], &mut [0; 32]).outcome,
+                    Outcome::Unavailable { .. }
+                ));
+                // Repeated recycle calls cannot increase a failed capture's pool.
+                job.grow();
+                let allocated = job.bytes.capacity();
+                job.grow();
+                assert_eq!(job.bytes.capacity(), allocated);
+                assert_eq!(allocated, if readable == 0 { 512 } else { 4096 });
+
+                memory.probes.set(0);
+                captured.capture(&memory, BASE, 0, 0, true);
+                assert_eq!(matches!(captured.outcomes()[0], Outcome::Truncated { .. }), may_grow);
+                captured.grow(&mut capacities);
+                let allocated = capacities.text;
+                captured.grow(&mut capacities);
+                assert_eq!(capacities.text, allocated);
+                assert_eq!(allocated, if readable == 0 { 32 } else { 4096 });
+                assert_eq!(memory.probes.get(), if readable == 0 || attempt == 0 { 1 } else { 2 });
+            }
+        }
     }
 
     #[test]
@@ -1501,9 +1652,16 @@ mod tests {
         use super::*;
         /// Parsed writer witness: the table geometry the bulk copy sizes itself
         /// from. Parsing is local; only the takes touch memory.
+        #[derive(PartialEq, Eq)]
         struct Witness {
             maximum: u32,
             table: usize,
+            static_maximum: u32,
+            dynamic_pointer: u64,
+            dynamic_capacity: u32,
+            dynamic_count: u32,
+            allocation: u32,
+            length: u32,
         }
 
         /// Mirror of `Witness::read`: writer flag, 64-byte header, writer flag, with
@@ -1571,7 +1729,16 @@ mod tests {
             }
             table
                 .checked_add((length as usize).checked_mul(TOKEN_NAME_STRIDE)?)
-                .map(|_| Witness { maximum, table })
+                .map(|_| Witness {
+                    maximum,
+                    table,
+                    static_maximum,
+                    dynamic_pointer,
+                    dynamic_capacity,
+                    dynamic_count,
+                    allocation,
+                    length,
+                })
         }
 
         /// Mirror of one token's string reads: header (served from the bulk chunk
@@ -1609,11 +1776,23 @@ mod tests {
             if log.take(memory, end, 1, 0x01).is_none() {
                 return false;
             }
-            if len != 0
-                && capacity != msvc_string::INLINE_CAPACITY
-                && log.take(memory, source, len, 0x01).is_none()
-            {
-                return false;
+            if len != 0 && capacity != msvc_string::INLINE_CAPACITY {
+                if len > log.bytes.capacity().saturating_sub(log.bytes.len())
+                    && log.spans.len() < log.spans.capacity()
+                    && cpdx_lexer::probe_growth_prefix(
+                        memory, source, len, log.bytes.len(), log.bytes.capacity()
+                    ).is_err()
+                {
+                    log.spans.push(crate::raw::Span {
+                        addr: source, len: len as u32, ok: false,
+                        mask: 1, start: 0, bulk: false,
+                    });
+                    log.fault = [true];
+                    return false;
+                }
+                if log.take(memory, source, len, 0x01).is_none() {
+                    return false;
+                }
             }
             // The replay validates the terminator byte itself from the recorded
             // spans; identical bytes give the identical verdict.
@@ -1622,10 +1801,10 @@ mod tests {
 
         /// One structural pass: witness gate, bulk header chunks with per-token heap
         /// takes, witness-after pair. Stops at the first typed abort point.
-        pub(super) fn copy_pass(memory: &impl Memory, base: usize, log: &mut RawLog<1>) {
-            let Some(witness) = copy_witness(log, memory, base) else {
-                return;
-            };
+        pub(super) fn copy_pass(memory: &impl Memory, base: usize, log: &mut RawLog<1>) -> Result<(), &'static str> {
+            let witness = copy_witness(log, memory, base)
+                .ok_or("lexer opening witness unavailable")?;
+            let closed = (|| {
             log.has_bulk = true;
             let total = (witness.maximum as usize + 1)
                 .checked_mul(TOKEN_NAME_STRIDE)
@@ -1633,10 +1812,7 @@ mod tests {
             let mut offset = 0usize;
             while offset < total {
                 let len = (total - offset).min(TABLE_CHUNK);
-                let address = match witness.table.checked_add(offset) {
-                    Some(address) => address,
-                    None => return,
-                };
+                let address = witness.table.checked_add(offset)?;
                 match log.take_bulk(memory, address, len, 0x01) {
                     Some(start) => {
                         // Heap payloads for this chunk, parsed locally from the
@@ -1644,46 +1820,37 @@ mod tests {
                         // to the stack first so the payload takes can borrow the log.
                         let tokens = len / TOKEN_NAME_STRIDE;
                         for index in 0..tokens {
-                            let header_addr = match address.checked_add(index * TOKEN_NAME_STRIDE) {
-                                Some(addr) => addr,
-                                None => return,
-                            };
+                            let header_addr = address.checked_add(index * TOKEN_NAME_STRIDE)?;
                             let mut header = [0u8; 32];
                             header.copy_from_slice(
                                 &log.bytes[start + index * TOKEN_NAME_STRIDE
                                     ..start + (index + 1) * TOKEN_NAME_STRIDE],
                             );
                             if !copy_token_text(log, memory, &header, header_addr) {
-                                return;
+                                return None;
                             }
                             if log.overflowed {
-                                return;
+                                return None;
                             }
                         }
                     }
-                    None if log.overflowed => return,
+                    None if log.overflowed => return None,
                     // Failed chunk: per-token header takes for this range, stopping
                     // at the identical token the typed walk fails on.
                     None => {
                         let tokens = len / TOKEN_NAME_STRIDE;
                         for index in 0..tokens {
-                            let header_addr = match witness
+                            let header_addr = witness
                                 .table
-                                .checked_add(offset + index * TOKEN_NAME_STRIDE)
-                            {
-                                Some(addr) => addr,
-                                None => return,
-                            };
-                            let Some(header_start) = log.take(memory, header_addr, 32, 0x01) else {
-                                return;
-                            };
+                                .checked_add(offset + index * TOKEN_NAME_STRIDE)?;
+                            let header_start = log.take(memory, header_addr, 32, 0x01)?;
                             let mut header = [0u8; 32];
                             header.copy_from_slice(&log.bytes[header_start..header_start + 32]);
                             if !copy_token_text(log, memory, &header, header_addr) {
-                                return;
+                                return None;
                             }
                             if log.overflowed {
-                                return;
+                                return None;
                             }
                         }
                     }
@@ -1691,18 +1858,22 @@ mod tests {
                 offset += len;
             }
             // Witness-after pair, read after the rows exactly like the typed walk.
-            copy_witness(log, memory, base);
+            copy_witness(log, memory, base).map(|after| after == witness)
+            })();
+            match closed {
+                Some(true) => Ok(()),
+                Some(false) => Err("lexer changed during copy"),
+                None => Err("lexer closing witness unavailable"),
+            }
         }
     }
 
-    use crate::sampling::CONSISTENCY_TARGET;
     use engine::{cpdx_lexer::*, memory::SliceMemory};
     use std::cell::Cell;
     struct MemoryFixture {
         header: [u8; 64],
         names: [u8; 64],
         copies: Cell<usize>,
-        change_on_second: bool,
     }
 
     impl Memory for MemoryFixture {
@@ -1719,24 +1890,15 @@ mod tests {
             if address == 0x1000 && destination.len() == 32 {
                 self.copies.set(count + 1);
             }
-            let success = SliceMemory {
+            SliceMemory {
                 base: 0x1000,
                 bytes: &self.names,
             }
-            .copy(address, destination);
-            if success
-                && address == 0x1000
-                && destination.len() == 1
-                && self.change_on_second
-                && self.copies.get() > 1
-            {
-                destination[0] = b'z';
-            }
-            success
+            .copy(address, destination)
         }
     }
 
-    fn fixture(change_on_second: bool) -> MemoryFixture {
+    fn fixture() -> MemoryFixture {
         let mut header = [0; 64];
         header[0] = 1;
         header[48..56].copy_from_slice(&0x1000_u64.to_le_bytes());
@@ -1750,36 +1912,28 @@ mod tests {
             header,
             names,
             copies: Cell::new(0),
-            change_on_second,
         }
     }
 
     #[test]
-    fn lexical_pack_preserves_exact_bytes_and_compares_the_arena() {
-        let mut captured = Captured::with_capacities(&Capacities { rows: 2, text: 32 }, &[0]);
-        let (matched, _) = captured.capture(&fixture(false), 0, 0, &[true], 3, true);
-        assert_eq!(matched, [true]);
-        let views = captured.tables();
-        let TableView::Complete(rows) = &views[0] else {
+    fn lexical_pack_preserves_exact_first_bytes() {
+        let mut captured = Captured::with_capacities(&Capacities { rows: 2, text: 32 });
+        let memory = fixture();
+        captured.capture(&memory, 0, 0, 3, true);
+        let [TableView::Complete(rows)] = captured.tables() else {
             panic!("complete dictionary expected")
         };
         let row = &rows.rows::<tables::LexicalTokens>().unwrap()[0];
         assert_eq!(row.literal, [255]);
         assert_eq!(row.token, 0);
-        let (matched, _) = captured.capture(&fixture(true), 0, 0, &[true], 3, true);
-        assert_eq!(matched, [false]);
-        assert_eq!(captured.checked_mismatches(), [1]);
-        assert!(matches!(
-            captured.outcomes()[0],
-            Outcome::Unavailable { .. }
-        ));
+        assert_eq!(memory.copies.get(), 1);
     }
 
     #[test]
-    fn lexical_pool_grows_after_stable_truncation_and_releases_comparison_storage() {
+    fn lexical_pool_grows_after_primary_truncation() {
         let mut capacity = Capacities { rows: 1, text: 0 };
-        let mut captured = Captured::with_capacities(&capacity, &[0]);
-        captured.capture(&fixture(false), 0, 0, &[false], 3, true);
+        let mut captured = Captured::with_capacities(&capacity);
+        captured.capture(&fixture(), 0, 0, 3, true);
         assert_eq!(
             captured.outcomes()[0],
             Outcome::Truncated {
@@ -1787,24 +1941,37 @@ mod tests {
                 unread_rows: 1
             }
         );
-        captured.grow(&mut capacity, &[CONSISTENCY_TARGET]);
+        captured.grow(&mut capacity);
         assert!(capacity.text >= 1);
-        assert!(captured.rows.second.is_empty() && captured.text.second.is_empty());
-        captured.capture(&fixture(false), 0, 0, &[false], 3, true);
+        captured.capture(&fixture(), 0, 0, 3, true);
         assert_eq!(captured.outcomes()[0], Outcome::Rows { len: 1 });
     }
 
     #[test]
-    fn lexical_off_hours_skips_walk_and_marks_carry_forward() {
-        let mut captured = Captured::with_capacities(&Capacities { rows: 2, text: 32 }, &[0]);
-        let (matched, ticks) = captured.capture(&fixture(false), 0, 0, &[true], 0, false);
-        assert_eq!(matched, [false]);
-        assert_eq!(ticks, [0]);
+    fn lexical_reads_the_dictionary_on_full_hours_only() {
+        let mut captured = Captured::with_capacities(&Capacities { rows: 2, text: 32 });
+        let memory = fixture();
+        for hour in -24..24 {
+            let before = memory.copies.get();
+            captured.capture(&memory, 0, 0, hour, false);
+            assert_eq!(memory.copies.get(), before);
+            assert_eq!(
+                captured.outcomes()[0],
+                Outcome::Unavailable {
+                    reason: replay::cadence::SKIPPED_REASON,
+                }
+            );
+        }
+        let before = memory.copies.get();
+        captured.capture(&memory, 0, 0, 5, true);
+        assert_eq!(memory.copies.get(), before + 1);
+        assert_eq!(captured.outcomes()[0], Outcome::Rows { len: 1 });
+        let [TableView::Complete(rows)] = captured.tables() else {
+            panic!("complete dictionary expected on a full hour");
+        };
         assert_eq!(
-            captured.outcomes()[0],
-            Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
-            }
+            rows.rows::<tables::LexicalTokens>().unwrap()[0].literal,
+            [255]
         );
     }
 
@@ -1823,7 +1990,6 @@ mod tests {
         let direct = kit::direct(&memory, &capacities);
         let (split, report, _) = kit::split(&memory, &capacities);
         assert!(report.raw_ok);
-        assert_eq!(report.matched, [true]);
         kit::assert_matches_direct(&split, &direct);
         assert_eq!(split.rows.outcome, Outcome::Rows { len: 3 });
         assert_eq!(split.rows.rows[0].token, 0);
@@ -1833,18 +1999,13 @@ mod tests {
     }
 
     #[test]
-    fn lexical_truncation_matrix_matches_direct_with_same_caps() {
-        // B3: zero/one/exact-fit(3)/overflow-by-one/massive run typed AND
-        // copy→decode against the SAME memory with the SAME pooled caps,
-        // asserting identical outcome (incl. len/unread) and identical rows.
-        // u32 unread saturation is not reachable with 3 rows and is covered
-        // by the walk's own saturating arithmetic. TABLE_CHUNK mid-table:
-        // the 3-token fixture (96 header bytes) fits one 64 KiB bulk chunk,
-        // so multi-chunk truncation is live-only (see below); the mid-table
-        // fault arm (middle heap token broken) proves per-token fallback
-        // inside the chunk with identical outcomes.
+    fn complete_lexical_payload_preserves_all_rows_across_destination_capacities() {
+        // Zero, undersized, exact-fit and oversized destinations all preserve
+        // the complete owned capture, regardless of the
+        // initial destination capacities. Faulted packets retain the old path.
         use super::lexical_test_kit as kit;
         let memory = kit::KitMemory::fixture();
+        let direct = kit::direct(&memory, &split_capacities());
         for capacities in [
             Capacities { rows: 0, text: 0 },
             Capacities { rows: 1, text: 2 },
@@ -1856,19 +2017,11 @@ mod tests {
                 text: 8192,
             },
         ] {
-            let direct = kit::direct(&memory, &capacities);
             let (split, report, _) = kit::split(&memory, &capacities);
             assert!(
                 report.raw_ok,
                 "rows={} text={}",
                 capacities.rows, capacities.text
-            );
-            assert_eq!(
-                report.matched,
-                [true],
-                "rows={} text={}",
-                capacities.rows,
-                capacities.text
             );
             kit::assert_matches_direct(&split, &direct);
         }
@@ -1922,99 +2075,52 @@ mod tests {
     }
 
     #[test]
-    fn split_copy_matches_direct_walk_under_truncation() {
+    fn complete_payload_grows_small_outputs_without_new_native_reads() {
         use super::lexical_test_kit as kit;
-        let memory = kit::KitMemory::fixture();
+        let mut memory = TracedMemory {
+            inner: kit::KitMemory::fixture(),
+            calls: Default::default(),
+            faults: Vec::new(),
+            replacements: Vec::new(),
+        };
+        let direct = kit::direct(&memory.inner, &split_capacities());
+        let mut job = LexicalJob::new();
+        copy_pass(&memory, kit::BASE, &mut job);
+        let native_reads = memory.calls.borrow().len();
+        memory.inner.table.fill(0);
+        memory.inner.heap.clear();
         let capacities = Capacities { rows: 2, text: 4 };
-        let direct = kit::direct(&memory, &capacities);
-        let (split, report, _) = kit::split(&memory, &capacities);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true]);
+        let mut split = Captured::with_capacities(&capacities);
+        let before_bytes = split.allocated_bytes();
+        split.decode_lexical_payload(kit::BASE, &job, &mut [0]);
         kit::assert_matches_direct(&split, &direct);
-        assert!(matches!(split.rows.outcome, Outcome::Truncated { .. }));
+        assert_eq!(split.rows.outcome, Outcome::Rows { len: 3 });
+        assert!(split.allocated_bytes() > before_bytes);
+        assert_eq!(memory.calls.borrow().len(), native_reads);
+        assert_eq!(job.reconstructions.get(), 0);
     }
 
     #[test]
-    fn split_copy_matches_direct_walk_on_writer_and_mutation_faults() {
+    fn split_copy_matches_direct_walk_on_first_writer_fault() {
         use super::lexical_test_kit as kit;
-        // Writer active at the gate: both copies agree the refresh is
-        // unwitnessable and the replay derives the identical reason.
+        // The first writer gate fails with the same owned replay reason.
         let mut memory = kit::KitMemory::fixture();
         memory.writer_before = 1;
-        memory.writer_after = 1;
         let capacities = split_capacities();
         let direct = kit::direct(&memory, &capacities);
         let (split, report, _) = kit::split(&memory, &capacities);
         assert!(report.raw_ok);
-        assert_eq!(report.matched, [true]);
         kit::assert_matches_direct(&split, &direct);
         assert!(matches!(direct.rows.outcome, Outcome::Unavailable { .. }));
-        // Header mutated mid-copy: the witness-after pair disagrees and both
-        // paths report the change without advancing the check. Each side
-        // gets a fresh witness counter so both observe the same before/after
-        // sequence. The allocation field stays valid, so the verdict is the
-        // change itself rather than an inconsistent witness.
-        let mutate = || {
-            let mut memory = kit::KitMemory::fixture();
-            memory.header_after[0x38..0x3c].copy_from_slice(&5_u32.to_le_bytes());
-            memory
-        };
-        let direct_memory = mutate();
-        let direct = kit::direct(&direct_memory, &capacities);
-        let split_memory = mutate();
-        let (split, report, _) = kit::split(&split_memory, &capacities);
-        assert!(report.raw_ok);
-        kit::assert_matches_direct(&split, &direct);
-        assert_eq!(
-            direct.rows.outcome,
-            Outcome::Unavailable {
-                reason: "lexer changed during copy"
-            }
-        );
-        assert_eq!(report.matched, [false]);
-    }
-
-    #[test]
-    fn double_copy_compare_blocks_checks_on_tearing() {
-        use super::lexical_test_kit as kit;
-        use replay::frame::TABLE_COUNT;
-        let memory = kit::KitMemory::fixture();
-        let capacities = split_capacities();
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = LexicalCopyContext {
-            base: kit::BASE,
-            needed: [true; TABLE_COUNT],
-        };
-        let mut first = LexicalJob::new();
-        let mut second = LexicalJob::new();
-        let report = copy_lexical_refresh(&memory, ctx, &mut first, Some(&mut second));
-        captured.apply_lexical_report(ctx, &report);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true]);
-        // A torn token header between the passes changes the log.
-        let mut torn = kit::KitMemory::fixture();
-        torn.table[16] ^= 0xff;
-        let mut after = LexicalJob::new();
-        copy_pass(&memory, kit::BASE, &mut after);
-        let mut after_torn = LexicalJob::new();
-        copy_pass(&torn, kit::BASE, &mut after_torn);
-        assert!(!after.equal(&after_torn));
     }
 
     #[test]
     fn staging_overflow_falls_back_to_typed_walk() {
         use super::lexical_test_kit as kit;
-        use replay::frame::TABLE_COUNT;
         let memory = kit::KitMemory::fixture();
-        let capacities = split_capacities();
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = LexicalCopyContext {
-            base: kit::BASE,
-            needed: [true; TABLE_COUNT],
-        };
+        let ctx = LexicalCopyContext { base: kit::BASE };
         let mut tiny = LexicalJob::with_capacity(8, 8);
-        let report = copy_lexical_refresh(&memory, ctx, &mut tiny, None);
-        captured.apply_lexical_report(ctx, &report);
+        let report = copy_lexical_refresh(&memory, ctx, &mut tiny);
         assert!(!report.raw_ok);
         assert!(tiny.overflowed);
         assert!(tiny.grow_for_next());
@@ -2023,7 +2129,7 @@ mod tests {
 
 #[cfg(test)]
 pub(crate) fn lexical_reuse_fixture(value: u8) -> Captured {
-    let mut captured = Captured::with_capacities(&Capacities { rows: 4, text: 16 }, &[200]);
+    let mut captured = Captured::with_capacities(&Capacities { rows: 4, text: 16 });
     captured.rows.rows[..3].copy_from_slice(&[
         cpdx_lexer::Row {
             token: 0,
@@ -2075,7 +2181,7 @@ mod conversion_tests {
                 assert_eq!(TableView::Complete((**rows).clone()), expected)
             }
             TableInput::Sampled(actual) => assert_eq!(actual, &expected),
-            TableInput::ComparedEqual(_) => {
+            TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. } => {
                 panic!("lexical reuse must retain full encoder validation")
             }
         }
@@ -2118,7 +2224,7 @@ mod conversion_tests {
     }
 
     #[test]
-    fn lexical_reuse_current_outcomes_counts_spans_and_mismatches_cannot_be_hidden() {
+    fn lexical_reuse_current_outcomes_counts_and_spans_cannot_be_hidden() {
         let previous = cached(&lexical_reuse_fixture(9));
         let changes: &[fn(&mut Captured)] = &[
             |c| c.rows.outcome = Outcome::Rows { len: 2 },
@@ -2140,11 +2246,6 @@ mod conversion_tests {
                     reason: "current lexical witness failed",
                 }
             },
-            |c| {
-                c.rows.checked = true;
-                c.rows.mismatches = 1;
-            },
-            |c| c.rows.mismatches = 1,
             |c| c.rows.rows[1].token = 0,
             |c| c.rows.rows.swap(1, 2),
             |c| c.rows.rows[0].text_len = 1,
@@ -2183,7 +2284,7 @@ mod conversion_tests {
     }
 
     #[test]
-    fn lexical_reuse_missing_wrong_cache_empty_dictionary_and_offhours_preserve_semantics() {
+    fn lexical_reuse_missing_wrong_cache_empty_dictionary_and_skips_preserve_semantics() {
         let mut current = lexical_reuse_fixture(9);
         let mut stats = LexicalConversionStats::default();
         let wrong = Arc::new(TableRows::Characters(Vec::new()));

@@ -1248,6 +1248,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.naval_combats,
             counter_report.unanchored
         );
+        // counters: ETA derivation coverage for this hour
+        if let Some(line) = counter_report.eta.line() {
+            println!("{line}");
+        }
         // counters: the viewing country and the fog switch, and what they hid
         println!(
             "Counter perspective: viewing country {} ({}), fog of war {}; {} of {} counters carry the game's question mark, {} of {} combat icons do",

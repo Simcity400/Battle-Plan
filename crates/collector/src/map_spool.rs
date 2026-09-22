@@ -39,9 +39,9 @@ pub(crate) fn table_inputs(
             captured.land_participants_len,
             projection.as_deref_mut(),
         ),
-        fleets(&captured.fleets, projection.as_deref_mut()),
-        task_forces(&captured.task_forces, projection.as_deref_mut()),
-        ships(&captured.ships, projection.as_deref_mut()),
+        fleets(&captured.naval.fleets, projection.as_deref_mut()),
+        task_forces(&captured.naval.task_forces, projection.as_deref_mut()),
+        ships(&captured.naval.ships, projection.as_deref_mut()),
         naval_combats(&captured.naval_combats, projection.as_deref_mut()),
         naval_participants(
             &captured.naval_combat_participants,
@@ -49,22 +49,12 @@ pub(crate) fn table_inputs(
         ),
         air_wings(&captured.air_wings, projection.as_deref_mut()),
         army_orders(
-            &captured.army_orders,
-            &captured.order_geometry,
-            captured.order_geometry_len,
+            &captured.orders.rows,
+            &captured.orders.geometry,
+            captured.orders.geometry_len,
             projection,
         ),
     ]
-}
-
-fn outcome<T>(captured: &CaptureRows<T>, mismatch_reason: &'static str) -> Outcome {
-    if captured.checked && captured.mismatches != 0 {
-        Outcome::Unavailable {
-            reason: mismatch_reason,
-        }
-    } else {
-        captured.outcome
-    }
 }
 
 fn source<T>(captured: &CaptureRows<T>, outcome: Outcome) -> Result<&[T], TableInput> {
@@ -87,7 +77,7 @@ fn players(
     names_len: usize,
     projection: Option<&mut Projection<'_>>,
 ) -> TableInput {
-    let outcome = outcome(captured, "players changed during double read");
+    let outcome = captured.outcome;
     let rows = match source(captured, outcome) {
         Ok(rows) => rows,
         Err(failure) => return failure,
@@ -129,7 +119,7 @@ fn controllers(
 ) -> TableInput {
     scalar_table::<tables::HumanControllers, _>(
         projection,
-        outcome(captured, "human controllers changed during double read"),
+        captured.outcome,
         &captured.rows,
         |row| u128::from(row.country),
         |row| HumanControllerRow {
@@ -145,7 +135,7 @@ fn land_combats(
     participants_len: usize,
     projection: Option<&mut Projection<'_>>,
 ) -> TableInput {
-    let outcome = outcome(captured, "land combats changed during double read");
+    let outcome = captured.outcome;
     let rows = match source(captured, outcome) {
         Ok(rows) => rows,
         Err(failure) => return failure,
@@ -207,7 +197,7 @@ fn fleets(
 ) -> TableInput {
     scalar_table::<tables::Fleets, _>(
         projection,
-        outcome(captured, "fleets changed during double read"),
+        captured.outcome,
         &captured.rows,
         |row| u128::from(row.id),
         |row| FleetRow {
@@ -225,7 +215,7 @@ fn task_forces(
 ) -> TableInput {
     scalar_table::<tables::TaskForces, _>(
         projection,
-        outcome(captured, "task forces changed during double read"),
+        captured.outcome,
         &captured.rows,
         |row| u128::from(row.id),
         |row| TaskForceRow {
@@ -246,7 +236,7 @@ fn ships(
 ) -> TableInput {
     scalar_table::<tables::Ships, _>(
         projection,
-        outcome(captured, "ships changed during double read"),
+        captured.outcome,
         &captured.rows,
         |row| u128::from(row.id),
         |row| ShipRow {
@@ -268,7 +258,7 @@ fn naval_combats(
 ) -> TableInput {
     scalar_table::<tables::NavalCombats, _>(
         projection,
-        outcome(captured, "naval combats changed during double read"),
+        captured.outcome,
         &captured.rows,
         |row| u128::from(row.id),
         |row| NavalCombatRow {
@@ -286,10 +276,7 @@ fn naval_participants(
     captured: &CaptureRows<cnaval_combatant::Row>,
     projection: Option<&mut Projection<'_>>,
 ) -> TableInput {
-    let outcome = outcome(
-        captured,
-        "naval combat participants changed during double read",
-    );
+    let outcome = captured.outcome;
     let rows = match source(captured, outcome) {
         Ok(rows) => rows,
         Err(failure) => return failure,
@@ -325,7 +312,7 @@ fn air_wings(
 ) -> TableInput {
     scalar_table::<tables::AirWings, _>(
         projection,
-        outcome(captured, "air wings changed during double read"),
+        captured.outcome,
         &captured.rows,
         |row| u128::from(row.id),
         |row| AirWingRow {
@@ -348,7 +335,7 @@ fn army_orders(
     geometry_len: usize,
     projection: Option<&mut Projection<'_>>,
 ) -> TableInput {
-    let outcome = outcome(captured, "army orders changed during double read");
+    let outcome = captured.outcome;
     let rows = match source(captured, outcome) {
         Ok(rows) => rows,
         Err(failure) => return failure,
@@ -447,7 +434,7 @@ mod tests {
         for hour in 0..3 {
             if hour == 2 {
                 captured.player_names[0] ^= 1;
-                captured.order_geometry[0] ^= 1;
+                captured.orders.geometry[0] ^= 1;
             }
             let current = table_inputs(
                 &captured,
@@ -468,9 +455,10 @@ mod tests {
             );
         }
         captured.player_names_len = captured.player_names.len() + 1;
-        captured.order_geometry_len = captured.order_geometry.len() + 1;
-        captured.ships.checked = true;
-        captured.ships.mismatches = 1;
+        captured.orders.geometry_len = captured.orders.geometry.len() + 1;
+        captured.naval.ships.outcome = Outcome::Unavailable {
+            reason: "native ship unreadable",
+        };
         let rejected = table_inputs(
             &captured,
             Some(&mut Projection::new(&encoder, 1, 3, false, &mut scratch)),
@@ -527,7 +515,7 @@ mod tests {
         captured.land_participants = vec![u64::MAX, 0x100000002, u64::MAX];
         captured.land_participants_len = 3;
         set(
-            &mut captured.fleets,
+            &mut captured.naval.fleets,
             vec![cfleet::Row {
                 id: u64::MAX,
                 owner: u32::MAX,
@@ -536,7 +524,7 @@ mod tests {
             }],
         );
         set(
-            &mut captured.task_forces,
+            &mut captured.naval.task_forces,
             vec![ctask_force::Row {
                 id: u64::MAX,
                 fleet: u64::MAX - 1,
@@ -548,7 +536,7 @@ mod tests {
             }],
         );
         set(
-            &mut captured.ships,
+            &mut captured.naval.ships,
             vec![cship::Row {
                 roster_ordinal: 0,
                 id: u64::MAX,
@@ -598,7 +586,7 @@ mod tests {
             }],
         );
         set(
-            &mut captured.army_orders,
+            &mut captured.orders.rows,
             vec![corder_instance::Row {
                 owner_group: u64::MAX,
                 instance: u32::MAX,
@@ -612,8 +600,8 @@ mod tests {
                 target_len: 2,
             }],
         );
-        captured.order_geometry = vec![9, 2, 9, 0, u32::MAX];
-        captured.order_geometry_len = 5;
+        captured.orders.geometry = vec![9, 2, 9, 0, u32::MAX];
+        captured.orders.geometry_len = 5;
         captured
     }
 
@@ -760,21 +748,21 @@ mod tests {
             TableView::Unavailable { .. }
         ));
 
-        captured.army_orders.rows[0].target_start = usize::MAX;
+        captured.orders.rows.rows[0].target_start = usize::MAX;
         assert!(matches!(
             sampled(army_orders(
-                &captured.army_orders,
-                &captured.order_geometry,
+                &captured.orders.rows,
+                &captured.orders.geometry,
                 5,
                 None
             )),
             TableView::Unavailable { .. }
         ));
-        captured.army_orders.rows[0].target_start = 3;
+        captured.orders.rows.rows[0].target_start = 3;
         assert!(matches!(
             sampled(army_orders(
-                &captured.army_orders,
-                &captured.order_geometry,
+                &captured.orders.rows,
+                &captured.orders.geometry,
                 4,
                 None
             )),
@@ -782,8 +770,8 @@ mod tests {
         ));
         assert!(matches!(
             sampled(army_orders(
-                &captured.army_orders,
-                &captured.order_geometry,
+                &captured.orders.rows,
+                &captured.orders.geometry,
                 6,
                 None
             )),
@@ -805,7 +793,7 @@ mod tests {
             attacker_len: 2,
             ..Default::default()
         });
-        captured.army_orders.rows.push(corder_instance::Row {
+        captured.orders.rows.rows.push(corder_instance::Row {
             path_start: usize::MAX,
             path_len: 2,
             ..Default::default()
@@ -816,7 +804,7 @@ mod tests {
         };
         captured.players.outcome = truncated;
         captured.land_combats.outcome = truncated;
-        captured.army_orders.outcome = truncated;
+        captured.orders.rows.outcome = truncated;
         let converted = tables(&captured);
         for index in [0, 2, 9] {
             let TableView::Complete(rows) = &complete[index] else {
@@ -830,11 +818,11 @@ mod tests {
                 }
             );
         }
-        captured.army_orders.outcome = Outcome::Rows { len: 3 };
+        captured.orders.rows.outcome = Outcome::Rows { len: 3 };
         assert_eq!(
             sampled(army_orders(
-                &captured.army_orders,
-                &captured.order_geometry,
+                &captured.orders.rows,
+                &captured.orders.geometry,
                 5,
                 None
             )),
@@ -881,19 +869,16 @@ mod tests {
     }
 
     #[test]
-    fn consistency_failures_are_table_local_and_stale_mismatch_counts_are_ignored() {
+    fn primary_failures_are_table_local_and_precede_arena_validation() {
         let mut captured = fixture();
         let before = tables(&captured);
-        captured.ships.checked = true;
-        captured.ships.mismatches = 1;
-        captured.human_controllers.mismatches = usize::MAX;
+        captured.naval.ships.outcome = Outcome::Unavailable {
+            reason: "native ship unreadable",
+        };
         let after = tables(&captured);
         for index in 0..10 {
             if index == 5 {
-                assert_eq!(
-                    after[index],
-                    unavailable("ships changed during double read")
-                );
+                assert_eq!(after[index], unavailable("native ship unreadable"));
             } else {
                 assert_eq!(after[index], before[index]);
             }
@@ -953,9 +938,9 @@ mod tests {
             unavailable("naval combat participant has an invalid side")
         );
 
-        let order = captured.army_orders.rows[0];
+        let order = captured.orders.rows.rows[0];
         set(
-            &mut captured.army_orders,
+            &mut captured.orders.rows,
             vec![
                 order,
                 corder_instance::Row {
@@ -965,13 +950,13 @@ mod tests {
             ],
         );
         assert!(
-            matches!(sampled(army_orders(&captured.army_orders, &captured.order_geometry, 5, None)), TableView::Complete(rows) if rows.len() == 2)
+            matches!(sampled(army_orders(&captured.orders.rows, &captured.orders.geometry, 5, None)), TableView::Complete(rows) if rows.len() == 2)
         );
-        captured.army_orders.rows[1] = order;
+        captured.orders.rows.rows[1] = order;
         assert_eq!(
             sampled(army_orders(
-                &captured.army_orders,
-                &captured.order_geometry,
+                &captured.orders.rows,
+                &captured.orders.geometry,
                 5,
                 None
             )),

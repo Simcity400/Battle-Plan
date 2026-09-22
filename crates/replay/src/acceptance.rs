@@ -34,7 +34,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 182] = [
+const DOMAIN_TABLES: [TableId; 183] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
@@ -182,7 +182,6 @@ const DOMAIN_TABLES: [TableId; 182] = [
     TableId::DivisionMovement,
     TableId::DivisionStatus,
     TableId::StateFlags,
-    TableId::DivisionEta,
     TableId::ProvinceVisibility,
     TableId::ArmyOrderPlans,
     TableId::OrdersGroupColors,
@@ -217,6 +216,8 @@ const DOMAIN_TABLES: [TableId; 182] = [
     TableId::NavalCombatDetails,
     TableId::NavalCombatShips,
     TableId::NavalCombatResultDetails,
+    TableId::DivisionEtaInputs,
+    TableId::MovementDefines,
 ];
 /// The fault campaign drives every table except the six the clock, campaign,
 /// country, province and state fixtures build directly, so a new table cannot
@@ -565,6 +566,9 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
                 [0, 2, 19][(index / 9 + id as usize) % 3]
             },
             victory_points: [i32::MIN, -1, 0, i32::MAX][(index + id as usize) % 4],
+            terrain_flags: [0, 1, 3, u8::MAX][id as usize % 4],
+            terrain_index: (id % 13) as u8 + 1,
+            fort_positive: u8::from((index + id as usize).is_multiple_of(3)),
         })
         .collect();
     if index % 17 < 5 {
@@ -574,6 +578,9 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             owner: 0,
             controller: 0,
             victory_points: i32::MAX,
+            terrain_flags: 0,
+            terrain_index: 0,
+            fort_positive: 0,
         });
     }
     let mut states: Vec<_> = (0..=2)
@@ -581,6 +588,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             id,
             owner: [2, 19][(index / 37 + id as usize) % 2],
             controller: [0, 7, 19][(index / 5 + id as usize) % 3],
+            movement_infrastructure: [i64::MIN, 0, 100_000, i64::MAX][(index + id as usize) % 4],
         })
         .collect();
     if index % 17 < 5 {
@@ -588,6 +596,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
             id: u32::MAX,
             owner: 0,
             controller: 0,
+            movement_infrastructure: 0,
         });
     }
     let native_value = |tick: usize| match tick % 31 {

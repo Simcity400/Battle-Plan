@@ -1,6 +1,7 @@
-//! Hourly naval window inputs, with independent native windows and arena growth.
+//! Hourly naval combat inputs. Ship rows and their arenas grow on the
+//! acquisition worker from their original observations; projection is deferred.
 use crate::{
-    sampling::{full_match, qpc},
+    sampling::qpc,
     spooling::table,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
@@ -72,24 +73,43 @@ pub struct Captured {
     weapon_terms: Arena<naval_ship_modifier_inputs::ModifierTerm>,
 }
 impl Captured {
-    pub fn with_capacities(c: &Capacities, successful: &[u16]) -> Self {
-        assert_eq!(successful.len(), N);
+    /// Allocation-free placeholder while a worker owns the capture buffers.
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities {
+            details: 0,
+            ships: 0,
+            groups: 0,
+            damage: 0,
+            air: 0,
+            hits: 0,
+            planes: 0,
+            plane_air: 0,
+            plane_hits: 0,
+            plane_names: 0,
+            plane_kills: 0,
+            commanders: 0,
+            weapon_sources: 0,
+            weapon_terms: 0,
+        })
+    }
+
+    pub fn with_capacities(c: &Capacities) -> Self {
         Self {
-            details: CaptureRows::new(c.details, successful[0]),
-            ships: CaptureRows::new(c.ships, successful[1]),
-            damage: Arena::new(c.damage, successful[1]),
-            air: Arena::new(c.air, successful[1]),
-            hits: Arena::new(c.hits, successful[1]),
+            details: CaptureRows::new(c.details),
+            ships: CaptureRows::new(c.ships),
+            damage: Arena::new(c.damage),
+            air: Arena::new(c.air),
+            hits: Arena::new(c.hits),
             groups: vec![0; c.groups],
             required_groups: 0,
-            planes: Arena::new(c.planes, successful[0]),
-            plane_air: Arena::new(c.plane_air, successful[0]),
-            plane_hits: Arena::new(c.plane_hits, successful[0]),
-            plane_names: Arena::new(c.plane_names, successful[0]),
-            plane_kills: Arena::new(c.plane_kills, successful[0]),
-            commanders: Arena::new(c.commanders, successful[0]),
-            weapon_sources: Arena::new(c.weapon_sources, successful[1]),
-            weapon_terms: Arena::new(c.weapon_terms, successful[1]),
+            planes: Arena::new(c.planes),
+            plane_air: Arena::new(c.plane_air),
+            plane_hits: Arena::new(c.plane_hits),
+            plane_names: Arena::new(c.plane_names),
+            plane_kills: Arena::new(c.plane_kills),
+            commanders: Arena::new(c.commanders),
+            weapon_sources: Arena::new(c.weapon_sources),
+            weapon_terms: Arena::new(c.weapon_terms),
         }
     }
     pub fn reset(&mut self) {
@@ -124,35 +144,35 @@ impl Captured {
             + self.weapon_terms.allocated_bytes()
             + self.groups.capacity() * size_of::<usize>()
     }
-    pub fn grow(&mut self, c: &mut Capacities, successful: &[u16]) {
-        self.details.grow(&mut c.details, successful[0]);
-        self.ships.grow(&mut c.ships, successful[1]);
-        self.damage.grow(&mut c.damage, successful[1]);
-        self.air.grow(&mut c.air, successful[1]);
-        self.hits.grow(&mut c.hits, successful[1]);
+    pub fn grow(&mut self, c: &mut Capacities) {
+        // Adopt allocations made by the worker before replenishing other
+        // pooled frames. Used lengths remain separate from allocated capacity.
+        c.ships = c.ships.max(self.ships.rows.capacity());
+        c.groups = c.groups.max(self.groups.capacity());
+        c.damage = c.damage.max(self.damage.first.capacity());
+        c.air = c.air.max(self.air.first.capacity());
+        c.hits = c.hits.max(self.hits.first.capacity());
+        c.weapon_sources = c.weapon_sources.max(self.weapon_sources.first.capacity());
+        c.weapon_terms = c.weapon_terms.max(self.weapon_terms.first.capacity());
+        self.details.grow(&mut c.details);
+        self.ships.grow(&mut c.ships);
+        self.damage.grow(&mut c.damage);
+        self.air.grow(&mut c.air);
+        self.hits.grow(&mut c.hits);
         grow_capacity(&mut c.groups, self.required_groups);
         grow_vec(&mut self.groups, c.groups);
-        self.planes.grow(&mut c.planes, successful[0]);
-        self.plane_air.grow(&mut c.plane_air, successful[0]);
-        self.plane_hits.grow(&mut c.plane_hits, successful[0]);
-        self.plane_names.grow(&mut c.plane_names, successful[0]);
-        self.plane_kills.grow(&mut c.plane_kills, successful[0]);
-        self.commanders.grow(&mut c.commanders, successful[0]);
-        self.weapon_sources
-            .grow(&mut c.weapon_sources, successful[1]);
-        self.weapon_terms.grow(&mut c.weapon_terms, successful[1]);
+        self.planes.grow(&mut c.planes);
+        self.plane_air.grow(&mut c.plane_air);
+        self.plane_hits.grow(&mut c.plane_hits);
+        self.plane_names.grow(&mut c.plane_names);
+        self.plane_kills.grow(&mut c.plane_kills);
+        self.commanders.grow(&mut c.commanders);
+        self.weapon_sources.grow(&mut c.weapon_sources);
+        self.weapon_terms.grow(&mut c.weapon_terms);
     }
-    pub fn capture(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        state: usize,
-        needed: &[bool],
-    ) -> ([bool; N], [u64; N]) {
+    pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+        let mut read_phase = crate::read_accounting::table(TABLES[0]);
         let capture_started = qpc();
-        assert_eq!(needed.len(), N);
-        self.details.mismatches = 0;
-        self.ships.mismatches = 0;
         let mut buffers = cfex_member::DetailBuffers {
             damage: &mut self.damage.first,
             air_hits: &mut self.air.first,
@@ -188,13 +208,13 @@ impl Captured {
             &mut self.ships.rows,
             &mut self.groups,
             &mut buffers,
-            [true, true],
-            || qpc().max(0) as u64,
+            |phase| {
+                read_phase.select(TABLES[phase]);
+                qpc().max(0) as u64
+            },
         );
         self.details.outcome = first.capture.combats;
         self.ships.outcome = first.capture.participants;
-        self.details.checked = needed[0];
-        self.ships.checked = needed[1];
         self.damage.len = buffers.lengths[0];
         self.air.len = buffers.lengths[1];
         self.hits.len = buffers.lengths[2];
@@ -219,148 +239,12 @@ impl Captured {
         self.weapon_terms.required = buffers.weapon_required[1];
         self.required_groups = first.capture.required_group_capacity;
         let mut ticks = first.read_ticks;
-        let mut matched = [false; N];
-        if needed.iter().any(|v| *v) {
-            let mut buffers = cfex_member::DetailBuffers {
-                damage: &mut self.damage.second,
-                air_hits: &mut self.air.second,
-                naval_hits: &mut self.hits.second,
-                lengths: [0; 3],
-                required: [0; 3],
-                planes: &mut self.planes.second,
-                planes_len: 0,
-                planes_required: 0,
-                plane_air_hits: &mut self.plane_air.second,
-                plane_naval_hits: &mut self.plane_hits.second,
-                plane_hit_lengths: [0; 2],
-                plane_hit_required: [0; 2],
-                plane_names: &mut self.plane_names.second,
-                plane_names_len: 0,
-                plane_names_required: 0,
-                plane_kills: &mut self.plane_kills.second,
-                plane_kills_len: 0,
-                plane_kills_required: 0,
-                commander_inputs: &mut self.commanders.second,
-                commander_inputs_len: 0,
-                commander_inputs_required: 0,
-                weapon_sources: &mut self.weapon_sources.second,
-                weapon_terms: &mut self.weapon_terms.second,
-                weapon_lengths: [0; 2],
-                weapon_required: [0; 2],
-            };
-            let second = cnaval_combat::walk_details_timed(
-                memory,
-                base,
-                state,
-                &mut self.details.second,
-                &mut self.ships.second,
-                &mut self.groups,
-                &mut buffers,
-                [needed[0], needed[1]],
-                || qpc().max(0) as u64,
-            );
-            let lengths = buffers.lengths;
-            let required = buffers.required;
-            let planes_len = buffers.planes_len;
-            let planes_required = buffers.planes_required;
-            let plane_hit_lengths = buffers.plane_hit_lengths;
-            let plane_hit_required = buffers.plane_hit_required;
-            let plane_names_len = buffers.plane_names_len;
-            let plane_names_required = buffers.plane_names_required;
-            let plane_kills_len = buffers.plane_kills_len;
-            let plane_kills_required = buffers.plane_kills_required;
-            let commanders_len = buffers.commander_inputs_len;
-            let commanders_required = buffers.commander_inputs_required;
-            let weapon_lengths = buffers.weapon_lengths;
-            let weapon_required = buffers.weapon_required;
-            self.required_groups = self
-                .required_groups
-                .max(second.capture.required_group_capacity);
-            for (cost, extra) in ticks.iter_mut().zip(second.read_ticks) {
-                *cost = cost.saturating_add(extra);
-            }
-            let started = qpc();
-            if needed[0] {
-                self.details.compare(second.capture.combats);
-                self.details.mismatches +=
-                    usize::from(!self.commanders.compare(commanders_len, commanders_required));
-                self.details.mismatches += usize::from(
-                    !self
-                        .plane_kills
-                        .compare(plane_kills_len, plane_kills_required),
-                );
-                self.details.mismatches +=
-                    usize::from(!self.planes.compare(planes_len, planes_required));
-                self.details.mismatches += usize::from(
-                    !self
-                        .plane_air
-                        .compare(plane_hit_lengths[0], plane_hit_required[0]),
-                );
-                self.details.mismatches += usize::from(
-                    !self
-                        .plane_hits
-                        .compare(plane_hit_lengths[1], plane_hit_required[1]),
-                );
-                self.details.mismatches += usize::from(
-                    !self
-                        .plane_names
-                        .compare(plane_names_len, plane_names_required),
-                );
-                matched[0] = full_match(
-                    first.capture.combats,
-                    second.capture.combats,
-                    self.details.mismatches,
-                );
-            }
-            ticks[0] = ticks[0].saturating_add(qpc().saturating_sub(started).max(0) as u64);
-            let started = qpc();
-            if needed[1] {
-                self.ships.compare(second.capture.participants);
-                self.ships.mismatches += usize::from(!self.damage.compare(lengths[0], required[0]));
-                self.ships.mismatches += usize::from(!self.air.compare(lengths[1], required[1]));
-                self.ships.mismatches += usize::from(!self.hits.compare(lengths[2], required[2]));
-                self.ships.mismatches += usize::from(
-                    !self
-                        .weapon_sources
-                        .compare(weapon_lengths[0], weapon_required[0]),
-                );
-                self.ships.mismatches += usize::from(
-                    !self
-                        .weapon_terms
-                        .compare(weapon_lengths[1], weapon_required[1]),
-                );
-                matched[1] = full_match(
-                    first.capture.participants,
-                    second.capture.participants,
-                    self.ships.mismatches,
-                );
-            }
-            ticks[1] = ticks[1].saturating_add(qpc().saturating_sub(started).max(0) as u64);
-        }
         let total = qpc().saturating_sub(capture_started).max(0) as u64;
         ticks[0] = ticks[0].saturating_add(total.saturating_sub(ticks.iter().sum::<u64>()));
-        (matched, ticks)
+        ticks
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [
-            if self.details.checked && self.details.mismatches != 0 {
-                Outcome::Unavailable {
-                    reason: "naval details changed during double read",
-                }
-            } else {
-                self.details.outcome
-            },
-            if self.ships.checked && self.ships.mismatches != 0 {
-                Outcome::Unavailable {
-                    reason: "naval ship details changed during double read",
-                }
-            } else {
-                self.ships.outcome
-            },
-        ]
-    }
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [self.details.mismatches, self.ships.mismatches]
+        [self.details.outcome, self.ships.outcome]
     }
     pub fn tables(&self) -> [TableView; N] {
         let out = self.outcomes();
@@ -677,26 +561,8 @@ fn naval_hit(v: &naval_combat_hit::Row) -> rows::NavalCombatHit {
 mod tests {
     use super::*;
     #[test]
-    fn each_window_retires_its_own_rows_and_ship_arenas() {
-        for successes in [0, 200] {
-            let pool = Captured::with_capacities(&Capacities::default(), &[successes; N]);
-            eprintln!(
-                "naval default pool at {successes} successful checks: {} bytes",
-                pool.allocated_bytes()
-            );
-        }
-        eprintln!(
-            "naval static row bytes: details={} ship={} plane={} damage={} air_hit={} naval_hit={} weapon_source={} weapon_term={}; native live cost unmeasured",
-            size_of::<cnaval_combat::DetailsRow>(),
-            size_of::<cfex_member::DetailsRow>(),
-            size_of::<cfex_air::Row>(),
-            size_of::<cfex_damage_entry::Row>(),
-            size_of::<naval_combat_air_hit::Row>(),
-            size_of::<naval_combat_hit::Row>(),
-            size_of::<naval_ship_modifier_inputs::SourceRow>(),
-            size_of::<naval_ship_modifier_inputs::ModifierTerm>()
-        );
-        let c = Capacities {
+    fn arena_pressure_grows_primary_storage_and_preserves_rows() {
+        let mut capacity = Capacities {
             details: 1,
             ships: 1,
             groups: 1,
@@ -712,62 +578,69 @@ mod tests {
             weapon_sources: 1,
             weapon_terms: 1,
         };
-        let mut a = Captured::with_capacities(&c, &[200, 0]);
-        assert!(a.details.second.is_empty());
-        assert!(
-            a.planes.second.is_empty()
-                && a.plane_air.second.is_empty()
-                && a.plane_hits.second.is_empty()
+        let mut captured = Captured::with_capacities(&capacity);
+        captured.details.rows[0].combat = 42;
+        captured.ships.rows[0].member.combat = 42;
+        let before = captured.allocated_bytes();
+        // The worker may grow these from original count observations before
+        // any outcome exists; recycling must adopt all actual allocations.
+        captured.ships.rows.resize(19, Default::default());
+        captured.groups.resize(17, 0);
+        captured.damage.first.resize(13, Default::default());
+        captured.air.first.resize(9, Default::default());
+        captured.hits.first.resize(11, Default::default());
+        captured.weapon_sources.first.resize(7, Default::default());
+        captured.weapon_terms.first.resize(21, Default::default());
+        assert!(captured.allocated_bytes() > before);
+        let worker_capacities = [
+            captured.ships.rows.capacity(),
+            captured.groups.capacity(),
+            captured.damage.first.capacity(),
+            captured.air.first.capacity(),
+            captured.hits.first.capacity(),
+            captured.weapon_sources.first.capacity(),
+            captured.weapon_terms.first.capacity(),
+        ];
+        captured.plane_air.first[0].variant = 111;
+        captured.plane_air.required = 9;
+        captured.plane_hits.required = 5;
+        captured.plane_names.required = 6;
+        captured.plane_kills.required = 7;
+        captured.commanders.required = 3;
+        captured.grow(&mut capacity);
+        assert_eq!(
+            [
+                capacity.ships,
+                capacity.groups,
+                capacity.damage,
+                capacity.air,
+                capacity.hits,
+                capacity.weapon_sources,
+                capacity.weapon_terms
+            ],
+            worker_capacities
         );
-        assert_eq!(a.ships.second.len(), 1);
-        assert_eq!(a.hits.second.len(), 1);
-        assert_eq!(a.weapon_sources.second.len(), 1);
-        assert!(a.plane_names.second.is_empty());
-        assert!(a.plane_kills.second.is_empty());
-        assert!(a.commanders.second.is_empty());
-        assert_eq!(a.weapon_terms.second.len(), 1);
-        a.details.outcome = Outcome::Rows { len: 0 };
-        a.ships.outcome = Outcome::Rows { len: 0 };
-        a.ships.checked = true;
-        a.ships.mismatches = 1;
-        assert_eq!(a.outcomes()[0], Outcome::Rows { len: 0 });
-        assert!(matches!(a.outcomes()[1], Outcome::Unavailable { .. }));
-        let b = Captured::with_capacities(&c, &[0, 200]);
-        assert_eq!(b.details.second.len(), 1);
-        assert!(b.ships.second.is_empty());
-        assert!(b.hits.second.is_empty());
-        assert_eq!(b.planes.second.len(), 1);
-        assert_eq!(b.plane_air.second.len(), 1);
-        assert_eq!(b.plane_hits.second.len(), 1);
-        assert_eq!(b.plane_names.second.len(), 1);
-        assert_eq!(b.plane_kills.second.len(), 1);
-        assert_eq!(b.commanders.second.len(), 1);
-        assert!(b.air.second.is_empty());
-        assert!(b.weapon_sources.second.is_empty() && b.weapon_terms.second.is_empty());
-        let mut c = c;
-        let mut b = b;
-        b.plane_air.required = 9;
-        b.plane_hits.required = 5;
-        b.plane_names.required = 6;
-        b.plane_kills.required = 7;
-        b.commanders.required = 3;
-        b.grow(&mut c, &[0, 200]);
-        assert!(c.plane_air >= 9 && c.plane_hits >= 5);
-        assert!(c.plane_names >= 6);
-        assert!(c.plane_kills >= 7);
-        assert!(c.commanders >= 3);
-        assert_eq!(b.plane_air.second.len(), c.plane_air);
-        assert!(b.air.second.is_empty());
-        b.grow(&mut c, &[200, 200]);
-        assert!(b.plane_air.second.is_empty() && b.plane_hits.second.is_empty());
-        assert!(b.plane_names.second.is_empty());
-        assert!(b.plane_kills.second.is_empty());
-        assert!(b.commanders.second.is_empty());
+        assert_eq!(Captured::vacant().allocated_bytes(), 0);
+        assert!(capacity.plane_air >= 9 && capacity.plane_hits >= 5);
+        assert!(capacity.plane_names >= 6 && capacity.plane_kills >= 7 && capacity.commanders >= 3);
+        assert_eq!(captured.plane_air.first.len(), capacity.plane_air);
+        assert_eq!(captured.details.rows[0].combat, 42);
+        assert_eq!(captured.ships.rows[0].member.combat, 42);
+        assert_eq!(captured.plane_air.first[0].variant, 111);
+        captured.details.outcome = Outcome::Rows { len: 0 };
+        captured.ships.outcome = Outcome::Unavailable {
+            reason: "native ship read failed",
+        };
+        assert_eq!(captured.outcomes()[0], Outcome::Rows { len: 0 });
+        assert!(matches!(
+            captured.outcomes()[1],
+            Outcome::Unavailable { .. }
+        ));
     }
 
     #[test]
     fn plane_and_ship_hit_spans_project_from_independent_arenas() {
-        let mut c = Captured::with_capacities(&Capacities::default(), &[200; N]);
+        let mut c = Captured::with_capacities(&Capacities::default());
         c.details.outcome = Outcome::Rows { len: 1 };
         c.ships.outcome = Outcome::Rows { len: 1 };
         c.planes.len = 1;

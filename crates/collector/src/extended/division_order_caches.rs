@@ -22,10 +22,18 @@ pub struct Captured {
     rows: CaptureRows<carmy::OrderCacheRow>,
 }
 impl Captured {
-    pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
-        assert_eq!(successful.len(), N);
+    pub(crate) fn fail_capture(&mut self, reason: &'static str) {
+        self.rows.fail(Outcome::Unavailable { reason });
+    }
+
+    /// Allocation-free placeholder while a worker owns the capture buffers.
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities { rows: 0 })
+    }
+
+    pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            rows: CaptureRows::new(capacity.rows, successful[0]),
+            rows: CaptureRows::new(capacity.rows),
         }
     }
     pub fn reset(&mut self) {
@@ -34,51 +42,32 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
     }
-    pub fn grow(&mut self, capacity: &mut Capacities, successful: &[u16]) {
-        self.rows.grow(&mut capacity.rows, successful[0]);
+    pub fn grow(&mut self, capacity: &mut Capacities) {
+        self.rows.grow(&mut capacity.rows);
     }
     pub fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
-        needed: bool,
         sources: super::production::Sources<'_, DivisionSource>,
-    ) -> ([bool; N], [u64; N]) {
+        seeds: Option<&[carmy::DivisionSeed]>,
+    ) -> [u64; N] {
+        let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         self.rows.outcome = read(
             memory,
             base,
-            sources.first,
-            sources.first_outcome,
+            sources.rows,
+            sources.outcome,
             &mut self.rows.rows,
+            seeds,
         );
-        self.rows.checked = needed;
-        let matched = if needed {
-            let second = read(
-                memory,
-                base,
-                sources.second,
-                sources.second_outcome,
-                &mut self.rows.second,
-            );
-            self.rows.compare(second)
-        } else {
-            false
-        };
-        ([matched], [qpc().saturating_sub(begin).max(0) as u64])
+        [qpc().saturating_sub(begin).max(0) as u64]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [if self.rows.checked && self.rows.mismatches != 0 {
-            Outcome::Unavailable {
-                reason: "division order caches changed during double read",
-            }
-        } else {
-            self.rows.outcome
-        }]
+        [self.rows.outcome]
     }
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [self.rows.mismatches]
-    }
+
     pub fn tables(&self) -> [TableView; N] {
         [table::<tables::DivisionOrderCaches, _>(
             self.outcomes()[0],
@@ -100,6 +89,7 @@ fn read(
     sources: &[DivisionSource],
     source: Outcome,
     rows: &mut [carmy::OrderCacheRow],
+    seeds: Option<&[carmy::DivisionSeed]>,
 ) -> Outcome {
     if let Outcome::Unavailable { .. } = source {
         return source;
@@ -110,8 +100,19 @@ fn read(
         };
     };
     let len = sources.len().min(rows.len());
-    for (out, source) in rows[..len].iter_mut().zip(sources) {
-        match carmy::read_order_caches(memory, base, *source) {
+    for (index, (out, source)) in rows[..len].iter_mut().zip(sources).enumerate() {
+        let seed = match seeds {
+            Some(seeds) => match seeds.get(index) {
+                Some(seed) => Some(seed),
+                None => {
+                    return Outcome::Unavailable {
+                        reason: "division order cache source seed absent",
+                    };
+                }
+            },
+            None => None,
+        };
+        match carmy::read_order_caches(memory, base, *source, seed) {
             Ok(row) => *out = row,
             Err(reason) => return Outcome::Unavailable { reason },
         }
@@ -133,7 +134,6 @@ fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sampling::CONSISTENCY_TARGET;
     use engine::memory::SliceMemory;
     #[test]
     fn missing_or_truncated_census_never_becomes_empty_success() {
@@ -143,11 +143,11 @@ mod tests {
         };
         let mut rows = [];
         assert_eq!(
-            read(&memory, 0, &[], super::super::MISSING, &mut rows),
+            read(&memory, 0, &[], super::super::MISSING, &mut rows, None),
             super::super::MISSING
         );
         assert!(matches!(
-            read(&memory, 0, &[], Outcome::Rows { len: 1 }, &mut rows),
+            read(&memory, 0, &[], Outcome::Rows { len: 1 }, &mut rows, None),
             Outcome::Unavailable { .. }
         ));
         assert_eq!(
@@ -159,7 +159,8 @@ mod tests {
                     len: 1,
                     unread_rows: 3
                 },
-                &mut rows
+                &mut rows,
+                None
             ),
             Outcome::Truncated {
                 len: 0,
@@ -168,9 +169,102 @@ mod tests {
         );
     }
     #[test]
-    fn cached_order_identities_and_dirty_byte_participate_in_the_window() {
+    fn supplied_seeds_keep_source_prefix_capacity_and_first_failure() {
+        let source = DivisionSource {
+            pointer: 0x100,
+            division: 51 | (9 << 32),
+            ..Default::default()
+        };
+        let seed = carmy::DivisionSeed {
+            pointer: source.pointer,
+            division: source.division,
+            primary_vtable: Some(carmy::VTABLE_RVA as u64),
+            handle: Some(source.division),
+            ..Default::default()
+        };
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &[0; 0x200],
+        };
+        let mut rows = [carmy::OrderCacheRow::default(); 2];
+        assert_eq!(
+            read(
+                &memory,
+                0,
+                &[source],
+                Outcome::Truncated {
+                    len: 1,
+                    unread_rows: 3
+                },
+                &mut rows,
+                Some(&[seed])
+            ),
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 3
+            }
+        );
+        assert_eq!(rows[0].division, source.division);
+        assert_eq!(
+            read(
+                &memory,
+                0,
+                &[source],
+                Outcome::Rows { len: 1 },
+                &mut [],
+                Some(&[])
+            ),
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 1
+            }
+        );
+        assert_eq!(
+            read(
+                &memory,
+                0,
+                &[source],
+                super::super::MISSING,
+                &mut rows,
+                Some(&[])
+            ),
+            super::super::MISSING
+        );
+        assert_eq!(
+            read(
+                &memory,
+                0,
+                &[source],
+                Outcome::Rows { len: 1 },
+                &mut rows,
+                Some(&[])
+            ),
+            Outcome::Unavailable {
+                reason: "division order cache source seed absent"
+            }
+        );
+        let missing = SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        assert_eq!(
+            read(
+                &missing,
+                0,
+                &[source; 2],
+                Outcome::Rows { len: 2 },
+                &mut rows,
+                Some(&[seed])
+            ),
+            Outcome::Unavailable {
+                reason: "army order caches unreadable"
+            }
+        );
+    }
+    #[test]
+    fn cached_order_identities_and_dirty_byte_preserve_primary_rows_and_growth() {
         let mut capacity = Capacities { rows: 1 };
-        let mut capture = Captured::with_capacities(&capacity, &[0]);
+        let mut capture = Captured::with_capacities(&capacity);
         capture.rows.rows[0] = carmy::OrderCacheRow {
             division: (7 << 32) | 51,
             root_group: (3 << 32) | 53,
@@ -179,19 +273,22 @@ mod tests {
             fallback_instance: 0,
             cache_dirty: 1,
         };
-        capture.rows.second[0] = capture.rows.rows[0];
         capture.rows.outcome = Outcome::Rows { len: 1 };
-        capture.rows.checked = true;
-        assert!(capture.rows.compare(Outcome::Rows { len: 1 }));
-        capture.rows.second[0].cache_dirty = 0;
-        assert!(!capture.rows.compare(Outcome::Rows { len: 1 }));
-        assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
+        let [TableView::Complete(replay::rows::TableRows::DivisionOrderCaches(rows))] =
+            capture.tables()
+        else {
+            panic!("complete primary row");
+        };
+        assert_eq!(rows[0].division, (7 << 32) | 51);
+        assert_eq!(rows[0].root_group, (3 << 32) | 53);
+        assert_eq!(rows[0].root_instance, 4);
+        assert_eq!(rows[0].cache_dirty, 1);
         capture.rows.outcome = Outcome::Truncated {
             len: 1,
             unread_rows: 8,
         };
-        capture.grow(&mut capacity, &[CONSISTENCY_TARGET]);
+        capture.grow(&mut capacity);
         assert!(capacity.rows >= 9);
-        assert!(capture.rows.second.is_empty());
+        assert_eq!(capture.rows.rows[0].cache_dirty, 1);
     }
 }

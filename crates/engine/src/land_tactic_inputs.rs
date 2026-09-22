@@ -216,19 +216,9 @@ pub fn capture_registry(
                     *slot = value;
                 }
             }
-            if array(memory, tactic, 0xc8, 8, WEIGHT_LIMIT)? != terms
-                || identity(memory, base, tactic)? != id
-            {
-                return Err("tactic weight source changed");
-            }
             if let Some(slot) = candidates.get_mut(index as usize - 1) {
                 *slot = value;
             }
-        }
-        if pointer(memory, base, DATABASE_RVA)? != db
-            || array(memory, db, 0x10, 8, CANDIDATE_LIMIT + 1)? != entries
-        {
-            return Err("tactic registry changed");
         }
         Ok(())
     })();
@@ -318,18 +308,11 @@ fn parent_commander(
             }
             return Ok(result);
         }
-        if array(memory, theatre, 0x80, 8, 4096)? != groups {
-            return Err("tactic formation list changed");
-        }
-    }
-    if array(memory, owner.pointer, 0x168, 8, 4096)? != theatres {
-        return Err("tactic theatre list changed");
     }
     Ok(0)
 }
 
-/// Bounded hourly context. The caller compares the complete output and unlock
-/// arena in its combat consistency window, including same-header list rewrites.
+/// Bounded hourly context and unlock arena, preserving native selection order.
 pub fn capture_context(
     memory: &impl Memory,
     base: usize,
@@ -410,9 +393,6 @@ pub fn capture_context(
                     base,
                     pointer(memory, leader, LEADER_PREFERRED_TACTIC)?,
                 )?;
-                if field::<u64>(memory, leader, crate::cunit_leader::TYPE)? != handle {
-                    return Err("tactic commander identity changed");
-                }
             }
         }
         let system = pointer(memory, game, DOCTRINE_SYSTEM)?;
@@ -450,15 +430,6 @@ pub fn capture_context(
                     *slot = value;
                 }
             }
-            if array(memory, country_row, 0x28, 8, UNLOCK_LIMIT)? != entries {
-                return Err("tactic unlock list changed");
-            }
-        }
-        if pointer(memory, game, DOCTRINE_SYSTEM)? != system
-            || array(memory, system, 8, 0xa0, 65536)? != doctrine_rows
-            || field::<u64>(memory, source.pointer, cland_combat::HANDLE)? != source.id
-        {
-            return Err("tactic context identity changed");
         }
         Ok(())
     })();
@@ -571,8 +542,8 @@ mod tests {
         );
         //One candidate with one literal modifier: guarded reads only, no calls
         //into the engine and no callback-owned heap or country census.
-        assert_eq!(memory.copies.get(), 24);
-        assert_eq!(memory.copied_bytes.get(), 174);
+        assert_eq!(memory.copies.get(), 19);
+        assert_eq!(memory.copied_bytes.get(), 122);
     }
 
     #[test]

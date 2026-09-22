@@ -8,6 +8,19 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = ["portrait_changes", "advisor_changes"]
+advisor_changes = []
+# Bounded per-section wall/cycle measurements for diagnosing slow captures.
+advisor_profile = ["advisor_changes"]
+# Bounded per-hour slow-callback phase and thread-cycle diagnostics.
+callback_profile = []
+# Diagnostic acquisition checks every proposed advisor cache hit.
+advisor_verify = ["advisor_changes"]
+portrait_changes = []
+# Diagnostic capture reads all entries and checks every proposed cache hit.
+portrait_verify = ["portrait_changes"]
+
 [dependencies]
 engine = { path = "../engine" }
 replay = { path = "../replay" }

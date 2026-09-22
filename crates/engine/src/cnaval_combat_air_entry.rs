@@ -4,7 +4,6 @@ use crate::{
     Memory,
     cnaval_combat_ship_entry::{HitBuffers, capture_hits},
     cnaval_combatant::field,
-    read,
 };
 
 ///140CD2FB7 LEA RIP+1C744E2 resolves to1429474A0 in the pinned executable.
@@ -31,8 +30,6 @@ pub fn capture_details(
     pointer: usize,
     buffers: &mut HitBuffers<'_>,
 ) -> Result<DetailsRow, &'static str> {
-    let header =
-        read::<[u8; 0x40]>(memory, pointer).ok_or("naval result air snapshot unreadable")?;
     if field::<u64>(memory, pointer, 0)?
         != base
             .checked_add(VTABLE_RVA)
@@ -54,7 +51,7 @@ pub fn capture_details(
         return Err("naval result air variant handle is null");
     }
     let (naval_hits, air_hits) = capture_hits(memory, base, pointer, [0x40, 0x58, 0x70], buffers)?;
-    let row = DetailsRow {
+    Ok(DetailsRow {
         variant: variant_handle,
         variant_summary_inputs: [
             field(memory, variant, 0x2a0)?,
@@ -73,11 +70,5 @@ pub fn capture_details(
         .ok_or("naval result air name invalid or exceeds capacity")?,
         naval_hits,
         air_hits,
-    };
-    if read::<[u8; 0x40]>(memory, pointer) != Some(header)
-        || field::<u64>(memory, variant, 8)? != variant_handle
-    {
-        return Err("naval result air snapshot changed");
-    }
-    Ok(row)
+    })
 }

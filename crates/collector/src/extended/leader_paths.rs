@@ -23,10 +23,18 @@ pub struct Captured {
     rows: CaptureRows<cunit_leader::PortraitPathRow>,
 }
 impl Captured {
-    pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
-        assert_eq!(successful.len(), N);
+    pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.rows.fail(super::failed_capture(TABLES[0], hour, force_full, reason));
+    }
+
+    /// Allocation-free placeholder while a worker owns the capture buffers.
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities { rows: 0 })
+    }
+
+    pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            rows: CaptureRows::new(capacity.rows, successful[0]),
+            rows: CaptureRows::new(capacity.rows),
         }
     }
     pub fn reset(&mut self) {
@@ -35,42 +43,26 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
     }
-    pub fn grow(&mut self, capacity: &mut Capacities, successful: &[u16]) {
-        self.rows.grow(&mut capacity.rows, successful[0]);
+    pub fn grow(&mut self, capacity: &mut Capacities) {
+        self.rows.grow(&mut capacity.rows);
     }
     pub fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
-        needed: &[bool],
-    ) -> ([bool; N], [u64; N]) {
-        assert_eq!(needed.len(), N);
+        sources: Option<&[(u64, usize)]>,
+    ) -> [u64; N] {
+        let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         self.rows.outcome =
-            cunit_leader::walk_portrait_paths(memory, base, state, &mut self.rows.rows);
-        self.rows.checked = needed[0];
-        let matched = if needed[0] {
-            let second =
-                cunit_leader::walk_portrait_paths(memory, base, state, &mut self.rows.second);
-            self.rows.compare(second)
-        } else {
-            false
-        };
-        ([matched], [qpc().saturating_sub(begin).max(0) as u64])
+            cunit_leader::walk_portrait_paths(memory, base, state, sources, &mut self.rows.rows);
+        [qpc().saturating_sub(begin).max(0) as u64]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [if self.rows.checked && self.rows.mismatches != 0 {
-            Outcome::Unavailable {
-                reason: "leader portrait paths changed during double read",
-            }
-        } else {
-            self.rows.outcome
-        }]
+        [self.rows.outcome]
     }
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [self.rows.mismatches]
-    }
+
     pub fn tables(&self) -> [TableView; N] {
         [table::<tables::LeaderPortraitPaths, _>(
             self.outcomes()[0],
@@ -95,8 +87,8 @@ mod tests {
             base: 0,
             bytes: &[],
         };
-        let mut capture = Captured::with_capacities(&Capacities { rows: 1 }, &[0]);
-        assert!(!capture.capture(&memory, 0, 0, &[true]).0[0]);
+        let mut capture = Captured::with_capacities(&Capacities { rows: 1 });
+        capture.capture(&memory, 0, 0, None);
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
         capture.reset();
         capture.rows.rows[0].leader = (9 << 32) | 4713;

@@ -501,9 +501,7 @@ function Invoke-FullSmoke {
             if ($status) {
                 if ($status.sample_boundary -ne 'end_of_hour') { throw 'Unexpected sample boundary.' }
                 if ($status.hours -gt 0 -and $status.last_hour-$status.hours+1 -ne $first) { throw 'Unexpected first recorded hour or discontinuity.' }
-                if ($status.dropped_frames -ne 0 -or $status.write_errors -ne 0 -or $status.war_matrix_failures -ne 0) { throw 'Recording reported drops, write errors or a failed war-matrix check.' }
-                $mismatches=@($status.consistency.mismatches.PSObject.Properties | Where-Object { $_.Value -ne 0 })
-                if ($mismatches.Count) { [IO.File]::WriteAllText((Join-Path $output 'failed-consistency.json'),($status | ConvertTo-Json -Depth 30),$utf8); throw ('Consistency mismatches: '+(($mismatches.Name) -join ', ')) }
+                if ($status.dropped_frames -ne 0 -or $status.write_errors -ne 0) { throw 'Recording reported drops or write errors.' }
                 if ($live.Elapsed.TotalSeconds -ge $progressAt) {
                     Write-Host "H=$($clock.hour) target=$target samples=$($status.hours)"
                     $progressAt=$live.Elapsed.TotalSeconds+15

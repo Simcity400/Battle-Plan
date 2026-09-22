@@ -1,58 +1,167 @@
-//! Staggered background tiers. Single source of truth for cadence.
+//! Capture cadence. Single source of truth.
 //!
-//! Tier-H (default) walks hourly. Tier-4 rotates every 4th hour by family.
-//! Rotation smooths measured game-thread p50: slot0 Characters 11.576,
-//! slot1 Relations 7.697, slot2 Research 7.857, slot3 Variants 2.105 plus
-//! Projects 2.152 plus Buildings 1.612 plus LexicalTokens 4.357 (=10.226).
-//! Hourly Tier-4 total 37.356, staggered average 9.339, saving 28.017 p50.
-//! LexicalTokens falls back to Tier-4 slot3: witness cannot prove staleness-free
-//! static-prefix caching within scheduler-only file ownership.
+//! Hourly: map inputs, character identities and unit leaders. Daily: panel
+//! data, including persistent character roles and traits, walked once per 24
+//! game-hours in a fixed slot so every hour costs about the same. Static: data
+//! that cannot change after a save loads, walked only on a full hour (branch
+//! start, keyframe, load, gap). Off-slot hours record [`SKIPPED_REASON`] and
+//! the replay carries the last walk forward.
 
 use crate::rows::TableId;
 
-pub const STAGGER_PERIOD: i32 = 4;
+pub const STAGGER_PERIOD: i32 = 24;
 pub const SKIPPED_REASON: &str = "staggered off-hours; carry forward";
 pub const STAGGER_LIMITATION: &str =
-    "refreshed every 4th hour; off-hours replay holds last refresh";
+    "refreshed on its scheduled slot; off-slot hours hold the last refresh";
+pub const STATIC_LIMITATION: &str = "read once per branch; cannot change after the save loads";
 
-pub const fn refresh_slot(table: TableId) -> Option<u32> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cadence {
+    Hourly,
+    /// Map-visible but slow to change: every 4th hour, in the given slot.
+    FourHourly(u32),
+    Daily(u32),
+    Static,
+}
+
+pub const fn cadence(table: TableId) -> Cadence {
+    use Cadence::{Daily, FourHourly, Static};
     match table {
-        TableId::Characters
-        | TableId::CountryLeaderRoles
-        | TableId::AdvisorRoles
-        | TableId::UnitLeaders
-        | TableId::UnitLeaderTraits
-        | TableId::UnitLeaderTraitExperience => Some(0),
-        TableId::RelationOpinions | TableId::RelationTuples => Some(1),
-        TableId::ResearchTechnologies | TableId::ResearchSlots | TableId::TechnologyDefinitions => {
-            Some(2)
+        // Cannot change after the save loads.
+        TableId::LexicalTokens | TableId::WeatherProvinceNeighbours => Static,
+        // Relations feed the perspective; buildings feed the building layer.
+        TableId::RelationOpinions | TableId::RelationTuples => FourHourly(1),
+        // Province names are live overrides: set_province_name and
+        // reset_province_name effects can change them after a save loads.
+        TableId::StateBuildings | TableId::ProvinceBuildings | TableId::ProvinceNames => {
+            FourHourly(3)
         }
-        TableId::VariantDefinitions
-        | TableId::VariantModules
-        | TableId::VariantStats
-        | TableId::VariantUpgrades
-        | TableId::ProjectPrograms
+        // Daily slots: whole shared-source families stay together. The
+        // technology and resource definitions are static too, but their
+        // daily consumers walk them as one census, so they share the slot.
+        TableId::ResearchTechnologies | TableId::TechnologyDefinitions => Daily(0),
+        TableId::ProjectPrograms
         | TableId::Projects
         | TableId::ProjectHistory
-        | TableId::ProjectBreakthroughs
-        | TableId::StateBuildings
-        | TableId::ProvinceBuildings
-        | TableId::ProvinceNames
-        | TableId::DivisionTemplates
-        | TableId::WeatherProvinceNeighbours
-        | TableId::LexicalTokens => Some(3),
-        _ => None,
+        | TableId::ProjectBreakthroughs => Daily(1),
+        TableId::DivisionEquipment
+        | TableId::ArmyUpgradeGroups
+        | TableId::ArmyUpgradeRequests
+        | TableId::ArmyUpgradeDeliveries
+        | TableId::ArmyUpgradeProduced => Daily(2),
+        TableId::StateBaseResources
+        | TableId::BuildingConstruction
+        | TableId::RailwayConstruction
+        | TableId::OccupationSettings
+        | TableId::StateOccupationLaws
+        | TableId::StateGarrisons
+        | TableId::StateAssignedManpower
+        | TableId::CountryOccupationReserveManpower
+        | TableId::StateResistance
+        | TableId::CountryCollaboration => Daily(3),
+        TableId::AirStatistics => Daily(5),
+        TableId::DecisionCounts | TableId::Decisions => Daily(6),
+        TableId::AirRegionHistory | TableId::AirRegionDamage => Daily(7),
+        TableId::ProductionLines
+        | TableId::Stockpiles
+        | TableId::ProductionLicenses
+        | TableId::DeploymentConveyors
+        | TableId::DeploymentLines
+        | TableId::DeploymentManpower
+        | TableId::DeploymentEquipment
+        | TableId::ProductionLicenseRecords => Daily(8),
+        TableId::ScriptVariables | TableId::DivisionTemplates => Daily(9),
+        TableId::ResourceDefinitions | TableId::CountryResources | TableId::ResourceExchanges => {
+            Daily(10)
+        }
+        TableId::ResearchSlots => Daily(11),
+        TableId::ScriptFlags => Daily(12),
+        TableId::LandTheatres
+        | TableId::LandTheatreGroups
+        | TableId::LandTheatreMembers
+        | TableId::AirTheatres
+        | TableId::AirTheatreGroups
+        | TableId::AirTheatreMembers => Daily(13),
+        TableId::IntelNetworks => Daily(14),
+        TableId::DynamicModifiers | TableId::ActiveIdeas => Daily(15),
+        TableId::OperativeMemberships | TableId::ActiveAbilities | TableId::WingCumulative => {
+            Daily(16)
+        }
+        TableId::Scientists
+        | TableId::ScientistSkills
+        | TableId::PowerBalances
+        | TableId::PowerBalanceMembers
+        | TableId::PowerBalanceRanges
+        | TableId::PowerBalanceOverrides
+        | TableId::CountryFuel
+        | TableId::CountryExperience
+        | TableId::HubMotorization
+        | TableId::DisruptedSupply
+        | TableId::ForeignHomebases
+        | TableId::PurchaseContracts => Daily(17),
+        TableId::PreferredTactics
+        | TableId::PreferredTacticOperands
+        | TableId::WorldTension
+        | TableId::ThreatSources
+        | TableId::ThreatCountryAggregates
+        | TableId::TheatreAreas => Daily(18),
+        // Raids stay hourly: RaidTargets is the same walk's map-icon projection.
+        TableId::SunkShips | TableId::Focus | TableId::CompletedFocuses => Daily(19),
+        TableId::IntelligenceAgencies | TableId::OperationTokens | TableId::WeatherPassState => {
+            Daily(20)
+        }
+        TableId::RadarCoverage
+        | TableId::AirAces
+        | TableId::PeaceConferences
+        | TableId::CountryLeaderRoles
+        | TableId::AdvisorRoles
+        | TableId::UnitLeaderTraits
+        | TableId::UnitLeaderTraitExperience => Daily(21),
+        TableId::Cryptology
+        | TableId::IncomingDiplomaticActions
+        | TableId::TechSharingGroups
+        | TableId::TechSharingMembers
+        | TableId::VariantDefinitions
+        | TableId::VariantModules
+        | TableId::VariantStats
+        | TableId::VariantUpgrades => Daily(22),
+        TableId::NavalSupremacy
+        | TableId::Operations
+        | TableId::OperationAssignments
+        | TableId::WeatherRegionPasses
+        | TableId::SunkConvoys => Daily(23),
+        _ => Cadence::Hourly,
     }
 }
 
+/// The daily slot, for slot balancing and status.
+pub const fn refresh_slot(table: TableId) -> Option<u32> {
+    match cadence(table) {
+        Cadence::Daily(slot) => Some(slot),
+        Cadence::Hourly | Cadence::FourHourly(_) | Cadence::Static => None,
+    }
+}
+
+/// Not walked every hour; off-hours carry the last walk forward.
 pub const fn is_staggered(table: TableId) -> bool {
-    refresh_slot(table).is_some()
+    matches!(
+        cadence(table),
+        Cadence::FourHourly(_) | Cadence::Daily(_) | Cadence::Static
+    )
 }
 
 pub fn is_refresh(table: TableId, hour: crate::Hour) -> bool {
-    match refresh_slot(table) {
-        None => true,
-        Some(slot) => hour.rem_euclid(STAGGER_PERIOD) == slot as i32,
+    cadence(table).is_refresh(hour)
+}
+
+impl Cadence {
+    pub fn is_refresh(self, hour: crate::Hour) -> bool {
+        match self {
+            Cadence::Hourly => true,
+            Cadence::FourHourly(slot) => hour.rem_euclid(4) == slot as i32,
+            Cadence::Daily(slot) => hour.rem_euclid(STAGGER_PERIOD) == slot as i32,
+            Cadence::Static => false,
+        }
     }
 }
 
@@ -61,173 +170,126 @@ pub fn should_walk(table: TableId, hour: crate::Hour, force_full: bool) -> bool 
 }
 
 pub fn is_full_hour(hour: crate::Hour, branch_first: crate::Hour) -> bool {
-    hour == branch_first || (hour - branch_first).rem_euclid(crate::KEYFRAME_INTERVAL as i32) == 0
+    (i64::from(hour) - i64::from(branch_first)).rem_euclid(i64::from(crate::KEYFRAME_INTERVAL)) == 0
 }
 
 pub fn refresh_text(table: TableId) -> &'static str {
-    match refresh_slot(table) {
-        None => "hourly",
-        Some(0) => "H%4==0",
-        Some(1) => "H%4==1",
-        Some(2) => "H%4==2",
-        _ => "H%4==3",
+    cadence(table).refresh_text()
+}
+
+impl Cadence {
+    pub fn refresh_text(self) -> &'static str {
+        const DAILY: [&str; 24] = [
+            "H%24==0", "H%24==1", "H%24==2", "H%24==3", "H%24==4", "H%24==5", "H%24==6", "H%24==7",
+            "H%24==8", "H%24==9", "H%24==10", "H%24==11", "H%24==12", "H%24==13", "H%24==14",
+            "H%24==15", "H%24==16", "H%24==17", "H%24==18", "H%24==19", "H%24==20", "H%24==21",
+            "H%24==22", "H%24==23",
+        ];
+        const FOUR: [&str; 4] = ["H%4==0", "H%4==1", "H%4==2", "H%4==3"];
+        match self {
+            Cadence::Hourly => "hourly",
+            Cadence::FourHourly(slot) => FOUR[slot as usize],
+            Cadence::Daily(slot) => DAILY[slot as usize],
+            Cadence::Static => "static",
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
 
     #[test]
-    fn rotation_covers_hours_h_through_h_plus_7() {
-        for base in [0, 1, 60_820_531, i32::MAX - 8] {
-            let mut seen: BTreeSet<TableId> = BTreeSet::new();
-            for hour in base..base + 8 {
-                for table in TableId::ALL {
-                    if is_refresh(table, hour) {
-                        seen.insert(table);
-                    }
-                }
-            }
+    fn each_cadence_refreshes_its_count_per_day_and_full_hours_walk_everything_recorded() {
+        for base in [0, 1, 60_820_531, i32::MAX - 24] {
             for table in TableId::ALL {
-                assert!(seen.contains(&table), "{table:?} missing near {base}");
+                let hits = (base..base + 24).filter(|h| is_refresh(table, *h)).count();
+                let expected = match cadence(table) {
+                    Cadence::Hourly => 24,
+                    Cadence::FourHourly(_) => 6,
+                    Cadence::Daily(_) => 1,
+                    Cadence::Static => 0,
+                };
+                assert_eq!(hits, expected, "{table:?} near {base}");
+                assert!(should_walk(table, base, true));
             }
         }
     }
 
     #[test]
-    fn every_tier4_family_refreshes_at_least_every_4th_hour() {
-        let families: &[&[TableId]] = &[
+    fn map_tables_are_hourly_and_families_share_a_slot() {
+        for table in [
+            TableId::Clock,
+            TableId::Characters,
+            TableId::UnitLeaders,
+            TableId::Provinces,
+            TableId::States,
+            TableId::Divisions,
+            TableId::DivisionMovement,
+            TableId::DivisionStatus,
+            TableId::DivisionEtaInputs,
+            TableId::MovementDefines,
+            TableId::ProvinceVisibility,
+            TableId::ShipModels,
+            TableId::SupplyNodes,
+            TableId::WeatherProvincePasses,
+            TableId::LandCombatDivisions,
+            TableId::AirBaseRegistrations,
+        ] {
+            assert_eq!(cadence(table), Cadence::Hourly, "{table:?}");
+            assert_eq!(refresh_text(table), "hourly");
+        }
+        for family in [
             &[
-                TableId::Characters,
                 TableId::CountryLeaderRoles,
                 TableId::AdvisorRoles,
-                TableId::UnitLeaders,
                 TableId::UnitLeaderTraits,
                 TableId::UnitLeaderTraitExperience,
-            ],
-            &[TableId::RelationOpinions, TableId::RelationTuples],
-            &[
-                TableId::ResearchTechnologies,
-                TableId::ResearchSlots,
-                TableId::TechnologyDefinitions,
-            ],
-            &[
-                TableId::VariantDefinitions,
-                TableId::VariantModules,
-                TableId::VariantStats,
-                TableId::VariantUpgrades,
-            ],
+            ][..],
             &[
                 TableId::ProjectPrograms,
                 TableId::Projects,
                 TableId::ProjectHistory,
-                TableId::ProjectBreakthroughs,
-            ],
+            ][..],
+            &[TableId::RelationOpinions, TableId::RelationTuples],
             &[TableId::StateBuildings, TableId::ProvinceBuildings],
-            &[TableId::LexicalTokens],
-        ];
-        for hour in [0, 7, 60_820_531] {
-            for family in families {
-                let mut hits = 0;
-                for offset in 0..4 {
-                    if family.iter().all(|t| is_refresh(*t, hour + offset)) {
-                        hits += 1;
-                    }
-                }
-                assert_eq!(hits, 1, "{family:?} near {hour}");
-            }
+            &[
+                TableId::VariantDefinitions,
+                TableId::VariantModules,
+                TableId::VariantStats,
+            ],
+        ] {
+            let shared = cadence(family[0]);
+            assert_ne!(shared, Cadence::Hourly);
+            assert!(family.iter().all(|t| cadence(*t) == shared), "{family:?}");
         }
+        assert_eq!(cadence(TableId::RelationTuples), Cadence::FourHourly(1));
+        assert_eq!(refresh_text(TableId::RelationTuples), "H%4==1");
+        assert_eq!(refresh_slot(TableId::RelationTuples), None);
+        assert_eq!(refresh_slot(TableId::Projects), Some(1));
+        assert_eq!(cadence(TableId::LexicalTokens), Cadence::Static);
+        assert_eq!(refresh_text(TableId::LexicalTokens), "static");
+        assert!(is_staggered(TableId::LexicalTokens));
+        assert_eq!(refresh_slot(TableId::LexicalTokens), None);
     }
 
     #[test]
-    fn tier_h_defaults_to_hourly_and_force_full_walks_all() {
-        for table in [
-            TableId::Clock,
-            TableId::Provinces,
-            TableId::StateFlags,
-            TableId::Divisions,
-            TableId::DivisionMovement,
-            TableId::DivisionStatus,
-            TableId::DivisionEta,
-            TableId::ProvinceVisibility,
-            TableId::CountryAppearance,
-            TableId::ArmyIconInputs,
-            TableId::ShipModels,
-            TableId::ProvinceUnitOrder,
-            TableId::CounterLayers,
-            TableId::CharacterPortraits,
-            TableId::LeaderPortraits,
-            TableId::WeatherPassState,
-            TableId::WeatherProvincePasses,
-            TableId::WeatherRegionPasses,
-            TableId::CounterSettings,
-            TableId::SelectedUnits,
-            TableId::TaskForceCounterInputs,
-            TableId::FleetCounterInputs,
-            TableId::CountryCounterInputs,
-            TableId::OrdersGroupCounterInputs,
-            TableId::DivisionOrderCaches,
-            TableId::LeaderPortraitPaths,
-            TableId::SupplyNodes,
-            TableId::TrainInventory,
-            TableId::LandCombatProgress,
-            TableId::LandCombatDetails,
-            TableId::LandCombatDivisions,
-            TableId::LandCombatModifiers,
-            TableId::NavalCombatDetails,
-            TableId::NavalCombatShips,
-            TableId::NavalCombatResultDetails,
-            TableId::AirBaseRegistrations,
-            TableId::ActiveAbilities,
-        ] {
-            assert!(!is_staggered(table));
-            assert!(is_refresh(table, 123));
-            assert!(should_walk(table, 124, false));
-        }
-        for table in TableId::ALL {
-            assert!(should_walk(table, 1, true));
-        }
+    fn full_hours_follow_the_keyframe_interval() {
+        assert!(is_full_hour(100, 100));
+        assert!(!is_full_hour(101, 100));
+        assert!(is_full_hour(100 + crate::KEYFRAME_INTERVAL as i32, 100));
+        assert!(is_full_hour(i32::MIN + 720, i32::MIN));
     }
 
     #[test]
-    fn staggered_slots_match_approved_rotation_map() {
-        for table in [
-            TableId::Characters,
-            TableId::CountryLeaderRoles,
-            TableId::AdvisorRoles,
-            TableId::UnitLeaders,
-            TableId::UnitLeaderTraits,
-            TableId::UnitLeaderTraitExperience,
-        ] {
-            assert_eq!(refresh_slot(table), Some(0));
-        }
-        for table in [TableId::RelationOpinions, TableId::RelationTuples] {
-            assert_eq!(refresh_slot(table), Some(1));
-        }
-        for table in [
-            TableId::ResearchTechnologies,
-            TableId::ResearchSlots,
-            TableId::TechnologyDefinitions,
-        ] {
-            assert_eq!(refresh_slot(table), Some(2));
-        }
-        for table in [
-            TableId::VariantDefinitions,
-            TableId::VariantModules,
-            TableId::VariantStats,
-            TableId::VariantUpgrades,
-            TableId::ProjectPrograms,
-            TableId::Projects,
-            TableId::ProjectHistory,
-            TableId::ProjectBreakthroughs,
-            TableId::StateBuildings,
-            TableId::ProvinceBuildings,
-            TableId::WeatherProvinceNeighbours,
-            TableId::LexicalTokens,
-        ] {
-            assert_eq!(refresh_slot(table), Some(3));
+    fn province_name_changes_are_recaptured_at_the_next_four_hour_slot() {
+        assert_eq!(cadence(TableId::ProvinceNames), Cadence::FourHourly(3));
+        for changed_at in -24..24 {
+            let next_refresh = (changed_at + 1..=changed_at + 4)
+                .find(|hour| should_walk(TableId::ProvinceNames, *hour, false))
+                .expect("a changed override must be revisited within four game hours");
+            assert_eq!(next_refresh.rem_euclid(4), 3);
+            assert!(should_walk(TableId::ProvinceNames, changed_at, true));
         }
     }
 }

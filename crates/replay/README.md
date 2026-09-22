@@ -22,16 +22,18 @@ Value equality and sample freshness are separate:
 
 Keep those distinctions through encoding, decoding, inspection, analytics and oracle joins. Do not infer freshness from a sibling table or the current frame's hour. Startup, branch/load transitions and keyframes must retain the full-refresh and self-contained-baseline behavior required by the format.
 
-Consumers that need only a few tables can use `FrameDecoder::for_tables`. It applies the same baseline and recovery rules to those tables and reports omitted tables as unavailable. The selection is fixed for the decoder lifetime; ordinary `FrameDecoder::new` still reconstructs every table. `Replay::read_block_selected` complements this by retaining only selected updates during parsing. All updates still go through the existing versioned decoder and validation before unselected ones are discarded; frame ordering, bounds, keyframe and compression checks remain shared with the full reader. The decompression buffer reserves the bounded size from the block index once. Neither selection API changes the recording format.
+Consumers that need only a few tables can use `FrameDecoder::for_tables`. It applies the same baseline and recovery rules to those tables and reports omitted tables as unavailable. The selection is fixed for the decoder lifetime; ordinary `FrameDecoder::new` still reconstructs every table. `Replay::read_block_selected` complements this by retaining only selected updates during parsing. All updates still go through the same decoder and validation before unselected ones are discarded; frame ordering, bounds, keyframe and compression checks remain shared with the full reader. The decompression buffer reserves the bounded size from the block index once. Neither selection API changes the recording format.
 
 ## Compatibility and recovery
 
-A format change updates all affected writers, readers and consumers together. Preserve deliberately supported finalized formats, including their historical cadence and provenance semantics. A table that predates its format is not applicable, not recorded-zero. Unsupported formats, incompatible spool records and unsupported old-file appends must fail explicitly. Removing a live field must not break consumption, alignment or validation of that field in a supported legacy payload.
+A format change updates all affected writers, readers and consumers together. This release reads and writes only the current format. Reject other replay versions at the header and incompatible spool records explicitly; do not infer or silently translate an older layout.
 
-Spool recovery keeps valid CRC-checked prefixes. Replay finalization and append must not destroy an existing good file when interrupted. Preserve session/branch identity and never join branches through merely probable parentage.
+Every spool record carries the current recording version; recovery checks it before decoding the payload and keeps only valid CRC-checked prefixes. Replay finalization and append must not destroy an existing good file when interrupted. Preserve session/branch identity and never join branches through merely probable parentage.
+
+File spools keep record writes ordered while allowing one periodic durability request per segment to run in the background. Pending errors are checked before subsequent writes and on idle polls; a failed segment is abandoned through the existing recovery path. Segment creation, forced boundaries and detach remain synchronous durability barriers. Every outstanding worker is joined before its sink is destroyed. On Windows the durability handle reopens the existing file through its handle, separately from the synchronous writer; no path-based replacement or extra capture-buffer queue is involved.
 
 The replay stores content identity, ordered layer hashes and the coverage policy, not game assets or machine-specific paths. Asset resolution belongs in [installed-content](../installed-content/README.md).
 
 ## Checking changes
 
-Use existing round-trip, delta/baseline, malformed-input, compatibility, provenance, branch and recovery tests. Validate affected collector, recorder, viewer and analytics consumers in the same change. See [AGENTS.md](../../AGENTS.md) for commands.
+Use existing round-trip, delta/baseline, malformed-input, version-rejection, provenance, branch and recovery tests. Validate affected collector, recorder, viewer and analytics consumers in the same change. See [AGENTS.md](../../AGENTS.md) for commands.

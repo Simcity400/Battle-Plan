@@ -1,0 +1,112 @@
+//! Advisor mutation boundaries for hash-pinned a729. These observe native calls;
+//! recording never invokes a game function to obtain data.
+//!
+//! CAdvisor ctor/dtor, idea setter and ReadToken cover captured role fields.
+//! Factories 1412898d0/141289cf0 initialize new objects after construction;
+//! map insertion/publication is covered separately. Generated idea prefixing
+//! 1403b7de0 calls the setter. Character parser creates then publishes roles.
+//! The two insertion helpers are shared with templates: watch exact map
+//! addresses, never infer the receiver class from the helper alone. Merge
+//! inlines insertion and therefore has its own boundary. Range erase and
+//! recursive clear destroy values; character destruction covers empty maps.
+//! Evidence: pinned full decompiles/callers/RTTI and executable prefixes,
+//! advisor_mutation_audit_20260922. Fresh-read verification remains available
+//! in the collector's diagnostic feature; native writer coverage is required
+//! independently of exercised-path comparisons.
+
+pub struct MutationSite {
+    pub name: &'static str,
+    pub rva: usize,
+    pub sentinel: [u8; 16],
+}
+
+pub const MUTATIONS: [MutationSite; 11] = [
+    MutationSite {
+        name: "construct",
+        rva: 0x1288d70,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41,
+            0x56, 0x41,
+        ],
+    },
+    MutationSite {
+        name: "destroy",
+        rva: 0x1288ff0,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x5f,
+            0x7e, 0x70,
+        ],
+    },
+    MutationSite {
+        name: "set_idea",
+        rva: 0x128fd80,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x79, 0x30,
+            0x48, 0x8b,
+        ],
+    },
+    MutationSite {
+        name: "read_role",
+        rva: 0x128ebd0,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+            0x41, 0x57,
+        ],
+    },
+    MutationSite {
+        name: "insert_map",
+        rva: 0x329af0,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
+            0x18, 0x57,
+        ],
+    },
+    MutationSite {
+        name: "insert_map_value",
+        rva: 0xf896a0,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
+            0x18, 0x57,
+        ],
+    },
+    MutationSite {
+        name: "erase_map",
+        rva: 0x3b9d90,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
+            0x18, 0x48,
+        ],
+    },
+    MutationSite {
+        name: "clear_map",
+        rva: 0x329e90,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x48, 0x83, 0xec,
+            0x20, 0x41,
+        ],
+    },
+    MutationSite {
+        name: "merge_character",
+        rva: 0xf8be70,
+        sentinel: [
+            0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x48, 0x89, 0x4c, 0x24,
+            0x08, 0x55,
+        ],
+    },
+    MutationSite {
+        name: "read_character",
+        rva: 0xf8ff30,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+            0x41, 0x57,
+        ],
+    },
+    MutationSite {
+        name: "destroy_character",
+        rva: 0xf8a000,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x1f,
+            0xde, 0x9d,
+        ],
+    },
+];

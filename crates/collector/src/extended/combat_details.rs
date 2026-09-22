@@ -1,7 +1,8 @@
 //! Hourly combat-window operands. One bounded census feeds three independent
-//! tables; projection and capacity growth happen only on the spool thread.
+//! tables. Division destinations grow from their original counts on the
+//! acquisition worker; projection and other capacity growth stay on the spool.
 use crate::{
-    sampling::{full_match, qpc},
+    sampling::qpc,
     spooling::table,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
@@ -168,7 +169,8 @@ impl Progress {
     }
 }
 struct Destination<'a> {
-    division_commanders: &'a mut [engine::naval_commander_inputs::DivisionCommanderRow],
+    context_modifiers: carmy_combat_inputs::ContextModifiers,
+    division_commanders: &'a mut Vec<engine::naval_commander_inputs::DivisionCommanderRow>,
     commander_progress: Progress,
     commander_keys: &'a mut [CommanderKey],
     commander_key_count: usize,
@@ -179,25 +181,24 @@ struct Destination<'a> {
     tactic_unlocks: &'a mut [land_tactic_inputs::Unlock],
     tactic_registry: Option<land_tactic_inputs::RegistryCapture>,
     tactic_unlock_progress: Progress,
-    divisions: &'a mut [Division],
+    divisions: &'a mut Vec<Division>,
     sides: &'a mut [ModifierSide],
     rosters: &'a mut [u64],
     members: &'a mut [ModifierMember],
     modifiers: &'a mut [carmy_combat_inputs::Modifier],
-    width_terms: &'a mut [carmy_combat_inputs::WidthTerm],
+    width_terms: &'a mut Vec<carmy_combat_inputs::WidthTerm>,
     width_progress: Progress,
-    manpower: &'a mut [carmy_combat_inputs::ManpowerTerm],
+    manpower: &'a mut Vec<carmy_combat_inputs::ManpowerTerm>,
     manpower_progress: Progress,
-    reinforcement_modifiers: &'a mut [reinforcement::ModifierTerm],
-    supply_terms: &'a mut [reinforcement::SupplyTerm],
-    acclimatization: &'a mut [reinforcement::AcclimatizationTerm],
-    transport_terms: &'a mut [reinforcement::TransportTerm],
+    reinforcement_modifiers: &'a mut Vec<reinforcement::ModifierTerm>,
+    supply_terms: &'a mut Vec<reinforcement::SupplyTerm>,
+    acclimatization: &'a mut Vec<reinforcement::AcclimatizationTerm>,
+    transport_terms: &'a mut Vec<reinforcement::TransportTerm>,
     reinforcement_progress: [Progress; 4],
     progress: [Progress; N],
     arenas: [Progress; N],
-    active: [bool; N],
     ticks: [u64; N],
-    window: &'a mut [cland_combat::WindowDivision],
+    window: &'a mut Vec<cland_combat::WindowDivision>,
     window_progress: Progress,
     current_window: Option<(u64, usize, usize, [u64; 2])>,
 }
@@ -225,12 +226,10 @@ impl Destination<'_> {
             self.commander_progress.required += 1;
             self.required_commander_keys =
                 self.required_commander_keys.max(self.commander_key_count);
-            if self.commander_progress.len == self.division_commanders.len() {
-                return None;
-            }
             match engine::naval_commander_inputs::capture_division_commander(memory, base, handle) {
                 Ok(row) => {
                     let index = self.commander_progress.len;
+                    grow_vec(self.division_commanders, index + 1);
                     self.division_commanders[index] = row;
                     self.commander_progress.len += 1;
                     self.commander_keys[slot].index = index;
@@ -253,66 +252,50 @@ impl Destination<'_> {
         source: cland_combat::Source,
     ) {
         self.current_window = None;
-        if self.active[0] || self.active[1] {
+        {
+            let _reads = crate::read_accounting::table(TABLES[1]);
             let started = qpc();
-            // Upper bound: one operand row per full participant. Bumped before
-            // the walk so a capacity skip still grows the arena off-thread.
-            let bound = (source.attackers.count as usize)
-                .saturating_add(source.defenders.count as usize);
+            // The census has already retained every participant in this combat.
+            // Its original counts bound both destinations without another read.
+            let bound =
+                (source.attackers.count as usize).saturating_add(source.defenders.count as usize);
             self.window_progress.required += bound;
-            let free = self
-                .window
-                .len()
-                .saturating_sub(self.window_progress.len);
-            if bound <= free {
-                let start = self.window_progress.len;
-                match cland_combat::read_window_operands(
-                    memory,
-                    base,
-                    state,
-                    source,
-                    &mut self.window[start..],
-                ) {
-                    Ok(operands) => {
-                        let len = operands.divisions_len;
-                        self.window_progress.len += len;
-                        self.current_window = Some((source.id, start, len, operands.hq_unit));
-                    }
-                    Err(reason) => {
-                        // Fail the consuming tables closed: a missing HQ unit
-                        // would invent a hidden badge, missing operands icons.
-                        if self.active[0] && self.progress[0].failure.is_none() {
-                            self.progress[0].failure = Some(reason);
-                        }
-                        if self.active[1] && self.progress[1].failure.is_none() {
-                            self.progress[1].failure = Some(reason);
-                        }
-                    }
+            let start = self.window_progress.len;
+            grow_vec(self.window, start + bound);
+            grow_vec(self.divisions, self.progress[1].required + bound);
+            match cland_combat::read_window_operands(
+                memory,
+                base,
+                state,
+                source,
+                &mut self.window[start..],
+            ) {
+                Ok(operands) => {
+                    let len = operands.divisions_len;
+                    self.window_progress.len += len;
+                    self.current_window = Some((source.id, start, len, operands.hq_unit));
                 }
-            } else {
-                // Keep the dependent tables explicitly unavailable until the
-                // arena grows off-thread. Modifiers remain independent and
-                // must still visit this combat below.
-                for index in 0..2 {
-                    if self.active[index] && self.progress[index].failure.is_none() {
-                        self.progress[index].failure =
-                            Some("land window operands exceed capture capacity");
+                Err(reason) => {
+                    // Fail the consuming tables closed: a missing HQ unit
+                    // would invent a hidden badge, missing operands icons.
+                    if self.progress[0].failure.is_none() {
+                        self.progress[0].failure = Some(reason);
+                    }
+                    if self.progress[1].failure.is_none() {
+                        self.progress[1].failure = Some(reason);
                     }
                 }
             }
-            if self.active[1] {
-                self.ticks[1] += elapsed(started);
-            } else {
-                self.ticks[0] += elapsed(started);
-            }
+            self.ticks[1] += elapsed(started);
         }
-        if self.active[0] {
+        {
             let started = qpc();
             self.detail(memory, base, state, source);
             self.ticks[0] += elapsed(started);
         }
         let mut side_indices = [None; 2];
-        if self.active[2] {
+        {
+            let _reads = crate::read_accounting::table(TABLES[2]);
             let started = qpc();
             self.progress[2].required += 2;
             match cland_combat::read_modifiers_context(memory, base, source) {
@@ -338,7 +321,7 @@ impl Destination<'_> {
             }
             self.ticks[2] += elapsed(started);
         }
-        if self.active[1] || self.active[2] {
+        {
             let started = qpc();
             let before = self.ticks[1] + self.ticks[2];
             let result = cland_combat::visit_units(
@@ -346,7 +329,8 @@ impl Destination<'_> {
                 base,
                 source,
                 |side, ordinal, pointer, handle, province, role| {
-                    if self.active[1] {
+                    {
+                        let _reads = crate::read_accounting::table(TABLES[1]);
                         let started = qpc();
                         self.progress[1].required += 1;
                         // The window walk in visit() covers every full
@@ -356,7 +340,11 @@ impl Destination<'_> {
                         let operand = match self.current_window {
                             Some((combat, start, len, _)) if combat == source.id => {
                                 let index = ordinal as usize
-                                    + if side == 0 { 0 } else { source.attackers.count as usize };
+                                    + if side == 0 {
+                                        0
+                                    } else {
+                                        source.attackers.count as usize
+                                    };
                                 self.window[start..start + len]
                                     .get(index)
                                     .filter(|row| row.handle == handle)
@@ -365,11 +353,9 @@ impl Destination<'_> {
                             _ => None,
                         };
                         if operand.is_none() && self.progress[1].failure.is_none() {
-                            self.progress[1].failure =
-                                Some("land window operands missing");
+                            self.progress[1].failure = Some("land window operands missing");
                         }
                         if self.progress[1].failure.is_none()
-                            && self.progress[1].len < self.divisions.len()
                             && let Some(operand) = operand
                         {
                             let mut terms = [carmy_combat_inputs::WidthTerm::default();
@@ -390,7 +376,13 @@ impl Destination<'_> {
                                 carmy_combat_inputs::capture_stats(memory, base, pointer, handle)
                                     .and_then(|stats| {
                                         carmy_combat_inputs::capture_context(
-                                            memory, base, state, pointer, handle, &mut terms,
+                                            memory,
+                                            base,
+                                            state,
+                                            pointer,
+                                            handle,
+                                            &mut terms,
+                                            &mut self.context_modifiers,
                                         )
                                         .and_then(
                                             |context| {
@@ -436,25 +428,24 @@ impl Destination<'_> {
                                         reinforcement.transport_term_count,
                                     ];
                                     let starts = self.reinforcement_progress.map(|p| p.len);
-                                    let capacities = [
-                                        self.reinforcement_modifiers.len(),
-                                        self.supply_terms.len(),
-                                        self.acclimatization.len(),
-                                        self.transport_terms.len(),
-                                    ];
                                     for (p, count) in
                                         self.reinforcement_progress.iter_mut().zip(counts)
                                     {
                                         p.required += count;
                                     }
-                                    if count <= self.width_terms.len().saturating_sub(start)
-                                        && (stats.commander == 0 || commander_input.is_some())
-                                        && manpower_len
-                                            <= self.manpower.len().saturating_sub(manpower_start)
-                                        && (0..4).all(|i| {
-                                            counts[i] <= capacities[i].saturating_sub(starts[i])
-                                        })
-                                    {
+                                    if stats.commander == 0 || commander_input.is_some() {
+                                        // Every prefix was read successfully above. Grow from
+                                        // those exact counts and retain it now, without retrying
+                                        // native reads or dropping the containing division.
+                                        grow_vec(self.width_terms, start + count);
+                                        grow_vec(self.manpower, manpower_start + manpower_len);
+                                        grow_vec(
+                                            self.reinforcement_modifiers,
+                                            starts[0] + counts[0],
+                                        );
+                                        grow_vec(self.supply_terms, starts[1] + counts[1]);
+                                        grow_vec(self.acclimatization, starts[2] + counts[2]);
+                                        grow_vec(self.transport_terms, starts[3] + counts[3]);
                                         self.reinforcement_modifiers
                                             [starts[0]..starts[0] + counts[0]]
                                             .copy_from_slice(&reinforcement_modifiers[..counts[0]]);
@@ -502,7 +493,8 @@ impl Destination<'_> {
                         }
                         self.ticks[1] += elapsed(started);
                     }
-                    if self.active[2] {
+                    {
+                        let _reads = crate::read_accounting::table(TABLES[2]);
                         let started = qpc();
                         self.modifier_member(
                             memory,
@@ -520,7 +512,7 @@ impl Destination<'_> {
                 elapsed(started).saturating_sub(self.ticks[1] + self.ticks[2] - before);
             if let Err(reason) = result {
                 for index in [1, 2] {
-                    if self.active[index] {
+                    {
                         self.progress[index].failure = Some(reason);
                     }
                 }
@@ -582,8 +574,7 @@ impl Destination<'_> {
                 }
                 // The window walk ran before this detail in visit(); without
                 // its HQ row the badge would be invented hidden. Fail closed.
-                let Some((window_combat, window_start, window_len, hq_unit)) =
-                    self.current_window
+                let Some((window_combat, window_start, window_len, hq_unit)) = self.current_window
                 else {
                     self.progress[0].failure = Some("land window operands missing");
                     return;
@@ -703,28 +694,56 @@ pub struct Captured {
     required_census_participants: usize,
 }
 impl Captured {
-    pub fn with_capacities(c: &Capacities, successful: &[u16]) -> Self {
-        assert_eq!(successful.len(), N);
+    /// Allocation-free placeholder while a worker owns the capture buffers.
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities {
+            combats: 0,
+            census_participants: 0,
+            details: 0,
+            divisions: 0,
+            sides: 0,
+            rosters: 0,
+            modifier_members: 0,
+            modifiers: 0,
+            width_terms: 0,
+            manpower: 0,
+            reinforcement_modifiers: 0,
+            supply_terms: 0,
+            acclimatization: 0,
+            transport_terms: 0,
+            tactic_candidates: 0,
+            tactic_weights: 0,
+            tactic_unlocks: 0,
+            division_commanders: 0,
+            commander_keys: 0,
+            window_divisions: 0,
+        })
+    }
+
+    pub fn with_capacities(c: &Capacities) -> Self {
         Self {
-            division_commanders: Arena::new(c.division_commanders, successful[1]),
-            commander_keys: vec![CommanderKey::default(); c.commander_keys],
+            division_commanders: Arena::new(c.division_commanders),
+            commander_keys: vec![
+                CommanderKey::default();
+                c.commander_keys.max(c.census_participants)
+            ],
             required_commander_keys: 0,
-            details: CaptureRows::new(c.details, successful[0]),
-            tactic_candidates: Arena::new(c.tactic_candidates, successful[0]),
-            tactic_weights: Arena::new(c.tactic_weights, successful[0]),
-            tactic_unlocks: Arena::new(c.tactic_unlocks, successful[0]),
-            divisions: CaptureRows::new(c.divisions, successful[1]),
-            sides: CaptureRows::new(c.sides, successful[2]),
-            rosters: Arena::new(c.rosters, successful[0]),
-            members: Arena::new(c.modifier_members, successful[2]),
-            modifiers: Arena::new(c.modifiers, successful[2]),
-            width_terms: Arena::new(c.width_terms, successful[1]),
-            manpower: Arena::new(c.manpower, successful[1]),
-            reinforcement_modifiers: Arena::new(c.reinforcement_modifiers, successful[1]),
-            supply_terms: Arena::new(c.supply_terms, successful[1]),
-            acclimatization: Arena::new(c.acclimatization, successful[1]),
-            transport_terms: Arena::new(c.transport_terms, successful[1]),
-            window: Arena::new(c.window_divisions, successful[0].min(successful[1])),
+            details: CaptureRows::new(c.details),
+            tactic_candidates: Arena::new(c.tactic_candidates),
+            tactic_weights: Arena::new(c.tactic_weights),
+            tactic_unlocks: Arena::new(c.tactic_unlocks),
+            divisions: CaptureRows::new(c.divisions),
+            sides: CaptureRows::new(c.sides),
+            rosters: Arena::new(c.rosters),
+            members: Arena::new(c.modifier_members),
+            modifiers: Arena::new(c.modifiers),
+            width_terms: Arena::new(c.width_terms),
+            manpower: Arena::new(c.manpower),
+            reinforcement_modifiers: Arena::new(c.reinforcement_modifiers),
+            supply_terms: Arena::new(c.supply_terms),
+            acclimatization: Arena::new(c.acclimatization),
+            transport_terms: Arena::new(c.transport_terms),
+            window: Arena::new(c.window_divisions),
             census: vec![cland_combat::Row::default(); c.combats],
             census_participants: vec![0; c.census_participants],
             required_census: 0,
@@ -753,6 +772,13 @@ impl Captured {
         self.required_census = 0;
         self.required_census_participants = 0;
     }
+    pub(crate) fn fail(&mut self, reason: &'static str) {
+        self.reset();
+        let outcome = Outcome::Unavailable { reason };
+        self.details.outcome = outcome;
+        self.divisions.outcome = outcome;
+        self.sides.outcome = outcome;
+    }
     pub fn allocated_bytes(&self) -> usize {
         self.details.allocated_bytes()
             + self.division_commanders.allocated_bytes()
@@ -775,34 +801,41 @@ impl Captured {
             + self.census.capacity() * size_of::<cland_combat::Row>()
             + self.census_participants.capacity() * size_of::<u64>()
     }
-    pub fn grow(&mut self, c: &mut Capacities, successful: &[u16]) {
-        self.division_commanders
-            .grow(&mut c.division_commanders, successful[1]);
+    pub fn grow(&mut self, c: &mut Capacities) {
+        c.division_commanders = c
+            .division_commanders
+            .max(self.division_commanders.first.capacity());
+        c.commander_keys = c.commander_keys.max(self.commander_keys.capacity());
+        c.divisions = c.divisions.max(self.divisions.rows.capacity());
+        c.width_terms = c.width_terms.max(self.width_terms.first.capacity());
+        c.manpower = c.manpower.max(self.manpower.first.capacity());
+        c.reinforcement_modifiers = c
+            .reinforcement_modifiers
+            .max(self.reinforcement_modifiers.first.capacity());
+        c.supply_terms = c.supply_terms.max(self.supply_terms.first.capacity());
+        c.acclimatization = c.acclimatization.max(self.acclimatization.first.capacity());
+        c.transport_terms = c.transport_terms.max(self.transport_terms.first.capacity());
+        c.window_divisions = c.window_divisions.max(self.window.first.capacity());
+        self.division_commanders.grow(&mut c.division_commanders);
         grow_capacity(&mut c.commander_keys, self.required_commander_keys);
         grow_vec(&mut self.commander_keys, c.commander_keys);
-        self.details.grow(&mut c.details, successful[0]);
-        self.tactic_candidates
-            .grow(&mut c.tactic_candidates, successful[0]);
-        self.tactic_weights
-            .grow(&mut c.tactic_weights, successful[0]);
-        self.tactic_unlocks
-            .grow(&mut c.tactic_unlocks, successful[0]);
-        self.divisions.grow(&mut c.divisions, successful[1]);
-        self.sides.grow(&mut c.sides, successful[2]);
-        self.rosters.grow(&mut c.rosters, successful[0]);
-        self.members.grow(&mut c.modifier_members, successful[2]);
-        self.modifiers.grow(&mut c.modifiers, successful[2]);
-        self.width_terms.grow(&mut c.width_terms, successful[1]);
-        self.manpower.grow(&mut c.manpower, successful[1]);
+        self.details.grow(&mut c.details);
+        self.tactic_candidates.grow(&mut c.tactic_candidates);
+        self.tactic_weights.grow(&mut c.tactic_weights);
+        self.tactic_unlocks.grow(&mut c.tactic_unlocks);
+        self.divisions.grow(&mut c.divisions);
+        self.sides.grow(&mut c.sides);
+        self.rosters.grow(&mut c.rosters);
+        self.members.grow(&mut c.modifier_members);
+        self.modifiers.grow(&mut c.modifiers);
+        self.width_terms.grow(&mut c.width_terms);
+        self.manpower.grow(&mut c.manpower);
         self.reinforcement_modifiers
-            .grow(&mut c.reinforcement_modifiers, successful[1]);
-        self.supply_terms.grow(&mut c.supply_terms, successful[1]);
-        self.acclimatization
-            .grow(&mut c.acclimatization, successful[1]);
-        self.transport_terms
-            .grow(&mut c.transport_terms, successful[1]);
-        self.window
-            .grow(&mut c.window_divisions, successful[0].min(successful[1]));
+            .grow(&mut c.reinforcement_modifiers);
+        self.supply_terms.grow(&mut c.supply_terms);
+        self.acclimatization.grow(&mut c.acclimatization);
+        self.transport_terms.grow(&mut c.transport_terms);
+        self.window.grow(&mut c.window_divisions);
         grow_capacity(&mut c.combats, self.required_census);
         grow_capacity(
             &mut c.census_participants,
@@ -810,124 +843,55 @@ impl Captured {
         );
         grow_vec(&mut self.census, c.combats);
         grow_vec(&mut self.census_participants, c.census_participants);
+        c.commander_keys = c.commander_keys.max(self.census_participants.len());
+        grow_vec(&mut self.commander_keys, c.commander_keys);
     }
     fn pass(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
-        second: bool,
-        active: [bool; N],
     ) -> ([Outcome; N], [u64; N]) {
+        let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
         let commander_started = qpc();
-        if active[1] {
-            self.commander_keys.fill(CommanderKey::default());
-        }
-        let commander_ticks = if active[1] {
-            elapsed(commander_started)
-        } else {
-            0
-        };
+        // walk_with visits a combat only after every participant fits in this
+        // owned census. Each visited participant has at most one commander, so
+        // this bounds all distinct nonzero keys before the first insertion.
+        grow_vec(&mut self.commander_keys, self.census_participants.len());
+        self.commander_keys.fill(CommanderKey::default());
+        let commander_ticks = elapsed(commander_started);
         let mut destination = Destination {
-            division_commanders: if second {
-                &mut self.division_commanders.second
-            } else {
-                &mut self.division_commanders.first
-            },
+            context_modifiers: carmy_combat_inputs::ContextModifiers::default(),
+            division_commanders: &mut self.division_commanders.first,
             commander_progress: Progress::default(),
             commander_keys: &mut self.commander_keys,
             commander_key_count: 0,
             required_commander_keys: 0,
-            tactic_candidates: if second {
-                &mut self.tactic_candidates.second
-            } else {
-                &mut self.tactic_candidates.first
-            },
-            tactic_weights: if second {
-                &mut self.tactic_weights.second
-            } else {
-                &mut self.tactic_weights.first
-            },
-            tactic_unlocks: if second {
-                &mut self.tactic_unlocks.second
-            } else {
-                &mut self.tactic_unlocks.first
-            },
+            tactic_candidates: &mut self.tactic_candidates.first,
+            tactic_weights: &mut self.tactic_weights.first,
+            tactic_unlocks: &mut self.tactic_unlocks.first,
             tactic_registry: None,
             tactic_unlock_progress: Progress::default(),
-            details: if second {
-                &mut self.details.second
-            } else {
-                &mut self.details.rows
-            },
-            divisions: if second {
-                &mut self.divisions.second
-            } else {
-                &mut self.divisions.rows
-            },
-            sides: if second {
-                &mut self.sides.second
-            } else {
-                &mut self.sides.rows
-            },
-            rosters: if second {
-                &mut self.rosters.second
-            } else {
-                &mut self.rosters.first
-            },
-            members: if second {
-                &mut self.members.second
-            } else {
-                &mut self.members.first
-            },
-            modifiers: if second {
-                &mut self.modifiers.second
-            } else {
-                &mut self.modifiers.first
-            },
-            width_terms: if second {
-                &mut self.width_terms.second
-            } else {
-                &mut self.width_terms.first
-            },
+            details: &mut self.details.rows,
+            divisions: &mut self.divisions.rows,
+            sides: &mut self.sides.rows,
+            rosters: &mut self.rosters.first,
+            members: &mut self.members.first,
+            modifiers: &mut self.modifiers.first,
+            width_terms: &mut self.width_terms.first,
             width_progress: Progress::default(),
-            manpower: if second {
-                &mut self.manpower.second
-            } else {
-                &mut self.manpower.first
-            },
+            manpower: &mut self.manpower.first,
             manpower_progress: Progress::default(),
-            reinforcement_modifiers: if second {
-                &mut self.reinforcement_modifiers.second
-            } else {
-                &mut self.reinforcement_modifiers.first
-            },
-            supply_terms: if second {
-                &mut self.supply_terms.second
-            } else {
-                &mut self.supply_terms.first
-            },
-            acclimatization: if second {
-                &mut self.acclimatization.second
-            } else {
-                &mut self.acclimatization.first
-            },
-            transport_terms: if second {
-                &mut self.transport_terms.second
-            } else {
-                &mut self.transport_terms.first
-            },
+            reinforcement_modifiers: &mut self.reinforcement_modifiers.first,
+            supply_terms: &mut self.supply_terms.first,
+            acclimatization: &mut self.acclimatization.first,
+            transport_terms: &mut self.transport_terms.first,
             reinforcement_progress: [Progress::default(); 4],
             progress: [Progress::default(); N],
             arenas: [Progress::default(); N],
-            active,
             ticks: [0, commander_ticks, 0],
-            window: if second {
-                &mut self.window.second
-            } else {
-                &mut self.window.first
-            },
+            window: &mut self.window.first,
             window_progress: Progress::default(),
             current_window: None,
         };
@@ -964,166 +928,50 @@ impl Captured {
         self.required_census_participants = self
             .required_census_participants
             .max(census.required_participants);
-        if second {
-            if active[0] {
-                let comparison_started = qpc();
-                self.details.mismatches +=
-                    usize::from(!self.rosters.compare(arenas[0].len, arenas[0].required));
-                self.details.mismatches += usize::from(!self.tactic_candidates.compare(
-                    tactic_registry.candidate_count,
-                    tactic_registry.required_candidates,
-                ));
-                self.details.mismatches += usize::from(!self.tactic_weights.compare(
-                    tactic_registry.weight_count,
-                    tactic_registry.required_weights,
-                ));
-                self.details.mismatches += usize::from(
-                    !self
-                        .tactic_unlocks
-                        .compare(tactic_unlocks.len, tactic_unlocks.required),
-                );
-                ticks[0] += elapsed(comparison_started);
-            }
-            if active[1] {
-                let comparison_started = qpc();
-                self.divisions.mismatches += usize::from(
-                    !self
-                        .division_commanders
-                        .compare(commanders.len, commanders.required),
-                );
-                self.divisions.mismatches +=
-                    usize::from(!self.width_terms.compare(width.len, width.required));
-                self.divisions.mismatches +=
-                    usize::from(!self.manpower.compare(manpower.len, manpower.required));
-                self.divisions.mismatches += usize::from(
-                    !self
-                        .reinforcement_modifiers
-                        .compare(reinforcement[0].len, reinforcement[0].required),
-                );
-                self.divisions.mismatches += usize::from(
-                    !self
-                        .supply_terms
-                        .compare(reinforcement[1].len, reinforcement[1].required),
-                );
-                self.divisions.mismatches += usize::from(
-                    !self
-                        .acclimatization
-                        .compare(reinforcement[2].len, reinforcement[2].required),
-                );
-                self.divisions.mismatches += usize::from(
-                    !self
-                        .transport_terms
-                        .compare(reinforcement[3].len, reinforcement[3].required),
-                );
-                self.divisions.mismatches +=
-                    usize::from(!self.window.compare(window.len, window.required));
-                ticks[1] += elapsed(comparison_started);
-            }
-            if active[2] {
-                let comparison_started = qpc();
-                self.sides.mismatches +=
-                    usize::from(!self.members.compare(arenas[1].len, arenas[1].required));
-                self.sides.mismatches +=
-                    usize::from(!self.modifiers.compare(arenas[2].len, arenas[2].required));
-                ticks[2] += elapsed(comparison_started);
-            }
-        } else {
-            self.division_commanders.len = commanders.len;
-            self.division_commanders.required = commanders.required;
-            self.tactic_candidates.len = tactic_registry.candidate_count;
-            self.tactic_candidates.required = tactic_registry.required_candidates;
-            self.tactic_weights.len = tactic_registry.weight_count;
-            self.tactic_weights.required = tactic_registry.required_weights;
-            self.tactic_unlocks.len = tactic_unlocks.len;
-            self.tactic_unlocks.required = tactic_unlocks.required;
-            self.rosters.len = arenas[0].len;
-            self.rosters.required = arenas[0].required;
-            self.width_terms.len = width.len;
-            self.width_terms.required = width.required;
-            self.window.len = window.len;
-            self.window.required = window.required;
-            self.manpower.len = manpower.len;
-            self.manpower.required = manpower.required;
-            self.reinforcement_modifiers.len = reinforcement[0].len;
-            self.reinforcement_modifiers.required = reinforcement[0].required;
-            self.supply_terms.len = reinforcement[1].len;
-            self.supply_terms.required = reinforcement[1].required;
-            self.acclimatization.len = reinforcement[2].len;
-            self.acclimatization.required = reinforcement[2].required;
-            self.transport_terms.len = reinforcement[3].len;
-            self.transport_terms.required = reinforcement[3].required;
-            self.members.len = arenas[1].len;
-            self.members.required = arenas[1].required;
-            self.modifiers.len = arenas[2].len;
-            self.modifiers.required = arenas[2].required;
-        }
+        self.division_commanders.len = commanders.len;
+        self.division_commanders.required = commanders.required;
+        self.tactic_candidates.len = tactic_registry.candidate_count;
+        self.tactic_candidates.required = tactic_registry.required_candidates;
+        self.tactic_weights.len = tactic_registry.weight_count;
+        self.tactic_weights.required = tactic_registry.required_weights;
+        self.tactic_unlocks.len = tactic_unlocks.len;
+        self.tactic_unlocks.required = tactic_unlocks.required;
+        self.rosters.len = arenas[0].len;
+        self.rosters.required = arenas[0].required;
+        self.width_terms.len = width.len;
+        self.width_terms.required = width.required;
+        self.window.len = window.len;
+        self.window.required = window.required;
+        self.manpower.len = manpower.len;
+        self.manpower.required = manpower.required;
+        self.reinforcement_modifiers.len = reinforcement[0].len;
+        self.reinforcement_modifiers.required = reinforcement[0].required;
+        self.supply_terms.len = reinforcement[1].len;
+        self.supply_terms.required = reinforcement[1].required;
+        self.acclimatization.len = reinforcement[2].len;
+        self.acclimatization.required = reinforcement[2].required;
+        self.transport_terms.len = reinforcement[3].len;
+        self.transport_terms.required = reinforcement[3].required;
+        self.members.len = arenas[1].len;
+        self.members.required = arenas[1].required;
+        self.modifiers.len = arenas[2].len;
+        self.modifiers.required = arenas[2].required;
         (outcomes, ticks)
     }
-    pub fn capture(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        state: usize,
-        needed: &[bool],
-    ) -> ([bool; N], [u64; N]) {
+    pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let started = qpc();
-        let needed: [bool; N] = needed.try_into().expect("land combat table count");
-        self.details.mismatches = 0;
-        self.divisions.mismatches = 0;
-        self.sides.mismatches = 0;
-        let (first, mut ticks) = self.pass(memory, base, state, false, [true; N]);
-        self.details.outcome = first[0];
-        self.divisions.outcome = first[1];
-        self.sides.outcome = first[2];
-        self.details.checked = needed[0];
-        self.divisions.checked = needed[1];
-        self.sides.checked = needed[2];
-        let mut matched = [false; N];
-        if needed.iter().any(|v| *v) {
-            let (second, costs) = self.pass(memory, base, state, true, needed);
-            for index in 0..N {
-                ticks[index] += costs[index];
-            }
-            if needed[0] {
-                let comparison_started = qpc();
-                let arena_mismatches = self.details.mismatches;
-                self.details.compare(second[0]);
-                self.details.mismatches += arena_mismatches;
-                matched[0] = full_match(first[0], second[0], self.details.mismatches);
-                ticks[0] += elapsed(comparison_started);
-            }
-            if needed[1] {
-                let comparison_started = qpc();
-                let arena_mismatches = self.divisions.mismatches;
-                self.divisions.compare(second[1]);
-                self.divisions.mismatches += arena_mismatches;
-                matched[1] = full_match(first[1], second[1], self.divisions.mismatches);
-                ticks[1] += elapsed(comparison_started);
-            }
-            if needed[2] {
-                let comparison_started = qpc();
-                let arena_mismatches = self.sides.mismatches;
-                self.sides.compare(second[2]);
-                self.sides.mismatches += arena_mismatches;
-                matched[2] = full_match(first[2], second[2], self.sides.mismatches);
-                ticks[2] += elapsed(comparison_started);
-            }
-        }
+        let (outcomes, mut ticks) = self.pass(memory, base, state);
+        self.details.outcome = outcomes[0];
+        self.divisions.outcome = outcomes[1];
+        self.sides.outcome = outcomes[2];
         ticks[0] += elapsed(started).saturating_sub(ticks.iter().sum::<u64>());
-        (matched, ticks)
+        ticks
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [
-            checked(&self.details),
-            checked(&self.divisions),
-            checked(&self.sides),
-        ]
-    }
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [
-            self.details.mismatches,
-            self.divisions.mismatches,
-            self.sides.mismatches,
+            self.details.outcome,
+            self.divisions.outcome,
+            self.sides.outcome,
         ]
     }
     fn tactic_inputs(&self, context: &land_tactic_inputs::ContextRow) -> LandCombatTacticInputs {
@@ -1212,93 +1060,94 @@ impl Captured {
                     sides: std::array::from_fn(|side| {
                         let s = &r.sides[side];
                         LandCombatSideDetails {
-                        flags: s.flags,
-                        presentation: commander_presentation(&s.presentation),
-                        committed: self.rosters.first
-                            [s.committed_start..s.committed_start + s.committed_len]
-                            .to_vec(),
-                        reserves: self.rosters.first
-                            [s.reserve_start..s.reserve_start + s.reserve_len]
-                            .to_vec(),
-                        tactic_id: s.tactic_id,
-                        tactic_kind: s.tactic_kind,
-                        tactic_counter_id: s.tactic_counter_id,
-                        tactic_token: s.tactic_token[..s.tactic_token_len].to_vec(),
-                        air_counts: s.air_counts[..s.air_count_len].to_vec(),
-                        anti_air_attack: s.anti_air_attack,
-                        air_kills: s.air_kills,
-                        damage: s.damage,
-                        organisation_loss: s.organisation_loss,
-                        organisation_loss_index: s.organisation_loss_index,
-                        organisation_loss_count: s.organisation_loss_count,
-                        border_modifier: s.border_modifier,
-                        border_dig_in_factor: s.border_dig_in_factor,
-                        border_terrain_factor: s.border_terrain_factor,
-                        commander: s.commander,
-                        commander_skill: s.commander_skill,
-                        commander_next_skill: super::naval_details::commander_skill(
-                            s.commander_next_skill,
-                        ),
-                        commander_category: s.commander_category,
-                        commander_country: s.commander_country,
-                        commander_description: s.commander_description
-                            [..s.commander_description_len]
-                            .to_vec(),
-                        parent_commander: s.parent_commander,
-                        parent_commander_name: s.parent_commander_name
-                            [..s.parent_commander_name_len]
-                            .to_vec(),
-                        parent_command_capacity: s.parent_command_capacity,
-                        parent_formation_kind: s.parent_formation_kind,
-                        parent_command_count: s.parent_command_count,
-                        portrait_modifiers: s.portrait_modifiers[..s.portrait_modifiers_len]
-                            .iter()
-                            .map(|m| LandCombatCommanderPortraitModifier {
-                                source: m.source,
-                                id: m.id,
-                                value: m.value,
-                                metadata_flags: m.metadata_flags,
-                                category_mask: m.category_mask,
-                                feature_selector: m.feature_selector,
-                            })
-                            .collect(),
-                        portrait_tooltips: s.portrait_tooltips[..s.portrait_tooltips_len]
-                            .iter()
-                            .map(|t| LandCombatCommanderPortraitTooltip {
-                                source: t.source,
-                                bucket: t.bucket,
-                                key: t.key,
-                                text: s.portrait_text[t.text_start..t.text_start + t.text_len]
-                                    .to_vec(),
-                            })
-                            .collect(),
-                        commander_experience: s.commander_experience,
-                        commander_name: s.commander_name[..s.commander_name_len].to_vec(),
-                        commander_modifiers: s.commander_modifiers,
-                        commander_modifier_present: s.commander_modifier_present,
-                        learning_traits: s.learning_traits[..s.learning_traits_len]
-                            .iter()
-                            .map(|t| LandCombatCommanderLearningTrait {
-                                token_id: t.token_id,
-                                definition_ordinal: t.definition_ordinal,
-                                required_experience: t.required_experience,
-                                experience: t.experience,
-                                token: s.learning_text[t.token_start..t.token_start + t.token_len]
-                                    .to_vec(),
-                            })
-                            .collect(),
-                        traits: s.traits[..s.traits_len]
-                            .iter()
-                            .map(|t| LandCombatCommanderTrait {
-                                token_id: t.token_id,
-                                definition_ordinal: t.definition_ordinal,
-                                kind: t.kind,
-                                relevant: t.relevant,
-                                token: s.trait_text[t.token_start..t.token_start + t.token_len]
-                                    .to_vec(),
-                            })
-                            .collect(),
-                        hq_unit: captured.hq_unit[side],
+                            flags: s.flags,
+                            presentation: commander_presentation(&s.presentation),
+                            committed: self.rosters.first
+                                [s.committed_start..s.committed_start + s.committed_len]
+                                .to_vec(),
+                            reserves: self.rosters.first
+                                [s.reserve_start..s.reserve_start + s.reserve_len]
+                                .to_vec(),
+                            tactic_id: s.tactic_id,
+                            tactic_kind: s.tactic_kind,
+                            tactic_counter_id: s.tactic_counter_id,
+                            tactic_token: s.tactic_token[..s.tactic_token_len].to_vec(),
+                            air_counts: s.air_counts[..s.air_count_len].to_vec(),
+                            anti_air_attack: s.anti_air_attack,
+                            air_kills: s.air_kills,
+                            damage: s.damage,
+                            organisation_loss: s.organisation_loss,
+                            organisation_loss_index: s.organisation_loss_index,
+                            organisation_loss_count: s.organisation_loss_count,
+                            border_modifier: s.border_modifier,
+                            border_dig_in_factor: s.border_dig_in_factor,
+                            border_terrain_factor: s.border_terrain_factor,
+                            commander: s.commander,
+                            commander_skill: s.commander_skill,
+                            commander_next_skill: super::naval_details::commander_skill(
+                                s.commander_next_skill,
+                            ),
+                            commander_category: s.commander_category,
+                            commander_country: s.commander_country,
+                            commander_description: s.commander_description
+                                [..s.commander_description_len]
+                                .to_vec(),
+                            parent_commander: s.parent_commander,
+                            parent_commander_name: s.parent_commander_name
+                                [..s.parent_commander_name_len]
+                                .to_vec(),
+                            parent_command_capacity: s.parent_command_capacity,
+                            parent_formation_kind: s.parent_formation_kind,
+                            parent_command_count: s.parent_command_count,
+                            portrait_modifiers: s.portrait_modifiers[..s.portrait_modifiers_len]
+                                .iter()
+                                .map(|m| LandCombatCommanderPortraitModifier {
+                                    source: m.source,
+                                    id: m.id,
+                                    value: m.value,
+                                    metadata_flags: m.metadata_flags,
+                                    category_mask: m.category_mask,
+                                    feature_selector: m.feature_selector,
+                                })
+                                .collect(),
+                            portrait_tooltips: s.portrait_tooltips[..s.portrait_tooltips_len]
+                                .iter()
+                                .map(|t| LandCombatCommanderPortraitTooltip {
+                                    source: t.source,
+                                    bucket: t.bucket,
+                                    key: t.key,
+                                    text: s.portrait_text[t.text_start..t.text_start + t.text_len]
+                                        .to_vec(),
+                                })
+                                .collect(),
+                            commander_experience: s.commander_experience,
+                            commander_name: s.commander_name[..s.commander_name_len].to_vec(),
+                            commander_modifiers: s.commander_modifiers,
+                            commander_modifier_present: s.commander_modifier_present,
+                            learning_traits: s.learning_traits[..s.learning_traits_len]
+                                .iter()
+                                .map(|t| LandCombatCommanderLearningTrait {
+                                    token_id: t.token_id,
+                                    definition_ordinal: t.definition_ordinal,
+                                    required_experience: t.required_experience,
+                                    experience: t.experience,
+                                    token: s.learning_text
+                                        [t.token_start..t.token_start + t.token_len]
+                                        .to_vec(),
+                                })
+                                .collect(),
+                            traits: s.traits[..s.traits_len]
+                                .iter()
+                                .map(|t| LandCombatCommanderTrait {
+                                    token_id: t.token_id,
+                                    definition_ordinal: t.definition_ordinal,
+                                    kind: t.kind,
+                                    relevant: t.relevant,
+                                    token: s.trait_text[t.token_start..t.token_start + t.token_len]
+                                        .to_vec(),
+                                })
+                                .collect(),
+                            hq_unit: captured.hq_unit[side],
                         }
                     }),
                 }
@@ -1508,22 +1357,13 @@ pub(super) fn commander_presentation(
 fn elapsed(start: i64) -> u64 {
     qpc().saturating_sub(start).max(0) as u64
 }
-fn checked<R>(rows: &CaptureRows<R>) -> Outcome {
-    if rows.checked && rows.mismatches != 0 {
-        Outcome::Unavailable {
-            reason: "land combat window operands changed during double read",
-        }
-    } else {
-        rows.outcome
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn modifier_capacity_omits_whole_side_and_counts_arena_pressure() {
+    fn modifier_capacity_and_division_growth_keep_independent_failures() {
         let mut image = vec![0_u8; 0x4000];
         for (address, value) in [
             (0x1000, engine::carmy::VTABLE_RVA as u64),
@@ -1555,8 +1395,9 @@ mod tests {
         let mut members = [ModifierMember::default(); 2];
         let mut values = [carmy_combat_inputs::Modifier::default(); 1];
         let mut destination = Destination {
+            context_modifiers: carmy_combat_inputs::ContextModifiers::default(),
             details: &mut [],
-            division_commanders: &mut [],
+            division_commanders: &mut Vec::new(),
             commander_keys: &mut [],
             commander_progress: Progress::default(),
             commander_key_count: 0,
@@ -1566,25 +1407,24 @@ mod tests {
             tactic_unlocks: &mut [],
             tactic_registry: None,
             tactic_unlock_progress: Progress::default(),
-            divisions: &mut [],
+            divisions: &mut Vec::new(),
             sides: &mut sides,
             rosters: &mut [],
             members: &mut members,
             modifiers: &mut values,
-            width_terms: &mut [],
+            width_terms: &mut Vec::new(),
             width_progress: Progress::default(),
             progress: [Progress::default(); N],
             arenas: [Progress::default(); N],
-            active: [false, false, true],
-            manpower: &mut [],
+            manpower: &mut Vec::new(),
             manpower_progress: Progress::default(),
-            reinforcement_modifiers: &mut [],
-            supply_terms: &mut [],
-            acclimatization: &mut [],
-            transport_terms: &mut [],
+            reinforcement_modifiers: &mut Vec::new(),
+            supply_terms: &mut Vec::new(),
+            acclimatization: &mut Vec::new(),
+            transport_terms: &mut Vec::new(),
             reinforcement_progress: [Progress::default(); 4],
             ticks: [0; N],
-            window: &mut [],
+            window: &mut Vec::new(),
             window_progress: Progress::default(),
             current_window: None,
         };
@@ -1608,10 +1448,10 @@ mod tests {
         assert_eq!(destination.sides[0].side, 1);
         assert_eq!(destination.sides[0].len, 0);
 
-        // Window pressure must fail its consumers visibly and still attempt
-        // the independent modifiers census, even with no operand slots.
+        // Empty division/window destinations grow from the original source
+        // count; native failures still fail both consumers and do not prevent
+        // the independent modifiers census below.
         destination.progress = [Progress::default(); N];
-        destination.active = [true; N];
         destination.visit(
             &memory,
             0,
@@ -1625,6 +1465,8 @@ mod tests {
             },
         );
         assert_eq!(destination.window_progress.required, 1);
+        assert_eq!(destination.window.len(), 1);
+        assert_eq!(destination.divisions.len(), 1);
         for progress in &destination.progress[..2] {
             assert!(matches!(
                 progress.outcome(Outcome::Rows { len: 1 }),
@@ -1632,6 +1474,94 @@ mod tests {
             ));
         }
         assert_eq!(destination.progress[2].required, 2);
+
+        // A commander that did not fit the old row arena must still be read
+        // exactly once and retained; compare every guarded-read failure prefix
+        // with the native reader called directly.
+        use engine::{creference_registry as registry, cunit_leader as leader};
+        use std::cell::{Cell, RefCell};
+        struct Traced<'a> {
+            bytes: &'a [u8],
+            reads: RefCell<Vec<(usize, usize)>>,
+            fail: Cell<Option<usize>>,
+        }
+        impl Memory for Traced<'_> {
+            fn copy(&self, address: usize, out: &mut [u8]) -> bool {
+                self.reads.borrow_mut().push((address, out.len()));
+                if self.fail.get() == Some(address) {
+                    return false;
+                }
+                if address == registry::HIGH_ROOT_RVA && out.len() == 8 {
+                    out.copy_from_slice(&0x1000_u64.to_le_bytes());
+                    return true;
+                }
+                engine::memory::SliceMemory {
+                    base: 0,
+                    bytes: self.bytes,
+                }
+                .copy(address, out)
+            }
+        }
+        let handle = (0xf000_0001_u64 << 32) | leader::REFERENCE_TYPE as u64;
+        let hash = handle
+            .rotate_left(32)
+            .wrapping_mul(registry::HASH_MULTIPLIER);
+        let slot = (((hash >> 32) as u32 ^ hash as u32) & 7) as usize;
+        let entry = 0x1100 + slot * 24;
+        let mut image = vec![0_u8; 0x5000];
+        for (address, value) in [
+            (0x1000 + registry::ENTRIES, 0x1100),
+            (0x1000 + registry::COUNT, 7_u64 << 32 | 1),
+            (entry + 8, handle),
+            (entry + 16, 0x2000),
+            (0x2000, engine::carmy_leader::VTABLE_RVA as u64),
+            (0x2000 + leader::TYPE, handle),
+            (0x2000 + leader::SKILL, 0x4000),
+            (0x2000 + leader::NAME + 16, 2),
+            (0x2000 + leader::NAME + 24, 15),
+            (0x4000, engine::cunit_leader_skill::VTABLE_RVA as u64),
+        ] {
+            image[address..address + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        image[0x1000 + registry::OVERFLOW_DISTANCE] = 5;
+        image[0x1100 + 13 * 24 + 4] = 255;
+        image[entry + 4] = 1;
+        image[0x2000 + leader::NAME..0x2000 + leader::NAME + 2].copy_from_slice(&[b'n', 0xff]);
+        let skill = 0x4000 + engine::cunit_leader_skill::LEVEL;
+        image[skill..skill + 4].copy_from_slice(&i32::MIN.to_le_bytes());
+        let memory = Traced {
+            bytes: &image,
+            reads: RefCell::default(),
+            fail: Cell::new(None),
+        };
+        let expected =
+            engine::naval_commander_inputs::capture_division_commander(&memory, 0, handle).unwrap();
+        let complete_reads = memory.reads.take();
+        let mut keys = [CommanderKey::default(); 1];
+        destination.commander_keys = &mut keys;
+        destination.progress = [Progress::default(); N];
+        assert_eq!(destination.commander(&memory, 0, handle), Some(0));
+        assert_eq!(destination.division_commanders[0], expected);
+        assert_eq!(*memory.reads.borrow(), complete_reads);
+        assert_eq!(destination.commander(&memory, 0, handle), Some(0));
+        assert_eq!(*memory.reads.borrow(), complete_reads);
+        for (address, _) in complete_reads {
+            memory.fail.set(Some(address));
+            memory.reads.borrow_mut().clear();
+            let expected =
+                engine::naval_commander_inputs::capture_division_commander(&memory, 0, handle)
+                    .unwrap_err();
+            let expected_reads = memory.reads.take();
+            destination.commander_keys.fill(CommanderKey::default());
+            destination.commander_progress = Progress::default();
+            destination.commander_key_count = 0;
+            destination.division_commanders.clear();
+            destination.progress = [Progress::default(); N];
+            assert_eq!(destination.commander(&memory, 0, handle), None);
+            assert_eq!(destination.progress[1].failure, Some(expected));
+            assert_eq!(*memory.reads.borrow(), expected_reads);
+            assert!(destination.division_commanders.is_empty());
+        }
     }
 
     #[test]
@@ -1658,7 +1588,7 @@ mod tests {
             commander_keys: 2,
             window_divisions: 1,
         };
-        let mut captured = Captured::with_capacities(&c, &[200; N]);
+        let mut captured = Captured::with_capacities(&c);
         captured.details.outcome = Outcome::Rows { len: 1 };
         captured.details.rows[0].row.id = 0x1000_0000_003e;
         captured.details.rows[0].tactic_context.unlock_start = [0, 1, 2];
@@ -1719,10 +1649,13 @@ mod tests {
             commander_keys: 2,
             window_divisions: 1,
         };
-        let mut captured = Captured::with_capacities(&c, &[200; N]);
+        let mut captured = Captured::with_capacities(&c);
         captured.details.outcome = Outcome::Rows { len: 2 };
         captured.rosters.len = 6;
-        captured.rosters.first.copy_from_slice(&[13, 6, 11, 4, 1, 9]);
+        captured
+            .rosters
+            .first
+            .copy_from_slice(&[13, 6, 11, 4, 1, 9]);
         for (row, id, spans) in [
             (0, 0x1000_0000_003e, [(0, 2, 2, 1), (3, 0, 3, 0)]),
             (1, 0x2000_0000_003e, [(3, 0, 3, 0), (3, 1, 4, 2)]),
@@ -1749,7 +1682,11 @@ mod tests {
         };
         let lists: Vec<_> = details
             .iter()
-            .map(|row| row.sides.clone().map(|side| [side.committed, side.reserves]))
+            .map(|row| {
+                row.sides
+                    .clone()
+                    .map(|side| [side.committed, side.reserves])
+            })
             .collect();
         assert_eq!(
             lists,
@@ -1787,7 +1724,7 @@ mod tests {
             commander_keys: 2,
             window_divisions: 1,
         };
-        let mut captured = Captured::with_capacities(&c, &[200; N]);
+        let mut captured = Captured::with_capacities(&c);
         captured.divisions.outcome = Outcome::Rows { len: 1 };
         captured.divisions.rows[0] = Division {
             combat: 0x1000_0000_003e,
@@ -1815,28 +1752,7 @@ mod tests {
     }
 
     #[test]
-    fn source_failures_and_independent_window_retirement_are_explicit() {
-        for successes in [0, 200] {
-            let pool = Captured::with_capacities(&Capacities::default(), &[successes; N]);
-            eprintln!(
-                "land default pool at {successes} successful checks: {} bytes",
-                pool.allocated_bytes()
-            );
-        }
-        eprintln!(
-            "land combat static row bytes: details={} division={} modifier_side={} modifier_member={} modifier={} width={} reinforcement_modifier={} supply={} acclimatization={} transport={} manpower={}; native live cost unmeasured",
-            size_of::<Detail>(),
-            size_of::<Division>(),
-            size_of::<ModifierSide>(),
-            size_of::<ModifierMember>(),
-            size_of::<carmy_combat_inputs::Modifier>(),
-            size_of::<carmy_combat_inputs::WidthTerm>(),
-            size_of::<reinforcement::ModifierTerm>(),
-            size_of::<reinforcement::SupplyTerm>(),
-            size_of::<reinforcement::AcclimatizationTerm>(),
-            size_of::<reinforcement::TransportTerm>(),
-            size_of::<carmy_combat_inputs::ManpowerTerm>(),
-        );
+    fn source_failures_and_primary_arena_capacity_are_explicit() {
         let mut c = Capacities {
             combats: 1,
             census_participants: 2,
@@ -1856,35 +1772,16 @@ mod tests {
             tactic_weights: 2,
             tactic_unlocks: 2,
             division_commanders: 2,
-            commander_keys: 2,
+            commander_keys: 1,
             window_divisions: 2,
         };
-        let mut captured = Captured::with_capacities(&c, &[200, 0, 200]);
-        assert!(captured.details.second.is_empty() && captured.rosters.second.is_empty());
-        assert!(
-            captured.tactic_candidates.second.is_empty()
-                && captured.tactic_weights.second.is_empty()
-                && captured.tactic_unlocks.second.is_empty()
-        );
-        assert!(captured.sides.second.is_empty() && captured.members.second.is_empty());
-        assert_eq!(captured.divisions.second.len(), 2);
-        assert_eq!(captured.division_commanders.second.len(), 2);
-        assert_eq!(captured.width_terms.second.len(), 2);
-        assert_eq!(captured.window.second.len(), 2);
-        let mut details_pending = Captured::with_capacities(&c, &[0, 200, 200]);
-        assert_eq!(details_pending.window.second.len(), 2);
-        details_pending.grow(&mut c, &[199, 200, 200]);
-        assert!(!details_pending.window.second.is_empty());
-        details_pending.grow(&mut c, &[200; N]);
-        assert!(details_pending.window.second.is_empty());
+        let mut captured = Captured::with_capacities(&c);
         let memory = engine::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
-        assert_eq!(
-            captured.capture(&memory, 0, 0, &[false, true, false]).0,
-            [false; N]
-        );
+        captured.capture(&memory, 0, 0);
+        assert!(captured.commander_keys.len() >= captured.census_participants.len());
         assert!(
             captured
                 .tables()
@@ -1916,22 +1813,29 @@ mod tests {
         captured.tactic_candidates.required = 7;
         captured.tactic_weights.required = 11;
         captured.tactic_unlocks.required = 13;
-        captured.grow(&mut c, &[200; N]);
+        captured.grow(&mut c);
         assert!(c.division_commanders >= 5 && c.commander_keys >= 7);
-        assert!(captured.division_commanders.second.is_empty());
         assert!(c.tactic_candidates >= 7 && c.tactic_weights >= 11 && c.tactic_unlocks >= 13);
         assert!(c.sides >= 4 && c.modifier_members >= 7 && c.modifiers >= 19 && c.width_terms >= 9);
-        assert!(captured.divisions.second.is_empty() && captured.width_terms.second.is_empty());
         captured.details.outcome = Outcome::Rows { len: 1 };
-        captured.divisions.outcome = Outcome::Rows { len: 1 };
+        captured.divisions.outcome = Outcome::Unavailable {
+            reason: "native division read failed",
+        };
         captured.sides.outcome = Outcome::Rows { len: 1 };
-        captured.divisions.checked = true;
-        captured.divisions.mismatches = 1;
         assert_eq!(captured.outcomes()[0], Outcome::Rows { len: 1 });
         assert!(matches!(
             captured.outcomes()[1],
             Outcome::Unavailable { .. }
         ));
         assert_eq!(captured.outcomes()[2], Outcome::Rows { len: 1 });
+        let allocated = captured.allocated_bytes();
+        captured.fail("ordinary worker unavailable");
+        assert_eq!(
+            captured.outcomes(),
+            [Outcome::Unavailable {
+                reason: "ordinary worker unavailable"
+            }; N],
+        );
+        assert_eq!(captured.allocated_bytes(), allocated);
     }
 }

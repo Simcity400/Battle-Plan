@@ -2,4 +2,5 @@
 *.rs text eol=lf
 *.toml text eol=lf
 *.md text eol=lf
+ui/src/generated/analytics.ts text eol=lf
 *.png binary

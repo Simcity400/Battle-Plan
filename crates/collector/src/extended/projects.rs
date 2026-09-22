@@ -2,19 +2,21 @@
 
 use crate::{
     raw::RawLog,
-    sampling::{full_match, qpc},
+    read_accounting,
+    sampling::qpc,
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
 use engine::{
-    Memory, ccountry, ccountry_raid_status, cgame_state, cnuke, cpdx_array::Array,
-    craid_instance, craid_province_entries, craid_system, msvc_string, nproject_breakthrough_node, nproject_cbreakthrough_progress,
-    nproject_cprogram, nproject_cprogram_status, nproject_cproject, nproject_cproject_pool,
-    nproject_cproject_state_machine, nproject_sproject_context, nproject_sproject_history,
-    peace_conference, scientist_roster, walk::Outcome,
+    Memory, ccountry, ccountry_raid_status, cgame_state, cnuke, cpdx_array::Array, craid_instance,
+    craid_province_entries, craid_system, msvc_string, nproject_breakthrough_node,
+    nproject_cbreakthrough_progress, nproject_cprogram, nproject_cprogram_status,
+    nproject_cproject, nproject_cproject_pool, nproject_cproject_state_machine,
+    nproject_sproject_context, nproject_sproject_history, peace_conference, scientist_roster,
+    walk::Outcome,
 };
 use replay::{
-    frame::{TABLE_COUNT, TableView},
+    frame::TableView,
     rows::{self, TableId, tables},
 };
 use std::mem::size_of;
@@ -35,12 +37,12 @@ pub const TABLES: [TableId; N] = [
     TableId::RaidProvinces,
 ];
 
-/// Each rooted walk produces two tables with independent consistency windows.
+/// Each rooted walk produces two independently bounded tables.
 /// Its entire cost is attributed once to the anchor named by each group.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("project pool and reward histories", 1, &[1, 2]),
     // RaidTargets is the raid instance walk's second projection: the same rows
-    // and the same double read, so it joins that walk's cost group.
+    // carry the map icon's operands, so it joins that walk's cost group.
     ("raid countries and instances", 5, &[5, 6, 10]),
     ("scientist rosters and specializations", 8, &[8, 9]),
     ("raid province registrations", 11, &[11]),
@@ -56,7 +58,9 @@ pub struct Capacities {
 impl Default for Capacities {
     fn default() -> Self {
         Self {
-            rows: [256, 32768, 1024, 2048, 1024, 512, 256, 32, 2048, 8192, 0, 4096],
+            rows: [
+                256, 32768, 1024, 2048, 1024, 512, 256, 32, 2048, 8192, 128, 4096,
+            ],
             program_names: 8192,
             program_candidates: 1024,
         }
@@ -78,9 +82,9 @@ pub struct Captured {
     names: Arena<u8>,
     candidates: Vec<usize>,
     required_candidates: usize,
-    /// Raw-copy split gate for the Tier-4 slot-3 project tables (0..4).
-    /// Set by the game thread on refresh hours with a valid raw payload;
-    /// `capture` then skips the typed slot-3 walks and the decode worker
+    /// Raw-copy split gate for the four daily project tables (0..4).
+    /// Set when an acquisition job returns a valid refresh payload;
+    /// `capture` then skips their typed walks and the decode worker
     /// fills these rows before the ready handoff. Preserved across `reset`
     /// (set per refresh, cleared by the worker after decode). Hourly tables
     /// are never gated by this flag.
@@ -88,21 +92,48 @@ pub struct Captured {
 }
 
 impl Captured {
-    /// All capacity, success, outcome and cost arrays use local TABLES order.
-    pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
+    /// Fail the typed job's tables without erasing its separately staged projects.
+    pub(crate) fn fail_gated_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        let outcomes = TABLES.map(|table| super::failed_capture(table, hour, force_full, reason));
+        if !self.raw_mode {
+            self.programs.fail(outcomes[0]);
+            self.projects.fail(outcomes[1]);
+            self.history.fail(outcomes[2]);
+            self.breakthroughs.fail(outcomes[3]);
+        }
+        self.nukes.fail(outcomes[4]);
+        self.raid_countries.fail(outcomes[5]);
+        self.raids.fail(outcomes[6]);
+        self.peace.fail(outcomes[7]);
+        self.scientists.fail(outcomes[8]);
+        self.scientist_skills.fail(outcomes[9]);
+        self.raid_provinces.fail(outcomes[11]);
+    }
+
+    /// Allocation-free placeholder while a worker owns the capture buffers.
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities {
+            rows: [0; N],
+            program_names: 0,
+            program_candidates: 0,
+        })
+    }
+
+    /// All capacity, outcome and cost arrays use local TABLES order.
+    pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            programs: CaptureRows::new(capacity.rows[0], successful[0]),
-            projects: CaptureRows::new(capacity.rows[1], successful[1]),
-            history: CaptureRows::new(capacity.rows[2], successful[2]),
-            breakthroughs: CaptureRows::new(capacity.rows[3], successful[3]),
-            nukes: CaptureRows::new(capacity.rows[4], successful[4]),
-            raid_countries: CaptureRows::new(capacity.rows[5], successful[5]),
-            raids: CaptureRows::new(capacity.rows[6], successful[6]),
-            peace: CaptureRows::new(capacity.rows[7], successful[7]),
-            scientists: CaptureRows::new(capacity.rows[8], successful[8]),
-            scientist_skills: CaptureRows::new(capacity.rows[9], successful[9]),
-            raid_provinces: CaptureRows::new(capacity.rows[11], successful[11]),
-            names: Arena::new(capacity.program_names, successful[0]),
+            programs: CaptureRows::new(capacity.rows[0]),
+            projects: CaptureRows::new(capacity.rows[1]),
+            history: CaptureRows::new(capacity.rows[2]),
+            breakthroughs: CaptureRows::new(capacity.rows[3]),
+            nukes: CaptureRows::new(capacity.rows[4]),
+            raid_countries: CaptureRows::new(capacity.rows[5]),
+            raids: CaptureRows::new(capacity.rows[6]),
+            peace: CaptureRows::new(capacity.rows[7]),
+            scientists: CaptureRows::new(capacity.rows[8]),
+            scientist_skills: CaptureRows::new(capacity.rows[9]),
+            raid_provinces: CaptureRows::new(capacity.rows[11]),
+            names: Arena::new(capacity.program_names),
             candidates: vec![0; capacity.program_candidates],
             required_candidates: 0,
             raw_mode: false,
@@ -141,23 +172,19 @@ impl Captured {
             + self.candidates.capacity() * size_of::<usize>()
     }
 
-    pub fn grow(&mut self, capacity: &mut Capacities, successful: &[u16]) {
-        self.programs.grow(&mut capacity.rows[0], successful[0]);
-        self.projects.grow(&mut capacity.rows[1], successful[1]);
-        self.history.grow(&mut capacity.rows[2], successful[2]);
-        self.breakthroughs
-            .grow(&mut capacity.rows[3], successful[3]);
-        self.nukes.grow(&mut capacity.rows[4], successful[4]);
-        self.raid_countries
-            .grow(&mut capacity.rows[5], successful[5]);
-        self.raids.grow(&mut capacity.rows[6], successful[6]);
-        self.peace.grow(&mut capacity.rows[7], successful[7]);
-        self.scientists.grow(&mut capacity.rows[8], successful[8]);
-        self.scientist_skills
-            .grow(&mut capacity.rows[9], successful[9]);
-        self.raid_provinces
-            .grow(&mut capacity.rows[11], successful[11]);
-        self.names.grow(&mut capacity.program_names, successful[0]);
+    pub fn grow(&mut self, capacity: &mut Capacities) {
+        self.programs.grow(&mut capacity.rows[0]);
+        self.projects.grow(&mut capacity.rows[1]);
+        self.history.grow(&mut capacity.rows[2]);
+        self.breakthroughs.grow(&mut capacity.rows[3]);
+        self.nukes.grow(&mut capacity.rows[4]);
+        self.raid_countries.grow(&mut capacity.rows[5]);
+        self.raids.grow(&mut capacity.rows[6]);
+        self.peace.grow(&mut capacity.rows[7]);
+        self.scientists.grow(&mut capacity.rows[8]);
+        self.scientist_skills.grow(&mut capacity.rows[9]);
+        self.raid_provinces.grow(&mut capacity.rows[11]);
+        self.names.grow(&mut capacity.program_names);
         grow_capacity(&mut capacity.program_candidates, self.required_candidates);
         if self.required_candidates > 0
             && self.required_candidates
@@ -171,32 +198,23 @@ impl Captured {
         grow_vec(&mut self.candidates, capacity.program_candidates);
     }
 
-    /// Only preallocated reads and comparisons run in the hourly callback.
+    /// Acquisition uses preallocated buffers while the hourly callback waits.
     /// Definition/reward/specialization tokens retain their native u32 bits.
+    /// Acquire current rows using the existing staggered project cadence.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        needed: &[bool],
         hour: i32,
         force_full: bool,
-    ) -> ([bool; N], [u64; N]) {
+    ) -> [u64; N] {
         self.reset();
-        let mut matched = [false; N];
         let mut ticks = [0; N];
-        // Tier-4 projects share slot3; off-hours skip all four walks.
-        // Raw-copy split: on refresh hours the game thread stages raw bytes
-        // via `copy_projects_refresh` and the decode worker fills the typed
-        // rows before the ready handoff, so the typed slot-3 walks are
-        // skipped here. Matched flags and costs come from the raw compare,
-        // applied by the caller after this returns. Hourly tables below
-        // always run.
-        let walk = replay::cadence::should_walk(replay::rows::TableId::Projects, hour, force_full)
-            && !self.raw_mode;
-        if self.raw_mode {
-            // Refresh payload staged: leave the reset outcomes for the decode
-            // worker, which installs identical rows, outcomes and arenas.
+        let active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
+        let walk = active[1] && !self.raw_mode;
+        if self.raw_mode && active[1] {
+            // The owned refresh supplies these rows before publication.
         } else if !walk {
             let skipped = Outcome::Unavailable {
                 reason: replay::cadence::SKIPPED_REASON,
@@ -207,151 +225,137 @@ impl Captured {
             self.breakthroughs.outcome = skipped;
         } else {
             let begin = qpc();
-            matched[0] = self.capture_programs(needed[0], |candidates, rows, names| {
+            self.capture_programs(|candidates, rows, names| {
+                let _reads = read_accounting::table(TABLES[0]);
                 nproject_cprogram::walk(memory, base, game_state, candidates, rows, names)
             });
             ticks[0] = elapsed(begin);
-
             let begin = qpc();
-            let project_matches = capture_pair(
+            capture_pair(
                 &mut self.projects,
                 &mut self.history,
-                [needed[1], needed[2]],
                 |projects, histories| {
+                    let _reads = read_accounting::table(TABLES[1]);
                     nproject_cproject::walk_with_history(
                         memory, base, game_state, projects, histories,
                     )
                 },
             );
-            matched[1..3].copy_from_slice(&project_matches);
             ticks[1] = elapsed(begin);
             let begin = qpc();
-            matched[3] = capture_rows(&mut self.breakthroughs, needed[3], |rows| {
+            capture_rows(&mut self.breakthroughs, |rows| {
+                let _reads = read_accounting::table(TABLES[3]);
                 nproject_cbreakthrough_progress::walk(memory, base, game_state, rows)
             });
             ticks[3] = elapsed(begin);
         }
         macro_rules! plain {
             ($field:ident, $index:literal, $module:ident) => {{
-                let begin = qpc();
-                matched[$index] = capture_rows(&mut self.$field, needed[$index], |rows| {
-                    $module::walk(memory, base, game_state, rows)
-                });
-                ticks[$index] = elapsed(begin);
+                if active[$index] {
+                    let _reads = read_accounting::table(TABLES[$index]);
+                    let begin = qpc();
+                    capture_rows(&mut self.$field, |rows| {
+                        $module::walk(memory, base, game_state, rows)
+                    });
+                    ticks[$index] = elapsed(begin);
+                } else {
+                    self.$field.outcome = Outcome::Unavailable {
+                        reason: replay::cadence::SKIPPED_REASON,
+                    };
+                }
             }};
         }
         plain!(nukes, 4, cnuke);
-
-        let begin = qpc();
-        let raid_matches = capture_pair(
-            &mut self.raid_countries,
-            &mut self.raids,
-            [needed[5], needed[6]],
-            |parents, instances| craid_system::walk(memory, base, game_state, parents, instances),
-        );
-        matched[5..7].copy_from_slice(&raid_matches);
-        // Slot 10 is the same read as slot 6: one walk, two published tables.
-        matched[10] = raid_matches[1];
-        ticks[5] = elapsed(begin);
-
-        let begin = qpc();
-        matched[11] = capture_rows(&mut self.raid_provinces, needed[11], |rows| {
-            craid_province_entries::walk(memory, base, game_state, rows)
-        });
-        ticks[11] = elapsed(begin);
+        // Slot 10 (RaidTargets) is the same walk as slot 6: one read, two tables.
+        if active[5] || active[10] {
+            let begin = qpc();
+            capture_pair(
+                &mut self.raid_countries,
+                &mut self.raids,
+                |parents, instances| {
+                    let _reads = read_accounting::table(TABLES[5]);
+                    craid_system::walk(memory, base, game_state, parents, instances)
+                },
+            );
+            ticks[5] = elapsed(begin);
+        } else {
+            self.raid_countries.outcome = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+            self.raids.outcome = self.raid_countries.outcome;
+        }
+        if active[11] {
+            let begin = qpc();
+            capture_rows(&mut self.raid_provinces, |rows| {
+                let _reads = read_accounting::table(TABLES[11]);
+                craid_province_entries::walk(memory, base, game_state, rows)
+            });
+            ticks[11] = elapsed(begin);
+        } else {
+            self.raid_provinces.outcome = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+        }
         plain!(peace, 7, peace_conference);
-
-        // One roster traversal fills both scientist tables. Their consistency
-        // windows stay independent, so a full skill buffer cannot shorten the
-        // roster census or silently drop a scientist's remaining records.
-        let begin = qpc();
-        let scientist_matches = capture_pair(
-            &mut self.scientists,
-            &mut self.scientist_skills,
-            [needed[8], needed[9]],
-            |scientists, skills| {
-                let walk = scientist_roster::walk(
-                    memory,
-                    base,
-                    game_state,
-                    &mut scientist_roster::Buffers { scientists, skills },
-                );
-                (walk.scientists, walk.skills)
-            },
-        );
-        matched[8..10].copy_from_slice(&scientist_matches);
-        ticks[8] = elapsed(begin);
-        (matched, ticks)
+        if active[8] {
+            let begin = qpc();
+            capture_pair(
+                &mut self.scientists,
+                &mut self.scientist_skills,
+                |scientists, skills| {
+                    let _reads = read_accounting::table(TABLES[8]);
+                    let walk = scientist_roster::walk(
+                        memory,
+                        base,
+                        game_state,
+                        &mut scientist_roster::Buffers { scientists, skills },
+                    );
+                    (walk.scientists, walk.skills)
+                },
+            );
+            ticks[8] = elapsed(begin);
+        } else {
+            self.scientists.outcome = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+            self.scientist_skills.outcome = self.scientists.outcome;
+        }
+        ticks
     }
 
     fn capture_programs(
         &mut self,
-        needed: bool,
-        mut walk: impl FnMut(
+        walk: impl FnOnce(
             &mut [usize],
             &mut [nproject_cprogram::Row],
             &mut [u8],
         ) -> nproject_cprogram::NameWalk,
-    ) -> bool {
-        let first = walk(
+    ) {
+        let result = walk(
             &mut self.candidates,
             &mut self.programs.rows,
             &mut self.names.first,
         );
-        self.programs.outcome = program_outcome(first, &self.programs.rows, &self.names.first);
-        self.names.len = first.bytes_len;
-        self.names.required = first.required_bytes;
-        self.required_candidates = first.required_candidates;
-        if !needed {
-            return false;
-        }
-        self.programs.checked = true;
-        // The pointer census is scratch, not captured data. Both reads can use
-        // it sequentially without retaining a second copy in every pool buffer.
-        let second = walk(
-            &mut self.candidates,
-            &mut self.programs.second,
-            &mut self.names.second,
-        );
-        self.required_candidates = self.required_candidates.max(second.required_candidates);
-        let outcome = program_outcome(second, &self.programs.second, &self.names.second);
-        self.programs.compare(outcome);
-        self.programs.mismatches +=
-            usize::from(!self.names.compare(second.bytes_len, second.required_bytes));
-        full_match(self.programs.outcome, outcome, self.programs.mismatches)
-    }
-
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [
-            self.programs.mismatches,
-            self.projects.mismatches,
-            self.history.mismatches,
-            self.breakthroughs.mismatches,
-            self.nukes.mismatches,
-            self.raid_countries.mismatches,
-            self.raids.mismatches,
-            self.peace.mismatches,
-            self.scientists.mismatches,
-            self.scientist_skills.mismatches,
-            self.raids.mismatches,
-            self.raid_provinces.mismatches,
-        ]
+        self.programs.outcome = program_outcome(result, &self.programs.rows, &self.names.first);
+        self.names.len = result.bytes_len;
+        self.names.required = result.required_bytes;
+        self.required_candidates = result.required_candidates;
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
         [
-            effective(&self.programs),
-            effective(&self.projects),
-            effective(&self.history),
-            effective(&self.breakthroughs),
-            effective(&self.nukes),
-            effective(&self.raid_countries),
-            effective(&self.raids),
-            effective(&self.peace),
-            effective(&self.scientists),
-            effective(&self.scientist_skills),
-            effective(&self.raids),
-            effective(&self.raid_provinces),
+            self.programs.outcome,
+            self.projects.outcome,
+            self.history.outcome,
+            self.breakthroughs.outcome,
+            self.nukes.outcome,
+            self.raid_countries.outcome,
+            self.raids.outcome,
+            self.peace.outcome,
+            self.scientists.outcome,
+            self.scientist_skills.outcome,
+            self.raids.outcome,
+            self.raid_provinces.outcome,
         ]
     }
 
@@ -463,9 +467,7 @@ impl Captured {
                     experience_raw: r.experience_raw,
                 }
             }),
-            // The raid instance rows carry the map icon's own operands; they
-            // publish as a twin table so a pre-format-27 reader sees the
-            // shorter `Raids` row unchanged.
+            // The raid instance rows carry the map icon's own operands.
             table::<tables::RaidTargets, _>(outcomes[10], &self.raids.rows, |r| {
                 rows::RaidTargetRow {
                     reference_type: r.reference_type,
@@ -527,13 +529,13 @@ fn elapsed(begin: i64) -> u64 {
 }
 
 // ===========================================================================
-// Tier-4 slot-3 raw-copy split (ProjectPrograms, Projects, ProjectHistory,
-// ProjectBreakthroughs; hourly tables stay game-side typed).
+// Scheduled raw-copy split (ProjectPrograms, Projects, ProjectHistory,
+// ProjectBreakthroughs; independent tables use separate typed acquisition).
 //
-// The game thread copies raw bytes only: one shared country census, program
+// The acquisition worker copies raw bytes: one shared country census, program
 // pointers/rows/strings, project pool records with state machines and
-// history entries, and breakthrough tree nodes. No row is decoded on the
-// game thread. The single FIFO decode worker replays the existing typed
+// history entries, and breakthrough tree nodes. The single FIFO decode worker
+// replays the existing typed
 // walks against the recorded spans (`crate::raw::Recorded`), so typed rows,
 // ordinals, skips, truncation counts and failure reasons are identical by
 // construction (see `crate::raw` for the mirror rules).
@@ -544,7 +546,7 @@ fn elapsed(begin: i64) -> u64 {
 // the census's authentication spans and record only their link span.
 // ===========================================================================
 
-/// Fault-attribution bits, one per slot-3 table in `TABLES[0..4]` order.
+/// Fault-attribution bits, one per project table in `TABLES[0..4]` order.
 const M_PROGRAMS: u32 = 0x01;
 const M_PROJECTS: u32 = 0x02;
 const M_HISTORY: u32 = 0x04;
@@ -567,6 +569,7 @@ const PROJECT_BATCH: u32 = 16;
 pub(crate) struct ProjectsJob {
     pub log: RawLog<4>,
     pub game_state: usize,
+    pub active: bool,
     census: Vec<CensusEntry>,
     pointers: Vec<usize>,
     capacity_charge: crate::raw_memory::Charge,
@@ -580,7 +583,7 @@ struct CensusEntry {
     canonical: bool,
 }
 
-/// Shared census borrowed by every slot-3 walk mirror.
+/// Shared census borrowed by every scheduled project walk mirror.
 #[derive(Clone, Copy)]
 struct ProjectCensus<'a> {
     links: &'a Array,
@@ -596,6 +599,7 @@ impl ProjectsJob {
             // steady state never overflows.
             log: RawLog::new(1 << 20, 48 << 20),
             game_state: 0,
+            active: false,
             census: Vec::with_capacity(512),
             pointers: Vec::with_capacity(32768),
             capacity_charge: crate::raw_memory::Charge::default(),
@@ -608,6 +612,7 @@ impl ProjectsJob {
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
+        self.active = false;
         self.census.clear();
         self.pointers.clear();
     }
@@ -616,9 +621,8 @@ impl ProjectsJob {
         self.log.grow_for_next()
     }
 
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed refreshes fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
+    /// Double every pool off the game thread until copies fit. An overflowed
+    /// accepted refresh stays unavailable; growth serves the next acquisition.
     pub fn grow(&mut self) {
         self.log.grow();
         crate::raw::double_capacity(&mut self.census);
@@ -637,22 +641,19 @@ impl ProjectsJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ProjectsCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
+    /// False when staging overflowed. The accepted acquisition cannot be
+    /// replayed and must fail without a second live walk.
     pub raw_ok: bool,
-    /// Whole-log raw equality gated by live-fault conservatism, in
-    /// [programs, projects, history, breakthroughs] order.
-    pub matched: [bool; 4],
     pub copy_ticks: [u64; 4],
     pub raw_bytes: [u64; 4],
 }
 
-/// Game-thread copy parameters, bundled to keep the refresh entry small.
+/// Acquisition-job parameters supplied at the sampling boundary.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ProjectsCopyContext {
     pub base: usize,
     pub game_state: usize,
-    pub needed: [bool; TABLE_COUNT],
+    pub active: bool,
 }
 
 fn pool_u32(log: &RawLog<4>, start: usize) -> u32 {
@@ -1265,10 +1266,11 @@ fn copy_breakthroughs(
     }
 }
 
-/// One structural pass over the slot-3 read set: shared census first, then
+/// One structural pass over the scheduled read set: shared census first, then
 /// the three walk mirrors in typed order. Failures stop only the affected
 /// walk; the replay derives every outcome from the same recorded spans.
 fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut ProjectsJob) {
+    let _reads = read_accounting::table(TABLES[0]);
     job.game_state = game_state;
     job.census.clear();
     let (links, countries) =
@@ -1387,82 +1389,53 @@ fn copy_census(
     Some((links, countries.count))
 }
 
-/// Acquire a refresh into owned jobs and compare independent raw passes.
-/// The caller applies the report after acquisition has completed.
-/// The caller schedules this only for the four slot-3 project tables.
+/// Acquire one refresh into an owned job.
+/// The caller applies the costs after acquisition has completed.
+/// The caller schedules this only for the four daily project tables.
 pub(crate) fn copy_projects_refresh(
     memory: &impl Memory,
     ctx: ProjectsCopyContext,
-    first: &mut ProjectsJob,
-    mut second: Option<&mut ProjectsJob>,
+    job: &mut ProjectsJob,
 ) -> ProjectsCopyReport {
-    let started = qpc();
-    copy_pass(memory, ctx.base, ctx.game_state, first);
-    let mut ticks = [0u64; 4];
-    ticks[0] = elapsed(started);
-    let mut matched = [true; 4];
-    if let Some(second_job) = second.as_deref_mut() {
-        let second_started = qpc();
-        copy_pass(memory, ctx.base, ctx.game_state, second_job);
-        ticks[0] += elapsed(second_started);
-        // Per-table partitions: shared program roots gate dependents,
-        // private spans only their own table.
-        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-        for (slot, matched) in matched.iter_mut().enumerate() {
-            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-        }
+    job.clear();
+    job.active = ctx.active;
+    if !ctx.active {
+        return ProjectsCopyReport {
+            raw_ok: true,
+            ..Default::default()
+        };
     }
-    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    let started = qpc();
+    copy_pass(memory, ctx.base, ctx.game_state, job);
     ProjectsCopyReport {
-        raw_ok,
-        matched,
-        copy_ticks: ticks,
-        raw_bytes: first.log.raw_bytes,
+        raw_ok: !job.log.overflowed,
+        copy_ticks: [elapsed(started), 0, 0, 0],
+        raw_bytes: job.log.raw_bytes,
     }
 }
 
 impl Captured {
-    /// Apply completed acquisition checks without changing rows or outcomes.
-    pub(crate) fn apply_projects_report(
-        &mut self,
-        ctx: ProjectsCopyContext,
-        report: &ProjectsCopyReport,
-    ) {
-        let needed = |local: usize| ctx.needed[TABLES[local].index()];
-        self.programs.checked = needed(0);
-        self.programs.mismatches = usize::from(needed(0) && !report.matched[0]);
-        self.projects.checked = needed(1);
-        self.projects.mismatches = usize::from(needed(1) && !report.matched[1]);
-        self.history.checked = needed(2);
-        self.history.mismatches = usize::from(needed(2) && !report.matched[2]);
-        self.breakthroughs.checked = needed(3);
-        self.breakthroughs.mismatches = usize::from(needed(3) && !report.matched[3]);
-    }
-
     /// Mark an accepted acquisition failure without retrying live memory.
-    /// Only slot-3 project tables are affected; hourly tables retain their results.
-    pub(crate) fn fail_projects_capture(&mut self, ctx: ProjectsCopyContext, reason: &'static str) {
-        let needed = |local: usize| ctx.needed[TABLES[local].index()];
+    /// Only the four project tables are affected; independent tables retain their results.
+    pub(crate) fn fail_projects_capture(&mut self, active: bool, reason: &'static str) {
+        let reason = if active {
+            reason
+        } else {
+            replay::cadence::SKIPPED_REASON
+        };
         self.programs.outcome = Outcome::Unavailable { reason };
-        self.programs.checked = needed(0);
-        self.programs.mismatches = usize::from(needed(0));
         self.projects.outcome = Outcome::Unavailable { reason };
-        self.projects.checked = needed(1);
-        self.projects.mismatches = usize::from(needed(1));
         self.history.outcome = Outcome::Unavailable { reason };
-        self.history.checked = needed(2);
-        self.history.mismatches = usize::from(needed(2));
         self.breakthroughs.outcome = Outcome::Unavailable { reason };
-        self.breakthroughs.checked = needed(3);
-        self.breakthroughs.mismatches = usize::from(needed(3));
+        self.names.reset();
+        self.required_candidates = 0;
         self.raw_mode = false;
     }
 
     /// Decode-worker interpretation of a raw refresh payload into the pooled
     /// typed rows. Outcomes, arena bytes and candidate counts match the typed
     /// walk exactly because the identical walks run against the recorded
-    /// spans; checked/mismatches set by the raw compare survive. Clears
+    /// spans. Clears
     /// `raw_mode` so the next capture starts clean.
     pub(crate) fn decode_projects_payload(
         &mut self,
@@ -1470,6 +1443,10 @@ impl Captured {
         job: &ProjectsJob,
         decode_ticks: &mut [u64; 4],
     ) {
+        if !job.active {
+            self.fail_projects_capture(false, replay::cadence::SKIPPED_REASON);
+            return;
+        }
         let started = qpc();
         let recorded = crate::raw::Recorded::build(&job.log);
         let first = nproject_cprogram::walk(
@@ -1814,66 +1791,18 @@ fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
     }
 }
 
-fn capture_rows<R: Default + Clone + PartialEq>(
-    captured: &mut CaptureRows<R>,
-    needed: bool,
-    mut walk: impl FnMut(&mut [R]) -> Outcome,
-) -> bool {
+fn capture_rows<R>(captured: &mut CaptureRows<R>, walk: impl FnOnce(&mut [R]) -> Outcome) {
     captured.outcome = bounded(walk(&mut captured.rows), captured.rows.len());
-    if !needed {
-        return false;
-    }
-    captured.checked = true;
-    let second = bounded(walk(&mut captured.second), captured.second.len());
-    captured.compare(second)
 }
 
-fn capture_pair<P: Default + Clone + PartialEq, C: Default + Clone + PartialEq>(
+fn capture_pair<P, C>(
     parents: &mut CaptureRows<P>,
     instances: &mut CaptureRows<C>,
-    needed: [bool; 2],
-    mut walk: impl FnMut(&mut [P], &mut [C]) -> (Outcome, Outcome),
-) -> [bool; 2] {
-    let first = walk(&mut parents.rows, &mut instances.rows);
-    parents.outcome = bounded(first.0, parents.rows.len());
-    instances.outcome = bounded(first.1, instances.rows.len());
-    let mut matched = [false; 2];
-    if needed[0] || needed[1] {
-        // A completed table can have no comparison storage. The native walker
-        // still authenticates its root census and counts omitted rows,
-        // so either table can finish its own window independently.
-        let second = walk(
-            if needed[0] {
-                &mut parents.second
-            } else {
-                &mut []
-            },
-            if needed[1] {
-                &mut instances.second
-            } else {
-                &mut []
-            },
-        );
-        if needed[0] {
-            parents.checked = true;
-            matched[0] = parents.compare(bounded(second.0, parents.second.len()));
-        }
-        if needed[1] {
-            instances.checked = true;
-            matched[1] = instances.compare(bounded(second.1, instances.second.len()));
-        }
-    }
-    matched
-}
-
-fn effective<R>(captured: &CaptureRows<R>) -> Outcome {
-    if captured.checked && captured.mismatches != 0 {
-        Outcome::Unavailable {
-            reason: "table changed during double read",
-        }
-    } else {
-        captured.outcome
-    }
+    walk: impl FnOnce(&mut [P], &mut [C]) -> (Outcome, Outcome),
+) {
+    let (parent, child) = walk(&mut parents.rows, &mut instances.rows);
+    parents.outcome = bounded(parent, parents.rows.len());
+    instances.outcome = bounded(child, instances.rows.len());
 }
 
 fn program_outcome(
@@ -1918,7 +1847,7 @@ fn valid_names(
 pub(crate) mod projects_test_kit {
     use super::copy_projects_refresh;
     use super::{
-        Capacities, Captured, N, ProjectsCopyContext, ProjectsCopyReport, ProjectsJob, bounded,
+        Capacities, Captured, ProjectsCopyContext, ProjectsCopyReport, ProjectsJob, bounded,
         program_outcome,
     };
     use crate::table_capture::CaptureRows;
@@ -1929,7 +1858,6 @@ pub(crate) mod projects_test_kit {
         nproject_cprototype_project_state as prototype, nproject_csimple_project_state as simple,
         nproject_sproject_context, nproject_sproject_history,
     };
-    use replay::frame::TABLE_COUNT;
 
     pub(crate) const BASE: usize = 0x140000000;
     pub(crate) const GAME_STATE: usize = 0x10000;
@@ -2306,7 +2234,7 @@ pub(crate) mod projects_test_kit {
     /// Reference typed walks with identical pooled buffers, outcomes and
     /// arenas installed exactly like `decode_projects_payload` installs them.
     pub(crate) fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> Captured {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+        let mut captured = Captured::with_capacities(capacities);
         let first = nproject_cprogram::walk(
             memory,
             BASE,
@@ -2341,22 +2269,19 @@ pub(crate) mod projects_test_kit {
         captured
     }
 
-    /// Raw-copy split: two raw passes compared, then the first payload
-    /// decoded into fresh pooled buffers of the same capacities.
+    /// Capture one current payload, then decode into fresh pooled buffers.
     pub(crate) fn split(
         memory: &impl engine::Memory,
         capacities: &Capacities,
     ) -> (Captured, ProjectsCopyReport, ProjectsJob) {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+        let mut captured = Captured::with_capacities(capacities);
         let ctx = ProjectsCopyContext {
             base: BASE,
             game_state: GAME_STATE,
-            needed: [true; TABLE_COUNT],
+            active: true,
         };
         let mut first = ProjectsJob::new();
-        let mut second = ProjectsJob::new();
-        let report = copy_projects_refresh(memory, ctx, &mut first, Some(&mut second));
-        captured.apply_projects_report(ctx, &report);
+        let report = copy_projects_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
         let mut ticks = [0u64; 4];
         captured.decode_projects_payload(BASE, &first, &mut ticks);
@@ -2421,7 +2346,6 @@ mod tests {
         assert_eq!(LOCAL.snapshot().current, Capacity::default());
     }
 
-    use crate::sampling::CONSISTENCY_TARGET;
     use replay::rows::TableSchema;
 
     fn small() -> (Capacities, Captured) {
@@ -2430,12 +2354,94 @@ mod tests {
             program_names: 4,
             program_candidates: 2,
         };
-        let captured = Captured::with_capacities(&capacities, &[0; N]);
+        let captured = Captured::with_capacities(&capacities);
         (capacities, captured)
     }
 
     #[test]
-    fn failed_project_job_hides_prior_rows_and_preserves_hourly_results() {
+    fn daily_project_siblings_do_no_inactive_native_work_after_shared_faults() {
+        struct Unreadable;
+        impl Memory for Unreadable {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                false
+            }
+        }
+        let memory = engine::memory::CountedMemory::new(Unreadable);
+        let (_, mut captured) = small();
+        for hour in 0..24 {
+            let accounting = read_accounting::Capture::new();
+            captured.capture(&memory, 0, 0x1000, hour, false);
+            let counts = accounting.finish();
+            for (index, outcome) in captured.outcomes().into_iter().enumerate() {
+                if !replay::cadence::should_walk(TABLES[index], hour, false) {
+                    assert_eq!(
+                        outcome,
+                        Outcome::Unavailable {
+                            reason: replay::cadence::SKIPPED_REASON
+                        }
+                    );
+                    assert_eq!(counts[TABLES[index].index()].spans, 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn daily_project_job_skips_empty_storage_and_preserves_raw_typed_identity() {
+        use super::projects_test_kit as kit;
+        let bytes = kit::fixture();
+        let (capacities, _) = small();
+        for hour in 0..24 {
+            let active = replay::cadence::should_walk(TableId::Projects, hour, false);
+            assert_eq!(active, hour == 1);
+            let memory = ProgramSource::new(&bytes);
+            let mut job = if active {
+                ProjectsJob::new()
+            } else {
+                ProjectsJob::default()
+            };
+            let report = copy_projects_refresh(
+                &memory,
+                ProjectsCopyContext {
+                    base: kit::BASE,
+                    game_state: kit::GAME_STATE,
+                    active,
+                },
+                &mut job,
+            );
+            assert!(report.raw_ok);
+            assert_eq!(job.active, active);
+            let mut captured = Captured::with_capacities(&capacities);
+            captured.nukes.outcome = Outcome::Rows { len: 1 };
+            let mut ticks = [0; 4];
+            captured.decode_projects_payload(kit::BASE, &job, &mut ticks);
+            if active {
+                let direct = kit::direct(&kit::memory(&bytes), &capacities);
+                kit::assert_matches_direct(&captured, &direct);
+                assert!(!memory.calls.borrow().is_empty());
+            } else {
+                assert!(memory.calls.borrow().is_empty());
+                assert_eq!(report.copy_ticks, [0; 4]);
+                assert_eq!(report.raw_bytes, [0; 4]);
+                assert_eq!(ticks, [0; 4]);
+                assert!(captured.outcomes()[..4].iter().all(|outcome| *outcome
+                    == Outcome::Unavailable {
+                        reason: replay::cadence::SKIPPED_REASON,
+                    }));
+                captured.fail_projects_capture(false, "accepted worker stopped");
+                assert_eq!(
+                    captured.programs.outcome,
+                    Outcome::Unavailable {
+                        reason: replay::cadence::SKIPPED_REASON
+                    }
+                );
+            }
+            assert_eq!(captured.nukes.outcome, Outcome::Rows { len: 1 });
+        }
+    }
+
+    #[test]
+    fn failed_project_job_hides_prior_rows_and_preserves_independent_results() {
         let (_, mut captured) = small();
         captured.programs.outcome = Outcome::Rows { len: 1 };
         captured.projects.outcome = Outcome::Rows { len: 1 };
@@ -2443,32 +2449,16 @@ mod tests {
         captured.breakthroughs.outcome = Outcome::Rows { len: 1 };
         captured.nukes.outcome = Outcome::Rows { len: 1 };
         captured.raids.outcome = Outcome::Rows { len: 1 };
-        let hourly = captured.outcomes()[4..].to_vec();
-        let mut needed = [false; TABLE_COUNT];
-        needed[TABLES[0].index()] = true;
-        needed[TABLES[2].index()] = true;
-        // These independently checked hourly rows must survive a project-job failure.
-        needed[TABLES[4].index()] = true;
+        let independent = captured.outcomes()[4..].to_vec();
         captured.raw_mode = true;
-        captured.fail_projects_capture(
-            ProjectsCopyContext {
-                base: 0,
-                game_state: 0,
-                needed,
-            },
-            "project acquisition worker failed",
-        );
+        captured.fail_projects_capture(true, "project acquisition worker failed");
         assert!(!captured.raw_mode);
-        assert_eq!(
-            captured.checked_mismatches(),
-            [1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        );
         assert!(
             captured.outcomes()[..4]
                 .iter()
                 .all(|outcome| matches!(outcome, Outcome::Unavailable { .. }))
         );
-        assert_eq!(&captured.outcomes()[4..], hourly);
+        assert_eq!(&captured.outcomes()[4..], independent);
         assert!(
             captured.tables()[..4]
                 .iter()
@@ -2576,38 +2566,7 @@ mod tests {
                 ship_reference_id: u32::MAX - 1,
                 country: -1,
             },
-            target: engine::craid_target::Row {
-                province: 6521,
-                leader_province: 0,
-                state: 64,
-                building_type: 0x2fb6,
-                building_location: 9421,
-                building_flags: 1,
-            },
-            raid_type: 0x4b06,
-            detected: 1,
-        };
-        captured.raid_provinces.outcome = Outcome::Rows { len: 1 };
-        captured.raid_provinces.rows[0] = engine::craid_province_entries::Row {
-            province: 6521,
-            targets: 1,
-            subset: 0,
-            owned: 0,
-            incoming: 2,
-            words: {
-                let mut words = [0; engine::craid_province_entries::MAX_WORDS];
-                words[0] = (u64::from(u32::MAX) << 32) | 99;
-                words
-            },
-            words_len: 1,
-            dropped_words: 3,
-            offers: {
-                let mut offers = [0; engine::craid_province_entries::MAX_OFFERS];
-                offers[0] = (0x4b06_u64 << 32) | 0x2fb6;
-                offers
-            },
-            offers_len: 1,
-            offer_count: 2,
+            ..Default::default()
         };
         captured.peace.outcome = Outcome::Rows { len: 1 };
         captured.peace.rows[0] = peace_conference::Row {
@@ -2617,9 +2576,6 @@ mod tests {
             finalized: 1,
         };
         let views = captured.tables();
-        let province = &complete::<tables::RaidProvinces>(&views[11])[0];
-        assert_eq!(province.offers, [(0x4b06_u64 << 32) | 0x2fb6]);
-        assert_eq!(province.offer_count, 2);
         let program = &complete::<tables::ProjectPrograms>(&views[0])[0];
         assert_eq!(
             (
@@ -2730,59 +2686,54 @@ mod tests {
     }
 
     #[test]
-    fn building_only_change_is_a_mismatch_and_complete_reads_are_required() {
+    fn program_capture_reads_once_and_preserves_primary_literal_and_truncation() {
         let (_, mut captured) = small();
         let mut calls = 0;
-        assert!(!captured.capture_programs(true, |_, rows, bytes| {
+        captured.capture_programs(|_, rows, bytes| {
             calls += 1;
             rows[0] = nproject_cprogram::Row {
                 id: 1,
                 building_len: 1,
                 ..Default::default()
             };
-            bytes[0] = calls;
+            bytes[0] = 0xff;
             nproject_cprogram::NameWalk {
                 outcome: Outcome::Rows { len: 1 },
                 bytes_len: 1,
                 required_bytes: 1,
                 required_candidates: 1,
             }
-        }));
-        assert_eq!(captured.checked_mismatches()[0], 1);
-        assert!(matches!(
-            captured.outcomes()[0],
-            Outcome::Unavailable { .. }
-        ));
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(captured.programs.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(captured.names.first[0], 0xff);
         captured.reset();
-        assert!(
-            !captured.capture_programs(true, |_, _, _| nproject_cprogram::NameWalk {
-                outcome: Outcome::Truncated {
-                    len: 0,
-                    unread_rows: 1
-                },
-                bytes_len: 0,
-                required_bytes: 9,
-                required_candidates: 1,
-            })
-        );
-        assert_eq!(captured.checked_mismatches()[0], 0);
+        captured.capture_programs(|_, _, _| nproject_cprogram::NameWalk {
+            outcome: Outcome::Truncated {
+                len: 0,
+                unread_rows: 1,
+            },
+            bytes_len: 0,
+            required_bytes: 9,
+            required_candidates: 1,
+        });
         assert_eq!(
-            captured.outcomes()[0],
+            captured.programs.outcome,
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 1
             }
         );
+        assert_eq!(captured.names.required, 9);
     }
 
     #[test]
-    fn shared_raid_reads_keep_parent_and_child_consistency_windows_independent() {
+    fn shared_raid_capture_reads_once_and_retains_independent_capacity_outcomes() {
         let (_, mut captured) = small();
         let mut calls = 0;
-        let matched = capture_pair(
+        capture_pair(
             &mut captured.raid_countries,
             &mut captured.raids,
-            [true, true],
             |parents, instances| {
                 calls += 1;
                 parents[0] = ccountry_raid_status::Row {
@@ -2791,92 +2742,65 @@ mod tests {
                 };
                 instances[0] = craid_instance::Row {
                     id: 7,
-                    preparation_hours: calls,
+                    preparation_hours: 13,
                     ..Default::default()
                 };
                 (Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 })
             },
         );
-        assert_eq!((calls, matched), (2, [true, false]));
-        assert_eq!(captured.outcomes()[5], Outcome::Rows { len: 1 });
-        assert!(matches!(
-            captured.outcomes()[6],
-            Outcome::Unavailable { .. }
-        ));
-
-        for needed in [[true, false], [false, true], [false, false]] {
-            captured.reset();
-            calls = 0;
-            let matched = capture_pair(
-                &mut captured.raid_countries,
-                &mut captured.raids,
-                needed,
-                |parents, instances| {
-                    calls += 1;
-                    if calls == 2 {
-                        assert_eq!(parents.is_empty(), !needed[0]);
-                        assert_eq!(instances.is_empty(), !needed[1]);
-                    }
-                    let outcome = |empty| {
-                        if empty {
-                            Outcome::Truncated {
-                                len: 0,
-                                unread_rows: 1,
-                            }
-                        } else {
-                            Outcome::Rows { len: 1 }
-                        }
-                    };
-                    if let Some(parent) = parents.first_mut() {
-                        *parent = ccountry_raid_status::Row::default();
-                    }
-                    if let Some(instance) = instances.first_mut() {
-                        *instance = craid_instance::Row::default();
-                    }
-                    (outcome(parents.is_empty()), outcome(instances.is_empty()))
-                },
-            );
-            assert_eq!(matched, needed);
-            assert_eq!(calls, if needed[0] || needed[1] { 2 } else { 1 });
-            assert_eq!(
-                [captured.raid_countries.checked, captured.raids.checked],
-                needed
-            );
-            assert_eq!(&captured.outcomes()[5..7], &[Outcome::Rows { len: 1 }; 2]);
-        }
+        assert_eq!(calls, 1);
+        assert_eq!(&captured.outcomes()[5..7], &[Outcome::Rows { len: 1 }; 2]);
+        assert_eq!(captured.raids.rows[0].preparation_hours, 13);
+        captured.raids.rows.clear();
+        capture_pair(
+            &mut captured.raid_countries,
+            &mut captured.raids,
+            |parents, instances| {
+                calls += 1;
+                assert_eq!(parents.len(), 2);
+                assert!(instances.is_empty());
+                (
+                    Outcome::Rows { len: 1 },
+                    Outcome::Truncated {
+                        len: 0,
+                        unread_rows: 1,
+                    },
+                )
+            },
+        );
+        assert_eq!(calls, 2);
+        assert_eq!(captured.raid_countries.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(
+            captured.raids.outcome,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 1
+            }
+        );
     }
 
     #[test]
-    fn scratch_and_arena_growth_use_both_reads_and_release_finished_comparisons() {
+    fn scratch_and_arena_growth_preserve_primary_requirements_after_failure() {
         let (mut capacities, mut captured) = small();
-        let mut calls = 0;
-        assert!(!captured.capture_programs(true, |_, _, _| {
-            calls += 1;
-            nproject_cprogram::NameWalk {
-                outcome: Outcome::Unavailable {
-                    reason: "program pointer scratch capacity insufficient",
-                },
-                bytes_len: 0,
-                required_bytes: 17 * calls,
-                required_candidates: 9 * calls,
-            }
-        }));
+        captured.capture_programs(|_, _, _| nproject_cprogram::NameWalk {
+            outcome: Outcome::Unavailable {
+                reason: "program pointer scratch capacity insufficient",
+            },
+            bytes_len: 0,
+            required_bytes: 17,
+            required_candidates: 9,
+        });
         captured.projects.outcome = Outcome::Truncated {
             len: 2,
             unread_rows: 63,
         };
-        captured.grow(&mut capacities, &[0; N]);
-        assert!(captured.candidates.len() >= 18 && captured.names.first.len() >= 34);
+        captured.grow(&mut capacities);
+        assert!(captured.candidates.len() >= 9 && captured.names.first.len() >= 17);
         assert!(captured.projects.rows.len() >= 65);
         let before = captured.allocated_bytes();
-        let mut successful = [CONSISTENCY_TARGET; N];
-        successful[6] = 0;
         captured.reset();
-        captured.grow(&mut capacities, &successful);
-        assert!(captured.programs.second.is_empty() && captured.names.second.is_empty());
-        assert!(captured.raid_countries.second.is_empty() && !captured.raids.second.is_empty());
-        assert!(captured.allocated_bytes() < before);
-        assert_eq!(captured.checked_mismatches(), [0; N]);
+        captured.grow(&mut capacities);
+        assert_eq!(captured.allocated_bytes(), before);
     }
 
     fn split_capacities() -> Capacities {
@@ -3017,9 +2941,6 @@ mod tests {
         assert_eq!(actual.overflowed, expected.overflowed);
         assert_eq!(actual.has_bulk, expected.has_bulk);
         assert_eq!(actual.grow_for_next(), expected.grow_for_next());
-        for slot in 0..4 {
-            assert_eq!(actual.partition_equal(expected, slot), !actual.overflowed);
-        }
     }
 
     #[test]
@@ -3359,9 +3280,16 @@ mod tests {
         let memory = kit::memory(&bytes);
         let capacities = split_capacities();
         let direct = kit::direct(&memory, &capacities);
+        let memory = engine::memory::CountedMemory::new(memory);
+        let native = read_accounting::Capture::new();
         let (split, report, _) = kit::split(&memory, &capacities);
+        let counts = native.finish();
+        let mut expected_counts = read_accounting::ZERO;
+        expected_counts[TABLES[0].index()] = counts[TABLES[0].index()];
+        assert!(counts[TABLES[0].index()].spans > 0);
+        assert!(counts[TABLES[0].index()].bytes > 0);
+        assert_eq!(counts, expected_counts);
         assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 4]);
         kit::assert_matches_direct(&split, &direct);
         // Spot-checks: program identity with heap building bytes, project
         // lifecycle and state, history context, breakthrough payload.
@@ -3435,7 +3363,6 @@ mod tests {
             let direct = kit::direct(&memory, &capacities);
             let (split, report, _) = kit::split(&memory, &capacities);
             assert!(report.raw_ok, "rows={rows:?}");
-            assert_eq!(report.matched, [true; 4], "rows={rows:?}");
             kit::assert_matches_direct(&split, &direct);
         }
         // Arena arms: names/candidates truncation agrees on both paths.
@@ -3448,7 +3375,6 @@ mod tests {
             let direct = kit::direct(&memory, &capacities);
             let (split, report, _) = kit::split(&memory, &capacities);
             assert!(report.raw_ok);
-            assert_eq!(report.matched, [true; 4]);
             kit::assert_matches_direct(&split, &direct);
         }
         // Exact-fit arm pins Rows on every table.
@@ -3496,7 +3422,6 @@ mod tests {
         let direct = kit::direct(&memory, &capacities);
         let (split, report, _) = kit::split(&memory, &capacities);
         assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 4]);
         kit::assert_matches_direct(&split, &direct);
     }
 
@@ -3519,27 +3444,21 @@ mod tests {
                 self.memory.copy(address, output)
             }
         }
-        // (fault offset from the image base, expected raw-compare verdicts in
-        // family order). Outcomes including reason strings must match the
-        // typed walk exactly; verdicts follow the fault-attribution masks.
-        for (offset, matched) in [
-            (cgame_state::COUNTRIES, [false, false, false, false]),
-            (kit::C1, [false, false, false, false]),
-            (kit::S1, [false, false, false, false]),
-            (kit::PROG1, [false, true, true, true]),
-            (kit::HEAP, [false, true, true, true]),
-            // A whole-walk abort in the project pool fails history's rows
-            // identically, but history's own partition holds no live fault,
-            // so its check still advances per the pilot's deterministic-fault
-            // rule (live tearing always blocks via fault bits instead).
-            (kit::PROJ1, [true, false, true, true]),
-            (kit::MACH1, [true, false, true, true]),
-            (kit::HIST1, [true, true, false, true]),
+        // Primary raw fault attribution remains independent of decoded outcomes.
+        for (offset, fault_mask) in [
+            (cgame_state::COUNTRIES, [true, true, true, true]),
+            (kit::C1, [true, true, true, true]),
+            (kit::S1, [true, true, true, true]),
+            (kit::PROG1, [true, false, false, false]),
+            (kit::HEAP, [true, false, false, false]),
+            (kit::PROJ1, [false, true, false, false]),
+            (kit::MACH1, [false, true, false, false]),
+            (kit::HIST1, [false, false, true, false]),
             (
                 kit::HIST1 + nproject_sproject_history::CONTEXT,
-                [true, true, false, true],
+                [false, false, true, false],
             ),
-            (kit::BT_NODE, [true, true, true, false]),
+            (kit::BT_NODE, [false, false, false, true]),
         ] {
             let bytes = kit::fixture();
             let fault = kit::GAME_STATE + offset;
@@ -3552,69 +3471,33 @@ mod tests {
             };
             let capacities = split_capacities();
             let direct = kit::direct(&memory, &capacities);
-            let (split, report, _) = kit::split(&memory, &capacities);
+            let (split, report, job) = kit::split(&memory, &capacities);
             assert!(report.raw_ok, "offset={offset:x}");
             kit::assert_matches_direct(&split, &direct);
-            assert_eq!(report.matched, matched, "offset={offset:x}");
+            assert_eq!(job.log.fault, fault_mask, "offset={offset:x}");
         }
-    }
-
-    #[test]
-    fn double_copy_compare_blocks_checks_on_tearing() {
-        use super::projects_test_kit as kit;
-        use replay::frame::TABLE_COUNT;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let capacities = split_capacities();
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = ProjectsCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            needed: [true; TABLE_COUNT],
-        };
-        let mut first = ProjectsJob::new();
-        let mut second = ProjectsJob::new();
-        let report = copy_projects_refresh(&memory, ctx, &mut first, Some(&mut second));
-        captured.apply_projects_report(ctx, &report);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 4]);
-        // Same-hour tearing between the passes changes the log.
-        let mut torn = bytes.clone();
-        torn[kit::PROJ1 + nproject_cproject::ID] ^= 0xff;
-        let torn_memory = kit::memory(&torn);
-        let mut after = ProjectsJob::new();
-        copy_pass(&memory, kit::BASE, kit::GAME_STATE, &mut after);
-        let mut after_torn = ProjectsJob::new();
-        copy_pass(&torn_memory, kit::BASE, kit::GAME_STATE, &mut after_torn);
-        assert!(!after.log.logs_equal(&after_torn.log));
-        let mut repeat = ProjectsJob::new();
-        copy_pass(&memory, kit::BASE, kit::GAME_STATE, &mut repeat);
-        assert!(after.log.logs_equal(&repeat.log));
     }
 
     #[test]
     fn staging_overflow_falls_back_to_typed_walk() {
         use super::projects_test_kit as kit;
-        use replay::frame::TABLE_COUNT;
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
-        let capacities = split_capacities();
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
         let ctx = ProjectsCopyContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
-            needed: [true; TABLE_COUNT],
+            active: true,
         };
         let mut tiny = ProjectsJob {
             log: crate::raw::RawLog::new(8, 8),
             game_state: 0,
+            active: false,
             census: Vec::with_capacity(1),
             pointers: Vec::with_capacity(1),
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         tiny.update_capacity_charge();
-        let report = copy_projects_refresh(&memory, ctx, &mut tiny, None);
-        captured.apply_projects_report(ctx, &report);
+        let report = copy_projects_refresh(&memory, ctx, &mut tiny);
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());

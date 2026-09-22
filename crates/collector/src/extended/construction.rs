@@ -1,8 +1,9 @@
-//! Construction and occupation acquisition; heap work is confined to buffer growth
-//! and replay conversion on the spool thread.
+//! Construction and occupation acquisition; building growth runs on the reserved
+//! acquisition worker, with other growth and conversion off the game thread.
 use crate::{
     raw::RawLog,
-    sampling::{full_match, qpc},
+    read_accounting,
+    sampling::qpc,
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
@@ -62,9 +63,58 @@ impl Default for Capacities {
     }
 }
 
-pub struct Captured {
+pub(crate) struct Buildings {
     state_buildings: CaptureRows<cbuilding::Row>,
     province_buildings: CaptureRows<cbuilding::Row>,
+}
+
+impl Buildings {
+    pub(crate) fn vacant() -> Self {
+        Self {
+            state_buildings: CaptureRows::new(0),
+            province_buildings: CaptureRows::new(0),
+        }
+    }
+
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.state_buildings.allocated_bytes() + self.province_buildings.allocated_bytes()
+    }
+
+    pub(crate) fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> u64 {
+        if !replay::cadence::should_walk(TableId::StateBuildings, hour, force_full) {
+            self.fail(replay::cadence::SKIPPED_REASON);
+            return 0;
+        }
+        let _reads = read_accounting::table(TABLES[0]);
+        let begin = qpc();
+        let buildings = cbuilding_status::walk(
+            memory,
+            base,
+            game_state,
+            &mut self.state_buildings.rows,
+            &mut self.province_buildings.rows,
+        );
+        self.state_buildings.outcome = buildings.states;
+        self.province_buildings.outcome = buildings.provinces;
+        elapsed(begin)
+    }
+
+    pub(crate) fn fail(&mut self, reason: &'static str) {
+        self.state_buildings.outcome = Outcome::Unavailable { reason };
+        self.province_buildings.outcome = Outcome::Unavailable { reason };
+    }
+}
+
+pub struct Captured {
+    buildings: Buildings,
+    buildings_ticks: Option<u64>,
     base_resources: CaptureRows<state_resource_entry::Row>,
     building_construction: CaptureRows<cbuilding_production_line::Row>,
     railway_construction: CaptureRows<crailway_production_line::Row>,
@@ -77,45 +127,63 @@ pub struct Captured {
     collaboration: CaptureRows<ccountry_collaboration_data::Row>,
     routes: Arena<u32>,
     law_bytes: Arena<u8>,
-    /// Raw-copy split gate for the hourly construction rest (tables 2..12).
-    /// Set by the game thread every hour with a valid raw payload; `capture`
+    /// Raw-copy split gate for scheduled construction-rest tables.
+    /// Set when an acquisition job returns a valid raw payload; `capture`
     /// then skips those typed walks and the decode worker fills the rows
     /// (plus route/law arenas) before the ready handoff. Preserved across
     /// `reset` (set per hour, cleared by the worker after decode).
     pub(crate) rest_raw_mode: bool,
 }
 
-fn group_success(successful: &[u16], start: usize, end: usize) -> u16 {
-    successful[start..end].iter().copied().min().unwrap()
-}
-
 impl Captured {
-    pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
-        // Completed secondary outputs can be empty even in a joint walk.
-        // Named rows compare their own bytes rather than shared arena offsets.
-        let names = group_success(successful, 5, 7);
+    /// Buildings belong to Governance; staged rest rows belong to World.
+    pub(crate) fn fail_gated_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        if !self.rest_raw_mode {
+            let reason = if replay::cadence::should_walk(TableId::StateBaseResources, hour, force_full) {
+                reason
+            } else {
+                replay::cadence::SKIPPED_REASON
+            };
+            self.fail_construction_rest_capture(reason);
+        }
+    }
+
+    /// Allocation-free placeholder while a worker owns the capture buffers.
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities {
+            rows: [0; N],
+            routes: 0,
+            law_bytes: 0,
+        })
+    }
+
+    pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            state_buildings: CaptureRows::new(capacity.rows[0], successful[0]),
-            province_buildings: CaptureRows::new(capacity.rows[1], successful[1]),
-            base_resources: CaptureRows::new(capacity.rows[2], successful[2]),
-            building_construction: CaptureRows::new(capacity.rows[3], successful[3]),
-            railway_construction: CaptureRows::new(capacity.rows[4], successful[4]),
-            settings: CaptureRows::new(capacity.rows[5], successful[5]),
-            laws: CaptureRows::new(capacity.rows[6], successful[6]),
-            garrisons: CaptureRows::new(capacity.rows[7], successful[7]),
-            assigned_manpower: CaptureRows::new(capacity.rows[8], successful[8]),
-            reserve_manpower: CaptureRows::new(capacity.rows[9], successful[9]),
-            resistance: CaptureRows::new(capacity.rows[10], successful[10]),
-            collaboration: CaptureRows::new(capacity.rows[11], successful[11]),
-            routes: Arena::new(capacity.routes, successful[4]),
-            law_bytes: Arena::new(capacity.law_bytes, names),
+            buildings: Buildings {
+                state_buildings: CaptureRows::new(capacity.rows[0]),
+                province_buildings: CaptureRows::new(capacity.rows[1]),
+            },
+            buildings_ticks: None,
+            base_resources: CaptureRows::new(capacity.rows[2]),
+            building_construction: CaptureRows::new(capacity.rows[3]),
+            railway_construction: CaptureRows::new(capacity.rows[4]),
+            settings: CaptureRows::new(capacity.rows[5]),
+            laws: CaptureRows::new(capacity.rows[6]),
+            garrisons: CaptureRows::new(capacity.rows[7]),
+            assigned_manpower: CaptureRows::new(capacity.rows[8]),
+            reserve_manpower: CaptureRows::new(capacity.rows[9]),
+            resistance: CaptureRows::new(capacity.rows[10]),
+            collaboration: CaptureRows::new(capacity.rows[11]),
+            routes: Arena::new(capacity.routes),
+            law_bytes: Arena::new(capacity.law_bytes),
             rest_raw_mode: false,
         }
     }
 
     pub fn reset(&mut self) {
-        self.state_buildings.reset();
-        self.province_buildings.reset();
+        self.buildings.state_buildings.reset();
+        self.buildings.province_buildings.reset();
+        self.buildings_ticks = None;
         self.base_resources.reset();
         self.building_construction.reset();
         self.railway_construction.reset();
@@ -131,8 +199,7 @@ impl Captured {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.state_buildings.allocated_bytes()
-            + self.province_buildings.allocated_bytes()
+        self.buildings.allocated_bytes()
             + self.base_resources.allocated_bytes()
             + self.building_construction.allocated_bytes()
             + self.railway_construction.allocated_bytes()
@@ -147,64 +214,80 @@ impl Captured {
             + self.law_bytes.allocated_bytes()
     }
 
-    pub fn grow(&mut self, capacity: &mut Capacities, successful: &[u16]) {
-        let names = group_success(successful, 5, 7);
-        self.state_buildings
-            .grow(&mut capacity.rows[0], successful[0]);
-        self.province_buildings
-            .grow(&mut capacity.rows[1], successful[1]);
-        self.base_resources
-            .grow(&mut capacity.rows[2], successful[2]);
-        self.building_construction
-            .grow(&mut capacity.rows[3], successful[3]);
-        self.railway_construction
-            .grow(&mut capacity.rows[4], successful[4]);
-        self.settings.grow(&mut capacity.rows[5], successful[5]);
-        self.laws.grow(&mut capacity.rows[6], successful[6]);
-        self.garrisons.grow(&mut capacity.rows[7], successful[7]);
-        self.assigned_manpower
-            .grow(&mut capacity.rows[8], successful[8]);
-        self.reserve_manpower
-            .grow(&mut capacity.rows[9], successful[9]);
-        self.resistance.grow(&mut capacity.rows[10], successful[10]);
-        self.collaboration
-            .grow(&mut capacity.rows[11], successful[11]);
-        self.routes.grow(&mut capacity.routes, successful[4]);
-        self.law_bytes.grow(&mut capacity.law_bytes, names);
+    pub fn grow(&mut self, capacity: &mut Capacities) {
+        capacity.rows[0] = capacity.rows[0].max(self.buildings.state_buildings.rows.len());
+        capacity.rows[1] = capacity.rows[1].max(self.buildings.province_buildings.rows.len());
+        capacity.rows[5] = capacity.rows[5].max(self.settings.rows.len());
+        capacity.law_bytes = capacity.law_bytes.max(self.law_bytes.first.len());
+        self.buildings.state_buildings.grow(&mut capacity.rows[0]);
+        self.buildings
+            .province_buildings
+            .grow(&mut capacity.rows[1]);
+        self.base_resources.grow(&mut capacity.rows[2]);
+        self.building_construction.grow(&mut capacity.rows[3]);
+        self.railway_construction.grow(&mut capacity.rows[4]);
+        self.settings.grow(&mut capacity.rows[5]);
+        self.laws.grow(&mut capacity.rows[6]);
+        self.garrisons.grow(&mut capacity.rows[7]);
+        self.assigned_manpower.grow(&mut capacity.rows[8]);
+        self.reserve_manpower.grow(&mut capacity.rows[9]);
+        self.resistance.grow(&mut capacity.rows[10]);
+        self.collaboration.grow(&mut capacity.rows[11]);
+        self.routes.grow(&mut capacity.routes);
+        self.law_bytes.grow(&mut capacity.law_bytes);
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
         [
-            checked_outcome(&self.state_buildings),
-            checked_outcome(&self.province_buildings),
-            checked_outcome(&self.base_resources),
-            checked_outcome(&self.building_construction),
-            checked_outcome(&self.railway_construction),
-            checked_outcome(&self.settings),
-            checked_outcome(&self.laws),
-            checked_outcome(&self.garrisons),
-            checked_outcome(&self.assigned_manpower),
-            checked_outcome(&self.reserve_manpower),
-            checked_outcome(&self.resistance),
-            checked_outcome(&self.collaboration),
+            self.buildings.state_buildings.outcome,
+            self.buildings.province_buildings.outcome,
+            self.base_resources.outcome,
+            self.building_construction.outcome,
+            self.railway_construction.outcome,
+            self.settings.outcome,
+            self.laws.outcome,
+            self.garrisons.outcome,
+            self.assigned_manpower.outcome,
+            self.reserve_manpower.outcome,
+            self.resistance.outcome,
+            self.collaboration.outcome,
         ]
     }
 
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [
-            usize::from(self.state_buildings.checked) * self.state_buildings.mismatches,
-            usize::from(self.province_buildings.checked) * self.province_buildings.mismatches,
-            usize::from(self.base_resources.checked) * self.base_resources.mismatches,
-            usize::from(self.building_construction.checked) * self.building_construction.mismatches,
-            usize::from(self.railway_construction.checked) * self.railway_construction.mismatches,
-            usize::from(self.settings.checked) * self.settings.mismatches,
-            usize::from(self.laws.checked) * self.laws.mismatches,
-            usize::from(self.garrisons.checked) * self.garrisons.mismatches,
-            usize::from(self.assigned_manpower.checked) * self.assigned_manpower.mismatches,
-            usize::from(self.reserve_manpower.checked) * self.reserve_manpower.mismatches,
-            usize::from(self.resistance.checked) * self.resistance.mismatches,
-            usize::from(self.collaboration.checked) * self.collaboration.mismatches,
-        ]
+    pub(crate) fn take_buildings(&mut self) -> Buildings {
+        self.buildings_ticks = None;
+        std::mem::replace(&mut self.buildings, Buildings::vacant())
+    }
+
+    pub(crate) fn restore_buildings(
+        &mut self,
+        mut part: Buildings,
+        result: Result<u64, &'static str>,
+    ) {
+        let ticks = match result {
+            Ok(ticks) => ticks,
+            Err(reason) => {
+                part.fail(reason);
+                0
+            }
+        };
+        self.buildings = part;
+        self.buildings_ticks = Some(ticks);
+    }
+
+    pub(crate) fn finish_buildings(&mut self, hour: i32, force_full: bool) -> u64 {
+        let ticks = self.buildings_ticks.take();
+        if !replay::cadence::should_walk(TableId::StateBuildings, hour, force_full) {
+            self.buildings.fail(replay::cadence::SKIPPED_REASON);
+            return 0;
+        }
+        match ticks {
+            Some(ticks) => ticks,
+            None => {
+                self.buildings.fail("building acquisition not supplied");
+                0
+            }
+        }
     }
 
     /// All elapsed values are raw QPC ticks; the containing callback owns their
@@ -214,15 +297,9 @@ impl Captured {
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        needed: &[bool],
         hour: i32,
         force_full: bool,
-    ) -> ([bool; N], [u64; N]) {
-        // Raw refresh bookkeeping belongs to the staged payload and must
-        // survive the remaining typed members of this pack.
-        self.state_buildings.reset();
-        self.province_buildings.reset();
-
+    ) -> [u64; N] {
         if !self.rest_raw_mode {
             self.base_resources.reset();
             self.building_construction.reset();
@@ -237,76 +314,22 @@ impl Captured {
             self.routes.reset();
             self.law_bytes.reset();
         }
-        let mut matched = [false; N];
         let mut ticks = [0; N];
-        // Tier-4 finished-buildings catalog shares one walk; off-hours skip.
-        let walk =
-            replay::cadence::should_walk(replay::rows::TableId::StateBuildings, hour, force_full);
-        self.state_buildings.checked = needed[0] && walk;
-        self.province_buildings.checked = needed[1] && walk;
-
-        // Hourly construction rest (copy/decode split): every hour the game
-        // thread stages raw bytes via `copy_construction_rest_refresh` and the
-        // decode worker fills tables 2..12 before the ready handoff. Checked
-        // flags and costs come from the raw compare, applied by the caller
-        // after this returns; the walks below skip while staged.
-        if !self.rest_raw_mode {
-            self.base_resources.checked = needed[2];
-            self.building_construction.checked = needed[3];
-            self.railway_construction.checked = needed[4];
-            self.settings.checked = needed[5];
-            self.laws.checked = needed[6];
-            self.garrisons.checked = needed[7];
-            self.assigned_manpower.checked = needed[8];
-            self.reserve_manpower.checked = needed[9];
-            self.resistance.checked = needed[10];
-            self.collaboration.checked = needed[11];
+        if !replay::cadence::should_walk(TableId::StateBaseResources, hour, force_full) {
+            self.fail_construction_rest_capture(replay::cadence::SKIPPED_REASON);
+            self.routes.reset();
+            self.law_bytes.reset();
+            return ticks;
         }
-
-        let begin = qpc();
-        if !walk {
-            let skipped = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
-            };
-            self.state_buildings.outcome = skipped;
-            self.province_buildings.outcome = skipped;
-            ticks[0] = 0;
-        } else {
-            let buildings = cbuilding_status::walk(
-                memory,
-                base,
-                game_state,
-                &mut self.state_buildings.rows,
-                &mut self.province_buildings.rows,
-            );
-            self.state_buildings.outcome = buildings.states;
-            self.province_buildings.outcome = buildings.provinces;
-            if needed[0] || needed[1] {
-                let second = cbuilding_status::walk(
-                    memory,
-                    base,
-                    game_state,
-                    &mut self.state_buildings.second,
-                    &mut self.province_buildings.second,
-                );
-                if needed[0] {
-                    matched[0] = self.state_buildings.compare(second.states);
-                }
-                if needed[1] {
-                    matched[1] = self.province_buildings.compare(second.provinces);
-                }
-            }
-            ticks[0] = elapsed(begin);
-        }
-        // Hourly rest staged: leave the reset outcomes for the decode worker,
-        // which installs identical rows, outcomes and arenas.
         if self.rest_raw_mode {
-            return (matched, ticks);
+            return ticks;
         }
-        (matched[2], ticks[2]) = single(&mut self.base_resources, needed[2], |output| {
-            state_resource_entry::walk(memory, base, game_state, output)
+        ticks[2] = read_accounting::with_table(TABLES[2], || {
+            single(&mut self.base_resources, |output| {
+                state_resource_entry::walk(memory, base, game_state, output)
+            })
         });
-
+        let mut reads = read_accounting::table(TABLES[3]);
         let begin = qpc();
         let queue = cbuilding_production_line::walk(
             memory,
@@ -322,45 +345,8 @@ impl Captured {
         self.railway_construction.outcome = queue.railways;
         self.routes.len = queue.route_len;
         self.routes.required = queue.required_route_len;
-        if needed[3] || needed[4] {
-            let second = cbuilding_production_line::walk(
-                memory,
-                base,
-                game_state,
-                cbuilding_production_line::Buffers {
-                    buildings: &mut self.building_construction.second,
-                    railways: &mut self.railway_construction.second,
-                    route_provinces: &mut self.routes.second,
-                },
-            );
-            self.routes.required = self.routes.required.max(second.required_route_len);
-            if needed[3] {
-                matched[3] = self.building_construction.compare(second.buildings);
-            }
-            if needed[4] {
-                let first_routes = self.routes.first.get(..self.routes.len);
-                let second_routes = self.routes.second.get(..second.route_len);
-                matched[4] = compare_by(
-                    &mut self.railway_construction,
-                    second.railways,
-                    |first, second| {
-                        let mut adjusted = *second;
-                        adjusted.route_start = first.route_start;
-                        *first == adjusted
-                            && equal_range(
-                                first_routes,
-                                first.route_start,
-                                first.route_len,
-                                second_routes,
-                                second.route_start,
-                                second.route_len,
-                            )
-                    },
-                );
-            }
-        }
         ticks[3] = elapsed(begin);
-
+        reads.select(TABLES[5]);
         let begin = qpc();
         let occupation = ccountry_occupation_status::walk(
             memory,
@@ -382,59 +368,16 @@ impl Captured {
         self.reserve_manpower.outcome = occupation.reserve_manpower;
         self.law_bytes.len = occupation.bytes_len;
         self.law_bytes.required = occupation.required_bytes;
-        if needed[5..10].iter().any(|&value| value) {
-            let second = ccountry_occupation_status::walk(
-                memory,
-                base,
-                game_state,
-                ccountry_occupation_status::Buffers {
-                    settings: &mut self.settings.second,
-                    laws: &mut self.laws.second,
-                    garrisons: &mut self.garrisons.second,
-                    manpower: &mut self.assigned_manpower.second,
-                    reserve_manpower: &mut self.reserve_manpower.second,
-                    names: &mut self.law_bytes.second,
-                },
-            );
-            self.law_bytes.required = self.law_bytes.required.max(second.required_bytes);
-            let first_names = self.law_bytes.first.get(..self.law_bytes.len);
-            let second_names = self.law_bytes.second.get(..second.bytes_len);
-            if needed[5] {
-                matched[5] = compare_by(&mut self.settings, second.settings, |first, second| {
-                    first.country == second.country
-                        && first.garrison_template == second.garrison_template
-                        && first.default_law_present == second.default_law_present
-                        && equal_range(
-                            first_names,
-                            first.law_start,
-                            first.law_len,
-                            second_names,
-                            second.law_start,
-                            second.law_len,
-                        )
-                });
-            }
-            if needed[6] {
-                matched[6] = compare_laws(&mut self.laws, second.laws, first_names, second_names);
-            }
-            if needed[7] {
-                matched[7] = self.garrisons.compare(second.garrisons);
-            }
-            if needed[8] {
-                matched[8] = self.assigned_manpower.compare(second.manpower);
-            }
-            if needed[9] {
-                matched[9] = self.reserve_manpower.compare(second.reserve_manpower);
-            }
-        }
         ticks[5] = elapsed(begin);
-        (matched[10], ticks[10]) = single(&mut self.resistance, needed[10], |output| {
+        reads.select(TABLES[10]);
+        ticks[10] = single(&mut self.resistance, |output| {
             cresistance::walk(memory, base, game_state, output)
         });
-        (matched[11], ticks[11]) = single(&mut self.collaboration, needed[11], |output| {
+        reads.select(TABLES[11]);
+        ticks[11] = single(&mut self.collaboration, |output| {
             ccountry_collaboration_status::walk(memory, base, game_state, output)
         });
-        (matched, ticks)
+        ticks
     }
 
     /// Runs only on the spool thread. All twelve tables use shared sort,
@@ -442,17 +385,17 @@ impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         [
             table::<tables::StateBuildings, _>(
-                checked_outcome(&self.state_buildings),
-                &self.state_buildings.rows,
+                self.buildings.state_buildings.outcome,
+                &self.buildings.state_buildings.rows,
                 building,
             ),
             table::<tables::ProvinceBuildings, _>(
-                checked_outcome(&self.province_buildings),
-                &self.province_buildings.rows,
+                self.buildings.province_buildings.outcome,
+                &self.buildings.province_buildings.rows,
                 building,
             ),
             table::<tables::StateBaseResources, _>(
-                checked_outcome(&self.base_resources),
+                self.base_resources.outcome,
                 &self.base_resources.rows,
                 |row| rows::StateBaseResourceRow {
                     state: row.state,
@@ -462,7 +405,7 @@ impl Captured {
                 },
             ),
             table::<tables::BuildingConstruction, _>(
-                checked_outcome(&self.building_construction),
+                self.building_construction.outcome,
                 &self.building_construction.rows,
                 |row| rows::BuildingConstructionRow {
                     id: row.id,
@@ -487,7 +430,7 @@ impl Captured {
             settings_table(&self.settings, &self.law_bytes),
             law_table(&self.laws, &self.law_bytes),
             table::<tables::StateGarrisons, _>(
-                checked_outcome(&self.garrisons),
+                self.garrisons.outcome,
                 &self.garrisons.rows,
                 |row| rows::StateGarrisonRow {
                     controller: row.controller,
@@ -500,7 +443,7 @@ impl Captured {
                 },
             ),
             table::<tables::StateAssignedManpower, _>(
-                checked_outcome(&self.assigned_manpower),
+                self.assigned_manpower.outcome,
                 &self.assigned_manpower.rows,
                 |row| rows::StateAssignedManpowerRow {
                     controller: row.controller,
@@ -512,7 +455,7 @@ impl Captured {
                 },
             ),
             table::<tables::CountryOccupationReserveManpower, _>(
-                checked_outcome(&self.reserve_manpower),
+                self.reserve_manpower.outcome,
                 &self.reserve_manpower.rows,
                 |row| rows::CountryOccupationReserveManpowerRow {
                     country: row.country,
@@ -522,7 +465,7 @@ impl Captured {
                 },
             ),
             table::<tables::StateResistance, _>(
-                checked_outcome(&self.resistance),
+                self.resistance.outcome,
                 &self.resistance.rows,
                 |row| rows::StateResistanceRow {
                     state: row.state,
@@ -535,7 +478,7 @@ impl Captured {
                 },
             ),
             table::<tables::CountryCollaboration, _>(
-                checked_outcome(&self.collaboration),
+                self.collaboration.outcome,
                 &self.collaboration.rows,
                 |row| rows::CountryCollaborationRow {
                     source: row.source,
@@ -552,12 +495,11 @@ fn elapsed(begin: i64) -> u64 {
 }
 
 impl Captured {
-    /// Decode-worker interpretation of a raw hourly construction-rest
+    /// Decode-worker interpretation of a scheduled raw construction-rest
     /// payload. Replays the existing resource, queue, occupation, resistance
-    /// and collaboration walks against the recorded spans, installing
-    /// identical rows, arenas, truncation counts and failure reasons into the
-    /// frame's pooled buffers. Checked/mismatches set by the raw compare
-    /// survive. Clears `rest_raw_mode` so the next capture starts clean.
+    /// and collaboration walks against the recorded spans. Occupation capacity
+    /// comes from demand recorded during that copy; other tables retain their
+    /// existing grants. Clears `rest_raw_mode` after installing the results.
     pub(crate) fn decode_construction_rest_payload(
         &mut self,
         base: usize,
@@ -587,6 +529,34 @@ impl Captured {
         self.routes.required = queue.required_route_len;
         decode_ticks[1] += elapsed(started);
         let started = qpc();
+        let settings_error = if job.settings_required > self.settings.rows.len() {
+            let additional = job.settings_required - self.settings.rows.len();
+            match self.settings.rows.try_reserve(additional) {
+                Ok(()) => {
+                    self.settings
+                        .rows
+                        .resize(job.settings_required, Default::default());
+                    None
+                }
+                Err(_) => Some("occupation settings allocation failed"),
+            }
+        } else {
+            None
+        };
+        let law_error = if job.law_demand_overflowed {
+            Some("occupation law byte demand overflow")
+        } else if job.law_bytes_required > self.law_bytes.first.len() {
+            let additional = job.law_bytes_required - self.law_bytes.first.len();
+            match self.law_bytes.first.try_reserve(additional) {
+                Ok(()) => {
+                    self.law_bytes.first.resize(job.law_bytes_required, 0);
+                    None
+                }
+                Err(_) => Some("occupation law byte allocation failed"),
+            }
+        } else {
+            None
+        };
         let occupation = ccountry_occupation_status::walk(
             &recorded,
             base,
@@ -607,6 +577,21 @@ impl Captured {
         self.reserve_manpower.outcome = occupation.reserve_manpower;
         self.law_bytes.len = occupation.bytes_len;
         self.law_bytes.required = occupation.required_bytes;
+        if law_error.is_none() {
+            self.law_bytes.required = self.law_bytes.required.max(job.law_bytes_required);
+        }
+        // Keep an original native failure ahead of allocation/demand failures.
+        // Other occupation tables still receive their one independent walk.
+        if let Some(reason) = settings_error.or(law_error)
+            && !matches!(self.settings.outcome, Outcome::Unavailable { .. })
+        {
+            self.settings.outcome = Outcome::Unavailable { reason };
+        }
+        if let Some(reason) = law_error
+            && !matches!(self.laws.outcome, Outcome::Unavailable { .. })
+        {
+            self.laws.outcome = Outcome::Unavailable { reason };
+        }
         decode_ticks[3] += elapsed(started);
         let started = qpc();
         self.resistance.outcome =
@@ -625,13 +610,12 @@ impl Captured {
 }
 
 // ===========================================================================
-// Hourly construction-rest raw-copy split (StateBaseResources,
+// Scheduled construction-rest raw-copy split (StateBaseResources,
 // BuildingConstruction, RailwayConstruction, OccupationSettings,
 // StateOccupationLaws, StateGarrisons, StateAssignedManpower,
 // CountryOccupationReserveManpower, StateResistance, CountryCollaboration).
 //
-// Zero-engine-change replay (Wars/Divisions/Focus/Session precedent): the
-// game thread copies raw bytes only and the single FIFO decode worker replays
+// The acquisition worker copies raw bytes and the single FIFO decode worker replays
 // the existing typed walks against the recorded spans
 // (`crate::raw::Recorded`), so rows, ordinals, arenas, truncation and failure
 // reasons are identical by construction (see `crate::raw`).
@@ -646,9 +630,9 @@ impl Captured {
 // decode-side: the log holds the underlying bytes and the worker fills the
 // pooled arenas by replaying the identical walks.
 //
-// Fault attribution is conservative like the pilot: shared roots carry the
+// Fault attribution is conservative: shared roots carry the
 // combined bits of their domain, so any live failure blocks its whole shared
-// domain even when both copies agree. The mirror traverses structurally and
+// domain. The mirror traverses structurally and
 // records every discoverable span, never aborting except on overflow.
 // ===========================================================================
 
@@ -666,7 +650,7 @@ const M_C_ALL: u32 = 0x3FF;
 const M_C_QUEUE: u32 = 0x006;
 const M_C_OCC: u32 = 0x0F8;
 
-/// One hour of raw construction-rest payload. Flat pools recycle capacities
+/// One scheduled refresh of raw construction-rest payload. Flat pools recycle capacities
 /// and the steady state allocates on neither thread; growth happens on the
 /// decode side only (see `crate::decode::recycle_construction_rest_job`).
 #[derive(Debug, Default)]
@@ -674,6 +658,9 @@ pub(crate) struct ConstructionRestJob {
     pub log: RawLog<10>,
     pub game_state: usize,
     census: Vec<ConstructionRestCountry>,
+    settings_required: usize,
+    law_bytes_required: usize,
+    law_demand_overflowed: bool,
     capacity_charge: crate::raw_memory::Charge,
 }
 
@@ -692,6 +679,9 @@ impl ConstructionRestJob {
             log: RawLog::new(1 << 17, 8 << 20),
             game_state: 0,
             census: Vec::with_capacity(512),
+            settings_required: 0,
+            law_bytes_required: 0,
+            law_demand_overflowed: false,
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         job.update_capacity_charge();
@@ -703,6 +693,9 @@ impl ConstructionRestJob {
         self.log.clear();
         self.game_state = 0;
         self.census.clear();
+        self.settings_required = 0;
+        self.law_bytes_required = 0;
+        self.law_demand_overflowed = false;
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -732,19 +725,15 @@ pub(crate) struct ConstructionRestCopyReport {
     /// False when staging overflowed: the caller falls back to the typed walk
     /// (identical rows through the existing path) and enqueues no payload.
     pub raw_ok: bool,
-    /// Whole-log raw equality gated by live-fault conservatism, in family
-    /// order.
-    pub matched: [bool; 10],
     pub copy_ticks: [u64; 10],
     pub raw_bytes: [u64; 10],
 }
 
-/// Game-thread copy parameters, bundled to keep the tick entry small.
+/// Acquisition-job parameters supplied at the sampling boundary.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ConstructionRestCopyContext {
     pub base: usize,
     pub game_state: usize,
-    pub needed: [bool; 10],
 }
 
 fn c_pool_u64(log: &RawLog<10>, start: usize) -> u64 {
@@ -769,7 +758,14 @@ fn cspan(
 
 /// Mirror of one MSVC string's reads: 32-byte header plus heap payload and
 /// terminator.
-fn copy_construction_string(log: &mut RawLog<10>, memory: &impl Memory, string: usize, mask: u32) {
+fn copy_construction_string(
+    log: &mut RawLog<10>,
+    memory: &impl Memory,
+    string: usize,
+    mask: u32,
+    required: &mut usize,
+    demand_overflowed: &mut bool,
+) {
     let Some(header_start) = cspan(log, memory, Some(string), 32, mask) else {
         return;
     };
@@ -817,6 +813,13 @@ fn copy_construction_string(log: &mut RawLog<10>, memory: &impl Memory, string: 
     };
     if source.checked_add(len).is_none() {
         return;
+    }
+    // Count every occurrence before the original payload attempt, including
+    // failed copies and names shared by default and state-override laws.
+    if let Some(total) = required.checked_add(len) {
+        *required = total;
+    } else {
+        *demand_overflowed = true;
     }
     if len != 0 {
         let _ = cspan(log, memory, Some(source), len, mask);
@@ -1366,6 +1369,8 @@ fn copy_occupation_walk(
     memory: &impl Memory,
     base: usize,
     census: &[ConstructionRestCountry],
+    required: &mut usize,
+    demand_overflowed: &mut bool,
 ) {
     for country in census {
         let Some(ptr_start) = cspan(
@@ -1424,7 +1429,7 @@ fn copy_occupation_walk(
         {
             let _ = cspan(log, memory, Some(law), 8, M_C_OCC);
             if let Some(name) = law.checked_add(coccupation_law::NAME) {
-                copy_construction_string(log, memory, name, M_C_OCC);
+                copy_construction_string(log, memory, name, M_C_OCC, required, demand_overflowed);
             }
         }
         // Reserve manpower container.
@@ -1453,7 +1458,7 @@ fn copy_occupation_walk(
         // identity, law table and garrison table are mirrored below so the
         // replay derives identical rows and reasons.
         if let Some(table) = status.checked_add(ccountry_occupation_status::OCCUPATION_DATA_TABLE) {
-            copy_occupation_entries(log, memory, base, table);
+            copy_occupation_entries(log, memory, base, table, required, demand_overflowed);
         }
         if log.overflowed {
             return;
@@ -1519,7 +1524,14 @@ fn copy_pdx_visit(
 }
 
 /// Outer occupation-data entries with nested law and garrison walks.
-fn copy_occupation_entries(log: &mut RawLog<10>, memory: &impl Memory, base: usize, table: usize) {
+fn copy_occupation_entries(
+    log: &mut RawLog<10>,
+    memory: &impl Memory,
+    base: usize,
+    table: usize,
+    required: &mut usize,
+    demand_overflowed: &mut bool,
+) {
     let Some(entries) = copy_pdx_visit(log, memory, table, M_C_OCC) else {
         return;
     };
@@ -1552,7 +1564,14 @@ fn copy_occupation_entries(log: &mut RawLog<10>, memory: &impl Memory, base: usi
             for (_, law) in laws {
                 let _ = cspan(log, memory, Some(law), 8, M_C_OCC);
                 if let Some(name) = law.checked_add(coccupation_law::NAME) {
-                    copy_construction_string(log, memory, name, M_C_OCC);
+                    copy_construction_string(
+                        log,
+                        memory,
+                        name,
+                        M_C_OCC,
+                        required,
+                        demand_overflowed,
+                    );
                 }
                 if log.overflowed {
                     return;
@@ -1720,108 +1739,38 @@ fn copy_collaboration_walk(
     let _ = base;
 }
 
-/// Acquire owned raw buffers and report per-table checks without borrowing the frame.
+/// Acquire one owned payload and report its per-table costs.
 pub(crate) fn copy_construction_rest_refresh(
     memory: &impl Memory,
     ctx: ConstructionRestCopyContext,
-    first: &mut ConstructionRestJob,
-    mut second: Option<&mut ConstructionRestJob>,
+    job: &mut ConstructionRestJob,
 ) -> ConstructionRestCopyReport {
     let started = qpc();
-    first.clear();
-    first.game_state = ctx.game_state;
-    copy_construction_rest_pass(memory, ctx.base, ctx.game_state, first);
-    let mut ticks = [0u64; 10];
+    job.clear();
+    job.game_state = ctx.game_state;
+    copy_construction_rest_pass(memory, ctx.base, ctx.game_state, job);
+    let mut ticks = [0; 10];
     ticks[0] = elapsed(started);
-    let mut matched = [true; 10];
-    if let Some(second_job) = second.as_deref_mut() {
-        let second_started = qpc();
-        second_job.clear();
-        second_job.game_state = ctx.game_state;
-        copy_construction_rest_pass(memory, ctx.base, ctx.game_state, second_job);
-        ticks[0] += elapsed(second_started);
-        // Per-table partitions: shared roots gate their dependents,
-        // private spans only their own table.
-        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-        for (slot, matched) in matched.iter_mut().enumerate() {
-            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-        }
-    }
-    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
     ConstructionRestCopyReport {
-        raw_ok,
-        matched,
+        raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
-        raw_bytes: first.log.raw_bytes,
+        raw_bytes: job.log.raw_bytes,
     }
 }
 
 impl Captured {
-    /// Install one completed raw-copy report without changing rows or outcomes.
-    pub(crate) fn apply_construction_rest_report(
-        &mut self,
-        needed: [bool; 10],
-        report: &ConstructionRestCopyReport,
-    ) {
-        self.base_resources.checked = needed[0];
-        self.base_resources.mismatches = usize::from(needed[0] && !report.matched[0]);
-        self.building_construction.checked = needed[1];
-        self.building_construction.mismatches = usize::from(needed[1] && !report.matched[1]);
-        self.railway_construction.checked = needed[2];
-        self.railway_construction.mismatches = usize::from(needed[2] && !report.matched[2]);
-        self.settings.checked = needed[3];
-        self.settings.mismatches = usize::from(needed[3] && !report.matched[3]);
-        self.laws.checked = needed[4];
-        self.laws.mismatches = usize::from(needed[4] && !report.matched[4]);
-        self.garrisons.checked = needed[5];
-        self.garrisons.mismatches = usize::from(needed[5] && !report.matched[5]);
-        self.assigned_manpower.checked = needed[6];
-        self.assigned_manpower.mismatches = usize::from(needed[6] && !report.matched[6]);
-        self.reserve_manpower.checked = needed[7];
-        self.reserve_manpower.mismatches = usize::from(needed[7] && !report.matched[7]);
-        self.resistance.checked = needed[8];
-        self.resistance.mismatches = usize::from(needed[8] && !report.matched[8]);
-        self.collaboration.checked = needed[9];
-        self.collaboration.mismatches = usize::from(needed[9] && !report.matched[9]);
-    }
-
     /// Finish an accepted acquisition failure without retrying live memory.
-    pub(crate) fn fail_construction_rest_capture(
-        &mut self,
-        needed: [bool; 10],
-        reason: &'static str,
-    ) {
-        self.base_resources.outcome = Outcome::Unavailable { reason };
-        self.base_resources.checked = needed[0];
-        self.base_resources.mismatches = usize::from(needed[0]);
-        self.building_construction.outcome = Outcome::Unavailable { reason };
-        self.building_construction.checked = needed[1];
-        self.building_construction.mismatches = usize::from(needed[1]);
-        self.railway_construction.outcome = Outcome::Unavailable { reason };
-        self.railway_construction.checked = needed[2];
-        self.railway_construction.mismatches = usize::from(needed[2]);
-        self.settings.outcome = Outcome::Unavailable { reason };
-        self.settings.checked = needed[3];
-        self.settings.mismatches = usize::from(needed[3]);
-        self.laws.outcome = Outcome::Unavailable { reason };
-        self.laws.checked = needed[4];
-        self.laws.mismatches = usize::from(needed[4]);
-        self.garrisons.outcome = Outcome::Unavailable { reason };
-        self.garrisons.checked = needed[5];
-        self.garrisons.mismatches = usize::from(needed[5]);
-        self.assigned_manpower.outcome = Outcome::Unavailable { reason };
-        self.assigned_manpower.checked = needed[6];
-        self.assigned_manpower.mismatches = usize::from(needed[6]);
-        self.reserve_manpower.outcome = Outcome::Unavailable { reason };
-        self.reserve_manpower.checked = needed[7];
-        self.reserve_manpower.mismatches = usize::from(needed[7]);
-        self.resistance.outcome = Outcome::Unavailable { reason };
-        self.resistance.checked = needed[8];
-        self.resistance.mismatches = usize::from(needed[8]);
-        self.collaboration.outcome = Outcome::Unavailable { reason };
-        self.collaboration.checked = needed[9];
-        self.collaboration.mismatches = usize::from(needed[9]);
+    pub(crate) fn fail_construction_rest_capture(&mut self, reason: &'static str) {
+        self.base_resources.fail(Outcome::Unavailable { reason });
+        self.building_construction.fail(Outcome::Unavailable { reason });
+        self.railway_construction.fail(Outcome::Unavailable { reason });
+        self.settings.fail(Outcome::Unavailable { reason });
+        self.laws.fail(Outcome::Unavailable { reason });
+        self.garrisons.fail(Outcome::Unavailable { reason });
+        self.assigned_manpower.fail(Outcome::Unavailable { reason });
+        self.reserve_manpower.fail(Outcome::Unavailable { reason });
+        self.resistance.fail(Outcome::Unavailable { reason });
+        self.collaboration.fail(Outcome::Unavailable { reason });
         self.rest_raw_mode = false;
     }
 }
@@ -1835,7 +1784,11 @@ fn copy_construction_rest_pass(
     game_state: usize,
     job: &mut ConstructionRestJob,
 ) {
+    let _reads = read_accounting::table(TABLES[2]);
     let states = copy_construction_roots(&mut job.log, memory, base, game_state, &mut job.census);
+    // Vec length is already representable and bounded by the owned census.
+    // Retain its prefix even if a later country authentication fails.
+    job.settings_required = job.census.len();
     if job.log.overflowed {
         return;
     }
@@ -1849,100 +1802,32 @@ fn copy_construction_rest_pass(
     if job.log.overflowed {
         return;
     }
-    copy_occupation_walk(&mut job.log, memory, base, &job.census);
+    copy_occupation_walk(
+        &mut job.log,
+        memory,
+        base,
+        &job.census,
+        &mut job.law_bytes_required,
+        &mut job.law_demand_overflowed,
+    );
     if job.log.overflowed {
         return;
     }
     copy_collaboration_walk(&mut job.log, memory, base, &job.census);
 }
 
-fn single<R: Default + Clone + PartialEq>(
-    rows: &mut CaptureRows<R>,
-    needed: bool,
-    mut walk: impl FnMut(&mut [R]) -> Outcome,
-) -> (bool, u64) {
+fn single<R>(rows: &mut CaptureRows<R>, mut walk: impl FnMut(&mut [R]) -> Outcome) -> u64 {
     let begin = qpc();
     rows.outcome = walk(&mut rows.rows);
-    let matched = needed && {
-        let second = walk(&mut rows.second);
-        rows.compare(second)
-    };
-    (matched, elapsed(begin))
-}
-
-fn compare_by<R>(
-    rows: &mut CaptureRows<R>,
-    second: Outcome,
-    mut same: impl FnMut(&R, &R) -> bool,
-) -> bool {
-    rows.mismatches = usize::from(rows.outcome != second);
-    match rows
-        .rows
-        .get(..rows.outcome.len())
-        .zip(rows.second.get(..second.len()))
-    {
-        Some((first, second)) => {
-            rows.mismatches += first
-                .iter()
-                .zip(second)
-                .filter(|(first, second)| !same(first, second))
-                .count();
-        }
-        None => rows.mismatches += 1,
-    }
-    full_match(rows.outcome, second, rows.mismatches)
-}
-
-fn checked_outcome<R>(rows: &CaptureRows<R>) -> Outcome {
-    if rows.checked && rows.mismatches != 0 {
-        Outcome::Unavailable {
-            reason: "construction or occupation table changed during double read",
-        }
-    } else {
-        rows.outcome
-    }
-}
-
-fn compare_laws(
-    rows: &mut CaptureRows<ccountry_occupation_data::LawRow>,
-    second: Outcome,
-    first_names: Option<&[u8]>,
-    second_names: Option<&[u8]>,
-) -> bool {
-    compare_by(rows, second, |first, second| {
-        (first.controller, first.occupied, first.state)
-            == (second.controller, second.occupied, second.state)
-            && equal_range(
-                first_names,
-                first.name_start,
-                first.name_len,
-                second_names,
-                second.name_start,
-                second.name_len,
-            )
-    })
+    elapsed(begin)
 }
 
 fn range<T>(arena: &[T], start: usize, len: usize) -> Option<&[T]> {
     arena.get(start..start.checked_add(len)?)
 }
 
-fn equal_range<T: PartialEq>(
-    first: Option<&[T]>,
-    first_start: usize,
-    first_len: usize,
-    second: Option<&[T]>,
-    second_start: usize,
-    second_len: usize,
-) -> bool {
-    first
-        .and_then(|first| range(first, first_start, first_len))
-        .zip(second.and_then(|second| range(second, second_start, second_len)))
-        .is_some_and(|(first, second)| first == second)
-}
-
 fn source<R>(rows: &CaptureRows<R>) -> Result<(Outcome, &[R]), TableView> {
-    let outcome = checked_outcome(rows);
+    let outcome = rows.outcome;
     match outcome {
         Outcome::Unavailable { reason } => Err(unavailable(reason)),
         _ => rows
@@ -2055,7 +1940,7 @@ fn law_table(
     })
 }
 
-/// Shared synthetic address space for the hourly construction-rest
+/// Shared synthetic address space for the scheduled construction-rest
 /// copy/decode split: one state with resources and resistance, one
 /// country with a building+railway queue, occupation settings with laws,
 /// garrisons, manpower and reserve, plus one collaboration relation.
@@ -2089,12 +1974,11 @@ pub(crate) mod construction_rest_test_kit {
     const OCC_TABLE: usize = 0x7100;
     const OCC_ROWS: usize = 0x7200;
     const OCC_DATA: usize = 0x7300;
-    const LAW_TABLE: usize = 0x7400;
     const LAW_DATA: usize = 0x7500;
     const GAR_TABLE: usize = 0x7600;
     const GAR_DATA: usize = 0x7700;
     const GAR_OBJ: usize = 0x7800;
-    const LAW_OBJ: usize = 0x7900;
+    pub(super) const LAW_OBJ: usize = 0x7900;
     const RESERVE_DATA: usize = 0x7B00;
     const ASSIGN_DATA: usize = 0x7D00;
     const COLLAB: usize = 0x8000;
@@ -2484,13 +2368,12 @@ pub(crate) mod construction_rest_test_kit {
             &1_u32.to_le_bytes(),
         );
         // Law table inside occupation data (one law, state 0).
-        put(
+        array(
             &mut bytes,
             OCC_DATA + ccountry_occupation_data::LAW_TABLE,
-            &(LAW_TABLE as u64).to_le_bytes(),
+            LAW_DATA,
+            1,
         );
-        put(&mut bytes, LAW_TABLE + 8, &1_u32.to_le_bytes());
-        put(&mut bytes, LAW_TABLE + 12, &1_u32.to_le_bytes());
         put(&mut bytes, LAW_DATA + 4, &[1]);
         put(&mut bytes, LAW_DATA + 8, &0_u32.to_le_bytes());
         put(&mut bytes, LAW_DATA + 16, &(LAW_OBJ as u64).to_le_bytes());
@@ -2584,8 +2467,12 @@ pub(crate) mod construction_rest_test_kit {
     }
 
     pub(crate) fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> Captured {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
-        let _ = captured.capture(memory, 0, BASE, &[true; N], 0, true);
+        let mut captured = Captured::with_capacities(capacities);
+        let mut buildings = captured.take_buildings();
+        let ticks = buildings.capture(memory, 0, BASE, 0, true);
+        captured.restore_buildings(buildings, Ok(ticks));
+        let _ = captured.capture(memory, 0, BASE, 0, true);
+        captured.finish_buildings(0, true);
         captured.rest_raw_mode = false;
         captured
     }
@@ -2594,24 +2481,21 @@ pub(crate) mod construction_rest_test_kit {
         memory: &impl engine::Memory,
         capacities: &Capacities,
     ) -> (Captured, ConstructionRestCopyReport, ConstructionRestJob) {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+        let mut captured = Captured::with_capacities(capacities);
         let ctx = ConstructionRestCopyContext {
             base: 0,
             game_state: BASE,
-            needed: [true; 10],
         };
         let mut first = ConstructionRestJob::new();
-        let mut second = ConstructionRestJob::new();
-        let report = crate::extended::construction::copy_construction_rest_refresh(
-            memory,
-            ctx,
-            &mut first,
-            Some(&mut second),
-        );
-        captured.apply_construction_rest_report(ctx.needed, &report);
+        let report =
+            crate::extended::construction::copy_construction_rest_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
         captured.rest_raw_mode = report.raw_ok;
-        let _ = captured.capture(memory, 0, BASE, &[true; N], 0, true);
+        let mut buildings = captured.take_buildings();
+        let ticks = buildings.capture(memory, 0, BASE, 0, true);
+        captured.restore_buildings(buildings, Ok(ticks));
+        let _ = captured.capture(memory, 0, BASE, 0, true);
+        captured.finish_buildings(0, true);
         let mut ticks = [0u64; 10];
         captured.decode_construction_rest_payload(0, BASE, &first, &mut ticks);
         (captured, report, first)
@@ -2685,6 +2569,18 @@ pub(crate) mod construction_rest_test_kit {
             &direct.law_bytes.first[..direct.law_bytes.len],
             "law bytes"
         );
+        let len = split.settings.outcome.len();
+        assert_eq!(
+            &split.settings.rows[..len],
+            &direct.settings.rows[..len],
+            "settings rows"
+        );
+        let len = split.laws.outcome.len();
+        assert_eq!(
+            &split.laws.rows[..len],
+            &direct.laws.rows[..len],
+            "law rows"
+        );
         let len = split.resistance.outcome.len();
         assert_eq!(
             &split.resistance.rows[..len],
@@ -2699,233 +2595,118 @@ mod tests {
     use super::*;
 
     #[test]
-    fn construction_rest_copy_report_bookkeeping_and_terminal_failure_are_table_local() {
-        let mut captured =
-            Captured::with_capacities(&construction_rest_test_kit::capacities(), &[0; N]);
-        captured.rest_raw_mode = true;
-        captured.base_resources.outcome = Outcome::Rows { len: 1 };
-        captured.base_resources.mismatches = 9;
-        captured.building_construction.outcome = Outcome::Rows { len: 1 };
-        captured.building_construction.mismatches = 9;
-        captured.railway_construction.outcome = Outcome::Rows { len: 1 };
-        captured.railway_construction.mismatches = 9;
-        captured.settings.outcome = Outcome::Rows { len: 1 };
-        captured.settings.mismatches = 9;
-        captured.laws.outcome = Outcome::Rows { len: 1 };
-        captured.laws.mismatches = 9;
-        captured.garrisons.outcome = Outcome::Rows { len: 1 };
-        captured.garrisons.mismatches = 9;
-        captured.assigned_manpower.outcome = Outcome::Rows { len: 1 };
-        captured.assigned_manpower.mismatches = 9;
-        captured.reserve_manpower.outcome = Outcome::Rows { len: 1 };
-        captured.reserve_manpower.mismatches = 9;
-        captured.resistance.outcome = Outcome::Rows { len: 1 };
-        captured.resistance.mismatches = 9;
-        captured.collaboration.outcome = Outcome::Rows { len: 1 };
-        captured.collaboration.mismatches = 9;
-        captured.state_buildings.outcome = Outcome::Rows { len: 1 };
-        captured.state_buildings.checked = true;
-        captured.state_buildings.mismatches = 7;
-        let needed = std::array::from_fn(|index| index % 2 == 0);
-        let report = ConstructionRestCopyReport {
-            raw_ok: false,
-            matched: std::array::from_fn(|index| index % 3 != 0),
-            copy_ticks: std::array::from_fn(|index| index as u64 + 17),
-            raw_bytes: std::array::from_fn(|index| index as u64 + 41),
+    fn buildings_read_on_their_slot_while_construction_rest_waits_for_its_slot() {
+        use construction_rest_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        });
+        let direct = kit::direct(&memory, &kit::capacities());
+        let mut captured = Captured::with_capacities(&kit::capacities());
+        let skipped = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
         };
-        captured.apply_construction_rest_report(needed, &report);
-        let states = [
-            (
-                captured.base_resources.checked,
-                captured.base_resources.mismatches,
-                captured.base_resources.outcome,
-            ),
-            (
-                captured.building_construction.checked,
-                captured.building_construction.mismatches,
-                captured.building_construction.outcome,
-            ),
-            (
-                captured.railway_construction.checked,
-                captured.railway_construction.mismatches,
-                captured.railway_construction.outcome,
-            ),
-            (
-                captured.settings.checked,
-                captured.settings.mismatches,
-                captured.settings.outcome,
-            ),
-            (
-                captured.laws.checked,
-                captured.laws.mismatches,
-                captured.laws.outcome,
-            ),
-            (
-                captured.garrisons.checked,
-                captured.garrisons.mismatches,
-                captured.garrisons.outcome,
-            ),
-            (
-                captured.assigned_manpower.checked,
-                captured.assigned_manpower.mismatches,
-                captured.assigned_manpower.outcome,
-            ),
-            (
-                captured.reserve_manpower.checked,
-                captured.reserve_manpower.mismatches,
-                captured.reserve_manpower.outcome,
-            ),
-            (
-                captured.resistance.checked,
-                captured.resistance.mismatches,
-                captured.resistance.outcome,
-            ),
-            (
-                captured.collaboration.checked,
-                captured.collaboration.mismatches,
-                captured.collaboration.outcome,
-            ),
-        ];
-        for (index, (checked, mismatches, outcome)) in states.into_iter().enumerate() {
-            assert_eq!(checked, needed[index]);
-            assert_eq!(
-                mismatches,
-                usize::from(needed[index] && !report.matched[index])
-            );
-            assert_eq!(outcome, Outcome::Rows { len: 1 });
+        for (hour, force_full) in (-24_i32..24).map(|hour| (hour, false)).chain([(0, true)]) {
+            let active = force_full || hour.rem_euclid(24) == 3;
+            captured.rest_raw_mode = !active;
+            let native = read_accounting::Capture::new();
+            let mut buildings = captured.take_buildings();
+            let ticks = buildings.capture(&memory, 0, kit::BASE, hour, force_full);
+            captured.restore_buildings(buildings, Ok(ticks));
+            let mut ticks = captured.capture(&memory, 0, kit::BASE, hour, force_full);
+            ticks[0] = captured.finish_buildings(hour, force_full);
+            let counts = native.finish();
+            if replay::cadence::should_walk(TableId::StateBuildings, hour, force_full) {
+                assert_eq!(&captured.outcomes()[..2], &direct.outcomes()[..2]);
+                assert!(counts[TABLES[0].index()].spans > 0);
+            } else {
+                assert_eq!(&captured.outcomes()[..2], &[skipped; 2], "{hour}");
+                assert_eq!(ticks[0], 0);
+                assert_eq!(counts[TABLES[0].index()], engine::memory::ReadCounts::ZERO);
+            }
+            if active {
+                kit::assert_matches_direct(&captured, &direct);
+                assert!(counts[TABLES[2].index()].spans > 0);
+            } else {
+                for (index, table) in TABLES.iter().enumerate().skip(2) {
+                    assert_eq!(captured.outcomes()[index], skipped, "{hour}: {index}");
+                    assert_eq!(ticks[index], 0);
+                    assert_eq!(counts[table.index()], engine::memory::ReadCounts::ZERO);
+                }
+                assert_eq!((captured.routes.len, captured.routes.required), (0, 0));
+                assert_eq!(
+                    (captured.law_bytes.len, captured.law_bytes.required),
+                    (0, 0)
+                );
+            }
         }
-        assert!(captured.rest_raw_mode);
-        // A later successful report replaces stale mismatch bookkeeping.
-        captured.apply_construction_rest_report(
-            [true; 10],
-            &ConstructionRestCopyReport {
-                raw_ok: true,
-                matched: [true; 10],
-                ..report
-            },
+    }
+
+    #[test]
+    fn construction_rest_terminal_failure_preserves_finished_buildings() {
+        let mut captured = Captured::with_capacities(&construction_rest_test_kit::capacities());
+        captured.rest_raw_mode = true;
+        captured.buildings.state_buildings.outcome = Outcome::Rows { len: 1 };
+        captured.fail_construction_rest_capture("accepted acquisition failed");
+        assert_eq!(
+            captured.buildings.state_buildings.outcome,
+            Outcome::Rows { len: 1 }
         );
-        let states = [
-            (
-                captured.base_resources.checked,
-                captured.base_resources.mismatches,
-                captured.base_resources.outcome,
-            ),
-            (
-                captured.building_construction.checked,
-                captured.building_construction.mismatches,
-                captured.building_construction.outcome,
-            ),
-            (
-                captured.railway_construction.checked,
-                captured.railway_construction.mismatches,
-                captured.railway_construction.outcome,
-            ),
-            (
-                captured.settings.checked,
-                captured.settings.mismatches,
-                captured.settings.outcome,
-            ),
-            (
-                captured.laws.checked,
-                captured.laws.mismatches,
-                captured.laws.outcome,
-            ),
-            (
-                captured.garrisons.checked,
-                captured.garrisons.mismatches,
-                captured.garrisons.outcome,
-            ),
-            (
-                captured.assigned_manpower.checked,
-                captured.assigned_manpower.mismatches,
-                captured.assigned_manpower.outcome,
-            ),
-            (
-                captured.reserve_manpower.checked,
-                captured.reserve_manpower.mismatches,
-                captured.reserve_manpower.outcome,
-            ),
-            (
-                captured.resistance.checked,
-                captured.resistance.mismatches,
-                captured.resistance.outcome,
-            ),
-            (
-                captured.collaboration.checked,
-                captured.collaboration.mismatches,
-                captured.collaboration.outcome,
-            ),
-        ];
-        assert!(
-            states
-                .into_iter()
-                .all(|(checked, mismatches, outcome)| checked
-                    && mismatches == 0
-                    && outcome == Outcome::Rows { len: 1 })
-        );
-        let reason = "accepted acquisition worker stopped";
-        captured.fail_construction_rest_capture(needed, reason);
-        let states = [
-            (
-                captured.base_resources.checked,
-                captured.base_resources.mismatches,
-                captured.base_resources.outcome,
-            ),
-            (
-                captured.building_construction.checked,
-                captured.building_construction.mismatches,
-                captured.building_construction.outcome,
-            ),
-            (
-                captured.railway_construction.checked,
-                captured.railway_construction.mismatches,
-                captured.railway_construction.outcome,
-            ),
-            (
-                captured.settings.checked,
-                captured.settings.mismatches,
-                captured.settings.outcome,
-            ),
-            (
-                captured.laws.checked,
-                captured.laws.mismatches,
-                captured.laws.outcome,
-            ),
-            (
-                captured.garrisons.checked,
-                captured.garrisons.mismatches,
-                captured.garrisons.outcome,
-            ),
-            (
-                captured.assigned_manpower.checked,
-                captured.assigned_manpower.mismatches,
-                captured.assigned_manpower.outcome,
-            ),
-            (
-                captured.reserve_manpower.checked,
-                captured.reserve_manpower.mismatches,
-                captured.reserve_manpower.outcome,
-            ),
-            (
-                captured.resistance.checked,
-                captured.resistance.mismatches,
-                captured.resistance.outcome,
-            ),
-            (
-                captured.collaboration.checked,
-                captured.collaboration.mismatches,
-                captured.collaboration.outcome,
-            ),
-        ];
-        for (index, (checked, mismatches, outcome)) in states.into_iter().enumerate() {
-            assert_eq!(checked, needed[index]);
-            assert_eq!(mismatches, usize::from(needed[index]));
-            assert_eq!(outcome, Outcome::Unavailable { reason });
-        }
         assert!(!captured.rest_raw_mode);
-        assert_eq!(captured.state_buildings.outcome, Outcome::Rows { len: 1 });
-        assert!(captured.state_buildings.checked);
-        assert_eq!(captured.state_buildings.mismatches, 7);
+        assert!(captured.outcomes()[2..].iter().all(|o| *o
+            == Outcome::Unavailable {
+                reason: "accepted acquisition failed"
+            }));
+    }
+
+    #[test]
+    fn building_handoff_consumes_its_report_without_live_retry_and_retains_growth() {
+        let mut capacity = capacity();
+        let mut captured = Captured::with_capacities(&capacity);
+        captured.rest_raw_mode = true;
+        let before = captured.allocated_bytes();
+        let mut part = captured.take_buildings();
+        let borrowed = part.allocated_bytes();
+        assert_eq!(Buildings::vacant().allocated_bytes(), 0);
+        assert_eq!(captured.allocated_bytes() + borrowed, before);
+        part.state_buildings
+            .rows
+            .resize(20, cbuilding::Row::default());
+        part.state_buildings.outcome = Outcome::Rows { len: 20 };
+        part.province_buildings.outcome = Outcome::Rows { len: 0 };
+        let grown = part.allocated_bytes();
+        captured.restore_buildings(part, Ok(37));
+        assert_eq!(captured.allocated_bytes(), before - borrowed + grown);
+        let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        });
+        let reads = read_accounting::Capture::new();
+        assert_eq!(captured.capture(&memory, 0, 0, 0, true)[0], 0);
+        assert_eq!(captured.finish_buildings(0, true), 37);
+        assert_eq!(captured.outcomes()[0], Outcome::Rows { len: 20 });
+        assert_eq!(captured.finish_buildings(0, true), 0);
+        assert_eq!(
+            &captured.outcomes()[..2],
+            &[Outcome::Unavailable {
+                reason: "building acquisition not supplied"
+            }; 2]
+        );
+        let part = captured.take_buildings();
+        captured.restore_buildings(part, Err("building worker failed"));
+        assert_eq!(captured.finish_buildings(0, true), 0);
+        assert_eq!(
+            &captured.outcomes()[..2],
+            &[Outcome::Unavailable {
+                reason: "building worker failed"
+            }; 2]
+        );
+        assert_eq!(reads.finish(), read_accounting::ZERO);
+        captured.reset();
+        captured.grow(&mut capacity);
+        assert_eq!(capacity.rows[0], 20);
+        assert_eq!(captured.allocated_bytes(), before - borrowed + grown);
     }
 
     #[test]
@@ -2950,7 +2731,6 @@ mod tests {
         assert_eq!(LOCAL.snapshot().current, Capacity::default());
     }
 
-    use crate::sampling::CONSISTENCY_TARGET;
     use replay::rows::TableSchema;
 
     fn capacity() -> Capacities {
@@ -2962,9 +2742,9 @@ mod tests {
     }
 
     fn fixture() -> Captured {
-        let mut captured = Captured::with_capacities(&capacity(), &[0; N]);
-        captured.state_buildings.outcome = Outcome::Rows { len: 1 };
-        captured.province_buildings.outcome = Outcome::Rows { len: 1 };
+        let mut captured = Captured::with_capacities(&capacity());
+        captured.buildings.state_buildings.outcome = Outcome::Rows { len: 1 };
+        captured.buildings.province_buildings.outcome = Outcome::Rows { len: 1 };
         captured.base_resources.outcome = Outcome::Rows { len: 1 };
         captured.building_construction.outcome = Outcome::Rows { len: 1 };
         captured.railway_construction.outcome = Outcome::Rows { len: 1 };
@@ -2975,7 +2755,7 @@ mod tests {
         captured.reserve_manpower.outcome = Outcome::Rows { len: 1 };
         captured.resistance.outcome = Outcome::Rows { len: 1 };
         captured.collaboration.outcome = Outcome::Rows { len: 1 };
-        captured.state_buildings.rows[0] = cbuilding::Row {
+        captured.buildings.state_buildings.rows[0] = cbuilding::Row {
             location: u32::MAX,
             state: 7,
             building_type: 99,
@@ -2986,11 +2766,11 @@ mod tests {
             healthy_level: i16::MAX,
             partial_health: i64::MIN,
         };
-        captured.province_buildings.rows[0] = cbuilding::Row {
+        captured.buildings.province_buildings.rows[0] = cbuilding::Row {
             location: 12,
             state: 0,
             status_flags: 1,
-            ..captured.state_buildings.rows[0]
+            ..captured.buildings.state_buildings.rows[0]
         };
         captured.base_resources.rows[0] = state_resource_entry::Row {
             state: 9,
@@ -3181,12 +2961,13 @@ mod tests {
     }
 
     #[test]
-    fn invalid_arenas_duplicate_keys_and_checked_mismatches_are_table_local() {
+    fn invalid_arenas_duplicate_keys_and_source_faults_are_table_local() {
         let mut captured = fixture();
         captured.railway_construction.rows[0].route_start = usize::MAX;
         captured.settings.rows[0].law_start = 6;
-        captured.state_buildings.checked = true;
-        captured.state_buildings.mismatches = 1;
+        captured.buildings.state_buildings.outcome = Outcome::Unavailable {
+            reason: "building source unreadable",
+        };
         let views = captured.tables();
         for index in [0, 4, 5] {
             assert!(matches!(views[index], TableView::Unavailable { .. }));
@@ -3206,7 +2987,7 @@ mod tests {
             complete::<tables::StateOccupationLaws>(&captured.tables()[6]).len(),
             2
         );
-        captured.province_buildings.outcome = Outcome::Truncated {
+        captured.buildings.province_buildings.outcome = Outcome::Truncated {
             len: 1,
             unread_rows: 5,
         };
@@ -3215,7 +2996,6 @@ mod tests {
             TableView::Truncated { missing: 5, .. }
         ));
         captured.reset();
-        assert_eq!(captured.checked_mismatches(), [0; N]);
         assert!(
             captured
                 .outcomes()
@@ -3225,83 +3005,48 @@ mod tests {
     }
 
     #[test]
-    fn changed_sibling_arena_positions_do_not_change_a_laws_native_value() {
-        let mut rows = CaptureRows::<ccountry_occupation_data::LawRow>::new(1, 0);
-        rows.checked = true;
-        rows.outcome = Outcome::Rows { len: 1 };
-        rows.rows[0] = ccountry_occupation_data::LawRow {
-            controller: 1,
-            occupied: 2,
-            state: 0,
-            name_start: 3,
-            name_len: 2,
-        };
-        rows.second[0] = ccountry_occupation_data::LawRow {
-            name_start: 0,
-            ..rows.rows[0]
-        };
-        assert!(compare_laws(
-            &mut rows,
-            Outcome::Rows { len: 1 },
-            Some(b"abcXY"),
-            Some(b"XY")
-        ));
-        assert_eq!(rows.mismatches, 0);
-        assert!(!compare_laws(
-            &mut rows,
-            Outcome::Rows { len: 1 },
-            Some(b"abcXY"),
-            Some(b"XZ")
-        ));
-        assert_eq!(rows.mismatches, 1);
-        assert!(matches!(
-            checked_outcome(&rows),
-            Outcome::Unavailable { .. }
-        ));
-        rows.checked = false;
-        assert_eq!(checked_outcome(&rows), Outcome::Rows { len: 1 });
-    }
-
-    #[test]
-    fn growth_counts_omitted_rows_and_releases_completed_comparisons_independently() {
+    fn growth_counts_omitted_rows_and_primary_arena_pressure() {
         let mut capacity = capacity();
-        let mut captured = Captured::with_capacities(&capacity, &[0; N]);
+        let mut captured = Captured::with_capacities(&capacity);
         captured.railway_construction.outcome = Outcome::Truncated {
             len: 1,
             unread_rows: 20,
         };
         captured.routes.required = 29;
         captured.law_bytes.required = 41;
-        let mut successful = [CONSISTENCY_TARGET; N];
-        successful[6] = 0;
-        captured.grow(&mut capacity, &successful);
+        captured.grow(&mut capacity);
         assert!(capacity.rows[4] >= 21 && capacity.routes >= 29 && capacity.law_bytes >= 41);
-        assert!(captured.settings.second.is_empty());
-        assert!(!captured.laws.second.is_empty());
-        assert!(captured.railway_construction.second.is_empty());
-        assert!(captured.routes.second.is_empty());
-        assert!(!captured.law_bytes.second.is_empty());
+        assert!(captured.routes.first.len() >= 29 && captured.law_bytes.first.len() >= 41);
         let before = captured.allocated_bytes();
-        successful[6] = CONSISTENCY_TARGET;
-        captured.grow(&mut capacity, &successful);
-        assert!(captured.laws.second.is_empty() && captured.law_bytes.second.is_empty());
-        assert!(captured.allocated_bytes() < before);
-        let fresh = Captured::with_capacities(&capacity, &successful);
-        assert!(fresh.laws.second.is_empty() && fresh.routes.second.is_empty());
+        captured.reset();
+        captured.grow(&mut capacity);
+        assert_eq!(captured.allocated_bytes(), before);
+        let fresh = Captured::with_capacities(&capacity);
+        assert_eq!(fresh.routes.first.len(), captured.routes.first.len());
+        assert_eq!(fresh.law_bytes.first.len(), captured.law_bytes.first.len());
     }
 
     #[test]
     fn construction_rest_split_copy_matches_direct_walk() {
         use super::construction_rest_test_kit as kit;
         let bytes = kit::fixture();
-        let memory = engine::memory::SliceMemory {
+        let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
             base: kit::BASE,
             bytes: &bytes,
-        };
+        });
         let capacities = kit::capacities();
+        let native = read_accounting::Capture::new();
         let direct = kit::direct(&memory, &capacities);
-        let (split, report, _) = kit::split(&memory, &capacities);
-        assert_eq!(report.matched, [true; 10]);
+        let direct_counts = native.finish();
+        let native = read_accounting::Capture::new();
+        let (split, _, _) = kit::split(&memory, &capacities);
+        let counts = native.finish();
+        let mut expected_counts = read_accounting::ZERO;
+        expected_counts[TABLES[0].index()] = direct_counts[TABLES[0].index()];
+        expected_counts[TABLES[2].index()] = counts[TABLES[2].index()];
+        assert!(counts[TABLES[0].index()].spans > 0);
+        assert!(counts[TABLES[2].index()].spans > 0);
+        assert_eq!(counts, expected_counts);
         kit::assert_matches_direct(&split, &direct);
         assert_eq!(split.base_resources.outcome, Outcome::Rows { len: 1 });
         assert_eq!(
@@ -3315,14 +3060,9 @@ mod tests {
     }
 
     #[test]
-    fn construction_rest_truncation_matrix_matches_direct_with_same_caps() {
-        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-        // copy→decode against the SAME memory with the SAME pooled caps,
-        // asserting identical outcome (incl. len/unread) and identical rows.
-        // Fixture holds 1 row on most rest tables (collaboration empty), so
-        // cap 1 is the one-row/exact-fit arm, cap 0 the zero/overflow/massive
-        // arm. u32 unread saturation is not reachable and is covered by the
-        // walk's own saturating arithmetic.
+    fn construction_rest_truncation_matrix_preserves_unrelated_caps() {
+        // The settings grant grows from the census; every other row grant
+        // retains the direct walk's truncation behavior.
         use super::construction_rest_test_kit as kit;
         let bytes = kit::fixture();
         let memory = engine::memory::SliceMemory {
@@ -3335,26 +3075,25 @@ mod tests {
                 routes: 64,
                 law_bytes: 64,
             };
-            let direct = kit::direct(&memory, &capacities);
-            let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+            let mut expected = capacities;
+            expected.rows[5] = expected.rows[5].max(1);
+            let direct = kit::direct(&memory, &expected);
+            let mut captured = Captured::with_capacities(&capacities);
             let ctx = ConstructionRestCopyContext {
                 base: 0,
                 game_state: kit::BASE,
-                needed: [true; 10],
             };
             let mut first = ConstructionRestJob::new();
-            let mut second = ConstructionRestJob::new();
             let report = crate::extended::construction::copy_construction_rest_refresh(
-                &memory,
-                ctx,
-                &mut first,
-                Some(&mut second),
+                &memory, ctx, &mut first,
             );
-            captured.apply_construction_rest_report(ctx.needed, &report);
             assert!(report.raw_ok, "rows={rows:?}");
-            assert_eq!(report.matched, [true; 10], "rows={rows:?}");
             captured.rest_raw_mode = true;
-            let _ = captured.capture(&memory, 0, kit::BASE, &[true; N], 0, true);
+            let mut buildings = captured.take_buildings();
+            let ticks = buildings.capture(&memory, 0, kit::BASE, 0, true);
+            captured.restore_buildings(buildings, Ok(ticks));
+            let _ = captured.capture(&memory, 0, kit::BASE, 0, true);
+            captured.finish_buildings(0, true);
             let mut ticks = [0u64; 10];
             captured.decode_construction_rest_payload(0, kit::BASE, &first, &mut ticks);
             kit::assert_matches_direct(&captured, &direct);
@@ -3374,89 +3113,203 @@ mod tests {
             routes: 1,
             law_bytes: 4,
         };
-        let direct = kit::direct(&memory, &capacities);
-        let (split, report, _) = {
-            let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let mut expected = capacities;
+        expected.law_bytes = 16;
+        let direct = kit::direct(&memory, &expected);
+        let (split, _, _) = {
+            let mut captured = Captured::with_capacities(&capacities);
             let ctx = ConstructionRestCopyContext {
                 base: 0,
                 game_state: kit::BASE,
-                needed: [true; 10],
             };
             let mut first = ConstructionRestJob::new();
-            let mut second = ConstructionRestJob::new();
             let report = crate::extended::construction::copy_construction_rest_refresh(
-                &memory,
-                ctx,
-                &mut first,
-                Some(&mut second),
+                &memory, ctx, &mut first,
             );
-            captured.apply_construction_rest_report(ctx.needed, &report);
             assert!(report.raw_ok);
             captured.rest_raw_mode = true;
-            let _ = captured.capture(&memory, 0, kit::BASE, &[true; N], 0, true);
+            let mut buildings = captured.take_buildings();
+            let ticks = buildings.capture(&memory, 0, kit::BASE, 0, true);
+            captured.restore_buildings(buildings, Ok(ticks));
+            let _ = captured.capture(&memory, 0, kit::BASE, 0, true);
+            captured.finish_buildings(0, true);
             let mut ticks = [0u64; 10];
             captured.decode_construction_rest_payload(0, kit::BASE, &first, &mut ticks);
             (captured, report, first)
         };
-        assert_eq!(report.matched, [true; 10]);
         kit::assert_matches_direct(&split, &direct);
     }
 
     #[test]
-    fn construction_rest_double_copy_compare_blocks_checks_on_tearing() {
+    fn construction_rest_first_decode_grows_settings_and_shared_law_bytes() {
+        use super::construction_rest_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        });
+        let native = read_accounting::Capture::new();
+        let (roomy, roomy_report, _) = kit::split(&memory, &kit::capacities());
+        let roomy_counts = native.finish();
+        for law_bytes in [0, 8] {
+            let mut capacity = kit::capacities();
+            capacity.rows[5] = 0;
+            capacity.law_bytes = law_bytes;
+            let native = read_accounting::Capture::new();
+            let (mut captured, report, mut job) = kit::split(&memory, &capacity);
+            assert_eq!(native.finish(), roomy_counts);
+            assert_eq!(report.raw_bytes, roomy_report.raw_bytes);
+            kit::assert_matches_direct(&captured, &roomy);
+            assert_eq!(captured.settings.outcome, Outcome::Rows { len: 1 });
+            assert_eq!(captured.laws.outcome, Outcome::Rows { len: 1 });
+            assert_eq!(
+                &captured.law_bytes.first[..captured.law_bytes.len],
+                b"civiliancivilian"
+            );
+            // The existing raw census includes the country's alias. Both
+            // default and override occurrences contribute for each entry.
+            assert_eq!(job.settings_required, 2);
+            assert_eq!(job.law_bytes_required, 32);
+            assert!(!job.law_demand_overflowed);
+            assert_eq!(captured.settings.rows.len(), job.settings_required);
+            assert_eq!(captured.law_bytes.first.len(), job.law_bytes_required);
+            let allocated = captured.allocated_bytes();
+            captured.reset();
+            captured.grow(&mut capacity);
+            assert_eq!(captured.allocated_bytes(), allocated);
+            assert_eq!(capacity.rows[5], job.settings_required);
+            assert_eq!(capacity.law_bytes, job.law_bytes_required);
+            job.clear();
+            assert_eq!((job.settings_required, job.law_bytes_required), (0, 0));
+            assert!(!job.law_demand_overflowed);
+        }
+    }
+
+    #[test]
+    fn construction_rest_law_growth_preserves_original_faults_and_failed_payload_demand() {
+        use super::construction_rest_test_kit as kit;
+        struct Fault<'a> {
+            memory: engine::memory::SliceMemory<'a>,
+            address: usize,
+            len: usize,
+            occurrence: usize,
+            seen: std::cell::Cell<usize>,
+        }
+        impl Memory for Fault<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                if address == self.address && destination.len() == self.len {
+                    self.seen.set(self.seen.get() + 1);
+                    if self.seen.get() == self.occurrence {
+                        return false;
+                    }
+                }
+                self.memory.copy(address, destination)
+            }
+        }
+        let mut bytes = kit::fixture();
+        let name = kit::LAW_OBJ + coccupation_law::NAME;
+        // A seven-byte payload is distinct from the producer's existing
+        // eight-byte pointer read, so faults target the payload occurrence.
+        bytes[name - kit::BASE + 7] = 0;
+        let length = name - kit::BASE + msvc_string::LENGTH;
+        bytes[length..length + 8].copy_from_slice(&7_u64.to_le_bytes());
+        for (address, len, occurrence, required) in [
+            (name, 32, 1, 21),
+            (name, 7, 1, 28),
+            (name, 7, 2, 28),
+            (name + 7, 1, 1, 28),
+        ] {
+            let memory = || Fault {
+                memory: engine::memory::SliceMemory {
+                    base: kit::BASE,
+                    bytes: &bytes,
+                },
+                address,
+                len,
+                occurrence,
+                seen: std::cell::Cell::new(0),
+            };
+            let direct = kit::direct(&memory(), &kit::capacities());
+            let mut capacity = kit::capacities();
+            capacity.rows[5] = 0;
+            capacity.law_bytes = 7;
+            let (mut captured, _, mut job) = kit::split(&memory(), &capacity);
+            kit::assert_matches_direct(&captured, &direct);
+            assert_eq!(job.law_bytes_required, required);
+            assert_eq!(captured.law_bytes.first.len(), required);
+            assert_eq!(captured.law_bytes.required, required);
+            // The grant remains adopted even when a genuine source failure
+            // makes one of the affected tables unavailable.
+            captured.grow(&mut capacity);
+            assert!(capacity.rows[5] >= job.settings_required);
+            assert!(capacity.law_bytes >= required);
+            job.law_demand_overflowed = true;
+            captured.decode_construction_rest_payload(0, kit::BASE, &job, &mut [0; 10]);
+            for (actual, expected) in captured.outcomes()[5..7]
+                .iter()
+                .zip(&direct.outcomes()[5..7])
+            {
+                if matches!(expected, Outcome::Unavailable { .. }) {
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn construction_rest_demand_failures_are_explicit_and_keep_successful_allocations() {
         use super::construction_rest_test_kit as kit;
         let bytes = kit::fixture();
         let memory = engine::memory::SliceMemory {
             base: kit::BASE,
             bytes: &bytes,
         };
-        let capacities = kit::capacities();
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = ConstructionRestCopyContext {
-            base: 0,
-            game_state: kit::BASE,
-            needed: [true; 10],
-        };
-        let mut first = ConstructionRestJob::new();
-        let mut second = ConstructionRestJob::new();
-        let report = crate::extended::construction::copy_construction_rest_refresh(
+        let (reference, _, mut job) = kit::split(&memory, &kit::capacities());
+        job.law_bytes_required = usize::MAX - 4;
+        copy_construction_string(
+            &mut job.log,
             &memory,
-            ctx,
-            &mut first,
-            Some(&mut second),
+            kit::LAW_OBJ + coccupation_law::NAME,
+            M_C_OCC,
+            &mut job.law_bytes_required,
+            &mut job.law_demand_overflowed,
         );
-        captured.apply_construction_rest_report(ctx.needed, &report);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 10]);
-        // A torn resource amount between the passes changes the log.
-        let mut torn = bytes.clone();
-        torn[0x5100 - kit::BASE] ^= 0xff;
-        let torn_memory = engine::memory::SliceMemory {
-            base: kit::BASE,
-            bytes: &torn,
-        };
-        let ctx_none = ConstructionRestCopyContext {
-            base: 0,
-            game_state: kit::BASE,
-            needed: [false; 10],
-        };
-        let mut c2 = Captured::with_capacities(&capacities, &[0; N]);
-        let mut after = ConstructionRestJob::new();
-        let mut after_torn = ConstructionRestJob::new();
-        let r1 = crate::extended::construction::copy_construction_rest_refresh(
-            &memory, ctx_none, &mut after, None,
-        );
-        c2.apply_construction_rest_report(ctx_none.needed, &r1);
-        assert!(r1.raw_ok);
-        let r2 = crate::extended::construction::copy_construction_rest_refresh(
-            &torn_memory,
-            ctx_none,
-            &mut after_torn,
-            None,
-        );
-        c2.apply_construction_rest_report(ctx_none.needed, &r2);
-        assert!(r2.raw_ok);
-        assert!(!after.log.logs_equal(&after_torn.log));
+        assert!(job.law_demand_overflowed);
+        for (settings, names, overflow, reason) in [
+            (2, 0, true, "occupation law byte demand overflow"),
+            (
+                2,
+                usize::MAX,
+                false,
+                "occupation law byte allocation failed",
+            ),
+            (
+                usize::MAX,
+                32,
+                false,
+                "occupation settings allocation failed",
+            ),
+        ] {
+            job.settings_required = settings;
+            job.law_bytes_required = names;
+            job.law_demand_overflowed = overflow;
+            let mut capacity = kit::capacities();
+            capacity.rows[5] = 0;
+            capacity.law_bytes = 0;
+            let mut captured = Captured::with_capacities(&capacity);
+            let before = captured.allocated_bytes();
+            captured.decode_construction_rest_payload(0, kit::BASE, &job, &mut [0; 10]);
+            assert_eq!(captured.settings.outcome, Outcome::Unavailable { reason });
+            if settings == usize::MAX {
+                assert_eq!(captured.laws.outcome, reference.laws.outcome);
+            } else {
+                assert_eq!(captured.laws.outcome, Outcome::Unavailable { reason });
+                assert_eq!(captured.settings.rows.len(), 2);
+                assert!(captured.allocated_bytes() > before);
+                assert_eq!(captured.law_bytes.first.len(), 0);
+            }
+            assert_eq!(&captured.outcomes()[7..], &reference.outcomes()[7..]);
+        }
     }
 
     #[test]
@@ -3467,23 +3320,16 @@ mod tests {
             base: kit::BASE,
             bytes: &bytes,
         };
-        let capacities = kit::capacities();
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
         let ctx = ConstructionRestCopyContext {
             base: 0,
             game_state: kit::BASE,
-            needed: [true; 10],
         };
         let mut tiny = ConstructionRestJob {
             log: crate::raw::RawLog::new(8, 8),
-            game_state: 0,
-            census: Vec::new(),
-            capacity_charge: crate::raw_memory::Charge::default(),
+            ..ConstructionRestJob::default()
         };
-        let report = crate::extended::construction::copy_construction_rest_refresh(
-            &memory, ctx, &mut tiny, None,
-        );
-        captured.apply_construction_rest_report(ctx.needed, &report);
+        let report =
+            crate::extended::construction::copy_construction_rest_refresh(&memory, ctx, &mut tiny);
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());

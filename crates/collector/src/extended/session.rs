@@ -10,6 +10,7 @@
 
 use crate::{
     raw::RawLog,
+    read_accounting,
     sampling::qpc,
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
@@ -74,22 +75,23 @@ pub struct Captured {
     sources: CaptureRows<cthreat_source::Row>,
     aggregates: CaptureRows<cworld_threat::AggregateRow>,
     reason_bytes: Arena<u8>,
-    /// Raw-copy split gate for the hourly session family (copy/decode split).
-    /// Set by the game thread every hour with a valid raw payload; `capture`
+    active: bool,
+    /// Raw-copy split gate for the scheduled session family (copy/decode split).
+    /// Set when an acquisition worker supplies a valid raw payload; `capture`
     /// then skips the typed walks and the decode worker fills these rows
-    /// before the ready handoff. Preserved across `reset` (set per hour,
+    /// before the ready handoff. Preserved across `reset` (set per capture,
     /// cleared by the worker after decode).
     pub(crate) raw_mode: bool,
 }
 
 impl Captured {
-    pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
-        assert_eq!(successful.len(), N);
+    pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            manager: CaptureRows::new(capacity.rows[0], successful[0]),
-            sources: CaptureRows::new(capacity.rows[1], successful[1]),
-            aggregates: CaptureRows::new(capacity.rows[2], successful[2]),
-            reason_bytes: Arena::new(capacity.reason_bytes, successful[1]),
+            manager: CaptureRows::new(capacity.rows[0]),
+            sources: CaptureRows::new(capacity.rows[1]),
+            aggregates: CaptureRows::new(capacity.rows[2]),
+            reason_bytes: Arena::new(capacity.reason_bytes),
+            active: true,
             raw_mode: false,
         }
     }
@@ -108,100 +110,68 @@ impl Captured {
             + self.reason_bytes.allocated_bytes()
     }
 
-    pub fn grow(&mut self, capacity: &mut Capacities, successful: &[u16]) {
-        assert_eq!(successful.len(), N);
-        self.manager.grow(&mut capacity.rows[0], successful[0]);
-        self.sources.grow(&mut capacity.rows[1], successful[1]);
-        self.aggregates.grow(&mut capacity.rows[2], successful[2]);
-        self.reason_bytes
-            .grow(&mut capacity.reason_bytes, successful[1]);
+    pub fn grow(&mut self, capacity: &mut Capacities) {
+        self.manager.grow(&mut capacity.rows[0]);
+        self.sources.grow(&mut capacity.rows[1]);
+        self.aggregates.grow(&mut capacity.rows[2]);
+        self.reason_bytes.grow(&mut capacity.reason_bytes);
     }
 
-    /// The manager is resolved afresh for each pass, and its header is rechecked
-    /// after the walk: a total or array header that moved mid-walk makes every
-    /// row of this pass unavailable rather than publishing a mixed census.
+    pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
+        self.active = replay::cadence::should_walk(TableId::WorldTension, hour, force_full);
+    }
+
+    /// Acquire the manager and both vectors from one authenticated snapshot.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        needed: &[bool],
-    ) -> ([bool; N], [u64; N]) {
-        assert_eq!(needed.len(), N);
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
+        self.prepare_hour(hour, force_full);
         self.reset();
-        // Raw-copy split (hourly session family): every hour the game thread
-        // stages raw bytes via `copy_session_refresh` and the decode worker
-        // fills the typed rows before the ready handoff, so both typed passes
-        // skip here. Matched flags and costs come from the raw compare,
-        // applied by the caller after this returns.
+        if !self.active {
+            self.fail_session_capture(replay::cadence::SKIPPED_REASON);
+            return [0; N];
+        }
+        // On a scheduled refresh, the acquisition worker stages raw bytes via
+        // `copy_session_refresh`; the decode worker fills the typed rows before
+        // the ready handoff.
         if self.raw_mode {
             // Refresh payload staged: leave the reset outcomes for the decode
             // worker, which installs identical rows, outcomes and arenas.
-            return ([false; N], [0; N]);
+            return [0; N];
         }
-        let mut matched = [false; N];
-        let mut ticks = [0; N];
 
+        let _reads = read_accounting::table(TableId::WorldTension);
         let begin = qpc();
-        let first = self.pass(memory, base, game_state, false);
+        let first = self.pass(memory, base, game_state);
         self.manager.outcome = first.tables[0];
         self.sources.outcome = first.tables[1];
         self.aggregates.outcome = first.tables[2];
         self.reason_bytes.len = first.bytes_len;
         self.reason_bytes.required = first.required_bytes;
-        ticks[0] = elapsed(begin);
-
-        if needed.iter().any(|needed| *needed) {
-            let begin = qpc();
-            let second = self.pass(memory, base, game_state, true);
-            // A changed reason arena is a source mismatch even when the fixed
-            // fields of every row happen to be equal.
-            let reasons_matched = self
-                .reason_bytes
-                .compare(second.bytes_len, second.required_bytes);
-            self.manager.checked = needed[0];
-            self.sources.checked = needed[1];
-            self.aggregates.checked = needed[2];
-            matched[0] = needed[0] && self.manager.compare(second.tables[0]);
-            let sources_matched = self.sources.compare(second.tables[1]);
-            if !reasons_matched {
-                self.sources.mismatches += 1;
-            }
-            matched[1] = needed[1] && sources_matched && reasons_matched;
-            matched[2] = needed[2] && self.aggregates.compare(second.tables[2]);
-            ticks[0] = ticks[0].saturating_add(elapsed(begin));
-        }
-        (matched, ticks)
+        [elapsed(begin), 0, 0]
     }
 
-    /// One authenticated pass over all three tables into the chosen buffers.
-    fn pass(&mut self, memory: &impl Memory, base: usize, game_state: usize, second: bool) -> Pass {
+    /// One authenticated pass over all three tables into the primary buffers.
+    fn pass(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> Pass {
         let reader = match cworld_threat::Reader::new(memory, base, game_state) {
             Ok(reader) => reader,
             Err(reason) => return Pass::unavailable(reason),
         };
-        let (manager, sources, aggregates, reasons) = if second {
-            (
-                &mut self.manager.second,
-                &mut self.sources.second,
-                &mut self.aggregates.second,
-                &mut self.reason_bytes.second,
-            )
-        } else {
-            (
-                &mut self.manager.rows,
-                &mut self.sources.rows,
-                &mut self.aggregates.rows,
-                &mut self.reason_bytes.first,
-            )
-        };
+        let (manager, sources, aggregates, reasons) = (
+            &mut self.manager.rows,
+            &mut self.sources.rows,
+            &mut self.aggregates.rows,
+            &mut self.reason_bytes.first,
+        );
         let manager = bounded(reader.manager(manager), manager.len());
         let result = reader.sources(memory, base, sources, reasons);
         let sources = bounded(result.outcome, sources.len());
         let aggregates = bounded(reader.aggregates(memory, aggregates), aggregates.len());
-        if !reader.unchanged(memory) {
-            return Pass::unavailable("world threat header changed during the walk");
-        }
         Pass {
             tables: [manager, sources, aggregates],
             bytes_len: result.bytes_len,
@@ -211,17 +181,9 @@ impl Captured {
 
     pub fn outcomes(&self) -> [Outcome; N] {
         [
-            effective(&self.manager),
-            effective(&self.sources),
-            effective(&self.aggregates),
-        ]
-    }
-
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [
-            checked(&self.manager),
-            checked(&self.sources),
-            checked(&self.aggregates),
+            self.manager.outcome,
+            self.sources.outcome,
+            self.aggregates.outcome,
         ]
     }
 
@@ -301,33 +263,14 @@ fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
     }
 }
 
-fn effective<R>(captured: &CaptureRows<R>) -> Outcome {
-    if captured.checked && captured.mismatches != 0 {
-        Outcome::Unavailable {
-            reason: "world threat table changed during double read",
-        }
-    } else {
-        captured.outcome
-    }
-}
-
-fn checked<R>(captured: &CaptureRows<R>) -> usize {
-    if captured.checked {
-        captured.mismatches
-    } else {
-        0
-    }
-}
-
 // ===========================================================================
-// Hourly session raw-copy split (WorldTension, ThreatSources,
+// Scheduled session raw-copy split (WorldTension, ThreatSources,
 // ThreatCountryAggregates).
 //
-// The game thread copies raw bytes only: manager pointer, manager header
+// The acquisition worker copies raw bytes only: manager pointer, manager header
 // (vtable, total, both array headers), per-source pointers with head and
-// reason strings, per-aggregate words, plus the manager header again for the
-// unchanged witness. No row is decoded on the game thread. The single FIFO
-// decode worker replays the existing `cworld_threat::Reader` walk against the
+// reason strings and per-aggregate words. No row is decoded during acquisition.
+// The single FIFO decode worker replays the `cworld_threat::Reader` walk against the
 // recorded spans (`crate::raw::Recorded`), so rows, ordinals, arenas,
 // truncation and failure reasons are identical by construction (see
 // `crate::raw` for the mirror rules).
@@ -343,13 +286,14 @@ const M_SOURCES: u32 = 0x02;
 const M_AGGREGATES: u32 = 0x04;
 const M_ALL: u32 = 0x07;
 
-/// One hour of raw session payload. Flat pools recycle capacities and the
+/// One refresh of raw session payload. Flat pools recycle capacities and the
 /// steady state allocates on neither thread; growth happens on the decode
 /// side only (see `crate::decode::recycle_session_job`).
 #[derive(Debug, Default)]
 pub(crate) struct SessionJob {
     pub log: RawLog<3>,
     pub game_state: usize,
+    active: bool,
 }
 
 impl SessionJob {
@@ -360,6 +304,7 @@ impl SessionJob {
             // state never overflows.
             log: RawLog::new(1 << 14, 4 << 20),
             game_state: 0,
+            active: false,
         }
     }
 
@@ -367,6 +312,7 @@ impl SessionJob {
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
+        self.active = false;
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -386,19 +332,17 @@ pub(crate) struct SessionCopyReport {
     /// False when staging overflowed: the caller falls back to the typed walk
     /// (identical rows through the existing path) and enqueues no payload.
     pub raw_ok: bool,
-    /// Whole-log raw equality gated by live-fault conservatism, in
-    /// [world, sources, aggregates] order.
-    pub matched: [bool; 3],
     pub copy_ticks: [u64; 3],
     pub raw_bytes: [u64; 3],
 }
 
-/// Game-thread copy parameters, bundled to keep the tick entry small.
+/// Acquisition-worker copy parameters, bundled to keep dispatch small.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SessionCopyContext {
     pub base: usize,
     pub game_state: usize,
-    pub needed: [bool; 3],
+    pub hour: i32,
+    pub force_full: bool,
 }
 
 fn pool_u64(log: &RawLog<3>, start: usize) -> u64 {
@@ -486,10 +430,11 @@ fn copy_source(log: &mut RawLog<3>, memory: &impl engine::Memory, pointer: usize
 }
 
 /// One structural pass: manager pointer, manager header, sources with
-/// reasons, aggregates, manager header again for the unchanged witness.
+/// reasons and aggregates.
 /// Stops at the first typed abort point; later extras are harmless.
 fn copy_pass(memory: &impl engine::Memory, base: usize, game_state: usize, log: &mut RawLog<3>) {
     use engine::{cgame_state, cpdx_array::Array, cworld_threat};
+    let _reads = read_accounting::table(TableId::WorldTension);
     let _ = base;
     log.has_bulk = true;
     let ptr_start = match sspan(
@@ -548,81 +493,50 @@ fn copy_pass(memory: &impl engine::Memory, base: usize, game_state: usize, log: 
             return;
         }
     }
-    // Unchanged witness: manager header again, served in record order.
-    let _ = sspan(log, memory, Some(pointer), 0x40, M_ALL);
 }
 
-/// Acquire a refresh into owned jobs and compare independent raw passes.
-/// The caller applies the report after acquisition has completed.
+/// Acquire one refresh into its owned payload.
 pub(crate) fn copy_session_refresh(
     memory: &impl engine::Memory,
     ctx: SessionCopyContext,
     first: &mut SessionJob,
-    mut second: Option<&mut SessionJob>,
 ) -> SessionCopyReport {
-    let started = qpc();
     first.clear();
+    first.active = replay::cadence::should_walk(TableId::WorldTension, ctx.hour, ctx.force_full);
+    if !first.active {
+        return SessionCopyReport::default();
+    }
+    let started = qpc();
     first.game_state = ctx.game_state;
     copy_pass(memory, ctx.base, ctx.game_state, &mut first.log);
     let mut ticks = [0u64; 3];
     ticks[0] = elapsed(started);
-    let mut matched = [true; 3];
-    if let Some(second_job) = second.as_deref_mut() {
-        let second_started = qpc();
-        second_job.clear();
-        second_job.game_state = ctx.game_state;
-        copy_pass(memory, ctx.base, ctx.game_state, &mut second_job.log);
-        ticks[0] += elapsed(second_started);
-        // Three-way partition equality: manager spans (M_ALL) gate all
-        // three slots, sources/aggregates private spans only their own.
-        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-        for (slot, matched) in matched.iter_mut().enumerate() {
-            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-        }
-    }
-    let raw_ok = !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    let raw_ok = !first.log.overflowed;
     SessionCopyReport {
         raw_ok,
-        matched,
         copy_ticks: ticks,
         raw_bytes: first.log.raw_bytes,
     }
 }
 
 impl Captured {
-    /// Apply completed acquisition checks without changing rows or outcomes.
-    pub(crate) fn apply_session_report(
-        &mut self,
-        ctx: SessionCopyContext,
-        report: &SessionCopyReport,
-    ) {
-        self.manager.checked = ctx.needed[0];
-        self.manager.mismatches = usize::from(ctx.needed[0] && !report.matched[0]);
-        self.sources.checked = ctx.needed[1];
-        self.sources.mismatches = usize::from(ctx.needed[1] && !report.matched[1]);
-        self.aggregates.checked = ctx.needed[2];
-        self.aggregates.mismatches = usize::from(ctx.needed[2] && !report.matched[2]);
-    }
-
     /// Mark an accepted acquisition failure without retrying live memory.
-    pub(crate) fn fail_session_capture(&mut self, ctx: SessionCopyContext, reason: &'static str) {
+    pub(crate) fn fail_session_capture(&mut self, reason: &'static str) {
+        let reason = if self.active {
+            reason
+        } else {
+            replay::cadence::SKIPPED_REASON
+        };
         self.manager.outcome = Outcome::Unavailable { reason };
-        self.manager.checked = ctx.needed[0];
-        self.manager.mismatches = usize::from(ctx.needed[0]);
         self.sources.outcome = Outcome::Unavailable { reason };
-        self.sources.checked = ctx.needed[1];
-        self.sources.mismatches = usize::from(ctx.needed[1]);
         self.aggregates.outcome = Outcome::Unavailable { reason };
-        self.aggregates.checked = ctx.needed[2];
-        self.aggregates.mismatches = usize::from(ctx.needed[2]);
+        self.reason_bytes.reset();
         self.raw_mode = false;
     }
 
-    /// Decode-worker interpretation of a raw hourly payload into the pooled
+    /// Decode-worker interpretation of a scheduled raw payload into the pooled
     /// typed rows. Outcomes and arena bytes match the typed walk exactly
-    /// because the identical walk runs against the recorded spans;
-    /// checked/mismatches set by the raw compare survive. Clears `raw_mode`
+    /// because the identical walk runs against the recorded spans. Clears `raw_mode`
     /// so the next capture starts clean.
     pub(crate) fn decode_session_payload(
         &mut self,
@@ -630,9 +544,14 @@ impl Captured {
         job: &SessionJob,
         decode_ticks: &mut [u64; 3],
     ) {
+        self.active = job.active;
+        if !job.active {
+            self.fail_session_capture(replay::cadence::SKIPPED_REASON);
+            return;
+        }
         let started = qpc();
         let recorded = crate::raw::Recorded::build(&job.log);
-        let walked = self.pass(&recorded, base, job.game_state, false);
+        let walked = self.pass(&recorded, base, job.game_state);
         self.manager.outcome = walked.tables[0];
         self.sources.outcome = walked.tables[1];
         self.aggregates.outcome = walked.tables[2];
@@ -646,10 +565,8 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sampling::CONSISTENCY_TARGET;
     use engine::{cgame_state, memory::SliceMemory, msvc_string};
     use replay::rows::TableSchema;
-    use std::cell::Cell;
 
     const BASE: usize = 0x1000;
     const MANAGER: usize = 0x2000;
@@ -740,7 +657,7 @@ mod tests {
             rows: [1, 2, 2],
             reason_bytes: 8,
         };
-        let captured = Captured::with_capacities(&capacities, &[0; N]);
+        let captured = Captured::with_capacities(&capacities);
         (capacities, captured)
     }
 
@@ -752,6 +669,60 @@ mod tests {
     }
 
     #[test]
+    fn daily_session_skips_native_reads_and_failures_outside_slot_18() {
+        struct NoReads;
+        impl Memory for NoReads {
+            fn copy(&self, address: usize, _: &mut [u8]) -> bool {
+                panic!("inactive session read at {address:#x}");
+            }
+        }
+        let bytes = fixture();
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let (capacities, mut captured) = small();
+        let mut job = SessionJob::new();
+        for force_full in [false, true] {
+            for hour in 0..24 {
+                let ctx = SessionCopyContext {
+                    base: 0,
+                    game_state: BASE,
+                    hour,
+                    force_full,
+                };
+                captured.prepare_hour(hour, force_full);
+                if force_full || hour == 18 {
+                    let report = copy_session_refresh(&memory, ctx, &mut job);
+                    assert!(report.raw_ok);
+                    captured.decode_session_payload(0, &job, &mut [0; N]);
+                    assert_matches_direct(&captured, &direct(&memory, &capacities));
+                } else {
+                    let report = copy_session_refresh(&NoReads, ctx, &mut job);
+                    assert!(!report.raw_ok && job.log.spans.is_empty());
+                    assert_eq!((report.copy_ticks, report.raw_bytes), ([0; N], [0; N]));
+                    assert!(!job.grow_for_next());
+                    assert_eq!(captured.capture(&NoReads, 0, BASE, hour, false), [0; N]);
+                    captured.fail_session_capture("worker failed");
+                    let mut ticks = [0; N];
+                    captured.decode_session_payload(0, &job, &mut ticks);
+                    assert_eq!(ticks, [0; N]);
+                    assert_eq!(
+                        captured.outcomes(),
+                        [Outcome::Unavailable {
+                            reason: replay::cadence::SKIPPED_REASON
+                        }; N]
+                    );
+                    assert_eq!(
+                        (captured.reason_bytes.len, captured.reason_bytes.required),
+                        (0, 0)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn manager_sources_and_aggregates_keep_raw_operands_and_literal_reasons() {
         let (_, mut captured) = small();
         let bytes = fixture();
@@ -759,9 +730,7 @@ mod tests {
             base: BASE,
             bytes: &bytes,
         };
-        let (matched, _) = captured.capture(&memory, 0, BASE, &[true; N]);
-        assert_eq!(matched, [true; N]);
-        assert_eq!(captured.checked_mismatches(), [0; N]);
+        let _ticks = captured.capture(&memory, 0, BASE, 0, true);
         let tables = captured.tables();
         assert_eq!(
             complete::<tables::WorldTension>(&tables[0]),
@@ -806,16 +775,13 @@ mod tests {
     fn capacity_truncation_and_a_broken_root_stay_distinct_and_grow_off_thread() {
         let (mut capacities, mut captured) = small();
         capacities.reason_bytes = 2;
-        let mut captured_small = Captured::with_capacities(&capacities, &[0; N]);
+        let mut captured_small = Captured::with_capacities(&capacities);
         let bytes = fixture();
         let memory = SliceMemory {
             base: BASE,
             bytes: &bytes,
         };
-        let (matched, _) = captured_small.capture(&memory, 0, BASE, &[true; N]);
-        // A truncated table never earns a consistency check, even when both
-        // passes truncate identically.
-        assert_eq!(matched, [true, false, true]);
+        let _ticks = captured_small.capture(&memory, 0, BASE, 0, true);
         // The five-byte reason does not fit; its row is omitted and counted.
         assert_eq!(
             captured_small.outcomes()[1],
@@ -828,21 +794,21 @@ mod tests {
             captured_small.tables()[1],
             TableView::Truncated { missing: 1, .. }
         ));
-        captured_small.grow(&mut capacities, &[0; N]);
+        captured_small.grow(&mut capacities);
         assert!(capacities.reason_bytes >= 5);
 
         let mut broken = fixture();
         put(&mut broken, MANAGER, &0_u64.to_le_bytes());
-        let (matched, _) = captured.capture(
+        let _ticks = captured.capture(
             &SliceMemory {
                 base: BASE,
                 bytes: &broken,
             },
             0,
             BASE,
-            &[true; N],
+            0,
+            true,
         );
-        assert_eq!(matched, [false; N]);
         for outcome in captured.outcomes() {
             assert_eq!(
                 outcome,
@@ -853,56 +819,6 @@ mod tests {
         }
     }
 
-    struct ChangingReason<'a> {
-        bytes: &'a [u8],
-        copies: Cell<usize>,
-    }
-    impl Memory for ChangingReason<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if !(SliceMemory {
-                base: BASE,
-                bytes: self.bytes,
-            })
-            .copy(address, output)
-            {
-                return false;
-            }
-            if address == FIRST + cthreat_source::REASON && output.len() == 5 {
-                let copies = self.copies.get();
-                self.copies.set(copies + 1);
-                if copies != 0 {
-                    output[0] ^= 1;
-                }
-            }
-            true
-        }
-    }
-
-    #[test]
-    fn a_changed_reason_arena_fails_the_source_window_and_finished_windows_release() {
-        let (mut capacities, mut captured) = small();
-        let bytes = fixture();
-        let memory = ChangingReason {
-            bytes: &bytes,
-            copies: Cell::new(0),
-        };
-        let (matched, _) = captured.capture(&memory, 0, BASE, &[true; N]);
-        assert_eq!(matched, [true, false, true]);
-        assert_eq!(captured.checked_mismatches(), [0, 1, 0]);
-        assert!(matches!(
-            captured.tables()[1],
-            TableView::Unavailable { .. }
-        ));
-        assert!(!captured.sources.second.is_empty());
-        captured.grow(&mut capacities, &[CONSISTENCY_TARGET; N]);
-        // A finished window releases every comparison buffer off the game
-        // thread; the first buffers keep their own growth headroom.
-        assert!(captured.manager.second.is_empty());
-        assert!(captured.sources.second.is_empty());
-        assert!(captured.aggregates.second.is_empty());
-        assert!(captured.reason_bytes.second.is_empty());
-    }
-
     fn split_capacities() -> Capacities {
         Capacities {
             rows: [2, 8, 8],
@@ -911,23 +827,21 @@ mod tests {
     }
 
     fn direct(memory: &SliceMemory<'_>, capacities: &Capacities) -> Captured {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
-        let (matched, _) = captured.capture(memory, 0, BASE, &[true; N]);
-        assert_eq!(matched, [true; N]);
+        let mut captured = Captured::with_capacities(capacities);
+        let _ticks = captured.capture(memory, 0, BASE, 0, true);
         captured
     }
 
-    fn split(memory: &SliceMemory<'_>, capacities: &Capacities) -> (Captured, SessionCopyReport) {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+    fn split(memory: &impl Memory, capacities: &Capacities) -> (Captured, SessionCopyReport) {
+        let mut captured = Captured::with_capacities(capacities);
         let ctx = SessionCopyContext {
+            hour: 0,
+            force_full: true,
             base: 0,
             game_state: BASE,
-            needed: [true; N],
         };
         let mut first = SessionJob::new();
-        let mut second = SessionJob::new();
-        let report = copy_session_refresh(memory, ctx, &mut first, Some(&mut second));
-        captured.apply_session_report(ctx, &report);
+        let report = copy_session_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
         captured.raw_mode = report.raw_ok;
         let mut ticks = [0u64; 3];
@@ -979,6 +893,7 @@ mod tests {
 
     #[test]
     fn session_split_copy_matches_direct_walk() {
+        use engine::memory::{CountedMemory, ReadCounts};
         let capacities = split_capacities();
         let bytes = fixture();
         let memory = SliceMemory {
@@ -986,11 +901,61 @@ mod tests {
             bytes: &bytes,
         };
         let direct = direct(&memory, &capacities);
-        let (split, report) = split(&memory, &capacities);
-        assert_eq!(report.matched, [true; 3]);
+        let memory = CountedMemory::new(memory);
+        let capture = read_accounting::Capture::new();
+        let (split, _report) = split(&memory, &capacities);
+        let counts = capture.finish();
         assert_matches_direct(&split, &direct);
         assert_eq!(split.manager.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.sources.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(split.aggregates.outcome, Outcome::Rows { len: 2 });
+        let anchor = TableId::WorldTension;
+        let mut expected = read_accounting::ZERO;
+        // Manager word/header, two source pointers/52-byte heads/32-byte
+        // inline reasons, two aggregates: ten requests, 272 bytes at one anchor.
+        expected[anchor.index()] = ReadCounts {
+            copy_calls: 10,
+            spans: 10,
+            bytes: 272,
+            ..ReadCounts::ZERO
+        };
+        assert_eq!(counts, expected);
+        let mut job = SessionJob::default();
+        let mut refreshes = 0;
+        for hour in 0..24 {
+            if replay::cadence::is_refresh(anchor, hour) {
+                refreshes += 1;
+                continue;
+            }
+            let capture = read_accounting::Capture::new();
+            let skipped = copy_session_refresh(
+                &memory,
+                SessionCopyContext {
+                    base: 0,
+                    game_state: BASE,
+                    hour,
+                    force_full: false,
+                },
+                &mut job,
+            );
+            assert_eq!(capture.finish(), read_accounting::ZERO);
+            assert!(!skipped.raw_ok && !job.grow_for_next());
+            assert_eq!((skipped.copy_ticks, skipped.raw_bytes), ([0; N], [0; N]));
+        }
+        assert_eq!(refreshes, 1);
+        let measured = counts[anchor.index()];
+        let per_refresh = [
+            measured.copy_calls,
+            measured.scattered_calls,
+            measured.record_calls,
+            measured.plan_calls,
+            measured.spans,
+            measured.bytes,
+        ];
+        println!(
+            "daily_fixture cohort=session_split_copy_matches_direct_walk anchor={anchor:?} counters=[copy,scattered,records,plans,spans,bytes] per_refresh={per_refresh:?} before_24h={:?} after_24h={per_refresh:?} basis=unchanged_refresh_x_24_legacy_hourly_vs_1_daily",
+            per_refresh.map(|value| value * 24)
+        );
     }
 
     #[test]
@@ -1004,126 +969,47 @@ mod tests {
             base: BASE,
             bytes: &bytes,
         };
-        let mut direct = Captured::with_capacities(&capacities, &[0; N]);
-        let (matched, _) = direct.capture(&memory, 0, BASE, &[true; N]);
-        assert_eq!(matched, [true, false, false]);
-        let (split, report) = {
-            let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let mut direct = Captured::with_capacities(&capacities);
+        let _ticks = direct.capture(&memory, 0, BASE, 0, true);
+        let (split, _report) = {
+            let mut captured = Captured::with_capacities(&capacities);
             let ctx = SessionCopyContext {
+                hour: 0,
+                force_full: true,
                 base: 0,
                 game_state: BASE,
-                needed: [true; N],
             };
             let mut first = SessionJob::new();
-            let mut second = SessionJob::new();
-            let report = copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
-            captured.apply_session_report(ctx, &report);
+            let report = copy_session_refresh(&memory, ctx, &mut first);
             assert!(report.raw_ok);
             captured.raw_mode = true;
             let mut ticks = [0u64; 3];
             captured.decode_session_payload(0, &first, &mut ticks);
             (captured, report)
         };
-        assert_eq!(report.matched, [true; 3]);
         assert_matches_direct(&split, &direct);
         assert!(matches!(split.sources.outcome, Outcome::Truncated { .. }));
     }
 
     #[test]
-    fn session_double_copy_compare_blocks_checks_on_tearing() {
-        let capacities = split_capacities();
-        let bytes = fixture();
-        let memory = SliceMemory {
-            base: BASE,
-            bytes: &bytes,
-        };
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = SessionCopyContext {
-            base: 0,
-            game_state: BASE,
-            needed: [true; N],
-        };
-        let mut first = SessionJob::new();
-        let mut second = SessionJob::new();
-        let report = copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
-        captured.apply_session_report(ctx, &report);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 3]);
-        // A torn source pointer between the passes changes the log.
-        let mut torn = fixture();
-        put(&mut torn, SOURCE_ARRAY, &0_u64.to_le_bytes());
-        let mut after = SessionJob::new();
-        copy_pass(&memory, 0, BASE, &mut after.log);
-        let mut after_torn = SessionJob::new();
-        copy_pass(
-            &SliceMemory {
-                base: BASE,
-                bytes: &torn,
-            },
-            0,
-            BASE,
-            &mut after_torn.log,
-        );
-        assert!(!after.log.logs_equal(&after_torn.log));
-    }
-
-    #[test]
-    fn session_partition_equal_isolates_sources_private_bytes() {
-        // Tear exactly the sources table's private bytes (M_SOURCES 0x02):
-        // only slot 1 flips; manager (M_ALL) and aggregates (0x04) stay
-        // true. The manager header gates all three, but sources-private
-        // payloads gate only sources.
-        let capacities = split_capacities();
-        let bytes = fixture();
-        let memory = SliceMemory {
-            base: BASE,
-            bytes: &bytes,
-        };
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = SessionCopyContext {
-            base: 0,
-            game_state: BASE,
-            needed: [true; N],
-        };
-        let mut first = SessionJob::new();
-        let mut second = SessionJob::new();
-        let report = copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
-        captured.apply_session_report(ctx, &report);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 3]);
-        let sources_idx = second
-            .log
-            .spans
-            .iter()
-            .position(|span| span.ok && span.mask == 0x02)
-            .expect("sources-private span");
-        let start = second.log.spans[sources_idx].start as usize;
-        second.log.bytes[start] ^= 0xff;
-        assert!(first.log.partition_equal(&second.log, 0));
-        assert!(!first.log.partition_equal(&second.log, 1));
-        assert!(first.log.partition_equal(&second.log, 2));
-    }
-
-    #[test]
     fn session_staging_overflow_falls_back_to_typed_walk() {
-        let capacities = split_capacities();
         let bytes = fixture();
         let memory = SliceMemory {
             base: BASE,
             bytes: &bytes,
         };
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
         let ctx = SessionCopyContext {
+            hour: 0,
+            force_full: true,
             base: 0,
             game_state: BASE,
-            needed: [true; N],
         };
         let mut tiny = SessionJob {
             log: crate::raw::RawLog::new(8, 8),
             game_state: 0,
+            ..Default::default()
         };
-        let report = copy_session_refresh(&memory, ctx, &mut tiny, None);
-        captured.apply_session_report(ctx, &report);
+        let report = copy_session_refresh(&memory, ctx, &mut tiny);
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());
@@ -1154,21 +1040,18 @@ mod tests {
                 rows,
                 reason_bytes: reason,
             };
-            let mut direct = Captured::with_capacities(&capacities, &[0; N]);
-            let (matched, _) = direct.capture(&memory, 0, BASE, &[true; N]);
-            let _ = matched;
-            let mut split = Captured::with_capacities(&capacities, &[0; N]);
+            let mut direct = Captured::with_capacities(&capacities);
+            let _ticks = direct.capture(&memory, 0, BASE, 0, true);
+            let mut split = Captured::with_capacities(&capacities);
             let ctx = SessionCopyContext {
+                hour: 0,
+                force_full: true,
                 base: 0,
                 game_state: BASE,
-                needed: [true; N],
             };
             let mut first = SessionJob::new();
-            let mut second = SessionJob::new();
-            let report = copy_session_refresh(&memory, ctx, &mut first, Some(&mut second));
-            split.apply_session_report(ctx, &report);
+            let report = copy_session_refresh(&memory, ctx, &mut first);
             assert!(report.raw_ok, "rows={rows:?}");
-            assert_eq!(report.matched, [true; 3], "rows={rows:?}");
             split.raw_mode = true;
             let mut ticks = [0u64; 3];
             split.decode_session_payload(0, &first, &mut ticks);
@@ -1179,8 +1062,8 @@ mod tests {
             rows: [1, 2, 2],
             reason_bytes: 8,
         };
-        let mut direct = Captured::with_capacities(&capacities, &[0; N]);
-        let _ = direct.capture(&memory, 0, BASE, &[true; N]);
+        let mut direct = Captured::with_capacities(&capacities);
+        let _ = direct.capture(&memory, 0, BASE, 0, true);
         assert_eq!(direct.manager.outcome, Outcome::Rows { len: 1 });
         assert_eq!(direct.sources.outcome, Outcome::Rows { len: 2 });
         assert_eq!(direct.aggregates.outcome, Outcome::Rows { len: 2 });

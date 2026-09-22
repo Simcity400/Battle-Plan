@@ -4,7 +4,7 @@ use super::{Report, TokenNames, complete, invalid, required_country_tag};
 use installed_content::save::characters as saved;
 use replay::{
     frame::DecodedFrame,
-    rows::{CountryRow, tables},
+    rows::{CountryRow, TableId, tables},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -115,19 +115,19 @@ pub(super) fn compare(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut complete = true;
-    // Tier-4 slot0; cadence table is the single source of truth.
-    let staggered = !report.refresh_is_current(replay::rows::TableId::Characters, frame.hour);
-    if staggered {
-        for table in [
-            replay::rows::TableId::Characters,
-            replay::rows::TableId::CountryLeaderRoles,
-            replay::rows::TableId::AdvisorRoles,
-            replay::rows::TableId::UnitLeaders,
-            replay::rows::TableId::UnitLeaderTraits,
-            replay::rows::TableId::UnitLeaderTraitExperience,
-        ] {
+    let tables = [
+        TableId::Characters,
+        TableId::CountryLeaderRoles,
+        TableId::AdvisorRoles,
+        TableId::UnitLeaders,
+        TableId::UnitLeaderTraits,
+        TableId::UnitLeaderTraitExperience,
+    ];
+    let current = tables.map(|table| report.refresh_is_current(table, frame.hour));
+    for (table, current) in tables.into_iter().zip(current) {
+        if !current {
             report.limitation(
-                "Characters family refreshed every 4th hour; off-hours replay holds last refresh",
+                &format!("Characters family {}", replay::cadence::STAGGER_LIMITATION),
                 format!(
                     "{table:?} refreshes on {} (oracle hour {})",
                     replay::cadence::refresh_text(table),
@@ -138,39 +138,39 @@ pub(super) fn compare(
     }
     if let Some(manager) = &pack.manager {
         complete &= report.attempt("Characters", |report| {
-            if staggered {
+            if !current[0] {
                 return Ok(());
             }
             compare_characters(frame, manager, links, tokens, report)
         });
         complete &= report.attempt("CountryLeaderRoles", |report| {
-            if staggered {
+            if !current[1] {
                 return Ok(());
             }
             compare_country_leader_roles(frame, manager, links, report)
         });
         complete &= report.attempt("AdvisorRoles", |report| {
-            if staggered {
+            if !current[2] {
                 return Ok(());
             }
             compare_advisors(frame, manager, links, report)
         });
         let mut unrepresented = None;
         complete &= report.attempt("UnitLeaders", |report| {
-            if staggered {
+            if !current[3] {
                 return Ok(());
             }
             unrepresented = Some(compare_leaders(frame, manager, report)?);
             Ok(())
         });
         complete &= report.attempt("UnitLeaderTraits", |report| {
-            if staggered {
+            if !current[4] {
                 return Ok(());
             }
             compare_traits(frame, manager, tokens, unrepresented.as_ref(), report)
         });
         complete &= report.attempt("UnitLeaderTraitExperience", |report| {
-            if staggered {
+            if !current[5] {
                 return Ok(());
             }
             compare_trait_experience(frame, manager, tokens, unrepresented.as_ref(), report)
@@ -684,7 +684,10 @@ mod tests {
     fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
         let character = handle(73, u32::MAX);
         let leader = handle(4713, u32::MAX);
-        let date = GameDate::parse(b"1936.1.1.1").unwrap();
+        // Exercise all persistent tables on their shared refresh slot. The
+        // cadence-specific test below explicitly supplies an off-slot hour.
+        // Save hours are one-based; slot 21 is text-save hour 22.
+        let date = GameDate::parse(b"1936.1.1.22").unwrap();
         let mut frame = DecodedFrame {
             branch: 1,
             hour: date.engine_hour().unwrap(),
@@ -780,6 +783,33 @@ mod tests {
             ..Default::default()
         };
         (frame, pack, country)
+    }
+
+    #[test]
+    fn character_tables_are_compared_only_when_fresh() {
+        let (mut frame, pack, country) = fixture();
+        frame.hour = 1;
+        let links = BTreeMap::from([(102, &country)]);
+        let tokens = BTreeMap::from([
+            (5, b"script_token".as_slice()),
+            (6, b"assigned"),
+            (7, b"progress"),
+        ]);
+        let TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) =
+            &mut frame.tables[TableId::UnitLeaderTraitExperience.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].experience += 1;
+        let mut mixed = Report::default();
+        mixed.record_tables(&frame);
+        compare(&frame, &pack, &links, &tokens, &mut mixed).unwrap();
+        assert!(mixed.differences.is_empty());
+        frame.hour = 21;
+        let mut current = Report::default();
+        current.record_tables(&frame);
+        compare(&frame, &pack, &links, &tokens, &mut current).unwrap();
+        assert_eq!(current.differences.len(), 1);
     }
 
     #[test]
@@ -1117,39 +1147,6 @@ mod tests {
                 .limitations
                 .keys()
                 .any(|reason| reason.contains("native category cannot establish"))
-        );
-    }
-
-    #[test]
-    fn staggered_off_hours_skips_compare_and_prints_refresh_hour() {
-        let (mut frame, pack, country) = fixture();
-        frame.hour = 1;
-        let mut report = Report::default();
-        compare(
-            &frame,
-            &pack,
-            &BTreeMap::from([(102, &country)]),
-            &BTreeMap::new(),
-            &mut report,
-        )
-        .unwrap();
-        assert!(report.differences.is_empty());
-        assert!(
-            report
-                .limitations
-                .keys()
-                .any(|reason| reason.contains(replay::cadence::STAGGER_LIMITATION)),
-            "{:?}",
-            report.limitations.keys()
-        );
-        assert!(
-            report
-                .limitations
-                .values()
-                .flatten()
-                .any(|subject| subject.contains("H%4==0")),
-            "{:?}",
-            report.limitations.values()
         );
     }
 }

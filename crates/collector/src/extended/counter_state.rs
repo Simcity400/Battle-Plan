@@ -25,11 +25,18 @@ pub struct Captured {
     selected: CaptureRows<selection::SelectedRow>,
 }
 impl Captured {
-    pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
-        assert_eq!(successful.len(), N);
+    /// Allocation-free placeholder while a worker owns the capture buffers.
+    pub(crate) fn vacant() -> Self {
         Self {
-            settings: CaptureRows::new(1, successful[0]),
-            selected: CaptureRows::new(capacity.selected, successful[1]),
+            settings: CaptureRows::new(0),
+            selected: CaptureRows::new(0),
+        }
+    }
+
+    pub fn with_capacities(capacity: &Capacities) -> Self {
+        Self {
+            settings: CaptureRows::new(1),
+            selected: CaptureRows::new(capacity.selected),
         }
     }
     pub fn reset(&mut self) {
@@ -39,66 +46,28 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.settings.allocated_bytes() + self.selected.allocated_bytes()
     }
-    pub fn grow(&mut self, capacity: &mut Capacities, successful: &[u16]) {
-        assert_eq!(successful.len(), N);
+    pub fn grow(&mut self, capacity: &mut Capacities) {
         let mut one = 1;
-        self.settings.grow(&mut one, successful[0]);
-        self.selected.grow(&mut capacity.selected, successful[1]);
+        self.settings.grow(&mut one);
+        self.selected.grow(&mut capacity.selected);
     }
-    pub fn capture(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        _state: usize,
-        needed: &[bool],
-    ) -> ([bool; N], [u64; N]) {
-        assert_eq!(needed.len(), N);
+    pub fn capture(&mut self, memory: &impl Memory, base: usize, _state: usize) -> [u64; N] {
+        let _settings_reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         self.settings.outcome =
             grouping_globals::read_counter_settings(memory, base, &mut self.settings.rows);
-        self.settings.checked = needed[0];
-        let settings = needed[0] && {
-            let second =
-                grouping_globals::read_counter_settings(memory, base, &mut self.settings.second);
-            self.settings.compare(second)
-        };
         let middle = qpc();
+        let _selected_reads = crate::read_accounting::table(TABLES[1]);
         self.selected.outcome =
             selection::walk_selected_units(memory, base, &mut self.selected.rows);
-        self.selected.checked = needed[1];
-        let selected = needed[1] && {
-            let second = selection::walk_selected_units(memory, base, &mut self.selected.second);
-            self.selected.compare(second)
-        };
         let end = qpc();
-        (
-            [settings, selected],
-            [
-                middle.saturating_sub(begin).max(0) as u64,
-                end.saturating_sub(middle).max(0) as u64,
-            ],
-        )
-    }
-    pub fn outcomes(&self) -> [Outcome; N] {
         [
-            if self.settings.checked && self.settings.mismatches != 0 {
-                Outcome::Unavailable {
-                    reason: "counter settings changed during double read",
-                }
-            } else {
-                self.settings.outcome
-            },
-            if self.selected.checked && self.selected.mismatches != 0 {
-                Outcome::Unavailable {
-                    reason: "unit selection changed during double read",
-                }
-            } else {
-                self.selected.outcome
-            },
+            middle.saturating_sub(begin).max(0) as u64,
+            end.saturating_sub(middle).max(0) as u64,
         ]
     }
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [self.settings.mismatches, self.selected.mismatches]
+    pub fn outcomes(&self) -> [Outcome; N] {
+        [self.settings.outcome, self.selected.outcome]
     }
     pub fn tables(&self) -> [TableView; N] {
         let [settings, selected] = self.outcomes();
@@ -110,13 +79,11 @@ impl Captured {
                     counter_color_mode: r.counter_color_mode,
                 }
             }),
-            table::<tables::SelectedUnits, _>(selected, &self.selected.rows, |r| {
-                SelectedUnitRow {
-                    unit: r.unit,
-                    class: r.class,
-                    selected: r.selected,
-                    removal_pending: r.removal_pending,
-                }
+            table::<tables::SelectedUnits, _>(selected, &self.selected.rows, |r| SelectedUnitRow {
+                unit: r.unit,
+                class: r.class,
+                selected: r.selected,
+                removal_pending: r.removal_pending,
             }),
         ]
     }
@@ -132,8 +99,8 @@ mod tests {
             base: 0,
             bytes: &[],
         };
-        let mut capture = Captured::with_capacities(&Capacities { selected: 1 }, &[0, 0]);
-        assert_eq!(capture.capture(&memory, 0, 0, &[true, true]).0, [false, false]);
+        let mut capture = Captured::with_capacities(&Capacities { selected: 1 });
+        capture.capture(&memory, 0, 0);
         let [settings, selected] = capture.tables();
         assert!(matches!(settings, TableView::Unavailable { .. }));
         assert!(matches!(selected, TableView::Unavailable { .. }));

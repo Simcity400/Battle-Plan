@@ -38,12 +38,20 @@ pub struct Captured {
     rosters: Arena<u64>,
 }
 impl Captured {
-    pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
-        assert_eq!(successful.len(), N);
+    /// Allocation-free placeholder while a worker owns the capture buffers.
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities {
+            task_forces: 0,
+            fleets: 0,
+            rosters: 0,
+        })
+    }
+
+    pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            task_forces: CaptureRows::new(capacity.task_forces, successful[0]),
-            fleets: CaptureRows::new(capacity.fleets, successful[1]),
-            rosters: Arena::new(capacity.rosters, successful[1]),
+            task_forces: CaptureRows::new(capacity.task_forces),
+            fleets: CaptureRows::new(capacity.fleets),
+            rosters: Arena::new(capacity.rosters),
         }
     }
     pub fn reset(&mut self) {
@@ -56,24 +64,16 @@ impl Captured {
             + self.fleets.allocated_bytes()
             + self.rosters.allocated_bytes()
     }
-    pub fn grow(&mut self, capacity: &mut Capacities, successful: &[u16]) {
-        assert_eq!(successful.len(), N);
-        self.task_forces
-            .grow(&mut capacity.task_forces, successful[0]);
-        self.fleets.grow(&mut capacity.fleets, successful[1]);
+    pub fn grow(&mut self, capacity: &mut Capacities) {
+        self.task_forces.grow(&mut capacity.task_forces);
+        self.fleets.grow(&mut capacity.fleets);
         grow_capacity(&mut capacity.rosters, self.rosters.required);
-        self.rosters.grow(&mut capacity.rosters, successful[1]);
+        self.rosters.grow(&mut capacity.rosters);
     }
-    pub fn capture(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        state: usize,
-        needed: &[bool],
-    ) -> ([bool; N], [u64; N]) {
-        assert_eq!(needed.len(), N);
+    pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+        let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
-        let first = cfleet::walk_counter_inputs(
+        let captured = cfleet::walk_counter_inputs(
             memory,
             base,
             state,
@@ -81,60 +81,16 @@ impl Captured {
             &mut self.rosters.first,
             &mut self.task_forces.rows,
         );
-        self.task_forces.outcome = first.task_forces;
-        self.fleets.outcome = first.fleets;
-        self.rosters.len = first.roster_len;
-        self.rosters.required = first.roster_required;
-        self.task_forces.checked = needed[0];
-        self.fleets.checked = needed[1];
-        let mut matched = [false; N];
-        if needed.iter().any(|v| *v) {
-            let second = cfleet::walk_counter_inputs(
-                memory,
-                base,
-                state,
-                &mut self.fleets.second,
-                &mut self.rosters.second,
-                &mut self.task_forces.second,
-            );
-            if needed[0] {
-                matched[0] = self.task_forces.compare(second.task_forces);
-            }
-            if needed[1] {
-                let rows = self.fleets.compare(second.fleets);
-                let arena = self
-                    .rosters
-                    .compare(second.roster_len, second.roster_required);
-                if !arena {
-                    self.fleets.mismatches += 1;
-                }
-                matched[1] = rows && arena;
-            }
-        }
-        let ticks = qpc().saturating_sub(begin).max(0) as u64;
-        (matched, [ticks, 0])
+        self.task_forces.outcome = captured.task_forces;
+        self.fleets.outcome = captured.fleets;
+        self.rosters.len = captured.roster_len;
+        self.rosters.required = captured.roster_required;
+        [qpc().saturating_sub(begin).max(0) as u64, 0]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [
-            if self.task_forces.checked && self.task_forces.mismatches != 0 {
-                Outcome::Unavailable {
-                    reason: "task force counter inputs changed during double read",
-                }
-            } else {
-                self.task_forces.outcome
-            },
-            if self.fleets.checked && self.fleets.mismatches != 0 {
-                Outcome::Unavailable {
-                    reason: "fleet counter inputs changed during double read",
-                }
-            } else {
-                self.fleets.outcome
-            },
-        ]
+        [self.task_forces.outcome, self.fleets.outcome]
     }
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [self.task_forces.mismatches, self.fleets.mismatches]
-    }
+
     pub fn tables(&self) -> [TableView; N] {
         let [tasks, fleets] = self.outcomes();
         let Some(rosters) = self.rosters.first.get(..self.rosters.len) else {
@@ -144,10 +100,11 @@ impl Captured {
             ];
         };
         let fleet_rows = &self.fleets.rows[..fleets.len().min(self.fleets.rows.len())];
-        if fleet_rows
-            .iter()
-            .any(|r| r.start.checked_add(r.len).is_none_or(|end| end > rosters.len()))
-        {
+        if fleet_rows.iter().any(|r| {
+            r.start
+                .checked_add(r.len)
+                .is_none_or(|end| end > rosters.len())
+        }) {
             return [
                 table::<tables::TaskForceCounterInputs, _>(tasks, &self.task_forces.rows, task),
                 unavailable("fleet roster lies outside captured arena"),
@@ -194,15 +151,12 @@ mod tests {
             base: 0,
             bytes: &[],
         };
-        let mut capture = Captured::with_capacities(
-            &Capacities {
-                task_forces: 1,
-                fleets: 1,
-                rosters: 2,
-            },
-            &[0, 0],
-        );
-        assert_eq!(capture.capture(&memory, 0, 0, &[true, true]).0, [false, false]);
+        let mut capture = Captured::with_capacities(&Capacities {
+            task_forces: 1,
+            fleets: 1,
+            rosters: 2,
+        });
+        capture.capture(&memory, 0, 0);
         assert!(
             capture
                 .tables()
@@ -221,8 +175,10 @@ mod tests {
         capture.rosters.len = 2;
         capture.fleets.outcome = Outcome::Rows { len: 1 };
         capture.task_forces.outcome = Outcome::Rows { len: 0 };
-        let [_, TableView::Complete(replay::rows::TableRows::FleetCounterInputs(rows))] =
-            capture.tables()
+        let [
+            _,
+            TableView::Complete(replay::rows::TableRows::FleetCounterInputs(rows)),
+        ] = capture.tables()
         else {
             panic!("complete");
         };

@@ -1,6 +1,6 @@
 //! Hourly battle-plan operands over the shared ArmyOrders/group source census.
 use crate::{
-    sampling::{full_match, qpc},
+    sampling::qpc,
     spooling::table,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
@@ -51,25 +51,34 @@ pub struct Captured {
     pairs: Arena<u32>,
     handles: Vec<u64>,
     required_handles: usize,
-    matched: [bool; N],
     ticks: [u64; N],
-    supplied: [bool; 2],
+    supplied: bool,
 }
 impl Captured {
-    pub fn with_capacities(c: &Capacities, successful: &[u16]) -> Self {
-        let order_success = successful[0].min(successful[2]);
+    /// Placeholder while the Orders job owns the buffers.
+    pub fn vacant() -> Self {
+        Self::with_capacities(&Capacities {
+            plans: 0,
+            groups: 0,
+            fronts: 0,
+            assigned: 0,
+            sections: 0,
+            pairs: 0,
+            handles: 0,
+        })
+    }
+    pub fn with_capacities(c: &Capacities) -> Self {
         Self {
-            plans: CaptureRows::new(c.plans, order_success),
-            colors: CaptureRows::new(c.groups, successful[1]),
-            fronts: CaptureRows::new(c.fronts, successful[2]),
-            assigned: Arena::new(c.assigned, order_success),
-            sections: Arena::new(c.sections, successful[2]),
-            pairs: Arena::new(c.pairs, successful[2]),
+            plans: CaptureRows::new(c.plans),
+            colors: CaptureRows::new(c.groups),
+            fronts: CaptureRows::new(c.fronts),
+            assigned: Arena::new(c.assigned),
+            sections: Arena::new(c.sections),
+            pairs: Arena::new(c.pairs),
             handles: vec![0; c.handles],
             required_handles: 0,
-            matched: [false; N],
             ticks: [0; N],
-            supplied: [false; 2],
+            supplied: false,
         }
     }
     pub fn reset(&mut self) {
@@ -80,9 +89,8 @@ impl Captured {
         self.sections.reset();
         self.pairs.reset();
         self.required_handles = 0;
-        self.matched = [false; N];
         self.ticks = [0; N];
-        self.supplied = [false; 2];
+        self.supplied = false;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.plans.allocated_bytes()
@@ -93,19 +101,18 @@ impl Captured {
             + self.pairs.allocated_bytes()
             + self.handles.capacity() * size_of::<u64>()
     }
-    pub fn grow(&mut self, c: &mut Capacities, successful: &[u16]) {
-        let order_success = successful[0].min(successful[2]);
-        self.plans.grow(&mut c.plans, order_success);
-        self.colors.grow(&mut c.groups, successful[1]);
-        self.fronts.grow(&mut c.fronts, successful[2]);
-        self.assigned.grow(&mut c.assigned, order_success);
-        self.sections.grow(&mut c.sections, successful[2]);
-        self.pairs.grow(&mut c.pairs, successful[2]);
+    pub fn grow(&mut self, c: &mut Capacities) {
+        self.plans.grow(&mut c.plans);
+        self.colors.grow(&mut c.groups);
+        self.fronts.grow(&mut c.fronts);
+        self.assigned.grow(&mut c.assigned);
+        self.sections.grow(&mut c.sections);
+        self.pairs.grow(&mut c.pairs);
         grow_capacity(&mut c.handles, self.required_handles);
         grow_vec(&mut self.handles, c.handles);
     }
-    /// Called inside each independently acquired native order-census pass.
-    #[allow(clippy::too_many_arguments)]
+    /// Called on the Orders worker, which may grow payloads from owned census
+    /// lengths and the original native headers.
     pub fn visit(
         &mut self,
         memory: &impl Memory,
@@ -114,161 +121,95 @@ impl Captured {
         visits: &[corder_instance::Visit],
         root_source: Outcome,
         order_source: Outcome,
-        second: bool,
-        needed: &[bool; N],
     ) -> u64 {
-        self.supplied[usize::from(second)] = true;
+        self.supplied = true;
         let begin_all = qpc();
         let before = self.ticks.iter().sum::<u64>();
+        let mut read_phase = crate::read_accounting::table(TABLES[1]);
         let begin = qpc();
-        if !second || needed[1] {
-            let outcome = corders_group::walk_colors(
-                memory,
-                base,
-                roots,
-                root_source,
-                if second {
-                    &mut self.colors.second
-                } else {
-                    &mut self.colors.rows
-                },
-            );
-            if second {
-                self.matched[1] = self.colors.compare(outcome);
-            } else {
-                self.colors.outcome = outcome;
-                self.colors.checked = needed[1];
+        let color_capacity = if let Outcome::Rows { len } = root_source
+            && len == roots.len()
+            && len > self.colors.rows.len()
+        {
+            self.colors
+                .rows
+                .try_reserve(len - self.colors.rows.len())
+                .map(|()| self.colors.rows.resize(len, Default::default()))
+        } else {
+            Ok(())
+        };
+        self.colors.outcome = match color_capacity {
+            Ok(()) => {
+                corders_group::walk_colors(memory, base, roots, root_source, &mut self.colors.rows)
             }
-        }
+            Err(_) => Outcome::Unavailable {
+                reason: "order color allocation failed",
+            },
+        };
         self.ticks[1] += qpc().saturating_sub(begin).max(0) as u64;
+        read_phase.select(TABLES[0]);
         let begin = qpc();
-        if !second || needed[0] || needed[2] {
-            let report = corder_instance::walk_plans(
-                memory,
-                base,
-                roots,
-                visits,
-                order_source,
-                if second {
-                    &mut self.plans.second
-                } else {
-                    &mut self.plans.rows
-                },
-                if second {
-                    &mut self.assigned.second
-                } else {
-                    &mut self.assigned.first
-                },
-            );
-            if second {
-                let arena_match = self
-                    .assigned
-                    .compare(report.assigned, report.required_assigned);
-                if needed[0] {
-                    self.plans.compare(report.outcome);
-                    self.plans.mismatches += usize::from(!arena_match);
-                    self.matched[0] =
-                        full_match(self.plans.outcome, report.outcome, self.plans.mismatches);
-                }
-            } else {
-                self.plans.outcome = report.outcome;
-                self.plans.checked = needed[0];
-                self.assigned.len = report.assigned;
-                self.assigned.required = report.required_assigned;
-            }
-            self.ticks[0] += qpc().saturating_sub(begin).max(0) as u64;
-            if !second || needed[2] {
-                let begin = qpc();
-                let front = cfront::walk(
-                    memory,
-                    base,
-                    if second {
-                        &self.plans.second
-                    } else {
-                        &self.plans.rows
-                    },
-                    report.outcome,
-                    &mut self.handles,
-                    if second {
-                        &mut self.fronts.second
-                    } else {
-                        &mut self.fronts.rows
-                    },
-                    if second {
-                        &mut self.sections.second
-                    } else {
-                        &mut self.sections.first
-                    },
-                    if second {
-                        &mut self.pairs.second
-                    } else {
-                        &mut self.pairs.first
-                    },
-                );
-                self.required_handles = self.required_handles.max(front.required_handles);
-                if second {
-                    self.fronts.compare(front.outcome);
-                    self.fronts.mismatches += usize::from(
-                        !self
-                            .sections
-                            .compare(front.sections, front.required_sections),
-                    );
-                    self.fronts.mismatches +=
-                        usize::from(!self.pairs.compare(front.pairs, front.required_pairs));
-                    self.matched[2] =
-                        full_match(self.fronts.outcome, front.outcome, self.fronts.mismatches);
-                } else {
-                    self.fronts.outcome = front.outcome;
-                    self.fronts.checked = needed[2];
-                    self.sections.len = front.sections;
-                    self.sections.required = front.required_sections;
-                    self.pairs.len = front.pairs;
-                    self.pairs.required = front.required_pairs;
-                }
-                self.ticks[2] += qpc().saturating_sub(begin).max(0) as u64;
-            }
-        }
+        let report = corder_instance::walk_plans(
+            memory,
+            base,
+            roots,
+            visits,
+            order_source,
+            &mut self.plans.rows,
+            &mut self.assigned.first,
+        );
+        self.plans.outcome = report.outcome;
+        self.assigned.len = report.assigned;
+        self.assigned.required = report.required_assigned;
+        self.ticks[0] += qpc().saturating_sub(begin).max(0) as u64;
+        read_phase.select(TABLES[2]);
+        let begin = qpc();
+        let front = cfront::walk(
+            memory,
+            base,
+            &self.plans.rows,
+            report.outcome,
+            &mut self.handles,
+            &mut self.fronts.rows,
+            &mut self.sections.first,
+            &mut self.pairs.first,
+        );
+        self.required_handles = self.required_handles.max(front.required_handles);
+        self.fronts.outcome = front.outcome;
+        self.sections.len = front.sections;
+        self.sections.required = front.required_sections;
+        self.pairs.len = front.pairs;
+        self.pairs.required = front.required_pairs;
+        self.ticks[2] += qpc().saturating_sub(begin).max(0) as u64;
         let total = qpc().saturating_sub(begin_all).max(0) as u64;
         self.ticks[0] += total.saturating_sub(self.ticks.iter().sum::<u64>() - before);
         total
     }
-    pub fn capture(
-        &mut self,
-        _: &impl Memory,
-        _: usize,
-        _: usize,
-        needed: &[bool],
-    ) -> ([bool; N], [u64; N]) {
-        if !self.supplied[0] || (!self.supplied[1] && needed.iter().any(|v| *v)) {
-            for (i, needed) in needed.iter().enumerate() {
-                if !self.supplied[0] || *needed {
-                    let outcome = Outcome::Unavailable {
-                        reason: "plan source pass not supplied",
-                    };
-                    match i {
-                        0 => self.plans.outcome = outcome,
-                        1 => self.colors.outcome = outcome,
-                        _ => self.fronts.outcome = outcome,
-                    }
-                    self.matched[i] = false;
-                }
-            }
+    /// Terminal worker/admission failure; no partial table may be published.
+    pub(crate) fn fail(&mut self, reason: &'static str) {
+        let outcome = Outcome::Unavailable { reason };
+        self.plans.outcome = outcome;
+        self.colors.outcome = outcome;
+        self.fronts.outcome = outcome;
+        self.assigned.len = 0;
+        self.sections.len = 0;
+        self.pairs.len = 0;
+        self.ticks = [0; N];
+        self.supplied = true;
+    }
+    pub fn capture(&mut self) -> [u64; N] {
+        if !self.supplied {
+            let outcome = Outcome::Unavailable {
+                reason: "plan source not supplied",
+            };
+            self.plans.outcome = outcome;
+            self.colors.outcome = outcome;
+            self.fronts.outcome = outcome;
         }
-        (self.matched, self.ticks)
+        self.ticks
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [
-            checked(&self.plans),
-            checked(&self.colors),
-            checked(&self.fronts),
-        ]
-    }
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [
-            self.plans.mismatches,
-            self.colors.mismatches,
-            self.fronts.mismatches,
-        ]
+        [self.plans.outcome, self.colors.outcome, self.fronts.outcome]
     }
     pub fn tables(&self) -> [TableView; N] {
         let outcomes = self.outcomes();
@@ -322,20 +263,10 @@ impl Captured {
         ]
     }
 }
-fn checked<R>(rows: &CaptureRows<R>) -> Outcome {
-    if rows.checked && rows.mismatches != 0 {
-        Outcome::Unavailable {
-            reason: "battle plan changed during double read",
-        }
-    } else {
-        rows.outcome
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sampling::CONSISTENCY_TARGET;
     use engine::{creference_registry as registry, reference_bucket as bucket};
     use std::collections::BTreeMap;
     #[derive(Default)]
@@ -394,14 +325,14 @@ mod tests {
         m.u32(ORDER + corder_instance::ID, 9);
         m
     }
-    fn pass(m: &Image, c: &mut Captured, second: bool, needed: &[bool; N]) {
+    fn pass(m: &Image, c: &mut Captured) {
         let mut groups = [corders_group::Root::default(); 4];
-        let mut visits = [corder_instance::Visit::default(); 8];
+        let mut visits = vec![corder_instance::Visit::default(); 8];
         let r = corder_instance::walk(
             m,
             0,
-            &mut [corder_instance::Row::default(); 4],
-            &mut [0; 4],
+            &mut vec![corder_instance::Row::default(); 4],
+            &mut vec![0; 4],
             &mut groups,
             &mut visits,
         );
@@ -413,59 +344,69 @@ mod tests {
             &visits,
             r.root_outcome,
             r.outcome,
-            second,
-            needed,
         );
     }
     #[test]
-    fn independent_native_passes_reject_changed_styles_and_colors_and_spool_exact_bytes() {
+    fn primary_plan_styles_and_colors_spool_exact_bytes() {
         let mut m = image();
-        let mut c = Captured::with_capacities(&Capacities::default(), &[0; N]);
+        let mut c = Captured::with_capacities(&Capacities::default());
         m.put(ORDER + corder_instance::MOVE_SPECIAL, &[255]);
         m.u32(GROUP + corders_group::COLOUR, 0x7fc01234);
-        pass(&m, &mut c, false, &[true; N]);
-        pass(&m, &mut c, true, &[true; N]);
-        assert_eq!(c.capture(&m, 0, 0, &[true; N]).0, [true; N]);
+        pass(&m, &mut c);
+        c.capture();
         assert!(
-            matches!(&c.tables()[0],TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(rows)) if rows[0].blitz==255)
+            matches!(&c.tables()[0], TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(rows)) if rows[0].blitz == 255)
         );
         assert!(
-            matches!(&c.tables()[1],TableView::Complete(replay::rows::TableRows::OrdersGroupColors(rows)) if rows[0].red==0x7fc01234)
+            matches!(&c.tables()[1], TableView::Complete(replay::rows::TableRows::OrdersGroupColors(rows)) if rows[0].red == 0x7fc01234)
         );
-        c.reset();
-        pass(&m, &mut c, false, &[true; N]);
-        m.put(ORDER + corder_instance::MOVE_SPECIAL, &[0]);
-        m.u32(GROUP + corders_group::COLOUR, 0);
-        pass(&m, &mut c, true, &[true; N]);
-        assert_eq!(c.capture(&m, 0, 0, &[true; N]).0, [false, false, true]);
-        assert!(matches!(c.outcomes()[0], Outcome::Unavailable { .. }));
-        assert!(matches!(c.outcomes()[1], Outcome::Unavailable { .. }));
         assert_eq!(c.outcomes()[2], Outcome::Rows { len: 0 });
     }
     #[test]
-    fn growth_retains_front_source_checks_after_order_window_and_missing_pass_fails() {
+    fn empty_payload_storage_grows_and_terminal_failure_hides_all_tables() {
+        let m = image();
+        let mut c = Captured::vacant();
+        pass(&m, &mut c);
+        assert_eq!(
+            c.outcomes(),
+            [
+                Outcome::Rows { len: 1 },
+                Outcome::Rows { len: 1 },
+                Outcome::Rows { len: 0 }
+            ]
+        );
+        let bytes = c.allocated_bytes();
+        assert!(bytes > 0);
+        c.fail("worker failed");
+        c.capture();
+        assert_eq!(
+            c.outcomes(),
+            [Outcome::Unavailable {
+                reason: "worker failed"
+            }; N]
+        );
+        assert_eq!(c.allocated_bytes(), bytes);
+        c.reset();
+        pass(&m, &mut c);
+        assert_eq!(c.outcomes()[0], Outcome::Rows { len: 1 });
+    }
+    #[test]
+    fn growth_preserves_primary_arenas_and_missing_source_fails() {
         let m = image();
         let mut capacity = Capacities::default();
-        let mut c =
-            Captured::with_capacities(&capacity, &[CONSISTENCY_TARGET, CONSISTENCY_TARGET, 0]);
-        assert!(!c.plans.second.is_empty());
-        assert!(c.colors.second.is_empty());
-        pass(&m, &mut c, false, &[false, false, true]);
-        pass(&m, &mut c, true, &[false, false, true]);
-        assert!(c.capture(&m, 0, 0, &[false, false, true]).0[2]);
+        let mut c = Captured::with_capacities(&capacity);
+        pass(&m, &mut c);
+        c.capture();
         c.assigned.required = capacity.assigned + 1;
         c.pairs.required = capacity.pairs + 1;
         c.required_handles = capacity.handles + 1;
-        c.grow(&mut capacity, &[CONSISTENCY_TARGET; N]);
-        assert!(
-            c.plans.second.is_empty()
-                && c.fronts.second.is_empty()
-                && c.assigned.second.is_empty()
-                && c.pairs.second.is_empty()
-        );
+        c.grow(&mut capacity);
         assert!(capacity.assigned > 16384 && capacity.pairs > 65536 && capacity.handles > 2048);
+        assert_eq!(c.assigned.first.len(), capacity.assigned);
+        assert_eq!(c.pairs.first.len(), capacity.pairs);
+        assert_eq!(c.handles.len(), capacity.handles);
         c.reset();
-        assert_eq!(c.capture(&m, 0, 0, &[false; N]).0, [false; N]);
+        c.capture();
         assert!(
             c.outcomes()
                 .iter()

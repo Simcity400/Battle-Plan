@@ -1,4 +1,4 @@
-//! Hourly weather pass scheduling state, province staged pass operands and region re-roll inputs.
+//! Hourly province pass operands plus daily scheduling state and region re-roll inputs.
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
@@ -7,9 +7,7 @@ use crate::{
 use engine::{Memory, cweather_manager, sweather_per_province, sweather_per_region, walk::Outcome};
 use replay::{
     frame::TableView,
-    rows::{
-        TableId, WeatherPassStateRow, WeatherProvincePassRow, WeatherRegionPassRow, tables,
-    },
+    rows::{TableId, WeatherPassStateRow, WeatherProvincePassRow, WeatherRegionPassRow, tables},
 };
 
 pub const N: usize = 3;
@@ -18,9 +16,12 @@ pub const TABLES: [TableId; N] = [
     TableId::WeatherProvincePasses,
     TableId::WeatherRegionPasses,
 ];
-/// Manager authentication is charged once to the singleton for each acquisition pass.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("weather manager pass state and pass operands", 0, &[0, 1, 2])];
+/// The hourly province table owns shared manager authentication.
+pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
+    "weather manager pass state and pass operands",
+    1,
+    &[0, 1, 2],
+)];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
@@ -45,13 +46,28 @@ pub struct Captured {
     flags: Arena<u32>,
 }
 impl Captured {
-    pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
-        assert_eq!(successful.len(), N);
+    pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.state.fail(super::failed_capture(TABLES[0], hour, force_full, reason));
+        self.provinces.fail(super::failed_capture(TABLES[1], hour, force_full, reason));
+        self.regions.fail(super::failed_capture(TABLES[2], hour, force_full, reason));
+    }
+
+    /// Allocation-free placeholder while a worker owns the capture buffers.
+    pub(crate) fn vacant() -> Self {
         Self {
-            state: CaptureRows::new(1, successful[0]),
-            provinces: CaptureRows::new(capacity.provinces, successful[1]),
-            regions: CaptureRows::new(capacity.regions, successful[2]),
-            flags: Arena::new(capacity.flags, successful[2]),
+            state: CaptureRows::new(0),
+            provinces: CaptureRows::new(0),
+            regions: CaptureRows::new(0),
+            flags: Arena::new(0),
+        }
+    }
+
+    pub fn with_capacities(capacity: &Capacities) -> Self {
+        Self {
+            state: CaptureRows::new(1),
+            provinces: CaptureRows::new(capacity.provinces),
+            regions: CaptureRows::new(capacity.regions),
+            flags: Arena::new(capacity.flags),
         }
     }
     pub fn reset(&mut self) {
@@ -66,119 +82,91 @@ impl Captured {
             + self.regions.allocated_bytes()
             + self.flags.allocated_bytes()
     }
-    pub fn grow(&mut self, capacity: &mut Capacities, successful: &[u16]) {
-        assert_eq!(successful.len(), N);
+    pub fn grow(&mut self, capacity: &mut Capacities) {
         let mut one = 1;
-        self.state.grow(&mut one, successful[0]);
-        self.provinces.grow(&mut capacity.provinces, successful[1]);
-        self.regions.grow(&mut capacity.regions, successful[2]);
+        self.state.grow(&mut one);
+        self.provinces.grow(&mut capacity.provinces);
+        self.regions.grow(&mut capacity.regions);
         grow_capacity(&mut capacity.flags, self.flags.required);
-        self.flags.grow(&mut capacity.flags, successful[2]);
+        self.flags.grow(&mut capacity.flags);
     }
     fn read(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
-        second: bool,
+        active: [bool; N],
         ticks: &mut [u64; N],
     ) -> ([Outcome; N], usize, usize) {
+        const SKIPPED: Outcome = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
+        };
+        let mut outcomes = [SKIPPED; N];
+        let mut reads = crate::read_accounting::table(TABLES[1]);
         let begin = qpc();
         let reader = match cweather_manager::Reader::new(memory, base, state) {
             Ok(reader) => reader,
             Err(reason) => {
-                ticks[0] += qpc().saturating_sub(begin).max(0) as u64;
-                return ([Outcome::Unavailable { reason }; N], 0, 0);
+                ticks[1] += qpc().saturating_sub(begin).max(0) as u64;
+                return (
+                    active.map(|due| {
+                        if due {
+                            Outcome::Unavailable { reason }
+                        } else {
+                            SKIPPED
+                        }
+                    }),
+                    0,
+                    0,
+                );
             }
         };
-        let state_rows = if second {
-            &mut self.state.second
+        ticks[1] += qpc().saturating_sub(begin).max(0) as u64;
+        if active[0] {
+            reads.select(TABLES[0]);
+            let begin = qpc();
+            outcomes[0] = reader.pass_state(&mut self.state.rows);
+            ticks[0] += qpc().saturating_sub(begin).max(0) as u64;
+        }
+        reads.select(TABLES[1]);
+        let begin = qpc();
+        outcomes[1] = reader.province_passes(&mut self.provinces.rows);
+        ticks[1] += qpc().saturating_sub(begin).max(0) as u64;
+        if active[2] {
+            reads.select(TABLES[2]);
+            let begin = qpc();
+            let regions = reader.region_passes(&mut self.regions.rows, &mut self.flags.first);
+            ticks[2] += qpc().saturating_sub(begin).max(0) as u64;
+            outcomes[2] = regions.outcome;
+            (outcomes, regions.len, regions.required)
         } else {
-            &mut self.state.rows
-        };
-        let pass_state = reader.pass_state(state_rows);
-        let after_state = qpc();
-        let province_rows = if second {
-            &mut self.provinces.second
-        } else {
-            &mut self.provinces.rows
-        };
-        let provinces = reader.province_passes(province_rows);
-        let after_provinces = qpc();
-        let (region_rows, arena) = if second {
-            (&mut self.regions.second, &mut self.flags.second)
-        } else {
-            (&mut self.regions.rows, &mut self.flags.first)
-        };
-        let regions = reader.region_passes(region_rows, arena);
-        let end = qpc();
-        ticks[0] += after_state.saturating_sub(begin).max(0) as u64;
-        ticks[1] += after_provinces.saturating_sub(after_state).max(0) as u64;
-        ticks[2] += end.saturating_sub(after_provinces).max(0) as u64;
-        (
-            [pass_state, provinces, regions.outcome],
-            regions.len,
-            regions.required,
-        )
+            (outcomes, 0, 0)
+        }
     }
     pub fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
-        needed: &[bool],
-    ) -> ([bool; N], [u64; N]) {
-        assert_eq!(needed.len(), N);
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
         let mut ticks = [0; N];
+        let active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
         let ([pass_state, provinces, regions], flags_len, flags_required) =
-            self.read(memory, base, state, false, &mut ticks);
+            self.read(memory, base, state, active, &mut ticks);
         self.flags.len = flags_len;
         self.flags.required = flags_required;
         self.state.outcome = pass_state;
         self.provinces.outcome = provinces;
         self.regions.outcome = regions;
-        self.state.checked = needed[0];
-        self.provinces.checked = needed[1];
-        self.regions.checked = needed[2];
-        let mut matched = [false; N];
-        if needed.iter().any(|v| *v) {
-            let ([pass_state, provinces, regions], second_len, second_required) =
-                self.read(memory, base, state, true, &mut ticks);
-            if needed[0] {
-                matched[0] = self.state.compare(pass_state);
-            }
-            if needed[1] {
-                matched[1] = self.provinces.compare(provinces);
-            }
-            if needed[2] {
-                let rows = self.regions.compare(regions);
-                let arena = self.flags.compare(second_len, second_required);
-                if !arena {
-                    self.regions.mismatches += 1;
-                }
-                matched[2] = rows && arena;
-            }
-        }
-        (matched, ticks)
+        ticks
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [
-            checked(&self.state, "weather pass state changed during double read"),
-            checked(
-                &self.provinces,
-                "weather province passes changed during double read",
-            ),
-            checked(
-                &self.regions,
-                "weather region passes changed during double read",
-            ),
-        ]
-    }
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [
-            self.state.mismatches,
-            self.provinces.mismatches,
-            self.regions.mismatches,
+            self.state.outcome,
+            self.provinces.outcome,
+            self.regions.outcome,
         ]
     }
     pub fn tables(&self) -> [TableView; N] {
@@ -216,10 +204,11 @@ impl Captured {
             ];
         };
         let rows = &self.regions.rows[..regions.len().min(self.regions.rows.len())];
-        if rows
-            .iter()
-            .any(|r| r.start.checked_add(r.count as usize).is_none_or(|end| end > flags.len()))
-        {
+        if rows.iter().any(|r| {
+            r.start
+                .checked_add(r.count as usize)
+                .is_none_or(|end| end > flags.len())
+        }) {
             return [
                 state,
                 provinces,
@@ -240,14 +229,6 @@ impl Captured {
     }
 }
 
-fn checked<R>(rows: &CaptureRows<R>, reason: &'static str) -> Outcome {
-    if rows.checked && rows.mismatches != 0 {
-        Outcome::Unavailable { reason }
-    } else {
-        rows.outcome
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,15 +239,12 @@ mod tests {
             base: 0,
             bytes: &[],
         };
-        let mut capture = Captured::with_capacities(
-            &Capacities {
-                provinces: 1,
-                regions: 1,
-                flags: 2,
-            },
-            &[0; N],
-        );
-        assert_eq!(capture.capture(&memory, 0, 0, &[true; N]).0, [false; N]);
+        let mut capture = Captured::with_capacities(&Capacities {
+            provinces: 1,
+            regions: 1,
+            flags: 2,
+        });
+        capture.capture(&memory, 0, 0, 0, true);
         assert!(
             capture
                 .tables()
@@ -299,5 +277,154 @@ mod tests {
         assert_eq!(regions[0].condition_flags, [1, 0xffff]);
         capture.regions.rows[0].count = 3;
         assert!(matches!(capture.tables()[2], TableView::Unavailable { .. }));
+    }
+
+    #[test]
+    fn daily_private_weather_reads_do_not_change_hourly_manager_and_province_sources() {
+        use engine::memory::{CountedMemory, ReadCounts};
+
+        let mut bytes = vec![0; 0x10000];
+        let state = 0x1000;
+        let manager = 0x2000;
+        bytes[state + engine::cgame_state::WEATHER_MANAGER
+            ..state + engine::cgame_state::WEATHER_MANAGER + 8]
+            .copy_from_slice(&(manager as u64).to_le_bytes());
+        bytes[manager..manager + 8]
+            .copy_from_slice(&(cweather_manager::VTABLE_RVA as u64).to_le_bytes());
+        let mut capture = Captured::with_capacities(&Capacities {
+            provinces: 0,
+            regions: 0,
+            flags: 0,
+        });
+        let allocated = capture.allocated_bytes();
+        let mut daily_totals = crate::read_accounting::ZERO;
+        for hour in -1..48 {
+            let memory = CountedMemory::new(SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            });
+            let scope = crate::read_accounting::Capture::new();
+            let ticks = capture.capture(&memory, 0, state, hour, false);
+            let counts = scope.finish();
+            if (0..24).contains(&hour) {
+                for (total, count) in daily_totals.iter_mut().zip(counts) {
+                    *total += count;
+                }
+            }
+            assert_eq!(
+                counts[TABLES[1].index()],
+                ReadCounts {
+                    copy_calls: 3,
+                    spans: 3,
+                    bytes: 32,
+                    ..ReadCounts::ZERO
+                }
+            );
+            assert_eq!(capture.provinces.outcome, Outcome::Rows { len: 0 });
+            for index in [0, 2] {
+                let due = replay::cadence::should_walk(TABLES[index], hour, false);
+                if due {
+                    assert_eq!(
+                        capture.outcomes()[index],
+                        Outcome::Rows {
+                            len: usize::from(index == 0)
+                        }
+                    );
+                    assert_eq!(
+                        counts[TABLES[index].index()],
+                        if index == 0 {
+                            ReadCounts {
+                                scattered_calls: 1,
+                                spans: 4,
+                                bytes: 27,
+                                ..ReadCounts::ZERO
+                            }
+                        } else {
+                            ReadCounts {
+                                copy_calls: 1,
+                                spans: 1,
+                                bytes: 16,
+                                ..ReadCounts::ZERO
+                            }
+                        }
+                    );
+                } else {
+                    assert_eq!(
+                        capture.outcomes()[index],
+                        Outcome::Unavailable {
+                            reason: replay::cadence::SKIPPED_REASON
+                        }
+                    );
+                    assert_eq!(counts[TABLES[index].index()], ReadCounts::ZERO);
+                    assert_eq!(ticks[index], 0);
+                }
+            }
+            assert_eq!(capture.allocated_bytes(), allocated);
+        }
+        let memory = CountedMemory::new(SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        });
+        let vector = |counts: ReadCounts| {
+            [
+                counts.copy_calls,
+                counts.scattered_calls,
+                counts.record_calls,
+                counts.plan_calls,
+                counts.spans,
+                counts.bytes,
+            ]
+        };
+        assert_eq!(
+            TABLES.map(|table| vector(daily_totals[table.index()])),
+            [
+                [0, 1, 0, 0, 4, 27],
+                [72, 0, 0, 0, 72, 768],
+                [1, 0, 0, 0, 1, 16]
+            ]
+        );
+        let sum = |counts: crate::read_accounting::TableCounts| {
+            let mut total = ReadCounts::ZERO;
+            for count in counts {
+                total += count;
+            }
+            vector(total)
+        };
+        let after = sum(daily_totals);
+        assert_eq!(after, [73, 1, 0, 0, 77, 811]);
+
+        let scope = crate::read_accounting::Capture::new();
+        capture.capture(&memory, 0, state, 1, true);
+        let counts = scope.finish();
+        assert_eq!(counts[TABLES[0].index()].bytes, 27);
+        assert_eq!(counts[TABLES[2].index()].bytes, 16);
+        bytes[state + engine::cgame_state::WEATHER_MANAGER
+            ..state + engine::cgame_state::WEATHER_MANAGER + 8]
+            .fill(0);
+        capture.capture(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            0,
+            state,
+            1,
+            false,
+        );
+        assert_eq!(
+            capture.state.outcome,
+            Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON
+            }
+        );
+        assert_eq!(
+            capture.regions.outcome,
+            Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON
+            }
+        );
+        assert!(
+            matches!(capture.provinces.outcome, Outcome::Unavailable { reason } if reason != replay::cadence::SKIPPED_REASON)
+        );
     }
 }

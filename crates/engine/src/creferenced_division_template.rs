@@ -311,18 +311,9 @@ pub fn walk(
                         units[result.units_len] = definition(memory, base, p)?.unwrap_or(0);
                         result.units_len += 1;
                     }
-                    let header = at
-                        .checked_add([REGIMENT_DATA, SUPPORT_DATA, REGIMENTAL_SUPPORT_DATA][which])
-                        .ok_or("template grid header overflow")?;
-                    if Array::read(memory, header, 8) != Some(array) {
-                        return Err("template grid changed during walk");
-                    }
                 }
                 rows[len] = row;
                 len += 1;
-            }
-            if Array::read(memory, root, 8) != Some(roster) {
-                return Err("template roster changed during walk");
             }
         }
         if !found_country {
@@ -367,9 +358,10 @@ mod tests {
     use super::*;
     use crate::memory::SliceMemory;
 
-    struct Fixture(Vec<u8>);
+    struct Fixture(Vec<u8>, std::cell::RefCell<Vec<(usize, usize)>>);
     impl Memory for Fixture {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.1.borrow_mut().push((address, output.len()));
             if address == subunit::NULL_OBJECT_RVA && output.len() == 8 {
                 output.copy_from_slice(&0x9000_u64.to_le_bytes());
                 return true;
@@ -400,7 +392,7 @@ mod tests {
         }
     }
     fn fixture() -> Fixture {
-        let mut memory = Fixture(vec![0; 0xa000]);
+        let mut memory = Fixture(vec![0; 0xa000], std::cell::RefCell::default());
         memory.array(0x1000 + crate::cgame_state::COUNTRIES, 0x2000, 2);
         memory.array(0x1000 + crate::cgame_state::COUNTRY_LINKS, 0x2100, 2);
         memory.word(0x2008, 0x3000);
@@ -444,6 +436,22 @@ mod tests {
         assert_eq!(rows[0].unit_type, 1);
         assert_eq!(rows[0].custom_icon, -1);
         assert_eq!(rows[0].composition[0], Span { start: 0, len: 2 });
+        for address in [
+            0x3000 + ccountry::DIVISION_TEMPLATES,
+            0x5000 + REGIMENT_DATA,
+            0x5000 + SUPPORT_DATA,
+            0x5000 + REGIMENTAL_SUPPORT_DATA,
+        ] {
+            assert_eq!(
+                memory
+                    .1
+                    .borrow()
+                    .iter()
+                    .filter(|p| **p == (address, 16))
+                    .count(),
+                1
+            );
+        }
     }
     #[test]
     fn template_capacity_omits_whole_rows_and_bad_identity_never_becomes_empty() {

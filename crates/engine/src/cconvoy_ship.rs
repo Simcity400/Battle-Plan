@@ -39,10 +39,5 @@ pub(crate) fn read(
         maximum_strength: field(memory, variant, 0x2e8)?,
         maximum_organisation: field(memory, variant, 0x2e0)?,
     };
-    if field::<u64>(memory, pointer, 8)? != handle
-        || field::<u64>(memory, pointer, 0x18)? != variant as u64
-    {
-        return Err("convoy ship changed");
-    }
     Ok(row)
 }

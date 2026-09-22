@@ -25,14 +25,103 @@ pub struct Control {
     pub expected_offset: usize,
 }
 
+/// An advisory source hint whose selecting dependencies have been compared at
+/// this boundary. Hints acquire no bytes and never authorize skipping a read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct Hint {
+    pub after_reads: usize,
+    pub address: usize,
+    pub len: usize,
+}
+
+// The native executor streams these compact descriptors. Public geometry uses
+// usize; narrowing is checked once during off-thread preparation, never while
+// acquiring memory. Oversized plans retain the ordinary ordered executor.
+#[derive(Debug)]
+#[repr(C)]
+pub(crate) struct NativeRead {
+    pub address: usize,
+    pub destination_offset: u32,
+    pub len: u32,
+}
+
+#[derive(Debug)]
+#[repr(C)]
+pub(crate) struct NativeControl {
+    pub after_reads: u32,
+    pub offset: u32,
+    pub len: u32,
+    pub expected_offset: u32,
+}
+
+#[derive(Debug)]
+#[repr(C)]
+pub(crate) struct NativeHint {
+    pub address: usize,
+    pub after_reads: u32,
+    pub len: u32,
+}
+
+#[derive(Debug)]
+pub(crate) struct NativePlan {
+    pub reads: Box<[NativeRead]>,
+    pub controls: Box<[NativeControl]>,
+    pub hints: Box<[NativeHint]>,
+}
+
+impl NativePlan {
+    fn new(reads: &[Read], controls: &[Control]) -> Option<Self> {
+        u32::try_from(reads.len()).ok()?;
+        let reads = reads
+            .iter()
+            .map(|read| {
+                Some(NativeRead {
+                    address: read.address,
+                    destination_offset: u32::try_from(read.destination_offset).ok()?,
+                    len: u32::try_from(read.len).ok()?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?
+            .into_boxed_slice();
+        let controls = controls
+            .iter()
+            .map(|control| {
+                Some(NativeControl {
+                    after_reads: u32::try_from(control.after_reads).ok()?,
+                    offset: u32::try_from(control.offset).ok()?,
+                    len: u32::try_from(control.len).ok()?,
+                    expected_offset: u32::try_from(control.expected_offset).ok()?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?
+            .into_boxed_slice();
+        Some(Self {
+            reads,
+            controls,
+            hints: Box::new([]),
+        })
+    }
+
+    fn capacity_bytes(&self) -> usize {
+        std::mem::size_of_val(&*self.reads)
+            + std::mem::size_of_val(&*self.controls)
+            + std::mem::size_of_val(&*self.hints)
+    }
+}
+
 /// Immutable geometry and owned expected controls. Preparation may allocate;
 /// execution never allocates and never reads a source beyond the stopped prefix.
 #[derive(Debug)]
 pub struct PreparedPlan {
     reads: Box<[Read]>,
     controls: Box<[Control]>,
+    hints: Box<[Hint]>,
     expected: Box<[u8]>,
     destination_len: usize,
+    requested_spans: u64,
+    requested_bytes: u64,
+    native: Option<NativePlan>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +144,8 @@ impl PreparedPlan {
         expected: Vec<u8>,
         destination_len: usize,
     ) -> Option<Self> {
+        let mut requested_spans = 0_u64;
+        let mut requested_bytes = 0_u64;
         for read in &reads {
             if read.destination_offset.checked_add(read.len)? > destination_len {
                 return None;
@@ -66,6 +157,8 @@ impl PreparedPlan {
             {
                 return None;
             }
+            requested_spans = requested_spans.saturating_add(u64::from(read.len != 0));
+            requested_bytes = requested_bytes.saturating_add(read.len as u64);
         }
         let mut previous = 0;
         for control in &controls {
@@ -79,10 +172,14 @@ impl PreparedPlan {
             previous = control.after_reads;
         }
         Some(Self {
+            native: NativePlan::new(&reads, &controls),
             reads: reads.into_boxed_slice(),
             controls: controls.into_boxed_slice(),
+            hints: Box::new([]),
             expected: expected.into_boxed_slice(),
             destination_len,
+            requested_spans,
+            requested_bytes,
         })
     }
 
@@ -94,6 +191,48 @@ impl PreparedPlan {
         &self.controls
     }
 
+    pub fn with_hints(mut self, hints: Vec<Hint>) -> Option<Self> {
+        let mut previous = 0;
+        for hint in &hints {
+            if hint.after_reads < previous
+                || hint.after_reads > self.reads.len()
+                || (hint.len != 0
+                    && (hint.address == 0 || !is_canonical_range(hint.address, hint.len)))
+            {
+                return None;
+            }
+            previous = hint.after_reads;
+        }
+        self.hints = hints.into_boxed_slice();
+        let packed = self
+            .hints
+            .iter()
+            .map(|hint| {
+                Some(NativeHint {
+                    address: hint.address,
+                    after_reads: u32::try_from(hint.after_reads).ok()?,
+                    len: u32::try_from(hint.len).ok()?,
+                })
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(packed) = packed {
+            if let Some(native) = &mut self.native {
+                native.hints = packed.into_boxed_slice();
+            }
+        } else {
+            self.native = None;
+        }
+        Some(self)
+    }
+
+    pub fn hints(&self) -> &[Hint] {
+        &self.hints
+    }
+
+    pub(crate) fn native(&self) -> Option<&NativePlan> {
+        self.native.as_ref()
+    }
+
     pub fn expected(&self) -> &[u8] {
         &self.expected
     }
@@ -102,11 +241,29 @@ impl PreparedPlan {
         self.destination_len
     }
 
+    /// Requested nonempty source spans/bytes up to an execution boundary. The
+    /// usual complete-plan path uses totals prepared with existing validation.
+    pub(crate) fn requested_work(&self, count: usize) -> (u64, u64) {
+        if count >= self.reads.len() {
+            return (self.requested_spans, self.requested_bytes);
+        }
+        self.reads[..count]
+            .iter()
+            .fold((0_u64, 0_u64), |(spans, bytes), read| {
+                (
+                    spans.saturating_add(u64::from(read.len != 0)),
+                    bytes.saturating_add(read.len as u64),
+                )
+            })
+    }
+
     /// Owned descriptor/control buffers; the containing plan is charged by its owner.
     pub fn capacity_bytes(&self) -> usize {
         std::mem::size_of_val(self.reads())
             .saturating_add(std::mem::size_of_val(self.controls()))
+            .saturating_add(std::mem::size_of_val(self.hints()))
             .saturating_add(self.expected.len())
+            .saturating_add(self.native.as_ref().map_or(0, NativePlan::capacity_bytes))
     }
 
     pub(crate) fn execute(
@@ -207,6 +364,134 @@ mod tests {
     }
 
     #[test]
+    fn compact_geometry_and_hints_reject_narrowing_without_changing_public_bounds() {
+        assert_eq!(std::mem::size_of::<NativeRead>(), 16);
+        assert_eq!(std::mem::size_of::<NativeControl>(), 16);
+        assert_eq!(std::mem::size_of::<NativeHint>(), 16);
+        let make = || {
+            PreparedPlan::new(
+                vec![read(0x1000, 0, 8)],
+                vec![control(1, 0, 8, 0)],
+                vec![7; 8],
+                8,
+            )
+            .unwrap()
+        };
+        for hints in [
+            vec![Hint {
+                after_reads: 2,
+                address: 0x1000,
+                len: 1,
+            }],
+            vec![Hint {
+                after_reads: 1,
+                address: 0,
+                len: 1,
+            }],
+            vec![Hint {
+                after_reads: 1,
+                address: usize::MAX,
+                len: 2,
+            }],
+            vec![
+                Hint {
+                    after_reads: 1,
+                    address: 0x1000,
+                    len: 1,
+                },
+                Hint {
+                    after_reads: 0,
+                    address: 0x1000,
+                    len: 1,
+                },
+            ],
+        ] {
+            assert!(make().with_hints(hints).is_none());
+        }
+        let hints = vec![
+            Hint {
+                after_reads: 0,
+                address: 0x1000,
+                len: 8,
+            },
+            Hint {
+                after_reads: 1,
+                address: 1,
+                len: 1,
+            },
+        ];
+        let plan = make().with_hints(hints.clone()).unwrap();
+        assert_eq!(plan.hints(), hints);
+        assert_eq!(plan.native().unwrap().hints.len(), 2);
+        assert_eq!(
+            source(&[7; 8]).execute_read_plan(&plan, &mut [0; 8]),
+            Some(Outcome::Complete)
+        );
+        let wide = u32::MAX as usize + 1;
+        let plan = PreparedPlan::new(vec![read(0, wide, 0)], vec![], vec![], wide).unwrap();
+        assert!(plan.native().is_none());
+        assert_eq!(plan.reads()[0].destination_offset, wide);
+        let plan = make()
+            .with_hints(vec![Hint {
+                after_reads: 1,
+                address: 0x1000,
+                len: wide,
+            }])
+            .unwrap();
+        assert!(plan.native().is_none());
+        assert_eq!(plan.hints()[0].len, wide);
+    }
+
+    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+    #[test]
+    fn native_compact_controls_keep_every_byte_and_fixed_width_boundary() {
+        let bytes = [7_u8; 128];
+        let address = bytes.as_ptr() as usize;
+        // SAFETY: immutable owned source remains alive for every execution.
+        let memory = unsafe { crate::memory::LiveMemory::new() };
+        for width in [1, 2, 3, 4, 8, 12, 16, 24, 26, 32, 48, 64] {
+            for changed in (0..width).map(Some).chain([None]) {
+                let mut expected = vec![7; width];
+                if let Some(index) = changed {
+                    expected[index] ^= 1;
+                }
+                let plan = PreparedPlan::new(
+                    vec![read(address + 1, 2, width)],
+                    vec![control(1, 2, width, 0)],
+                    expected,
+                    128,
+                )
+                .unwrap()
+                .with_hints(vec![
+                    Hint {
+                        after_reads: 0,
+                        address: address + 1,
+                        len: width,
+                    },
+                    Hint {
+                        after_reads: 1,
+                        address,
+                        len: 1,
+                    },
+                ])
+                .unwrap();
+                let mut output = [0xCC; 128];
+                assert_eq!(
+                    memory.execute_read_plan(&plan, &mut output),
+                    Some(if changed.is_some() {
+                        Outcome::ControlChanged { completed_reads: 1 }
+                    } else {
+                        Outcome::Complete
+                    })
+                );
+                assert_eq!(&output[..2], &[0xCC; 2]);
+                assert_eq!(&output[2..2 + width], &bytes[..width]);
+                assert!(output[2 + width..].iter().all(|&byte| byte == 0xCC));
+            }
+        }
+    }
+
+    #[test]
     fn changed_parent_stops_before_any_child_read_and_payload_changes_are_fresh() {
         let plan = PreparedPlan::new(
             vec![read(0x1000, 0, 1), read(0x1001, 1, 2)],
@@ -268,6 +553,10 @@ mod tests {
             2,
         )
         .unwrap();
+        assert_eq!(plan.requested_work(0), (0, 0));
+        assert_eq!(plan.requested_work(1), (0, 0));
+        assert_eq!(plan.requested_work(2), (1, 1));
+        assert_eq!(plan.requested_work(usize::MAX), (1, 1));
         let mut output = [3, 0];
         assert_eq!(
             memory.execute_read_plan(&plan, &mut output),

@@ -3,7 +3,8 @@
 use crate::{
     projection::{Projection, project_table, scalar_table},
     raw::RawLog,
-    sampling::{full_match, qpc},
+    read_accounting,
+    sampling::qpc,
     spooling::unavailable,
     table_capture::{Arena, CaptureRows, grow_vec},
 };
@@ -68,32 +69,35 @@ pub struct Captured {
     sources: Arena<u8>,
     exchange_scratch: Vec<cresource_exchange::Membership>,
     purchase_scratch: Vec<cpurchase_contract::Membership>,
-    /// Raw-copy split gate for the hourly economy rest (copy/decode split).
-    /// Set by the game thread every hour with a valid raw payload; `capture`
+    /// Raw-copy split gate for economy's hourly and scheduled tables.
+    /// Set when an acquisition job returns a valid raw payload; `capture`
     /// then skips the typed walks and the decode worker fills the rows before
     /// the ready handoff. Preserved across `reset` (set per hour, cleared by
     /// the worker after decode).
     pub(crate) rest_raw_mode: bool,
+    resources_active: bool,
+    other_active: bool,
 }
 
 impl Captured {
-    /// `successful` is in local TABLES order, as are all returned arrays.
-    pub fn with_capacities(capacity: &Capacities, successful: &[u16]) -> Self {
+    pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            fuel: CaptureRows::new(capacity.rows[0], successful[0]),
-            experience: CaptureRows::new(capacity.rows[1], successful[1]),
-            supply: CaptureRows::new(capacity.rows[2], successful[2]),
-            hubs: CaptureRows::new(capacity.rows[3], successful[3]),
-            disrupted: CaptureRows::new(capacity.rows[4], successful[4]),
-            foreign: CaptureRows::new(capacity.rows[5], successful[5]),
-            definitions: CaptureRows::new(capacity.rows[6], successful[6]),
-            resources: CaptureRows::new(capacity.rows[7], successful[7]),
-            exchanges: CaptureRows::new(capacity.rows[8], successful[8]),
-            purchases: CaptureRows::new(capacity.rows[9], successful[9]),
-            sources: Arena::new(capacity.foreign_sources, successful[5]),
+            fuel: CaptureRows::new(capacity.rows[0]),
+            experience: CaptureRows::new(capacity.rows[1]),
+            supply: CaptureRows::new(capacity.rows[2]),
+            hubs: CaptureRows::new(capacity.rows[3]),
+            disrupted: CaptureRows::new(capacity.rows[4]),
+            foreign: CaptureRows::new(capacity.rows[5]),
+            definitions: CaptureRows::new(capacity.rows[6]),
+            resources: CaptureRows::new(capacity.rows[7]),
+            exchanges: CaptureRows::new(capacity.rows[8]),
+            purchases: CaptureRows::new(capacity.rows[9]),
+            sources: Arena::new(capacity.foreign_sources),
             exchange_scratch: vec![cresource_exchange::Membership::default(); capacity.rows[8]],
             purchase_scratch: vec![cpurchase_contract::Membership::default(); capacity.rows[9]],
             rest_raw_mode: false,
+            resources_active: false,
+            other_active: false,
         }
     }
 
@@ -127,201 +131,170 @@ impl Captured {
             + self.purchase_scratch.capacity() * size_of::<cpurchase_contract::Membership>()
     }
 
-    pub fn grow(&mut self, capacity: &mut Capacities, successful: &[u16]) {
-        self.fuel.grow(&mut capacity.rows[0], successful[0]);
-        self.experience.grow(&mut capacity.rows[1], successful[1]);
-        self.supply.grow(&mut capacity.rows[2], successful[2]);
-        self.hubs.grow(&mut capacity.rows[3], successful[3]);
-        self.disrupted.grow(&mut capacity.rows[4], successful[4]);
-        self.foreign.grow(&mut capacity.rows[5], successful[5]);
-        self.definitions.grow(&mut capacity.rows[6], successful[6]);
-        self.resources.grow(&mut capacity.rows[7], successful[7]);
-        self.exchanges.grow(&mut capacity.rows[8], successful[8]);
-        self.purchases.grow(&mut capacity.rows[9], successful[9]);
-        self.sources
-            .grow(&mut capacity.foreign_sources, successful[5]);
+    pub fn grow(&mut self, capacity: &mut Capacities) {
+        self.fuel.grow(&mut capacity.rows[0]);
+        self.experience.grow(&mut capacity.rows[1]);
+        self.supply.grow(&mut capacity.rows[2]);
+        self.hubs.grow(&mut capacity.rows[3]);
+        self.disrupted.grow(&mut capacity.rows[4]);
+        self.foreign.grow(&mut capacity.rows[5]);
+        self.definitions.grow(&mut capacity.rows[6]);
+        self.resources.grow(&mut capacity.rows[7]);
+        self.exchanges.grow(&mut capacity.rows[8]);
+        self.purchases.grow(&mut capacity.rows[9]);
+        self.sources.grow(&mut capacity.foreign_sources);
         grow_vec(&mut self.exchange_scratch, capacity.rows[8]);
         grow_vec(&mut self.purchase_scratch, capacity.rows[9]);
     }
 
-    /// Reads and bounded consistency checks: no allocation, encoding or I/O. QPC
-    /// ticks include every acquisition and bounded double-read comparison.
+    /// Bounded acquisition without allocation, encoding or I/O; returns QPC ticks.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        needed: &[bool],
-    ) -> ([bool; N], [u64; N]) {
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
         self.reset();
-        // Hourly economy rest (copy/decode split): every hour the game thread
-        // stages raw bytes via `copy_economy_rest_refresh` and the decode
-        // worker fills all ten tables before the ready handoff, so the typed
-        // walks below skip here. Matched flags and costs come from the raw
-        // compare, applied by the caller after this returns.
+        self.set_schedule(hour, force_full);
+        // A staged payload is installed by the decode worker.
         if self.rest_raw_mode {
-            // Refresh payload staged: leave the reset outcomes for the decode
-            // worker, which installs identical rows and outcomes.
-            return ([false; N], [0; N]);
+            return [0; N];
         }
-        let mut matched = [false; N];
         let mut ticks = [0; N];
         macro_rules! plain {
             ($index:literal, $field:ident, $walker:path) => {{
+                let _reads = read_accounting::table(TABLES[$index]);
                 let begin = qpc();
-                matched[$index] = capture_rows(&mut self.$field, needed[$index], |rows| {
+                capture_rows(&mut self.$field, |rows| {
                     $walker(memory, base, game_state, rows)
                 });
                 ticks[$index] = elapsed(begin);
             }};
         }
-        plain!(0, fuel, ccountry_fuel_status::walk);
-        plain!(1, experience, ccountry_experience_status::walk);
-        plain!(2, supply, sprovince_supply_data::walk);
-        plain!(3, hubs, ccountry_supply_system::walk);
-        plain!(4, disrupted, disrupted_supply_bucket::walk);
-
-        let begin = qpc();
-        let first = foreign_homebase_node::walk(
-            memory,
-            base,
-            game_state,
-            &mut self.foreign.rows,
-            &mut self.sources.first,
-        );
-        self.foreign.outcome = bounded(first.outcome, self.foreign.rows.len());
-        self.sources.len = first.bytes_len;
-        self.sources.required = first.required_bytes;
-        if first.required_bytes < first.bytes_len
-            || !valid_sources(
-                self.foreign.outcome,
-                &self.foreign.rows,
-                &self.sources.first,
-                first.bytes_len,
-            )
-        {
-            self.foreign.outcome = invalid_sources();
+        if self.other_active {
+            plain!(0, fuel, ccountry_fuel_status::walk);
+            plain!(1, experience, ccountry_experience_status::walk);
         }
-        if needed[5] {
-            self.foreign.checked = true;
-            let second = foreign_homebase_node::walk(
+        plain!(2, supply, sprovince_supply_data::walk);
+        if self.other_active {
+            plain!(3, hubs, ccountry_supply_system::walk);
+            plain!(4, disrupted, disrupted_supply_bucket::walk);
+            let _reads = read_accounting::table(TABLES[5]);
+            let begin = qpc();
+            let acquired = foreign_homebase_node::walk(
                 memory,
                 base,
                 game_state,
-                &mut self.foreign.second,
-                &mut self.sources.second,
+                &mut self.foreign.rows,
+                &mut self.sources.first,
             );
-            let mut outcome = bounded(second.outcome, self.foreign.second.len());
-            if second.required_bytes < second.bytes_len
+            self.foreign.outcome = bounded(acquired.outcome, self.foreign.rows.len());
+            self.sources.len = acquired.bytes_len;
+            self.sources.required = acquired.required_bytes;
+            if acquired.required_bytes < acquired.bytes_len
                 || !valid_sources(
-                    outcome,
-                    &self.foreign.second,
-                    &self.sources.second,
-                    second.bytes_len,
+                    self.foreign.outcome,
+                    &self.foreign.rows,
+                    &self.sources.first,
+                    acquired.bytes_len,
                 )
             {
-                outcome = invalid_sources();
+                self.foreign.outcome = invalid_sources();
             }
-            self.foreign.compare(outcome);
-            self.foreign.mismatches += usize::from(
-                !self
-                    .sources
-                    .compare(second.bytes_len, second.required_bytes),
-            );
-            matched[5] = full_match(self.foreign.outcome, outcome, self.foreign.mismatches);
+            ticks[5] = elapsed(begin);
         }
-        ticks[5] = elapsed(begin);
-
-        // Raw descriptor acquisition deliberately never resolves GlobalLexicalTokens.
-        let begin = qpc();
-        matched[6] = capture_rows(&mut self.definitions, needed[6], |rows| {
-            cstrategic_resource::walk(memory, base, rows)
-        });
-        ticks[6] = elapsed(begin);
-        let descriptors = match self.definitions.outcome {
-            Outcome::Rows { len } if self.definitions.mismatches == 0 => {
-                self.definitions.rows.get(..len)
-            }
-            _ => None,
-        };
-        let begin = qpc();
-        if let Some(descriptors) = descriptors {
-            matched[7] = capture_rows(&mut self.resources, needed[7], |rows| {
-                ccountry_resources::walk(memory, base, game_state, descriptors, rows)
+        if self.resources_active {
+            let mut reads = read_accounting::table(TABLES[6]);
+            let begin = qpc();
+            capture_rows(&mut self.definitions, |rows| {
+                cstrategic_resource::walk(memory, base, rows)
             });
-        } else {
-            self.resources.outcome = unavailable_descriptors();
-        }
-        ticks[7] = elapsed(begin);
-
-        let begin = qpc();
-        if let Some(descriptors) = descriptors {
-            self.exchanges.outcome = bounded(
-                cresource_exchange::walk(
-                    memory,
-                    base,
-                    game_state,
-                    descriptors,
-                    &mut self.exchanges.rows,
-                    &mut self.exchange_scratch,
-                ),
-                self.exchanges.rows.len(),
-            );
-            if needed[8] {
-                self.exchanges.checked = true;
-                let second = bounded(
-                    cresource_exchange::walk_exports(
+            ticks[6] = elapsed(begin);
+            let descriptors = match self.definitions.outcome {
+                Outcome::Rows { len } => self.definitions.rows.get(..len),
+                _ => None,
+            };
+            reads.select(TABLES[7]);
+            let begin = qpc();
+            if let Some(descriptors) = descriptors {
+                capture_rows(&mut self.resources, |rows| {
+                    ccountry_resources::walk(memory, base, game_state, descriptors, rows)
+                });
+            } else {
+                self.resources.outcome = unavailable_descriptors();
+            }
+            ticks[7] = elapsed(begin);
+            reads.select(TABLES[8]);
+            let begin = qpc();
+            if let Some(descriptors) = descriptors {
+                self.exchanges.outcome = bounded(
+                    cresource_exchange::walk(
                         memory,
                         base,
                         game_state,
                         descriptors,
-                        &mut self.exchanges.second,
+                        &mut self.exchanges.rows,
                         &mut self.exchange_scratch,
                     ),
-                    self.exchanges.second.len(),
+                    self.exchanges.rows.len(),
                 );
-                matched[8] = compare_exchanges(&mut self.exchanges, second);
+            } else {
+                self.exchanges.outcome = unavailable_descriptors();
             }
-        } else {
-            self.exchanges.outcome = unavailable_descriptors();
+            ticks[8] = elapsed(begin);
         }
-        ticks[8] = elapsed(begin);
-
-        let begin = qpc();
-        matched[9] = capture_rows(&mut self.purchases, needed[9], |rows| {
-            cpurchase_contract::walk(memory, base, game_state, rows, &mut self.purchase_scratch)
-        });
-        ticks[9] = elapsed(begin);
-        (matched, ticks)
+        if self.other_active {
+            let _reads = read_accounting::table(TABLES[9]);
+            let begin = qpc();
+            capture_rows(&mut self.purchases, |rows| {
+                cpurchase_contract::walk(memory, base, game_state, rows, &mut self.purchase_scratch)
+            });
+            ticks[9] = elapsed(begin);
+        }
+        ticks
     }
 
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [
-            self.fuel.mismatches,
-            self.experience.mismatches,
-            self.supply.mismatches,
-            self.hubs.mismatches,
-            self.disrupted.mismatches,
-            self.foreign.mismatches,
-            self.definitions.mismatches,
-            self.resources.mismatches,
-            self.exchanges.mismatches,
-            self.purchases.mismatches,
-        ]
+    fn set_schedule(&mut self, hour: i32, force_full: bool) {
+        self.resources_active =
+            replay::cadence::should_walk(TableId::ResourceDefinitions, hour, force_full);
+        self.other_active = replay::cadence::should_walk(TableId::CountryFuel, hour, force_full);
+        self.mark_inactive();
+    }
+
+    fn mark_inactive(&mut self) {
+        let skipped = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
+        };
+        if !self.resources_active {
+            self.definitions.outcome = skipped;
+            self.resources.outcome = skipped;
+            self.exchanges.outcome = skipped;
+        }
+        if !self.other_active {
+            self.fuel.outcome = skipped;
+            self.experience.outcome = skipped;
+            self.hubs.outcome = skipped;
+            self.disrupted.outcome = skipped;
+            self.foreign.outcome = skipped;
+            self.purchases.outcome = skipped;
+            self.sources.reset();
+        }
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
         [
-            effective(&self.fuel),
-            effective(&self.experience),
-            effective(&self.supply),
-            effective(&self.hubs),
-            effective(&self.disrupted),
-            effective(&self.foreign),
-            effective(&self.definitions),
-            effective(&self.resources),
-            effective(&self.exchanges),
-            effective(&self.purchases),
+            self.fuel.outcome,
+            self.experience.outcome,
+            self.supply.outcome,
+            self.hubs.outcome,
+            self.disrupted.outcome,
+            self.foreign.outcome,
+            self.definitions.outcome,
+            self.resources.outcome,
+            self.exchanges.outcome,
+            self.purchases.outcome,
         ]
     }
 
@@ -569,43 +542,8 @@ fn bounded(outcome: Outcome, capacity: usize) -> Outcome {
     }
 }
 
-fn capture_rows<R: Default + Clone + PartialEq>(
-    captured: &mut CaptureRows<R>,
-    needed: bool,
-    mut walk: impl FnMut(&mut [R]) -> Outcome,
-) -> bool {
+fn capture_rows<R>(captured: &mut CaptureRows<R>, mut walk: impl FnMut(&mut [R]) -> Outcome) {
     captured.outcome = bounded(walk(&mut captured.rows), captured.rows.len());
-    if !needed {
-        return false;
-    }
-    captured.checked = true;
-    let second = bounded(walk(&mut captured.second), captured.second.len());
-    captured.compare(second)
-}
-
-fn effective<R>(captured: &CaptureRows<R>) -> Outcome {
-    if captured.checked && captured.mismatches != 0 {
-        Outcome::Unavailable {
-            reason: "table changed during double read",
-        }
-    } else {
-        captured.outcome
-    }
-}
-
-/// Validation-only O(n log n) ordering in caller-owned buffers. A successful
-/// check requires every native field to match across both complete censuses.
-/// Truncated opposite-root prefixes need not contain the same objects, so they
-/// cannot establish a complete consistency check or a differing-world claim.
-fn compare_exchanges(captured: &mut CaptureRows<cresource_exchange::Row>, second: Outcome) -> bool {
-    if let (Outcome::Rows { len }, Outcome::Rows { len: other_len }) = (captured.outcome, second) {
-        captured.rows[..len].sort_unstable_by_key(|row| row.id);
-        captured.second[..other_len].sort_unstable_by_key(|row| row.id);
-        captured.compare(second)
-    } else {
-        captured.mismatches = usize::from(matches!(captured.outcome, Outcome::Rows { .. }));
-        false
-    }
 }
 
 fn unavailable_descriptors() -> Outcome {
@@ -636,102 +574,58 @@ fn valid_sources(
         })
 }
 
-/// Acquire owned raw buffers and report per-table checks without borrowing the frame.
+/// Acquire one owned payload and report its per-table costs.
 pub(crate) fn copy_economy_rest_refresh(
     memory: &impl Memory,
     ctx: EconomyRestCopyContext,
-    first: &mut EconomyRestJob,
-    mut second: Option<&mut EconomyRestJob>,
+    job: &mut EconomyRestJob,
 ) -> EconomyRestCopyReport {
     let started = qpc();
-    first.clear();
-    first.game_state = ctx.game_state;
-    let first_ready = first
-        .resources
-        .prepare(ctx.resource_rows, ctx.resource_scratch);
-    let second_needed = ctx.needed[6..9].iter().any(|&needed| needed);
-    let second_ready = if let Some(job) = second.as_deref_mut() {
-        job.clear();
-        job.game_state = ctx.game_state;
-        job.resources
-            .prepare(ctx.resource_second, ctx.resource_scratch)
-    } else {
-        !second_needed
-    };
-    // Refuse capacity before touching any source. The normal typed fallback
-    // must remain the first acquisition, including for consumable guard faults.
-    if !first_ready || !second_ready {
+    job.clear();
+    job.game_state = ctx.game_state;
+    job.resources_active = ctx.resources_active;
+    job.other_active = ctx.other_active;
+    // Active resources must have capacity before any raw source fault is consumed.
+    if ctx.resources_active
+        && !job
+            .resources
+            .prepare(ctx.resource_rows, ctx.resource_scratch)
+    {
         return EconomyRestCopyReport::default();
     }
-    copy_economy_rest_pass(memory, ctx.base, ctx.game_state, &mut first.log);
-    let mut ticks = [0u64; 10];
-    ticks[0] = elapsed(started);
-    let mut matched = [true; 10];
-    if let Some(second_job) = second.as_deref_mut() {
-        let second_started = qpc();
-        copy_economy_rest_pass(memory, ctx.base, ctx.game_state, &mut second_job.log);
-        ticks[0] += elapsed(second_started);
-        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-        for (slot, matched) in matched.iter_mut().enumerate() {
-            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-        }
-    }
-    let overflow = first.log.overflowed || second.as_ref().is_some_and(|job| job.log.overflowed);
-    let fault = first.log.fault.iter().any(|&fault| fault)
-        || second
-            .as_ref()
-            .is_some_and(|job| job.log.fault.iter().any(|&fault| fault));
+    copy_economy_rest_pass(
+        memory,
+        ctx.base,
+        ctx.game_state,
+        ctx.other_active,
+        &mut job.log,
+    );
+    let mut ticks = [0; N];
+    ticks[2] = elapsed(started);
+    let overflow = job.log.overflowed;
+    let fault = job.log.fault.iter().any(|&fault| fault);
     if overflow && fault {
-        first.staging_failure = Some("economy staging unavailable after source read failure");
-        matched = [false; N];
-        first.resources.mismatches = [1; 3];
-    } else if !overflow
-        && (first
+        job.staging_failure = Some("economy staging unavailable after source read failure");
+    } else if ctx.resources_active
+        && !overflow
+        && job
             .log
             .spans
             .iter()
             .any(|span| !span.ok && span.mask == M_E_CENSUS)
-            || second.as_ref().is_some_and(|job| {
-                job.log
-                    .spans
-                    .iter()
-                    .any(|span| !span.ok && span.mask == M_E_CENSUS)
-            }))
     {
-        // The shared census has already failed. Do not let a new typed read
-        // consume the recovered page and make its dependent group look valid.
-        first.resources.outcomes = [Some(Outcome::Unavailable {
+        // Failed shared input must not be retried by the typed resource group.
+        job.resources.outcomes = [Some(Outcome::Unavailable {
             reason: "economy shared country census unreadable",
         }); 3];
-        first.resources.mismatches = [1; 3];
-        matched[6..9].fill(false);
-    } else if !overflow {
-        acquire_resource_group(
-            memory,
-            ctx,
-            &mut first.resources,
-            second.map(|job| &mut job.resources),
-            &mut matched,
-            &mut ticks,
-        );
+    } else if ctx.resources_active && !overflow {
+        acquire_resource_group(memory, ctx, &mut job.resources, &mut ticks);
     }
-    let raw_ok = !overflow || first.staging_failure.is_some();
     EconomyRestCopyReport {
-        raw_ok,
-        matched,
+        raw_ok: !overflow || job.staging_failure.is_some(),
         copy_ticks: ticks,
-        raw_bytes: first.log.raw_bytes,
-        resource_mismatches: first.resources.mismatches,
+        raw_bytes: job.log.raw_bytes,
     }
-}
-
-fn resource_match<R: PartialEq>(first: Outcome, a: &[R], second: Outcome, b: &[R]) -> bool {
-    full_match(
-        first,
-        second,
-        crate::sampling::mismatches(first, a, second, b),
-    )
 }
 
 fn install_resource_rows<R: Copy>(
@@ -757,95 +651,52 @@ fn install_resource_rows<R: Copy>(
 fn acquire_resource_group(
     memory: &impl Memory,
     ctx: EconomyRestCopyContext,
-    first: &mut OwnedResources,
-    mut second: Option<&mut OwnedResources>,
-    matched: &mut [bool; N],
+    owned: &mut OwnedResources,
     ticks: &mut [u64; N],
 ) {
+    let mut reads = read_accounting::table(TABLES[6]);
     let started = qpc();
-    let definitions = &mut first.definitions[..ctx.resource_rows[0]];
-    let a = cstrategic_resource::walk(memory, ctx.base, definitions);
-    first.outcomes[0] = Some(a);
-    if ctx.needed[6] {
-        let b = second
-            .as_deref_mut()
-            .expect("preflighted resource comparison");
-        let rows = &mut b.definitions[..ctx.resource_second[0]];
-        let outcome = cstrategic_resource::walk(memory, ctx.base, rows);
-        b.outcomes[0] = Some(outcome);
-        first.mismatches[0] = crate::sampling::mismatches(a, definitions, outcome, rows);
-        matched[6] = resource_match(a, definitions, outcome, rows);
-    }
+    let definitions = &mut owned.definitions[..ctx.resource_rows[0]];
+    let outcome = cstrategic_resource::walk(memory, ctx.base, definitions);
+    owned.outcomes[0] = Some(outcome);
     ticks[6] = elapsed(started);
-    let descriptors = match a {
-        Outcome::Rows { len } if !ctx.needed[6] || matched[6] => definitions.get(..len),
+    let descriptors = match outcome {
+        Outcome::Rows { len } => definitions.get(..len),
         _ => None,
     };
     let Some(descriptors) = descriptors else {
-        first.outcomes[1] = Some(unavailable_descriptors());
-        first.outcomes[2] = Some(unavailable_descriptors());
-        matched[7] = false;
-        matched[8] = false;
+        owned.outcomes[1] = Some(unavailable_descriptors());
+        owned.outcomes[2] = Some(unavailable_descriptors());
         return;
     };
+    reads.select(TABLES[7]);
     let started = qpc();
-    let rows = &mut first.resources[..ctx.resource_rows[1]];
-    let a = ccountry_resources::walk(memory, ctx.base, ctx.game_state, descriptors, rows);
-    first.outcomes[1] = Some(a);
-    if ctx.needed[7] {
-        let b = second
-            .as_deref_mut()
-            .expect("preflighted resource comparison");
-        let other = &mut b.resources[..ctx.resource_second[1]];
-        let outcome =
-            ccountry_resources::walk(memory, ctx.base, ctx.game_state, descriptors, other);
-        b.outcomes[1] = Some(outcome);
-        first.mismatches[1] = crate::sampling::mismatches(a, rows, outcome, other);
-        matched[7] = resource_match(a, rows, outcome, other);
-    }
-    ticks[7] = elapsed(started);
-    let started = qpc();
-    let rows = &mut first.exchanges[..ctx.resource_rows[2]];
-    let a = cresource_exchange::walk(
+    owned.outcomes[1] = Some(ccountry_resources::walk(
         memory,
         ctx.base,
         ctx.game_state,
         descriptors,
-        rows,
-        &mut first.scratch[..ctx.resource_scratch],
-    );
-    first.outcomes[2] = Some(a);
-    if ctx.needed[8] {
-        let b = second.expect("preflighted resource comparison");
-        let other = &mut b.exchanges[..ctx.resource_second[2]];
-        let outcome = cresource_exchange::walk_exports(
-            memory,
-            ctx.base,
-            ctx.game_state,
-            descriptors,
-            other,
-            &mut b.scratch[..ctx.resource_scratch],
-        );
-        b.outcomes[2] = Some(outcome);
-        matched[8] = if let (Outcome::Rows { len }, Outcome::Rows { len: other_len }) = (a, outcome)
-        {
-            rows[..len].sort_unstable_by_key(|row| row.id);
-            other[..other_len].sort_unstable_by_key(|row| row.id);
-            first.mismatches[2] = crate::sampling::mismatches(a, rows, outcome, other);
-            resource_match(a, rows, outcome, other)
-        } else {
-            first.mismatches[2] = usize::from(matches!(a, Outcome::Rows { .. }));
-            false
-        };
-    }
+        &mut owned.resources[..ctx.resource_rows[1]],
+    ));
+    ticks[7] = elapsed(started);
+    reads.select(TABLES[8]);
+    let started = qpc();
+    owned.outcomes[2] = Some(cresource_exchange::walk(
+        memory,
+        ctx.base,
+        ctx.game_state,
+        descriptors,
+        &mut owned.exchanges[..ctx.resource_rows[2]],
+        &mut owned.scratch[..ctx.resource_scratch],
+    ));
     ticks[8] = elapsed(started);
 }
 
 impl Captured {
     /// Interpret seven indexed raw tables and install three owned native tables.
-    /// Resource rows are already acquired and checked in dependency order; their
+    /// Resource rows are already acquired in dependency order; their
     /// installation performs no native reads, index lookup or replayed walk.
-    /// All rows, arenas, truncation and comparison verdicts reach the same FIFO
+    /// All rows, arenas and truncation outcomes reach the same FIFO
     /// handoff. Clears `rest_raw_mode` so the next capture starts clean.
     pub(crate) fn decode_economy_rest_payload(
         &mut self,
@@ -853,211 +704,150 @@ impl Captured {
         job: &EconomyRestJob,
         decode_ticks: &mut [u64; 10],
     ) {
+        self.resources_active = job.resources_active;
+        self.other_active = job.other_active;
+        self.mark_inactive();
         if let Some(reason) = job.staging_failure {
-            let needed = [
-                self.fuel.checked,
-                self.experience.checked,
-                self.supply.checked,
-                self.hubs.checked,
-                self.disrupted.checked,
-                self.foreign.checked,
-                self.definitions.checked,
-                self.resources.checked,
-                self.exchanges.checked,
-                self.purchases.checked,
-            ];
-            self.fail_economy_rest_capture(needed, reason);
+            self.fail_economy_rest_capture(reason);
             return;
         }
         let recorded = crate::raw::Recorded::build(&job.log);
-        let started = qpc();
-        self.fuel.outcome = bounded(
-            ccountry_fuel_status::walk(&recorded, base, job.game_state, &mut self.fuel.rows),
-            self.fuel.rows.len(),
-        );
-        decode_ticks[0] += elapsed(started);
-        let started = qpc();
-        self.experience.outcome = bounded(
-            ccountry_experience_status::walk(
-                &recorded,
-                base,
-                job.game_state,
-                &mut self.experience.rows,
-            ),
-            self.experience.rows.len(),
-        );
-        decode_ticks[1] += elapsed(started);
+        if self.other_active {
+            let started = qpc();
+            self.fuel.outcome = bounded(
+                ccountry_fuel_status::walk(&recorded, base, job.game_state, &mut self.fuel.rows),
+                self.fuel.rows.len(),
+            );
+            decode_ticks[0] += elapsed(started);
+            let started = qpc();
+            self.experience.outcome = bounded(
+                ccountry_experience_status::walk(
+                    &recorded,
+                    base,
+                    job.game_state,
+                    &mut self.experience.rows,
+                ),
+                self.experience.rows.len(),
+            );
+            decode_ticks[1] += elapsed(started);
+        }
         let started = qpc();
         self.supply.outcome = bounded(
             sprovince_supply_data::walk(&recorded, base, job.game_state, &mut self.supply.rows),
             self.supply.rows.len(),
         );
         decode_ticks[2] += elapsed(started);
-        let started = qpc();
-        self.hubs.outcome = bounded(
-            ccountry_supply_system::walk(&recorded, base, job.game_state, &mut self.hubs.rows),
-            self.hubs.rows.len(),
-        );
-        self.disrupted.outcome = bounded(
-            disrupted_supply_bucket::walk(
+        if self.other_active {
+            let started = qpc();
+            self.hubs.outcome = bounded(
+                ccountry_supply_system::walk(&recorded, base, job.game_state, &mut self.hubs.rows),
+                self.hubs.rows.len(),
+            );
+            self.disrupted.outcome = bounded(
+                disrupted_supply_bucket::walk(
+                    &recorded,
+                    base,
+                    job.game_state,
+                    &mut self.disrupted.rows,
+                ),
+                self.disrupted.rows.len(),
+            );
+            decode_ticks[3] += elapsed(started);
+            decode_ticks[4] += 0;
+            let started = qpc();
+            let first = foreign_homebase_node::walk(
                 &recorded,
                 base,
                 job.game_state,
-                &mut self.disrupted.rows,
-            ),
-            self.disrupted.rows.len(),
-        );
-        decode_ticks[3] += elapsed(started);
-        decode_ticks[4] += 0;
-        let started = qpc();
-        let first = foreign_homebase_node::walk(
-            &recorded,
-            base,
-            job.game_state,
-            &mut self.foreign.rows,
-            &mut self.sources.first,
-        );
-        self.foreign.outcome = bounded(first.outcome, self.foreign.rows.len());
-        self.sources.len = first.bytes_len;
-        self.sources.required = first.required_bytes;
-        if first.required_bytes < first.bytes_len
-            || !valid_sources(
-                self.foreign.outcome,
-                &self.foreign.rows,
-                &self.sources.first,
-                first.bytes_len,
-            )
-        {
-            self.foreign.outcome = invalid_sources();
+                &mut self.foreign.rows,
+                &mut self.sources.first,
+            );
+            self.foreign.outcome = bounded(first.outcome, self.foreign.rows.len());
+            self.sources.len = first.bytes_len;
+            self.sources.required = first.required_bytes;
+            if first.required_bytes < first.bytes_len
+                || !valid_sources(
+                    self.foreign.outcome,
+                    &self.foreign.rows,
+                    &self.sources.first,
+                    first.bytes_len,
+                )
+            {
+                self.foreign.outcome = invalid_sources();
+            }
+            decode_ticks[5] += elapsed(started);
         }
-        decode_ticks[5] += elapsed(started);
-        let started = qpc();
-        self.definitions.outcome = install_resource_rows(
-            &mut self.definitions.rows,
-            &job.resources.definitions,
-            job.resources.outcomes[0],
-            job.resources.required[0],
-        );
-        decode_ticks[6] += elapsed(started);
-        let started = qpc();
-        let valid_definitions = matches!(self.definitions.outcome, Outcome::Rows { .. })
-            && self.definitions.mismatches == 0;
-        self.resources.outcome = if valid_definitions {
-            install_resource_rows(
-                &mut self.resources.rows,
-                &job.resources.resources,
-                job.resources.outcomes[1],
-                job.resources.required[1],
-            )
-        } else {
-            unavailable_descriptors()
-        };
-        decode_ticks[7] += elapsed(started);
-        let started = qpc();
-        self.exchanges.outcome = if valid_definitions {
-            install_resource_rows(
-                &mut self.exchanges.rows,
-                &job.resources.exchanges,
-                job.resources.outcomes[2],
-                job.resources.required[2],
-            )
-        } else {
-            unavailable_descriptors()
-        };
-        decode_ticks[8] += elapsed(started);
-        let started = qpc();
-        self.purchases.outcome = bounded(
-            cpurchase_contract::walk(
-                &recorded,
-                base,
-                job.game_state,
-                &mut self.purchases.rows,
-                &mut self.purchase_scratch,
-            ),
-            self.purchases.rows.len(),
-        );
-        decode_ticks[9] += elapsed(started);
+        if self.resources_active {
+            let started = qpc();
+            self.definitions.outcome = install_resource_rows(
+                &mut self.definitions.rows,
+                &job.resources.definitions,
+                job.resources.outcomes[0],
+                job.resources.required[0],
+            );
+            decode_ticks[6] += elapsed(started);
+            let started = qpc();
+            let valid_definitions = matches!(self.definitions.outcome, Outcome::Rows { .. });
+            self.resources.outcome = if valid_definitions {
+                install_resource_rows(
+                    &mut self.resources.rows,
+                    &job.resources.resources,
+                    job.resources.outcomes[1],
+                    job.resources.required[1],
+                )
+            } else {
+                unavailable_descriptors()
+            };
+            decode_ticks[7] += elapsed(started);
+            let started = qpc();
+            self.exchanges.outcome = if valid_definitions {
+                install_resource_rows(
+                    &mut self.exchanges.rows,
+                    &job.resources.exchanges,
+                    job.resources.outcomes[2],
+                    job.resources.required[2],
+                )
+            } else {
+                unavailable_descriptors()
+            };
+            decode_ticks[8] += elapsed(started);
+        }
+        if self.other_active {
+            let started = qpc();
+            self.purchases.outcome = bounded(
+                cpurchase_contract::walk(
+                    &recorded,
+                    base,
+                    job.game_state,
+                    &mut self.purchases.rows,
+                    &mut self.purchase_scratch,
+                ),
+                self.purchases.rows.len(),
+            );
+            decode_ticks[9] += elapsed(started);
+        }
         self.rest_raw_mode = false;
     }
 
-    /// Install one completed raw-copy report without changing rows or outcomes.
-    pub(crate) fn apply_economy_rest_report(
-        &mut self,
-        needed: [bool; 10],
-        report: &EconomyRestCopyReport,
-    ) {
-        self.fuel.checked = needed[0];
-        self.fuel.mismatches = usize::from(needed[0] && !report.matched[0]);
-        self.experience.checked = needed[1];
-        self.experience.mismatches = usize::from(needed[1] && !report.matched[1]);
-        self.supply.checked = needed[2];
-        self.supply.mismatches = usize::from(needed[2] && !report.matched[2]);
-        self.hubs.checked = needed[3];
-        self.hubs.mismatches = usize::from(needed[3] && !report.matched[3]);
-        self.disrupted.checked = needed[4];
-        self.disrupted.mismatches = usize::from(needed[4] && !report.matched[4]);
-        self.foreign.checked = needed[5];
-        self.foreign.mismatches = usize::from(needed[5] && !report.matched[5]);
-        self.definitions.checked = needed[6];
-        self.definitions.mismatches = if needed[6] {
-            report.resource_mismatches[0]
-        } else {
-            0
-        };
-        self.resources.checked = needed[7];
-        self.resources.mismatches = if needed[7] {
-            report.resource_mismatches[1]
-        } else {
-            0
-        };
-        self.exchanges.checked = needed[8];
-        self.exchanges.mismatches = if needed[8] {
-            report.resource_mismatches[2]
-        } else {
-            0
-        };
-        self.purchases.checked = needed[9];
-        self.purchases.mismatches = usize::from(needed[9] && !report.matched[9]);
-    }
-
     /// Finish an accepted acquisition failure without retrying live memory.
-    pub(crate) fn fail_economy_rest_capture(&mut self, needed: [bool; 10], reason: &'static str) {
+    pub(crate) fn fail_economy_rest_capture(&mut self, reason: &'static str) {
         self.fuel.outcome = Outcome::Unavailable { reason };
-        self.fuel.checked = needed[0];
-        self.fuel.mismatches = usize::from(needed[0]);
         self.experience.outcome = Outcome::Unavailable { reason };
-        self.experience.checked = needed[1];
-        self.experience.mismatches = usize::from(needed[1]);
         self.supply.outcome = Outcome::Unavailable { reason };
-        self.supply.checked = needed[2];
-        self.supply.mismatches = usize::from(needed[2]);
         self.hubs.outcome = Outcome::Unavailable { reason };
-        self.hubs.checked = needed[3];
-        self.hubs.mismatches = usize::from(needed[3]);
         self.disrupted.outcome = Outcome::Unavailable { reason };
-        self.disrupted.checked = needed[4];
-        self.disrupted.mismatches = usize::from(needed[4]);
         self.foreign.outcome = Outcome::Unavailable { reason };
-        self.foreign.checked = needed[5];
-        self.foreign.mismatches = usize::from(needed[5]);
         self.definitions.outcome = Outcome::Unavailable { reason };
-        self.definitions.checked = needed[6];
-        self.definitions.mismatches = usize::from(needed[6]);
         self.resources.outcome = Outcome::Unavailable { reason };
-        self.resources.checked = needed[7];
-        self.resources.mismatches = usize::from(needed[7]);
         self.exchanges.outcome = Outcome::Unavailable { reason };
-        self.exchanges.checked = needed[8];
-        self.exchanges.mismatches = usize::from(needed[8]);
         self.purchases.outcome = Outcome::Unavailable { reason };
-        self.purchases.checked = needed[9];
-        self.purchases.mismatches = usize::from(needed[9]);
+        self.mark_inactive();
         self.rest_raw_mode = false;
     }
 }
 
 // ===========================================================================
-// Hourly economy-rest raw-copy split (CountryFuel, CountryExperience,
+// Economy-rest raw-copy split (CountryFuel, CountryExperience,
 // ProvinceSupply, HubMotorization, DisruptedSupply, ForeignHomebases,
 // ResourceDefinitions, CountryResources, ResourceExchanges,
 // PurchaseContracts).
@@ -1068,10 +858,10 @@ impl Captured {
 // All raw staging completes before typed resource acquisition, preventing a
 // later raw capacity shortage from retrying an already-read resource source.
 //
-// Shared raw census spans carry only the seven raw-table bits. A source fault
-// in that census also blocks typed resource acquisition. The independent World
-// country-cache final verification and callback-bounded lifetime are unchanged.
-// Supply-root spans carry four supply bits; table-private reads remain local.
+// Shared raw census spans cover the six daily raw tables, never ProvinceSupply.
+// A source fault there also blocks active typed resource acquisition. When the
+// other daily tables are inactive, only ProvinceSupply is staged; country and
+// market sources are untouched. Supply-root masks include only active supply tables.
 // ===========================================================================
 
 /// Raw bits retain full ten-table positions; slots6..8 use owned native rows.
@@ -1082,7 +872,7 @@ const M_E_HUBS: u32 = 0x008;
 const M_E_DISRUPTED: u32 = 0x010;
 const M_E_FOREIGN: u32 = 0x020;
 const M_E_PURCH: u32 = 0x200;
-const M_E_CENSUS: u32 = 0x23F;
+const M_E_CENSUS: u32 = 0x23B;
 const M_E_SUPPLY_ROOT: u32 = 0x03C;
 const M_E_SUPPLY_OBJ: u32 = 0x038;
 
@@ -1093,6 +883,8 @@ const M_E_SUPPLY_OBJ: u32 = 0x038;
 pub(crate) struct EconomyRestJob {
     pub log: RawLog<10>,
     pub game_state: usize,
+    resources_active: bool,
+    other_active: bool,
     resources: OwnedResources,
     staging_failure: Option<&'static str>,
 }
@@ -1104,6 +896,8 @@ impl EconomyRestJob {
             // Resource rows use separate typed storage with exact frame grants.
             log: RawLog::new(1 << 18, 16 << 20),
             game_state: 0,
+            resources_active: false,
+            other_active: false,
             resources: OwnedResources::new([16, 4096, 1024], 1024),
             staging_failure: None,
         }
@@ -1113,6 +907,8 @@ impl EconomyRestJob {
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
+        self.resources_active = false;
+        self.other_active = false;
         self.resources.clear();
         self.staging_failure = None;
     }
@@ -1136,25 +932,21 @@ pub(crate) struct EconomyRestCopyReport {
     /// has not consumed a source fault. Source faults plus overflow are accepted
     /// terminal unavailable payloads, never a reason to reread failed memory.
     pub raw_ok: bool,
-    /// Seven raw partition verdicts plus three complete typed comparisons.
-    pub matched: [bool; 10],
     pub copy_ticks: [u64; 10],
     /// Indexed raw payload bytes. Owned resource tables have zero raw bytes;
     /// their native row storage is included in raw-memory payload-vector cost.
     pub raw_bytes: [u64; 10],
-    /// Typed comparison distinguishes equal truncation from a changed row.
-    pub resource_mismatches: [usize; 3],
 }
 
-/// Game-thread copy parameters, bundled to keep the tick entry small.
+/// Acquisition-job parameters supplied at the sampling boundary.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EconomyRestCopyContext {
     pub base: usize,
     pub game_state: usize,
-    pub needed: [bool; 10],
     pub resource_rows: [usize; 3],
-    pub resource_second: [usize; 3],
     pub resource_scratch: usize,
+    pub resources_active: bool,
+    pub other_active: bool,
 }
 
 /// Owned native rows only. Capacity grants are the enclosing frame's exact
@@ -1166,7 +958,6 @@ struct OwnedResources {
     exchanges: Vec<cresource_exchange::Row>,
     scratch: Vec<cresource_exchange::Membership>,
     outcomes: [Option<Outcome>; 3],
-    mismatches: [usize; 3],
     required: [usize; 3],
     scratch_required: usize,
     charge: crate::raw_memory::Charge,
@@ -1184,7 +975,6 @@ impl OwnedResources {
     }
     fn clear(&mut self) {
         self.outcomes = [None; 3];
-        self.mismatches = [0; 3];
         self.required = [0; 3];
         self.scratch_required = 0;
     }
@@ -1216,26 +1006,24 @@ impl OwnedResources {
 
 impl Captured {
     pub(crate) fn resource_copy_context(
-        &self,
+        &mut self,
         base: usize,
         game_state: usize,
-        needed: [bool; N],
+        hour: i32,
+        force_full: bool,
     ) -> EconomyRestCopyContext {
+        self.set_schedule(hour, force_full);
         EconomyRestCopyContext {
             base,
             game_state,
-            needed,
             resource_rows: [
                 self.definitions.rows.len(),
                 self.resources.rows.len(),
                 self.exchanges.rows.len(),
             ],
-            resource_second: [
-                self.definitions.second.len(),
-                self.resources.second.len(),
-                self.exchanges.second.len(),
-            ],
             resource_scratch: self.exchange_scratch.len(),
+            resources_active: self.resources_active,
+            other_active: self.other_active,
         }
     }
 }
@@ -1353,21 +1141,26 @@ fn copy_economy_link(
     Some(Some(slot))
 }
 
-/// One structural copy pass: shared census, supply root with province data,
-/// per-country fuel/experience/resources/supply/market blocks, resource
-/// database, market manager with contracts. Stops at the first typed abort
-/// point; later extras are harmless.
+/// One structural copy pass over the active raw tables. The hourly supply
+/// block is independent of the daily country and market sources.
 #[allow(clippy::collapsible_if)]
 fn copy_economy_rest_pass(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    other_active: bool,
     log: &mut RawLog<10>,
 ) {
+    let _reads = read_accounting::table(TABLES[2]);
     log.has_bulk = true;
+    // Retain the independent hourly sample before a daily census can fail.
+    copy_economy_province_supply(log, memory, game_state, other_active);
+    if !other_active {
+        return;
+    }
     // Census runs inline with per-country details copied immediately while
     // iterating slots, parsing link bytes from the log. No heap allocation on
-    // the game thread.
+    // the acquisition worker.
     let Some(countries_start) = espan(
         log,
         memory,
@@ -1404,69 +1197,6 @@ fn copy_economy_rest_pass(
         Some(v) => v as u64,
         None => return,
     };
-    // Supply root shared by supply/hubs/disrupted/foreign.
-    let supply_root = game_state
-        .checked_add(cgame_state::SUPPLY_SYSTEM)
-        .and_then(|p| {
-            let s = espan(log, memory, Some(p), 8, M_E_SUPPLY_ROOT)?;
-            usize::try_from(e_pool_u64(log, s)).ok().filter(|&v| v != 0)
-        });
-    if let Some(root) = supply_root {
-        let _ = esbulk(log, memory, Some(root), 16, M_E_SUPPLY_ROOT);
-        let _ = espan(
-            log,
-            memory,
-            root.checked_add(engine::csupply_system::PROVINCE_DATA),
-            16,
-            M_E_SUPPLY,
-        );
-        let _ = espan(
-            log,
-            memory,
-            root.checked_add(engine::csupply_system::COUNTRY_SYSTEM_DATA),
-            16,
-            M_E_SUPPLY_ROOT,
-        );
-        let _ = espan(
-            log,
-            memory,
-            root.checked_add(engine::csupply_system::COUNTRY_COMPANION_DATA),
-            16,
-            M_E_SUPPLY_ROOT,
-        );
-        // Province supply array data (batched gather): header plus full
-        // contiguous records. The walk batches 64x0x20; one bulk covers all.
-        if let Some(h) = root
-            .checked_add(engine::csupply_system::PROVINCE_DATA)
-            .and_then(|p| {
-                // Re-read header bytes from the log for discovery.
-                log.spans.iter().rev().find_map(|span| {
-                    if span.addr == p && span.len == 16 && span.ok {
-                        let mut h = [0u8; 16];
-                        h.copy_from_slice(
-                            &log.bytes[span.start as usize..span.start as usize + 16],
-                        );
-                        Array::from_header(h, sprovince_supply_data::STRIDE)
-                    } else {
-                        None
-                    }
-                })
-            })
-        {
-            if h.count >= 2 {
-                let bytes = (h.count as usize).saturating_mul(sprovince_supply_data::STRIDE);
-                let _ = esbulk(log, memory, Some(h.data), bytes, M_E_SUPPLY);
-            }
-        }
-        // Provinces array header for the slot-count check.
-        let _ = espan(
-            log,
-            memory,
-            game_state.checked_add(cgame_state::PROVINCES),
-            16,
-            M_E_SUPPLY,
-        );
-    }
     // Market manager shared by purchases.
     let market = game_state
         .checked_add(cgame_state::MARKET_MANAGER)
@@ -1607,6 +1337,69 @@ fn copy_economy_rest_pass(
     // same slots using log-served discovery).
     copy_economy_supply_details(log, memory, base, game_state);
     copy_economy_market_contracts(log, memory, base, market);
+}
+
+fn copy_economy_province_supply(
+    log: &mut RawLog<10>,
+    memory: &impl Memory,
+    game_state: usize,
+    other_active: bool,
+) {
+    let root_mask = if other_active {
+        M_E_SUPPLY_ROOT
+    } else {
+        M_E_SUPPLY
+    };
+    let supply_root = game_state
+        .checked_add(cgame_state::SUPPLY_SYSTEM)
+        .and_then(|p| {
+            let s = espan(log, memory, Some(p), 8, root_mask)?;
+            usize::try_from(e_pool_u64(log, s)).ok().filter(|&v| v != 0)
+        });
+    if let Some(root) = supply_root {
+        let _ = esbulk(log, memory, Some(root), 16, root_mask);
+        let province_data = espan(
+            log,
+            memory,
+            root.checked_add(engine::csupply_system::PROVINCE_DATA),
+            16,
+            M_E_SUPPLY,
+        );
+        if other_active {
+            let _ = espan(
+                log,
+                memory,
+                root.checked_add(engine::csupply_system::COUNTRY_SYSTEM_DATA),
+                16,
+                M_E_SUPPLY_ROOT,
+            );
+            let _ = espan(
+                log,
+                memory,
+                root.checked_add(engine::csupply_system::COUNTRY_COMPANION_DATA),
+                16,
+                M_E_SUPPLY_ROOT,
+            );
+        }
+        // Use the first header's recorded bytes to discover its contiguous rows.
+        if let Some(start) = province_data {
+            let mut header = [0; 16];
+            header.copy_from_slice(&log.bytes[start..start + 16]);
+            if let Some(array) = Array::from_header(header, sprovince_supply_data::STRIDE)
+                && array.count >= 2
+            {
+                let bytes = (array.count as usize).saturating_mul(sprovince_supply_data::STRIDE);
+                let _ = esbulk(log, memory, Some(array.data), bytes, M_E_SUPPLY);
+            }
+        }
+        let _ = espan(
+            log,
+            memory,
+            game_state.checked_add(cgame_state::PROVINCES),
+            16,
+            M_E_SUPPLY,
+        );
+    }
 }
 
 fn copy_economy_supply_details(
@@ -2045,7 +1838,7 @@ mod tests {
 
     #[test]
     fn owned_resource_group_matches_direct_rows_and_all_independent_capacity_limits() {
-        let memory = resource_fixture::Fixture::new();
+        let memory = engine::memory::CountedMemory::new(resource_fixture::Fixture::new());
         for definition_capacity in [0, 1, 2] {
             for resource_capacity in [0, 1, 3] {
                 for exchange_capacity in [0, 1, 2] {
@@ -2055,26 +1848,27 @@ mod tests {
                         resource_capacity,
                         exchange_capacity,
                     ]);
-                    let mut direct = Captured::with_capacities(&capacities, &[0; N]);
-                    let (expected, _) = direct.capture(&memory, 0, 0x1000, &[true; N]);
-                    let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-                    let ctx = captured.resource_copy_context(0, 0x1000, [true; N]);
+                    let mut direct = Captured::with_capacities(&capacities);
+                    let native = read_accounting::Capture::new();
+                    direct.capture(&memory, 0, 0x1000, 10, false);
+                    let direct_counts = native.finish();
+                    let mut captured = Captured::with_capacities(&capacities);
+                    let ctx = captured.resource_copy_context(0, 0x1000, 10, false);
                     let mut first = resource_job();
-                    let mut second = resource_job();
-                    let report =
-                        copy_economy_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
+                    let native = read_accounting::Capture::new();
+                    let report = copy_economy_rest_refresh(&memory, ctx, &mut first);
                     assert!(report.raw_ok);
-                    assert_eq!(&report.matched[6..9], &expected[6..9]);
-                    assert_eq!(
-                        report.resource_mismatches,
-                        [
-                            direct.definitions.mismatches,
-                            direct.resources.mismatches,
-                            direct.exchanges.mismatches
-                        ]
-                    );
-                    captured.apply_economy_rest_report(ctx.needed, &report);
+                    let counts = read_accounting::snapshot();
+                    let mut expected_counts = read_accounting::ZERO;
+                    expected_counts[TABLES[2].index()] = counts[TABLES[2].index()];
+                    for table in &TABLES[6..9] {
+                        expected_counts[table.index()] = direct_counts[table.index()];
+                    }
+                    assert!(counts[TABLES[2].index()].spans > 0);
+                    assert!(counts[TABLES[6].index()].spans > 0);
+                    assert_eq!(counts, expected_counts);
                     captured.decode_economy_rest_payload(0, &first, &mut [0; N]);
+                    assert_eq!(native.finish(), counts);
                     assert_eq!(&captured.outcomes()[6..9], &direct.outcomes()[6..9]);
                     assert_eq!(
                         &captured.definitions.rows[..captured.definitions.outcome.len()],
@@ -2099,48 +1893,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn owned_resource_comparison_capacity_and_retired_checks_are_not_row_limits() {
-        let memory = resource_fixture::Fixture::new();
-        for slot in 0..3 {
-            let capacities = e_capacities();
-            let mut direct = Captured::with_capacities(&capacities, &[0; N]);
-            match slot {
-                0 => direct.definitions.second.clear(),
-                1 => direct.resources.second.clear(),
-                _ => direct.exchanges.second.clear(),
-            }
-            let ctx = direct.resource_copy_context(0, 0x1000, [true; N]);
-            let (expected, _) = direct.capture(&memory, 0, 0x1000, &[true; N]);
-            let mut first = resource_job();
-            let mut second = resource_job();
-            let report = copy_economy_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
-            assert!(report.raw_ok);
-            assert_eq!(&report.matched[6..9], &expected[6..9]);
-            assert_eq!(
-                report.resource_mismatches,
-                [
-                    direct.definitions.mismatches,
-                    direct.resources.mismatches,
-                    direct.exchanges.mismatches
-                ]
-            );
-        }
-        let mut captured = Captured::with_capacities(&e_capacities(), &[200; N]);
-        let ctx = captured.resource_copy_context(0, 0x1000, [false; N]);
-        assert_eq!(ctx.resource_second, [0; 3]);
-        let mut job = resource_job();
-        let report = copy_economy_rest_refresh(&memory, ctx, &mut job, None);
-        assert!(report.raw_ok);
-        captured.apply_economy_rest_report(ctx.needed, &report);
-        captured.decode_economy_rest_payload(0, &job, &mut [0; N]);
-        assert_eq!(captured.resources.outcome, Outcome::Rows { len: 2 });
-        assert_eq!(captured.resources.rows[0].produced, 4_294_967_297);
-        job.clear();
-        assert_eq!(job.resources.outcomes, [None; 3]);
-        assert_eq!(job.resources.mismatches, [0; 3]);
-    }
-
     struct ResourceTrace<'a> {
         source: &'a resource_fixture::Fixture,
         reads: std::cell::RefCell<Vec<usize>>,
@@ -2160,43 +1912,83 @@ mod tests {
     #[test]
     fn owned_resource_preflight_refuses_before_reads_and_grows_only_when_recycled() {
         let source = resource_fixture::Fixture::new();
-        for short_slot in 0..4 {
-            for short_pass in 0..2 {
-                let memory = ResourceTrace {
-                    source: &source,
-                    reads: Default::default(),
-                    fault: None,
-                };
-                let captured = Captured::with_capacities(&e_capacities(), &[0; N]);
-                let ctx = captured.resource_copy_context(0, 0x1000, [true; N]);
-                let mut first = resource_job();
-                let mut second = resource_job();
-                let short = if short_pass == 0 {
-                    &mut first
-                } else {
-                    &mut second
-                };
-                match short_slot {
-                    0 => short.resources.definitions.clear(),
-                    1 => short.resources.resources.clear(),
-                    2 => short.resources.exchanges.clear(),
-                    _ => short.resources.scratch.clear(),
-                }
-                let report = copy_economy_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
-                assert!(!report.raw_ok);
-                assert!(memory.reads.borrow().is_empty());
-                let short = if short_pass == 0 {
-                    &mut first
-                } else {
-                    &mut second
-                };
-                assert!(short.grow_for_next());
-                short.grow();
-                assert!(!short.resources.needs_growth());
-                short.clear();
-                assert_eq!(short.resources.outcomes, [None; 3]);
+        for slot in 0..4 {
+            let memory = engine::memory::CountedMemory::new(ResourceTrace {
+                source: &source,
+                reads: Default::default(),
+                fault: None,
+            });
+            let mut captured = Captured::with_capacities(&e_capacities());
+            let ctx = captured.resource_copy_context(0, 0x1000, 0, true);
+            let mut job = resource_job();
+            match slot {
+                0 => job.resources.definitions.clear(),
+                1 => job.resources.resources.clear(),
+                2 => job.resources.exchanges.clear(),
+                _ => job.resources.scratch.clear(),
             }
+            let native = read_accounting::Capture::new();
+            let report = copy_economy_rest_refresh(&memory, ctx, &mut job);
+            assert!(!report.raw_ok);
+            assert_eq!(native.finish(), read_accounting::ZERO);
+            assert!(memory.0.reads.borrow().is_empty());
+            assert!(job.grow_for_next());
+            job.grow();
+            assert!(!job.resources.needs_growth());
+            job.clear();
+            assert_eq!(job.resources.outcomes, [None; 3]);
         }
+    }
+
+    #[test]
+    fn inactive_resources_neither_preflight_capacity_nor_install_missing_payloads() {
+        let source = resource_fixture::Fixture::new();
+        let memory = engine::memory::CountedMemory::new(ResourceTrace {
+            source: &source,
+            reads: Default::default(),
+            fault: None,
+        });
+        let mut captured = Captured::with_capacities(&e_capacities());
+        let context = captured.resource_copy_context(0, 0x1000, 0, false);
+        let mut job = resource_job();
+        job.resources.definitions.clear();
+        job.resources.resources.clear();
+        job.resources.exchanges.clear();
+        job.resources.scratch.clear();
+        let native = read_accounting::Capture::new();
+        let report = copy_economy_rest_refresh(&memory, context, &mut job);
+        assert!(report.raw_ok);
+        assert!(!job.resources.needs_growth());
+        assert_eq!(job.resources.outcomes, [None; 3]);
+        assert_eq!(
+            memory.0.reads.borrow().as_slice(),
+            &[0x1000 + cgame_state::SUPPLY_SYSTEM]
+        );
+        assert!(job.log.spans.iter().all(|span| span.mask == M_E_SUPPLY));
+        let before_decode = read_accounting::snapshot();
+        captured.set_schedule(0, true);
+        let mut ticks = [0; N];
+        captured.decode_economy_rest_payload(0, &job, &mut ticks);
+        assert_eq!(native.finish(), before_decode);
+        for index in [0, 1, 3, 4, 5, 6, 7, 8, 9] {
+            assert_eq!(
+                captured.outcomes()[index],
+                Outcome::Unavailable {
+                    reason: replay::cadence::SKIPPED_REASON,
+                }
+            );
+            assert_eq!(ticks[index], 0);
+            assert_eq!(report.copy_ticks[index], 0);
+            assert_eq!(report.raw_bytes[index], 0);
+            assert_eq!(
+                before_decode[TABLES[index].index()],
+                engine::memory::ReadCounts::ZERO
+            );
+        }
+        let context = captured.resource_copy_context(0, 0x1000, 10, false);
+        let native = read_accounting::Capture::new();
+        assert!(!copy_economy_rest_refresh(&memory, context, &mut job).raw_ok);
+        assert_eq!(native.finish(), read_accounting::ZERO);
     }
 
     #[test]
@@ -2207,12 +1999,11 @@ mod tests {
             reads: Default::default(),
             fault: Some(0x10010),
         };
-        let mut captured = Captured::with_capacities(&e_capacities(), &[200; N]);
-        let ctx = captured.resource_copy_context(0, 0x1000, [false; N]);
+        let mut captured = Captured::with_capacities(&e_capacities());
+        let ctx = captured.resource_copy_context(0, 0x1000, 10, false);
         let mut job = resource_job();
-        let report = copy_economy_rest_refresh(&memory, ctx, &mut job, None);
+        let report = copy_economy_rest_refresh(&memory, ctx, &mut job);
         assert!(report.raw_ok);
-        captured.apply_economy_rest_report(ctx.needed, &report);
         captured.decode_economy_rest_payload(0, &job, &mut [0; N]);
         assert!(matches!(
             captured.resources.outcome,
@@ -2248,267 +2039,158 @@ mod tests {
     #[test]
     fn owned_resource_raw_shortage_never_starts_group_and_shared_fault_is_terminal() {
         let source = resource_fixture::Fixture::new();
-        let captured = Captured::with_capacities(&e_capacities(), &[0; N]);
-        let ctx = captured.resource_copy_context(0, 0x1000, [true; N]);
-        for fault in [None, Some(0x1000 + cgame_state::COUNTRIES)] {
-            let memory = ResourceTrace {
-                source: &source,
-                reads: Default::default(),
-                fault,
-            };
-            let mut first = resource_job();
-            let mut second = resource_job();
-            second.log = RawLog::new(1, 1);
-            let report = copy_economy_rest_refresh(&memory, ctx, &mut first, Some(&mut second));
-            // This sparse fixture also has genuine unreadable unrelated roots,
-            // so either source failure requires terminal acceptance, not retry.
-            assert!(report.raw_ok);
-            assert!(first.staging_failure.is_some());
-            assert!(
-                !memory
-                    .reads
-                    .borrow()
-                    .contains(&engine::cstrategic_resource_database::SINGLETON_RVA)
-            );
-            assert_eq!(first.resources.outcomes, [None; 3]);
-            let mut decoded = Captured::with_capacities(&e_capacities(), &[0; N]);
-            decoded.apply_economy_rest_report(ctx.needed, &report);
-            decoded.decode_economy_rest_payload(0, &first, &mut [0; N]);
-            assert!(
-                decoded
-                    .outcomes()
-                    .iter()
-                    .all(|outcome| matches!(outcome, Outcome::Unavailable { .. }))
-            );
-        }
+        let mut captured = Captured::with_capacities(&e_capacities());
+        let ctx = captured.resource_copy_context(0, 0x1000, 0, true);
+        let memory = engine::memory::CountedMemory::new(ResourceTrace {
+            source: &source,
+            reads: Default::default(),
+            fault: Some(0x1000 + cgame_state::COUNTRIES),
+        });
+        let mut job = resource_job();
+        let native = read_accounting::Capture::new();
+        assert!(copy_economy_rest_refresh(&memory, ctx, &mut job).raw_ok);
+        let mut expected_counts = read_accounting::ZERO;
+        expected_counts[TABLES[2].index()] = engine::memory::ReadCounts {
+            copy_calls: 2,
+            spans: 2,
+            bytes: 24,
+            ..engine::memory::ReadCounts::ZERO
+        };
+        assert_eq!(read_accounting::snapshot(), expected_counts);
+        assert_eq!(
+            memory.0.reads.borrow().as_slice(),
+            &[
+                0x1000 + cgame_state::SUPPLY_SYSTEM,
+                0x1000 + cgame_state::COUNTRIES,
+            ]
+        );
+        assert!(
+            job.resources
+                .outcomes
+                .iter()
+                .all(|o| matches!(o, Some(Outcome::Unavailable { .. })))
+        );
+        let mut decoded = Captured::with_capacities(&e_capacities());
+        decoded.decode_economy_rest_payload(0, &job, &mut [0; N]);
+        assert_eq!(native.finish(), expected_counts);
+        assert!(
+            decoded.outcomes()[6..9]
+                .iter()
+                .all(|o| matches!(o, Outcome::Unavailable { .. }))
+        );
+
+        let memory = ResourceTrace {
+            source: &source,
+            reads: Default::default(),
+            fault: None,
+        };
+        let mut job = resource_job();
+        job.log = RawLog::new(8, 128);
+        assert!(copy_economy_rest_refresh(&memory, ctx, &mut job).raw_ok);
+        assert!(job.staging_failure.is_some());
+        assert!(
+            !memory
+                .reads
+                .borrow()
+                .contains(&engine::cstrategic_resource_database::SINGLETON_RVA)
+        );
+        assert_eq!(job.resources.outcomes, [None; 3]);
+        decoded.decode_economy_rest_payload(0, &job, &mut [0; N]);
+        assert!(
+            decoded
+                .outcomes()
+                .iter()
+                .all(|o| matches!(o, Outcome::Unavailable { .. }))
+        );
     }
 
     #[test]
-    fn economy_rest_copy_report_bookkeeping_and_terminal_failure_are_table_local() {
-        let mut captured = Captured::with_capacities(&e_capacities(), &[0; N]);
-        captured.rest_raw_mode = true;
-        captured.fuel.outcome = Outcome::Rows { len: 1 };
-        captured.fuel.mismatches = 9;
-        captured.experience.outcome = Outcome::Rows { len: 1 };
-        captured.experience.mismatches = 9;
-        captured.supply.outcome = Outcome::Rows { len: 1 };
-        captured.supply.mismatches = 9;
-        captured.hubs.outcome = Outcome::Rows { len: 1 };
-        captured.hubs.mismatches = 9;
-        captured.disrupted.outcome = Outcome::Rows { len: 1 };
-        captured.disrupted.mismatches = 9;
-        captured.foreign.outcome = Outcome::Rows { len: 1 };
-        captured.foreign.mismatches = 9;
-        captured.definitions.outcome = Outcome::Rows { len: 1 };
-        captured.definitions.mismatches = 9;
-        captured.resources.outcome = Outcome::Rows { len: 1 };
-        captured.resources.mismatches = 9;
-        captured.exchanges.outcome = Outcome::Rows { len: 1 };
-        captured.exchanges.mismatches = 9;
-        captured.purchases.outcome = Outcome::Rows { len: 1 };
-        captured.purchases.mismatches = 9;
-        let needed = std::array::from_fn(|index| index % 2 == 0);
-        let report = EconomyRestCopyReport {
-            raw_ok: false,
-            matched: std::array::from_fn(|index| index % 3 != 0),
-            copy_ticks: std::array::from_fn(|index| index as u64 + 17),
-            raw_bytes: std::array::from_fn(|index| index as u64 + 41),
-            resource_mismatches: [1, 0, 0],
-        };
-        captured.apply_economy_rest_report(needed, &report);
-        let states = [
-            (
-                captured.fuel.checked,
-                captured.fuel.mismatches,
-                captured.fuel.outcome,
-            ),
-            (
-                captured.experience.checked,
-                captured.experience.mismatches,
-                captured.experience.outcome,
-            ),
-            (
-                captured.supply.checked,
-                captured.supply.mismatches,
-                captured.supply.outcome,
-            ),
-            (
-                captured.hubs.checked,
-                captured.hubs.mismatches,
-                captured.hubs.outcome,
-            ),
-            (
-                captured.disrupted.checked,
-                captured.disrupted.mismatches,
-                captured.disrupted.outcome,
-            ),
-            (
-                captured.foreign.checked,
-                captured.foreign.mismatches,
-                captured.foreign.outcome,
-            ),
-            (
-                captured.definitions.checked,
-                captured.definitions.mismatches,
-                captured.definitions.outcome,
-            ),
-            (
-                captured.resources.checked,
-                captured.resources.mismatches,
-                captured.resources.outcome,
-            ),
-            (
-                captured.exchanges.checked,
-                captured.exchanges.mismatches,
-                captured.exchanges.outcome,
-            ),
-            (
-                captured.purchases.checked,
-                captured.purchases.mismatches,
-                captured.purchases.outcome,
-            ),
-        ];
-        for (index, (checked, mismatches, outcome)) in states.into_iter().enumerate() {
-            assert_eq!(checked, needed[index]);
-            assert_eq!(
-                mismatches,
-                usize::from(needed[index] && !report.matched[index])
-            );
-            assert_eq!(outcome, Outcome::Rows { len: 1 });
-        }
-        assert!(captured.rest_raw_mode);
-        // A later successful report replaces stale mismatch bookkeeping.
-        captured.apply_economy_rest_report(
-            [true; 10],
-            &EconomyRestCopyReport {
-                raw_ok: true,
-                matched: [true; 10],
-                resource_mismatches: [0; 3],
-                ..report
-            },
+    fn failed_daily_country_header_keeps_hourly_supply_and_first_fault() {
+        use engine::csupply_system;
+
+        const GAME: usize = 0x1000;
+        const ROOT: usize = 0x20000;
+        const SUPPLY: usize = 0x21000;
+        let mut source = resource_fixture::Fixture::new();
+        source.u64(GAME + cgame_state::SUPPLY_SYSTEM, ROOT as u64);
+        source.u64(ROOT, csupply_system::VTABLE_RVA as u64);
+        source.u64(ROOT + 8, csupply_system::SECONDARY_VTABLE_RVA as u64);
+        source.array(GAME + cgame_state::PROVINCES, 0x22000, 3);
+        source.array(ROOT + csupply_system::PROVINCE_DATA, SUPPLY, 3);
+        source.array(ROOT + csupply_system::COUNTRY_SYSTEM_DATA, 0, 0);
+        source.array(ROOT + csupply_system::COUNTRY_COMPANION_DATA, 0, 0);
+        source.put(SUPPLY, &[0; 3 * sprovince_supply_data::STRIDE]);
+        source.u64(SUPPLY + sprovince_supply_data::STRIDE, 5);
+        source.u64(SUPPLY + 2 * sprovince_supply_data::STRIDE, 9);
+        let mut expected = [sprovince_supply_data::Row::default(); 2];
+        assert_eq!(
+            sprovince_supply_data::walk(&source, 0, GAME, &mut expected),
+            Outcome::Rows { len: 2 }
         );
-        let states = [
-            (
-                captured.fuel.checked,
-                captured.fuel.mismatches,
-                captured.fuel.outcome,
-            ),
-            (
-                captured.experience.checked,
-                captured.experience.mismatches,
-                captured.experience.outcome,
-            ),
-            (
-                captured.supply.checked,
-                captured.supply.mismatches,
-                captured.supply.outcome,
-            ),
-            (
-                captured.hubs.checked,
-                captured.hubs.mismatches,
-                captured.hubs.outcome,
-            ),
-            (
-                captured.disrupted.checked,
-                captured.disrupted.mismatches,
-                captured.disrupted.outcome,
-            ),
-            (
-                captured.foreign.checked,
-                captured.foreign.mismatches,
-                captured.foreign.outcome,
-            ),
-            (
-                captured.definitions.checked,
-                captured.definitions.mismatches,
-                captured.definitions.outcome,
-            ),
-            (
-                captured.resources.checked,
-                captured.resources.mismatches,
-                captured.resources.outcome,
-            ),
-            (
-                captured.exchanges.checked,
-                captured.exchanges.mismatches,
-                captured.exchanges.outcome,
-            ),
-            (
-                captured.purchases.checked,
-                captured.purchases.mismatches,
+
+        for (hour, force_full) in [(17, false), (0, true)] {
+            let memory = engine::memory::CountedMemory::new(ResourceTrace {
+                source: &source,
+                reads: Default::default(),
+                // A second native attempt would succeed, hiding the first fault.
+                fault: Some(GAME + cgame_state::COUNTRIES),
+            });
+            let mut captured = Captured::with_capacities(&e_capacities());
+            let context = captured.resource_copy_context(0, GAME, hour, force_full);
+            let mut job = resource_job();
+            let native = read_accounting::Capture::new();
+            let report = copy_economy_rest_refresh(&memory, context, &mut job);
+            assert!(report.raw_ok);
+            assert!(job.staging_failure.is_none());
+            assert!(job.log.fault[0]);
+            assert!(!job.log.fault[2]);
+            let mut expected_counts = read_accounting::ZERO;
+            expected_counts[TableId::ProvinceSupply.index()] = engine::memory::ReadCounts {
+                copy_calls: 8,
+                spans: 8,
+                // Seven supply requests plus the failed 16-byte country header.
+                bytes: 104 + 3 * sprovince_supply_data::STRIDE as u64,
+                ..engine::memory::ReadCounts::ZERO
+            };
+            assert_eq!(read_accounting::snapshot(), expected_counts);
+            captured.decode_economy_rest_payload(0, &job, &mut [0; N]);
+            assert_eq!(native.finish(), expected_counts);
+            assert_eq!(captured.supply.outcome, Outcome::Rows { len: 2 });
+            assert_eq!(&captured.supply.rows[..2], &expected);
+            for index in [0, 1, 3, 4, 5] {
+                assert_eq!(
+                    captured.outcomes()[index],
+                    Outcome::Unavailable {
+                        reason: "country array unreadable or invalid",
+                    }
+                );
+            }
+            assert!(matches!(
                 captured.purchases.outcome,
-            ),
-        ];
-        assert!(
-            states
-                .into_iter()
-                .all(|(checked, mismatches, outcome)| checked
-                    && mismatches == 0
-                    && outcome == Outcome::Rows { len: 1 })
-        );
-        let reason = "accepted acquisition worker stopped";
-        captured.fail_economy_rest_capture(needed, reason);
-        let states = [
-            (
-                captured.fuel.checked,
-                captured.fuel.mismatches,
-                captured.fuel.outcome,
-            ),
-            (
-                captured.experience.checked,
-                captured.experience.mismatches,
-                captured.experience.outcome,
-            ),
-            (
-                captured.supply.checked,
-                captured.supply.mismatches,
-                captured.supply.outcome,
-            ),
-            (
-                captured.hubs.checked,
-                captured.hubs.mismatches,
-                captured.hubs.outcome,
-            ),
-            (
-                captured.disrupted.checked,
-                captured.disrupted.mismatches,
-                captured.disrupted.outcome,
-            ),
-            (
-                captured.foreign.checked,
-                captured.foreign.mismatches,
-                captured.foreign.outcome,
-            ),
-            (
-                captured.definitions.checked,
-                captured.definitions.mismatches,
-                captured.definitions.outcome,
-            ),
-            (
-                captured.resources.checked,
-                captured.resources.mismatches,
-                captured.resources.outcome,
-            ),
-            (
-                captured.exchanges.checked,
-                captured.exchanges.mismatches,
-                captured.exchanges.outcome,
-            ),
-            (
-                captured.purchases.checked,
-                captured.purchases.mismatches,
-                captured.purchases.outcome,
-            ),
-        ];
-        for (index, (checked, mismatches, outcome)) in states.into_iter().enumerate() {
-            assert_eq!(checked, needed[index]);
-            assert_eq!(mismatches, usize::from(needed[index]));
-            assert_eq!(outcome, Outcome::Unavailable { reason });
+                Outcome::Unavailable { reason } if reason != replay::cadence::SKIPPED_REASON
+            ));
+            for outcome in &captured.outcomes()[6..9] {
+                assert!(matches!(outcome, Outcome::Unavailable { .. }));
+                assert_eq!(
+                    *outcome
+                        == Outcome::Unavailable {
+                            reason: replay::cadence::SKIPPED_REASON,
+                        },
+                    !force_full
+                );
+            }
+            let reads = memory.0.reads.borrow();
+            assert_eq!(reads.len(), 8);
+            for address in [
+                GAME + cgame_state::COUNTRIES,
+                GAME + cgame_state::SUPPLY_SYSTEM,
+                SUPPLY,
+            ] {
+                assert_eq!(reads.iter().filter(|&&read| read == address).count(), 1);
+            }
         }
-        assert!(!captured.rest_raw_mode);
     }
 
-    use crate::sampling::CONSISTENCY_TARGET;
     use replay::rows::TableSchema;
 
     fn small() -> (Capacities, Captured) {
@@ -2516,7 +2198,7 @@ mod tests {
             rows: [2; N],
             foreign_sources: 4,
         };
-        let captured = Captured::with_capacities(&capacities, &[0; N]);
+        let captured = Captured::with_capacities(&capacities);
         (capacities, captured)
     }
 
@@ -2638,40 +2320,46 @@ mod tests {
             tables: std::array::from_fn(|_| unavailable("outside economy fixture").into()),
             metrics: Metrics::default(),
         };
-        for (table, input) in TABLES.into_iter().zip(captured.table_inputs(None)) {
+        let original_inputs = captured.table_inputs(None);
+        for (table, input) in TABLES.into_iter().zip(original_inputs.iter().cloned()) {
             baseline.tables[table.index()] = input;
         }
         let mut encoder = FrameEncoder::new();
         encoder.encode_input(baseline, false).unwrap();
         let mut scratch = ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 101, false, &mut scratch);
-        assert!(
-            captured
-                .table_inputs(Some(&mut projection))
-                .iter()
-                .all(|input| { matches!(input, TableInput::ComparedEqual(_)) })
-        );
+        let assert_unchanged = |inputs: [TableInput; N]| {
+            // Hourly supply may reuse its validated baseline. Daily tables
+            // materialize complete rows for their separate recovery cache.
+            assert!(matches!(inputs[2], TableInput::ComparedEqual(_)));
+            for index in [0, 1, 3, 4, 5, 6, 7, 8, 9] {
+                assert_eq!(inputs[index], original_inputs[index], "table {index}");
+            }
+        };
+        assert_unchanged(captured.table_inputs(Some(&mut projection)));
         // A native census permutation keeps the same replay keys and payloads,
         // including unsigned replay ordering of signed province/node fields.
         captured.hubs.rows.swap(0, 1);
-        assert!(
-            captured
-                .table_inputs(Some(&mut projection))
-                .iter()
-                .all(|input| { matches!(input, TableInput::ComparedEqual(_)) })
-        );
+        assert_unchanged(captured.table_inputs(Some(&mut projection)));
 
         captured.supply.rows[0].flags -= 1;
         captured.resources.rows[0].exported += 1;
         let changed = captured.table_inputs(Some(&mut projection));
         let converted = captured.table_inputs(None);
         for index in [2, 7] {
-            assert_eq!(changed[index], converted[index]);
-            assert!(matches!(changed[index], TableInput::Sampled(_)));
+            match &changed[index] {
+                TableInput::ComparedChanges { indices, rows, .. } => {
+                    assert_eq!(index, 2);
+                    assert_eq!(indices, &[0]);
+                    assert_eq!(TableInput::Sampled(TableView::Complete(rows.clone())), converted[index]);
+                }
+                _ => assert_eq!(changed[index], converted[index]),
+            }
+            assert_ne!(changed[index], original_inputs[index]);
         }
 
         // Every field in the only nested economy row must participate in the
-        // exact comparison, including embedded zero/non-UTF8 source bytes.
+        // exact projection, including embedded zero/non-UTF8 source bytes.
         let original = captured.foreign.rows[0];
         for field in 0..13 {
             captured.foreign.rows[0] = original;
@@ -2697,6 +2385,7 @@ mod tests {
                 input,
                 captured.foreign_table(None, captured.foreign.outcome)
             );
+            assert_ne!(input, original_inputs[5], "field {field}");
             assert!(matches!(input, TableInput::Sampled(_)), "field {field}");
         }
         captured.foreign.rows[0] = original;
@@ -2704,17 +2393,18 @@ mod tests {
         // Identical bytes in a different arena position are still equal.
         captured.sources.first.copy_within(1..4, 0);
         captured.foreign.rows[0].source_start = 0;
-        assert!(matches!(
+        assert_eq!(
             captured.foreign_table(Some(&mut projection), captured.foreign.outcome),
-            TableInput::ComparedEqual(_)
-        ));
+            original_inputs[5]
+        );
         captured.foreign.rows[0].source_start = usize::MAX;
         assert!(matches!(
             captured.foreign_table(Some(&mut projection), captured.foreign.outcome),
             TableInput::Sampled(TableView::Unavailable { .. })
         ));
-        captured.fuel.checked = true;
-        captured.fuel.mismatches = 1;
+        captured.fuel.outcome = Outcome::Unavailable {
+            reason: "fuel source unreadable",
+        };
         captured.hubs.outcome = Outcome::Truncated {
             len: 2,
             unread_rows: 1,
@@ -2829,49 +2519,7 @@ mod tests {
     }
 
     #[test]
-    fn independent_exchange_order_matches_but_changed_fields_and_incomplete_censuses_do_not() {
-        let mut captured = CaptureRows::<cresource_exchange::Row>::new(2, 0);
-        captured.outcome = Outcome::Rows { len: 2 };
-        captured.rows[0] = cresource_exchange::Row {
-            id: (1_u64 << 48) | 9,
-            delivered: i64::MAX,
-            ..Default::default()
-        };
-        captured.rows[1] = cresource_exchange::Row {
-            id: 2,
-            delivered: i64::MIN,
-            ..Default::default()
-        };
-        captured.second[0] = captured.rows[1];
-        captured.second[1] = captured.rows[0];
-        assert!(compare_exchanges(&mut captured, Outcome::Rows { len: 2 }));
-        captured.second[1].export_ordinal = 5;
-        assert!(!compare_exchanges(&mut captured, Outcome::Rows { len: 2 }));
-        assert_eq!(captured.mismatches, 1);
-        assert!(!compare_exchanges(
-            &mut captured,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        ));
-        assert_eq!(captured.mismatches, 1);
-        captured.outcome = Outcome::Truncated {
-            len: 1,
-            unread_rows: 1,
-        };
-        assert!(!compare_exchanges(
-            &mut captured,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        ));
-        assert_eq!(captured.mismatches, 0);
-    }
-
-    #[test]
-    fn growth_keeps_membership_scratch_in_step_and_releases_completed_validation_arenas() {
+    fn growth_keeps_primary_membership_scratch_and_source_capacity_in_step() {
         let (mut capacities, mut captured) = small();
         captured.purchases.outcome = Outcome::Truncated {
             len: 2,
@@ -2882,7 +2530,7 @@ mod tests {
             unread_rows: 9,
         };
         captured.sources.required = 37;
-        captured.grow(&mut capacities, &[0; N]);
+        captured.grow(&mut capacities);
         assert!(capacities.rows[9] >= 65 && capacities.rows[8] >= 11);
         assert_eq!(
             captured.purchases.rows.len(),
@@ -2895,13 +2543,8 @@ mod tests {
         assert!(captured.sources.first.len() >= 37);
         let before = captured.allocated_bytes();
         captured.reset();
-        captured.grow(&mut capacities, &[CONSISTENCY_TARGET; N]);
-        assert!(captured.exchanges.second.is_empty() && captured.sources.second.is_empty());
-        assert!(captured.allocated_bytes() < before);
-        assert_eq!(
-            captured.purchases.rows.len(),
-            captured.purchase_scratch.len()
-        );
+        captured.grow(&mut capacities);
+        assert_eq!(captured.allocated_bytes(), before);
     }
 
     // =======================================================================
@@ -2964,9 +2607,8 @@ mod tests {
     }
 
     fn e_direct(memory: &engine::memory::SliceMemory<'_>, cap: &Capacities) -> Captured {
-        let mut captured = Captured::with_capacities(cap, &[0; N]);
-        let (matched, _) = captured.capture(memory, E_BASE, E_GAME, &[true; N]);
-        let _ = matched;
+        let mut captured = Captured::with_capacities(cap);
+        captured.capture(memory, E_BASE, E_GAME, 0, true);
         captured
     }
 
@@ -2974,17 +2616,10 @@ mod tests {
         memory: &engine::memory::SliceMemory<'_>,
         cap: &Capacities,
     ) -> (Captured, EconomyRestCopyReport) {
-        let mut captured = Captured::with_capacities(cap, &[0; N]);
-        let ctx = captured.resource_copy_context(E_BASE, E_GAME, [true; N]);
+        let mut captured = Captured::with_capacities(cap);
+        let ctx = captured.resource_copy_context(E_BASE, E_GAME, 0, true);
         let mut first = EconomyRestJob::new();
-        let mut second = EconomyRestJob::new();
-        let report = crate::extended::economy::copy_economy_rest_refresh(
-            memory,
-            ctx,
-            &mut first,
-            Some(&mut second),
-        );
-        captured.apply_economy_rest_report(ctx.needed, &report);
+        let report = crate::extended::economy::copy_economy_rest_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
         captured.rest_raw_mode = report.raw_ok;
         let mut ticks = [0u64; 10];
@@ -3051,8 +2686,7 @@ mod tests {
         };
         let cap = e_capacities();
         let direct = e_direct(&memory, &cap);
-        let (split, report) = e_split(&memory, &cap);
-        assert!(report.matched[0]);
+        let (split, _) = e_split(&memory, &cap);
         assert_eq!(split.fuel.outcome, direct.fuel.outcome);
         assert_eq!(
             split.fuel.rows[..split.fuel.outcome.len()],
@@ -3094,14 +2728,13 @@ mod tests {
         };
         let cap = e_capacities();
         let direct = e_direct(&memory, &cap);
-        let (split, report) = e_split(&memory, &cap);
-        assert!(report.matched[1]);
+        let (split, _) = e_split(&memory, &cap);
         assert_eq!(split.experience.outcome, direct.experience.outcome);
         e_assert_table::<1>(&split, &direct, 1);
     }
 
     #[test]
-    fn economy_supply_copy_matches_direct_walk() {
+    fn economy_supply_is_hourly_with_daily_gates_and_identical_truncation() {
         use engine::{cgame_state, csupply_system, memory::SliceMemory, sprovince_supply_data};
         let mut bytes = vec![0; 0x20000];
         e_census(&mut bytes);
@@ -3130,16 +2763,94 @@ mod tests {
             SUPPLY + sprovince_supply_data::STRIDE,
             &5_i64.to_le_bytes(),
         );
-        let memory = SliceMemory {
+        let memory = engine::memory::CountedMemory::new(SliceMemory {
             base: E_GAME,
             bytes: &bytes,
+        });
+        let mut job = EconomyRestJob::new();
+        let skipped = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
         };
-        let cap = e_capacities();
-        let direct = e_direct(&memory, &cap);
-        let (split, report) = e_split(&memory, &cap);
-        assert!(report.matched[2]);
-        assert_eq!(split.supply.outcome, direct.supply.outcome);
-        e_assert_table::<2>(&split, &direct, 2);
+        for supply_capacity in [0, 1, 8] {
+            let mut cap = e_capacities();
+            cap.rows[2] = supply_capacity;
+            let mut direct = Captured::with_capacities(&cap);
+            let mut split = Captured::with_capacities(&cap);
+            for (hour, force_full) in (-24_i32..24).map(|hour| (hour, false)).chain([(0, true)]) {
+                let native = read_accounting::Capture::new();
+                let typed_ticks = direct.capture(&memory, E_BASE, E_GAME, hour, force_full);
+                let typed_counts = native.finish();
+                let context = split.resource_copy_context(E_BASE, E_GAME, hour, force_full);
+                let native = read_accounting::Capture::new();
+                let report = copy_economy_rest_refresh(&memory, context, &mut job);
+                assert!(report.raw_ok);
+                let raw_counts = read_accounting::snapshot();
+                // The acquired job determines the decode's active groups.
+                split.set_schedule(0, true);
+                let mut decode_ticks = [0; N];
+                split.decode_economy_rest_payload(E_BASE, &job, &mut decode_ticks);
+                assert_eq!(read_accounting::snapshot(), raw_counts);
+                assert_eq!(split.supply.outcome, direct.supply.outcome);
+                assert_eq!(split.supply.outcome.len(), supply_capacity.min(2));
+                assert_eq!(
+                    split.supply.rows[..split.supply.outcome.len()],
+                    direct.supply.rows[..direct.supply.outcome.len()],
+                );
+                assert!(typed_counts[TABLES[2].index()].spans > 0);
+                assert!(raw_counts[TABLES[2].index()].spans > 0);
+                for (active, indices) in [
+                    (force_full || hour.rem_euclid(24) == 10, &[6, 7, 8][..]),
+                    (
+                        force_full || hour.rem_euclid(24) == 17,
+                        &[0, 1, 3, 4, 5, 9][..],
+                    ),
+                ] {
+                    for &index in indices {
+                        if active {
+                            assert_ne!(direct.outcomes()[index], skipped);
+                            assert_ne!(split.outcomes()[index], skipped);
+                        } else {
+                            assert_eq!(direct.outcomes()[index], skipped);
+                            assert_eq!(split.outcomes()[index], skipped);
+                            assert_eq!(typed_ticks[index], 0);
+                            assert_eq!(decode_ticks[index], 0);
+                            assert_eq!(report.copy_ticks[index], 0);
+                            assert_eq!(report.raw_bytes[index], 0);
+                            assert_eq!(
+                                typed_counts[TABLES[index].index()],
+                                engine::memory::ReadCounts::ZERO
+                            );
+                            assert_eq!(
+                                raw_counts[TABLES[index].index()],
+                                engine::memory::ReadCounts::ZERO
+                            );
+                        }
+                    }
+                }
+                job.staging_failure = Some("accepted acquisition failed");
+                split.set_schedule(0, true);
+                let mut failure_ticks = [0; N];
+                split.decode_economy_rest_payload(E_BASE, &job, &mut failure_ticks);
+                assert_eq!(failure_ticks, [0; N]);
+                for (index, outcome) in split.outcomes().into_iter().enumerate() {
+                    let active = index == 2
+                        || force_full
+                        || ((6..9).contains(&index) && hour.rem_euclid(24) == 10)
+                        || (!(6..9).contains(&index) && hour.rem_euclid(24) == 17);
+                    assert_eq!(
+                        outcome,
+                        if active {
+                            Outcome::Unavailable {
+                                reason: "accepted acquisition failed",
+                            }
+                        } else {
+                            skipped
+                        }
+                    );
+                }
+                assert_eq!(native.finish(), raw_counts);
+            }
+        }
     }
 
     #[test]
@@ -3195,11 +2906,8 @@ mod tests {
 
     #[test]
     fn economy_resource_definitions_copy_matches_direct_walk() {
-        // Definitions need the resource DB singleton at base+0x3316cb8
-        // (outside the 32 KiB fixture, so both paths record the same live
-        // fault). Raw outcomes and rows are identical by construction; the
-        // raw compare conservatively blocks the check (matched=false), which
-        // is the pilot's fault rule, not a row defect.
+        // The resource DB singleton at base+0x3316cb8 lies outside this
+        // fixture. Both paths preserve its initial source failure.
         use engine::memory::SliceMemory;
         let mut bytes = vec![0; 0x8000];
         e_census(&mut bytes);
@@ -3209,15 +2917,13 @@ mod tests {
         };
         let cap = e_capacities();
         let direct = e_direct(&memory, &cap);
-        let (split, report) = e_split(&memory, &cap);
+        let (split, _) = e_split(&memory, &cap);
         assert_eq!(split.definitions.outcome, direct.definitions.outcome);
-        assert!(!report.matched[6]);
     }
 
     #[test]
     fn economy_country_resources_copy_matches_direct_walk() {
-        // Resources share the DB singleton fault above; raw outcomes match,
-        // checks stay blocked per the conservative fault rule.
+        // Resource consumers preserve the shared descriptor source failure.
         use engine::memory::SliceMemory;
         let mut bytes = vec![0; 0x8000];
         e_census(&mut bytes);
@@ -3227,15 +2933,13 @@ mod tests {
         };
         let cap = e_capacities();
         let direct = e_direct(&memory, &cap);
-        let (split, report) = e_split(&memory, &cap);
+        let (split, _) = e_split(&memory, &cap);
         assert_eq!(split.resources.outcome, direct.resources.outcome);
-        assert!(!report.matched[7]);
     }
 
     #[test]
     fn economy_resource_exchanges_copy_matches_direct_walk() {
-        // Exchanges share the DB singleton fault above; raw outcomes match,
-        // checks stay blocked per the conservative fault rule.
+        // Exchange consumers preserve the shared descriptor source failure.
         use engine::memory::SliceMemory;
         let mut bytes = vec![0; 0x8000];
         e_census(&mut bytes);
@@ -3245,9 +2949,8 @@ mod tests {
         };
         let cap = e_capacities();
         let direct = e_direct(&memory, &cap);
-        let (split, report) = e_split(&memory, &cap);
+        let (split, _) = e_split(&memory, &cap);
         assert_eq!(split.exchanges.outcome, direct.exchanges.outcome);
-        assert!(!report.matched[8]);
     }
 
     #[test]
@@ -3307,65 +3010,6 @@ mod tests {
     }
 
     #[test]
-    fn economy_double_copy_compare_blocks_checks_on_tearing() {
-        use engine::{ccountry, ccountry_fuel_status, memory::SliceMemory};
-        let mut bytes = vec![0; 0x8000];
-        e_census(&mut bytes);
-        {
-            let (country, fuel) = (E_C1, 0x6000_usize);
-            e_put(
-                &mut bytes,
-                country + ccountry::FUEL_STATUS,
-                &(fuel as u64).to_le_bytes(),
-            );
-            e_put(
-                &mut bytes,
-                fuel,
-                &(ccountry_fuel_status::VTABLE_RVA as u64).to_le_bytes(),
-            );
-            e_put(
-                &mut bytes,
-                fuel + ccountry_fuel_status::COUNTRY,
-                &(country as u64).to_le_bytes(),
-            );
-            e_put(
-                &mut bytes,
-                fuel + ccountry_fuel_status::CURRENT,
-                &1_i64.to_le_bytes(),
-            );
-        }
-        let memory = SliceMemory {
-            base: E_GAME,
-            bytes: &bytes,
-        };
-        let cap = e_capacities();
-        let mut captured = Captured::with_capacities(&cap, &[0; N]);
-        let ctx = captured.resource_copy_context(E_BASE, E_GAME, [true; N]);
-        let mut first = EconomyRestJob::new();
-        let mut second = EconomyRestJob::new();
-        let report = crate::extended::economy::copy_economy_rest_refresh(
-            &memory,
-            ctx,
-            &mut first,
-            Some(&mut second),
-        );
-        captured.apply_economy_rest_report(ctx.needed, &report);
-        assert!(report.raw_ok);
-        assert!(report.matched[0]);
-        // Tear the fuel bytes in the second log: only slot 0 flips.
-        let fuel_idx = second
-            .log
-            .spans
-            .iter()
-            .position(|s| s.ok && s.mask == 0x001)
-            .expect("fuel span");
-        let start = second.log.spans[fuel_idx].start as usize;
-        second.log.bytes[start] ^= 0xff;
-        assert!(!first.log.partition_equal(&second.log, 0));
-        assert!(first.log.partition_equal(&second.log, 1));
-    }
-
-    #[test]
     fn economy_staging_overflow_falls_back_to_typed_walk() {
         use engine::memory::SliceMemory;
         let mut bytes = vec![0; 0x8000];
@@ -3375,19 +3019,13 @@ mod tests {
             bytes: &bytes,
         };
         let cap = e_capacities();
-        let mut captured = Captured::with_capacities(&cap, &[0; N]);
-        let ctx = captured.resource_copy_context(E_BASE, E_GAME, [true; N]);
+        let mut captured = Captured::with_capacities(&cap);
+        let ctx = captured.resource_copy_context(E_BASE, E_GAME, 0, true);
         let mut tiny = EconomyRestJob {
             log: crate::raw::RawLog::new(8, 8),
             ..EconomyRestJob::new()
         };
-        let ctx = EconomyRestCopyContext {
-            needed: [false; N],
-            ..ctx
-        };
-        let report =
-            crate::extended::economy::copy_economy_rest_refresh(&memory, ctx, &mut tiny, None);
-        captured.apply_economy_rest_report(ctx.needed, &report);
+        let report = crate::extended::economy::copy_economy_rest_refresh(&memory, ctx, &mut tiny);
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());
@@ -3402,10 +3040,9 @@ mod tests {
             bytes: &bytes,
         };
         let cap = e_capacities();
-        let mut captured = Captured::with_capacities(&cap, &[0; N]);
+        let mut captured = Captured::with_capacities(&cap);
         captured.rest_raw_mode = true;
-        let (matched, ticks) = captured.capture(&memory, E_BASE, E_GAME, &[true; N]);
-        assert_eq!(matched, [false; N]);
+        let ticks = captured.capture(&memory, E_BASE, E_GAME, 0, true);
         assert_eq!(ticks, [0; N]);
     }
 

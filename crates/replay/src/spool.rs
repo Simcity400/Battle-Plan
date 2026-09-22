@@ -9,15 +9,16 @@ use std::{
 };
 
 use crate::{
+    FORMAT_VERSION,
     branches::{BranchStart, Gap},
     codec::{Decoder, invalid, put_string},
-    format::FormatVersion,
-    frame::Frame,
+    frame::{EncodedFrame, Frame},
     identity::SessionStart,
 };
 
-pub const RECORD_MAGIC: [u8; 4] = *b"H4SP";
-pub const RECORD_HEADER_BYTES: usize = 12;
+pub const RECORD_MAGIC: [u8; 4] = *b"H4SV";
+/// Magic, recording version, payload length and payload CRC, all scalars little-endian.
+pub const RECORD_HEADER_BYTES: usize = 4 + 2 + 4 + 4;
 pub const MAX_RECORD_BYTES: usize = 128 * 1024 * 1024;
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -178,10 +179,9 @@ impl Record {
         Ok(match input.u8()? {
             0 => Self::SessionStart(SessionStart::decode(input)?),
             1 => Self::BranchStart(BranchStart::decode(input)?),
-            // A spool segment carries the `H4SP` record magic this build
-            // writes, so its frames are always the current layout; older
-            // segments are refused whole at the magic.
-            2 => Self::Frame(Frame::decode(input, FormatVersion::CURRENT)?),
+            // Recovery checks the envelope's recording version before
+            // decoding this payload.
+            2 => Self::Frame(Frame::decode(input)?),
             3 => Self::Gap(Gap::decode(input)?),
             tag @ 4..=6 => Self::Control(ControlRecord::decode_tag(tag, input)?),
             _ => return Err(invalid("unknown spool record tag")),
@@ -192,14 +192,24 @@ impl Record {
 pub fn encode_record(record: &Record) -> io::Result<Vec<u8>> {
     let mut out = vec![0; RECORD_HEADER_BYTES];
     record.encode(&mut out)?;
+    seal_record(out)
+}
+
+fn encode_frame_record(mut frame: EncodedFrame) -> io::Result<Vec<u8>> {
+    frame.bytes[RECORD_HEADER_BYTES] = 2;
+    seal_record(frame.bytes)
+}
+
+fn seal_record(mut out: Vec<u8>) -> io::Result<Vec<u8>> {
     let length = out.len() - RECORD_HEADER_BYTES;
     if length > MAX_RECORD_BYTES {
         return Err(invalid("spool record exceeds 128 MiB"));
     }
     let crc = crc32fast::hash(&out[RECORD_HEADER_BYTES..]);
     out[..4].copy_from_slice(&RECORD_MAGIC);
-    out[4..8].copy_from_slice(&(length as u32).to_le_bytes());
-    out[8..12].copy_from_slice(&crc.to_le_bytes());
+    out[4..6].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+    out[6..10].copy_from_slice(&(length as u32).to_le_bytes());
+    out[10..14].copy_from_slice(&crc.to_le_bytes());
     Ok(out)
 }
 
@@ -252,20 +262,7 @@ impl SegmentState {
                 self.gap_before_keyframe = false;
             }
             Record::Frame(frame) => {
-                if self.branch != Some(frame.branch) {
-                    return Err(invalid("frame lacks matching branch context"));
-                }
-                if self.needs_keyframe && !frame.keyframe {
-                    return Err(invalid("branch or segment does not start with a keyframe"));
-                }
-                if self.first_hour.is_some_and(|hour| frame.hour < hour) {
-                    return Err(invalid("frame precedes declared first branch hour"));
-                }
-                if self.last_hour.is_some_and(|hour| frame.hour <= hour) {
-                    return Err(invalid("frame hours do not increase within branch"));
-                }
-                self.last_hour = Some(frame.hour);
-                self.needs_keyframe = false;
+                return self.accept_frame(frame.branch, frame.hour, frame.keyframe);
             }
             Record::Gap(gap) => {
                 if self.branch != Some(gap.branch) {
@@ -296,6 +293,33 @@ impl SegmentState {
                 self.detached = true;
             }
         }
+        self.records += 1;
+        Ok(())
+    }
+
+    fn accept_frame(&mut self, branch: u64, hour: i32, keyframe: bool) -> io::Result<()> {
+        if self.detached {
+            return Err(invalid("record after detach"));
+        }
+        if self.records == 0 {
+            return Err(invalid(
+                "segment does not begin with session or branch context",
+            ));
+        }
+        if self.branch != Some(branch) {
+            return Err(invalid("frame lacks matching branch context"));
+        }
+        if self.needs_keyframe && !keyframe {
+            return Err(invalid("branch or segment does not start with a keyframe"));
+        }
+        if self.first_hour.is_some_and(|first| hour < first) {
+            return Err(invalid("frame precedes declared first branch hour"));
+        }
+        if self.last_hour.is_some_and(|last| hour <= last) {
+            return Err(invalid("frame hours do not increase within branch"));
+        }
+        self.last_hour = Some(hour);
+        self.needs_keyframe = false;
         self.records += 1;
         Ok(())
     }
@@ -338,7 +362,13 @@ pub fn recover_prefix(bytes: &[u8]) -> Recovery {
                     String::from_utf8_lossy(&RECORD_MAGIC),
                 )));
             }
-            let length = u32::from_le_bytes(tail[4..8].try_into().unwrap()) as usize;
+            let version = u16::from_le_bytes(tail[4..6].try_into().unwrap());
+            if version != FORMAT_VERSION {
+                return Err(invalid(format!(
+                    "unsupported spool format version {version}; expected {FORMAT_VERSION}"
+                )));
+            }
+            let length = u32::from_le_bytes(tail[6..10].try_into().unwrap()) as usize;
             if length == 0 || length > MAX_RECORD_BYTES {
                 return Err(invalid("invalid record length"));
             }
@@ -346,7 +376,7 @@ pub fn recover_prefix(bytes: &[u8]) -> Recovery {
                 return Err(invalid("truncated record payload"));
             }
             let payload = &tail[RECORD_HEADER_BYTES..RECORD_HEADER_BYTES + length];
-            let expected = u32::from_le_bytes(tail[8..12].try_into().unwrap());
+            let expected = u32::from_le_bytes(tail[10..14].try_into().unwrap());
             if crc32fast::hash(payload) != expected {
                 return Err(invalid("record CRC mismatch"));
             }
@@ -373,14 +403,159 @@ pub fn recover_prefix(bytes: &[u8]) -> Recovery {
     result
 }
 
+/// Periodic synchronization work for one live segment, excluding forced barriers.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BackgroundSyncWork {
+    pub requested: u64,
+    pub completed: u64,
+    pub total_ns: u64,
+    pub max_ns: u64,
+    pub pending: bool,
+}
+
 /// A narrow I/O seam permits fault tests without creating files or spawning processes.
 pub trait SegmentSink: Write {
     fn sync_all(&mut self) -> io::Result<()>;
+
+    /// Start periodic durability work. A sink may complete it in the background;
+    /// ordinary writes remain ordered, and forced boundaries still use sync_all.
+    fn start_sync(&mut self) -> io::Result<()> {
+        self.sync_all()
+    }
+
+    /// Report pending durability errors before accepting more records. False
+    /// means the previous request is still running, so another must not start.
+    fn poll_sync(&mut self) -> io::Result<bool> {
+        Ok(true)
+    }
+
+    fn background_sync_work(&self) -> Option<BackgroundSyncWork> {
+        None
+    }
 }
 
 impl SegmentSink for File {
     fn sync_all(&mut self) -> io::Result<()> {
         File::sync_all(self)
+    }
+}
+
+/// One ordered writer and at most one periodic durability worker per segment.
+/// The worker owns a cloned handle, never record bytes or capture buffers.
+pub struct FileSink {
+    file: File,
+    sync_file: File,
+    pending: Option<std::thread::JoinHandle<(u64, io::Result<()>)>>,
+    work: BackgroundSyncWork,
+}
+
+#[cfg(windows)]
+fn independent_sync_file(file: &File) -> io::Result<File> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use windows_sys::Win32::{
+        Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE},
+        Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, ReOpenFile},
+    };
+    // Reopen the existing object, not its path. A duplicated synchronous writer
+    // handle would share that object's I/O serialization with the flush thread.
+    let handle = unsafe {
+        ReOpenFile(
+            file.as_raw_handle(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            0,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(unsafe { File::from_raw_handle(handle) })
+    }
+}
+
+#[cfg(not(windows))]
+fn independent_sync_file(file: &File) -> io::Result<File> {
+    file.try_clone()
+}
+
+impl FileSink {
+    fn finish_pending(&mut self) -> io::Result<()> {
+        if let Some(pending) = self.pending.take() {
+            let (elapsed, result) = pending
+                .join()
+                .map_err(|_| io::Error::other("spool durability worker panicked"))?;
+            self.work.completed += 1;
+            self.work.total_ns = self.work.total_ns.saturating_add(elapsed);
+            self.work.max_ns = self.work.max_ns.max(elapsed);
+            result?;
+        }
+        Ok(())
+    }
+}
+
+impl Write for FileSink {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.file.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl SegmentSink for FileSink {
+    fn sync_all(&mut self) -> io::Result<()> {
+        self.finish_pending()?;
+        // Include writes accepted after the background request began.
+        self.file.sync_all()
+    }
+
+    fn start_sync(&mut self) -> io::Result<()> {
+        if !self.poll_sync()? {
+            return Ok(());
+        }
+        let file = self.sync_file.try_clone()?;
+        self.pending = Some(
+            std::thread::Builder::new()
+                .name("replay-durability".into())
+                .spawn(move || {
+                    let started = Instant::now();
+                    let result = file.sync_all();
+                    (
+                        started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+                        result,
+                    )
+                })?,
+        );
+        self.work.requested += 1;
+        Ok(())
+    }
+
+    fn poll_sync(&mut self) -> io::Result<bool> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| !pending.is_finished())
+        {
+            return Ok(false);
+        }
+        self.finish_pending()?;
+        Ok(true)
+    }
+
+    fn background_sync_work(&self) -> Option<BackgroundSyncWork> {
+        Some(BackgroundSyncWork {
+            pending: self.pending.is_some(),
+            ..self.work
+        })
+    }
+}
+
+impl Drop for FileSink {
+    fn drop(&mut self) {
+        // The collector DLL must never unload with its worker still running.
+        // Normal close reports failures through sync_all; error cleanup only joins.
+        let _ = self.finish_pending();
     }
 }
 
@@ -406,13 +581,20 @@ impl FileBackend {
 }
 
 impl SegmentBackend for FileBackend {
-    type Sink = File;
+    type Sink = FileSink;
 
-    fn create(&mut self, index: u32) -> io::Result<File> {
-        OpenOptions::new()
+    fn create(&mut self, index: u32) -> io::Result<FileSink> {
+        let file = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(self.directory.join(format!("spool.{index:04}.h4s")))
+            .open(self.directory.join(format!("spool.{index:04}.h4s")))?;
+        let sync_file = independent_sync_file(&file)?;
+        Ok(FileSink {
+            file,
+            sync_file,
+            pending: None,
+            work: BackgroundSyncWork::default(),
+        })
     }
 }
 
@@ -451,13 +633,49 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         self.last_error.as_deref()
     }
 
+    /// Current open segment only; completed durations exclude forced barriers.
+    pub fn background_sync_work(&self) -> Option<BackgroundSyncWork> {
+        self.sink.as_ref()?.background_sync_work()
+    }
+
     /// The caller resets its table encoder and supplies a new keyframe on every restart.
     /// Lost hours must be named in `Gap` records in this context or subsequent appends.
     pub fn start_segment(&mut self, context: &[Record], keyframe: &Frame) -> io::Result<()> {
+        self.start_segment_with(
+            context,
+            keyframe.branch,
+            keyframe.hour,
+            keyframe.keyframe,
+            || encode_frame_record(keyframe.encoded()?),
+        )
+    }
+
+    pub fn start_encoded_segment(
+        &mut self,
+        context: &[Record],
+        keyframe: EncodedFrame,
+    ) -> io::Result<()> {
+        self.start_segment_with(
+            context,
+            keyframe.branch,
+            keyframe.hour,
+            keyframe.keyframe,
+            || encode_frame_record(keyframe),
+        )
+    }
+
+    fn start_segment_with(
+        &mut self,
+        context: &[Record],
+        branch: u64,
+        hour: i32,
+        keyframe: bool,
+        encode: impl FnOnce() -> io::Result<Vec<u8>>,
+    ) -> io::Result<()> {
         if self.sink.is_some() {
             return Err(invalid("close the current segment before starting another"));
         }
-        if context.is_empty() || !keyframe.keyframe {
+        if context.is_empty() || !keyframe {
             return Err(invalid("segment start needs context and a keyframe"));
         }
         let mut state = SegmentState::default();
@@ -472,9 +690,10 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
             state.accept(record)?;
             encoded.push(encode_record(record)?);
         }
-        let record = Record::Frame(keyframe.clone());
-        state.accept(&record)?;
-        encoded.push(encode_record(&record)?);
+        state.accept_frame(branch, hour, keyframe)?;
+        // Preserve context-before-payload errors for the borrowed Frame API.
+        // Neither entry point creates a segment until all bytes are ready.
+        encoded.push(encode()?);
         let index = self.next_segment;
         self.next_segment = index
             .checked_add(1)
@@ -506,13 +725,44 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         let mut state = self.state.clone();
         state.accept(record)?;
         let bytes = encode_record(record)?;
+        self.append_bytes(
+            state,
+            bytes,
+            matches!(record, Record::Control(ControlRecord::Detach { .. })),
+        )
+    }
+
+    pub fn append_encoded_frame(&mut self, frame: EncodedFrame) -> io::Result<()> {
+        if self.sink.is_none() {
+            return Err(invalid(
+                "no writable segment; restart with context and a keyframe",
+            ));
+        }
+        let mut state = self.state.clone();
+        state.accept_frame(frame.branch, frame.hour, frame.keyframe)?;
+        self.append_bytes(state, encode_frame_record(frame)?, false)
+    }
+
+    fn append_bytes(
+        &mut self,
+        state: SegmentState,
+        bytes: Vec<u8>,
+        force_sync: bool,
+    ) -> io::Result<()> {
+        if let Some(sink) = &mut self.sink
+            && let Err(error) = sink.poll_sync()
+        {
+            return self.failed(error);
+        }
         if let Err(error) = self.write_flushed(&bytes) {
             return self.failed(error);
         }
-        if (matches!(record, Record::Control(ControlRecord::Detach { .. }))
-            || self.last_sync.elapsed() >= SYNC_INTERVAL)
-            && let Err(error) = self.sync_current()
-        {
+        let synced = if force_sync {
+            self.sync_current()
+        } else {
+            self.sync_if_due()
+        };
+        if let Err(error) = synced {
             return self.failed(error);
         }
         self.state = state;
@@ -521,10 +771,18 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
 
     /// Call on the spool thread's timeout as well as on writes, so pauses still sync.
     pub fn sync_if_due(&mut self) -> io::Result<()> {
-        if self.sink.is_some()
-            && self.last_sync.elapsed() >= SYNC_INTERVAL
-            && let Err(error) = self.sync_current()
-        {
+        let result = (|| {
+            if let Some(sink) = &mut self.sink
+                && sink.poll_sync()?
+                && self.last_sync.elapsed() >= SYNC_INTERVAL
+            {
+                sink.flush()?;
+                sink.start_sync()?;
+                self.last_sync = Instant::now();
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
             return self.failed(error);
         }
         Ok(())
@@ -648,21 +906,57 @@ mod tests {
 
     #[test]
     fn old_spool_magic_is_refused_before_decoding_any_records() {
-        let mut bytes = valid_segment();
-        bytes[..4].copy_from_slice(b"H4SO");
+        let mut bytes = encode_record(&branch()).unwrap();
+        // The old envelope had no version field. Its payload and CRC are
+        // otherwise valid, so rejection must happen before decoding them.
+        bytes.drain(4..6);
+        bytes[..4].copy_from_slice(b"H4SP");
         let recovered = recover_prefix(&bytes);
         assert_eq!(recovered.valid_bytes, 0);
         assert!(recovered.records.is_empty());
         let reason = recovered.damage.unwrap();
-        assert!(reason.contains("unsupported spool record magic \"H4SO\""));
-        assert!(reason.contains("expected \"H4SP\""));
+        assert!(reason.contains("unsupported spool record magic \"H4SP\""));
+        assert!(reason.contains("expected \"H4SV\""));
+    }
+
+    #[test]
+    fn spool_versions_are_checked_on_every_record_before_payload_decoding() {
+        let prefix = valid_segment();
+        for version in [0, FORMAT_VERSION - 1, FORMAT_VERSION + 1, u16::MAX] {
+            for with_prefix in [false, true] {
+                let mut wrong = encode_record(&Record::Frame(frame(12, false))).unwrap();
+                wrong[4..6].copy_from_slice(&version.to_le_bytes());
+                // Keep the CRC valid. Even an invalid payload must report the
+                // envelope version first, without considering segment context.
+                wrong[RECORD_HEADER_BYTES] = u8::MAX;
+                let crc = crc32fast::hash(&wrong[RECORD_HEADER_BYTES..]);
+                wrong[10..14].copy_from_slice(&crc.to_le_bytes());
+                let mut bytes = if with_prefix {
+                    prefix.clone()
+                } else {
+                    Vec::new()
+                };
+                let valid_bytes = bytes.len();
+                bytes.extend(wrong);
+                bytes.extend_from_slice(&prefix);
+                let recovered = recover_prefix(&bytes);
+                assert_eq!(recovered.valid_bytes, valid_bytes);
+                assert_eq!(recovered.records.len(), if with_prefix { 3 } else { 0 });
+                assert_eq!(
+                    recovered.damage.as_deref(),
+                    Some(format!(
+                        "segment byte {valid_bytes}: unsupported spool format version {version}; expected {FORMAT_VERSION}"
+                    ).as_str()),
+                );
+            }
+        }
     }
 
     #[test]
     fn corruption_never_hides_valid_later_segments_or_resynchronizes_inside_one() {
         let good = valid_segment();
         let first_size = encode_record(&branch()).unwrap().len();
-        for byte in [0, 4, 8, RECORD_HEADER_BYTES, first_size + 8] {
+        for byte in [0, 4, 6, 10, RECORD_HEADER_BYTES, first_size + 10] {
             let mut broken = good.clone();
             broken[byte] ^= 0x80;
             broken.extend_from_slice(&good);
@@ -672,7 +966,7 @@ mod tests {
             assert_eq!(recover_prefix(&good).records.len(), 3);
         }
         let mut oversized = good.clone();
-        oversized[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        oversized[6..10].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(recover_prefix(&oversized).records.is_empty());
     }
 
@@ -682,7 +976,7 @@ mod tests {
         let mut unknown = encode_record(&branch()).unwrap();
         unknown[RECORD_HEADER_BYTES] = 255;
         let crc = crc32fast::hash(&unknown[RECORD_HEADER_BYTES..]);
-        unknown[8..12].copy_from_slice(&crc.to_le_bytes());
+        unknown[10..14].copy_from_slice(&crc.to_le_bytes());
         assert!(
             recover_prefix(&unknown)
                 .damage
@@ -832,6 +1126,10 @@ mod tests {
         fault: Option<Fault>,
         flushes: usize,
         syncs: usize,
+        background: bool,
+        sync_pending: bool,
+        sync_ready: bool,
+        sync_requests: usize,
     }
 
     #[derive(Clone, Default)]
@@ -901,12 +1199,182 @@ mod tests {
         fn sync_all(&mut self) -> io::Result<()> {
             let mut memory = self.shared.borrow_mut();
             memory.syncs += 1;
+            memory.sync_pending = false;
             if matches!(memory.fault, Some(Fault::Sync)) {
                 Err(injected())
             } else {
                 Ok(())
             }
         }
+
+        fn start_sync(&mut self) -> io::Result<()> {
+            if !self.shared.borrow().background {
+                return self.sync_all();
+            }
+            let mut memory = self.shared.borrow_mut();
+            assert!(!memory.sync_pending);
+            memory.sync_pending = true;
+            memory.sync_ready = false;
+            memory.sync_requests += 1;
+            Ok(())
+        }
+
+        fn poll_sync(&mut self) -> io::Result<bool> {
+            let mut memory = self.shared.borrow_mut();
+            if memory.sync_pending && memory.sync_ready {
+                memory.sync_pending = false;
+                memory.syncs += 1;
+                if matches!(memory.fault, Some(Fault::Sync)) {
+                    return Err(injected());
+                }
+            }
+            Ok(!memory.sync_pending)
+        }
+    }
+
+    #[test]
+    fn pending_periodic_sync_allows_ordered_frames_but_detach_remains_forced() {
+        let backend = MemoryBackend::default();
+        let shared = backend.0.clone();
+        shared.borrow_mut().background = true;
+        let mut spool = SegmentedSpool::new(backend);
+        spool.start_segment(&[branch()], &frame(10, true)).unwrap();
+        assert_eq!(shared.borrow().syncs, 1);
+        spool.last_sync = Instant::now() - SYNC_INTERVAL;
+        spool.sync_if_due().unwrap();
+        assert!(shared.borrow().sync_pending);
+        for hour in 11..20 {
+            // A slow request never blocks writes or starts an unbounded queue.
+            spool.last_sync = Instant::now() - SYNC_INTERVAL;
+            spool.append(&Record::Frame(frame(hour, false))).unwrap();
+        }
+        assert_eq!(shared.borrow().sync_requests, 1);
+        assert_eq!(shared.borrow().syncs, 1);
+        spool
+            .append(&Record::Control(ControlRecord::Detach {
+                session: 3,
+                last_hour: Some(19),
+            }))
+            .unwrap();
+        assert_eq!(shared.borrow().syncs, 2);
+        assert!(!shared.borrow().sync_pending);
+        let recovered = recover_prefix(&shared.borrow().files[&0]);
+        assert!(recovered.damage.is_none());
+    }
+
+    #[test]
+    fn background_sync_failure_closes_segment_before_another_record_is_written() {
+        for idle in [false, true] {
+            let backend = MemoryBackend::default();
+            let shared = backend.0.clone();
+            shared.borrow_mut().background = true;
+            let mut spool = SegmentedSpool::new(backend);
+            spool.start_segment(&[branch()], &frame(10, true)).unwrap();
+            spool.last_sync = Instant::now() - SYNC_INTERVAL;
+            spool.sync_if_due().unwrap();
+            spool.append(&Record::Frame(frame(11, false))).unwrap();
+            let length = shared.borrow().files[&0].len();
+            {
+                let mut memory = shared.borrow_mut();
+                memory.fault = Some(Fault::Sync);
+                memory.sync_ready = true;
+            }
+            let result = if idle {
+                spool.sync_if_due()
+            } else {
+                spool.append(&Record::Frame(frame(12, false)))
+            };
+            assert!(result.is_err());
+            assert!(!spool.is_open());
+            assert!(spool.last_error().is_some());
+            assert_eq!(shared.borrow().files[&0].len(), length);
+            assert!(spool.append(&Record::Frame(frame(12, false))).is_err());
+            shared.borrow_mut().fault = None;
+            spool.start_segment(&[branch()], &frame(12, true)).unwrap();
+            assert_eq!(spool.next_segment_index(), 2);
+        }
+    }
+
+    #[test]
+    fn forced_boundaries_surface_a_still_pending_durability_failure() {
+        for detach in [false, true] {
+            let backend = MemoryBackend::default();
+            let shared = backend.0.clone();
+            shared.borrow_mut().background = true;
+            let mut spool = SegmentedSpool::new(backend);
+            spool.start_segment(&[branch()], &frame(10, true)).unwrap();
+            spool.last_sync = Instant::now() - SYNC_INTERVAL;
+            spool.sync_if_due().unwrap();
+            assert!(shared.borrow().sync_pending);
+            shared.borrow_mut().fault = Some(Fault::Sync);
+            let result = if detach {
+                spool.append(&Record::Control(ControlRecord::Detach {
+                    session: 3,
+                    last_hour: Some(10),
+                }))
+            } else {
+                spool.finish_segment()
+            };
+            assert!(result.is_err());
+            assert!(!spool.is_open());
+            assert_eq!(shared.borrow().syncs, 2);
+        }
+    }
+
+    #[test]
+    fn encoded_frames_keep_their_buffer_and_match_the_existing_record_bytes() {
+        for keyframe in [false, true] {
+            let source = frame(10, keyframe);
+            let expected = encode_record(&Record::Frame(source.clone())).unwrap();
+            let prepared = source.encoded().unwrap();
+            let pointer = prepared.bytes.as_ptr();
+            let capacity = prepared.bytes.capacity();
+            let actual = encode_frame_record(prepared).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(actual.as_ptr(), pointer);
+            assert_eq!(actual.capacity(), capacity);
+        }
+    }
+
+    #[test]
+    fn segment_context_errors_precede_payload_encoding_without_creating_files() {
+        let backend = MemoryBackend::default();
+        let shared = backend.0.clone();
+        let mut spool = SegmentedSpool::new(backend);
+        let mut malformed = frame(10, true);
+        malformed.tables[crate::rows::TableId::Clock.index()] =
+            TableUpdate::Unchanged { baseline: 9 };
+        assert_eq!(
+            spool
+                .start_segment(&[], &malformed)
+                .unwrap_err()
+                .to_string(),
+            "segment start needs context and a keyframe",
+        );
+        assert_eq!(
+            spool
+                .start_segment(&[Record::Frame(frame(10, true))], &malformed)
+                .unwrap_err()
+                .to_string(),
+            "segment context contains frame or detach",
+        );
+        assert_eq!(
+            spool
+                .start_segment(&[branch()], &malformed)
+                .unwrap_err()
+                .to_string(),
+            "keyframe contains a dependent or partial table",
+        );
+        assert_eq!(spool.next_segment_index(), 0);
+        assert!(shared.borrow().files.is_empty());
+        spool.start_segment(&[branch()], &frame(10, true)).unwrap();
+        assert_eq!(
+            spool
+                .start_segment(&[], &malformed)
+                .unwrap_err()
+                .to_string(),
+            "close the current segment before starting another",
+        );
     }
 
     #[test]
@@ -923,12 +1391,20 @@ mod tests {
             });
             // Make the sync failure due without sleeping or relying on wall time.
             spool.last_sync = Instant::now() - SYNC_INTERVAL;
-            assert!(spool.append(&Record::Frame(frame(11, false))).is_err());
+            assert!(
+                spool
+                    .append_encoded_frame(frame(11, false).encoded().unwrap())
+                    .is_err()
+            );
             assert!(!spool.is_open());
             assert!(spool.last_error().is_some());
             let abandoned = shared.borrow().files[&0].clone();
             shared.borrow_mut().fault = None;
-            assert!(spool.append(&Record::Frame(frame(12, false))).is_err());
+            assert!(
+                spool
+                    .append_encoded_frame(frame(12, false).encoded().unwrap())
+                    .is_err()
+            );
             assert!(spool.start_segment(&[branch()], &frame(12, false)).is_err());
             let gap = Record::Gap(Gap {
                 branch: 7,
@@ -939,7 +1415,9 @@ mod tests {
             spool
                 .start_segment(&[branch(), gap], &frame(12, true))
                 .unwrap();
-            spool.append(&Record::Frame(frame(13, false))).unwrap();
+            spool
+                .append_encoded_frame(frame(13, false).encoded().unwrap())
+                .unwrap();
             spool.finish_segment().unwrap();
             assert_eq!(spool.next_segment_index(), 2);
             assert_eq!(shared.borrow().files[&0], abandoned);

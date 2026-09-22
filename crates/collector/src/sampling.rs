@@ -3,9 +3,9 @@
 use crate::{
     acquisition_factions, acquisition_jobs as acquisition, acquisition_states, acquisition_wars,
     decode, extended,
-    map_capture::{MapCapacities, MapCaptured},
+    map_capture::{MapCapacities, MapCaptured, ShipCensus},
     roster::Roster,
-    table_capture::{comparison_rows, grow_capacity},
+    table_capture::grow_capacity,
 };
 use crossbeam_queue::ArrayQueue;
 #[cfg(test)]
@@ -15,117 +15,42 @@ use engine::{
     cgame_state::{self, Clock},
     country_memory::{Cache, SeedStatus},
     cprovince, cstate, cwar_relation,
-    memory::LiveMemory,
+    memory::{CountedMemory, LiveMemory, ReadCounts},
     msvc_string::Text,
     save_allocation_counters::{self, AllocationCounters},
     walk::Outcome,
 };
-use replay::frame::TABLE_COUNT;
+use replay::{frame::TABLE_COUNT, rows::TableId};
 use std::{
     cell::UnsafeCell,
     mem::size_of,
     panic::{AssertUnwindSafe, catch_unwind},
     ptr,
     sync::{
-        Arc, OnceLock,
-        atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
+        Arc, Condvar, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
     },
 };
 use windows_sys::Win32::System::Performance::QueryPerformanceCounter;
 
-pub const BUFFERS: usize = 256;
-// The broad capture needed one queued buffer; keep a producer/consumer pair
-// plus two spare buffers, then grow off-thread when that reserve is consumed.
-const INITIAL_BUFFERS: usize = 4;
-const GROW_BUFFERS: usize = 4;
-const FREE_RESERVE: usize = 1;
+// Reuse a bounded producer/consumer pool; a burst waits rather than dropping an hour.
+pub const BUFFERS: usize = 4;
+/// One DivisionEtaInputs job per contiguous seed range.
+const ETA_INPUT_RANGES: usize = extended::division_eta_inputs::MAX_RANGES;
+const SUPPLY_PARTS: usize = extended::supply_trains::PARTS;
+const CHARACTER_PARTS: usize = extended::characters::PARTS;
+const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
+pub const SEGMENTS: usize = 15;
+pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst; 1 division inputs copy + divisions/intel dispatch + character parts, relations, ordinary, slow and supply parts; 2 World join + governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated dispatch + Naval join; 7 map sample; 8 Orders join + Late dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late join + capture_tables_late; 13 visibility + failure handling; 14 ShipModels join";
 pub const INITIAL_CAPACITIES: [usize; 9] = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
-pub const CONSISTENCY_TARGET: u16 = 200;
 /// Where the collector samples: at the entry of the hooked hourly tick, before
 /// the trampoline runs, so a frame labelled with +468 is the state at the end
 /// of that hour. Recorded in every session so readers know which instant it is.
 pub const SAMPLE_BOUNDARY: replay::identity::SampleBoundary =
     replay::identity::SampleBoundary::EndOfHour;
-/// These indices describe comparison scheduling, not the replay's table indices.
-pub const CONSISTENCY_TABLES: [&str; 17] = [
-    "CountryLinks",
-    "States",
-    "Divisions",
-    "WarRelations",
-    "Factions",
-    "FactionMembers",
-    "Players",
-    "HumanControllers",
-    "LandCombats",
-    "Fleets",
-    "TaskForces",
-    "Ships",
-    "NavalCombats",
-    "NavalCombatParticipants",
-    "AirWings",
-    "ArmyOrders",
-    "Provinces",
-];
-pub const PROVINCE_CHECK: usize = CONSISTENCY_TABLES.len() - 1;
 const LOSS_RUNS: usize = 64;
 pub static SHARED: AtomicPtr<Shared> = AtomicPtr::new(ptr::null_mut());
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
-
-pub(crate) fn mismatches<R: PartialEq>(
-    first: Outcome,
-    rows: &[R],
-    second: Outcome,
-    other: &[R],
-) -> usize {
-    if first != second {
-        return 1;
-    }
-    rows[..first.len()]
-        .iter()
-        .zip(&other[..second.len()])
-        .filter(|(a, b)| a != b)
-        .count()
-}
-
-pub(crate) fn full_match(first: Outcome, second: Outcome, mismatches: usize) -> bool {
-    matches!(first, Outcome::Rows { .. }) && first == second && mismatches == 0
-}
-
-pub(crate) fn stable_clock(before: Option<Clock>, after: Option<Clock>) -> bool {
-    matches!((before, after), (Some(before), Some(after))
-        if before.hour == after.hour
-            && before.game_state == after.game_state
-            && before.campaign_id == after.campaign_id
-            && before.play_session_started_at == after.play_session_started_at)
-}
-
-#[derive(Clone, Copy)]
-struct ConsistencyWindow<const N: usize> {
-    successful: [u16; N],
-}
-
-impl<const N: usize> Default for ConsistencyWindow<N> {
-    fn default() -> Self {
-        Self { successful: [0; N] }
-    }
-}
-
-impl<const N: usize> ConsistencyWindow<N> {
-    fn needed(&self) -> [bool; N] {
-        self.successful.map(|count| count < CONSISTENCY_TARGET)
-    }
-
-    fn commit(&mut self, matched: [bool; N], stable: bool, published: bool) -> [u16; N] {
-        if stable && published {
-            for (count, matched) in self.successful.iter_mut().zip(matched) {
-                if matched && *count < CONSISTENCY_TARGET {
-                    *count += 1;
-                }
-            }
-        }
-        self.successful
-    }
-}
 
 // Staggered cadence branch/keyframe state. Game thread only.
 #[derive(Clone, Copy, Debug, Default)]
@@ -138,6 +63,12 @@ struct CadenceState {
 }
 
 impl CadenceState {
+    fn continuous(&self, clock: &Clock) -> bool {
+        self.initialized
+            && self.prev_hour.checked_add(1) == Some(clock.hour)
+            && self.prev_signal == clock.play_session_started_at
+            && self.prev_campaign == clock.campaign_id
+    }
     // New branches never open on stale data: first, signal, campaign,
     // discontinuity and 720-hour keyframes all force a full refresh.
     fn force_full(&mut self, clock: &Clock) -> bool {
@@ -197,17 +128,17 @@ impl LossBatch {
         self.items[..self.len].iter()
     }
 
-    fn push(&mut self, entry: Option<Clock>, after: Option<Clock>) {
-        let Some(after) = after else {
+    fn push(&mut self, clock: Option<Clock>) {
+        let Some(clock) = clock else {
             self.unknown_count += 1;
             return;
         };
         if let Some(last) = self.items[..self.len].last_mut()
-            && last.campaign_id == after.campaign_id
-            && last.load_signal == Some(after.play_session_started_at)
-            && last.last_hour.checked_add(1) == Some(after.hour)
+            && last.campaign_id == clock.campaign_id
+            && last.load_signal == Some(clock.play_session_started_at)
+            && last.last_hour.checked_add(1) == Some(clock.hour)
         {
-            last.last_hour = after.hour;
+            last.last_hour = clock.hour;
             last.count += 1;
             return;
         }
@@ -216,13 +147,11 @@ impl LossBatch {
             return;
         }
         self.items[self.len] = LostObservation {
-            campaign_id: after.campaign_id,
-            first_hour: after.hour,
-            last_hour: after.hour,
-            loaded_hour: entry
-                .filter(|entry| entry.campaign_id == after.campaign_id)
-                .map(|entry| entry.hour),
-            load_signal: Some(after.play_session_started_at),
+            campaign_id: clock.campaign_id,
+            first_hour: clock.hour,
+            last_hour: clock.hour,
+            loaded_hour: Some(clock.hour),
+            load_signal: Some(clock.play_session_started_at),
             count: 1,
         };
         self.len += 1;
@@ -237,10 +166,6 @@ pub struct OrderCounterCapture {
     pub qpc_begin: i64,
     pub qpc_end: i64,
     pub elapsed_ns: u64,
-    pub terminal_counters: Option<AllocationCounters>,
-    pub terminal_qpc_begin: i64,
-    pub terminal_qpc_end: i64,
-    pub terminal_elapsed_ns: u64,
 }
 
 impl OrderCounterCapture {
@@ -252,10 +177,6 @@ impl OrderCounterCapture {
             qpc_begin: 0,
             qpc_end: 0,
             elapsed_ns: 0,
-            terminal_counters: None,
-            terminal_qpc_begin: 0,
-            terminal_qpc_end: 0,
-            terminal_elapsed_ns: 0,
         }
     }
 
@@ -265,10 +186,6 @@ impl OrderCounterCapture {
         self.qpc_begin = 0;
         self.qpc_end = 0;
         self.elapsed_ns = 0;
-        self.terminal_counters = None;
-        self.terminal_qpc_begin = 0;
-        self.terminal_qpc_end = 0;
-        self.terminal_elapsed_ns = 0;
     }
 
     fn capture(
@@ -307,63 +224,37 @@ pub struct Captured {
     pub order_counters: OrderCounterCapture,
     pub map: MapCaptured,
     pub extended: extended::Captured,
-    pub extended_checked: [bool; TABLE_COUNT],
-    // Raw-copy verdicts survive pack resets between staging and worker decode.
-    pub extended_raw_mismatches: [bool; TABLE_COUNT],
-    pub extended_successful: [u16; TABLE_COUNT],
     pub country_cache_status: SeedStatus,
     pub country_cache_entries: usize,
-    pub country_cache_error: Option<&'static str>,
     pub country_cache_ns: u64,
-    pub clock_entry: Option<Clock>,
-    pub clock_before: Option<Clock>,
-    pub clock_after: Option<Clock>,
-    /// The engine's monotonic allocation counters at this sampled tick.
+    /// The sole clock observation, taken at hook entry before acquisition.
+    pub clock: Option<Clock>,
     pub counters: Option<AllocationCounters>,
     pub countries: Vec<ccountry::Row>,
     pub provinces: Vec<cprovince::Row>,
-    provinces_second: Vec<cprovince::Row>,
     pub states: Vec<cstate::Row>,
-    states_second: Vec<cstate::Row>,
     pub divisions: Vec<carmy::Row>,
-    /// Frame-owned spare inputs preserve capture when an asynchronous job is
-    /// unavailable. They grow only while this frame belongs to the spooler.
-    division_fallback: [crate::division_census::Census; 2],
+    /// A frame-owned spare for an input-stage capacity miss before any lease.
+    division_fallback: crate::division_census::Census,
     pub wars: Vec<cwar_relation::Row>,
     pub(crate) wars_snapshot: cwar_relation::OwnedSnapshotScratch,
     pub(crate) wars_snapshot_sampled: bool,
-    wars_second: Vec<cwar_relation::Row>,
-    pub wars_matrix: Vec<cwar_relation::Row>,
     pub factions: Vec<cfaction::Row>,
-    factions_second: Vec<cfaction::Row>,
     pub faction_names: Vec<u8>,
-    faction_names_second: Vec<u8>,
     pub faction_names_len: usize,
     pub faction_names_required: usize,
     pub faction_members: Vec<cfaction_system::MemberRow>,
-    faction_members_second: Vec<cfaction_system::MemberRow>,
     pub links: Vec<ccountry::LinkRow>,
-    links_second: Vec<ccountry::LinkRow>,
     pub countries_result: Outcome,
     pub provinces_result: Outcome,
-    pub provinces_mismatches: usize,
     pub states_result: Outcome,
-    pub states_mismatches: usize,
     pub divisions_result: Outcome,
-    pub divisions_mismatches: usize,
     pub wars_result: Outcome,
-    pub wars_mismatches: usize,
-    pub war_matrix_result: Option<Outcome>,
-    pub war_matrix_ns: u64,
     pub factions_result: Outcome,
-    pub factions_mismatches: usize,
     pub faction_members_result: Outcome,
-    pub faction_members_mismatches: usize,
     pub links_result: Outcome,
-    pub links_mismatches: usize,
-    pub consistency_checked: [bool; CONSISTENCY_TABLES.len()],
-    pub consistency_successful: [u16; CONSISTENCY_TABLES.len()],
     pub table_ns: [u64; TABLE_COUNT],
+    pub table_reads: [ReadCounts; TABLE_COUNT],
     pub total_ns: u64,
     pub qpc: i64,
     pub pool_bytes: u64,
@@ -376,105 +267,56 @@ impl Captured {
         Self::with_capacities(
             &INITIAL_CAPACITIES,
             &MapCapacities::default(),
-            [0; CONSISTENCY_TABLES.len()],
             &extended::Capacities::default(),
-            [0; TABLE_COUNT],
         )
     }
 
     fn with_capacities(
         capacities: &[usize; 9],
         map_capacities: &MapCapacities,
-        successful: [u16; CONSISTENCY_TABLES.len()],
         extended_capacities: &extended::Capacities,
-        extended_successful: [u16; TABLE_COUNT],
     ) -> Self {
         let unavailable = Outcome::Unavailable {
             reason: "clock unavailable",
         };
-        let division_fallback = std::array::from_fn(|_| {
-            let mut census = crate::division_census::Census::new();
-            census.reserve_sources(capacities[4].max(extended_capacities.division_sources));
-            census
-        });
+        let mut division_fallback = crate::division_census::Census::new();
+        division_fallback.reserve_sources(capacities[4].max(extended_capacities.division_sources));
         Self {
             capture_seq: 0,
             order_counters: OrderCounterCapture::with_capacity(capacities[0]),
-            map: MapCaptured::with_capacities(
-                map_capacities,
-                &successful[6..PROVINCE_CHECK],
-                extended::Captured::source_checks(
-                    &extended_successful.map(|n| n < CONSISTENCY_TARGET),
-                ),
-            ),
-            extended: extended::Captured::with_capacities(
-                extended_capacities,
-                &extended_successful,
-            ),
-            extended_checked: [false; TABLE_COUNT],
-            extended_raw_mismatches: [false; TABLE_COUNT],
-            extended_successful,
+            map: MapCaptured::with_capacities(map_capacities),
+            extended: extended::Captured::with_capacities(extended_capacities),
             country_cache_status: SeedStatus::Unavailable {
                 reason: "clock unavailable",
             },
             country_cache_entries: 0,
-            country_cache_error: None,
             country_cache_ns: 0,
-            clock_entry: None,
-            clock_before: None,
-            clock_after: None,
+            clock: None,
             counters: None,
             countries: vec![ccountry::Row::default(); capacities[0]],
             provinces: vec![cprovince::Row::default(); capacities[1]],
-            provinces_second: comparison_rows(capacities[1], successful[PROVINCE_CHECK]),
             states: vec![cstate::Row::default(); capacities[3]],
-            states_second: comparison_rows(
-                capacities[3],
-                if extended::Captured::needs_state_check(
-                    &extended_successful.map(|n| n < CONSISTENCY_TARGET),
-                ) {
-                    0
-                } else {
-                    successful[1]
-                },
-            ),
             divisions: vec![carmy::Row::default(); capacities[4]],
             division_fallback,
             wars: vec![cwar_relation::Row::default(); capacities[5]],
             wars_snapshot: cwar_relation::OwnedSnapshotScratch::with_capacity(capacities[0]),
             wars_snapshot_sampled: false,
-            wars_second: comparison_rows(capacities[5], successful[3]),
-            wars_matrix: vec![cwar_relation::Row::default(); capacities[5]],
             factions: vec![cfaction::Row::default(); capacities[6]],
-            factions_second: comparison_rows(capacities[6], successful[4]),
             faction_names: vec![0; capacities[8]],
-            faction_names_second: comparison_rows(capacities[8], successful[4]),
             faction_names_len: 0,
             faction_names_required: 0,
             faction_members: vec![cfaction_system::MemberRow::default(); capacities[7]],
-            faction_members_second: comparison_rows(capacities[7], successful[5]),
             links: vec![ccountry::LinkRow::default(); capacities[2]],
-            links_second: comparison_rows(capacities[2], successful[0]),
             countries_result: unavailable,
             provinces_result: unavailable,
-            provinces_mismatches: 0,
             states_result: unavailable,
-            states_mismatches: 0,
             divisions_result: unavailable,
-            divisions_mismatches: 0,
             wars_result: unavailable,
-            wars_mismatches: 0,
-            war_matrix_result: None,
-            war_matrix_ns: 0,
             factions_result: unavailable,
-            factions_mismatches: 0,
             faction_members_result: unavailable,
-            faction_members_mismatches: 0,
             links_result: unavailable,
-            links_mismatches: 0,
-            consistency_checked: [false; CONSISTENCY_TABLES.len()],
-            consistency_successful: successful,
             table_ns: [0; TABLE_COUNT],
+            table_reads: crate::read_accounting::ZERO,
             total_ns: 0,
             qpc: 0,
             pool_bytes: 0,
@@ -489,46 +331,25 @@ impl Captured {
             + self.map.allocated_bytes()
             + self.extended.allocated_bytes()
             + self.wars_snapshot.allocated_bytes()
-            + self
-                .division_fallback
-                .iter()
-                .map(|census| census.allocated_bytes() as usize)
-                .sum::<usize>()
+            + self.division_fallback.allocated_bytes() as usize
             + self.countries.capacity() * size_of::<ccountry::Row>()
-            + (self.provinces.capacity() + self.provinces_second.capacity())
-                * size_of::<cprovince::Row>()
-            + (self.states.capacity() + self.states_second.capacity()) * size_of::<cstate::Row>()
+            + self.provinces.capacity() * size_of::<cprovince::Row>()
+            + self.states.capacity() * size_of::<cstate::Row>()
             + self.divisions.capacity() * size_of::<carmy::Row>()
-            + (self.wars.capacity() + self.wars_second.capacity() + self.wars_matrix.capacity())
-                * size_of::<cwar_relation::Row>()
-            + (self.factions.capacity() + self.factions_second.capacity())
-                * size_of::<cfaction::Row>()
+            + self.wars.capacity() * size_of::<cwar_relation::Row>()
+            + self.factions.capacity() * size_of::<cfaction::Row>()
             + self.faction_names.capacity()
-            + self.faction_names_second.capacity()
-            + (self.faction_members.capacity() + self.faction_members_second.capacity())
-                * size_of::<cfaction_system::MemberRow>()
-            + (self.links.capacity() + self.links_second.capacity())
-                * size_of::<ccountry::LinkRow>()
+            + self.faction_members.capacity() * size_of::<cfaction_system::MemberRow>()
+            + self.links.capacity() * size_of::<ccountry::LinkRow>()
     }
 
     pub(crate) fn take_states_request(
         &mut self,
         base: usize,
         game_state: usize,
-        needed: bool,
-        flags_needed: bool,
     ) -> acquisition_states::Request {
         acquisition_states::Request {
-            census: acquisition::GatherRequest {
-                base,
-                game_state,
-                needed,
-                buffers: acquisition::GatherBuffers::take(
-                    &mut self.states,
-                    &mut self.states_second,
-                ),
-            },
-            flags_needed,
+            census: acquisition::GatherRequest::take(base, game_state, &mut self.states),
             visitor: self.extended.take_state_visitor(),
         }
     }
@@ -539,19 +360,13 @@ impl Captured {
         report: acquisition_states::Report,
         failure: Option<&'static str>,
     ) -> acquisition_states::Report {
-        let needed = request.census.needed;
         let report = failure.map_or(report, |reason| {
             request.visitor.fail_sources(reason);
-            acquisition_states::Report::failed(needed, reason)
+            acquisition_states::Report::failed(reason)
         });
-        request
-            .census
-            .buffers
-            .restore(&mut self.states, &mut self.states_second);
+        request.census.restore(&mut self.states);
         self.extended.restore_state_visitor(request.visitor);
         self.states_result = report.census.result;
-        self.consistency_checked[1] = needed;
-        self.states_mismatches = if needed { report.census.mismatches } else { 0 };
         report
     }
 
@@ -560,21 +375,12 @@ impl Captured {
         countries: &Arc<Cache>,
         base: usize,
         game_state: usize,
-        needed: bool,
-        matrix_needed: bool,
     ) -> acquisition_wars::Request {
         acquisition_wars::Request {
             countries: Arc::clone(countries),
-            table: acquisition::GatherRequest {
-                base,
-                game_state,
-                needed,
-                buffers: acquisition::GatherBuffers::take(&mut self.wars, &mut self.wars_second),
-            },
+            table: acquisition::GatherRequest::take(base, game_state, &mut self.wars),
             snapshot: std::mem::take(&mut self.wars_snapshot),
             snapshot_sampled: false,
-            matrix: std::mem::take(&mut self.wars_matrix),
-            matrix_needed,
         }
     }
 
@@ -584,26 +390,15 @@ impl Captured {
         report: acquisition_wars::Report,
         failure: Option<&'static str>,
     ) -> acquisition_wars::Report {
-        let needed = request.table.needed;
-        let report = failure.map_or(report, |reason| {
-            acquisition_wars::Report::failed(reason, request.matrix_needed)
-        });
-        request
-            .table
-            .buffers
-            .restore(&mut self.wars, &mut self.wars_second);
+        let report = failure.map_or(report, acquisition_wars::Report::failed);
+        request.table.restore(&mut self.wars);
         self.wars_snapshot = request.snapshot;
         self.wars_snapshot_sampled = request.snapshot_sampled;
-        self.wars_matrix = request.matrix;
         self.wars_result = report.table.result;
-        self.consistency_checked[3] = needed;
-        self.wars_mismatches = if needed { report.table.mismatches } else { 0 };
-        self.war_matrix_result = report.matrix;
         report
     }
 
-    /// Called only by the spool thread while it owns this buffer's queue index.
-    /// Completed comparison buffers are released here and never grown again.
+    /// Only the spool thread grows a frame while it owns that frame's queue index.
     pub fn grow(&mut self, capacities: &mut [usize; 9]) {
         fn resize<T: Default + Clone>(rows: &mut Vec<T>, outcome: Outcome, capacity: &mut usize) {
             if let Outcome::Truncated { len, unread_rows } = outcome {
@@ -611,13 +406,6 @@ impl Captured {
             }
             if rows.len() < *capacity {
                 rows.resize(*capacity, T::default());
-            }
-        }
-        fn comparison<T: Default + Clone>(rows: &mut Vec<T>, successful: u16, capacity: usize) {
-            if successful >= CONSISTENCY_TARGET {
-                *rows = Vec::new();
-            } else if rows.len() < capacity {
-                rows.resize(capacity, T::default());
             }
         }
         resize(
@@ -633,31 +421,18 @@ impl Captured {
         resize(&mut self.links, self.links_result, &mut capacities[2]);
         self.order_counters.grow(capacities[0]);
         self.wars_snapshot.grow(capacities[0]);
-        comparison(
-            &mut self.provinces_second,
-            self.consistency_successful[PROVINCE_CHECK],
-            capacities[1],
-        );
         resize(&mut self.states, self.states_result, &mut capacities[3]);
         resize(
             &mut self.divisions,
             self.divisions_result,
             &mut capacities[4],
         );
-        let division_source_capacity = self.extended.division_capture_capacities().0;
-        for census in &mut self.division_fallback {
-            if census.overflowed {
-                census.grow();
-            }
-            census.reserve_sources(capacities[4].max(division_source_capacity));
-            // A later hour may use a regular job or have no readable clock.
-            // Retire this attempt's overflow request so idle spares do not
-            // repeatedly double on every frame recycle.
-            census.clear();
+        let census = &mut self.division_fallback;
+        if census.overflowed {
+            census.grow();
         }
-        if let Some(Outcome::Truncated { len, unread_rows }) = self.war_matrix_result {
-            grow_capacity(&mut capacities[5], len.saturating_add(unread_rows as usize));
-        }
+        census.reserve_sources(capacities[4].max(self.extended.division_capture_capacities().0));
+        census.clear();
         resize(&mut self.wars, self.wars_result, &mut capacities[5]);
         resize(&mut self.factions, self.factions_result, &mut capacities[6]);
         resize(
@@ -666,46 +441,31 @@ impl Captured {
             &mut capacities[7],
         );
         grow_capacity(&mut capacities[8], self.faction_names_required);
-        comparison(
-            &mut self.links_second,
-            self.consistency_successful[0],
-            capacities[2],
-        );
-        comparison(
-            &mut self.states_second,
-            if extended::Captured::needs_state_check(
-                &self.extended_successful.map(|n| n < CONSISTENCY_TARGET),
-            ) {
-                0
-            } else {
-                self.consistency_successful[1]
-            },
-            capacities[3],
-        );
-        comparison(
-            &mut self.wars_second,
-            self.consistency_successful[3],
-            capacities[5],
-        );
-        self.wars_matrix
-            .resize(capacities[5], cwar_relation::Row::default());
-        comparison(
-            &mut self.factions_second,
-            self.consistency_successful[4],
-            capacities[6],
-        );
-        comparison(
-            &mut self.faction_members_second,
-            self.consistency_successful[5],
-            capacities[7],
-        );
         self.faction_names.resize(capacities[8], 0);
-        comparison(
-            &mut self.faction_names_second,
-            self.consistency_successful[4],
-            capacities[8],
-        );
     }
+}
+
+/// Cumulative DivisionEtaInputs attribution. Game thread writer; `hours` is the
+/// divisor. `walks` counts single acquisitions; spans are wall time inside the
+/// owning worker rather than the whole game-thread block.
+#[derive(Default)]
+pub struct EtaInputStats {
+    pub hours: AtomicU64,
+    pub walks: AtomicU64,
+    pub divisions: AtomicU64,
+    pub legs: AtomicU64,
+    pub graph_ns: AtomicU64,
+    pub scan_ns: AtomicU64,
+    pub other_ns: AtomicU64,
+    pub geometry_hits: AtomicU64,
+    pub geometry_misses: AtomicU64,
+    pub static_hits: AtomicU64,
+    pub static_misses: AtomicU64,
+    pub static_cleared: AtomicU64,
+    pub state_modifier_requests: AtomicU64,
+    pub state_modifier_hits: AtomicU64,
+    pub air_defense_requests: AtomicU64,
+    pub air_defense_hits: AtomicU64,
 }
 
 pub struct Shared {
@@ -720,18 +480,23 @@ pub struct Shared {
     pub acquisition_wait_ns: AtomicU64,
     /// Disjoint game-thread wall phases of the block, summing to the body wall:
     /// setup+country snapshot, the parallel region (dispatch, inline reads and
-    /// every non-ETA join), the serial ETA barrier loop, then residual
-    /// verification and enqueue. Game thread writer; phase_calls is the divisor.
+    /// every join), then residual work and enqueue. Game thread writer;
+    /// phase_calls is the divisor.
     pub phase_setup_ns: AtomicU64,
     pub phase_parallel_ns: AtomicU64,
-    pub phase_eta_ns: AtomicU64,
     pub phase_residual_ns: AtomicU64,
     pub phase_calls: AtomicU64,
     /// The two halves of the parallel phase: the game thread's own typed walks
-    /// (countries/links/provinces/states/wars/factions) versus the wall it
-    /// spends joining the already-dispatched non-ETA pool jobs.
+    /// (countries/links/wars/factions) versus the wall it spends joining the
+    /// already-dispatched pool jobs.
     pub phase_inline_walk_ns: AtomicU64,
-    pub phase_noneta_join_ns: AtomicU64,
+    pub phase_join_ns: AtomicU64,
+    /// Game-thread wall between successive marks of the parallel phase; see
+    /// `block_segments_scope` in status.json for what each segment spans.
+    pub phase_segments: [AtomicU64; SEGMENTS],
+    /// Game-thread wall spent joining each pool role, indexed by
+    /// `acquisition::ROLES`.
+    pub join_wait: [AtomicU64; acquisition::ROLE_COUNT],
     /// Existing QPC brackets around the original native tick, not collector
     /// acquisition. These diagnostic counters also include ticks with no free
     /// recording buffer and exclude game-loop work outside the hooked function.
@@ -740,11 +505,16 @@ pub struct Shared {
     pub base: usize,
     pub trampoline: usize,
     pub frequency: u64,
-    /// Slot addresses never move. Only published slots own a Captured allocation.
+    /// Every slot is allocated before hook installation and never moves.
     pub frames: [AtomicPtr<Captured>; BUFFERS],
     pub completed: [AtomicI64; BUFFERS],
     pub callback_tail: [AtomicI64; BUFFERS],
-    pub pool_buffers: AtomicUsize,
+    frame_return: Mutex<()>,
+    frame_available: Condvar,
+    pub cancel_buffer_wait: AtomicBool,
+    pub buffer_wait_ns: AtomicU64,
+    pub buffer_wait_calls: AtomicU64,
+    pub buffer_wait_max_ns: AtomicU64,
     pub free: ArrayQueue<usize>,
     pub ready: ArrayQueue<usize>,
     /// Single FIFO decode queue between the game thread and the spool ready
@@ -762,15 +532,16 @@ pub struct Shared {
     /// Only the game thread writes this, inside the hook. The spool worker takes
     /// it after the hook is quiescent.
     pub pending: UnsafeCell<LossBatch>,
-    /// Only the game thread updates these per-attach counts, inside the hook.
-    consistency: UnsafeCell<ConsistencyWindow<{ CONSISTENCY_TABLES.len() }>>,
-    extended_consistency: UnsafeCell<ConsistencyWindow<TABLE_COUNT>>,
     cadence: UnsafeCell<CadenceState>,
-    /// Fresh country authentication per hour, verified directly before
-    /// publication. Acquisition thread only.
+    /// Fresh country authentication for this quiescent callback. Game thread only.
     country_cache: UnsafeCell<Arc<Cache>>,
-    /// Independent matrix census supplements the owned-vector double read for 200 full walks.
-    war_matrix_remaining: AtomicUsize,
+    pub eta_inputs: EtaInputStats,
+    /// Set by the spool when a staggered table truncated or a static table
+    /// failed: the next hour walks everything again, with grown buffers.
+    pub force_next: AtomicBool,
+    /// The lexer's maximum token id at the last dictionary walk; a change
+    /// means tokens were appended and the static dictionary is walked again.
+    pub lexical_max: AtomicI32,
 }
 
 // Each frame index has exactly one owner: a queue, the game thread inside the
@@ -789,11 +560,12 @@ impl Shared {
             acquisition_panics: AtomicU64::new(0),
             phase_setup_ns: AtomicU64::new(0),
             phase_parallel_ns: AtomicU64::new(0),
-            phase_eta_ns: AtomicU64::new(0),
             phase_residual_ns: AtomicU64::new(0),
             phase_calls: AtomicU64::new(0),
             phase_inline_walk_ns: AtomicU64::new(0),
-            phase_noneta_join_ns: AtomicU64::new(0),
+            phase_join_ns: AtomicU64::new(0),
+            phase_segments: std::array::from_fn(|_| AtomicU64::new(0)),
+            join_wait: std::array::from_fn(|_| AtomicU64::new(0)),
             acquisition_dispatch_ns: AtomicU64::new(0),
             acquisition_wait_ns: AtomicU64::new(0),
             native_tick_ns: AtomicU64::new(0),
@@ -804,7 +576,12 @@ impl Shared {
             frames: std::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
             completed: std::array::from_fn(|_| AtomicI64::new(0)),
             callback_tail: std::array::from_fn(|_| AtomicI64::new(0)),
-            pool_buffers: AtomicUsize::new(0),
+            frame_return: Mutex::new(()),
+            frame_available: Condvar::new(),
+            cancel_buffer_wait: AtomicBool::new(false),
+            buffer_wait_ns: AtomicU64::new(0),
+            buffer_wait_calls: AtomicU64::new(0),
+            buffer_wait_max_ns: AtomicU64::new(0),
             free: ArrayQueue::new(BUFFERS),
             ready: ArrayQueue::new(BUFFERS),
             decode_queue: decode::new_queue(),
@@ -815,61 +592,104 @@ impl Shared {
             roster: UnsafeCell::new(Some(roster)),
             roster_ready: AtomicBool::new(false),
             pending: UnsafeCell::new(LossBatch::default()),
-            consistency: UnsafeCell::new(ConsistencyWindow::default()),
-            extended_consistency: UnsafeCell::new(ConsistencyWindow::default()),
             cadence: UnsafeCell::new(CadenceState::default()),
             country_cache: UnsafeCell::new(country_cache),
-            war_matrix_remaining: AtomicUsize::new(200),
+            eta_inputs: EtaInputStats::default(),
+            force_next: AtomicBool::new(false),
+            lexical_max: AtomicI32::new(-1),
         };
-        for index in 0..INITIAL_BUFFERS {
+        for index in 0..BUFFERS {
             // No callback or spool thread can observe Shared during construction.
             unsafe { shared.publish_frame(index, Box::new(Captured::new())) };
         }
         shared
     }
 
-    /// Publish a previously unused slot; the caller is the sole pool allocator.
+    /// Initialize one slot before Shared can be observed by any worker or hook.
     unsafe fn publish_frame(&self, index: usize, frame: Box<Captured>) {
         debug_assert!(self.frames[index].load(Ordering::Relaxed).is_null());
         let bytes = frame.allocated_bytes();
         // Acquire after popping a free index makes the entire allocation visible.
         self.frames[index].store(Box::into_raw(frame), Ordering::Release);
         self.pool_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
-        self.pool_buffers.store(index + 1, Ordering::Relaxed);
         // A newly allocated slot has no index in either queue. Both queues have
         // room for every allocated slot, including ones currently held by a thread.
         let published = self.free.push(index);
         debug_assert!(published.is_ok());
     }
 
-    /// Allocate only on the spool thread, after servicing a captured frame.
-    ///
-    /// # Safety
-    /// The caller must be the sole pool allocator; no other thread calls this.
-    pub unsafe fn grow_pool(
-        &self,
-        capacities: &[usize; 9],
-        map_capacities: &MapCapacities,
-        successful: [u16; CONSISTENCY_TABLES.len()],
-        extended_capacities: &extended::Capacities,
-        extended_successful: [u16; TABLE_COUNT],
-    ) -> usize {
-        if self.stop_spool.load(Ordering::Acquire) {
-            return 0;
+    /// The callback retains the hourly boundary while an existing frame drains.
+    /// The common path is only a queue pop; no native reads or allocations are
+    /// repeated while waiting. Loader cancellation prevents shutdown deadlocks.
+    pub fn take_frame(&self) -> Option<usize> {
+        if self.acquisition_failed() {
+            return None;
         }
-        let allocated = self.pool_buffers.load(Ordering::Relaxed);
-        let count = pool_growth(self.free.len(), allocated);
-        for index in allocated..allocated + count {
-            let frame = Box::new(Captured::with_capacities(
-                capacities,
-                map_capacities,
-                successful,
-                extended_capacities,
-                extended_successful,
-            ));
-            unsafe { self.publish_frame(index, frame) };
+        if let Some(index) = self.free.pop() {
+            return Some(index);
         }
-        count
+        let started = qpc();
+        self.buffer_wait_calls.fetch_add(1, Ordering::Relaxed);
+        let mut returned = self.frame_return.lock().unwrap_or_else(|e| e.into_inner());
+        let index = loop {
+            if let Some(index) = self.free.pop() {
+                break Some(index);
+            }
+            if self.cancel_buffer_wait.load(Ordering::Acquire) {
+                break None;
+            }
+            // Cancellation must work even if a failed consumer cannot notify us.
+            returned = self
+                .frame_available
+                .wait_timeout(returned, std::time::Duration::from_millis(5))
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        };
+        drop(returned);
+        let elapsed = self.ns(qpc() - started);
+        self.buffer_wait_ns.fetch_add(elapsed, Ordering::Relaxed);
+        self.buffer_wait_max_ns
+            .fetch_max(elapsed, Ordering::Relaxed);
+        index
+    }
+
+    pub fn acquisition_failed(&self) -> bool {
+        self.acquisition_panics.load(Ordering::Acquire) != 0
+    }
+
+    /// Publish all completed writes before waking a callback waiting for reuse.
+    pub fn recycle_frame(&self, index: usize) {
+        let _returned = self.frame_return.lock().unwrap_or_else(|e| e.into_inner());
+        let published = self.free.push(index);
+        debug_assert!(published.is_ok());
+        self.frame_available.notify_one();
+    }
+
+    /// Fold one hour's ETA input attribution into the cumulative counters.
+    fn record_eta_inputs(&self, counters: engine::carmy::EtaInputCounters) {
+        let add = |slot: &AtomicU64, value: u64| {
+            slot.fetch_add(value, Ordering::Relaxed);
+        };
+        let stats = &self.eta_inputs;
+        add(&stats.hours, 1);
+        add(&stats.walks, counters.walks);
+        add(&stats.divisions, counters.divisions);
+        add(&stats.legs, counters.legs);
+        add(&stats.graph_ns, self.ns(counters.graph_ticks as i64));
+        add(&stats.scan_ns, self.ns(counters.scan_ticks as i64));
+        add(&stats.other_ns, self.ns(counters.other_ticks as i64));
+        add(&stats.geometry_hits, counters.geometry_hits);
+        add(&stats.geometry_misses, counters.geometry_misses);
+        add(&stats.static_hits, counters.static_hits);
+        add(&stats.static_misses, counters.static_misses);
+        add(&stats.static_cleared, counters.static_cleared);
+        add(
+            &stats.state_modifier_requests,
+            counters.state_modifier_requests,
+        );
+        add(&stats.state_modifier_hits, counters.state_modifier_hits);
+        add(&stats.air_defense_requests, counters.air_defense_requests);
+        add(&stats.air_defense_hits, counters.air_defense_hits);
     }
 
     pub fn ns(&self, ticks: i64) -> u64 {
@@ -878,11 +698,12 @@ impl Shared {
 
     /// Called only by the game thread inside the hook. A failed clock postpones
     /// this once-only read until the next readable hour, free buffer or not.
-    unsafe fn sample_roster(&self, memory: &LiveMemory, clock: Option<Clock>) {
+    unsafe fn sample_roster(&self, memory: &impl engine::Memory, clock: Option<Clock>) {
         if self.roster_ready.load(Ordering::Acquire) {
             return;
         }
         if let Some(clock) = clock {
+            let _reads = crate::read_accounting::table(replay::rows::TableId::Players);
             let roster = unsafe { (&mut *self.roster.get()).as_mut().unwrap() };
             roster.sample(memory, self.base, Some(clock.hour));
             self.roster_ready.store(roster.sampled(), Ordering::Release);
@@ -896,33 +717,15 @@ pub(crate) fn completed_callback_ticks(base: &AtomicI64, tail: &AtomicI64) -> Op
     (base > 0 && tail > 0).then(|| base.saturating_add(tail))
 }
 
-fn complete_matrix_check(remaining: &AtomicUsize) {
-    // A completed window stays closed even if a stale successful report is
-    // observed. Wrapping zero restarts billions of expensive matrix reads.
-    let _ = remaining.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        value.checked_sub(1)
-    });
-}
-
-fn pool_growth(free: usize, allocated: usize) -> usize {
-    if free <= FREE_RESERVE {
-        GROW_BUFFERS.min(BUFFERS.saturating_sub(allocated))
-    } else {
-        0
-    }
-}
-
-/// Whole-frame drop for an owned buffer: restores the witnesses the frame
-/// already absorbed, records the gap through the existing `LossBatch` path
-/// with the existing counters, and returns the buffer to the free queue.
-/// Shared by every queue-full branch; no new loss reasons.
-fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize, entry: Option<Clock>) {
+/// Restore an owned frame's absorbed witnesses, record its lost hour and return
+/// the buffer. Shared by every queue-full branch; no new loss reasons.
+fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
     unsafe {
         *shared.pending.get() = frame.dropped_before;
-        (&mut *shared.pending.get()).push(entry, frame.clock_after);
+        (&mut *shared.pending.get()).push(frame.clock);
     }
     shared.dropped.fetch_add(1, Ordering::Relaxed);
-    let _ = shared.free.push(index);
+    shared.recycle_frame(index);
 }
 
 impl Drop for Shared {
@@ -947,12 +750,56 @@ pub fn qpc() -> i64 {
 }
 
 /// The hour's read, built at the tick's entry. `index` is None when no frame
-/// was free: that hour is recorded as a drop, as before.
+/// could be obtained before shutdown cancellation: retain an explicit loss witness.
 struct Dispatch {
     index: Option<usize>,
     entry: Option<Clock>,
     entry_ticks: i64,
     dispatched: i64,
+}
+
+#[cfg(feature = "callback_profile")]
+fn callback_profile_counters(shared: &Shared) -> crate::callback_profile::Sample {
+    let load = |value: &AtomicU64| value.load(Ordering::Relaxed);
+    crate::callback_profile::Sample {
+        buffer_wait_ns: load(&shared.buffer_wait_ns),
+        setup_ns: load(&shared.phase_setup_ns),
+        parallel_ns: load(&shared.phase_parallel_ns),
+        residual_ns: load(&shared.phase_residual_ns),
+        dispatch_ns: load(&shared.acquisition_dispatch_ns),
+        phase_calls: load(&shared.phase_calls),
+        segments_ns: shared.phase_segments.each_ref().map(load),
+        join_wait_ns: shared.join_wait.each_ref().map(load),
+        ..Default::default()
+    }
+}
+
+/// Contain callback failures without reusing partially restored capture storage.
+/// Once a callback panics, subsequent hours record losses until the loader
+/// restores the hook; they must not consume more buffers or wait for the lost one.
+///
+/// # Safety
+/// Only the sole game-thread callback may mutate the pending loss batch.
+unsafe fn guarded_acquisition(
+    shared: &Shared,
+    entry: Option<Clock>,
+    acquire: impl FnOnce(),
+) -> bool {
+    if !shared.acquisition_failed() {
+        match catch_unwind(AssertUnwindSafe(acquire)) {
+            Ok(()) => return true,
+            Err(payload) => {
+                // A panic payload can itself panic on Drop. At most one is
+                // retained because this attachment now stops acquisition.
+                std::mem::forget(payload);
+                shared.cancel_buffer_wait.store(true, Ordering::Release);
+                shared.acquisition_panics.fetch_add(1, Ordering::Release);
+            }
+        }
+    }
+    unsafe { (&mut *shared.pending.get()).push(entry) };
+    shared.dropped.fetch_add(1, Ordering::Relaxed);
+    false
 }
 
 /// The hooked hourly boundary, CGameState::HourlyUpdate. Its entry is the
@@ -966,18 +813,25 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     let shared = unsafe { &*SHARED.load(Ordering::Acquire) };
     let recording = shared.recording.load(Ordering::Relaxed);
     if recording {
-        let memory = unsafe { LiveMemory::new() };
+        let _reads = crate::read_accounting::Capture::new();
+        let memory = CountedMemory::new(unsafe { LiveMemory::new() });
         // Read the clock at entry: +468 still the hour just ended, the trampoline
         // has not run. The frame's identity and the settled state the body reads.
         let clock_start = qpc();
         let entry = cgame_state::read_clock(&memory, shared.base);
         let entry_ticks = qpc() - clock_start;
-        let index = shared.free.pop();
+        #[cfg(feature = "callback_profile")]
+        let profile_before = callback_profile_counters(shared);
+        #[cfg(feature = "callback_profile")]
+        crate::callback_profile::reset_join();
+        #[cfg(feature = "callback_profile")]
+        let profile_stamp = crate::callback_profile::Stamp::start();
+        let dispatched = qpc();
+        let index = shared.take_frame();
         if let Some(index) = index {
             shared.completed[index].store(0, Ordering::Relaxed);
             shared.callback_tail[index].store(0, Ordering::Relaxed);
         }
-        let dispatched = qpc();
         // The body reads on this hot core; pool workers read in parallel and
         // this thread helps drain them. A Rust panic must never unwind across
         // the extern boundary into the game: contain it and drop the hour.
@@ -987,17 +841,38 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             entry_ticks,
             dispatched,
         };
-        if catch_unwind(AssertUnwindSafe(|| unsafe { acquire(shared, job) })).is_err() {
-            // The frame stays out of the pool; its hour is simply not recorded.
-            shared.acquisition_panics.fetch_add(1, Ordering::Relaxed);
-        } else if let Some(index) = index {
+        if unsafe { guarded_acquisition(shared, entry, || acquire(shared, job)) }
+            && let Some(index) = index
+        {
             shared.callback_tail[index].store(1, Ordering::Release);
         }
-        // The whole game-thread block before the trampoline: the only exposure.
+        // Include buffer backpressure in the whole game-thread block before the trampoline.
         // Its percentiles are callback_work; this is only the cheap cumulative.
         shared
             .collect_wait_ns
             .fetch_add(shared.ns(qpc() - dispatched), Ordering::Relaxed);
+        #[cfg(feature = "callback_profile")]
+        {
+            let mut sample = profile_stamp.finish(shared.frequency);
+            let after = callback_profile_counters(shared);
+            sample.hour = entry.map(|clock| clock.hour);
+            sample.buffer_wait_ns = after
+                .buffer_wait_ns
+                .saturating_sub(profile_before.buffer_wait_ns);
+            sample.setup_ns = after.setup_ns.saturating_sub(profile_before.setup_ns);
+            sample.parallel_ns = after.parallel_ns.saturating_sub(profile_before.parallel_ns);
+            sample.residual_ns = after.residual_ns.saturating_sub(profile_before.residual_ns);
+            sample.dispatch_ns = after.dispatch_ns.saturating_sub(profile_before.dispatch_ns);
+            sample.phase_calls = after.phase_calls.saturating_sub(profile_before.phase_calls);
+            sample.segments_ns = std::array::from_fn(|i| {
+                after.segments_ns[i].saturating_sub(profile_before.segments_ns[i])
+            });
+            sample.join_wait_ns = std::array::from_fn(|i| {
+                after.join_wait_ns[i].saturating_sub(profile_before.join_wait_ns[i])
+            });
+            sample.join = crate::callback_profile::take_join();
+            crate::callback_profile::record(sample);
+        }
     }
     // Run the trampoline (this hour's tick) only after every live read finished.
     let original_begin = qpc();
@@ -1026,65 +901,50 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         entry_ticks,
         dispatched,
     } = dispatch;
-    let memory = unsafe { LiveMemory::new() };
+    let memory = CountedMemory::new(unsafe { LiveMemory::new() });
 
     if let Some(index) = index {
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-        frame.clock_entry = entry;
+        frame.clock = entry;
         frame.qpc = dispatched;
         frame.table_ns = [0; TABLE_COUNT];
+        frame.table_reads = crate::read_accounting::ZERO;
         let before = qpc();
-        frame.clock_before = cgame_state::read_clock(&memory, shared.base);
         // Passive scalar reads of the same counters the save header emits.
-        frame.counters = frame.clock_before.map(|clock| {
+        frame.counters = frame.clock.map(|clock| {
             save_allocation_counters::read_counters(&memory, shared.base, clock.game_state as usize)
         });
-        let mut clock_ticks = entry_ticks + qpc() - before;
+        let clock_ticks = entry_ticks + qpc() - before;
         let unavailable = Outcome::Unavailable {
             reason: "clock unavailable",
         };
         frame.countries_result = unavailable;
         frame.provinces_result = unavailable;
         frame.states_result = unavailable;
-        frame.states_mismatches = 0;
         frame.divisions_result = unavailable;
-        frame.divisions_mismatches = 0;
         frame.wars_result = unavailable;
-        frame.wars_mismatches = 0;
         frame.wars_snapshot_sampled = false;
-        frame.war_matrix_result = None;
-        frame.war_matrix_ns = 0;
         frame.factions_result = unavailable;
-        frame.factions_mismatches = 0;
         frame.faction_names_len = 0;
         frame.faction_names_required = 0;
         frame.faction_members_result = unavailable;
-        frame.faction_members_mismatches = 0;
         frame.links_result = unavailable;
-        frame.links_mismatches = 0;
-        frame.consistency_checked = [false; CONSISTENCY_TABLES.len()];
-        frame.provinces_mismatches = 0;
         frame.map.reset();
         frame.extended.reset();
-        frame.extended_checked = [false; TABLE_COUNT];
-        frame.extended_raw_mismatches = [false; TABLE_COUNT];
         frame.country_cache_status = SeedStatus::Unavailable {
             reason: "clock unavailable",
         };
         frame.country_cache_entries = 0;
-        frame.country_cache_error = None;
         frame.country_cache_ns = 0;
         frame.order_counters.reset();
-        let needed = unsafe { (&*shared.consistency.get()).needed() };
-        let extended_needed = unsafe { (&*shared.extended_consistency.get()).needed() };
-        let mut matched = [false; CONSISTENCY_TABLES.len()];
-        let mut extended_matched = [false; TABLE_COUNT];
         // Relations handoff state: same FIFO, same ordering guarantees.
         let mut relations_payload: Option<extended::intel::RelationsJob> = None;
         let mut relations_report = extended::intel::RelationsCopyReport::default();
         // Characters handoff state: same FIFO, same ordering guarantees.
-        let mut characters_payload: Option<extended::characters::CharactersJob> = None;
-        let mut characters_report = extended::characters::CharactersCopyReport::default();
+        let mut characters_payload: [Option<extended::characters::CharactersJob>; CHARACTER_PARTS] =
+            [const { None }; CHARACTER_PARTS];
+        let mut characters_report =
+            [extended::characters::CharactersCopyReport::default(); CHARACTER_PARTS];
         // Projects handoff state: same FIFO, same ordering guarantees.
         let mut projects_payload: Option<extended::projects::ProjectsJob> = None;
         let mut projects_report = extended::projects::ProjectsCopyReport::default();
@@ -1092,14 +952,12 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         let mut lexical_payload: Option<extended::lexical::LexicalJob> = None;
         let mut lexical_report = extended::lexical::LexicalCopyReport::default();
         // Divisions handoff state: same FIFO, same ordering guarantees.
-        // The hourly payload carries the divisions walk plus the
+        // The hourly payload carries the divisions walk and any scheduled
         // equipment/upgrade detail walks sharing its census.
         let mut divisions_payload: Option<DivisionsJob> = None;
         let mut divisions_report = DivisionsCopyReport::default();
-        // Typed Wars keep their independent matrix consistency window.
-        let mut wars_matrix_check = false;
         // Focus handoff state: same FIFO, same ordering guarantees. The
-        // hourly payload carries the summary walk plus the completed
+        // scheduled payload carries the summary walk plus the completed
         // roster; staging overflow falls back to the typed walk inside
         // governance capture with no payload enqueued.
         let mut focus_payload: Option<extended::governance::FocusJob> = None;
@@ -1110,7 +968,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         let mut air_stats_report = extended::air::AirStatsCopyReport::default();
         let mut naval_payload: Option<extended::naval_history::NavalJob> = None;
         let mut naval_report = extended::naval_history::NavalCopyReport::default();
-        // Players pair handoff state: same FIFO, same ordering
+        // Players handoff state: same FIFO, same ordering
         // guarantees. The hourly payload carries the independent roster
         // and controller walks with its own root refs and no
         // cross-family decoded roots. Staging overflow falls back to the
@@ -1118,21 +976,21 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         let mut players_payload: Option<crate::map_capture::PlayersJob> = None;
         let mut players_report = crate::map_capture::PlayersCopyReport::default();
         // Session family handoff state: same FIFO, same ordering
-        // guarantees. The hourly payload carries the manager, sources
+        // guarantees. The scheduled payload carries the manager, sources
         // and aggregates with its own root refs and no cross-family
         // decoded roots. Staging overflow falls back to the typed walks
         // with no payload enqueued.
         let mut session_payload: Option<extended::session::SessionJob> = None;
         let mut session_report = extended::session::SessionCopyReport::default();
-        // Production hourly rest handoff state: same FIFO, same ordering
-        // guarantees. The hourly payload carries lines, stockpiles,
+        // Production rest handoff state: same FIFO, same ordering
+        // guarantees. The scheduled payload carries lines, stockpiles,
         // licences, the deployment queue and licence records with its own
         // census and no cross-family decoded roots. Staging overflow
         // falls back to the typed walks with no payload enqueued.
         let mut production_rest_payload: Option<extended::production::ProductionRestJob> = None;
         let mut production_rest_report = extended::production::ProductionRestCopyReport::default();
-        // Construction hourly rest handoff state: same FIFO, same ordering
-        // guarantees. The hourly payload carries resources, the
+        // Construction rest handoff state: same FIFO, same ordering
+        // guarantees. The scheduled payload carries resources, the
         // construction queue, occupation, resistance and collaboration
         // with its own census and no cross-family decoded roots. Staging
         // overflow falls back to the typed walks with no payload enqueued.
@@ -1141,8 +999,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         let mut construction_rest_report =
             extended::construction::ConstructionRestCopyReport::default();
         // Economy hourly rest handoff state: same FIFO, same ordering
-        // guarantees. The hourly payload carries fuel, experience,
-        // supply, hubs, disrupted, foreign, definitions, resources,
+        // guarantees. The hourly payload carries province supply plus scheduled
+        // fuel, experience, hubs, disrupted, foreign, definitions, resources,
         // exchanges and purchases with its own census and no
         // cross-family decoded roots. Staging overflow falls back to the
         // typed walks with no payload enqueued.
@@ -1150,29 +1008,29 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         let mut economy_rest_report = extended::economy::EconomyRestCopyReport::default();
         // Shared hourly bases handoff state: same FIFO, same ordering
         // guarantees. The hourly payload carries the wing/manager census
-        // once with bases, registrations and aces detail; all three
+        // once with bases, registrations and scheduled aces detail; the
         // decodes read the shared spans. Staging overflow falls back to
         // the typed walks with no payload enqueued.
         let mut air_bases_payload: Option<extended::air::AirBasesJob> = None;
         let mut air_bases_report = extended::air::AirBasesCopyReport::default();
-        // Shared hourly history handoff state: same FIFO, same ordering
-        // guarantees. The hourly payload carries the regional walk once
+        // Shared history handoff state: same FIFO, same ordering
+        // guarantees. The scheduled payload carries the regional walk once
         // with history and damage detail; both decodes read the shared
         // spans. Staging overflow falls back to the typed walk with no
         // payload enqueued.
         let mut air_history_payload: Option<extended::air::AirHistoryJob> = None;
         let mut air_history_report = extended::air::AirHistoryCopyReport::default();
-        // Hourly supremacy handoff state: same FIFO, same ordering
+        // Scheduled supremacy handoff state: same FIFO, same ordering
         // guarantees. Staging overflow falls back to the typed walk with
         // no payload enqueued.
         let mut supremacy_payload: Option<extended::naval_history::SupremacyJob> = None;
         let mut supremacy_report = extended::naval_history::SupremacyCopyReport::default();
-        // Hourly sunk-ships handoff state: same FIFO, same ordering
+        // Scheduled sunk-ships handoff state: same FIFO, same ordering
         // guarantees. Staging overflow falls back to the typed walk with
         // no payload enqueued.
         let mut sunk_payload: Option<extended::naval_history::SunkJob> = None;
         let mut sunk_report = extended::naval_history::SunkCopyReport::default();
-        // Hourly radar handoff state: same FIFO, same ordering
+        // Scheduled radar handoff state: same FIFO, same ordering
         // guarantees. Staging overflow falls back to the typed walk with
         // no payload enqueued.
         let mut radar_payload: Option<extended::fog::RadarJob> = None;
@@ -1204,21 +1062,33 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         // clockless frame lands entirely in residual.
         let mut ts_setup = dispatched;
         let mut ts_parallel = dispatched;
-        let mut ts_eta = dispatched;
         // The two halves of the parallel phase.
         let mut inline_walk_ns = 0u64;
-        let mut noneta_join_ns = 0u64;
-        if let Some(clock) = frame.clock_before {
-            let force_full = unsafe { (&mut *shared.cadence.get()).force_full(&clock) };
+        let mut join_ns = 0u64;
+        if let Some(clock) = frame.clock {
+            let cadence = unsafe { &mut *shared.cadence.get() };
+            let continuous = cadence.continuous(&clock);
+            let recovery = shared.force_next.swap(false, Ordering::AcqRel);
+            let force_full = cadence.force_full(&clock) | recovery;
+            // A periodic encoding keyframe does not interrupt native mutation
+            // observation. Its freshly certified owned rows remain complete.
+            if !continuous || recovery {
+                crate::portrait_changes::invalidate();
+                crate::advisor_changes::invalidate();
+            }
+            frame.extended.prepare_hour(clock.hour, force_full);
             let state = clock.game_state as usize;
             let cache_begin = qpc();
-            let country_snapshot = Cache::prepare_shared(
-                unsafe { &mut *shared.country_cache.get() },
-                &memory,
-                shared.base,
-                state,
-            )
-            .expect("every country snapshot lease returned before the next callback");
+            let country_snapshot =
+                crate::read_accounting::with_table(replay::rows::TableId::Countries, || {
+                    Cache::prepare_shared(
+                        unsafe { &mut *shared.country_cache.get() },
+                        &memory,
+                        shared.base,
+                        state,
+                    )
+                })
+                .expect("every country snapshot lease returned before the next callback");
             let cached = country_snapshot.view(&memory);
             frame.country_cache_status = cached.seed_status();
             frame.country_cache_entries = cached.cached_entries();
@@ -1228,6 +1098,15 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             let acquisition = shared.acquisition.get().expect("initialized before hook");
             let mut batch = acquisition::Batch::new(acquisition);
             ts_setup = qpc();
+            let mut segment_prev = ts_setup;
+            macro_rules! segment {
+                ($index:expr) => {{
+                    let now = qpc();
+                    shared.phase_segments[$index]
+                        .fetch_add(shared.ns(now - segment_prev), Ordering::Relaxed);
+                    segment_prev = now;
+                }};
+            }
             let wait_at_setup = shared.acquisition_wait_ns.load(Ordering::Relaxed);
             macro_rules! queue {
                 ($job:expr) => {{
@@ -1256,770 +1135,67 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     (request, report.unwrap_or_default(), failure)
                 }};
             }
-            macro_rules! pair {
-                ($acquire:path, $recycle:path, $checking:expr, $ready:expr) => {{
-                    let mut first = $acquire();
-                    let second = ($checking).then($acquire);
-                    if second.as_ref().is_some_and(|job| !($ready)(job)) {
-                        $recycle(first);
-                        first = Default::default();
-                    }
-                    (first, second)
-                }};
-            }
             let characters_refresh = decode::characters_refresh_hour(clock.hour, force_full);
             let projects_refresh = decode::projects_refresh_hour(clock.hour, force_full);
-            let lexical_refresh = decode::lexical_refresh_hour(clock.hour, force_full);
+            let lexical_max =
+                engine::read::<i32>(&memory, shared.base + engine::cpdx_lexer::MAX_TOKEN_ID_RVA)
+                    .unwrap_or(-1);
+            let lexical_refresh = decode::lexical_refresh_hour(clock.hour, force_full)
+                || lexical_max != shared.lexical_max.load(Ordering::Relaxed);
+            if lexical_refresh {
+                shared.lexical_max.store(lexical_max, Ordering::Relaxed);
+            }
             let relations_refresh = decode::relations_refresh_hour(clock.hour, force_full);
-            let world_request = acquire_world_request(
-                &country_snapshot,
-                shared.base,
-                state,
-                &extended_needed,
-                frame.extended.focus_pilot().focus_copy_context(
-                    shared.base,
-                    state,
-                    decode::FOCUS.map(|table| extended_needed[table.index()]),
-                ),
-                frame.extended.economy_rest_pilot(),
-            );
-            let world_pending = queue!(acquisition::Job::World(world_request));
-            // Provinces has no country/division dependency; dispatch its pointer
-            // chase to the pool so it overlaps the other readers. Buffers move
-            // out here and are restored where the inline walk used to run.
-            let provinces_pending =
-                queue!(acquisition::Job::Provinces(acquisition::ProvincesRequest {
-                    base: shared.base,
-                    game_state: state,
-                    needed: needed[PROVINCE_CHECK],
-                    buffers: acquisition::GatherBuffers::take(
-                        &mut frame.provinces,
-                        &mut frame.provinces_second,
-                    ),
-                }));
-            // The state visitor travels with its census. Restore it before
-            // StateFlags consumes the two source passes later in this callback.
-            let states_pending = queue!(acquisition::Job::States(frame.take_states_request(
-                shared.base,
-                state,
-                needed[1],
-                extended::Captured::needs_state_check(&extended_needed),
-            )));
-            // Both faction tables use this callback's country snapshot and
-            // retain separate second-pass windows. All six buffers return at
-            // the original factions/member collection point.
-            let factions_pending =
-                queue!(acquisition::Job::Factions(acquisition_factions::Request {
-                    countries: Arc::clone(&country_snapshot),
-                    factions: acquisition::GatherRequest {
-                        base: shared.base,
-                        game_state: state,
-                        needed: needed[4],
-                        buffers: acquisition::GatherBuffers {
-                            first: acquisition_factions::Names::take(
-                                &mut frame.factions,
-                                &mut frame.faction_names,
-                            ),
-                            second: acquisition_factions::Names::take(
-                                &mut frame.factions_second,
-                                &mut frame.faction_names_second,
-                            ),
-                        },
-                    },
-                    members: acquisition::GatherRequest {
-                        base: shared.base,
-                        game_state: state,
-                        needed: needed[5],
-                        buffers: acquisition::GatherBuffers::take(
-                            &mut frame.faction_members,
-                            &mut frame.faction_members_second,
-                        ),
-                    },
-                }));
-            let countries_pending = queue!(acquisition::Job::Countries(
-                acquisition::CountriesRequest::take(
+            // ShipModels is the longest single job and walks its own ship census:
+            // dispatch it first so it overlaps everything else.
+            let ship_census = std::mem::replace(&mut frame.map.naval, ShipCensus::vacant());
+            let ship_models_pending = queue!(acquisition::Job::ShipModels(
+                frame.extended.take_ship_models_request(
                     &country_snapshot,
                     shared.base,
                     state,
-                    needed[0],
-                    &mut frame.countries,
-                    &mut frame.links,
-                    &mut frame.links_second,
+                    ship_census,
                 )
             ));
-            // Both war censuses depend only on the callback's country snapshot.
-            // Their independent window state cannot advance until publication.
-            let matrix_needed = shared.war_matrix_remaining.load(Ordering::Relaxed) != 0;
-            let wars_pending = queue!(acquisition::Job::Wars(frame.take_wars_request(
-                &country_snapshot,
-                shared.base,
-                state,
-                needed[3],
-                matrix_needed,
-            )));
-            let province_unit_order_pending = queue!(acquisition::Job::ProvinceUnitOrder(
-                frame.extended.take_province_unit_order_request(
-                    shared.base,
-                    state,
-                    &extended_needed
-                )
-            ));
-            // These hourly families have no World or division dependency.
-            // Loan their existing buffers while other acquisition is ready.
-            let supply_trains_pending = queue!(acquisition::Job::SupplyTrains(
-                frame.extended.take_supply_trains_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    &extended_needed
-                )
-            ));
-            let character_portraits_pending = queue!(acquisition::Job::CharacterPortraits(
-                frame.extended.take_character_portraits_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    &extended_needed
-                )
-            ));
-            let (trait_rows, trait_bytes) =
-                frame.extended.characters_pilot().trait_capture_capacities();
-            let characters_ctx = extended::characters::CharactersCopyContext {
-                base: shared.base,
-                game_state: state,
-                trait_rows,
-                trait_bytes,
-            };
-            let characters_pending = if characters_refresh {
-                let (first, second) = pair!(
-                    decode::acquire_characters_job,
-                    decode::recycle_characters_job,
-                    decode::CHARACTERS
-                        .iter()
-                        .any(|table| extended_needed[table.index()]),
-                    |job: &extended::characters::CharactersJob| job.log.spans.capacity() != 0
-                );
-                Some(queue!(acquisition::Job::Characters(
-                    acquisition::RawRequest {
-                        countries: Arc::clone(&country_snapshot),
-                        context: characters_ctx,
-                        first,
-                        second
-                    }
-                )))
-            } else {
-                None
-            };
-            let relations_ctx = extended::intel::RelationsCopyContext {
-                base: shared.base,
-                game_state: state,
-                opinion_cap: frame.extended.relations_pilot().opinion_rows_cap(),
-                tuple_cap: frame.extended.relations_pilot().tuple_rows_cap(),
-            };
-            let relations_pending = if relations_refresh {
-                let (first, second) = pair!(
-                    decode::acquire_relations_job,
-                    decode::recycle_relations_job,
-                    decode::RELATIONS
-                        .iter()
-                        .any(|table| extended_needed[table.index()]),
-                    |job: &extended::intel::RelationsJob| job.countries.capacity() != 0
-                );
-                Some(queue!(acquisition::Job::Relations(
-                    acquisition::RawRequest {
-                        countries: Arc::clone(&country_snapshot),
-                        context: relations_ctx,
-                        first,
-                        second
-                    }
-                )))
-            } else {
-                None
-            };
-            let players_ctx = crate::map_capture::PlayersCopyContext {
-                base: shared.base,
-                game_state: state,
-                needed: [needed[6], needed[7]],
-            };
-            let players_pending = {
-                let (first, second) = pair!(
-                    decode::acquire_players_job,
-                    decode::recycle_players_job,
-                    needed[6] || needed[7],
-                    |job: &crate::map_capture::PlayersJob| job.log.spans.capacity() != 0
-                );
-                queue!(acquisition::Job::Players(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: players_ctx,
-                    first,
-                    second
-                }))
-            };
-            let air_stats_ctx = extended::air::AirStatsCopyContext {
-                base: shared.base,
-                game_state: state,
-            };
-            let air_stats_pending = {
-                let (first, second) = pair!(
-                    decode::acquire_air_stats_job,
-                    decode::recycle_air_stats_job,
-                    decode::AIR_STATS
-                        .iter()
-                        .any(|table| extended_needed[table.index()]),
-                    |job: &extended::air::AirStatsJob| job.log.spans.capacity() != 0
-                );
-                queue!(acquisition::Job::AirStats(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: air_stats_ctx,
-                    first,
-                    second
-                }))
-            };
-            let air_bases_ctx = extended::air::AirBasesCopyContext {
-                base: shared.base,
-                game_state: state,
-                needed: decode::AIR_BASES.map(|table| extended_needed[table.index()]),
-            };
-            let air_bases_pending = {
-                let (first, second) = pair!(
-                    decode::acquire_air_bases_job,
-                    decode::recycle_air_bases_job,
-                    decode::AIR_BASES
-                        .iter()
-                        .any(|table| extended_needed[table.index()]),
-                    |job: &extended::air::AirBasesJob| job.log.spans.capacity() != 0
-                );
-                queue!(acquisition::Job::AirBases(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: air_bases_ctx,
-                    first,
-                    second
-                }))
-            };
-            let air_history_ctx = extended::air::AirHistoryCopyContext {
-                base: shared.base,
-                game_state: state,
-                needed: decode::AIR_HISTORY.map(|table| extended_needed[table.index()]),
-                history_limit: frame.extended.air_history_pilot().air_history_limits()[0],
-                damage_limit: frame.extended.air_history_pilot().air_history_limits()[1],
-            };
-            let air_history_pending = {
-                let first = decode::acquire_air_history_job();
-                let second = (decode::AIR_HISTORY
-                    .iter()
-                    .any(|table| extended_needed[table.index()]))
-                .then(decode::acquire_air_history_job);
-                queue!(acquisition::Job::AirHistory(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: air_history_ctx,
-                    first,
-                    second
-                }))
-            };
-            let supremacy_ctx = extended::naval_history::SupremacyCopyContext {
-                base: shared.base,
-                game_state: state,
-                needed: decode::SUPREMACY.map(|table| extended_needed[table.index()]),
-            };
-            let supremacy_pending = {
-                let (first, second) = pair!(
-                    decode::acquire_supremacy_job,
-                    decode::recycle_supremacy_job,
-                    decode::SUPREMACY
-                        .iter()
-                        .any(|table| extended_needed[table.index()]),
-                    |job: &extended::naval_history::SupremacyJob| job.log.spans.capacity() != 0
-                );
-                queue!(acquisition::Job::Supremacy(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: supremacy_ctx,
-                    first,
-                    second
-                }))
-            };
-            let sunk_ctx = extended::naval_history::SunkCopyContext {
-                base: shared.base,
-                game_state: state,
-                hour: clock.hour,
-                needed: decode::SUNK.map(|table| extended_needed[table.index()]),
-            };
-            let sunk_pending = {
-                let (first, second) = pair!(
-                    decode::acquire_sunk_job,
-                    decode::recycle_sunk_job,
-                    decode::SUNK
-                        .iter()
-                        .any(|table| extended_needed[table.index()]),
-                    |job: &extended::naval_history::SunkJob| job.log.spans.capacity() != 0
-                );
-                queue!(acquisition::Job::Sunk(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: sunk_ctx,
-                    first,
-                    second
-                }))
-            };
-            let radar_ctx = frame.extended.radar_pilot().radar_copy_context(
-                shared.base,
-                state,
-                decode::RADAR.map(|table| extended_needed[table.index()]),
-            );
-            let radar_pending = {
-                let (first, second) = pair!(
-                    decode::acquire_radar_job,
-                    decode::recycle_radar_job,
-                    decode::RADAR
-                        .iter()
-                        .any(|table| extended_needed[table.index()]),
-                    |job: &extended::fog::RadarJob| job.initialized()
-                );
-                queue!(acquisition::Job::Radar(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: radar_ctx,
-                    first,
-                    second
-                }))
-            };
-            let weather_ctx = extended::weather::WeatherCopyContext {
-                base: shared.base,
-                game_state: state,
-                needed: decode::WEATHER.map(|table| extended_needed[table.index()]),
-            };
-            let weather_pending = {
-                let (first, second) = pair!(
-                    decode::acquire_weather_job,
-                    decode::recycle_weather_job,
-                    decode::WEATHER
-                        .iter()
-                        .any(|table| extended_needed[table.index()]),
-                    |job: &extended::weather::WeatherJob| job.log.spans.capacity() != 0
-                );
-                queue!(acquisition::Job::Weather(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: weather_ctx,
-                    first,
-                    second
-                }))
-            };
-            let capitulation_ctx = extended::intel::CapitulationCopyContext {
-                base: shared.base,
-                game_state: state,
-                needed: decode::CAPITULATION.map(|table| extended_needed[table.index()]),
-            };
-            let capitulation_pending = {
-                let (first, second) = pair!(
-                    decode::acquire_capitulation_job,
-                    decode::recycle_capitulation_job,
-                    decode::CAPITULATION
-                        .iter()
-                        .any(|table| extended_needed[table.index()]),
-                    |job: &extended::intel::CapitulationJob| job.log.spans.capacity() != 0
-                );
-                queue!(acquisition::Job::Capitulation(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: capitulation_ctx,
-                    first,
-                    second
-                }))
-            };
-            let projects_ctx = extended::projects::ProjectsCopyContext {
-                base: shared.base,
-                game_state: state,
-                needed: extended_needed,
-            };
-            let projects_pending = if projects_refresh {
-                let (first, second) = pair!(
-                    decode::acquire_projects_job,
-                    decode::recycle_projects_job,
-                    decode::PROJECTS
-                        .iter()
-                        .any(|table| extended_needed[table.index()]),
-                    |job: &extended::projects::ProjectsJob| job.log.spans.capacity() != 0
-                );
-                Some(queue!(acquisition::Job::Projects(
-                    acquisition::RawRequest {
-                        countries: Arc::clone(&country_snapshot),
-                        context: projects_ctx,
-                        first,
-                        second
-                    }
-                )))
-            } else {
-                None
-            };
-            let lexical_ctx = extended::lexical::LexicalCopyContext {
-                base: shared.base,
-                needed: extended_needed,
-            };
-            let lexical_pending = if lexical_refresh {
-                let (first, second) = pair!(
-                    decode::acquire_lexical_job,
-                    decode::recycle_lexical_job,
-                    decode::LEXICAL
-                        .iter()
-                        .any(|table| extended_needed[table.index()]),
-                    |job: &extended::lexical::LexicalJob| job.initialized()
-                );
-                Some(queue!(acquisition::Job::Lexical(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: lexical_ctx,
-                    first,
-                    second
-                })))
-            } else {
-                None
-            };
-            let session_ctx = extended::session::SessionCopyContext {
-                base: shared.base,
-                game_state: state,
-                needed: decode::SESSION.map(|table| extended_needed[table.index()]),
-            };
-            let session_pending = {
-                let (first, second) = pair!(
-                    decode::acquire_session_job,
-                    decode::recycle_session_job,
-                    decode::SESSION
-                        .iter()
-                        .any(|table| extended_needed[table.index()]),
-                    |job: &extended::session::SessionJob| job.log.spans.capacity() != 0
-                );
-                queue!(acquisition::Job::Session(acquisition::RawRequest {
-                    countries: Arc::clone(&country_snapshot),
-                    context: session_ctx,
-                    first,
-                    second
-                }))
-            };
+            let orders_request = frame
+                .extended
+                .take_orders_request(&mut frame.map.orders, shared.base);
+            let orders_bytes = orders_request.allocated_bytes();
+            let orders_pending = queue!(acquisition::Job::Orders(orders_request));
             // Naval uses this callback's independently bounded wing-membership census.
-            let naval_second_needed = decode::NAVAL_ORDER
-                .iter()
-                .any(|table| extended_needed[table.index()]);
-            let (mut naval_first, mut naval_second) = pair!(
-                decode::acquire_naval_job,
-                decode::recycle_naval_job,
-                naval_second_needed,
-                |job: &extended::naval_history::NavalJob| job.log.spans.capacity() != 0
-            );
-            let air_second_needed = needed[14]
-                || decode::AIR_WING
-                    .iter()
-                    .chain(decode::NAVAL_ORDER.iter())
-                    .any(|table| extended_needed[table.index()]);
-            let air_first = decode::acquire_air_wing_job();
-            let air_second = air_second_needed.then(decode::acquire_air_wing_job);
+            let mut naval_job = decode::acquire_naval_job();
             let wing_limits = frame.extended.air_wing_pilot().wing_limits();
             let air_ctx = extended::air::AirWingCopyContext {
                 base: shared.base,
                 game_state: state,
-                needed: decode::AIR_WING.map(|table| extended_needed[table.index()]),
+                hour: clock.hour,
+                force_full,
                 limits: [
                     frame.map.air_wings.rows.len(),
                     wing_limits[0],
                     wing_limits[1],
                 ],
-                naval_limits: [
-                    naval_first.wing_limit(),
-                    naval_second.as_ref().map_or(0, |job| job.wing_limit()),
-                ],
+                naval_limit: naval_job.wing_limit(),
             };
             let air_pending = queue!(acquisition::Job::AirWing(acquisition::RawRequest {
                 countries: Arc::clone(&country_snapshot),
                 context: air_ctx,
-                first: air_first,
-                second: air_second,
+                payload: decode::acquire_air_wing_job(),
             }));
-            let mut divisions_first = decode::acquire_divisions_job();
-            let division_second_needed = needed[2]
-                || extended::Captured::needs_division_check(&extended_needed)
-                || extended_needed[replay::rows::TableId::UnitIntel.index()];
-            let mut divisions_second = division_second_needed.then(decode::acquire_divisions_job);
-            // A consistency pass needs both owned buffers; otherwise use
-            // the allocation-free typed double read.
-            if divisions_second
-                .as_ref()
-                .is_some_and(|job| !job.initialized())
-            {
-                decode::recycle_divisions_job(divisions_first);
-                divisions_first = Default::default();
-            }
-            let (division_source_capacity, detail_capacities) =
-                frame.extended.division_capture_capacities();
-            let divisions_ctx = DivisionsCopyContext {
+            let air_bases_ctx = extended::air::AirBasesCopyContext {
                 base: shared.base,
                 game_state: state,
-                row_capacity: frame.divisions.len(),
-                source_capacity: division_source_capacity,
-                detail_capacities,
+                hour: clock.hour,
+                force_full,
             };
-            // Seed admission remains on this callback. Every consumer below leases these
-            // exact packets; a core completion cannot authorize a new seed acquisition.
-            let divisions_owned = copy_divisions_inputs_refresh(
-                &cached,
-                divisions_ctx,
-                &mut divisions_first,
-                divisions_second.as_mut(),
-            );
-            let mut divisions_pending = None;
-            if divisions_owned {
-                frame.extended.install_unit_inputs(
-                    divisions_first.census.unit_inputs().map(Arc::clone),
-                    divisions_second
-                        .as_ref()
-                        .and_then(|second| second.census.unit_inputs())
-                        .map(Arc::clone),
-                    divisions_second.as_ref().is_none_or(|second| {
-                        divisions_first.census.unit_inputs_equal(&second.census)
-                    }),
-                );
-            } else {
-                let begin = qpc();
-                decode::recycle_divisions_job(divisions_first);
-                divisions_first = Default::default();
-                if let Some(second) = divisions_second.take() {
-                    decode::recycle_divisions_job(second);
-                }
-                frame.extended.set_divisions_raw_mode(false);
-                let capacity = frame.divisions.len().max(division_source_capacity);
-                frame.division_fallback[0].capture(&cached, shared.base, state, capacity);
-                frame.divisions_result =
-                    frame.division_fallback[0].install_rows(&mut frame.divisions);
-                supply_division_census_sources(
-                    &frame.division_fallback[0],
-                    &mut frame.extended,
-                    division_source_capacity,
-                    false,
-                );
-                if division_second_needed {
-                    frame.division_fallback[1].capture(&cached, shared.base, state, capacity);
-                    supply_division_census_sources(
-                        &frame.division_fallback[1],
-                        &mut frame.extended,
-                        division_source_capacity,
-                        true,
-                    );
-                    frame.consistency_checked[2] = needed[2];
-                    matched[2] = needed[2]
-                        && frame.division_fallback[0]
-                            .equal(&frame.division_fallback[1], frame.divisions.len());
-                    frame.divisions_mismatches = usize::from(needed[2] && !matched[2]);
-                }
-                frame.extended.install_unit_inputs(
-                    frame.division_fallback[0].unit_inputs().map(Arc::clone),
-                    division_second_needed
-                        .then(|| frame.division_fallback[1].unit_inputs().map(Arc::clone))
-                        .flatten(),
-                    !division_second_needed
-                        || frame.division_fallback[0]
-                            .unit_inputs_equal(&frame.division_fallback[1]),
-                );
-                frame.table_ns[6] = shared.ns(qpc() - begin);
-            }
-            let presentation_pending = queue!(acquisition::Job::Presentation(
-                frame.extended.take_presentation_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    &extended_needed,
-                )
-            ));
-            let unit_first = if divisions_owned {
-                divisions_first.census.unit_inputs().map(Arc::clone)
-            } else {
-                frame.division_fallback[0].unit_inputs().map(Arc::clone)
-            };
-            let unit_second = if divisions_owned {
-                divisions_second
-                    .as_ref()
-                    .and_then(|second| second.census.unit_inputs())
-                    .map(Arc::clone)
-            } else if division_second_needed {
-                frame.division_fallback[1].unit_inputs().map(Arc::clone)
-            } else {
-                None
-            };
-            let unit_matched = if divisions_owned {
-                divisions_second
-                    .as_ref()
-                    .is_none_or(|second| divisions_first.census.intel_equal(&second.census))
-            } else {
-                !division_second_needed
-                    || frame.division_fallback[0].intel_equal(&frame.division_fallback[1])
-            };
-            if divisions_owned {
-                divisions_pending = Some(queue!(acquisition::Job::Divisions(
-                    acquisition::RawRequest {
-                        countries: Arc::clone(&country_snapshot),
-                        context: divisions_ctx,
-                        first: divisions_first,
-                        second: divisions_second.take(),
-                    }
-                )));
-            }
-            let intel_ctx = frame.extended.intel_pilot().intel_copy_context(
-                shared.base,
-                state,
-                decode::INTEL.map(|table| extended_needed[table.index()]),
-            );
-            let intel_pending = {
-                let (first, second) = pair!(
-                    decode::acquire_intel_job,
-                    decode::recycle_intel_job,
-                    intel_ctx.needed.iter().any(|&needed| needed),
-                    |job: &extended::fog::IntelJob| job.initialized()
-                );
-                queue!(acquisition::Job::Intel(acquisition::IntelRequest {
+            let air_bases_pending = {
+                let payload = decode::acquire_air_bases_job();
+                queue!(acquisition::Job::AirBases(acquisition::RawRequest {
                     countries: Arc::clone(&country_snapshot),
-                    context: intel_ctx,
-                    first,
-                    second,
-                    divisions_first: unit_first.as_ref().map(Arc::clone),
-                    divisions_second: unit_second.as_ref().map(Arc::clone),
-                    divisions_matched: unit_matched,
+                    context: air_bases_ctx,
+                    payload,
                 }))
             };
-            let eta_checked = extended_needed[replay::rows::TableId::DivisionEta.index()];
-            let mut eta_workspaces: [Option<Box<extended::division_eta::Workspace>>;
-                extended::division_eta::MAX_RANGES] = std::array::from_fn(|_| None);
-            let mut eta_workspace_count = 0;
-            for slot in &mut eta_workspaces {
-                let Some(workspace) = decode::acquire_eta_workspace() else {
-                    break;
-                };
-                *slot = Some(workspace);
-                eta_workspace_count += 1;
-            }
-            // Range independence requires complete per-range dependency caches.
-            // Decide the serial fallback before any ETA acquisition starts.
-            let eta_max_ranges = if eta_workspaces
-                .iter()
-                .flatten()
-                .all(|workspace| workspace.supports_ranges())
-            {
-                eta_workspace_count
-            } else {
-                1
-            };
-            let eta_ranges = if eta_workspace_count == 0 {
-                frame
-                    .extended
-                    .fail_eta_capture(eta_checked, "ETA acquisition workspace unavailable");
-                0
-            } else {
-                frame
-                    .extended
-                    .prepare_eta_ranges(eta_checked, eta_max_ranges)
-            };
-            let mut eta_pending: [Option<PendingAcquisition>; extended::division_eta::MAX_RANGES] =
-                std::array::from_fn(|_| None);
-            for (index, workspace) in eta_workspaces.iter_mut().enumerate() {
-                if index < eta_ranges {
-                    eta_pending[index] =
-                        Some(queue!(acquisition::Job::Eta(acquisition::EtaRequest {
-                            countries: Arc::clone(&country_snapshot),
-                            base: shared.base,
-                            state,
-                            payload: frame.extended.take_eta_range(index),
-                            workspace: workspace.take().expect("prepared ETA workspace"),
-                            first: unit_first.as_ref().map(Arc::clone),
-                            second: if eta_checked {
-                                unit_second.as_ref().map(Arc::clone)
-                            } else {
-                                None
-                            },
-                            pass: 0,
-                        })));
-                } else if let Some(workspace) = workspace.take() {
-                    decode::recycle_eta_workspace(workspace);
-                }
-            }
-            // Focus delegation must be settled before the complete Governance job moves.
-            let (world, world_report, world_failure) = completed!(world_pending, World);
-            production_rest_report = world_report.production;
-            construction_rest_report = world_report.construction;
-            economy_rest_report = world_report.economy;
-            focus_report = world_report.focus;
-            // A terminal worker fault suppresses typed retries and its raw
-            // payloads; the affected tables receive explicit unavailability
-            // after independent capture. Ordinary staging overflow retains
-            // the established per-family typed fallback.
-            let terminal = world_failure.is_some();
-            frame
-                .extended
-                .production_rest_pilot()
-                .apply_production_rest_report(
-                    world.production.context.needed,
-                    &production_rest_report,
-                );
-            frame.extended.production_rest_pilot().rest_raw_mode =
-                terminal || production_rest_report.plan_failed || production_rest_report.raw_ok;
-            frame
-                .extended
-                .construction_rest_pilot()
-                .apply_construction_rest_report(
-                    world.construction.context.needed,
-                    &construction_rest_report,
-                );
-            frame.extended.construction_rest_pilot().rest_raw_mode =
-                terminal || construction_rest_report.raw_ok;
-            frame
-                .extended
-                .economy_rest_pilot()
-                .apply_economy_rest_report(world.economy.context.needed, &economy_rest_report);
-            frame.extended.economy_rest_pilot().rest_raw_mode =
-                terminal || economy_rest_report.raw_ok;
-            frame
-                .extended
-                .focus_pilot()
-                .apply_focus_report(world.focus.context.needed, &focus_report);
-            frame.extended.focus_pilot().focus_raw_mode = terminal || focus_report.raw_ok;
-            if production_rest_report.raw_ok && !terminal && !production_rest_report.plan_failed {
-                production_rest_payload = Some(world.production.first);
-            } else {
-                decode::recycle_production_rest_job(world.production.first);
-            }
-            if let Some(second) = world.production.second {
-                decode::recycle_production_rest_job(second);
-            }
-            if construction_rest_report.raw_ok && !terminal {
-                construction_rest_payload = Some(world.construction.first);
-            } else {
-                decode::recycle_construction_rest_job(world.construction.first);
-            }
-            if let Some(second) = world.construction.second {
-                decode::recycle_construction_rest_job(second);
-            }
-            if economy_rest_report.raw_ok && !terminal {
-                economy_rest_payload = Some(world.economy.first);
-            } else {
-                decode::recycle_economy_rest_job(world.economy.first);
-            }
-            if let Some(second) = world.economy.second {
-                decode::recycle_economy_rest_job(second);
-            }
-            if focus_report.raw_ok && !terminal {
-                focus_payload = Some(world.focus.first);
-            } else {
-                decode::recycle_focus_job(world.focus.first);
-            }
-            if let Some(second) = world.focus.second {
-                decode::recycle_focus_job(second);
-            }
-            if terminal {
-                production_rest_report.raw_ok = false;
-                construction_rest_report.raw_ok = false;
-                economy_rest_report.raw_ok = false;
-                focus_report.raw_ok = false;
-            }
-            let governance_pending = queue!(acquisition::Job::Governance(
-                frame.extended.take_governance_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                    &extended_needed
-                )
-            ));
             let intel_residual_pending = queue!(acquisition::Job::IntelResidual(
                 frame.extended.take_intel_residual_request(
                     &country_snapshot,
@@ -2028,150 +1204,517 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                         game_state: state,
                         hour: clock.hour,
                         force_full,
-                        needed: extended::intel::TABLES.map(|table| extended_needed[table.index()]),
                     },
                 )
             ));
+            let world_request = acquire_world_request(
+                &country_snapshot,
+                shared.base,
+                state,
+                frame.extended.focus_pilot().focus_copy_context(
+                    shared.base,
+                    state,
+                    replay::cadence::should_walk(TableId::Focus, clock.hour, force_full),
+                ),
+                frame.extended.economy_rest_pilot(),
+                clock.hour,
+                force_full,
+            );
+            let world_pending = queue!(acquisition::Job::World(world_request));
+            let provinces_pending = queue!(acquisition::Job::Provinces(
+                acquisition::ProvincesRequest::take(shared.base, state, &mut frame.provinces)
+            ));
+            let states_pending = queue!(acquisition::Job::States(
+                frame.take_states_request(shared.base, state)
+            ));
+            let factions_pending =
+                queue!(acquisition::Job::Factions(acquisition_factions::Request {
+                    countries: Arc::clone(&country_snapshot),
+                    factions: acquisition::GatherRequest {
+                        base: shared.base,
+                        game_state: state,
+                        payload: acquisition_factions::Names::take(
+                            &mut frame.factions,
+                            &mut frame.faction_names
+                        ),
+                    },
+                    members: acquisition::GatherRequest::take(
+                        shared.base,
+                        state,
+                        &mut frame.faction_members
+                    ),
+                }));
+            let countries_pending = queue!(acquisition::Job::Countries(
+                acquisition::CountriesRequest::take(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    &mut frame.countries,
+                    &mut frame.links
+                )
+            ));
+            let wars_pending = queue!(acquisition::Job::Wars(frame.take_wars_request(
+                &country_snapshot,
+                shared.base,
+                state
+            )));
+            let province_unit_order_pending = queue!(acquisition::Job::ProvinceUnitOrder(
+                frame
+                    .extended
+                    .take_province_unit_order_request(shared.base, state,)
+            ));
+            let players_ctx = crate::map_capture::PlayersCopyContext {
+                base: shared.base,
+                game_state: state,
+            };
+            let players_pending = {
+                let payload = decode::acquire_players_job();
+                queue!(acquisition::Job::Players(acquisition::RawRequest {
+                    countries: Arc::clone(&country_snapshot),
+                    context: players_ctx,
+                    payload,
+                }))
+            };
+            let air_stats_ctx = extended::air::AirStatsCopyContext {
+                base: shared.base,
+                game_state: state,
+                hour: clock.hour,
+                force_full,
+            };
+            let air_stats_pending =
+                if replay::cadence::should_walk(TableId::AirStatistics, clock.hour, force_full) {
+                    let payload = decode::acquire_air_stats_job();
+                    Some(queue!(acquisition::Job::AirStats(
+                        acquisition::RawRequest {
+                            countries: Arc::clone(&country_snapshot),
+                            context: air_stats_ctx,
+                            payload,
+                        }
+                    )))
+                } else {
+                    frame.extended.air_stats_pilot().stats_raw_mode = false;
+                    None
+                };
+            let air_history_ctx = extended::air::AirHistoryCopyContext {
+                base: shared.base,
+                game_state: state,
+                hour: clock.hour,
+                force_full,
+                history_limit: frame.extended.air_history_pilot().air_history_limits()[0],
+                damage_limit: frame.extended.air_history_pilot().air_history_limits()[1],
+            };
+            let air_history_pending = if replay::cadence::should_walk(
+                TableId::AirRegionHistory,
+                clock.hour,
+                force_full,
+            ) {
+                let payload = decode::acquire_air_history_job();
+                Some(queue!(acquisition::Job::AirHistory(
+                    acquisition::RawRequest {
+                        countries: Arc::clone(&country_snapshot),
+                        context: air_history_ctx,
+                        payload,
+                    }
+                )))
+            } else {
+                frame.extended.air_history_pilot().history_raw_mode = false;
+                None
+            };
+            let supremacy_ctx = extended::naval_history::SupremacyCopyContext {
+                base: shared.base,
+                game_state: state,
+                hour: clock.hour,
+                force_full,
+            };
+            let supremacy_pending =
+                if replay::cadence::should_walk(TableId::NavalSupremacy, clock.hour, force_full) {
+                    let payload = decode::acquire_supremacy_job();
+                    Some(queue!(acquisition::Job::Supremacy(
+                        acquisition::RawRequest {
+                            countries: Arc::clone(&country_snapshot),
+                            context: supremacy_ctx,
+                            payload,
+                        }
+                    )))
+                } else {
+                    frame.extended.supremacy_pilot().supremacy_raw_mode = false;
+                    None
+                };
+            let sunk_ctx = extended::naval_history::SunkCopyContext {
+                base: shared.base,
+                game_state: state,
+                hour: clock.hour,
+                force_full,
+            };
+            let sunk_pending =
+                if replay::cadence::should_walk(TableId::SunkShips, clock.hour, force_full) {
+                    let payload = decode::acquire_sunk_job();
+                    Some(queue!(acquisition::Job::Sunk(acquisition::RawRequest {
+                        countries: Arc::clone(&country_snapshot),
+                        context: sunk_ctx,
+                        payload,
+                    })))
+                } else {
+                    frame.extended.sunk_pilot().sunk_raw_mode = false;
+                    None
+                };
+            let radar_ctx = frame.extended.radar_pilot().radar_copy_context(
+                shared.base,
+                state,
+                clock.hour,
+                force_full,
+            );
+            let radar_pending =
+                if replay::cadence::should_walk(TableId::RadarCoverage, clock.hour, force_full) {
+                    let payload = decode::acquire_radar_job();
+                    Some(queue!(acquisition::Job::Radar(acquisition::RawRequest {
+                        countries: Arc::clone(&country_snapshot),
+                        context: radar_ctx,
+                        payload,
+                    })))
+                } else {
+                    frame.extended.radar_pilot().radar_raw_mode = false;
+                    None
+                };
+            let weather_ctx = extended::weather::WeatherCopyContext {
+                base: shared.base,
+                game_state: state,
+            };
+            let weather_pending = {
+                let payload = decode::acquire_weather_job();
+                queue!(acquisition::Job::Weather(acquisition::RawRequest {
+                    countries: Arc::clone(&country_snapshot),
+                    context: weather_ctx,
+                    payload,
+                }))
+            };
+            let capitulation_ctx = extended::intel::CapitulationCopyContext {
+                base: shared.base,
+                game_state: state,
+            };
+            let capitulation_pending = {
+                let payload = decode::acquire_capitulation_job();
+                queue!(acquisition::Job::Capitulation(acquisition::RawRequest {
+                    countries: Arc::clone(&country_snapshot),
+                    context: capitulation_ctx,
+                    payload,
+                }))
+            };
+            let projects_ctx = extended::projects::ProjectsCopyContext {
+                base: shared.base,
+                game_state: state,
+                active: projects_refresh,
+            };
+            let projects_pending = if projects_refresh {
+                let payload = decode::acquire_projects_job();
+                Some(queue!(acquisition::Job::Projects(
+                    acquisition::RawRequest {
+                        countries: Arc::clone(&country_snapshot),
+                        context: projects_ctx,
+                        payload,
+                    }
+                )))
+            } else {
+                frame.extended.projects_pilot().raw_mode = false;
+                None
+            };
+            let lexical_ctx = extended::lexical::LexicalCopyContext { base: shared.base };
+            let lexical_pending = if lexical_refresh {
+                let payload = decode::acquire_lexical_job();
+                Some(queue!(acquisition::Job::Lexical(acquisition::RawRequest {
+                    countries: Arc::clone(&country_snapshot),
+                    context: lexical_ctx,
+                    payload,
+                })))
+            } else {
+                None
+            };
+            let session_ctx = extended::session::SessionCopyContext {
+                base: shared.base,
+                game_state: state,
+                hour: clock.hour,
+                force_full,
+            };
+            let session_pending =
+                if replay::cadence::should_walk(TableId::WorldTension, clock.hour, force_full) {
+                    let payload = decode::acquire_session_job();
+                    Some(queue!(acquisition::Job::Session(acquisition::RawRequest {
+                        countries: Arc::clone(&country_snapshot),
+                        context: session_ctx,
+                        payload,
+                    })))
+                } else {
+                    frame.extended.session_pilot().raw_mode = false;
+                    None
+                };
+            segment!(0);
+            let mut divisions_job = Some(decode::acquire_divisions_job());
+            let (division_source_capacity, detail_capacities) =
+                frame.extended.division_capture_capacities();
+            let divisions_ctx = DivisionsCopyContext {
+                base: shared.base,
+                game_state: state,
+                row_capacity: frame.divisions.len(),
+                source_capacity: division_source_capacity,
+                detail_capacities,
+                details_active: replay::cadence::should_walk(
+                    TableId::DivisionEquipment,
+                    clock.hour,
+                    force_full,
+                ),
+            };
+            // Input-stage admission precedes every consumer's lease. A later
+            // core completion cannot authorize another source acquisition.
+            let divisions_owned = copy_divisions_inputs_refresh(
+                &cached,
+                divisions_ctx,
+                divisions_job.as_mut().expect("owned input job"),
+            );
+            let inputs = if divisions_owned {
+                divisions_job
+                    .as_ref()
+                    .unwrap()
+                    .census
+                    .unit_inputs()
+                    .map(Arc::clone)
+            } else {
+                let begin = qpc();
+                decode::recycle_divisions_job(divisions_job.take().unwrap());
+                let _reads = crate::read_accounting::table(replay::rows::TableId::Divisions);
+                frame.extended.set_divisions_raw_mode(false);
+                let capacity = frame.divisions.len().max(division_source_capacity);
+                frame
+                    .division_fallback
+                    .capture(&cached, shared.base, state, capacity);
+                frame.divisions_result = frame.division_fallback.install_rows(&mut frame.divisions);
+                supply_division_census_sources(
+                    &frame.division_fallback,
+                    &mut frame.extended,
+                    division_source_capacity,
+                );
+                frame.table_ns[6] = shared.ns(qpc() - begin);
+                frame.division_fallback.unit_inputs().map(Arc::clone)
+            };
+            frame
+                .extended
+                .install_unit_inputs(inputs.as_ref().map(Arc::clone));
+            let divisions_pending = divisions_job.take().map(|payload| {
+                queue!(acquisition::Job::Divisions(acquisition::RawRequest {
+                    countries: Arc::clone(&country_snapshot),
+                    context: divisions_ctx,
+                    payload
+                }))
+            });
+            let intel_ctx = frame
+                .extended
+                .intel_pilot()
+                .intel_copy_context(shared.base, state);
+            let intel_pending = queue!(acquisition::Job::Intel(acquisition::IntelRequest {
+                countries: Arc::clone(&country_snapshot),
+                context: intel_ctx,
+                payload: decode::acquire_intel_job(),
+                inputs: inputs.as_ref().map(Arc::clone),
+            }));
+            // The fat late-joined jobs go out after Divisions and Intel so those
+            // find a free worker; the burst's short jobs have freed some by now.
+            let (trait_rows, trait_bytes) =
+                frame.extended.characters_pilot().trait_capture_capacities();
+            let characters_ctx = extended::characters::CharactersCopyContext {
+                base: shared.base,
+                game_state: state,
+                trait_rows,
+                trait_bytes,
+                active: decode::CHARACTERS
+                    .map(|table| replay::cadence::should_walk(table, clock.hour, force_full)),
+            };
+            frame
+                .extended
+                .characters_pilot()
+                .set_character_activity(characters_ctx.active);
+            let mut characters_pending: [Option<PendingAcquisition>; CHARACTER_PARTS] =
+                [const { None }; CHARACTER_PARTS];
+            for (part, pending) in characters_pending.iter_mut().enumerate() {
+                let active = std::array::from_fn(|index| {
+                    characters_ctx.active[index] && extended::characters::PART_MASKS[part][index]
+                });
+                if characters_refresh && active.iter().any(|&value| value) {
+                    *pending = Some(queue!(acquisition::Job::Characters(
+                        acquisition::CharactersRequest {
+                            context: extended::characters::CharactersCopyContext {
+                                active,
+                                ..characters_ctx
+                            },
+                            payload: decode::acquire_characters_job(part),
+                        }
+                    )));
+                }
+            }
+            let relations_ctx = extended::intel::RelationsCopyContext {
+                base: shared.base,
+                game_state: state,
+                opinion_cap: frame.extended.relations_pilot().opinion_rows_cap(),
+                tuple_cap: frame.extended.relations_pilot().tuple_rows_cap(),
+                active: decode::RELATIONS
+                    .map(|table| replay::cadence::should_walk(table, clock.hour, force_full)),
+            };
+            frame
+                .extended
+                .relations_pilot()
+                .set_relation_activity(relations_ctx.active);
+            let relations_pending = if relations_refresh {
+                let payload = decode::acquire_relations_job();
+                Some(queue!(acquisition::Job::Relations(
+                    acquisition::RawRequest {
+                        countries: Arc::clone(&country_snapshot),
+                        context: relations_ctx,
+                        payload,
+                    }
+                )))
+            } else {
+                None
+            };
+            let ordinary_request =
+                frame
+                    .extended
+                    .take_ordinary_request(&country_snapshot, shared.base, state);
+            let ordinary_bytes = ordinary_request.allocated_bytes();
+            let ordinary_pending = queue!(acquisition::Job::Ordinary(ordinary_request));
+            let slow_pending = queue!(acquisition::Job::Slow(frame.extended.take_slow_request(
+                &country_snapshot,
+                shared.base,
+                state,
+                clock.hour,
+                force_full
+            )));
+            let mut supply_trains_pending: [Option<PendingAcquisition>; SUPPLY_PARTS] =
+                [const { None }; SUPPLY_PARTS];
+            for (part, pending) in supply_trains_pending.iter_mut().enumerate() {
+                *pending = Some(queue!(acquisition::Job::SupplyTrains(
+                    frame.extended.take_supply_trains_request(
+                        &country_snapshot,
+                        shared.base,
+                        state,
+                        part
+                    )
+                )));
+            }
+            // Focus delegation must be settled before the complete Governance job moves.
+            segment!(1);
+            let (world, world_report, world_failure) = completed!(world_pending, World);
+            let production_active = world.production.is_some();
+            let construction_active = world.construction.is_some();
+            let focus_active = world.focus.as_ref().is_some_and(|part| part.context.active);
+            production_rest_report = world_report.production;
+            construction_rest_report = world_report.construction;
+            economy_rest_report = world_report.economy;
+            focus_report = world_report.focus;
+            // An interrupted accepted job is final for this callback. Capacity
+            // admission failures retain each family's existing typed fallback.
+            let terminal = world_failure.is_some();
+            frame.extended.production_rest_pilot().rest_raw_mode = production_active
+                && (terminal
+                    || production_rest_report.plan_failed
+                    || production_rest_report.raw_ok);
+            frame.extended.construction_rest_pilot().rest_raw_mode =
+                construction_active && (terminal || construction_rest_report.raw_ok);
+            frame.extended.economy_rest_pilot().rest_raw_mode =
+                terminal || economy_rest_report.raw_ok;
+            frame.extended.focus_pilot().focus_raw_mode =
+                focus_active && (terminal || focus_report.raw_ok);
+            if let Some(part) = world.production {
+                if production_rest_report.raw_ok && !terminal && !production_rest_report.plan_failed
+                {
+                    production_rest_payload = Some(part.payload);
+                } else {
+                    decode::recycle_production_rest_job(part.payload);
+                }
+            }
+
+            if let Some(part) = world.construction {
+                if construction_rest_report.raw_ok && !terminal {
+                    construction_rest_payload = Some(part.payload);
+                } else {
+                    decode::recycle_construction_rest_job(part.payload);
+                }
+            }
+
+            if economy_rest_report.raw_ok && !terminal {
+                economy_rest_payload = Some(world.economy.payload);
+            } else {
+                decode::recycle_economy_rest_job(world.economy.payload);
+            }
+
+            if let Some(part) = world.focus {
+                if focus_report.raw_ok && !terminal {
+                    focus_payload = Some(part.payload);
+                } else {
+                    decode::recycle_focus_job(part.payload);
+                }
+            }
+
+            if terminal {
+                production_rest_report.raw_ok = false;
+                construction_rest_report.raw_ok = false;
+                economy_rest_report.raw_ok = false;
+                focus_report.raw_ok = false;
+            }
+            let governance_request = frame.extended.take_governance_request(
+                &country_snapshot,
+                shared.base,
+                state,
+                clock.hour,
+                force_full,
+            );
+            let governance_bytes = governance_request.allocated_bytes();
+            let governance_pending = queue!(acquisition::Job::Governance(governance_request));
+            let presentation_request =
+                frame
+                    .extended
+                    .take_presentation_request(&country_snapshot, shared.base, state);
+            let presentation_bytes = presentation_request.allocated_bytes();
+            let presentation_pending = queue!(acquisition::Job::Presentation(presentation_request));
+            let eta_ranges = frame.extended.plan_eta_input_ranges();
+            let mut eta_inputs_pending: [Option<PendingAcquisition>; ETA_INPUT_RANGES] =
+                [const { None }; ETA_INPUT_RANGES];
+            for (range, pending) in eta_inputs_pending.iter_mut().enumerate().take(eta_ranges) {
+                *pending = Some(queue!(acquisition::Job::EtaInputs(
+                    frame.extended.take_eta_inputs_request(
+                        range,
+                        &country_snapshot,
+                        shared.base,
+                        state
+                    )
+                )));
+            }
             // Keep the original collection span. Accepted pool joins in this
-            // span are already charged to noneta_join_ns; subtract those from
+            // span are already charged to join_ns; subtract those from
             // the inline subtotal, including callback helping inside a join.
             let inline_walk_begin = qpc();
             let inline_wait_begin = shared.acquisition_wait_ns.load(Ordering::Relaxed);
-            // Restore both tables at their original collection point. Service
-            // ticks remain per table; shared authentication is charged below.
-            let (countries_request, countries_report, _countries_failure) =
-                completed!(countries_pending, Countries);
-            countries_request.restore(
-                &mut frame.countries,
-                &mut frame.links,
-                &mut frame.links_second,
-            );
-            frame.countries_result = countries_report.countries;
-            frame.table_ns[2] = shared.ns(countries_report.countries_ticks);
-            frame.links_result = countries_report.links.result;
-            if needed[0] {
-                frame.consistency_checked[0] = true;
-                frame.links_mismatches = countries_report.links.mismatches;
-                matched[0] = full_match(
-                    frame.links_result,
-                    countries_report.links.second,
-                    frame.links_mismatches,
-                );
-            }
-            frame.table_ns[3] = shared.ns(countries_report.links_ticks);
-            // These independent core tables do not feed the division
-            // census or ETA: both authenticate their own native roots.
-            // Retain the same reads/checks, now overlapping ETA acquisition.
-            let begin = qpc();
-            // Collect the pool provinces walk and restore its buffers. table_ns[4]
-            // is now the join wall; the read cost is on the pool (Role::Provinces).
-            let (provinces_request, provinces_report, _provinces_failure) =
-                completed!(provinces_pending, Provinces);
-            provinces_request
-                .buffers
-                .restore(&mut frame.provinces, &mut frame.provinces_second);
-            frame.provinces_result = provinces_report.result;
-            if needed[PROVINCE_CHECK] {
-                frame.consistency_checked[PROVINCE_CHECK] = true;
-                frame.provinces_mismatches = provinces_report.mismatches;
-                matched[PROVINCE_CHECK] = full_match(
-                    provinces_report.result,
-                    provinces_report.second,
-                    provinces_report.mismatches,
-                );
-            }
-            frame.table_ns[4] = shared.ns(qpc() - begin);
-            // Collection stays between Provinces and Wars. Restore the visitor
-            // without reading flags here; their original later stage is intact.
-            let (states_request, states_report, states_failure) =
-                completed!(states_pending, States);
-            let states_report =
-                frame.restore_states_request(states_request, states_report, states_failure);
-            matched[1] = needed[1]
-                && full_match(
-                    states_report.census.result,
-                    states_report.census.second,
-                    states_report.census.mismatches,
-                );
-            frame.table_ns[5] = shared.ns(states_report.ticks);
-            // Restore all wars storage at the original wars point. Pool read
-            // ticks retain distinct table/matrix costs; collection contributes
-            // to the callback's existing non-ETA join accounting.
-            let (wars_request, wars_report, wars_failure) = completed!(wars_pending, Wars);
-            let wars_report = frame.restore_wars_request(wars_request, wars_report, wars_failure);
-            matched[3] = needed[3] && wars_report.table_matched();
-            wars_matrix_check = wars_report.matrix_eligible();
-            frame.table_ns[7] = shared.ns(wars_report.table_ticks);
-            frame.war_matrix_ns = shared.ns(wars_report.matrix_ticks);
-            let (factions_request, mut factions_report, factions_failure) =
-                completed!(factions_pending, Factions);
-            if let Some(reason) = factions_failure {
-                factions_report =
-                    acquisition_factions::Report::failed([needed[4], needed[5]], reason);
-            }
-            (frame.faction_names_len, frame.faction_names_required) = factions_request.restore(
-                &mut frame.factions,
-                &mut frame.factions_second,
-                &mut frame.faction_names,
-                &mut frame.faction_names_second,
-                &mut frame.faction_members,
-                &mut frame.faction_members_second,
-            );
-            frame.factions_result = factions_report.factions.result;
-            if needed[4] {
-                frame.consistency_checked[4] = true;
-                frame.factions_mismatches = factions_report.factions.mismatches;
-                matched[4] = full_match(
-                    factions_report.factions.result,
-                    factions_report.factions.second,
-                    factions_report.factions.mismatches,
-                );
-            }
-            frame.table_ns[8] = shared.ns(factions_report.ticks[0] as i64);
-            frame.faction_members_result = factions_report.members.result;
-            if needed[5] {
-                frame.consistency_checked[5] = true;
-                frame.faction_members_mismatches = factions_report.members.mismatches;
-                matched[5] = full_match(
-                    factions_report.members.result,
-                    factions_report.members.second,
-                    factions_report.members.mismatches,
-                );
-            }
-            frame.table_ns[9] = shared.ns(factions_report.ticks[1] as i64);
-            inline_walk_ns = shared.ns(qpc() - inline_walk_begin).saturating_sub(
-                shared
-                    .acquisition_wait_ns
-                    .load(Ordering::Relaxed)
-                    .saturating_sub(inline_wait_begin),
-            );
+            segment!(2);
+            segment!(3);
             let (air_request, report, air_failure) = completed!(air_pending, AirWing);
             air_wing_report = report;
-            let mut air_second = air_request.second;
             if air_wing_report.raw_ok && air_failure.is_none() {
-                air_wing_payload = Some(air_request.first);
+                air_wing_payload = Some(air_request.payload);
             } else {
-                decode::recycle_air_wing_job(air_request.first);
+                decode::recycle_air_wing_job(air_request.payload);
             }
             let naval_ctx = extended::naval_history::NavalCopyContext {
                 base: shared.base,
                 game_state: state,
+                hour: clock.hour,
+                force_full,
             };
             let mut naval_install_ticks = 0;
             if let Some(wings) = air_wing_payload.as_ref() {
-                naval_install_ticks += naval_first.install_wings(wings);
+                naval_install_ticks += naval_job.install_wings(wings);
             }
-            if let Some(naval) = naval_second.as_mut()
-                && let Some(wings) = air_second.as_ref()
-                && air_failure.is_none()
-            {
-                naval_install_ticks += naval.install_wings(wings);
-            }
+            segment!(4);
             let naval_pending = queue!(acquisition::Job::Naval(acquisition::RawRequest {
                 countries: Arc::clone(&country_snapshot),
                 context: naval_ctx,
-                first: naval_first,
-                second: naval_second,
+                payload: naval_job,
             }));
             let mut divisions_failure = None;
             if let Some(pending) = divisions_pending {
@@ -2183,41 +1726,15 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                             .then_some("division owned acquisition could not complete"));
                 let source_started = qpc();
                 request
-                    .first
-                    .supply_sources(&mut frame.extended, division_source_capacity, false);
-                if let Some(second) = request.second.as_ref() {
-                    second.supply_sources(&mut frame.extended, division_source_capacity, true);
-                }
+                    .payload
+                    .supply_sources(&mut frame.extended, division_source_capacity);
                 divisions_report.copy_ticks[0] += elapsed(source_started);
-                divisions_payload = Some(request.first);
-                divisions_second = request.second;
+                divisions_payload = Some(request.payload);
                 frame.extended.set_divisions_raw_mode(true);
-                matched[2] = divisions_report.matched[0] && divisions_failure.is_none();
-                frame.consistency_checked[2] = needed[2];
-                frame.divisions_mismatches = if needed[2] {
-                    usize::from(!matched[2])
-                } else {
-                    0
-                };
                 let ns = shared.ns(divisions_report.copy_ticks[0] as i64);
                 frame.table_ns[6] = ns;
                 decode::add_divisions_copy_ns(0, ns);
                 decode::add_divisions_raw_bytes(0, divisions_report.raw_bytes[0]);
-            }
-            let mut characters_failure = None;
-            if let Some(pending) = characters_pending {
-                let (request, report, failure) = completed!(pending, Characters);
-                characters_report = report;
-                characters_failure = failure;
-                frame.extended.characters_pilot().raw_mode = report.raw_ok || failure.is_some();
-                if report.raw_ok && failure.is_none() {
-                    characters_payload = Some(request.first);
-                } else {
-                    decode::recycle_characters_job(request.first);
-                }
-                if let Some(second) = request.second {
-                    decode::recycle_characters_job(second);
-                }
             }
             let intel_residual_completed =
                 unsafe { finish_acquisition(shared, &mut batch, intel_residual_pending) };
@@ -2235,46 +1752,30 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             frame
                 .extended
                 .restore_intel_residual_request(intel_residual_request, intel_residual_report);
-            let mut relations_failure = None;
-            if let Some(pending) = relations_pending {
-                let (request, report, failure) = completed!(pending, Relations);
-                relations_report = report;
-                relations_failure = failure;
-                frame.extended.relations_pilot().relations_raw_mode =
-                    report.raw_ok || failure.is_some();
-                if report.raw_ok && failure.is_none() {
-                    relations_payload = Some(request.first);
-                } else {
-                    decode::recycle_relations_job(request.first);
-                }
-                if let Some(second) = request.second {
-                    decode::recycle_relations_job(second);
-                }
-            }
             let (request, report, failure) = completed!(players_pending, Players);
             players_report = report;
             let players_failure = failure;
             frame.map.players_raw_mode = report.raw_ok || failure.is_some();
             if report.raw_ok && failure.is_none() {
-                players_payload = Some(request.first);
+                players_payload = Some(request.payload);
             } else {
-                decode::recycle_players_job(request.first);
+                decode::recycle_players_job(request.payload);
             }
-            if let Some(second) = request.second {
-                decode::recycle_players_job(second);
+
+            let mut air_stats_failure = None;
+            if let Some(pending) = air_stats_pending {
+                let (request, report, failure) = completed!(pending, AirStats);
+                air_stats_report = report;
+                air_stats_failure = failure;
+                frame.extended.air_stats_pilot().stats_raw_mode =
+                    report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    air_stats_payload = Some(request.payload);
+                } else {
+                    decode::recycle_air_stats_job(request.payload);
+                }
             }
-            let (request, report, failure) = completed!(air_stats_pending, AirStats);
-            air_stats_report = report;
-            let air_stats_failure = failure;
-            frame.extended.air_stats_pilot().stats_raw_mode = report.raw_ok || failure.is_some();
-            if report.raw_ok && failure.is_none() {
-                air_stats_payload = Some(request.first);
-            } else {
-                decode::recycle_air_stats_job(request.first);
-            }
-            if let Some(second) = request.second {
-                decode::recycle_air_stats_job(second);
-            }
+
             let (request, report, failure) = completed!(air_bases_pending, AirBases);
             air_bases_report = report;
             let air_bases_failure = failure;
@@ -2282,88 +1783,86 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             frame.extended.radar_pilot().registrations_raw_mode =
                 report.raw_ok || failure.is_some();
             if report.raw_ok && failure.is_none() {
-                air_bases_payload = Some(request.first);
+                air_bases_payload = Some(request.payload);
             } else {
-                decode::recycle_air_bases_job(request.first);
+                decode::recycle_air_bases_job(request.payload);
             }
-            if let Some(second) = request.second {
-                decode::recycle_air_bases_job(second);
+
+            let mut air_history_failure = None;
+            if let Some(pending) = air_history_pending {
+                let (request, report, failure) = completed!(pending, AirHistory);
+                air_history_report = report;
+                air_history_failure = failure;
+                frame.extended.air_history_pilot().history_raw_mode =
+                    report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    air_history_payload = Some(request.payload);
+                } else {
+                    decode::recycle_air_history_job(request.payload);
+                }
             }
-            let (request, report, failure) = completed!(air_history_pending, AirHistory);
-            air_history_report = report;
-            let air_history_failure = failure;
-            frame.extended.air_history_pilot().history_raw_mode =
-                report.raw_ok || failure.is_some();
-            if report.raw_ok && failure.is_none() {
-                air_history_payload = Some(request.first);
-            } else {
-                decode::recycle_air_history_job(request.first);
+
+            let mut supremacy_failure = None;
+            if let Some(pending) = supremacy_pending {
+                let (request, report, failure) = completed!(pending, Supremacy);
+                supremacy_report = report;
+                supremacy_failure = failure;
+                frame.extended.supremacy_pilot().supremacy_raw_mode =
+                    report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    supremacy_payload = Some(request.payload);
+                } else {
+                    decode::recycle_supremacy_job(request.payload);
+                }
             }
-            if let Some(second) = request.second {
-                decode::recycle_air_history_job(second);
+
+            let mut sunk_failure = None;
+            if let Some(pending) = sunk_pending {
+                let (request, report, failure) = completed!(pending, Sunk);
+                sunk_report = report;
+                sunk_failure = failure;
+                frame.extended.sunk_pilot().sunk_raw_mode = report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    sunk_payload = Some(request.payload);
+                } else {
+                    decode::recycle_sunk_job(request.payload);
+                }
             }
-            let (request, report, failure) = completed!(supremacy_pending, Supremacy);
-            supremacy_report = report;
-            let supremacy_failure = failure;
-            frame.extended.supremacy_pilot().supremacy_raw_mode =
-                report.raw_ok || failure.is_some();
-            if report.raw_ok && failure.is_none() {
-                supremacy_payload = Some(request.first);
-            } else {
-                decode::recycle_supremacy_job(request.first);
+
+            let mut radar_failure = None;
+            if let Some(pending) = radar_pending {
+                let (request, report, failure) = completed!(pending, Radar);
+                radar_report = report;
+                radar_failure = failure;
+                frame.extended.radar_pilot().radar_raw_mode = report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    radar_payload = Some(request.payload);
+                } else {
+                    decode::recycle_radar_job(request.payload);
+                }
             }
-            if let Some(second) = request.second {
-                decode::recycle_supremacy_job(second);
-            }
-            let (request, report, failure) = completed!(sunk_pending, Sunk);
-            sunk_report = report;
-            let sunk_failure = failure;
-            frame.extended.sunk_pilot().sunk_raw_mode = report.raw_ok || failure.is_some();
-            if report.raw_ok && failure.is_none() {
-                sunk_payload = Some(request.first);
-            } else {
-                decode::recycle_sunk_job(request.first);
-            }
-            if let Some(second) = request.second {
-                decode::recycle_sunk_job(second);
-            }
-            let (request, report, failure) = completed!(radar_pending, Radar);
-            radar_report = report;
-            let radar_failure = failure;
-            frame.extended.radar_pilot().radar_raw_mode = report.raw_ok || failure.is_some();
-            if report.raw_ok && failure.is_none() {
-                radar_payload = Some(request.first);
-            } else {
-                decode::recycle_radar_job(request.first);
-            }
-            if let Some(second) = request.second {
-                decode::recycle_radar_job(second);
-            }
+
             let (request, report, failure) = completed!(weather_pending, Weather);
             weather_report = report;
             let weather_failure = failure;
             frame.extended.weather_pilot().raw_mode = report.raw_ok || failure.is_some();
             if report.raw_ok && failure.is_none() {
-                weather_payload = Some(request.first);
+                weather_payload = Some(request.payload);
             } else {
-                decode::recycle_weather_job(request.first);
+                decode::recycle_weather_job(request.payload);
             }
-            if let Some(second) = request.second {
-                decode::recycle_weather_job(second);
-            }
+
             let (request, report, failure) = completed!(capitulation_pending, Capitulation);
             capitulation_report = report;
             let capitulation_failure = failure;
             frame.extended.capitulation_pilot().capitulation_raw_mode =
                 report.raw_ok || failure.is_some();
             if report.raw_ok && failure.is_none() {
-                capitulation_payload = Some(request.first);
+                capitulation_payload = Some(request.payload);
             } else {
-                decode::recycle_capitulation_job(request.first);
+                decode::recycle_capitulation_job(request.payload);
             }
-            if let Some(second) = request.second {
-                decode::recycle_capitulation_job(second);
-            }
+
             let mut projects_failure = None;
             if let Some(pending) = projects_pending {
                 let (request, report, failure) = completed!(pending, Projects);
@@ -2371,12 +1870,9 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 projects_failure = failure;
                 frame.extended.projects_pilot().raw_mode = report.raw_ok || failure.is_some();
                 if report.raw_ok && failure.is_none() {
-                    projects_payload = Some(request.first);
+                    projects_payload = Some(request.payload);
                 } else {
-                    decode::recycle_projects_job(request.first);
-                }
-                if let Some(second) = request.second {
-                    decode::recycle_projects_job(second);
+                    decode::recycle_projects_job(request.payload);
                 }
             }
             let mut lexical_failure = None;
@@ -2386,42 +1882,88 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 lexical_failure = failure;
                 frame.extended.lexical_pilot().raw_mode = report.raw_ok || failure.is_some();
                 if report.raw_ok && failure.is_none() {
-                    lexical_payload = Some(request.first);
+                    lexical_payload = Some(request.payload);
                 } else {
-                    decode::recycle_lexical_job(request.first);
-                }
-                if let Some(second) = request.second {
-                    decode::recycle_lexical_job(second);
+                    decode::recycle_lexical_job(request.payload);
                 }
             }
-            let (request, report, failure) = completed!(session_pending, Session);
-            session_report = report;
-            let session_failure = failure;
-            frame.extended.session_pilot().raw_mode = report.raw_ok || failure.is_some();
-            if report.raw_ok && failure.is_none() {
-                session_payload = Some(request.first);
-            } else {
-                decode::recycle_session_job(request.first);
+            let mut session_failure = None;
+            if let Some(pending) = session_pending {
+                let (request, report, failure) = completed!(pending, Session);
+                session_report = report;
+                session_failure = failure;
+                frame.extended.session_pilot().raw_mode = report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    session_payload = Some(request.payload);
+                } else {
+                    decode::recycle_session_job(request.payload);
+                }
             }
-            if let Some(second) = request.second {
-                decode::recycle_session_job(second);
-            }
+
             let (request, report, failure) = completed!(intel_pending, Intel);
             intel_report = report;
             let intel_failure = failure;
             frame.extended.intel_pilot().intel_raw_mode = report.raw_ok || failure.is_some();
             if report.raw_ok && failure.is_none() {
-                intel_payload = Some(request.first);
+                intel_payload = Some(request.payload);
             } else {
-                decode::recycle_intel_job(request.first);
+                decode::recycle_intel_job(request.payload);
             }
-            if let Some(second) = request.second {
-                decode::recycle_intel_job(second);
-            }
-            // Release the shared seed leases before either Census can be
+
+            // Release the shared seed leases before the Census can be
             // cleared on the decode worker during payload retirement.
-            drop(request.divisions_first);
-            drop(request.divisions_second);
+            drop(request.inputs);
+            segment!(5);
+            // Resolve the character producer before dispatching its consumers.
+            // The root owns this dependency; executor jobs never enqueue jobs.
+            let mut characters_failure = [None; CHARACTER_PARTS];
+            frame.extended.characters_pilot().raw_active = [false; 6];
+            macro_rules! join_characters {
+                ($part:expr) => {{
+                    let part = $part;
+                    if let Some(pending) = characters_pending[part].take() {
+                        let (request, report, failure) = completed!(pending, Characters);
+                        characters_report[part] = report;
+                        let failure = failure.or(report
+                            .plan_failed
+                            .then_some("character prepared acquisition failed"));
+                        characters_failure[part] = failure;
+                        for (raw, active) in frame
+                            .extended
+                            .characters_pilot()
+                            .raw_active
+                            .iter_mut()
+                            .zip(request.context.active)
+                        {
+                            *raw |= active && (report.raw_ok || failure.is_some());
+                        }
+                        if report.raw_ok && failure.is_none() {
+                            characters_payload[part] = Some(request.payload);
+                        } else {
+                            decode::recycle_characters_job(request.payload);
+                        }
+                    }
+                }};
+            }
+            join_characters!(0);
+            let mut character_portraits_pending: [Option<PendingAcquisition>; PORTRAIT_PARTS] =
+                [const { None }; PORTRAIT_PARTS];
+            for (part, pending) in character_portraits_pending.iter_mut().enumerate() {
+                let mut request =
+                    frame
+                        .extended
+                        .take_character_portraits_request(shared.base, state, part);
+                request.census = characters_payload[0]
+                    .as_ref()
+                    .and_then(|job| job.portrait_census());
+                *pending = Some(queue!(acquisition::Job::CharacterPortraits(request)));
+            }
+            let gated_pending = queue!(acquisition::Job::Gated(frame.extended.take_gated_request(
+                shared.base,
+                state,
+                clock.hour,
+                force_full
+            )));
             let (naval_request, report, naval_failure) = completed!(naval_pending, Naval);
             naval_report = report;
             if naval_report.raw_ok {
@@ -2429,138 +1971,147 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             }
             if let Some(wings) = air_wing_payload.as_ref() {
                 naval_report.copy_ticks[0] += wings.membership_ticks;
-                if let Some(second) = air_second.as_ref() {
-                    naval_report.copy_ticks[0] += second.membership_ticks;
-                }
+
                 air_wing_report.copy_ticks[0] += frame.map.install_owned_air(wings);
                 if !naval_report.raw_ok && naval_failure.is_none() {
                     frame
                         .extended
                         .naval_pilot()
                         .add_wing_source_ticks(naval_install_ticks);
-                    frame.extended.naval_pilot().install_map_wings(wings, false);
-                    if let Some(second) = air_second.as_ref() {
-                        frame.extended.naval_pilot().install_map_wings(second, true);
-                    }
+                    frame.extended.naval_pilot().install_map_wings(wings);
                 }
             }
             frame.extended.naval_pilot().raw_mode = naval_report.raw_ok || naval_failure.is_some();
             if naval_report.raw_ok && naval_failure.is_none() {
-                naval_payload = Some(naval_request.first);
+                naval_payload = Some(naval_request.payload);
             } else {
-                decode::recycle_naval_job(naval_request.first);
+                decode::recycle_naval_job(naval_request.payload);
             }
-            if let Some(second) = naval_request.second {
-                decode::recycle_naval_job(second);
-            }
-            if let Some(second) = air_second.take() {
-                decode::recycle_air_wing_job(second);
-            }
+
             if let Some(reason) = air_failure {
-                frame.map.fail_air_capture(needed[14], reason);
+                frame.map.fail_air_capture(reason);
             }
-            let (map_matched, map_ticks) = frame.map.sample(
+            segment!(6);
+            let map_ticks = frame.map.sample(
                 &cached,
                 shared.base,
                 state,
-                &needed[6..PROVINCE_CHECK],
                 &mut frame.extended.sources(
                     &cached,
                     shared.base,
-                    &extended_needed,
                     air_wing_report.raw_ok || air_failure.is_some(),
                     naval_report.raw_ok || naval_failure.is_some(),
                 ),
             );
-            // ShipModels depends on the exact first/second native ship
-            // census just completed above. Loan those preallocated seeds to
-            // the flat pool without walking Ships again or copying model
-            // data on this thread.
-            let ship_models_pending = queue!(acquisition::Job::ShipModels(
-                frame.extended.take_ship_models_request(
-                    &country_snapshot,
-                    shared.base,
-                    &extended_needed,
-                )
-            ));
-            matched[6..PROVINCE_CHECK].copy_from_slice(&map_matched);
-            frame.consistency_checked[6..PROVINCE_CHECK]
-                .copy_from_slice(&needed[6..PROVINCE_CHECK]);
+            segment!(7);
+            let (orders_request, _, orders_failure) = completed!(orders_pending, Orders);
+            let acquired_bytes = orders_request.allocated_bytes();
+            if acquired_bytes >= orders_bytes {
+                shared
+                    .pool_bytes
+                    .fetch_add((acquired_bytes - orders_bytes) as u64, Ordering::Relaxed);
+            } else {
+                shared
+                    .pool_bytes
+                    .fetch_sub((orders_bytes - acquired_bytes) as u64, Ordering::Relaxed);
+            }
+            frame.extended.restore_orders_request(
+                orders_request,
+                orders_failure.is_none(),
+                &mut frame.map.orders,
+            );
+            let orders = TableId::ArmyOrders.index();
+            frame.table_ns[orders] = shared.ns(frame.map.orders.ticks as i64);
+            let late_pending = queue!(acquisition::Job::Late(frame.extended.take_late_request(
+                &mut frame.map.orders,
+                naval_report.raw_ok || naval_failure.is_some(),
+                shared.base,
+                state,
+                clock.hour,
+                force_full
+            )));
+            let (countries_request, countries_report, _countries_failure) =
+                completed!(countries_pending, Countries);
+            countries_request.restore(&mut frame.countries, &mut frame.links);
+            frame.countries_result = countries_report.countries;
+            frame.table_ns[2] = shared.ns(countries_report.countries_ticks);
+            frame.links_result = countries_report.links.result;
+            frame.table_ns[3] = shared.ns(countries_report.links_ticks);
+            let begin = qpc();
+            let (provinces_request, provinces_report, _provinces_failure) =
+                completed!(provinces_pending, Provinces);
+            provinces_request.restore(&mut frame.provinces);
+            frame.provinces_result = provinces_report.result;
+            frame.table_ns[4] = shared.ns(qpc() - begin);
+            let (states_request, states_report, states_failure) =
+                completed!(states_pending, States);
+            let states_report =
+                frame.restore_states_request(states_request, states_report, states_failure);
+            frame.table_ns[5] = shared.ns(states_report.ticks);
+            let (wars_request, wars_report, wars_failure) = completed!(wars_pending, Wars);
+            let wars_report = frame.restore_wars_request(wars_request, wars_report, wars_failure);
+            frame.table_ns[7] = shared.ns(wars_report.table_ticks);
+            let (factions_request, mut factions_report, factions_failure) =
+                completed!(factions_pending, Factions);
+            if let Some(reason) = factions_failure {
+                factions_report = acquisition_factions::Report::failed(reason);
+            }
+            (frame.faction_names_len, frame.faction_names_required) = factions_request.restore(
+                &mut frame.factions,
+                &mut frame.faction_names,
+                &mut frame.faction_members,
+            );
+            frame.factions_result = factions_report.factions.result;
+            frame.table_ns[8] = shared.ns(factions_report.ticks[0] as i64);
+            frame.faction_members_result = factions_report.members.result;
+            frame.table_ns[9] = shared.ns(factions_report.ticks[1] as i64);
+            inline_walk_ns = shared.ns(qpc() - inline_walk_begin).saturating_sub(
+                shared
+                    .acquisition_wait_ns
+                    .load(Ordering::Relaxed)
+                    .saturating_sub(inline_wait_begin),
+            );
             for (total, ticks) in frame.table_ns[10..].iter_mut().zip(map_ticks) {
                 *total = shared.ns(ticks as i64);
             }
             decode_hour = clock.hour;
             decode_force_full = force_full;
             if let Some(reason) = players_failure {
-                frame.map.fail_players_capture(players_ctx.needed, reason);
-                matched[6] = false;
-                matched[7] = false;
-            } else if players_report.raw_ok {
-                frame
-                    .map
-                    .apply_players_report(players_ctx.needed, &players_report);
+                frame.map.fail_players_capture(reason);
             }
-            let governance_completed =
-                unsafe { finish_acquisition(shared, &mut batch, governance_pending) };
-            let acquisition::Job::Governance(governance_request) = governance_completed.request
-            else {
-                unreachable!("Governance ticket type")
-            };
-            let governance_report = governance_completed.report.map(|report| {
-                let acquisition::Report::Governance(report) = report else {
-                    unreachable!("Governance report type")
+            segment!(8);
+            for pending in supply_trains_pending.into_iter().flatten() {
+                // SAFETY: this thread still owns the live acquisition boundary.
+                let completed = unsafe { finish_acquisition(shared, &mut batch, pending) };
+                let acquisition::Job::SupplyTrains(request) = completed.request else {
+                    unreachable!("SupplyTrains ticket type")
                 };
-                report
-            });
-            frame
-                .extended
-                .restore_governance_request(governance_request, governance_report);
-            let presentation_completed =
-                unsafe { finish_acquisition(shared, &mut batch, presentation_pending) };
-            let acquisition::Job::Presentation(presentation_request) =
-                presentation_completed.request
-            else {
-                unreachable!("Presentation ticket type")
-            };
-            let presentation_report = presentation_completed.report.map(|report| {
-                let acquisition::Report::Presentation(report) = report else {
-                    unreachable!("Presentation report type")
+                let report = completed.report.map(|report| {
+                    let acquisition::Report::SupplyTrains(report) = report else {
+                        unreachable!("SupplyTrains report type")
+                    };
+                    report
+                });
+                frame
+                    .extended
+                    .restore_supply_trains_request(request, report);
+            }
+            for pending in character_portraits_pending.into_iter().flatten() {
+                // SAFETY: this thread still owns the live acquisition boundary.
+                let completed = unsafe { finish_acquisition(shared, &mut batch, pending) };
+                let acquisition::Job::CharacterPortraits(request) = completed.request else {
+                    unreachable!("CharacterPortraits ticket type")
                 };
-                report
-            });
-            frame
-                .extended
-                .restore_presentation_request(presentation_request, presentation_report);
-            let supply_completed =
-                unsafe { finish_acquisition(shared, &mut batch, supply_trains_pending) };
-            let acquisition::Job::SupplyTrains(supply_request) = supply_completed.request else {
-                unreachable!("SupplyTrains ticket type")
-            };
-            let supply_report = supply_completed.report.map(|report| {
-                let acquisition::Report::SupplyTrains(report) = report else {
-                    unreachable!("SupplyTrains report type")
-                };
-                report
-            });
-            frame
-                .extended
-                .restore_supply_trains_request(supply_request, supply_report);
-            let portraits_completed =
-                unsafe { finish_acquisition(shared, &mut batch, character_portraits_pending) };
-            let acquisition::Job::CharacterPortraits(portraits_request) =
-                portraits_completed.request
-            else {
-                unreachable!("CharacterPortraits ticket type")
-            };
-            let portraits_report = portraits_completed.report.map(|report| {
-                let acquisition::Report::CharacterPortraits(report) = report else {
-                    unreachable!("CharacterPortraits report type")
-                };
-                report
-            });
-            frame
-                .extended
-                .restore_character_portraits_request(portraits_request, portraits_report);
+                let report = completed.report.map(|report| {
+                    let acquisition::Report::CharacterPortraits(report) = report else {
+                        unreachable!("CharacterPortraits report type")
+                    };
+                    report
+                });
+                frame
+                    .extended
+                    .restore_character_portraits_request(request, report);
+            }
             let province_order_completed =
                 unsafe { finish_acquisition(shared, &mut batch, province_unit_order_pending) };
             let acquisition::Job::ProvinceUnitOrder(province_order_request) =
@@ -2577,70 +2128,185 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             frame
                 .extended
                 .restore_province_unit_order_request(province_order_request, province_order_report);
-            let (mut checks, mut ticks) = frame.extended.capture_before_eta(
+            let mut relations_failure = None;
+            if let Some(pending) = relations_pending {
+                let (request, report, failure) = completed!(pending, Relations);
+                relations_report = report;
+                relations_failure = failure;
+                frame.extended.relations_pilot().relations_raw_mode =
+                    report.raw_ok || failure.is_some();
+                if report.raw_ok && failure.is_none() {
+                    relations_payload = Some(request.payload);
+                } else {
+                    decode::recycle_relations_job(request.payload);
+                }
+            }
+            let (ordinary_request, _, ordinary_failure) = completed!(ordinary_pending, Ordinary);
+            let acquired_bytes = ordinary_request.allocated_bytes();
+            if acquired_bytes >= ordinary_bytes {
+                shared
+                    .pool_bytes
+                    .fetch_add((acquired_bytes - ordinary_bytes) as u64, Ordering::Relaxed);
+            } else {
+                shared
+                    .pool_bytes
+                    .fetch_sub((ordinary_bytes - acquired_bytes) as u64, Ordering::Relaxed);
+            }
+            frame
+                .extended
+                .restore_ordinary_request(ordinary_request, ordinary_failure);
+            let (slow_request, _, slow_failure) = completed!(slow_pending, Slow);
+            frame
+                .extended
+                .restore_slow_request(slow_request, slow_failure.is_none());
+            let (gated_request, _, gated_failure) = completed!(gated_pending, Gated);
+            frame
+                .extended
+                .restore_gated_request(gated_request, gated_failure.is_none());
+            let governance_completed =
+                unsafe { finish_acquisition(shared, &mut batch, governance_pending) };
+            let acquisition::Job::Governance(governance_request) = governance_completed.request
+            else {
+                unreachable!("Governance ticket type")
+            };
+            let acquired_bytes = governance_request.allocated_bytes();
+            if acquired_bytes >= governance_bytes {
+                shared.pool_bytes.fetch_add(
+                    (acquired_bytes - governance_bytes) as u64,
+                    Ordering::Relaxed,
+                );
+            } else {
+                shared.pool_bytes.fetch_sub(
+                    (governance_bytes - acquired_bytes) as u64,
+                    Ordering::Relaxed,
+                );
+            }
+            let governance_report = governance_completed.report.map(|report| {
+                let acquisition::Report::Governance(report) = report else {
+                    unreachable!("Governance report type")
+                };
+                report
+            });
+            frame
+                .extended
+                .restore_governance_request(governance_request, governance_report);
+            // Only the core roster feeds portraits. Independent role and
+            // trait jobs need their verdicts here, before the typed fallback;
+            // they must not delay dispatch of unrelated map/gated/late work.
+            for part in 1..CHARACTER_PARTS {
+                join_characters!(part);
+            }
+            segment!(9);
+            let mut ticks =
+                frame
+                    .extended
+                    .capture_tables(&cached, shared.base, state, clock.hour, force_full);
+            segment!(10);
+            let presentation_completed =
+                unsafe { finish_acquisition(shared, &mut batch, presentation_pending) };
+            let acquisition::Job::Presentation(presentation_request) =
+                presentation_completed.request
+            else {
+                unreachable!("Presentation ticket type")
+            };
+            let acquired_bytes = presentation_request.allocated_bytes();
+            if acquired_bytes >= presentation_bytes {
+                shared.pool_bytes.fetch_add(
+                    (acquired_bytes - presentation_bytes) as u64,
+                    Ordering::Relaxed,
+                );
+            } else {
+                shared.pool_bytes.fetch_sub(
+                    (presentation_bytes - acquired_bytes) as u64,
+                    Ordering::Relaxed,
+                );
+            }
+            let presentation_report = presentation_completed.report.map(|report| {
+                let acquisition::Report::Presentation(report) = report else {
+                    unreachable!("Presentation report type")
+                };
+                report
+            });
+            frame
+                .extended
+                .restore_presentation_request(presentation_request, presentation_report);
+            for pending in eta_inputs_pending.into_iter().flatten() {
+                // SAFETY: this thread still owns the live acquisition boundary.
+                let completed = unsafe { finish_acquisition(shared, &mut batch, pending) };
+                let acquisition::Job::EtaInputs(request) = completed.request else {
+                    unreachable!("EtaInputs ticket type")
+                };
+                let report = completed.report.map(|report| {
+                    let acquisition::Report::EtaInputs(report) = report else {
+                        unreachable!("EtaInputs report type")
+                    };
+                    report
+                });
+                frame.extended.restore_eta_inputs_request(request, report);
+            }
+            segment!(11);
+            let (late_request, _, late_failure) = completed!(late_pending, Late);
+            frame.extended.restore_late_request(
+                late_request,
+                late_failure.is_none(),
+                &mut frame.map.orders,
+            );
+            frame.extended.capture_tables_late(
                 &cached,
                 shared.base,
                 state,
                 clock.hour,
-                &extended_needed,
                 force_full,
+                &mut frame.map.orders,
+                &mut ticks,
             );
+            segment!(12);
+            shared.record_eta_inputs(frame.extended.eta_input_counters());
             let visibility = replay::rows::TableId::ProvinceVisibility.index();
-            let visibility_source = extended::province_visibility::source_outcome(
-                frame.provinces_result,
-                frame.consistency_checked[PROVINCE_CHECK],
-                frame.provinces_mismatches,
-            );
-            (checks[visibility], ticks[visibility]) = frame.extended.capture_province_visibility(
+            ticks[visibility] = frame.extended.capture_province_visibility(
                 &memory,
                 shared.base,
                 state,
                 &frame.provinces,
-                visibility_source,
-                extended_needed[visibility],
+                frame.provinces_result,
             );
             if production_rest_report.plan_failed {
                 frame
                     .extended
                     .production_rest_pilot()
                     .fail_production_rest_capture(
-                        decode::PRODUCTION_REST.map(|table| extended_needed[table.index()]),
                         "production acquisition plan could not complete safely",
                     );
                 for (table, cost) in decode::PRODUCTION_REST
                     .into_iter()
                     .zip(production_rest_report.copy_ticks)
                 {
-                    checks[table.index()] = false;
                     ticks[table.index()] = cost;
                 }
             }
             if let Some(reason) = world_failure {
-                frame
-                    .extended
-                    .production_rest_pilot()
-                    .fail_production_rest_capture(
-                        decode::PRODUCTION_REST.map(|table| extended_needed[table.index()]),
-                        reason,
-                    );
-                frame
-                    .extended
-                    .construction_rest_pilot()
-                    .fail_construction_rest_capture(
-                        decode::CONSTRUCTION_REST.map(|table| extended_needed[table.index()]),
-                        reason,
-                    );
+                if production_active {
+                    frame
+                        .extended
+                        .production_rest_pilot()
+                        .fail_production_rest_capture(reason);
+                }
+                if construction_active {
+                    frame
+                        .extended
+                        .construction_rest_pilot()
+                        .fail_construction_rest_capture(reason);
+                }
                 frame
                     .extended
                     .economy_rest_pilot()
-                    .fail_economy_rest_capture(
-                        decode::ECONOMY_REST.map(|table| extended_needed[table.index()]),
-                        reason,
-                    );
-                frame.extended.focus_pilot().fail_focus_capture(
-                    decode::FOCUS.map(|table| extended_needed[table.index()]),
-                    reason,
-                );
+                    .fail_economy_rest_capture(reason);
+                if focus_active {
+                    frame
+                        .extended
+                        .focus_pilot()
+                        .fail_focus_capture(focus_active, reason);
+                }
                 for (table, cost) in decode::PRODUCTION_REST
                     .into_iter()
                     .zip(world_report.production.copy_ticks)
@@ -2656,202 +2322,104 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     )
                     .chain(decode::FOCUS.into_iter().zip(world_report.focus.copy_ticks))
                 {
-                    checks[table.index()] = false;
                     ticks[table.index()] = cost;
                 }
             }
-            if characters_refresh {
-                if let Some(reason) = characters_failure {
+            for (part, failure) in characters_failure.into_iter().enumerate() {
+                if let Some(reason) = failure {
+                    let active = std::array::from_fn(|index| {
+                        characters_ctx.active[index]
+                            && extended::characters::PART_MASKS[part][index]
+                    });
                     frame
                         .extended
                         .characters_pilot()
-                        .fail_characters_capture(&extended_needed, reason);
-                } else if characters_report.raw_ok {
-                    frame
-                        .extended
-                        .characters_pilot()
-                        .apply_characters_report(&extended_needed, &characters_report);
+                        .fail_character_tables(active, reason);
                 }
             }
-            if relations_refresh {
-                if let Some(reason) = relations_failure {
-                    frame.extended.relations_pilot().fail_relations_capture(
-                        decode::RELATIONS.map(|table| extended_needed[table.index()]),
-                        reason,
-                    );
-                } else if relations_report.raw_ok {
-                    frame.extended.relations_pilot().apply_relations_report(
-                        decode::RELATIONS.map(|table| extended_needed[table.index()]),
-                        &relations_report,
-                    );
-                }
+            if let Some(reason) = relations_failure {
+                frame
+                    .extended
+                    .relations_pilot()
+                    .fail_relations_capture(relations_ctx.active, reason);
             }
             if let Some(reason) = air_bases_failure {
                 frame
                     .extended
                     .air_bases_pilot()
-                    .fail_air_bases_capture(air_bases_ctx.needed, reason);
-            } else if air_bases_report.raw_ok {
-                frame
-                    .extended
-                    .air_bases_pilot()
-                    .apply_air_bases_report(air_bases_ctx.needed, &air_bases_report);
+                    .fail_air_bases_capture(reason);
             }
             if let Some(reason) = air_history_failure {
                 frame
                     .extended
                     .air_history_pilot()
-                    .fail_air_history_capture(air_history_ctx.needed, reason);
-            } else if air_history_report.raw_ok {
-                frame
-                    .extended
-                    .air_history_pilot()
-                    .apply_air_history_report(air_history_ctx.needed, &air_history_report);
+                    .fail_air_history_capture(reason);
             }
             if let Some(reason) = supremacy_failure {
                 frame
                     .extended
                     .supremacy_pilot()
-                    .fail_supremacy_capture(supremacy_ctx.needed, reason);
-            } else if supremacy_report.raw_ok {
-                frame
-                    .extended
-                    .supremacy_pilot()
-                    .apply_supremacy_report(supremacy_ctx.needed, &supremacy_report);
+                    .fail_supremacy_capture(reason);
             }
             if let Some(reason) = sunk_failure {
-                frame
-                    .extended
-                    .sunk_pilot()
-                    .fail_sunk_capture(sunk_ctx.needed, reason);
-            } else if sunk_report.raw_ok {
-                frame
-                    .extended
-                    .sunk_pilot()
-                    .apply_sunk_report(sunk_ctx.needed, &sunk_report);
+                frame.extended.sunk_pilot().fail_sunk_capture(reason);
             }
             if let Some(reason) = radar_failure {
-                frame
-                    .extended
-                    .radar_pilot()
-                    .fail_radar_capture(radar_ctx.needed, reason);
-            } else if radar_report.raw_ok {
-                frame
-                    .extended
-                    .radar_pilot()
-                    .apply_radar_report(radar_ctx.needed, &radar_report);
+                frame.extended.radar_pilot().fail_radar_capture(reason);
             }
             if let Some(reason) = intel_failure {
-                frame
-                    .extended
-                    .intel_pilot()
-                    .fail_intel_capture(intel_ctx.needed, reason);
-            } else if intel_report.raw_ok {
-                frame
-                    .extended
-                    .intel_pilot()
-                    .apply_intel_report(intel_ctx.needed, &intel_report);
+                frame.extended.intel_pilot().fail_intel_capture(reason);
             }
             if let Some(reason) = capitulation_failure {
                 frame
                     .extended
                     .capitulation_pilot()
-                    .fail_capitulation_capture(capitulation_ctx.needed, reason);
-            } else if capitulation_report.raw_ok {
-                frame
-                    .extended
-                    .capitulation_pilot()
-                    .apply_capitulation_report(capitulation_ctx.needed, &capitulation_report);
+                    .fail_capitulation_capture(reason);
             }
             if let Some(reason) = weather_failure {
+                frame.extended.weather_pilot().fail_weather_capture(reason);
+            }
+            if let Some(reason) = projects_failure {
                 frame
                     .extended
-                    .weather_pilot()
-                    .fail_weather_capture(weather_ctx, reason);
-            } else if weather_report.raw_ok {
-                frame
-                    .extended
-                    .weather_pilot()
-                    .apply_weather_report(weather_ctx, &weather_report);
+                    .projects_pilot()
+                    .fail_projects_capture(projects_ctx.active, reason);
             }
-            if projects_refresh {
-                if let Some(reason) = projects_failure {
-                    frame
-                        .extended
-                        .projects_pilot()
-                        .fail_projects_capture(projects_ctx, reason);
-                } else if projects_report.raw_ok {
-                    frame
-                        .extended
-                        .projects_pilot()
-                        .apply_projects_report(projects_ctx, &projects_report);
-                }
-            }
-            if lexical_refresh {
-                if let Some(reason) = lexical_failure {
-                    frame
-                        .extended
-                        .lexical_pilot()
-                        .fail_lexical_capture(lexical_ctx, reason);
-                } else if lexical_report.raw_ok {
-                    frame
-                        .extended
-                        .lexical_pilot()
-                        .apply_lexical_report(lexical_ctx, &lexical_report);
-                }
+            if let Some(reason) = lexical_failure {
+                frame.extended.lexical_pilot().fail_lexical_capture(reason);
             }
             if let Some(reason) = session_failure {
-                frame
-                    .extended
-                    .session_pilot()
-                    .fail_session_capture(session_ctx, reason);
-            } else if session_report.raw_ok {
-                frame
-                    .extended
-                    .session_pilot()
-                    .apply_session_report(session_ctx, &session_report);
+                frame.extended.session_pilot().fail_session_capture(reason);
             }
             if let Some(reason) = air_bases_failure {
                 frame
                     .extended
                     .radar_pilot()
-                    .fail_registrations_capture(air_bases_ctx.needed[1], reason);
-            } else if air_bases_report.raw_ok {
-                frame
-                    .extended
-                    .radar_pilot()
-                    .note_registrations_copy(air_bases_ctx.needed[1], air_bases_report.matched[1]);
+                    .fail_registrations_capture(reason);
             }
             if let Some(reason) = air_failure {
                 frame
                     .extended
                     .air_wing_pilot()
-                    .fail_air_wing_capture(air_ctx.needed, reason);
+                    .fail_air_wing_capture(reason);
             }
             if let Some(reason) = air_stats_failure {
-                frame.extended.air_stats_pilot().fail_air_stats_capture(
-                    decode::AIR_STATS.map(|table| extended_needed[table.index()]),
-                    reason,
-                );
+                frame
+                    .extended
+                    .air_stats_pilot()
+                    .fail_air_stats_capture(reason);
             }
             if let Some(reason) = naval_failure {
-                frame.extended.naval_pilot().fail_naval_capture(
-                    decode::NAVAL_ORDER.map(|table| extended_needed[table.index()]),
-                    reason,
-                );
+                frame.extended.naval_pilot().fail_naval_capture(reason);
             }
             if let Some(reason) = divisions_failure {
                 frame.divisions_result = Outcome::Unavailable { reason };
-                for pass in 0..=usize::from(division_second_needed) {
-                    frame
-                        .extended
-                        .reject_division_detail_source(pass, &extended_needed, reason);
+                if divisions_ctx.details_active {
+                    frame.extended.fail_division_details(reason);
                 }
             }
-            // ShipModels can run through every independent pre-ETA callback
-            // stage. Join it only at the structural barrier, then restore
-            // and perform its fresh modifier terminal verification before
-            // any ETA phase or later shared-source verification can begin.
+            // Restore the final independent request before releasing the lease.
+            segment!(13);
             let ship_models_completed =
                 unsafe { finish_acquisition(shared, &mut batch, ship_models_pending) };
             let acquisition::Job::ShipModels(ship_models_request) = ship_models_completed.request
@@ -2864,160 +2432,39 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 };
                 report
             });
-            frame
+            frame.map.naval = frame
                 .extended
                 .restore_ship_models_request(ship_models_request, ship_models_report);
+            for (table, cost) in [TableId::Fleets, TableId::TaskForces, TableId::Ships]
+                .into_iter()
+                .zip(frame.map.naval.ticks)
+            {
+                frame.table_ns[table.index()] = shared.ns(cost as i64);
+            }
             let ships = replay::rows::TableId::ShipModels.index();
-            (checks[ships], ticks[ships]) = frame.extended.capture_ship_models(
-                &cached,
-                shared.base,
-                state,
-                clock.hour,
-                extended_needed[ships],
-                force_full,
-            );
-            ts_parallel = qpc();
-            // Join wall spent on the non-ETA pool jobs during the parallel phase.
+            ticks[ships] = frame.extended.capture_ship_models(&cached, shared.base);
+            segment!(14);
+            ts_parallel = segment_prev;
+            // Join wall spent on the pool jobs during the parallel phase.
             // acquisition_wait_ns is written only by this thread's joins.
-            noneta_join_ns = shared
+            join_ns = shared
                 .acquisition_wait_ns
                 .load(Ordering::Relaxed)
                 .saturating_sub(wait_at_setup);
-            // All ranges cross each pass barrier together.
-            let mut eta_requests: [Option<acquisition::EtaRequest>;
-                extended::division_eta::MAX_RANGES] = std::array::from_fn(|_| None);
-            let mut eta_failed = [false; extended::division_eta::MAX_RANGES];
-            // One acquisition per observation; the second runs only while the
-            // DivisionEta window is open.
-            for pass in 0..=usize::from(eta_checked) {
-                if pass != 0 {
-                    for index in 0..eta_ranges {
-                        let mut request = eta_requests[index]
-                            .take()
-                            .expect("previous ETA pass returned");
-                        request.pass = pass;
-                        if eta_failed[index] {
-                            request
-                                .payload
-                                .fail("ETA acquisition did not complete", pass);
-                            eta_requests[index] = Some(request);
-                        } else {
-                            eta_pending[index] = Some(queue!(acquisition::Job::Eta(request)));
-                        }
-                    }
-                }
-                for index in 0..eta_ranges {
-                    if let Some(pending) = eta_pending[index].take() {
-                        let (mut request, _report, failure) = completed!(pending, Eta);
-                        if let Some(reason) = failure {
-                            request.payload.fail(reason, pass);
-                            eta_failed[index] = true;
-                        }
-                        eta_requests[index] = Some(request);
-                    }
-                }
-            }
-            for (index, request) in eta_requests.into_iter().enumerate().take(eta_ranges) {
-                let request = request.expect("all ETA ranges returned");
-                frame.extended.restore_eta_range(index, request.payload);
-                decode::recycle_eta_workspace(request.workspace);
-            }
-            if eta_ranges != 0 {
-                frame.extended.finish_eta_ranges();
-            }
-            acquisition.observe_eta_diagnostics(frame.extended.eta_diagnostics());
-            let eta = replay::rows::TableId::DivisionEta.index();
-            (checks[eta], ticks[eta]) =
-                frame
-                    .extended
-                    .capture_eta(&cached, shared.base, state, extended_needed[eta]);
-            ts_eta = qpc();
-            // Explicitly drain the flat lease before shared-field or country verification.
+            // Every consumer has joined. Release all input leases before
+            // returning a failed payload to its decode-side pool.
             drop(batch);
-            drop(unit_first);
-            drop(unit_second);
-            let unit_verify_started = qpc();
-            for pass in 0..=usize::from(division_second_needed) {
-                let census = if divisions_owned {
-                    if pass == 0 {
-                        &mut divisions_payload
-                            .as_mut()
-                            .expect("owned division packet")
-                            .census
-                    } else {
-                        &mut divisions_second
-                            .as_mut()
-                            .expect("owned division check packet")
-                            .census
-                    }
-                } else {
-                    &mut frame.division_fallback[pass]
-                };
-                let bytes_before = census.payload_bytes();
-                let consumed = frame.extended.consumed_unit_seed_masks(pass);
-                let changed = census.verify_unit_inputs(&cached, &consumed);
-                let valid = frame.extended.reject_changed_unit_inputs(pass, changed);
-                for (table, valid) in [
-                    replay::rows::TableId::DivisionMovement,
-                    replay::rows::TableId::DivisionStatus,
-                    replay::rows::TableId::DivisionEta,
-                ]
-                .into_iter()
-                .zip(valid)
-                {
-                    checks[table.index()] &= valid;
-                }
-                let core = census.outcome(frame.divisions.len());
-                if needed[2] && !matches!(core, Outcome::Rows { .. }) {
-                    matched[2] = false;
-                    divisions_report.matched[0] = false;
-                    divisions_report.mismatches[0] = 1;
-                    frame.divisions_mismatches = 1;
-                }
-                if !divisions_owned && pass == 0 {
-                    frame.divisions_result = core;
-                }
-                if let Outcome::Unavailable { reason } = census.outcome(division_source_capacity) {
-                    frame
-                        .extended
-                        .reject_division_detail_source(pass, &extended_needed, reason);
-                    for (slot, table) in decode::DIVISIONS.iter().enumerate().skip(1) {
-                        if pass == 0 || extended_needed[table.index()] {
-                            checks[table.index()] = false;
-                            divisions_report.matched[slot] = false;
-                            divisions_report.mismatches[slot] = 1;
-                        }
-                    }
-                }
-                if divisions_report.raw_ok && pass == 0 {
-                    decode::add_divisions_raw_bytes(
-                        0,
-                        census.payload_bytes().saturating_sub(bytes_before),
-                    );
-                }
-            }
-            // Drop every worker/frame lease before a census can be recycled
-            // or cleared. Deferred projection owns its operands separately.
+            drop(inputs);
             frame.extended.release_unit_inputs();
-            if let Some(second) = divisions_second.take() {
-                decode::recycle_divisions_job(second);
-            }
-            let unit_verify_ns = shared.ns(qpc() - unit_verify_started);
-            frame.table_ns[6] += unit_verify_ns;
-            if divisions_report.raw_ok {
-                decode::add_divisions_copy_ns(0, unit_verify_ns);
-            }
             if divisions_failure.is_some() {
                 if let Some(job) = divisions_payload.take() {
                     decode::recycle_divisions_job(job);
                 }
                 divisions_report.raw_ok = false;
             }
-            extended_matched = checks;
             for table in extended::TABLES {
                 let index = table.index();
                 let walk = replay::cadence::should_walk(table, clock.hour, force_full);
-                frame.extended_checked[index] = extended_needed[index] && walk;
                 // Skipped tables keep zero game-thread cost for measurement.
                 frame.table_ns[index] = if walk {
                     shared.ns(ticks[index] as i64)
@@ -3029,35 +2476,33 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if relations_report.raw_ok {
                 for (slot, table) in decode::RELATIONS.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = relations_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !relations_report.matched[slot];
                     let ns = shared.ns(relations_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_relations_copy_ns(slot, ns);
                     decode::add_relations_raw_bytes(slot, relations_report.raw_bytes[slot]);
                 }
             }
-            // Characters tables measured copy-only above; same install.
-            if characters_report.raw_ok {
+            // Independent jobs charge their own anchor; these worker times
+            // overlap and must not be interpreted as callback wall time.
+            for (part, report) in characters_report.iter().enumerate() {
+                if !report.raw_ok {
+                    continue;
+                }
                 for (slot, table) in decode::CHARACTERS.iter().enumerate() {
+                    if !extended::characters::PART_MASKS[part][slot] {
+                        continue;
+                    }
                     let index = table.index();
-                    extended_matched[index] = characters_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !characters_report.matched[slot];
-                    let ns = shared.ns(characters_report.copy_ticks[slot] as i64);
+                    let ns = shared.ns(report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_characters_copy_ns(slot, ns);
-                    decode::add_characters_raw_bytes(slot, characters_report.raw_bytes[slot]);
+                    decode::add_characters_raw_bytes(slot, report.raw_bytes[slot]);
                 }
             }
             // Projects tables measured copy-only above; same install.
             if projects_report.raw_ok {
                 for (slot, table) in decode::PROJECTS.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = projects_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !projects_report.matched[slot];
                     let ns = shared.ns(projects_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_projects_copy_ns(slot, ns);
@@ -3068,9 +2513,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if lexical_report.raw_ok {
                 for (slot, table) in decode::LEXICAL.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = lexical_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !lexical_report.matched[slot];
                     let ns = shared.ns(lexical_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_lexical_copy_ns(slot, ns);
@@ -3083,9 +2525,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if divisions_report.raw_ok {
                 for (slot, table) in decode::DIVISIONS.iter().enumerate().skip(1) {
                     let index = table.index();
-                    extended_matched[index] = divisions_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && divisions_report.mismatches[slot] != 0;
                     let ns = shared.ns(divisions_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_divisions_copy_ns(slot, ns);
@@ -3099,9 +2538,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if focus_report.raw_ok {
                 for (slot, table) in decode::FOCUS.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = focus_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && focus_report.mismatches[slot] != 0;
                     let ns = shared.ns(focus_report.copy_ticks[slot] as i64);
                     // Governance retains the shared country traversal on this anchor.
                     frame.table_ns[index] = frame.table_ns[index].saturating_add(ns);
@@ -3112,9 +2548,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if air_wing_report.raw_ok {
                 for (slot, table) in decode::AIR_WING.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = air_wing_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !air_wing_report.matched[slot];
                     let ns = shared.ns(air_wing_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_air_wing_copy_ns(slot, ns);
@@ -3128,9 +2561,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if air_stats_report.raw_ok {
                 for (slot, table) in decode::AIR_STATS.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = air_stats_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !air_stats_report.matched[slot];
                     let ns = shared.ns(air_stats_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_air_stats_copy_ns(slot, ns);
@@ -3140,9 +2570,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if naval_report.raw_ok {
                 for (slot, table) in decode::NAVAL_ORDER.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = naval_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !naval_report.matched[slot];
                     let ns = shared.ns(naval_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_naval_copy_ns(slot, ns);
@@ -3150,15 +2577,9 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 }
             }
             // Players pair measured copy-only above; same install for the
-            // calibration counters. Players tables use core consistency
-            // slots (players=6, controllers=7).
+            // calibration counters. Each table retains its own timing slot.
             if players_report.raw_ok {
                 for (slot, table) in decode::PLAYERS.iter().enumerate() {
-                    let core = 6 + slot;
-                    matched[core] = players_report.matched[slot];
-                    if needed[core] {
-                        frame.consistency_checked[core] = true;
-                    }
                     let ns = shared.ns(players_report.copy_ticks[slot] as i64);
                     frame.table_ns[table.index()] = ns;
                     decode::add_players_copy_ns(slot, ns);
@@ -3172,9 +2593,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if session_report.raw_ok {
                 for (slot, table) in decode::SESSION.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = session_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !session_report.matched[slot];
                     let ns = shared.ns(session_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_session_copy_ns(slot, ns);
@@ -3189,9 +2607,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if production_rest_report.raw_ok {
                 for (slot, table) in decode::PRODUCTION_REST.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = production_rest_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !production_rest_report.matched[slot];
                     let ns = shared.ns(production_rest_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_production_rest_copy_ns(slot, ns);
@@ -3209,9 +2624,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if construction_rest_report.raw_ok {
                 for (slot, table) in decode::CONSTRUCTION_REST.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = construction_rest_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !construction_rest_report.matched[slot];
                     let ns = shared.ns(construction_rest_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_construction_rest_copy_ns(slot, ns);
@@ -3229,13 +2641,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if economy_rest_report.raw_ok {
                 for (slot, table) in decode::ECONOMY_REST.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = economy_rest_report.matched[slot];
-                    frame.extended_raw_mismatches[index] = extended_needed[index]
-                        && if (6..9).contains(&slot) {
-                            economy_rest_report.resource_mismatches[slot - 6] != 0
-                        } else {
-                            !economy_rest_report.matched[slot]
-                        };
                     let ns = shared.ns(economy_rest_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_economy_rest_copy_ns(slot, ns);
@@ -3250,9 +2655,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if air_bases_report.raw_ok {
                 for (slot, table) in decode::AIR_BASES.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = air_bases_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !air_bases_report.matched[slot];
                     let ns = shared.ns(air_bases_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_air_bases_copy_ns(slot, ns);
@@ -3266,9 +2668,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if air_history_report.raw_ok {
                 for (slot, table) in decode::AIR_HISTORY.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = air_history_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !air_history_report.matched[slot];
                     let ns = shared.ns(air_history_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_air_history_copy_ns(slot, ns);
@@ -3280,9 +2679,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if supremacy_report.raw_ok {
                 for (slot, table) in decode::SUPREMACY.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = supremacy_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !supremacy_report.matched[slot];
                     let ns = shared.ns(supremacy_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_supremacy_copy_ns(slot, ns);
@@ -3294,9 +2690,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if sunk_report.raw_ok {
                 for (slot, table) in decode::SUNK.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = sunk_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !sunk_report.matched[slot];
                     let ns = shared.ns(sunk_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_sunk_copy_ns(slot, ns);
@@ -3308,9 +2701,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if radar_report.raw_ok {
                 for (slot, table) in decode::RADAR.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = radar_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && radar_report.mismatches[slot] != 0;
                     let ns = shared.ns(radar_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_radar_copy_ns(slot, ns);
@@ -3322,9 +2712,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if intel_report.raw_ok {
                 for (slot, table) in decode::INTEL.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = intel_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && intel_report.mismatches[slot] != 0;
                     let ns = shared.ns(intel_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_intel_copy_ns(slot, ns);
@@ -3338,9 +2725,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if weather_report.raw_ok {
                 for (slot, table) in decode::WEATHER.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = weather_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !weather_report.matched[slot];
                     let ns = shared.ns(weather_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_weather_copy_ns(slot, ns);
@@ -3352,9 +2736,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             if capitulation_report.raw_ok {
                 for (slot, table) in decode::CAPITULATION.iter().enumerate() {
                     let index = table.index();
-                    extended_matched[index] = capitulation_report.matched[slot];
-                    frame.extended_raw_mismatches[index] =
-                        extended_needed[index] && !capitulation_report.matched[slot];
                     let ns = shared.ns(capitulation_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
                     decode::add_capitulation_copy_ns(slot, ns);
@@ -3374,40 +2755,18 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 frame.order_counters.qpc_end = qpc();
                 frame.order_counters.elapsed_ns = shared.ns(frame.order_counters.qpc_end - begin);
             }
-            let cache_verify_begin = qpc();
-            frame.country_cache_error = cached.verify().err();
-            frame.country_cache_ns = shared.ns(cache_prepare_ticks + qpc() - cache_verify_begin);
-            // Authentication is shared by country-dependent tables. This
-            // accounting slot includes the seed and final direct check once.
+            frame.country_cache_ns = shared.ns(cache_prepare_ticks);
+            // All dependent tables share the one seeded authentication census.
             frame.table_ns[2] += frame.country_cache_ns;
-            if frame.country_cache_error.is_some() {
-                matched.fill(false);
-                extended_matched.fill(false);
-                wars_matrix_check = false;
-            }
-            if force_full {
-                // Diagnostic only: the original replay witness is the entry
-                // sample. This second sample follows acquisition and all
-                // terminal dependency checks, before the tick releases.
-                let begin = qpc();
-                frame.order_counters.terminal_qpc_begin = begin;
-                frame.order_counters.terminal_counters = Some(
-                    save_allocation_counters::read_counters(&memory, shared.base, state),
-                );
-                let end = qpc();
-                frame.order_counters.terminal_qpc_end = end;
-                frame.order_counters.terminal_elapsed_ns = shared.ns(end - begin);
-                clock_ticks += end - begin;
-            }
         }
-        let after = qpc();
-        frame.clock_after = cgame_state::read_clock(&memory, shared.base);
-        clock_ticks += qpc() - after;
         unsafe {
-            shared.sample_roster(&memory, frame.clock_after.or(frame.clock_before));
+            shared.sample_roster(&memory, frame.clock);
         }
         frame.table_ns[0] = shared.ns(clock_ticks);
-        frame.dropped_before = unsafe { std::mem::take(&mut *shared.pending.get()) };
+        frame.table_reads = crate::read_accounting::snapshot();
+        // Keep the producer's loss witnesses until ownership is published.
+        // A contained panic before enqueue must not consume earlier gaps.
+        frame.dropped_before = unsafe { *shared.pending.get() };
         frame.pool_bytes = shared.pool_bytes.load(Ordering::Relaxed);
         frame.dropped_frames = shared.dropped.load(Ordering::Relaxed);
         shared.completed[index].store(0, Ordering::Relaxed);
@@ -3415,39 +2774,28 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         // Finish every frame write before publishing its index. The decode
         // worker may acquire exclusive access as soon as enqueue succeeds;
         // its later ready-queue Release cannot protect writes after enqueue.
-        // Stage the window updates locally, committing them only if sent.
-        let stable = stable_clock(frame.clock_before, frame.clock_after);
-        let mut consistency = unsafe { *shared.consistency.get() };
-        let mut extended_consistency = unsafe { *shared.extended_consistency.get() };
-        frame.consistency_successful = consistency.commit(matched, stable, true);
-        frame.extended_successful = extended_consistency.commit(extended_matched, stable, true);
         // Every frame transits the single decode FIFO in hour order; the
         // worker hands it to the spool ready queue after decoding any
-        // refresh payload. With 256 buffers and 256 queue slots, an owned
-        // buffer guarantees space, exactly as the ready push did before.
+        // refresh payload. Each queue can hold the complete buffer pool,
+        // so owning a buffer guarantees space for its index.
         // The frame's cost is this acquisition body's wall on the game thread.
         let game_elapsed = (qpc() - dispatched).max(1);
         // Disjoint block phases: setup+snapshot, parallel (dispatch/inline/joins),
-        // the serial ETA barriers, then residual verification and enqueue.
+        // then residual work and enqueue.
         shared
             .phase_setup_ns
             .fetch_add(shared.ns(ts_setup - dispatched), Ordering::Relaxed);
         shared
             .phase_parallel_ns
             .fetch_add(shared.ns(ts_parallel - ts_setup), Ordering::Relaxed);
-        shared
-            .phase_eta_ns
-            .fetch_add(shared.ns(ts_eta - ts_parallel), Ordering::Relaxed);
         shared.phase_residual_ns.fetch_add(
-            shared.ns(dispatched + game_elapsed - ts_eta),
+            shared.ns(dispatched + game_elapsed - ts_parallel),
             Ordering::Relaxed,
         );
         shared
             .phase_inline_walk_ns
             .fetch_add(inline_walk_ns, Ordering::Relaxed);
-        shared
-            .phase_noneta_join_ns
-            .fetch_add(noneta_join_ns, Ordering::Relaxed);
+        shared.phase_join_ns.fetch_add(join_ns, Ordering::Relaxed);
         shared.phase_calls.fetch_add(1, Ordering::Relaxed);
         frame.capture_seq = decode::next_seq();
         let decode_job = decode::DecodeJob {
@@ -3455,7 +2803,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             seq: frame.capture_seq,
             hour: decode_hour,
             relations_refresh: relations_report.raw_ok,
-            characters_refresh: characters_report.raw_ok,
+            characters_refresh: characters_report.map(|report| report.raw_ok),
             projects_refresh: projects_report.raw_ok,
             lexical_refresh: lexical_report.raw_ok,
             divisions_refresh: divisions_report.raw_ok,
@@ -3502,20 +2850,12 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             capitulation_payload,
         };
         match decode::enqueue(shared, decode_job) {
-            None => {
-                unsafe {
-                    *shared.consistency.get() = consistency;
-                    *shared.extended_consistency.get() = extended_consistency;
-                }
-                if wars_matrix_check && stable {
-                    complete_matrix_check(&shared.war_matrix_remaining);
-                }
-            }
+            None => unsafe { *shared.pending.get() = LossBatch::default() },
             Some(returned) => {
                 if let Some(payload) = returned.relations_payload {
                     decode::recycle_relations_job(payload);
                 }
-                if let Some(payload) = returned.characters_payload {
+                for payload in returned.characters_payload.into_iter().flatten() {
                     decode::recycle_characters_job(payload);
                 }
                 if let Some(payload) = returned.projects_payload {
@@ -3583,22 +2923,23 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 }
                 // Existing whole-frame drop plus gap path, unchanged
                 // counters and no new loss reasons.
-                drop_owned_frame(shared, frame, index, entry);
+                drop_owned_frame(shared, frame, index);
             }
         }
     } else {
-        let after = cgame_state::read_clock(&memory, shared.base);
         unsafe {
-            shared.sample_roster(&memory, after);
-            (&mut *shared.pending.get()).push(entry, after);
+            shared.sample_roster(&memory, entry);
+            (&mut *shared.pending.get()).push(entry);
         }
         shared.dropped.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-struct PendingAcquisition {
-    ticket: Option<acquisition::Ticket>,
-    retained: Option<acquisition::Job>,
+// Keep a rejected request inline: boxing it would allocate on the game thread.
+#[allow(clippy::large_enum_variant)]
+enum PendingAcquisition {
+    Accepted(acquisition::Ticket),
+    Rejected(acquisition::Job),
 }
 
 /// Caller retains the game boundary until this guard and all returned jobs finish.
@@ -3610,29 +2951,83 @@ unsafe fn submit_acquisition(
     let begin = qpc();
     let mut retained = Some(request);
     // SAFETY: the caller's batch owns this callback's complete live lease.
-    let ticket = unsafe { batch.submit(&mut retained) }.ok();
+    let pending = match unsafe { batch.submit(&mut retained) } {
+        Ok(ticket) => PendingAcquisition::Accepted(ticket),
+        Err(_) => PendingAcquisition::Rejected(retained.expect("rejected request retained")),
+    };
     shared
         .acquisition_dispatch_ns
         .fetch_add(shared.ns(qpc() - begin), Ordering::Relaxed);
-    PendingAcquisition { ticket, retained }
+    pending
 }
 
 /// Accepted work is recovered once; only rejected submissions may execute inline.
 unsafe fn finish_acquisition(
     shared: &Shared,
     batch: &mut acquisition::Batch<'_>,
-    mut pending: PendingAcquisition,
+    pending: PendingAcquisition,
 ) -> acquisition::Completion<acquisition::Job, acquisition::Report> {
-    if let Some(ticket) = pending.ticket {
-        let begin = qpc();
-        let result = batch.finish(ticket).expect("submitted acquisition job");
-        shared
-            .acquisition_wait_ns
-            .fetch_add(shared.ns(qpc() - begin), Ordering::Relaxed);
-        result
-    } else {
-        // SAFETY: this request was rejected before acquiring any live state.
-        unsafe { batch.run_inline(pending.retained.take().expect("rejected request retained")) }
+    match pending {
+        PendingAcquisition::Accepted(ticket) => {
+            let begin = qpc();
+            let result = batch.finish(ticket).expect("submitted acquisition job");
+            let wait = shared.ns(qpc() - begin);
+            shared
+                .acquisition_wait_ns
+                .fetch_add(wait, Ordering::Relaxed);
+            shared.join_wait[result.request.role() as usize].fetch_add(wait, Ordering::Relaxed);
+            #[cfg(feature = "callback_profile")]
+            crate::callback_profile::record_join(
+                result.request.role() as usize,
+                wait,
+                result.profile,
+            );
+            result
+        }
+        PendingAcquisition::Rejected(mut request) => {
+            if let acquisition::Job::Governance(governance) = &mut request {
+                let report = governance.fail("governance worker admission failed");
+                return acquisition::Completion {
+                    request,
+                    report: Ok(acquisition::Report::Governance(report)),
+                    table_reads: crate::read_accounting::ZERO,
+                    #[cfg(feature = "callback_profile")]
+                    profile: Default::default(),
+                };
+            }
+            if let acquisition::Job::Orders(orders) = &mut request {
+                let report = orders.fail("army order worker admission failed");
+                return acquisition::Completion {
+                    request,
+                    report: Ok(acquisition::Report::Orders(report)),
+                    table_reads: crate::read_accounting::ZERO,
+                    #[cfg(feature = "callback_profile")]
+                    profile: Default::default(),
+                };
+            }
+            if let acquisition::Job::Ordinary(ordinary) = &mut request {
+                let report = ordinary.fail("ordinary worker admission failed");
+                return acquisition::Completion {
+                    request,
+                    report: Ok(acquisition::Report::Ordinary(report)),
+                    table_reads: crate::read_accounting::ZERO,
+                    #[cfg(feature = "callback_profile")]
+                    profile: Default::default(),
+                };
+            }
+            if let acquisition::Job::Presentation(presentation) = &mut request {
+                let report = presentation.fail("division presentation worker admission failed");
+                return acquisition::Completion {
+                    request,
+                    report: Ok(acquisition::Report::Presentation(report)),
+                    table_reads: crate::read_accounting::ZERO,
+                    #[cfg(feature = "callback_profile")]
+                    profile: Default::default(),
+                };
+            }
+            // SAFETY: this request was rejected before acquiring any live state.
+            unsafe { batch.run_inline(request) }
+        }
     }
 }
 
@@ -3643,81 +3038,38 @@ fn acquisition_failure_reason(failure: acquisition::Failure) -> &'static str {
     }
 }
 
-fn acquire_world_request(
+pub(crate) fn acquire_world_request(
     countries: &Arc<Cache>,
     base: usize,
     game_state: usize,
-    needed: &[bool],
     focus: extended::governance::FocusCopyContext,
-    economy: &extended::economy::Captured,
+    economy: &mut extended::economy::Captured,
+    hour: i32,
+    force_full: bool,
 ) -> acquisition::WorldRequest {
-    // Reuse the exact existing per-family buffer eligibility: a needed
-    // second pass without a provisioned buffer forces typed acquisition.
-    macro_rules! pair {
-        ($context:expr, $acquire:path, $recycle:path) => {{
-            let context = $context;
-            let mut first = $acquire();
-            let second = context.needed.iter().any(|&check| check).then($acquire);
-            if second
-                .as_ref()
-                .is_some_and(|job| job.log.spans.capacity() == 0)
-            {
-                $recycle(first);
-                first = Default::default();
-            }
-            acquisition::WorldPair {
-                context,
-                first,
-                second,
-            }
-        }};
-    }
     acquisition::WorldRequest {
         countries: Arc::clone(countries),
-        production: pair!(
-            extended::production::ProductionRestCopyContext {
-                base,
-                game_state,
-                needed: decode::PRODUCTION_REST.map(|table| needed[table.index()]),
+        production: replay::cadence::should_walk(TableId::ProductionLines, hour, force_full).then(
+            || acquisition::WorldPart {
+                context: extended::production::ProductionRestCopyContext { base, game_state },
+                payload: decode::acquire_production_rest_job(),
             },
-            decode::acquire_production_rest_job,
-            decode::recycle_production_rest_job
         ),
-        construction: pair!(
-            extended::construction::ConstructionRestCopyContext {
-                base,
-                game_state,
-                needed: decode::CONSTRUCTION_REST.map(|table| needed[table.index()]),
-            },
-            decode::acquire_construction_rest_job,
-            decode::recycle_construction_rest_job
-        ),
-        economy: pair!(
-            economy.resource_copy_context(
-                base,
-                game_state,
-                decode::ECONOMY_REST.map(|table| needed[table.index()])
-            ),
-            decode::acquire_economy_rest_job,
-            decode::recycle_economy_rest_job
-        ),
-        focus: {
-            let mut first = decode::acquire_focus_job();
-            let second = focus
-                .needed
-                .iter()
-                .any(|&check| check)
-                .then(decode::acquire_focus_job);
-            if second.as_ref().is_some_and(|job| !job.is_provisioned()) {
-                decode::recycle_focus_job(first);
-                first = Default::default();
-            }
-            acquisition::WorldPair {
-                context: focus,
-                first,
-                second,
-            }
+        construction: replay::cadence::should_walk(TableId::StateBaseResources, hour, force_full)
+            .then(|| acquisition::WorldPart {
+                context: extended::construction::ConstructionRestCopyContext { base, game_state },
+                payload: decode::acquire_construction_rest_job(),
+            }),
+        economy: acquisition::WorldPart {
+            context: economy.resource_copy_context(base, game_state, hour, force_full),
+            payload: decode::acquire_economy_rest_job(),
         },
+        focus: replay::cadence::should_walk(TableId::Focus, hour, force_full).then(|| {
+            acquisition::WorldPart {
+                context: focus,
+                payload: decode::acquire_focus_job(),
+            }
+        }),
     }
 }
 
@@ -3740,9 +3092,10 @@ pub(crate) struct DivisionsJob {
 }
 impl DivisionsJob {
     pub fn new() -> Self {
+        let census = crate::division_census::Census::new();
         let mut job = Self {
-            census: crate::division_census::Census::new(),
-            details: crate::division_detail::OwnedDetails::new(),
+            details: crate::division_detail::OwnedDetails::new(census.source_capacity()),
+            census,
             ..Self::default()
         };
         job.update_capacity_charge();
@@ -3764,7 +3117,7 @@ impl DivisionsJob {
     }
     pub fn grow(&mut self) {
         self.census.grow();
-        self.details.grow();
+        self.details.grow(self.census.source_capacity());
         self.update_capacity_charge();
     }
     fn update_capacity_charge(&mut self) {
@@ -3784,8 +3137,8 @@ impl DivisionsJob {
     fn source_outcome(&self, capacity: usize) -> Outcome {
         self.census.outcome(capacity)
     }
-    fn supply_sources(&self, captured: &mut extended::Captured, capacity: usize, second: bool) {
-        supply_division_census_sources(&self.census, captured, capacity, second);
+    fn supply_sources(&self, captured: &mut extended::Captured, capacity: usize) {
+        supply_division_census_sources(&self.census, captured, capacity);
     }
 }
 
@@ -3793,13 +3146,12 @@ fn supply_division_census_sources(
     census: &crate::division_census::Census,
     captured: &mut extended::Captured,
     capacity: usize,
-    second: bool,
 ) {
     let (sources, outcome) = census.sources(capacity);
     for &source in sources {
-        captured.visit_division_source(source, second);
+        captured.visit_division_source(source);
     }
-    captured.finish_divisions(outcome, second);
+    captured.finish_divisions(outcome);
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -3807,8 +3159,6 @@ pub(crate) struct DivisionsCopyReport {
     /// Ready owned payload. A core failure after seed leasing is terminal;
     /// only an input-stage shortage before leasing may use a fresh fallback.
     pub raw_ok: bool,
-    pub matched: [bool; 6],
-    pub mismatches: [usize; 6],
     pub copy_ticks: [u64; 6],
     pub raw_bytes: [u64; 6],
 }
@@ -3819,6 +3169,8 @@ pub(crate) struct DivisionsCopyContext {
     pub row_capacity: usize,
     pub source_capacity: usize,
     pub detail_capacities: [usize; 5],
+    /// Frozen with the input lineage and retained through owned decoding.
+    pub details_active: bool,
 }
 impl Default for DivisionsCopyContext {
     fn default() -> Self {
@@ -3829,6 +3181,7 @@ impl Default for DivisionsCopyContext {
             row_capacity: INITIAL_CAPACITIES[4],
             source_capacity: 8192,
             detail_capacities: [c[2], c[7], c[8], c[9], c[10]],
+            details_active: true,
         }
     }
 }
@@ -3839,8 +3192,12 @@ fn copy_divisions_inputs_pass(
     memory: &impl engine::Memory,
     context: DivisionsCopyContext,
 ) {
+    let _reads = crate::read_accounting::table(replay::rows::TableId::Divisions);
     job.clear();
     job.context = context;
+    if !context.details_active {
+        job.details.mark_skipped();
+    }
     let started = qpc();
     job.census
         .capture_inputs(memory, context.base, context.game_state);
@@ -3849,24 +3206,19 @@ fn copy_divisions_inputs_pass(
     // This is metadata-only capacity admission. capture_core may still discover
     // a private row/header capacity shortage, which cannot authorize a retry
     // after consumers receive a lease.
-    job.overflowed = !job.details.ready_for(context.detail_capacities) || job.census.overflowed;
+    job.overflowed = (context.details_active && !job.details.ready_for(context.detail_capacities))
+        || job.census.overflowed;
 }
 
-/// Acquire and retain the two independent seed packets before any core task.
-/// False permits a fresh fallback only while neither packet has been leased.
+/// Retain one input packet before any core task leases it. A capacity miss
+/// permits fallback only before any consumer has borrowed that packet.
 pub(crate) fn copy_divisions_inputs_refresh(
     memory: &impl engine::Memory,
     ctx: DivisionsCopyContext,
-    first: &mut DivisionsJob,
-    second: Option<&mut DivisionsJob>,
+    payload: &mut DivisionsJob,
 ) -> bool {
-    copy_divisions_inputs_pass(first, memory, ctx);
-    let mut ready = !first.overflowed;
-    if let Some(second) = second {
-        copy_divisions_inputs_pass(second, memory, ctx);
-        ready &= !second.overflowed;
-    }
-    ready
+    copy_divisions_inputs_pass(payload, memory, ctx);
+    !payload.overflowed
 }
 
 /// Consume only the retained input lineage. This stage never clears a Census,
@@ -3876,8 +3228,9 @@ fn copy_divisions_core_pass(
     memory: &impl engine::Memory,
     context: DivisionsCopyContext,
 ) {
+    let _reads = crate::read_accounting::table(replay::rows::TableId::Divisions);
     // Context mismatch is a terminal orchestration failure. Keep the original
-    // input owner intact so its other consumers can finish and be verified.
+    // input owner intact so its other consumers can finish.
     if !job.inputs_captured || job.context != context {
         job.overflowed = true;
         job.core_finished = true;
@@ -3891,8 +3244,12 @@ fn copy_divisions_core_pass(
     job.census
         .capture_core(memory, context.row_capacity.max(context.source_capacity));
     job.acquisition_ticks[0] += elapsed(started);
-    job.overflowed = !job.details.ready_for(context.detail_capacities) || job.census.overflowed;
+    job.overflowed = (context.details_active && !job.details.ready_for(context.detail_capacities))
+        || job.census.overflowed;
     if job.overflowed {
+        return;
+    }
+    if !context.details_active {
         return;
     }
     let (sources, outcome) = job.census.sources(context.source_capacity);
@@ -3908,80 +3265,39 @@ fn copy_divisions_core_pass(
     }
 }
 
-/// Compare only the owned results; no source read or input reauthentication.
-fn divisions_copy_report(
-    ctx: DivisionsCopyContext,
-    first: &DivisionsJob,
-    second: Option<&DivisionsJob>,
-) -> DivisionsCopyReport {
-    let mut ticks = first.acquisition_ticks;
-    let mut matched = [true; 6];
-    let mut mismatches = [0; 6];
-    let mut raw_ok = !first.overflowed;
-    if let Some(second) = second {
-        for (total, extra) in ticks.iter_mut().zip(second.acquisition_ticks) {
-            *total += extra;
-        }
-        raw_ok &= !second.overflowed;
-        matched[0] = raw_ok && first.census.equal(&second.census, ctx.row_capacity);
-        mismatches[0] = usize::from(!first.census.same(&second.census, ctx.row_capacity));
-        let source_match = first.census.equal(&second.census, ctx.source_capacity);
-        let source_same = first.census.same(&second.census, ctx.source_capacity);
-        mismatches[1..].copy_from_slice(&first.details.differences(&second.details));
-        for mismatch in &mut mismatches[1..] {
-            *mismatch += usize::from(!source_same);
-        }
-        for (slot, equal) in matched[1..]
-            .iter_mut()
-            .zip(first.details.equal(&second.details))
-        {
-            *slot = raw_ok && source_match && equal;
-        }
-    }
+/// Report the one owned acquisition without reading source memory.
+fn divisions_copy_report(payload: &DivisionsJob) -> DivisionsCopyReport {
     DivisionsCopyReport {
-        raw_ok,
-        matched,
-        mismatches,
-        copy_ticks: ticks,
-        raw_bytes: first.payload_bytes(),
+        raw_ok: !payload.overflowed,
+        copy_ticks: payload.acquisition_ticks,
+        raw_bytes: payload.payload_bytes(),
     }
 }
 
-/// Finish already-seeded jobs. Once their inputs have been leased, raw_ok=false
-/// is a terminal result, never authorization for the composed/fallback reader.
+/// A failure after input leasing is final for this callback; no source retry.
 pub(crate) fn copy_divisions_core_refresh(
     memory: &impl engine::Memory,
     ctx: DivisionsCopyContext,
-    first: &mut DivisionsJob,
-    mut second: Option<&mut DivisionsJob>,
+    payload: &mut DivisionsJob,
 ) -> DivisionsCopyReport {
-    copy_divisions_core_pass(first, memory, ctx);
-    if let Some(second) = second.as_deref_mut() {
-        copy_divisions_core_pass(second, memory, ctx);
-    }
-    divisions_copy_report(ctx, first, second.as_deref())
+    copy_divisions_core_pass(payload, memory, ctx);
+    divisions_copy_report(payload)
 }
 
-/// Original composed path for synthetic callers and pre-lease fallback. Keep
-/// every first-pass observation before the second input census is acquired.
+/// Single composed acquisition for synthetic callers.
 #[cfg(test)]
 pub(crate) fn copy_divisions_refresh(
     memory: &impl engine::Memory,
     ctx: DivisionsCopyContext,
-    first: &mut DivisionsJob,
-    mut second: Option<&mut DivisionsJob>,
+    payload: &mut DivisionsJob,
 ) -> DivisionsCopyReport {
-    copy_divisions_inputs_pass(first, memory, ctx);
-    copy_divisions_core_pass(first, memory, ctx);
-    if let Some(second) = second.as_deref_mut() {
-        copy_divisions_inputs_pass(second, memory, ctx);
-        copy_divisions_core_pass(second, memory, ctx);
-    }
-    divisions_copy_report(ctx, first, second.as_deref())
+    copy_divisions_inputs_pass(payload, memory, ctx);
+    copy_divisions_core_pass(payload, memory, ctx);
+    divisions_copy_report(payload)
 }
 
 /// Worker installation copies compact core rows and transfers owned detail
-/// buffers. Callback presentation rows and its independent source passes survive.
+/// buffers. Callback presentation rows and their source packet survive.
 pub(crate) fn decode_divisions_payload(
     frame: &mut Captured,
     _base: usize,
@@ -3991,10 +3307,15 @@ pub(crate) fn decode_divisions_payload(
     let started = qpc();
     frame.divisions_result = job.census.install_rows(&mut frame.divisions);
     decode_ticks[0] += elapsed(started);
-    let started = qpc();
-    frame.extended.install_division_detail(&mut job.details);
-    job.update_capacity_charge();
-    decode_ticks[1] += elapsed(started);
+    if job.context.details_active {
+        let started = qpc();
+        frame.extended.install_division_detail(&mut job.details);
+        job.update_capacity_charge();
+        decode_ticks[1] += elapsed(started);
+    } else {
+        frame.extended.set_divisions_raw_mode(false);
+        job.update_capacity_charge();
+    }
 }
 /// Shared synthetic address space for the typed Wars capture and FIFO tests:
 /// three countries plus one alias slot, two wars with signed-extreme rows,
@@ -4235,24 +3556,18 @@ pub(crate) mod wars_test_kit {
         SliceMemory { base: 0, bytes }
     }
 
-    pub(crate) struct Censuses {
+    pub(crate) struct Capture {
         pub owned_outcome: Outcome,
         pub owned: Vec<cwar_relation::Row>,
-        pub matrix_outcome: Outcome,
-        pub matrix: Vec<cwar_relation::Row>,
     }
 
-    /// Reference typed walks with identical pooled buffers.
-    pub(crate) fn direct(memory: &impl Memory, len: usize) -> Censuses {
+    /// Reference primary walk with identical pooled buffers.
+    pub(crate) fn direct(memory: &impl Memory, len: usize) -> Capture {
         let mut owned = vec![cwar_relation::Row::default(); len];
         let owned_outcome = cwar_relation::walk(memory, BASE, GAME_STATE, &mut owned);
-        let mut matrix = vec![cwar_relation::Row::default(); len];
-        let matrix_outcome = cwar_relation::walk_matrix(memory, BASE, GAME_STATE, &mut matrix);
-        Censuses {
+        Capture {
             owned_outcome,
             owned,
-            matrix_outcome,
-            matrix,
         }
     }
 }
@@ -4591,8 +3906,7 @@ pub(crate) mod divisions_test_kit {
         }
     }
 
-    /// Owned capture: independent passes compared, then the first payload
-    /// installed into a pooled frame with the same buffer lengths.
+    /// One owned acquisition installed into a pooled frame with equal capacities.
     pub(crate) fn split(
         memory: &impl Memory,
         lens: [usize; 6],
@@ -4603,10 +3917,10 @@ pub(crate) mod divisions_test_kit {
             row_capacity: lens[0],
             source_capacity: lens[0],
             detail_capacities: lens[1..].try_into().unwrap(),
+            details_active: true,
         };
         let mut first = DivisionsJob::new();
-        let mut second = DivisionsJob::new();
-        let report = super::copy_divisions_refresh(memory, ctx, &mut first, Some(&mut second));
+        let report = super::copy_divisions_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
         let mut frame = Captured::new();
         frame.divisions = vec![carmy::Row::default(); lens[0]];
@@ -4651,7 +3965,11 @@ pub(crate) mod divisions_test_kit {
             split.groups_outcome, direct.groups_outcome,
             "groups outcome"
         );
-        assert_eq!(split.groups, direct.groups, "groups rows");
+        assert_eq!(
+            &split.groups[..direct.groups.len()],
+            direct.groups,
+            "groups rows"
+        );
         assert_eq!(
             split.requests_outcome, direct.requests_outcome,
             "requests outcome"
@@ -4734,7 +4052,6 @@ mod tests {
         assert_eq!(sample.read, None);
         assert_eq!(sample.rows.as_ptr(), pointer);
         assert_eq!(sample.rows.capacity(), capacity);
-        assert!(cached.verify().is_ok());
     }
 
     #[test]
@@ -4782,8 +4099,24 @@ mod tests {
         let grown = LOCAL.snapshot().current.auxiliary_vectors;
         assert!(grown > initial);
         assert_eq!(grown, expected(&job));
+        assert!(
+            job.details
+                .ready_for([0, job.census.source_capacity(), 0, 0, 0])
+        );
+        let mut frame = Captured::new();
+        let frame_before = frame.allocated_bytes();
+        let payload_before = expected(&job);
+        decode_divisions_payload(&mut frame, 0, &mut job, &mut [0; 6]);
+        let payload_after = expected(&job);
+        assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, payload_after);
+        assert_eq!(
+            frame.allocated_bytes() as u64 + payload_after - frame_before as u64 - payload_before,
+            (job.census.source_capacity() - extended::production::Capacities::default().rows[7])
+                as u64
+                * size_of::<engine::carmy_upgrades_requests::Row>() as u64
+        );
         job.clear();
-        assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, grown);
+        assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, payload_after);
         drop(job);
         assert_eq!(LOCAL.snapshot().current, Capacity::default());
     }
@@ -4801,26 +4134,6 @@ mod tests {
         assert_eq!(completed_callback_ticks(&base, &tail), None);
         base.store(23, Ordering::Release);
         assert_eq!(completed_callback_ticks(&base, &tail), Some(26));
-    }
-
-    #[test]
-    fn matrix_window_stays_closed_after_its_last_success() {
-        let remaining = AtomicUsize::new(200);
-        for _ in 0..200 {
-            complete_matrix_check(&remaining);
-        }
-        assert_eq!(remaining.load(Ordering::Relaxed), 0);
-        complete_matrix_check(&remaining);
-        assert_eq!(remaining.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn pool_growth_preserves_reserve_threshold_and_hard_queue_bound() {
-        assert_eq!(pool_growth(FREE_RESERVE + 1, INITIAL_BUFFERS), 0);
-        assert_eq!(pool_growth(FREE_RESERVE, INITIAL_BUFFERS), GROW_BUFFERS);
-        assert_eq!(pool_growth(0, BUFFERS - 1), 1);
-        assert_eq!(pool_growth(0, BUFFERS), 0);
-        assert_eq!(pool_growth(0, BUFFERS + 1), 0);
     }
 
     #[test]
@@ -4843,7 +4156,7 @@ mod tests {
                     seq: seq as u64,
                     hour: 0,
                     relations_refresh: false,
-                    characters_refresh: false,
+                    characters_refresh: [false; CHARACTER_PARTS],
                     projects_refresh: false,
                     lexical_refresh: false,
                     divisions_refresh: false,
@@ -4867,7 +4180,7 @@ mod tests {
                     force_full: false,
                     game_elapsed: 1,
                     relations_payload: None,
-                    characters_payload: None,
+                    characters_payload: [const { None }; CHARACTER_PARTS],
                     projects_payload: None,
                     lexical_payload: None,
                     divisions_payload: None,
@@ -4891,15 +4204,14 @@ mod tests {
                 })
                 .unwrap();
         }
-        // The game thread never blocks: a full decode FIFO drops the whole
-        // frame through the existing gap path with the existing counters and
-        // no new loss reasons.
+        // A decode FIFO filled with duplicate leases is an invariant violation.
+        // Keep its explicit failure path rather than losing an acquired frame silently.
         let extra = decode::DecodeJob {
             index,
             seq: u64::MAX,
             hour: 0,
             relations_refresh: false,
-            characters_refresh: false,
+            characters_refresh: [false; CHARACTER_PARTS],
             projects_refresh: false,
             lexical_refresh: false,
             divisions_refresh: false,
@@ -4923,7 +4235,7 @@ mod tests {
             force_full: false,
             game_elapsed: 1,
             relations_payload: None,
-            characters_payload: None,
+            characters_payload: [const { None }; CHARACTER_PARTS],
             projects_payload: None,
             lexical_payload: None,
             divisions_payload: None,
@@ -4947,12 +4259,12 @@ mod tests {
         };
         assert!(shared.decode_queue.push(extra).is_err());
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-        frame.clock_after = Some(clock(42, 7));
+        frame.clock = Some(clock(42, 7));
         let dropped_before = shared.dropped.load(Ordering::Relaxed);
-        drop_owned_frame(&shared, frame, index, Some(clock(41, 7)));
+        drop_owned_frame(&shared, frame, index);
         assert_eq!(shared.dropped.load(Ordering::Relaxed), dropped_before + 1);
         assert_eq!(shared.ready.len(), 0);
-        assert_eq!(shared.free.len(), INITIAL_BUFFERS);
+        assert_eq!(shared.free.len(), BUFFERS);
         let pending = unsafe { &*shared.pending.get() };
         let runs: Vec<_> = pending.iter().collect();
         assert_eq!(runs.len(), 1);
@@ -4960,112 +4272,141 @@ mod tests {
             (runs[0].first_hour, runs[0].last_hour, runs[0].count),
             (42, 42, 1)
         );
-        assert_eq!(runs[0].loaded_hour, Some(41));
+        assert_eq!(runs[0].loaded_hour, Some(42));
     }
 
     #[test]
-    fn pool_initialization_allocates_only_published_slots_and_counts_actual_bytes() {
+    fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
         let shared = Shared::new(0, 0, 1);
         assert_eq!(shared.free.capacity(), BUFFERS);
         assert_eq!(shared.ready.capacity(), BUFFERS);
-        assert_eq!(shared.free.len(), INITIAL_BUFFERS);
-        assert_eq!(shared.pool_buffers.load(Ordering::Relaxed), INITIAL_BUFFERS);
+        assert_eq!(shared.free.len(), BUFFERS);
         let mut bytes = unsafe { (&*shared.roster.get()).as_ref().unwrap() }.allocated_bytes();
         bytes += unsafe { &*shared.country_cache.get() }.allocated_bytes();
-        for (index, slot) in shared.frames.iter().enumerate() {
+        for slot in &shared.frames {
             let frame = slot.load(Ordering::Acquire);
-            if index < INITIAL_BUFFERS {
-                assert!(!frame.is_null());
-                bytes += unsafe { &*frame }.allocated_bytes();
-            } else {
-                assert!(frame.is_null());
-            }
+            assert!(!frame.is_null());
+            bytes += unsafe { &*frame }.allocated_bytes();
         }
         assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), bytes as u64);
-        assert_eq!(
-            unsafe {
-                shared.grow_pool(
-                    &INITIAL_CAPACITIES,
-                    &MapCapacities::default(),
-                    [0; CONSISTENCY_TABLES.len()],
-                    &extended::Capacities::default(),
-                    [0; TABLE_COUNT],
-                )
-            },
-            0
-        );
     }
 
     #[test]
-    fn new_pool_slots_publish_current_capacities_and_completed_proofs_without_moving_old_slots() {
-        let shared = Shared::new(0, 0, 1);
-        let original = shared.frames[0].load(Ordering::Acquire);
-        let held: Vec<_> = (0..INITIAL_BUFFERS)
-            .map(|_| shared.free.pop().unwrap())
-            .collect();
-        let mut capacities = INITIAL_CAPACITIES;
-        capacities[0] += 9;
-        capacities[4] += 17;
-        capacities[8] += 23;
-        let mut successful = [CONSISTENCY_TARGET; CONSISTENCY_TABLES.len()];
-        successful[2] -= 1;
-        let before_bytes = shared.pool_bytes.load(Ordering::Relaxed);
-        let published = AtomicBool::new(false);
-        let slots = std::thread::scope(|scope| {
-            let consumer = scope.spawn(|| {
-                let mut slots = Vec::new();
-                while slots.len() < GROW_BUFFERS {
-                    let Some(index) = shared.free.pop() else {
-                        if published.load(Ordering::Acquire) && shared.free.is_empty() {
-                            break;
-                        }
-                        std::thread::yield_now();
-                        continue;
-                    };
-                    let pointer = shared.frames[index].load(Ordering::Acquire);
-                    assert!(!pointer.is_null());
-                    let frame = unsafe { &*pointer };
-                    assert_eq!(frame.countries.len(), capacities[0]);
-                    assert_eq!(frame.divisions.len(), capacities[4]);
-                    assert_eq!(frame.divisions.len(), capacities[4]);
-                    assert_eq!(frame.faction_names.len(), capacities[8]);
-                    assert_eq!(frame.consistency_successful, successful);
-                    let second = comparison_capacities(frame);
-                    assert_eq!(second, [0; 7]);
-                    slots.push((index, frame.allocated_bytes()));
-                }
-                assert_eq!(slots.len(), GROW_BUFFERS);
-                slots
-            });
-            let added = unsafe {
-                shared.grow_pool(
-                    &capacities,
-                    &MapCapacities::default(),
-                    successful,
-                    &extended::Capacities::default(),
-                    [CONSISTENCY_TARGET; TABLE_COUNT],
-                )
-            };
-            published.store(true, Ordering::Release);
-            assert_eq!(added, GROW_BUFFERS);
-            consumer.join().unwrap()
-        });
-        assert_eq!(shared.frames[0].load(Ordering::Acquire), original);
-        assert_eq!(
-            shared.pool_buffers.load(Ordering::Relaxed),
-            INITIAL_BUFFERS + GROW_BUFFERS
-        );
-        assert_eq!(
-            shared.pool_bytes.load(Ordering::Relaxed) - before_bytes,
-            slots.iter().map(|(_, bytes)| *bytes as u64).sum::<u64>()
-        );
-        for index in held
-            .into_iter()
-            .chain(slots.into_iter().map(|(index, _)| index))
-        {
-            shared.free.push(index).unwrap();
+    fn exhausted_pool_reuses_a_returned_frame_without_allocating_or_dropping() {
+        use std::{sync::mpsc, time::Duration};
+        let shared = Arc::new(Shared::new(0, 0, 1));
+        let held: Vec<_> = (0..BUFFERS).map(|_| shared.take_frame().unwrap()).collect();
+        let original = shared.frames[held[0]].load(Ordering::Acquire);
+        unsafe {
+            (*original).qpc = 42;
         }
-        assert_eq!(shared.free.len(), INITIAL_BUFFERS + GROW_BUFFERS);
+        let bytes = shared.pool_bytes.load(Ordering::Relaxed);
+        let (send, receive) = mpsc::channel();
+        let consumer = Arc::clone(&shared);
+        let waiter = std::thread::spawn(move || {
+            let result = consumer.take_frame();
+            send.send(result).unwrap();
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while shared.buffer_wait_calls.load(Ordering::Relaxed) == 0
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        let waited = shared.buffer_wait_calls.load(Ordering::Relaxed);
+        let pending = receive.try_recv().is_err();
+        shared.recycle_frame(held[0]);
+        let result = receive.recv_timeout(Duration::from_secs(2));
+        shared.cancel_buffer_wait.store(true, Ordering::Release);
+        waiter.join().unwrap();
+        assert_eq!(waited, 1);
+        assert!(pending);
+        assert_eq!(result.unwrap(), Some(held[0]));
+        assert_eq!(shared.frames[held[0]].load(Ordering::Acquire), original);
+        assert_eq!(unsafe { (*original).qpc }, 42);
+        assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), bytes);
+        assert_eq!(shared.dropped.load(Ordering::Relaxed), 0);
+        for index in held {
+            shared.recycle_frame(index);
+        }
+        assert_eq!(shared.free.len(), BUFFERS);
+    }
+
+    #[test]
+    fn exhausted_pool_wait_cancels_without_a_live_consumer() {
+        use std::{sync::mpsc, time::Duration};
+        let shared = Arc::new(Shared::new(0, 0, 1));
+        let held: Vec<_> = (0..BUFFERS).map(|_| shared.take_frame().unwrap()).collect();
+        let (send, receive) = mpsc::channel();
+        let consumer = Arc::clone(&shared);
+        let waiter = std::thread::spawn(move || {
+            send.send(consumer.take_frame()).unwrap();
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while shared.buffer_wait_calls.load(Ordering::Relaxed) == 0
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        shared.cancel_buffer_wait.store(true, Ordering::Release);
+        let result = receive.recv_timeout(Duration::from_secs(2));
+        waiter.join().unwrap();
+        assert_eq!(result.unwrap(), None);
+        for index in held {
+            shared.recycle_frame(index);
+        }
+        // Cancellation does not discard a frame that is already available.
+        assert!(shared.take_frame().is_some());
+    }
+
+    #[test]
+    fn acquisition_panic_stops_admission_and_preserves_losses_without_waiting() {
+        use std::sync::atomic::AtomicUsize;
+
+        struct PanicOnDrop;
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                panic!("panic payload must not be dropped across the callback boundary");
+            }
+        }
+
+        let shared = Shared::new(0, 0, 1);
+        let index = shared.take_frame().unwrap();
+        unsafe { (&mut *shared.pending.get()).push(Some(clock(40, 7))) };
+        let acquisitions = AtomicUsize::new(0);
+        let completed = unsafe {
+            guarded_acquisition(&shared, Some(clock(41, 7)), || {
+                acquisitions.fetch_add(1, Ordering::Relaxed);
+                std::panic::panic_any(PanicOnDrop);
+            })
+        };
+        assert!(!completed);
+        assert!(shared.acquisition_failed());
+        assert!(shared.cancel_buffer_wait.load(Ordering::Acquire));
+        assert_eq!(shared.acquisition_panics.load(Ordering::Acquire), 1);
+        assert_eq!(shared.free.len(), BUFFERS - 1);
+        assert_eq!(shared.take_frame(), None);
+        assert_eq!(shared.buffer_wait_calls.load(Ordering::Relaxed), 0);
+
+        // During a delayed hook restore, record the next hour as a loss without
+        // running acquisition again or consuming another capture buffer.
+        assert!(!unsafe {
+            guarded_acquisition(&shared, Some(clock(42, 7)), || {
+                acquisitions.fetch_add(1, Ordering::Relaxed);
+            })
+        });
+        assert_eq!(acquisitions.load(Ordering::Relaxed), 1);
+        assert_eq!(shared.acquisition_panics.load(Ordering::Acquire), 1);
+        assert_eq!(shared.dropped.load(Ordering::Relaxed), 2);
+        let losses = unsafe { &*shared.pending.get() };
+        let run = losses.iter().next().unwrap();
+        assert_eq!((run.first_hour, run.last_hour, run.count), (40, 42, 3));
+
+        // Cancellation also works when no healthy frame remains. Do not
+        // reclaim the partially restored frame as if acquisition succeeded.
+        while shared.free.pop().is_some() {}
+        assert_eq!(shared.take_frame(), None);
+        assert_eq!(shared.completed[index].load(Ordering::Acquire), 0);
     }
 
     fn clock(hour: i32, signal: i64) -> Clock {
@@ -5080,32 +4421,31 @@ mod tests {
             tick_busy: 0,
         }
     }
+
     #[test]
     fn lost_ranges_preserve_reload_origins_and_never_bridge_discontinuities() {
         let mut batch = LossBatch::default();
-        batch.push(Some(clock(10, 1)), Some(clock(11, 1)));
-        batch.push(Some(clock(11, 1)), Some(clock(12, 1)));
-        batch.push(Some(clock(5, 2)), Some(clock(6, 2)));
-        batch.push(Some(clock(8, 2)), Some(clock(9, 2)));
+        batch.push(Some(clock(10, 1)));
+        batch.push(Some(clock(11, 1)));
+        batch.push(Some(clock(5, 2)));
+        batch.push(Some(clock(8, 2)));
         let runs: Vec<_> = batch.iter().collect();
         assert_eq!(runs.len(), 3);
         assert_eq!(
             (runs[0].first_hour, runs[0].last_hour, runs[0].count),
-            (11, 12, 2)
+            (10, 11, 2)
         );
         assert_eq!(runs[1].loaded_hour, Some(5));
-        batch.push(None, None);
+        batch.push(None);
         assert_eq!(batch.unknown_count, 1);
     }
 
-    /// At the end-of-hour boundary a dropped callback reads both clocks before
-    /// the original tick, so a lost first hour after a load is the loaded hour.
     #[test]
     fn end_of_hour_losses_record_the_entry_hour_as_the_lost_and_loaded_hour() {
         assert_eq!(SAMPLE_BOUNDARY, replay::identity::SampleBoundary::EndOfHour);
         let mut batch = LossBatch::default();
-        batch.push(Some(clock(20, 3)), Some(clock(20, 3)));
-        batch.push(Some(clock(21, 3)), Some(clock(21, 3)));
+        batch.push(Some(clock(20, 3)));
+        batch.push(Some(clock(21, 3)));
         let runs: Vec<_> = batch.iter().collect();
         assert_eq!(runs.len(), 1);
         assert_eq!(
@@ -5115,109 +4455,14 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_or_mismatching_walks_do_not_complete_consistency_checks() {
-        let rows = Outcome::Rows { len: 2 };
-        let unavailable = Outcome::Unavailable {
-            reason: "unreadable",
-        };
-        let truncated = Outcome::Truncated {
-            len: 2,
-            unread_rows: 1,
-        };
-        for (first, second, mismatches) in [
-            (unavailable, unavailable, 0),
-            (truncated, truncated, 0),
-            (rows, unavailable, 1),
-            (rows, truncated, 1),
-            (rows, Outcome::Rows { len: 1 }, 1),
-            (rows, rows, 1),
-        ] {
-            assert!(!full_match(first, second, mismatches));
-        }
-        assert!(full_match(rows, rows, 0));
-        assert!(full_match(
-            Outcome::Rows { len: 0 },
-            Outcome::Rows { len: 0 },
-            0
-        ));
-    }
-
-    #[test]
-    fn consistency_windows_finish_independently_after_200_published_matches() {
-        let mut window = ConsistencyWindow::default();
-        for index in 0..CONSISTENCY_TARGET {
-            let mut passed = [false; CONSISTENCY_TABLES.len()];
-            passed[0] = true;
-            passed[1] = index % 2 == 0;
-            window.commit(passed, true, true);
-        }
-        assert_eq!(&window.successful[..6], &[200, 100, 0, 0, 0, 0]);
-        assert_eq!(
-            &window.needed()[..6],
-            &[false, true, true, true, true, true]
-        );
-        for _ in 0..CONSISTENCY_TARGET {
-            window.commit(window.needed(), true, true);
-        }
-        assert_eq!(window.successful, [200; CONSISTENCY_TABLES.len()]);
-        assert_eq!(window.needed(), [false; CONSISTENCY_TABLES.len()]);
-        // Completion stays capped even if the caller supplies a redundant pass.
-        assert_eq!(
-            window.commit([true; CONSISTENCY_TABLES.len()], true, true),
-            [200; CONSISTENCY_TABLES.len()]
-        );
-    }
-
-    #[test]
-    fn clock_changes_and_unpublished_buffers_leave_comparisons_pending() {
-        let before = clock(10, 1);
-        let mut changed_campaign = before;
-        changed_campaign.campaign_id.bytes[0] = b'x';
-        changed_campaign.campaign_id.len = 1;
-        let mut changed_state = before;
-        changed_state.game_state += 1;
-        let mut window = ConsistencyWindow::default();
-        for (before, after) in [
-            (None, Some(before)),
-            (Some(before), None),
-            (Some(before), Some(clock(11, 1))),
-            (Some(before), Some(clock(10, 2))),
-            (Some(before), Some(changed_campaign)),
-            (Some(before), Some(changed_state)),
-        ] {
-            assert_eq!(
-                window.commit(
-                    [true; CONSISTENCY_TABLES.len()],
-                    stable_clock(before, after),
-                    true
-                ),
-                [0; CONSISTENCY_TABLES.len()]
-            );
-        }
-        assert_eq!(
-            window.commit(
-                [true; CONSISTENCY_TABLES.len()],
-                stable_clock(Some(before), Some(before)),
-                false
-            ),
-            [0; CONSISTENCY_TABLES.len()]
-        );
-        assert_eq!(window.needed(), [true; CONSISTENCY_TABLES.len()]);
-        assert_eq!(
-            window.commit([true; CONSISTENCY_TABLES.len()], true, true),
-            [1; CONSISTENCY_TABLES.len()]
-        );
-    }
-
-    #[test]
-    fn capacity_growth_keeps_comparison_buffers_and_name_arenas_in_step() {
+    fn capacity_growth_keeps_primary_rows_and_name_arena_sized() {
         let mut frame = Captured::new();
         let before = frame.allocated_bytes();
-        let mut capacities = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
-        frame.war_matrix_result = Some(Outcome::Truncated {
+        let mut capacities = INITIAL_CAPACITIES;
+        frame.wars_result = Outcome::Truncated {
             len: 1024,
             unread_rows: 7,
-        });
+        };
         frame.factions_result = Outcome::Truncated {
             len: 64,
             unread_rows: 2,
@@ -5228,46 +4473,14 @@ mod tests {
         };
         frame.faction_names_required = 20_000;
         frame.grow(&mut capacities);
-        assert_eq!(
-            (
-                frame.wars.len(),
-                frame.wars_second.len(),
-                frame.wars_matrix.len()
-            ),
-            (2048, 2048, 2048)
-        );
-        assert_eq!(
-            (frame.factions.len(), frame.factions_second.len()),
-            (128, 128)
-        );
-        assert_eq!(
-            (
-                frame.faction_members.len(),
-                frame.faction_members_second.len()
-            ),
-            (2048, 2048)
-        );
-        assert_eq!(
-            (frame.faction_names.len(), frame.faction_names_second.len()),
-            (32768, 32768)
-        );
+        assert_eq!(frame.wars.len(), 2048);
+        assert_eq!(frame.factions.len(), 128);
+        assert_eq!(frame.faction_members.len(), 2048);
+        assert_eq!(frame.faction_names.len(), 32768);
         assert!(frame.allocated_bytes() > before);
-        // An idle buffer with no truncation result receives the same capacities.
         let mut idle = Captured::new();
         idle.grow(&mut capacities);
         assert_eq!(idle.allocated_bytes(), frame.allocated_bytes());
-    }
-
-    fn comparison_capacities(frame: &Captured) -> [usize; 7] {
-        [
-            frame.links_second.capacity(),
-            frame.states_second.capacity(),
-            0, // Core division comparison rows now live in the owned census.
-            frame.wars_second.capacity(),
-            frame.factions_second.capacity(),
-            frame.faction_members_second.capacity(),
-            frame.faction_names_second.capacity(),
-        ]
     }
 
     #[test]
@@ -5275,168 +4488,38 @@ mod tests {
         use super::divisions_test_kit as kit;
         let bytes = kit::fixture();
         let mut frame = Captured::new();
-        frame.division_fallback[0] = crate::division_census::Census::default();
-        frame.division_fallback[0].capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
-        assert!(frame.division_fallback[0].overflowed);
+        frame.division_fallback = crate::division_census::Census::default();
+        frame
+            .division_fallback
+            .capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
+        assert!(frame.division_fallback.overflowed);
         let mut capacities = INITIAL_CAPACITIES;
         frame.grow(&mut capacities);
-        assert!(frame.division_fallback[0].initialized());
-        assert!(!frame.division_fallback[0].overflowed);
-        let grown = frame.division_fallback[0].allocated_bytes();
+        assert!(frame.division_fallback.initialized());
+        assert!(!frame.division_fallback.overflowed);
+        let grown = frame.division_fallback.allocated_bytes();
         assert!(grown > 0);
 
         // A subsequent frame that never used the fallback carries no new
         // overflow request and must retain, rather than double, its storage.
         frame.grow(&mut capacities);
-        assert_eq!(frame.division_fallback[0].allocated_bytes(), grown);
+        assert_eq!(frame.division_fallback.allocated_bytes(), grown);
 
-        frame.division_fallback[0].capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
+        frame
+            .division_fallback
+            .capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
         assert_eq!(
-            frame.division_fallback[0].outcome(64),
+            frame.division_fallback.outcome(64),
             Outcome::Rows { len: 3 },
         );
-        let lease = Arc::clone(frame.division_fallback[0].unit_inputs().unwrap());
-        frame
-            .extended
-            .install_unit_inputs(Some(Arc::clone(&lease)), None, true);
+        let lease = Arc::clone(frame.division_fallback.unit_inputs().unwrap());
+        frame.extended.install_unit_inputs(Some(Arc::clone(&lease)));
         assert_eq!(Arc::strong_count(&lease), 3);
         frame.extended.release_unit_inputs();
         assert_eq!(Arc::strong_count(&lease), 2);
         drop(lease);
         frame.grow(&mut capacities);
-        assert_eq!(frame.division_fallback[0].allocated_bytes(), grown);
-    }
-
-    #[test]
-    fn state_comparison_storage_survives_until_both_state_windows_finish() {
-        let mut extended_successful = [CONSISTENCY_TARGET; TABLE_COUNT];
-        extended_successful[replay::rows::TableId::StateFlags.index()] = CONSISTENCY_TARGET - 1;
-        let mut capacities = INITIAL_CAPACITIES;
-        let mut frame = Captured::with_capacities(
-            &capacities,
-            &MapCapacities::default(),
-            [CONSISTENCY_TARGET; CONSISTENCY_TABLES.len()],
-            &extended::Capacities::default(),
-            extended_successful,
-        );
-        assert_eq!(frame.states_second.len(), capacities[3]);
-        frame.grow(&mut capacities);
-        assert_eq!(frame.states_second.len(), capacities[3]);
-        frame.extended_successful[replay::rows::TableId::StateFlags.index()] = CONSISTENCY_TARGET;
-        frame.grow(&mut capacities);
-        assert!(frame.states_second.is_empty());
-
-        frame.consistency_successful[1] = CONSISTENCY_TARGET - 1;
-        frame.grow(&mut capacities);
-        assert_eq!(frame.states_second.len(), capacities[3]);
-    }
-
-    #[test]
-    fn each_completed_window_releases_only_its_comparison_buffers() {
-        let mut frame = Captured::new();
-        frame.extended_successful.fill(CONSISTENCY_TARGET);
-        let mut capacities = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
-        let mut expected = comparison_capacities(&frame);
-        frame.consistency_successful = [CONSISTENCY_TARGET - 1; CONSISTENCY_TABLES.len()];
-        frame.links[0].id = 7;
-        frame.wars_matrix[0].first_country = 11;
-        frame.faction_names[0] = b'x';
-        let primary_capacities = [
-            frame.links.capacity(),
-            frame.states.capacity(),
-            frame.divisions.capacity(),
-            frame.wars.capacity(),
-            frame.factions.capacity(),
-            frame.faction_members.capacity(),
-            frame.faction_names.capacity(),
-            frame.wars_matrix.capacity(),
-        ];
-        frame.grow(&mut capacities);
-        assert_eq!(comparison_capacities(&frame), expected);
-        for index in 0..6 {
-            let before = frame.allocated_bytes();
-            frame.consistency_successful[index] = CONSISTENCY_TARGET;
-            frame.grow(&mut capacities);
-            expected[index] = 0;
-            if index == 4 {
-                expected[6] = 0;
-            }
-            assert_eq!(comparison_capacities(&frame), expected);
-            if index == 2 {
-                // Fallback census storage is retained independently of the core window.
-                assert_eq!(frame.allocated_bytes(), before);
-            } else {
-                assert!(frame.allocated_bytes() < before);
-            }
-        }
-        assert_eq!(
-            [
-                frame.links.capacity(),
-                frame.states.capacity(),
-                frame.divisions.capacity(),
-                frame.wars.capacity(),
-                frame.factions.capacity(),
-                frame.faction_members.capacity(),
-                frame.faction_names.capacity(),
-                frame.wars_matrix.capacity(),
-            ],
-            primary_capacities
-        );
-        assert_eq!(frame.links[0].id, 7);
-        assert_eq!(frame.wars_matrix[0].first_country, 11);
-        assert_eq!(frame.faction_names[0], b'x');
-        let primary_provinces = frame.provinces.capacity();
-        let before = frame.allocated_bytes();
-        frame.consistency_successful[PROVINCE_CHECK] = CONSISTENCY_TARGET;
-        frame.grow(&mut capacities);
-        assert_eq!(frame.provinces_second.capacity(), 0);
-        assert_eq!(frame.provinces.capacity(), primary_provinces);
-        assert!(frame.allocated_bytes() < before);
-    }
-
-    #[test]
-    fn later_growth_keeps_completed_comparisons_empty_and_pending_ones_ready() {
-        let mut complete = Captured::new();
-        complete.extended_successful.fill(CONSISTENCY_TARGET);
-        let mut capacities = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
-        complete.consistency_successful = [CONSISTENCY_TARGET; CONSISTENCY_TABLES.len()];
-        complete.grow(&mut capacities);
-        complete.divisions_result = Outcome::Truncated {
-            len: 4096,
-            unread_rows: 3,
-        };
-        complete.war_matrix_result = Some(Outcome::Truncated {
-            len: 1024,
-            unread_rows: 7,
-        });
-        complete.factions_result = Outcome::Truncated {
-            len: 64,
-            unread_rows: 2,
-        };
-        complete.faction_names_required = 20_000;
-        complete.grow(&mut capacities);
-        assert_eq!(comparison_capacities(&complete), [0; 7]);
-        assert_eq!(complete.provinces_second.capacity(), 0);
-        assert_eq!(complete.divisions.len(), 8192);
-        assert_eq!(complete.wars.len(), 2048);
-        assert_eq!(complete.wars_matrix.len(), 2048);
-        assert_eq!(complete.factions.len(), 128);
-        assert_eq!(complete.faction_names.len(), 32768);
-
-        let mut pending = Captured::new();
-        pending.consistency_successful = [CONSISTENCY_TARGET - 1; CONSISTENCY_TABLES.len()];
-        pending.grow(&mut capacities);
-        assert_eq!(pending.provinces_second.len(), capacities[1]);
-        assert_eq!(pending.divisions.len(), 8192);
-        assert_eq!(pending.wars_second.len(), 2048);
-        assert_eq!(pending.factions_second.len(), 128);
-        assert_eq!(pending.faction_names_second.len(), 32768);
-        assert!(
-            comparison_capacities(&pending)
-                .into_iter()
-                .enumerate()
-                .all(|(index, capacity)| index == 2 || capacity != 0)
-        );
+        assert_eq!(frame.division_fallback.allocated_bytes(), grown);
     }
 
     fn cadence_clock(hour: i32, signal: i64) -> Clock {
@@ -5444,23 +4527,39 @@ mod tests {
     }
 
     #[test]
-    fn cadence_rotation_walks_expected_families_on_hours_h_through_h_plus_7() {
-        use replay::cadence::{is_refresh, refresh_slot};
+    fn cadence_rotation_walks_recorded_families_once_per_24_hours() {
+        use replay::cadence::{Cadence, cadence, is_refresh};
         use replay::rows::TableId;
-        for base in [0, 1, 60_820_531] {
-            for offset in 0..8 {
+        for base in [i32::MIN, -25, -1, 0, 1, 60_820_531, i32::MAX - 23] {
+            let mut refreshes = [0; replay::frame::TABLE_COUNT];
+            for offset in 0..24 {
                 let hour: i32 = base + offset;
-                let slot = hour.rem_euclid(4);
+                let slot = hour.rem_euclid(24);
                 for table in TableId::ALL {
-                    let expected = match refresh_slot(table) {
-                        None => true,
-                        Some(s) => s as i32 == slot,
+                    let expected = match cadence(table) {
+                        Cadence::Hourly => true,
+                        Cadence::FourHourly(s) => s as i32 == hour.rem_euclid(4),
+                        Cadence::Daily(s) => s as i32 == slot,
+                        Cadence::Static => false,
                     };
                     assert_eq!(is_refresh(table, hour), expected, "{table:?} at {hour}");
                     let walk = replay::cadence::should_walk(table, hour, false);
                     assert_eq!(walk, expected, "{table:?} walk at {hour}");
-                    assert!(replay::cadence::should_walk(table, hour, true));
+                    assert!(
+                        replay::cadence::should_walk(table, hour, true),
+                        "{table:?} forced at {hour}"
+                    );
+                    refreshes[table.index()] += usize::from(walk);
                 }
+            }
+            for table in TableId::ALL {
+                let expected = match cadence(table) {
+                    Cadence::Hourly => 24,
+                    Cadence::FourHourly(_) => 6,
+                    Cadence::Daily(_) => 1,
+                    Cadence::Static => 0,
+                };
+                assert_eq!(refreshes[table.index()], expected, "{table:?} near {base}");
             }
         }
     }
@@ -5483,160 +4582,20 @@ mod tests {
     }
 
     #[test]
-    fn consistency_windows_count_refreshes_not_wall_hours() {
-        use replay::cadence::should_walk;
-        use replay::rows::TableId;
-        let mut window = ConsistencyWindow::<TABLE_COUNT>::default();
-        let table = TableId::Characters.index();
-        let mut successes = 0;
-        for hour in 0..16 {
-            let walk = should_walk(TableId::Characters, hour, false);
-            let mut matched = [false; TABLE_COUNT];
-            matched[table] = walk;
-            let counts = window.commit(matched, true, true);
-            if walk {
-                successes += 1;
-                assert_eq!(counts[table], successes);
-            } else {
-                assert_eq!(counts[table], successes);
-            }
+    fn periodic_keyframe_keeps_observation_continuous_but_load_gap_and_campaign_do_not() {
+        let mut cadence = CadenceState::default();
+        assert!(!cadence.continuous(&cadence_clock(100, 1)));
+        cadence.force_full(&cadence_clock(100, 1));
+        for hour in 101..=820 {
+            let clock = cadence_clock(hour, 1);
+            assert!(cadence.continuous(&clock));
+            assert_eq!(cadence.force_full(&clock), hour == 820);
         }
-        assert_eq!(successes, 4);
-        assert_eq!(window.successful[table], 4);
-    }
-
-    #[test]
-    fn wars_acquisition_restores_storage_and_denies_failed_completion_credit() {
-        use crate::acquisition::Failure;
-        use wars_test_kit as kit;
-        for failure in [None, Some(Failure::Panicked), Some(Failure::Stopped)] {
-            let bytes = kit::fixture();
-            let memory = kit::memory(&bytes);
-            let mut owner = Arc::new(Cache::with_capacity(1024));
-            let countries =
-                Cache::prepare_shared(&mut owner, &memory, kit::BASE, kit::GAME_STATE).unwrap();
-            let mut frame = Captured::new();
-            let expected_bytes = frame.allocated_bytes();
-            let pointers = [
-                frame.wars.as_ptr(),
-                frame.wars_second.as_ptr(),
-                frame.wars_matrix.as_ptr(),
-            ];
-            let snapshot_capacity = frame.wars_snapshot.capacity();
-            let mut request =
-                frame.take_wars_request(&countries, kit::BASE, kit::GAME_STATE, true, true);
-            assert!(frame.wars.is_empty());
-            assert!(frame.wars_second.is_empty());
-            assert!(frame.wars_matrix.is_empty());
-            assert_eq!(
-                frame.wars_snapshot.capacity(),
-                cwar_relation::OwnedSnapshotCapacity::default()
-            );
-            let row_bytes = (request.table.buffers.first.capacity()
-                + request.table.buffers.second.capacity()
-                + request.matrix.capacity())
-                * size_of::<cwar_relation::Row>();
-            assert_eq!(
-                frame.allocated_bytes() + snapshot_capacity.allocated_bytes + row_bytes,
-                expected_bytes
-            );
-            let report = if failure == Some(Failure::Stopped) {
-                acquisition_wars::Report::default()
-            } else {
-                request.run(&memory)
-            };
-            // A completion failure overrides even fully populated, matching
-            // buffers. They are recovered, but cannot publish a valid report.
-            let report = frame.restore_wars_request(
-                request,
-                report,
-                failure.map(acquisition_failure_reason),
-            );
-            assert_eq!(
-                [
-                    frame.wars.as_ptr(),
-                    frame.wars_second.as_ptr(),
-                    frame.wars_matrix.as_ptr()
-                ],
-                pointers
-            );
-            assert_eq!(frame.wars_snapshot.capacity(), snapshot_capacity);
-            assert_eq!(frame.allocated_bytes(), expected_bytes);
-            assert_eq!(
-                frame.wars_snapshot_sampled,
-                failure != Some(Failure::Stopped)
-            );
-            assert!(frame.consistency_checked[3]);
-            assert_eq!(Arc::strong_count(&countries), 2);
-            drop(countries);
-            assert!(Arc::get_mut(&mut owner).is_some());
-            let mut window = ConsistencyWindow::<17>::default();
-            let mut matched = [false; 17];
-            matched[3] = report.table_matched();
-            assert_eq!(
-                window.commit(matched, true, true)[3],
-                u16::from(failure.is_none())
-            );
-            let matrix_remaining = AtomicUsize::new(1);
-            if report.matrix_eligible() {
-                complete_matrix_check(&matrix_remaining);
-            }
-            assert_eq!(
-                matrix_remaining.load(Ordering::Relaxed),
-                usize::from(failure.is_some())
-            );
-            if let Some(failure) = failure {
-                let unavailable = Outcome::Unavailable {
-                    reason: acquisition_failure_reason(failure),
-                };
-                assert_eq!(frame.wars_result, unavailable);
-                assert_eq!(frame.war_matrix_result, Some(unavailable));
-                assert_eq!(report.table_ticks, 0);
-                assert_eq!(report.matrix_ticks, 0);
-            }
-        }
-    }
-
-    #[test]
-    fn wars_acquisition_uses_empty_default_and_preserves_closed_outputs() {
-        use wars_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let mut cache = Cache::with_capacity(1024);
-        let _ = cache.prepare(&memory, kit::BASE, kit::GAME_STATE);
-        let countries = Arc::new(cache);
-        let mut frame = Captured::new();
-        let bytes = frame.allocated_bytes();
-        for (needed, matrix_needed) in [(true, true), (false, true), (true, false), (false, false)]
-        {
-            let second = frame.wars_second.clone();
-            let matrix = frame.wars_matrix.clone();
-            let mut request = frame.take_wars_request(
-                &countries,
-                kit::BASE,
-                kit::GAME_STATE,
-                needed,
-                matrix_needed,
-            );
-            assert_eq!(
-                frame.wars_snapshot.capacity(),
-                cwar_relation::OwnedSnapshotCapacity::default()
-            );
-            let report = request.run(&memory);
-            let report = frame.restore_wars_request(request, report, None);
-            assert_eq!(frame.consistency_checked[3], needed);
-            assert_eq!(frame.wars_mismatches, 0);
-            assert_eq!(frame.war_matrix_result.is_some(), matrix_needed);
-            assert_eq!(report.table_matched(), needed);
-            assert_eq!(report.matrix_eligible(), matrix_needed);
-            assert_eq!(frame.allocated_bytes(), bytes);
-            if !needed {
-                assert_eq!(frame.wars_second, second);
-            }
-            if !matrix_needed {
-                assert_eq!(frame.wars_matrix, matrix);
-            }
-        }
+        assert!(!cadence.continuous(&cadence_clock(822, 1)));
+        assert!(!cadence.continuous(&cadence_clock(821, 2)));
+        let mut changed = cadence_clock(821, 1);
+        changed.campaign_id.bytes[0] ^= 1;
+        assert!(!cadence.continuous(&changed));
     }
 
     #[test]
@@ -5651,13 +4610,13 @@ mod tests {
     }
 
     #[test]
-    fn wars_typed_walk_preserves_native_rows_and_independent_matrix() {
+    fn wars_typed_walk_preserves_primary_native_rows() {
         use super::wars_test_kit as kit;
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
         let split = kit::direct(&memory, 64);
         // Spot-checks: the owned walk emits each war once from its first
-        // endpoint; the matrix census covers both in slot order.
+        // endpoint, retaining native signed values.
         assert_eq!(split.owned_outcome, Outcome::Rows { len: 2 });
         assert_eq!(split.owned[0].first_country, 1);
         assert_eq!(split.owned[0].second_country, 2);
@@ -5666,35 +4625,10 @@ mod tests {
         assert_eq!(split.owned[1].first_country, 3);
         assert_eq!(split.owned[1].second_country, 1);
         assert_eq!(split.owned[1].first_casualties, 11);
-        assert_eq!(split.matrix_outcome, Outcome::Rows { len: 2 });
-        assert_eq!(split.matrix[0].first_country, 1);
-        assert_eq!(split.matrix[1].first_country, 3);
     }
 
     #[test]
-    fn wars_typed_walk_preserves_truncated_censuses() {
-        use super::wars_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let split = kit::direct(&memory, 1);
-        assert_eq!(
-            split.owned_outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            split.matrix_outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-    }
-
-    #[test]
-    fn wars_typed_capacity_matrix_keeps_full_validation_and_exact_unread_counts() {
+    fn wars_typed_capacities_keep_full_validation_and_exact_unread_counts() {
         use super::wars_test_kit as kit;
         let bytes = kit::fixture();
         let memory = kit::memory(&bytes);
@@ -5709,12 +4643,11 @@ mod tests {
                 }
             };
             assert_eq!(direct.owned_outcome, expected);
-            assert_eq!(direct.matrix_outcome, expected);
         }
     }
 
     #[test]
-    fn wars_typed_owned_and_matrix_fault_scopes_remain_independent() {
+    fn wars_primary_faults_preserve_native_validation_scope() {
         use super::wars_test_kit as kit;
         use engine::{ccountry, cdiplomacy_status, cgame_state, crelation, memory::SliceMemory};
         struct Fault<'a> {
@@ -5732,26 +4665,25 @@ mod tests {
                 self.memory.copy(address, output)
             }
         }
-        // A failure in an owned-only root must not invalidate the independent
-        // matrix census, and matrix-only failures must not invalidate owned rows.
-        for (fault, matched) in [
-            (kit::GAME_STATE + cgame_state::COUNTRIES, [false, false]),
-            (kit::GAME_STATE + cgame_state::COUNTRY_LINKS, [false, false]),
-            (kit::CTAB + 8, [false, false]),
-            (kit::LTAB + 4, [false, false]),
-            (kit::C0, [false, false]),
-            (kit::C0 + ccountry::ID, [false, false]),
-            (kit::C0 + ccountry::DIPLOMACY_STATUS, [false, false]),
-            (kit::D0, [false, false]),
-            (kit::WAR1 + crelation::TYPE_ID, [false, false]),
-            (kit::WAR1 + crelation::START_HOUR, [false, false]),
-            (kit::D0 + cdiplomacy_status::OWNED_RELATIONS, [false, true]),
-            (kit::O0 + 8, [false, true]),
-            (kit::OTHER + crelation::TYPE_ID, [false, true]),
-            (kit::RETIRED + crelation::TYPE_ID, [false, true]),
-            (kit::D0 + cdiplomacy_status::RELATIONS, [false, false]),
-            (kit::M0 + 8, [true, false]),
-            (kit::status(1, 2), [true, false]),
+        // The primary census validates each used link and ignores unrelated slots.
+        for (fault, complete) in [
+            (kit::GAME_STATE + cgame_state::COUNTRIES, false),
+            (kit::GAME_STATE + cgame_state::COUNTRY_LINKS, false),
+            (kit::CTAB + 8, false),
+            (kit::LTAB + 4, false),
+            (kit::C0, false),
+            (kit::C0 + ccountry::ID, false),
+            (kit::C0 + ccountry::DIPLOMACY_STATUS, false),
+            (kit::D0, false),
+            (kit::WAR1 + crelation::TYPE_ID, false),
+            (kit::WAR1 + crelation::START_HOUR, false),
+            (kit::D0 + cdiplomacy_status::OWNED_RELATIONS, false),
+            (kit::O0 + 8, false),
+            (kit::OTHER + crelation::TYPE_ID, false),
+            (kit::RETIRED + crelation::TYPE_ID, false),
+            (kit::D0 + cdiplomacy_status::RELATIONS, false),
+            (kit::M0 + 8, true),
+            (kit::status(1, 2), true),
         ] {
             let bytes = kit::fixture();
             let memory = Fault {
@@ -5763,46 +4695,36 @@ mod tests {
             };
             let direct = kit::direct(&memory, 64);
             assert_eq!(
-                [
-                    matches!(direct.owned_outcome, Outcome::Rows { .. }),
-                    matches!(direct.matrix_outcome, Outcome::Rows { .. })
-                ],
-                matched,
+                matches!(direct.owned_outcome, Outcome::Rows { .. }),
+                complete,
                 "fault={fault:x}",
             );
         }
     }
 
     #[test]
-    fn wars_typed_comparison_blocks_checks_on_changed_native_rows() {
-        use super::wars_test_kit as kit;
-        let bytes = kit::fixture();
-        let first = kit::direct(&kit::memory(&bytes), 64);
-        let mut torn = bytes.clone();
-        torn[kit::WAR1 + engine::crelation::START_HOUR] ^= 0xff;
-        let second = kit::direct(&kit::memory(&torn), 64);
-        let mismatch = mismatches(
-            first.owned_outcome,
-            &first.owned,
-            second.owned_outcome,
-            &second.owned,
-        );
-        assert_eq!(mismatch, 1);
-        assert!(!full_match(
-            first.owned_outcome,
-            second.owned_outcome,
-            mismatch
-        ));
-    }
+    fn divisions_core_is_hourly_and_five_details_refresh_on_daily_slot_two() {
+        use replay::cadence::{is_refresh, refresh_slot, should_walk};
 
-    #[test]
-    fn divisions_tables_are_hourly_tier_h_with_no_refresh_gate() {
-        // The whole group keeps its hourly cadence: no stagger slot, every
-        // hour walks. This pins the no-cadence-change rule for the split.
-        for table in crate::decode::DIVISIONS {
-            assert!(!replay::cadence::is_staggered(table), "{table:?}");
-            for hour in [0, 1, 2, 3, 60_820_531] {
-                assert!(replay::cadence::is_refresh(table, hour));
+        for table in [
+            TableId::Divisions,
+            TableId::DivisionMovement,
+            TableId::DivisionStatus,
+            TableId::DivisionEtaInputs,
+        ] {
+            assert_eq!(refresh_slot(table), None, "{table:?}");
+            for hour in [-25, -22, -1, 0, 1, 2, 3, 26, 60_820_531] {
+                assert!(is_refresh(table, hour), "{table:?} at {hour}");
+                assert!(should_walk(table, hour, true));
+            }
+        }
+        for table in crate::decode::DIVISIONS.into_iter().skip(1) {
+            assert_eq!(refresh_slot(table), Some(2), "{table:?}");
+            for hour in -48i32..48 {
+                let expected = hour.rem_euclid(24) == 2;
+                assert_eq!(is_refresh(table, hour), expected, "{table:?} at {hour}");
+                assert_eq!(should_walk(table, hour, false), expected);
+                assert!(should_walk(table, hour, true));
             }
         }
     }
@@ -5815,7 +4737,6 @@ mod tests {
         let direct = kit::direct(&memory, [64; 6]);
         let (split, report, _) = kit::split(&memory, [64; 6]);
         assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 6]);
         kit::assert_matches_direct(&split, &direct);
         // Spot-checks: null location/template/orders read as zero rows.
         assert_eq!(split.divisions_outcome, Outcome::Rows { len: 3 });
@@ -5843,7 +4764,6 @@ mod tests {
         let direct = kit::direct(&memory, [1; 6]);
         let (split, report, _) = kit::split(&memory, [1; 6]);
         assert!(report.raw_ok);
-        assert_eq!(report.matched, [false; 6]);
         kit::assert_matches_direct(&split, &direct);
         // A truncated divisions walk makes every dependent census
         // incomplete on both paths with the identical reason.
@@ -5894,10 +4814,10 @@ mod tests {
         }
         // (fault address, expected independent table verdicts in group order).
         // Outcomes including reason strings must match the typed walks
-        // exactly; only equal complete tables can advance their cold windows.
+        // exactly, including each independent table fault.
         // Shared census failures block every dependent table.
         let group = 0x60070usize;
-        for (fault, matched) in [
+        for (fault, complete) in [
             (kit::GAME_STATE + cgame_state::COUNTRIES, [false; 6]),
             (kit::CTAB + 8, [false; 6]),
             (kit::C0, [false; 6]),
@@ -5982,37 +4902,20 @@ mod tests {
             let (split, report, _) = kit::split(&memory, [64; 6]);
             assert!(report.raw_ok, "fault={fault:x}");
             kit::assert_matches_direct(&split, &direct);
-            assert_eq!(report.matched, matched, "fault={fault:x}");
+            assert_eq!(
+                [
+                    split.divisions_outcome,
+                    split.equipment_outcome,
+                    split.groups_outcome,
+                    split.requests_outcome,
+                    split.deliveries_outcome,
+                    split.produced_outcome,
+                ]
+                .map(|outcome| matches!(outcome, Outcome::Rows { .. })),
+                complete,
+                "fault={fault:x}"
+            );
         }
-    }
-
-    #[test]
-    fn divisions_double_copy_compare_blocks_checks_on_tearing() {
-        use super::divisions_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let ctx = DivisionsCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            ..Default::default()
-        };
-        let mut first = DivisionsJob::new();
-        let mut second = DivisionsJob::new();
-        let report = copy_divisions_refresh(&memory, ctx, &mut first, Some(&mut second));
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 6]);
-        // Same-hour tearing between independent passes changes the owned rows.
-        let mut torn = bytes.clone();
-        torn[kit::A1 + engine::carmy::STRENGTH] ^= 0xff;
-        let torn_memory = kit::memory(&torn);
-        let mut after = DivisionsJob::new();
-        let mut after_torn = DivisionsJob::new();
-        let no_second: Option<&mut DivisionsJob> = None;
-        let clean_report = copy_divisions_refresh(&memory, ctx, &mut after, no_second);
-        assert!(clean_report.raw_ok);
-        let torn_report = copy_divisions_refresh(&torn_memory, ctx, &mut after_torn, None);
-        assert!(torn_report.raw_ok);
-        assert!(!after.census.equal(&after_torn.census, ctx.row_capacity));
     }
 
     fn divisions_presentation_memory() -> impl engine::Memory {
@@ -6056,49 +4959,27 @@ mod tests {
             ..Default::default()
         };
         let mut first = DivisionsJob::new();
-        let mut second = DivisionsJob::new();
-        let report = copy_divisions_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = copy_divisions_refresh(&memory, ctx, &mut first);
         assert!(report.raw_ok);
         assert_eq!(first.source_outcome(64), Outcome::Rows { len: 3 });
         let (first_sources, _) = first.census.sources(64);
-        assert_eq!(first_sources, second.census.sources(64).0);
         assert_eq!(first_sources[0].division, 101);
         assert_eq!(first_sources[0].template, 0x3455_0000_0034);
         assert_eq!(first_sources[0].country, 1);
         let mut frame = Captured::new();
-        first.supply_sources(&mut frame.extended, frame.divisions.len(), false);
-        second.supply_sources(&mut frame.extended, frame.divisions.len(), true);
-        frame.extended.install_unit_inputs(
-            first.census.unit_inputs().map(Arc::clone),
-            second.census.unit_inputs().map(Arc::clone),
-            first.census.unit_inputs_equal(&second.census),
-        );
+        first.supply_sources(&mut frame.extended, frame.divisions.len());
+        frame
+            .extended
+            .install_unit_inputs(first.census.unit_inputs().map(Arc::clone));
         frame.extended.set_divisions_raw_mode(true);
-        let mut needed = [false; TABLE_COUNT];
-        needed[TableId::DivisionMovement.index()] = true;
-        needed[TableId::DivisionStatus.index()] = true;
-        let (matched, ticks) =
-            frame
-                .extended
-                .capture(&memory, 0, kit::GAME_STATE, 0, &needed, false);
+        let ticks = frame
+            .extended
+            .capture(&memory, 0, kit::GAME_STATE, 0, false);
         for table in [TableId::DivisionMovement, TableId::DivisionStatus] {
-            assert!(
-                matched[table.index()],
-                "{table:?}: {:?}",
-                frame.extended.outcomes()[table.index()]
-            );
             assert!(ticks[table.index()] > 0);
             assert_eq!(
                 frame.extended.outcomes()[table.index()],
                 Outcome::Rows { len: 3 }
-            );
-        }
-        for (pass, job) in [&mut first, &mut second].into_iter().enumerate() {
-            let consumed = frame.extended.consumed_unit_seed_masks(pass);
-            let changed = job.census.verify_unit_inputs(&memory, &consumed);
-            assert_eq!(
-                frame.extended.reject_changed_unit_inputs(pass, changed),
-                [true; 3]
             );
         }
         frame.extended.release_unit_inputs();
@@ -6153,7 +5034,7 @@ mod tests {
             let mut bytes = kit::fixture();
             bytes[fault..fault + 8].fill(0xff);
             let mut first = DivisionsJob::new();
-            let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first, None);
+            let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first);
             assert!(report.raw_ok); // No overflow is not a successful census.
             assert!(matches!(
                 first.source_outcome(64),
@@ -6174,7 +5055,7 @@ mod tests {
             bytes[address..address + 8].fill(0);
         }
         let mut first = DivisionsJob::new();
-        let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first, None);
+        let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first);
         assert!(report.raw_ok);
         assert!(matches!(
             first.source_outcome(0),
@@ -6187,12 +5068,12 @@ mod tests {
         for country in [kit::C0, kit::C1] {
             bytes[country + ccountry::DIVISIONS..country + ccountry::DIVISIONS + 16].fill(0);
         }
-        copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first, None);
+        copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first);
         assert_eq!(first.source_outcome(0), Outcome::Rows { len: 0 });
         assert!(first.census.sources(64).0.is_empty()); // Recycled rows were cleared.
         first.census = crate::division_census::Census::default();
         let bytes = kit::fixture();
-        let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first, None);
+        let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first);
         assert!(!report.raw_ok && first.census.overflowed);
         assert!(matches!(
             first.source_outcome(64),
@@ -6231,7 +5112,6 @@ mod tests {
                 reason: "division hit points unreadable"
             }
         );
-        assert!(!census.equal(&census, 64));
     }
 
     #[test]
@@ -6254,7 +5134,6 @@ mod tests {
             Some(census.intel_sources()),
         );
         assert_eq!(shared, direct);
-        assert!(census.intel_equal(&census));
         assert_eq!(
             census.rows(0).1,
             Outcome::Unavailable {
@@ -6298,178 +5177,111 @@ mod tests {
         let mut census = crate::division_census::Census::new();
         census.capture(&memory, kit::BASE, kit::GAME_STATE, 64);
         assert_eq!(census.rows(64).1, direct.divisions_outcome);
-        assert!(!census.equal(&census, 64));
     }
 
     #[test]
-    fn divisions_owned_consistency_rejects_replaced_source_with_equal_rows() {
+    fn divisions_seeded_worker_preserves_primary_trace_and_never_repeats_core() {
         use super::divisions_test_kit as kit;
-        let bytes = kit::fixture();
-        let mut replaced = bytes.clone();
-        let pointer = 0x66000_usize;
-        replaced[pointer..pointer + 0x1000].copy_from_slice(&bytes[kit::A1..kit::A1 + 0x1000]);
-        replaced[0x23000..0x23008].copy_from_slice(&(pointer as u64).to_le_bytes());
-        let mut first = crate::division_census::Census::new();
-        let mut second = crate::division_census::Census::new();
-        first.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
-        second.capture(&kit::memory(&replaced), kit::BASE, kit::GAME_STATE, 64);
-        assert_eq!(first.rows(64), second.rows(64));
-        assert_eq!(first.rows(64).1, Outcome::Rows { len: 3 });
-        assert_ne!(first.entries(), second.entries());
-        assert!(!first.equal(&second, 64));
-    }
-
-    #[test]
-    fn divisions_live_companion_checks_do_not_accept_missing_or_failed_second_sources() {
-        use super::divisions_test_kit as kit;
+        use crate::read_accounting;
         use replay::rows::TableId;
-        let memory = divisions_presentation_memory();
-        let ctx = DivisionsCopyContext {
-            base: 0,
-            game_state: kit::GAME_STATE,
-            ..Default::default()
-        };
-        let mut first = DivisionsJob::new();
-        copy_divisions_refresh(&memory, ctx, &mut first, None);
-        let mut needed = [false; TABLE_COUNT];
-        needed[TableId::DivisionMovement.index()] = true;
-        needed[TableId::DivisionStatus.index()] = true;
-        for failed in [false, true] {
-            let mut frame = Captured::new();
-            first.supply_sources(&mut frame.extended, frame.divisions.len(), false);
-            if failed {
-                DivisionsJob::default().supply_sources(
-                    &mut frame.extended,
-                    frame.divisions.len(),
-                    true,
-                );
-            }
-            frame.extended.install_unit_inputs(
-                first.census.unit_inputs().map(Arc::clone),
-                failed.then(|| {
-                    Arc::new(crate::division_census::UnitInputs::fixture(
-                        Vec::new(),
-                        Outcome::Unavailable {
-                            reason: "synthetic failed second census",
-                        },
-                    ))
-                }),
-                false,
-            );
-            let (matched, _) =
-                frame
-                    .extended
-                    .capture(&memory, 0, kit::GAME_STATE, 0, &needed, false);
-            for table in [TableId::DivisionMovement, TableId::DivisionStatus] {
-                assert!(!matched[table.index()]);
-                assert!(matches!(
-                    frame.extended.outcomes()[table.index()],
-                    Outcome::Unavailable { .. }
-                ));
+        struct Traced<'a> {
+            bytes: &'a [u8],
+            calls: std::cell::RefCell<Vec<(usize, usize)>>,
+        }
+        impl engine::Memory for Traced<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.calls.borrow_mut().push((address, output.len()));
+                kit::memory(self.bytes).copy(address, output)
             }
         }
-        // A retired parent window still has a second owned job when only a new
-        // companion needs its independent check; no core check is fabricated.
-        for table in [TableId::DivisionMovement, TableId::DivisionStatus] {
-            let mut child_only = [false; TABLE_COUNT];
-            child_only[table.index()] = true;
-            assert!(extended::Captured::needs_division_check(&child_only));
-            let mut second = DivisionsJob::new();
-            copy_divisions_refresh(&memory, ctx, &mut first, Some(&mut second));
-            let mut frame = Captured::new();
-            first.supply_sources(&mut frame.extended, frame.divisions.len(), false);
-            second.supply_sources(&mut frame.extended, frame.divisions.len(), true);
-            frame.extended.install_unit_inputs(
-                first.census.unit_inputs().map(Arc::clone),
-                second.census.unit_inputs().map(Arc::clone),
-                first.census.unit_inputs_equal(&second.census),
-            );
-            let (matched, _) =
-                frame
-                    .extended
-                    .capture(&memory, 0, kit::GAME_STATE, 0, &child_only, false);
-            assert!(matched[table.index()]);
-            frame.extended.release_unit_inputs();
-        }
-    }
-
-    #[test]
-    fn divisions_owned_comparison_isolates_equipment_private_values() {
-        use super::divisions_test_kit as kit;
-        // Change one bank amount while keeping its shared variant identity and
-        // the entire division census stable. Only equipment must differ.
-        let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let ctx = DivisionsCopyContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-            ..Default::default()
-        };
-        let mut first = DivisionsJob::new();
-        let mut second = DivisionsJob::new();
-        let report = copy_divisions_refresh(&memory, ctx, &mut first, Some(&mut second));
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 6]);
-        let mut changed = bytes.clone();
-        changed[0x42008] ^= 0xff;
-        copy_divisions_refresh(&kit::memory(&changed), ctx, &mut second, None);
-        assert!(first.census.equal(&second.census, ctx.row_capacity));
-        assert!(first.census.equal(&second.census, ctx.source_capacity));
-        assert_eq!(
-            first.details.equal(&second.details),
-            [false, true, true, true, true]
-        );
-    }
-
-    #[test]
-    fn divisions_seeded_worker_preserves_owned_results_and_does_not_repeat_core() {
-        use super::divisions_test_kit as kit;
         struct NoRead;
         impl engine::Memory for NoRead {
             fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-                panic!("completed core must not read again");
+                panic!("completed core repeated a read");
             }
         }
         let bytes = kit::fixture();
-        let memory = kit::memory(&bytes);
-        let context = DivisionsCopyContext {
+        let capture = read_accounting::Capture::new();
+        let memory = CountedMemory::new(Traced {
+            bytes: &bytes,
+            calls: Default::default(),
+        });
+        let composed_memory = Traced {
+            bytes: &bytes,
+            calls: Default::default(),
+        };
+        let ctx = DivisionsCopyContext {
             base: kit::BASE,
             game_state: kit::GAME_STATE,
             ..Default::default()
         };
-        let mut first = DivisionsJob::new();
-        let mut second = DivisionsJob::new();
-        assert!(copy_divisions_inputs_refresh(
-            &memory,
-            context,
-            &mut first,
-            Some(&mut second)
-        ));
-        let lease = Arc::clone(first.census.unit_inputs().unwrap());
-        let report = copy_divisions_core_refresh(&memory, context, &mut first, Some(&mut second));
+        let mut payload = DivisionsJob::new();
+        assert!(copy_divisions_inputs_refresh(&memory, ctx, &mut payload));
+        let seed_reads = read_accounting::snapshot();
+        assert!(seed_reads[TableId::Divisions.index()].bytes > 0);
+        let inputs = Arc::clone(payload.census.unit_inputs().unwrap());
+        let report = copy_divisions_core_refresh(&memory, ctx, &mut payload);
         assert!(report.raw_ok);
-        assert!(Arc::ptr_eq(&lease, first.census.unit_inputs().unwrap()));
-        let repeated = copy_divisions_core_refresh(&NoRead, context, &mut first, Some(&mut second));
+        assert!(Arc::ptr_eq(&inputs, payload.census.unit_inputs().unwrap()));
+        let accounted = read_accounting::snapshot();
+        let repeated = copy_divisions_core_refresh(&NoRead, ctx, &mut payload);
         assert_eq!(repeated.raw_bytes, report.raw_bytes);
         assert_eq!(repeated.copy_ticks, report.copy_ticks);
-        assert_eq!(repeated.matched, report.matched);
-        let mut composed_first = DivisionsJob::new();
-        let mut composed_second = DivisionsJob::new();
-        let composed = copy_divisions_refresh(
-            &memory,
-            context,
-            &mut composed_first,
-            Some(&mut composed_second),
+        assert_eq!(read_accounting::snapshot(), accounted);
+        let mut composed = DivisionsJob::new();
+        let original = copy_divisions_refresh(&composed_memory, ctx, &mut composed);
+        assert_eq!(report.raw_bytes, original.raw_bytes);
+        assert_eq!(
+            payload.census.rows(ctx.row_capacity),
+            composed.census.rows(ctx.row_capacity)
         );
-        assert_eq!(report.raw_bytes, composed.raw_bytes);
-        assert_eq!(report.matched, composed.matched);
-        assert_eq!(report.mismatches, composed.mismatches);
-        assert!(
-            first
-                .census
-                .same(&composed_first.census, context.row_capacity)
+        assert_eq!(*memory.0.calls.borrow(), *composed_memory.calls.borrow());
+        assert_eq!(
+            memory
+                .0
+                .calls
+                .borrow()
+                .iter()
+                .filter(|(at, _)| *at == kit::A1 + carmy::STRENGTH)
+                .count(),
+            1
         );
-        assert_eq!(first.details.differences(&composed_first.details), [0; 5]);
+        drop(inputs);
+        let mut actual = Captured::new();
+        let mut expected = Captured::new();
+        decode_divisions_payload(&mut actual, kit::BASE, &mut payload, &mut [0; 6]);
+        decode_divisions_payload(&mut expected, kit::BASE, &mut composed, &mut [0; 6]);
+        assert_eq!(actual.divisions, expected.divisions);
+        assert_eq!(
+            actual.extended.test_division_detail().tables(),
+            expected.extended.test_division_detail().tables()
+        );
+        let mut total = ReadCounts::ZERO;
+        for (index, counts) in accounted.iter().enumerate() {
+            total += *counts;
+            if [
+                TableId::Divisions,
+                TableId::DivisionEquipment,
+                TableId::ArmyUpgradeGroups,
+            ]
+            .iter()
+            .any(|table| table.index() == index)
+            {
+                assert!(counts.spans > 0 && counts.bytes > 0);
+            } else {
+                assert_eq!(*counts, ReadCounts::ZERO);
+            }
+        }
+        let trace = memory.0.calls.borrow();
+        assert_eq!(
+            total.spans,
+            trace.iter().filter(|(_, len)| *len != 0).count() as u64
+        );
+        assert_eq!(
+            total.bytes,
+            trace.iter().map(|(_, len)| *len as u64).sum::<u64>()
+        );
+        assert_eq!(capture.finish(), accounted);
     }
 
     #[test]
@@ -6492,7 +5304,6 @@ mod tests {
             &kit::memory(&bytes),
             context,
             &mut job,
-            None
         ));
         let lease = Arc::clone(job.census.unit_inputs().unwrap());
         let before = job.payload_bytes();
@@ -6500,10 +5311,10 @@ mod tests {
             row_capacity: 0,
             ..context
         };
-        assert!(!copy_divisions_core_refresh(&NoRead, changed, &mut job, None).raw_ok);
+        assert!(!copy_divisions_core_refresh(&NoRead, changed, &mut job).raw_ok);
         assert_eq!(job.payload_bytes(), before);
         assert!(Arc::ptr_eq(&lease, job.census.unit_inputs().unwrap()));
-        assert!(!copy_divisions_core_refresh(&NoRead, context, &mut job, None).raw_ok);
+        assert!(!copy_divisions_core_refresh(&NoRead, context, &mut job).raw_ok);
     }
 
     #[test]
@@ -6518,9 +5329,7 @@ mod tests {
         };
         let mut first = DivisionsJob::new();
         first.census = crate::division_census::Census::default();
-        let mut second = DivisionsJob::new();
-        second.census = crate::division_census::Census::default();
-        let report = copy_divisions_refresh(&memory, ctx, &mut first, Some(&mut second));
+        let report = copy_divisions_refresh(&memory, ctx, &mut first);
         assert!(!report.raw_ok);
         assert!(first.grow_for_next());
         // The typed walk still produces the identical rows through the
@@ -6529,6 +5338,86 @@ mod tests {
         assert_eq!(direct.divisions_outcome, Outcome::Rows { len: 3 });
         assert_eq!(direct.equipment_outcome, Outcome::Rows { len: 3 });
         assert_eq!(direct.groups_outcome, Outcome::Rows { len: 3 });
+    }
+
+    #[test]
+    fn inactive_division_details_skip_capacity_reads_and_decode_installation() {
+        use super::divisions_test_kit as kit;
+        struct Traced<'a> {
+            bytes: &'a [u8],
+            calls: std::cell::RefCell<Vec<(usize, usize)>>,
+        }
+        impl engine::Memory for Traced<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.calls.borrow_mut().push((address, output.len()));
+                kit::memory(self.bytes).copy(address, output)
+            }
+        }
+        let bytes = kit::fixture();
+        let memory = CountedMemory::new(Traced {
+            bytes: &bytes,
+            calls: Default::default(),
+        });
+        let reference = Traced {
+            bytes: &bytes,
+            calls: Default::default(),
+        };
+        let context = DivisionsCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            row_capacity: 64,
+            source_capacity: 64,
+            detail_capacities: [usize::MAX; 5],
+            details_active: false,
+        };
+        let mut job = DivisionsJob {
+            census: crate::division_census::Census::new(),
+            ..Default::default()
+        };
+        let reads = crate::read_accounting::Capture::new();
+        assert!(copy_divisions_inputs_refresh(&memory, context, &mut job));
+        let lease = Arc::clone(job.census.unit_inputs().unwrap());
+        let report = copy_divisions_core_refresh(&memory, context, &mut job);
+        assert!(report.raw_ok);
+        assert!(Arc::ptr_eq(&lease, job.census.unit_inputs().unwrap()));
+        assert_eq!(job.details.allocated_bytes(), 0);
+        let skipped = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
+        };
+        assert_eq!(job.details.outcomes(), [skipped; 5]);
+        assert_eq!(report.copy_ticks[1..], [0; 5]);
+        assert_eq!(report.raw_bytes[1..], [0; 5]);
+        let counts = reads.finish();
+        assert!(counts[TableId::Divisions.index()].spans > 0);
+        for (index, counts) in counts.iter().enumerate() {
+            if index != TableId::Divisions.index() {
+                assert_eq!(*counts, ReadCounts::ZERO);
+            }
+        }
+        let mut census = crate::division_census::Census::new();
+        census.capture_inputs(&reference, context.base, context.game_state);
+        census.capture_core(&reference, context.row_capacity);
+        assert_eq!(*memory.0.calls.borrow(), *reference.calls.borrow());
+        assert_eq!(job.census.rows(64), census.rows(64));
+        drop(lease);
+
+        let mut frame = Captured::new();
+        frame
+            .extended
+            .fail_division_details(replay::cadence::SKIPPED_REASON);
+        frame.extended.set_divisions_raw_mode(true);
+        let detail = frame.extended.test_division_detail();
+        let pointer = detail.division_equipment.rows.as_ptr();
+        let capacity = detail.division_equipment.rows.len();
+        let mut ticks = [0; 6];
+        decode_divisions_payload(&mut frame, context.base, &mut job, &mut ticks);
+        assert_eq!(frame.divisions_result, Outcome::Rows { len: 3 });
+        let detail = frame.extended.test_division_detail();
+        assert_eq!(detail.division_equipment.rows.as_ptr(), pointer);
+        assert_eq!(detail.division_equipment.rows.len(), capacity);
+        assert_eq!(detail.division_equipment.outcome, skipped);
+        assert!(!detail.divisions_raw_mode);
+        assert_eq!(ticks[1..], [0; 5]);
     }
 
     #[test]
@@ -6542,7 +5431,7 @@ mod tests {
             ..Default::default()
         };
         let mut first = DivisionsJob::new();
-        let report = copy_divisions_refresh(&memory, ctx, &mut first, None);
+        let report = copy_divisions_refresh(&memory, ctx, &mut first);
         assert!(report.raw_ok);
         assert!(report.copy_ticks[0] > 0);
         let mut frame = Captured::new();
@@ -6571,10 +5460,18 @@ mod tests {
             let direct = kit::direct(&memory, caps);
             let (split, report, _) = kit::split(&memory, caps);
             assert!(report.raw_ok, "cap={cap}");
-            assert_eq!(report.matched, [cap >= 3; 6], "cap={cap}");
             kit::assert_matches_direct(&split, &direct);
         }
         let (exact, _, _) = kit::split(&memory, [3; 6]);
         assert_eq!(exact.divisions_outcome, Outcome::Rows { len: 3 });
+        for groups in [0, 1] {
+            let mut caps = [3; 6];
+            caps[2] = groups;
+            let direct = kit::direct(&memory, [3; 6]);
+            let (split, report, _) = kit::split(&memory, caps);
+            assert!(report.raw_ok);
+            kit::assert_matches_direct(&split, &direct);
+            assert_eq!(split.groups_outcome, Outcome::Rows { len: 3 });
+        }
     }
 }

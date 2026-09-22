@@ -1,6 +1,6 @@
-//! Bounded discovery traces for fresh scalar raw acquisition.
+//! Bounded discovery traces for fresh raw acquisition with exact read occurrences.
 
-use engine::read_plan::{Control, PreparedPlan, Read};
+use engine::read_plan::{Control, Hint, PreparedPlan, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static ATTEMPTS: AtomicU64 = AtomicU64::new(0);
@@ -17,10 +17,11 @@ static CONTROL_FRONTIERS: AtomicU64 = AtomicU64::new(0);
 static PREPARE_NS: AtomicU64 = AtomicU64::new(0);
 static BACKEND_NS: AtomicU64 = AtomicU64::new(0);
 static OVERFLOW_NO_RETRY: AtomicU64 = AtomicU64::new(0);
+static REDUNDANT_CONTROLS: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn diagnostics() -> serde_json::Value {
     serde_json::json!({
-        "scope": "opted-in scalar raw acquisition since attach; every plan executes fresh source reads",
+        "scope": "opted-in raw acquisition since attach; every plan executes fresh source reads",
         "attempts": ATTEMPTS.load(Ordering::Relaxed),
         "complete": COMPLETE.load(Ordering::Relaxed),
         "control_changed": CHANGED.load(Ordering::Relaxed),
@@ -33,6 +34,7 @@ pub(crate) fn diagnostics() -> serde_json::Value {
         "planned_read_occurrences": PLANNED_READS.load(Ordering::Relaxed),
         "canonical_source_calls": CANONICAL_READS.load(Ordering::Relaxed),
         "control_frontiers_reached": CONTROL_FRONTIERS.load(Ordering::Relaxed),
+        "redundant_controls_removed": REDUNDANT_CONTROLS.load(Ordering::Relaxed),
         "worker_prepare_ns": PREPARE_NS.load(Ordering::Relaxed),
         "backend_execution_ns": BACKEND_NS.load(Ordering::Relaxed),
         "backend_scope": "execute_read_plan calls only; excludes canonical continuation and raw metadata restoration",
@@ -47,6 +49,7 @@ pub(crate) struct Observations {
     pub after_reads: usize,
     pub controls: Vec<Control>,
     pub expected: Vec<u8>,
+    pub hints: Vec<Hint>,
     required_controls: usize,
     required_bytes: usize,
 }
@@ -59,6 +62,7 @@ impl Observations {
             after_reads: 0,
             controls: Vec::with_capacity(controls),
             expected: Vec::with_capacity(bytes),
+            hints: Vec::with_capacity(controls),
             required_controls: 0,
             required_bytes: 0,
         }
@@ -67,6 +71,7 @@ impl Observations {
     pub fn begin(&mut self) {
         self.controls.clear();
         self.expected.clear();
+        self.hints.clear();
         self.after_reads = 0;
         self.required_controls = 0;
         self.required_bytes = 0;
@@ -104,9 +109,25 @@ impl Observations {
         }
     }
 
+    pub fn hint(&mut self, address: usize, len: usize) {
+        if self.active
+            && self.hints.len() < self.hints.capacity()
+            && len != 0
+            && address != 0
+            && crate::raw::is_canonical_range(address, len)
+        {
+            self.hints.push(Hint {
+                after_reads: self.after_reads,
+                address,
+                len,
+            });
+        }
+    }
+
     pub fn capacity_bytes(&self) -> u64 {
         crate::raw_memory::vector_bytes(&self.controls)
             + crate::raw_memory::vector_bytes(&self.expected)
+            + crate::raw_memory::vector_bytes(&self.hints)
     }
 
     pub fn grow_for_next(&mut self) {
@@ -145,7 +166,7 @@ pub(crate) struct Compiled<const N: usize> {
     pub key: [usize; 4],
     pub requests: Vec<Request>,
     pub plan: PreparedPlan,
-    pub spans: usize,
+    pub spans: Vec<crate::raw::Span>,
     pub has_bulk: bool,
     pub raw_bytes: [u64; N],
     frontiers: Vec<usize>,
@@ -165,6 +186,7 @@ pub(crate) enum Attempt {
 #[derive(Debug)]
 pub(crate) struct CapturePlan<const N: usize> {
     pub enabled: bool,
+    pub scattered: bool,
     pub active: bool,
     pub key: [usize; 4],
     pub requests: Vec<Request>,
@@ -184,6 +206,7 @@ impl<const N: usize> Default for CapturePlan<N> {
     fn default() -> Self {
         Self {
             enabled: false,
+            scattered: false,
             active: false,
             key: [0; 4],
             requests: Vec::new(),
@@ -298,11 +321,23 @@ impl<const N: usize> CapturePlan<N> {
                     len: request.len,
                 })
                 .collect();
-            let controls = observations.controls.clone();
-            let expected = observations.expected.clone();
-            if let Some(plan) = PreparedPlan::new(reads, controls, expected, len) {
+            let (controls, expected) = compact_controls(&self.requests, observations, len);
+            if let Some(plan) = PreparedPlan::new(reads, controls, expected, len)
+                .and_then(|plan| plan.with_hints(observations.hints.clone()))
+            {
                 let requests = self.requests.clone();
-                let spans = requests.iter().filter(|request| request.len != 0).count();
+                let spans = requests
+                    .iter()
+                    .filter(|request| request.len != 0)
+                    .map(|request| crate::raw::Span {
+                        addr: request.address,
+                        len: request.len as u32,
+                        ok: true,
+                        mask: request.mask,
+                        start: request.start as u32,
+                        bulk: request.bulk,
+                    })
+                    .collect();
                 let first_source_read = requests.iter().position(|request| request.len != 0);
                 let mut frontiers: Vec<usize> = plan
                     .controls()
@@ -346,8 +381,135 @@ impl<const N: usize> CapturePlan<N> {
         crate::raw_memory::vector_bytes(&self.requests)
             + self.compiled.as_ref().map_or(0, |compiled| {
                 crate::raw_memory::vector_bytes(&compiled.requests)
+                    + crate::raw_memory::vector_bytes(&compiled.spans)
                     + compiled.plan.capacity_bytes() as u64
                     + crate::raw_memory::vector_bytes(&compiled.frontiers)
             })
+    }
+}
+
+/// Raw destinations are append-only: after a control has checked owned bytes,
+/// later reads cannot overwrite them. Keep the earliest check of every byte;
+/// repeated parses of the same view need no additional native-plan comparison.
+/// This optimization is deliberately outside PreparedPlan's general API,
+/// whose callers may use overlapping writable destinations.
+fn compact_controls(
+    requests: &[Request],
+    observations: &Observations,
+    len: usize,
+) -> (Vec<Control>, Vec<u8>) {
+    let mut end = 0;
+    let append_only = requests.iter().all(|request| {
+        let valid = request.start == end;
+        end = end.saturating_add(request.len);
+        valid
+    }) && end == len;
+    if !append_only
+        || observations.controls.iter().any(|control| {
+            control
+                .offset
+                .checked_add(control.len)
+                .is_none_or(|end| end > len)
+        })
+    {
+        return (observations.controls.clone(), observations.expected.clone());
+    }
+    let mut checked = vec![0_u8; len];
+    let mut controls = Vec::with_capacity(observations.controls.len());
+    let mut expected = Vec::with_capacity(observations.expected.len());
+    for control in &observations.controls {
+        let covered = &mut checked[control.offset..control.offset + control.len];
+        if !covered.contains(&0) {
+            continue;
+        }
+        covered.fill(1);
+        controls.push(Control {
+            expected_offset: expected.len(),
+            ..*control
+        });
+        expected.extend_from_slice(
+            &observations.expected[control.expected_offset..control.expected_offset + control.len],
+        );
+    }
+    REDUNDANT_CONTROLS.fetch_add(
+        (observations.controls.len() - controls.len()) as u64,
+        Ordering::Relaxed,
+    );
+    (controls, expected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine::{Memory, memory::SliceMemory, read_plan::Outcome};
+
+    #[test]
+    fn redundant_checks_keep_the_first_failure_frontier_and_fresh_unchecked_payload() {
+        let requests = [
+            Request {
+                address: 0x1000,
+                start: 0,
+                len: 4,
+                mask: 1,
+                bulk: false,
+            },
+            Request {
+                address: 0x1004,
+                start: 4,
+                len: 4,
+                mask: 1,
+                bulk: false,
+            },
+        ];
+        let mut observations = Observations::new(8, 32);
+        observations.begin();
+        observations.after_reads = 1;
+        observations.observe(0, &[1, 2, 3, 4]);
+        observations.after_reads = 2;
+        observations.observe(2, &[3, 4]);
+        observations.observe(4, &[5, 6]);
+        observations.observe(0, &[1, 2, 3, 4]);
+        let (controls, expected) = compact_controls(&requests, &observations, 8);
+        assert_eq!(controls.len(), 2);
+        let plan = PreparedPlan::new(
+            requests
+                .iter()
+                .map(|r| Read {
+                    address: r.address,
+                    destination_offset: r.start,
+                    len: r.len,
+                })
+                .collect(),
+            controls,
+            expected,
+            8,
+        )
+        .unwrap();
+        for (byte, outcome) in [
+            (1, Outcome::ControlChanged { completed_reads: 1 }),
+            (5, Outcome::ControlChanged { completed_reads: 2 }),
+            (7, Outcome::Complete),
+        ] {
+            let mut data = [1, 2, 3, 4, 5, 6, 7, 8];
+            data[byte] = 99;
+            let mut output = [0; 8];
+            assert_eq!(
+                SliceMemory {
+                    base: 0x1000,
+                    bytes: &data
+                }
+                .execute_read_plan(&plan, &mut output),
+                Some(outcome)
+            );
+            if outcome == Outcome::Complete {
+                assert_eq!(output, data);
+            }
+        }
+        let mut overlap = requests;
+        overlap[1].start = 2;
+        assert_eq!(
+            compact_controls(&overlap, &observations, 6),
+            (observations.controls.clone(), observations.expected.clone())
+        );
     }
 }

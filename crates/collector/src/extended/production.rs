@@ -1,10 +1,11 @@
 //! Production/equipment acquisition. Only construction/growth and conversion
-//! allocate; the callback fills typed buffers and measures shared graph work.
+//! allocate; worker-owned variants grow during their original acquisition.
 
 use crate::{
     projection::{Projection, scalar_table},
     raw::RawLog,
-    sampling::{full_match, qpc},
+    read_accounting,
+    sampling::qpc,
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
@@ -46,11 +47,7 @@ pub const TABLES: [TableId; N] = [
 /// Name, local cost slot, and local member indices. Zero cost in a non-anchor
 /// slot means the work is accounted for by this group, not that reads are free.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    (
-        "variant definitions, modules, stats and upgrades",
-        3,
-        &[3, 4, 5, 6],
-    ),
+    ("variant modules, stats and upgrades", 4, &[4, 5, 6]),
     (
         "army upgrade groups, requests, deliveries and produced equipment",
         7,
@@ -64,13 +61,10 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("production licences and licence records", 11, &[11, 16]),
 ];
 
-/// Borrowed buffers owned by shared acquisition. Each pass must carry its
-/// independently measured complete census, in stable order.
+/// Borrowed current census owned by shared acquisition, in native source order.
 pub struct Sources<'a, T> {
-    pub first: &'a [T],
-    pub first_outcome: Outcome,
-    pub second: &'a [T],
-    pub second_outcome: Outcome,
+    pub rows: &'a [T],
+    pub outcome: Outcome,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,14 +95,168 @@ impl Default for Capacities {
     }
 }
 
+/// Variant leaves loaned to the worker-only acquisition job.
+pub(crate) struct Variants {
+    definitions: CaptureRows<cequipment_variant::DefinitionRow>,
+    modules: CaptureRows<equipment_module_container::Row>,
+    stats: CaptureRows<cequipment_variant::StatsRow>,
+    upgrades: CaptureRows<cequipment_upgrades_instance::Row>,
+    definition_bytes: Arena<u8>,
+    module_bytes: Arena<u8>,
+    upgrade_bytes: Arena<u8>,
+}
+
+impl Variants {
+    fn with_capacities(capacities: &Capacities) -> Self {
+        Self {
+            definitions: CaptureRows::new(capacities.rows[3]),
+            modules: CaptureRows::new(capacities.rows[4]),
+            stats: CaptureRows::new(capacities.rows[5]),
+            upgrades: CaptureRows::new(capacities.rows[6]),
+            definition_bytes: Arena::new(capacities.definition_bytes),
+            module_bytes: Arena::new(capacities.module_bytes),
+            upgrade_bytes: Arena::new(capacities.upgrade_bytes),
+        }
+    }
+
+    pub(crate) fn vacant() -> Self {
+        Self {
+            definitions: CaptureRows::new(0),
+            modules: CaptureRows::new(0),
+            stats: CaptureRows::new(0),
+            upgrades: CaptureRows::new(0),
+            definition_bytes: Arena::new(0),
+            module_bytes: Arena::new(0),
+            upgrade_bytes: Arena::new(0),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.definitions.reset();
+        self.modules.reset();
+        self.stats.reset();
+        self.upgrades.reset();
+        self.definition_bytes.reset();
+        self.module_bytes.reset();
+        self.upgrade_bytes.reset();
+    }
+
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.definitions.allocated_bytes()
+            + self.modules.allocated_bytes()
+            + self.stats.allocated_bytes()
+            + self.upgrades.allocated_bytes()
+            + self.definition_bytes.allocated_bytes()
+            + self.module_bytes.allocated_bytes()
+            + self.upgrade_bytes.allocated_bytes()
+    }
+
+    fn grow(&mut self, capacities: &mut Capacities) {
+        capacities.rows[3] = capacities.rows[3].max(self.definitions.rows.capacity());
+        self.definitions.grow(&mut capacities.rows[3]);
+        capacities.rows[4] = capacities.rows[4].max(self.modules.rows.capacity());
+        self.modules.grow(&mut capacities.rows[4]);
+        capacities.rows[5] = capacities.rows[5].max(self.stats.rows.capacity());
+        self.stats.grow(&mut capacities.rows[5]);
+        capacities.rows[6] = capacities.rows[6].max(self.upgrades.rows.capacity());
+        self.upgrades.grow(&mut capacities.rows[6]);
+        capacities.definition_bytes = capacities
+            .definition_bytes
+            .max(self.definition_bytes.first.capacity());
+        self.definition_bytes.grow(&mut capacities.definition_bytes);
+        capacities.module_bytes = capacities
+            .module_bytes
+            .max(self.module_bytes.first.capacity());
+        self.module_bytes.grow(&mut capacities.module_bytes);
+        capacities.upgrade_bytes = capacities
+            .upgrade_bytes
+            .max(self.upgrade_bytes.first.capacity());
+        self.upgrade_bytes.grow(&mut capacities.upgrade_bytes);
+    }
+
+    pub(crate) fn fail(&mut self, reason: &'static str, hour: i32, force_full: bool) {
+        self.reset();
+        for (outcome, table) in [
+            (&mut self.definitions.outcome, TABLES[3]),
+            (&mut self.modules.outcome, TABLES[4]),
+            (&mut self.stats.outcome, TABLES[5]),
+            (&mut self.upgrades.outcome, TABLES[6]),
+        ] {
+            *outcome = Outcome::Unavailable {
+                reason: if replay::cadence::should_walk(table, hour, force_full) {
+                    reason
+                } else {
+                    replay::cadence::SKIPPED_REASON
+                },
+            };
+        }
+    }
+
+    /// Read variant fields from the current complete registry census.
+    pub(crate) fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        variants: Sources<'_, cequipment_variant::RegistryRow>,
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
+        let mut ticks = [0; N];
+        let mut reads = read_accounting::table(TABLES[3]);
+        let begin = qpc();
+        let source = complete_source(variants.rows, variants.outcome);
+        capture_text(
+            &mut self.definitions,
+            &mut self.definition_bytes,
+            source,
+            |source, rows, arena| {
+                cequipment_variant::walk_definitions(memory, base, source, rows, arena)
+            },
+        );
+        ticks[3] = elapsed(begin);
+        if !replay::cadence::should_walk(TableId::VariantModules, hour, force_full) {
+            let skipped = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+            self.modules.outcome = skipped;
+            self.stats.outcome = skipped;
+            self.upgrades.outcome = skipped;
+            self.module_bytes.reset();
+            self.upgrade_bytes.reset();
+            return ticks;
+        }
+        reads.select(TABLES[4]);
+        let begin = qpc();
+        capture_text(
+            &mut self.modules,
+            &mut self.module_bytes,
+            source,
+            |source, rows, arena| {
+                equipment_module_container::walk(memory, base, source, rows, arena)
+            },
+        );
+        self.stats.outcome = match source {
+            Ok(source) => cequipment_variant::walk_stats(memory, source, &mut self.stats.rows),
+            Err(reason) => Outcome::Unavailable { reason },
+        };
+        capture_text(
+            &mut self.upgrades,
+            &mut self.upgrade_bytes,
+            source,
+            |source, rows, arena| {
+                cequipment_upgrades_instance::walk(memory, base, source, rows, arena)
+            },
+        );
+        ticks[4] = elapsed(begin);
+        ticks
+    }
+}
+
 pub struct Captured {
+    variants: Variants,
     pub lines: CaptureRows<cequipment_production_line::Row>,
     pub stockpiles: CaptureRows<cequipment_variant_pool::StockpileRow>,
     pub division_equipment: CaptureRows<cequipment_variant_pool::DivisionRow>,
-    pub definitions: CaptureRows<cequipment_variant::DefinitionRow>,
-    pub modules: CaptureRows<equipment_module_container::Row>,
-    pub stats: CaptureRows<cequipment_variant::StatsRow>,
-    pub upgrades: CaptureRows<cequipment_upgrades_instance::Row>,
     pub groups: CaptureRows<carmy_upgrades_requests::Row>,
     pub requests: CaptureRows<army_upgrade_request_row::Row>,
     pub deliveries: CaptureRows<cupgrade_delivery::Row>,
@@ -118,71 +266,67 @@ pub struct Captured {
     pub deployment_lines: CaptureRows<cdeployment_status::LineRow>,
     pub deployment_manpower: CaptureRows<cdeployment_status::ManpowerRow>,
     pub deployment_equipment: CaptureRows<cdeployment_status::EquipmentRow>,
-    pub definition_bytes: Arena<u8>,
-    pub module_bytes: Arena<u8>,
-    pub upgrade_bytes: Arena<u8>,
     pub conveyor_name_bytes: Arena<u8>,
     pub line_custom_name_bytes: Arena<u8>,
     pub license_records: CaptureRows<cproduction_status::LicenseRecordRow>,
     pub license_handles: Arena<u64>,
-    /// Raw-copy split gate for the hourly divisions group (equipment table
-    /// 2 plus the upgrade graph 7..11). Set by the game thread every hour
-    /// with a valid raw payload; `acquire` then skips those typed detail
+    /// Raw-copy split gate for scheduled division equipment and upgrade details.
+    /// Set when an acquisition job returns a valid raw payload;
+    /// `acquire` then skips those typed detail
     /// walks and the decode worker fills the rows before the ready handoff.
-    /// Preserved across `reset` (set per hour, cleared by the worker after
-    /// decode). Lines, stockpiles, licences and deployment stay game-side.
+    /// Preserved across `reset` and cleared by the worker after decode.
+    /// Production and deployment use the independent rest payload below.
     pub(crate) divisions_raw_mode: bool,
-    /// Raw-copy split gate for the hourly production rest (lines 0,
+    /// Raw-copy split gate for scheduled production rest (lines 0,
     /// stockpiles 1, licences 11, deployment 12..15, licence records 16).
-    /// Set by the game thread every hour with a valid raw payload; `acquire`
+    /// Set when an acquisition job returns a valid raw payload; `acquire`
     /// then skips those typed walks and the decode worker fills the rows
     /// (plus the licence/name arenas) before the ready handoff. Preserved
     /// across `reset` (set per hour, cleared by the worker after decode).
     pub(crate) rest_raw_mode: bool,
+    /// The acquisition's selected detail activity survives through decode failures.
+    division_details_active: bool,
 }
 
 impl Captured {
-    pub fn with_capacities(capacities: &Capacities, successful: &[u16]) -> Self {
-        assert_eq!(successful.len(), N);
-        let graph_successful = *successful[7..11].iter().min().unwrap();
-        let deployment = *successful[12..16].iter().min().unwrap();
+    pub(crate) fn take_variants(&mut self) -> Variants {
+        std::mem::replace(&mut self.variants, Variants::vacant())
+    }
+
+    pub(crate) fn restore_variants(&mut self, variants: Variants) {
+        self.variants = variants;
+    }
+
+    pub fn with_capacities(capacities: &Capacities) -> Self {
         Self {
-            lines: CaptureRows::new(capacities.rows[0], successful[0]),
-            stockpiles: CaptureRows::new(capacities.rows[1], successful[1]),
-            division_equipment: CaptureRows::new(capacities.rows[2], successful[2]),
-            definitions: CaptureRows::new(capacities.rows[3], successful[3]),
-            modules: CaptureRows::new(capacities.rows[4], successful[4]),
-            stats: CaptureRows::new(capacities.rows[5], successful[5]),
-            upgrades: CaptureRows::new(capacities.rows[6], successful[6]),
-            groups: CaptureRows::new(capacities.rows[7], graph_successful),
-            requests: CaptureRows::new(capacities.rows[8], graph_successful),
-            deliveries: CaptureRows::new(capacities.rows[9], graph_successful),
-            produced: CaptureRows::new(capacities.rows[10], graph_successful),
-            licenses: CaptureRows::new(capacities.rows[11], successful[11]),
-            conveyors: CaptureRows::new(capacities.rows[12], deployment),
-            deployment_lines: CaptureRows::new(capacities.rows[13], deployment),
-            deployment_manpower: CaptureRows::new(capacities.rows[14], deployment),
-            deployment_equipment: CaptureRows::new(capacities.rows[15], deployment),
-            definition_bytes: Arena::new(capacities.definition_bytes, successful[3]),
-            module_bytes: Arena::new(capacities.module_bytes, successful[4]),
-            upgrade_bytes: Arena::new(capacities.upgrade_bytes, successful[6]),
-            conveyor_name_bytes: Arena::new(capacities.conveyor_name_bytes, deployment),
-            line_custom_name_bytes: Arena::new(capacities.line_custom_name_bytes, deployment),
-            license_records: CaptureRows::new(capacities.rows[16], successful[16]),
-            license_handles: Arena::new(capacities.license_handles, successful[16]),
+            variants: Variants::with_capacities(capacities),
+            lines: CaptureRows::new(capacities.rows[0]),
+            stockpiles: CaptureRows::new(capacities.rows[1]),
+            division_equipment: CaptureRows::new(capacities.rows[2]),
+            groups: CaptureRows::new(capacities.rows[7]),
+            requests: CaptureRows::new(capacities.rows[8]),
+            deliveries: CaptureRows::new(capacities.rows[9]),
+            produced: CaptureRows::new(capacities.rows[10]),
+            licenses: CaptureRows::new(capacities.rows[11]),
+            conveyors: CaptureRows::new(capacities.rows[12]),
+            deployment_lines: CaptureRows::new(capacities.rows[13]),
+            deployment_manpower: CaptureRows::new(capacities.rows[14]),
+            deployment_equipment: CaptureRows::new(capacities.rows[15]),
+            conveyor_name_bytes: Arena::new(capacities.conveyor_name_bytes),
+            line_custom_name_bytes: Arena::new(capacities.line_custom_name_bytes),
+            license_records: CaptureRows::new(capacities.rows[16]),
+            license_handles: Arena::new(capacities.license_handles),
             divisions_raw_mode: false,
             rest_raw_mode: false,
+            division_details_active: true,
         }
     }
 
     pub fn reset(&mut self) {
+        self.variants.reset();
         self.lines.reset();
         self.stockpiles.reset();
         self.division_equipment.reset();
-        self.definitions.reset();
-        self.modules.reset();
-        self.stats.reset();
-        self.upgrades.reset();
         self.groups.reset();
         self.requests.reset();
         self.deliveries.reset();
@@ -192,9 +336,6 @@ impl Captured {
         self.deployment_lines.reset();
         self.deployment_manpower.reset();
         self.deployment_equipment.reset();
-        self.definition_bytes.reset();
-        self.module_bytes.reset();
-        self.upgrade_bytes.reset();
         self.conveyor_name_bytes.reset();
         self.line_custom_name_bytes.reset();
         self.license_records.reset();
@@ -202,13 +343,10 @@ impl Captured {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.lines.allocated_bytes()
+        self.variants.allocated_bytes()
+            + self.lines.allocated_bytes()
             + self.stockpiles.allocated_bytes()
             + self.division_equipment.allocated_bytes()
-            + self.definitions.allocated_bytes()
-            + self.modules.allocated_bytes()
-            + self.stats.allocated_bytes()
-            + self.upgrades.allocated_bytes()
             + self.groups.allocated_bytes()
             + self.requests.allocated_bytes()
             + self.deliveries.allocated_bytes()
@@ -218,104 +356,91 @@ impl Captured {
             + self.deployment_lines.allocated_bytes()
             + self.deployment_manpower.allocated_bytes()
             + self.deployment_equipment.allocated_bytes()
-            + self.definition_bytes.allocated_bytes()
-            + self.module_bytes.allocated_bytes()
-            + self.upgrade_bytes.allocated_bytes()
             + self.conveyor_name_bytes.allocated_bytes()
             + self.line_custom_name_bytes.allocated_bytes()
             + self.license_records.allocated_bytes()
             + self.license_handles.allocated_bytes()
     }
 
-    pub fn grow(&mut self, capacities: &mut Capacities, successful: &[u16]) {
-        assert_eq!(successful.len(), N);
-        self.lines.grow(&mut capacities.rows[0], successful[0]);
-        self.stockpiles.grow(&mut capacities.rows[1], successful[1]);
-        self.division_equipment
-            .grow(&mut capacities.rows[2], successful[2]);
-        self.definitions
-            .grow(&mut capacities.rows[3], successful[3]);
-        self.modules.grow(&mut capacities.rows[4], successful[4]);
-        self.stats.grow(&mut capacities.rows[5], successful[5]);
-        self.upgrades.grow(&mut capacities.rows[6], successful[6]);
-        let graph = *successful[7..11].iter().min().unwrap();
-        self.groups.grow(&mut capacities.rows[7], graph);
-        self.requests.grow(&mut capacities.rows[8], graph);
-        self.deliveries.grow(&mut capacities.rows[9], graph);
-        self.produced.grow(&mut capacities.rows[10], graph);
-        self.licenses.grow(&mut capacities.rows[11], successful[11]);
-        let deployment = *successful[12..16].iter().min().unwrap();
-        self.conveyors.grow(&mut capacities.rows[12], deployment);
-        self.deployment_lines
-            .grow(&mut capacities.rows[13], deployment);
-        self.deployment_manpower
-            .grow(&mut capacities.rows[14], deployment);
-        self.deployment_equipment
-            .grow(&mut capacities.rows[15], deployment);
-        self.definition_bytes
-            .grow(&mut capacities.definition_bytes, successful[3]);
-        self.module_bytes
-            .grow(&mut capacities.module_bytes, successful[4]);
-        self.upgrade_bytes
-            .grow(&mut capacities.upgrade_bytes, successful[6]);
+    pub fn grow(&mut self, capacities: &mut Capacities) {
+        self.variants.grow(capacities);
+        self.lines.grow(&mut capacities.rows[0]);
+        self.stockpiles.grow(&mut capacities.rows[1]);
+        self.division_equipment.grow(&mut capacities.rows[2]);
+        capacities.rows[7] = capacities.rows[7].max(self.groups.rows.capacity());
+        self.groups.grow(&mut capacities.rows[7]);
+        self.requests.grow(&mut capacities.rows[8]);
+        self.deliveries.grow(&mut capacities.rows[9]);
+        self.produced.grow(&mut capacities.rows[10]);
+        self.licenses.grow(&mut capacities.rows[11]);
+        self.conveyors.grow(&mut capacities.rows[12]);
+        self.deployment_lines.grow(&mut capacities.rows[13]);
+        self.deployment_manpower.grow(&mut capacities.rows[14]);
+        self.deployment_equipment.grow(&mut capacities.rows[15]);
         self.conveyor_name_bytes
-            .grow(&mut capacities.conveyor_name_bytes, deployment);
+            .grow(&mut capacities.conveyor_name_bytes);
         self.line_custom_name_bytes
-            .grow(&mut capacities.line_custom_name_bytes, deployment);
-        self.license_records
-            .grow(&mut capacities.rows[16], successful[16]);
-        self.license_handles
-            .grow(&mut capacities.license_handles, successful[16]);
+            .grow(&mut capacities.line_custom_name_bytes);
+        self.license_records.grow(&mut capacities.rows[16]);
+        self.license_handles.grow(&mut capacities.license_handles);
     }
 
-    /// Acquire non-variant tables. Each table requests its own consistency
-    /// reads; variants use the independently acquired registry census.
-    /// Durations are QPC ticks and include comparison work.
-    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn division_details_active(&self) -> bool {
+        self.division_details_active
+    }
+
+    /// Acquire scheduled non-variant tables from the current shared census.
+    /// Durations are QPC ticks.
     pub fn acquire(
         &mut self,
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        needed: &[bool],
         divisions: Sources<'_, cequipment_variant_pool::DivisionSource>,
-        _hour: i32,
-        _force_full: bool,
-    ) -> ([bool; N], [u64; N]) {
-        assert_eq!(needed.len(), N);
-        let mut matched = [false; N];
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
         let mut ticks = [0; N];
-        // Hourly production rest (copy/decode split): every hour the game
-        // thread stages raw bytes via `copy_production_rest_refresh` and the
-        // decode worker fills lines, stockpiles, licences, deployment and
-        // licence records before the ready handoff, so the typed walks below
-        // skip here. Matched flags and costs come from the raw compare,
-        // applied by the caller after this returns.
-        if !self.rest_raw_mode {
+        let rest_active = replay::cadence::should_walk(TableId::ProductionLines, hour, force_full);
+        let divisions_active =
+            replay::cadence::should_walk(TableId::DivisionEquipment, hour, force_full);
+        self.division_details_active = divisions_active;
+        if !rest_active {
+            self.fail_production_rest_capture(replay::cadence::SKIPPED_REASON);
+            self.conveyor_name_bytes.reset();
+            self.line_custom_name_bytes.reset();
+            self.license_handles.reset();
+        }
+        if !divisions_active {
+            let skipped = Outcome::Unavailable {
+                reason: replay::cadence::SKIPPED_REASON,
+            };
+            self.division_equipment.outcome = skipped;
+            self.groups.outcome = skipped;
+            self.requests.outcome = skipped;
+            self.deliveries.outcome = skipped;
+            self.produced.outcome = skipped;
+            self.divisions_raw_mode = false;
+        }
+        if rest_active && !self.rest_raw_mode {
+            let mut reads = read_accounting::table(TABLES[0]);
             let begin = qpc();
-            matched[0] = capture_rows(&mut self.lines, needed[0], |rows| {
+            capture_rows(&mut self.lines, |rows| {
                 cproduction_status::walk_lines(memory, base, game_state, rows)
             });
             ticks[0] = elapsed(begin);
+            reads.select(TABLES[1]);
             let begin = qpc();
-            matched[1] = capture_rows(&mut self.stockpiles, needed[1], |rows| {
+            capture_rows(&mut self.stockpiles, |rows| {
                 cequipment_variant_pool::walk_stockpiles(memory, base, game_state, rows)
             });
             ticks[1] = elapsed(begin);
         }
-        // Divisions group (copy/decode split): on hours with a staged raw
-        // payload the decode worker fills equipment and upgrade rows before
-        // the ready handoff, so the typed detail walks are skipped here,
-        // leaving the reset outcomes for the worker. Matched flags and costs
-        // come from the raw compare, applied by the caller after this
-        // returns. Lines, stockpiles, licences and deployment below always
-        // run game-side (independent walks).
-        if !self.divisions_raw_mode {
+        if divisions_active && !self.divisions_raw_mode {
+            let mut reads = read_accounting::table(TABLES[2]);
             let begin = qpc();
-            let first_sources = complete_source(divisions.first, divisions.first_outcome);
-            let second_sources = complete_source(divisions.second, divisions.second_outcome);
-            self.division_equipment.checked = needed[2];
-            self.division_equipment.outcome = match first_sources {
+            let source = complete_source(divisions.rows, divisions.outcome);
+            self.division_equipment.outcome = match source {
                 Ok(source) => cequipment_variant_pool::walk_divisions(
                     memory,
                     base,
@@ -324,29 +449,14 @@ impl Captured {
                 ),
                 Err(reason) => Outcome::Unavailable { reason },
             };
-            if needed[2] {
-                let second = match second_sources {
-                    Ok(source) => cequipment_variant_pool::walk_divisions(
-                        memory,
-                        base,
-                        source,
-                        &mut self.division_equipment.second,
-                    ),
-                    Err(reason) => Outcome::Unavailable { reason },
-                };
-                matched[2] = self.division_equipment.compare(second);
-                if sources_changed(first_sources, second_sources) {
-                    self.division_equipment.mismatches += 1;
-                    matched[2] = false;
-                }
-            }
             ticks[2] = elapsed(begin);
+            reads.select(TABLES[7]);
             let begin = qpc();
-            let result = match first_sources {
-                Ok(sources) => carmy_upgrades_status::walk(
+            let result = match source {
+                Ok(source) => carmy_upgrades_status::walk(
                     memory,
                     base,
-                    sources,
+                    source,
                     &mut self.groups.rows,
                     &mut self.requests.rows,
                     &mut self.deliveries.rows,
@@ -358,171 +468,66 @@ impl Captured {
             self.requests.outcome = result.requests;
             self.deliveries.outcome = result.deliveries;
             self.produced.outcome = result.produced;
-            self.groups.checked = needed[7];
-            self.requests.checked = needed[8];
-            self.deliveries.checked = needed[9];
-            self.produced.checked = needed[10];
-            if needed[7..11].iter().any(|&needed| needed) {
-                let result = match second_sources {
-                    Ok(sources) => carmy_upgrades_status::walk(
-                        memory,
-                        base,
-                        sources,
-                        &mut self.groups.second,
-                        &mut self.requests.second,
-                        &mut self.deliveries.second,
-                        &mut self.produced.second,
-                    ),
-                    Err(reason) => carmy_upgrades_status::Outcomes::unavailable(reason),
-                };
-                if needed[7] {
-                    matched[7] = self.groups.compare(result.groups);
-                }
-                if needed[8] {
-                    matched[8] = self.requests.compare(result.requests);
-                }
-                if needed[9] {
-                    matched[9] = self.deliveries.compare(result.deliveries);
-                }
-                if needed[10] {
-                    matched[10] = self.produced.compare(result.produced);
-                }
-                if sources_changed(first_sources, second_sources) {
-                    for (index, mismatches) in [
-                        (7, &mut self.groups.mismatches),
-                        (8, &mut self.requests.mismatches),
-                        (9, &mut self.deliveries.mismatches),
-                        (10, &mut self.produced.mismatches),
-                    ] {
-                        if needed[index] {
-                            *mismatches += 1;
-                            matched[index] = false;
-                        }
-                    }
-                }
-            }
             ticks[7] = elapsed(begin);
         }
-
-        if !self.rest_raw_mode {
+        if rest_active && !self.rest_raw_mode {
+            let mut reads = read_accounting::table(TABLES[11]);
             let begin = qpc();
-            matched[11] = capture_rows(&mut self.licenses, needed[11], |rows| {
+            capture_rows(&mut self.licenses, |rows| {
                 cproduction_status::walk_licenses(memory, base, game_state, rows)
             });
-            let first = cproduction_status::walk_license_records(
+            let records = cproduction_status::walk_license_records(
                 memory,
                 base,
                 game_state,
                 &mut self.license_records.rows,
                 &mut self.license_handles.first,
             );
-            self.license_records.outcome = first.outcome;
-            self.license_handles.len = first.handles_len;
-            self.license_handles.required = first.required_handles;
-            self.license_records.checked = needed[16];
-            if needed[16] {
-                let second = cproduction_status::walk_license_records(
-                    memory,
-                    base,
-                    game_state,
-                    &mut self.license_records.second,
-                    &mut self.license_handles.second,
-                );
-                // A changed produced-handle arena is a mismatch even when every
-                // fixed field of every record is equal.
-                let handles_matched = self
-                    .license_handles
-                    .compare(second.handles_len, second.required_handles);
-                let rows_matched = self.license_records.compare(second.outcome);
-                if !handles_matched {
-                    self.license_records.mismatches += 1;
-                }
-                matched[16] = rows_matched && handles_matched;
-            }
+            self.license_records.outcome = records.outcome;
+            self.license_handles.len = records.handles_len;
+            self.license_handles.required = records.required_handles;
             ticks[11] = elapsed(begin);
-
+            reads.select(TABLES[12]);
             let begin = qpc();
-            let deployment_needed = needed[12..16].iter().any(|needed| *needed);
-            let first = self.deployment(memory, base, game_state, false);
-            self.conveyors.outcome = first.conveyors;
-            self.deployment_lines.outcome = first.lines;
-            self.deployment_manpower.outcome = first.manpower;
-            self.deployment_equipment.outcome = first.equipment;
-            self.conveyor_name_bytes.len = first.name_bytes;
-            self.conveyor_name_bytes.required = first.required_name_bytes;
-            self.line_custom_name_bytes.len = first.custom_name_bytes;
-            self.line_custom_name_bytes.required = first.required_custom_name_bytes;
-            self.conveyors.checked = needed[12];
-            self.deployment_lines.checked = needed[13];
-            self.deployment_manpower.checked = needed[14];
-            self.deployment_equipment.checked = needed[15];
-            if deployment_needed {
-                let second = self.deployment(memory, base, game_state, true);
-                // A changed name arena is a mismatch for every deployment table,
-                // including ones whose rows happen to be equal.
-                let names_matched = self
-                    .conveyor_name_bytes
-                    .compare(second.name_bytes, second.required_name_bytes);
-                let custom_matched = self
-                    .line_custom_name_bytes
-                    .compare(second.custom_name_bytes, second.required_custom_name_bytes);
-                let arenas_matched = names_matched && custom_matched;
-                let check = |index: usize, rows: &mut dyn DeploymentRows, outcome| {
-                    let matched_rows = rows.compare(outcome);
-                    if !arenas_matched {
-                        rows.add_mismatch();
-                    }
-                    needed[index] && matched_rows && arenas_matched
-                };
-                matched[12] = check(12, &mut self.conveyors, second.conveyors);
-                matched[13] = check(13, &mut self.deployment_lines, second.lines);
-                matched[14] = check(14, &mut self.deployment_manpower, second.manpower);
-                matched[15] = check(15, &mut self.deployment_equipment, second.equipment);
-            }
+            let deployment = self.deployment(memory, base, game_state);
+            self.conveyors.outcome = deployment.conveyors;
+            self.deployment_lines.outcome = deployment.lines;
+            self.deployment_manpower.outcome = deployment.manpower;
+            self.deployment_equipment.outcome = deployment.equipment;
+            self.conveyor_name_bytes.len = deployment.name_bytes;
+            self.conveyor_name_bytes.required = deployment.required_name_bytes;
+            self.line_custom_name_bytes.len = deployment.custom_name_bytes;
+            self.line_custom_name_bytes.required = deployment.required_custom_name_bytes;
             ticks[12] = elapsed(begin);
         }
-        (matched, ticks)
+        ticks
     }
 
-    /// One shared traversal fills all four deployment buffers. The second pass
-    /// writes the comparison buffers, which are empty once the window closes.
+    /// One shared traversal fills all four deployment buffers.
     fn deployment(
         &mut self,
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        second: bool,
     ) -> cdeployment_status::Outcomes {
-        let (conveyors, lines, manpower, equipment, names, custom) = if second {
-            (
-                &mut self.conveyors.second,
-                &mut self.deployment_lines.second,
-                &mut self.deployment_manpower.second,
-                &mut self.deployment_equipment.second,
-                &mut self.conveyor_name_bytes.second,
-                &mut self.line_custom_name_bytes.second,
-            )
-        } else {
-            (
-                &mut self.conveyors.rows,
-                &mut self.deployment_lines.rows,
-                &mut self.deployment_manpower.rows,
-                &mut self.deployment_equipment.rows,
-                &mut self.conveyor_name_bytes.first,
-                &mut self.line_custom_name_bytes.first,
-            )
-        };
         cdeployment_status::walk(
-            memory, base, game_state, conveyors, lines, manpower, equipment, names, custom,
+            memory,
+            base,
+            game_state,
+            &mut self.conveyors.rows,
+            &mut self.deployment_lines.rows,
+            &mut self.deployment_manpower.rows,
+            &mut self.deployment_equipment.rows,
+            &mut self.conveyor_name_bytes.first,
+            &mut self.line_custom_name_bytes.first,
         )
     }
 
-    /// Decode-worker interpretation of a raw hourly production-rest payload.
+    /// Decode-worker interpretation of a scheduled production-rest payload.
     /// Replays the existing lines, stockpile, licence, deployment and licence-
     /// record walks against the recorded spans, installing identical rows,
     /// arenas, truncation counts and failure reasons into the frame's pooled
-    /// buffers. Checked/mismatches set by the raw compare survive. Clears
-    /// `rest_raw_mode` so the next capture starts clean.
+    /// buffers. Clears `rest_raw_mode` so the next capture starts clean.
     pub(crate) fn decode_production_rest_payload(
         &mut self,
         base: usize,
@@ -583,12 +588,11 @@ impl Captured {
 }
 
 // ===========================================================================
-// Hourly production-rest raw-copy split (ProductionLines, Stockpiles,
+// Scheduled production-rest raw-copy split (ProductionLines, Stockpiles,
 // ProductionLicenses, DeploymentConveyors, DeploymentLines,
 // DeploymentManpower, DeploymentEquipment, ProductionLicenseRecords).
 //
-// Zero-engine-change replay (Wars/Divisions/Focus/Session precedent for
-// census plus per-country walks): the game thread copies raw bytes only and
+// The acquisition worker copies the country census and per-country raw bytes, and
 // the single FIFO decode worker replays the existing typed walks against the
 // recorded spans (`crate::raw::Recorded`), so rows, ordinals, arenas,
 // truncation and failure reasons are identical by construction (see
@@ -604,10 +608,10 @@ impl Captured {
 // underlying string/array bytes and the worker fills the pooled arenas by
 // replaying the identical walks.
 //
-// Fault attribution is conservative like the pilot: shared census spans carry
+// Fault attribution is conservative: shared census spans carry
 // all eight bits, production-manager spans the four production bits, and
 // deployment spans all four deployment bits, so any live failure blocks its
-// whole shared domain even when both copies agree. Per-table leaves use
+// whole shared domain. Per-table leaves use
 // single-bit masks. The mirror traverses structurally and records every
 // discoverable span, never aborting except on overflow: the replay derives
 // every outcome, precedence and error scope from the same recorded spans, so
@@ -627,7 +631,7 @@ const M_P_PROD_MGR: u32 = 0x87;
 const M_P_DEPLOY: u32 = 0x78;
 const M_P_CENSUS: u32 = 0xFF;
 
-/// One hour of raw production-rest payload. Flat pools recycle capacities
+/// One scheduled refresh of raw production-rest payload. Flat pools recycle capacities
 /// and the steady state allocates on neither thread; growth happens on the
 /// decode side only (see `crate::decode::recycle_production_rest_job`).
 #[derive(Debug, Default)]
@@ -700,20 +704,15 @@ pub(crate) struct ProductionRestCopyReport {
     /// Transcript disagreement or capacity exhaustion after prepared source
     /// observations. This capture must not trigger another live acquisition.
     pub plan_failed: bool,
-    /// Whole-log raw equality gated by live-fault conservatism, in family
-    /// order [lines, stockpiles, licences, conveyors, lines, manpower,
-    /// equipment, records].
-    pub matched: [bool; 8],
     pub copy_ticks: [u64; 8],
     pub raw_bytes: [u64; 8],
 }
 
-/// Game-thread copy parameters, bundled to keep the tick entry small.
+/// Acquisition-job parameters supplied at the sampling boundary.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ProductionRestCopyContext {
     pub base: usize,
     pub game_state: usize,
-    pub needed: [bool; 8],
 }
 
 fn p_pool_u64(log: &RawLog<8>, start: usize) -> u64 {
@@ -1576,100 +1575,38 @@ fn copy_deployment_object(
     }
 }
 
-/// Acquire owned raw buffers and report per-table checks without borrowing the frame.
+/// Acquire one owned payload and report its per-table costs.
 pub(crate) fn copy_production_rest_refresh(
     memory: &impl Memory,
     ctx: ProductionRestCopyContext,
-    first: &mut ProductionRestJob,
-    mut second: Option<&mut ProductionRestJob>,
+    job: &mut ProductionRestJob,
 ) -> ProductionRestCopyReport {
     let started = qpc();
-    first.clear();
-    first.game_state = ctx.game_state;
-    acquire_production_rest_pass(memory, ctx.base, ctx.game_state, first);
-    let mut ticks = [0u64; 8];
+    job.clear();
+    job.game_state = ctx.game_state;
+    acquire_production_rest_pass(memory, ctx.base, ctx.game_state, job);
+    let mut ticks = [0; 8];
     ticks[0] = elapsed(started);
-    let mut matched = [true; 8];
-    if let Some(second_job) = second.as_deref_mut() {
-        let second_started = qpc();
-        second_job.clear();
-        second_job.game_state = ctx.game_state;
-        acquire_production_rest_pass(memory, ctx.base, ctx.game_state, second_job);
-        ticks[0] += elapsed(second_started);
-        // Per-table partitions: shared roots gate their dependents,
-        // private spans only their own table.
-        let raw_ok_pair = !first.log.overflowed && !second_job.log.overflowed;
-        for (slot, matched) in matched.iter_mut().enumerate() {
-            let equal = raw_ok_pair && first.log.partition_equal(&second_job.log, slot);
-            *matched = equal && !first.log.fault[slot] && !second_job.log.fault[slot];
-        }
-    }
-    let plan_failed = first.log.planned_capture_requires_no_retry()
-        || second
-            .as_ref()
-            .is_some_and(|job| job.log.planned_capture_requires_no_retry());
-    let raw_ok =
-        !plan_failed && !first.log.overflowed && second.is_none_or(|job| !job.log.overflowed);
+    let plan_failed = job.log.planned_capture_requires_no_retry();
     ProductionRestCopyReport {
-        raw_ok,
+        raw_ok: !plan_failed && !job.log.overflowed,
         plan_failed,
-        matched,
         copy_ticks: ticks,
-        raw_bytes: first.log.raw_bytes,
+        raw_bytes: job.log.raw_bytes,
     }
 }
 
 impl Captured {
-    /// Install one completed raw-copy report without changing rows or outcomes.
-    pub(crate) fn apply_production_rest_report(
-        &mut self,
-        needed: [bool; 8],
-        report: &ProductionRestCopyReport,
-    ) {
-        self.lines.checked = needed[0];
-        self.lines.mismatches = usize::from(needed[0] && !report.matched[0]);
-        self.stockpiles.checked = needed[1];
-        self.stockpiles.mismatches = usize::from(needed[1] && !report.matched[1]);
-        self.licenses.checked = needed[2];
-        self.licenses.mismatches = usize::from(needed[2] && !report.matched[2]);
-        self.conveyors.checked = needed[3];
-        self.conveyors.mismatches = usize::from(needed[3] && !report.matched[3]);
-        self.deployment_lines.checked = needed[4];
-        self.deployment_lines.mismatches = usize::from(needed[4] && !report.matched[4]);
-        self.deployment_manpower.checked = needed[5];
-        self.deployment_manpower.mismatches = usize::from(needed[5] && !report.matched[5]);
-        self.deployment_equipment.checked = needed[6];
-        self.deployment_equipment.mismatches = usize::from(needed[6] && !report.matched[6]);
-        self.license_records.checked = needed[7];
-        self.license_records.mismatches = usize::from(needed[7] && !report.matched[7]);
-    }
-
     /// Finish an accepted acquisition failure without retrying live memory.
-    pub(crate) fn fail_production_rest_capture(&mut self, needed: [bool; 8], reason: &'static str) {
+    pub(crate) fn fail_production_rest_capture(&mut self, reason: &'static str) {
         self.lines.outcome = Outcome::Unavailable { reason };
-        self.lines.checked = needed[0];
-        self.lines.mismatches = usize::from(needed[0]);
         self.stockpiles.outcome = Outcome::Unavailable { reason };
-        self.stockpiles.checked = needed[1];
-        self.stockpiles.mismatches = usize::from(needed[1]);
         self.licenses.outcome = Outcome::Unavailable { reason };
-        self.licenses.checked = needed[2];
-        self.licenses.mismatches = usize::from(needed[2]);
         self.conveyors.outcome = Outcome::Unavailable { reason };
-        self.conveyors.checked = needed[3];
-        self.conveyors.mismatches = usize::from(needed[3]);
         self.deployment_lines.outcome = Outcome::Unavailable { reason };
-        self.deployment_lines.checked = needed[4];
-        self.deployment_lines.mismatches = usize::from(needed[4]);
         self.deployment_manpower.outcome = Outcome::Unavailable { reason };
-        self.deployment_manpower.checked = needed[5];
-        self.deployment_manpower.mismatches = usize::from(needed[5]);
         self.deployment_equipment.outcome = Outcome::Unavailable { reason };
-        self.deployment_equipment.checked = needed[6];
-        self.deployment_equipment.mismatches = usize::from(needed[6]);
         self.license_records.outcome = Outcome::Unavailable { reason };
-        self.license_records.checked = needed[7];
-        self.license_records.mismatches = usize::from(needed[7]);
         self.rest_raw_mode = false;
     }
 }
@@ -1684,8 +1621,9 @@ fn acquire_production_rest_pass(
     game_state: usize,
     job: &mut ProductionRestJob,
 ) {
-    // These are the producer's external inputs. Output-table capacities and
-    // check masks do not select its reads; the raw producer captures a superset.
+    let _reads = read_accounting::table(TABLES[0]);
+    // These are the producer's external inputs. Output-table capacities
+    // do not select its reads; the raw producer captures a superset.
     // Census capacity does affect admission, so it belongs to the plan key.
     let key = [base, game_state, job.census.capacity(), 1];
     if !job.log.begin_planned_capture(memory, key) {
@@ -1736,145 +1674,25 @@ fn copy_production_rest_pass(
 }
 
 impl Captured {
-    /// Read variant fields from complete, independently acquired registry
-    /// snapshots. No consumer-table union or discovery pass is needed.
-    pub fn finish_variants(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        needed: &[bool],
-        variants: Sources<'_, cequipment_variant::RegistryRow>,
-        hour: i32,
-        force_full: bool,
-    ) -> ([bool; N], [u64; N]) {
-        assert_eq!(needed.len(), N);
-        let mut matched = [false; N];
-        let mut ticks = [0; N];
-        // Tier-4 variants share slot3; off-hours skip the whole walk.
-        let walk = replay::cadence::should_walk(
-            replay::rows::TableId::VariantDefinitions,
-            hour,
-            force_full,
-        );
-
-        if !walk {
-            let skipped = Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON,
-            };
-            self.definitions.outcome = skipped;
-            self.modules.outcome = skipped;
-            self.stats.outcome = skipped;
-            self.upgrades.outcome = skipped;
-            return (matched, ticks);
-        }
-        let begin = qpc();
-        let first = complete_source(variants.first, variants.first_outcome);
-        let second = complete_source(variants.second, variants.second_outcome);
-        matched[3] = capture_text(
-            &mut self.definitions,
-            &mut self.definition_bytes,
-            needed[3],
-            first,
-            second,
-            |source, rows, arena| {
-                cequipment_variant::walk_definitions(memory, base, source, rows, arena)
-            },
-        );
-        matched[4] = capture_text(
-            &mut self.modules,
-            &mut self.module_bytes,
-            needed[4],
-            first,
-            second,
-            |source, rows, arena| {
-                equipment_module_container::walk(memory, base, source, rows, arena)
-            },
-        );
-        self.stats.checked = needed[5];
-        self.stats.outcome = match first {
-            Ok(source) => cequipment_variant::walk_stats(memory, source, &mut self.stats.rows),
-            Err(reason) => Outcome::Unavailable { reason },
-        };
-        if needed[5] {
-            let second = match second {
-                Ok(source) => {
-                    cequipment_variant::walk_stats(memory, source, &mut self.stats.second)
-                }
-                Err(reason) => Outcome::Unavailable { reason },
-            };
-            matched[5] = self.stats.compare(second);
-        }
-        matched[6] = capture_text(
-            &mut self.upgrades,
-            &mut self.upgrade_bytes,
-            needed[6],
-            first,
-            second,
-            |source, rows, arena| {
-                cequipment_upgrades_instance::walk(memory, base, source, rows, arena)
-            },
-        );
-        if sources_changed(first, second) {
-            // A changed parent census is a mismatch even when both child tables
-            // are empty (for example, two variants without installed modules).
-            for (index, mismatches) in [
-                (3, &mut self.definitions.mismatches),
-                (4, &mut self.modules.mismatches),
-                (5, &mut self.stats.mismatches),
-                (6, &mut self.upgrades.mismatches),
-            ] {
-                if needed[index] {
-                    *mismatches += 1;
-                    matched[index] = false;
-                }
-            }
-        }
-        ticks[3] = elapsed(begin);
-
-        (matched, ticks)
-    }
-
     pub fn outcomes(&self) -> [Outcome; N] {
         [
             self.lines.outcome,
             self.stockpiles.outcome,
             self.division_equipment.outcome,
-            self.definitions.outcome,
-            self.modules.outcome,
-            self.stats.outcome,
-            self.upgrades.outcome,
+            self.variants.definitions.outcome,
+            self.variants.modules.outcome,
+            self.variants.stats.outcome,
+            self.variants.upgrades.outcome,
             self.groups.outcome,
             self.requests.outcome,
             self.deliveries.outcome,
             self.produced.outcome,
             self.licenses.outcome,
-            outcome(&self.conveyors),
-            outcome(&self.deployment_lines),
-            outcome(&self.deployment_manpower),
-            outcome(&self.deployment_equipment),
-            outcome(&self.license_records),
-        ]
-    }
-
-    pub fn checked_mismatches(&self) -> [usize; N] {
-        [
-            checked_mismatches(&self.lines),
-            checked_mismatches(&self.stockpiles),
-            checked_mismatches(&self.division_equipment),
-            checked_mismatches(&self.definitions),
-            checked_mismatches(&self.modules),
-            checked_mismatches(&self.stats),
-            checked_mismatches(&self.upgrades),
-            checked_mismatches(&self.groups),
-            checked_mismatches(&self.requests),
-            checked_mismatches(&self.deliveries),
-            checked_mismatches(&self.produced),
-            checked_mismatches(&self.licenses),
-            checked_mismatches(&self.conveyors),
-            checked_mismatches(&self.deployment_lines),
-            checked_mismatches(&self.deployment_manpower),
-            checked_mismatches(&self.deployment_equipment),
-            checked_mismatches(&self.license_records),
+            self.conveyors.outcome,
+            self.deployment_lines.outcome,
+            self.deployment_manpower.outcome,
+            self.deployment_equipment.outcome,
+            self.license_records.outcome,
         ]
     }
 
@@ -1894,7 +1712,7 @@ impl Captured {
         mut projection: Option<&mut Projection<'_>>,
     ) -> [TableInput; N] {
         [
-            table::<tables::ProductionLines, _>(outcome(&self.lines), &self.lines.rows, |r| {
+            table::<tables::ProductionLines, _>(self.lines.outcome, &self.lines.rows, |r| {
                 rows::ProductionLineRow {
                     handle: r.handle,
                     country: r.country,
@@ -1911,7 +1729,7 @@ impl Captured {
                 }
             })
             .into(),
-            table::<tables::Stockpiles, _>(outcome(&self.stockpiles), &self.stockpiles.rows, |r| {
+            table::<tables::Stockpiles, _>(self.stockpiles.outcome, &self.stockpiles.rows, |r| {
                 rows::StockpileRow {
                     country: r.country,
                     ordinal: r.ordinal,
@@ -1922,7 +1740,7 @@ impl Captured {
             .into(),
             scalar_table::<tables::DivisionEquipment, _>(
                 projection.as_deref_mut(),
-                outcome(&self.division_equipment),
+                self.division_equipment.outcome,
                 &self.division_equipment.rows,
                 |r| (r.division as u128) << 32 | r.ordinal as u128,
                 |r| rows::DivisionEquipmentRow {
@@ -1934,19 +1752,21 @@ impl Captured {
                     amount_raw: r.amount_raw,
                 },
             ),
-            definitions(&self.definitions, &self.definition_bytes).into(),
-            modules(&self.modules, &self.module_bytes).into(),
-            table::<tables::VariantStats, _>(outcome(&self.stats), &self.stats.rows, |r| {
-                rows::VariantStatsRow {
+            definitions(&self.variants.definitions, &self.variants.definition_bytes).into(),
+            modules(&self.variants.modules, &self.variants.module_bytes).into(),
+            table::<tables::VariantStats, _>(
+                self.variants.stats.outcome,
+                &self.variants.stats.rows,
+                |r| rows::VariantStatsRow {
                     variant: r.variant,
                     values: r.values,
-                }
-            })
+                },
+            )
             .into(),
-            upgrades(&self.upgrades, &self.upgrade_bytes).into(),
+            upgrades(&self.variants.upgrades, &self.variants.upgrade_bytes).into(),
             scalar_table::<tables::ArmyUpgradeGroups, _>(
                 projection.as_deref_mut(),
-                outcome(&self.groups),
+                self.groups.outcome,
                 &self.groups.rows,
                 |r| r.army as u128,
                 |r| rows::ArmyUpgradeGroupRow {
@@ -1957,7 +1777,7 @@ impl Captured {
             ),
             scalar_table::<tables::ArmyUpgradeRequests, _>(
                 projection.as_deref_mut(),
-                outcome(&self.requests),
+                self.requests.outcome,
                 &self.requests.rows,
                 |r| (r.army as u128) << 32 | r.ordinal as u128,
                 |r| rows::ArmyUpgradeRequestRow {
@@ -1971,7 +1791,7 @@ impl Captured {
             ),
             scalar_table::<tables::ArmyUpgradeDeliveries, _>(
                 projection.as_deref_mut(),
-                outcome(&self.deliveries),
+                self.deliveries.outcome,
                 &self.deliveries.rows,
                 |r| (r.army as u128) << 32 | r.ordinal as u128,
                 |r| rows::ArmyUpgradeDeliveryRow {
@@ -1986,7 +1806,7 @@ impl Captured {
             ),
             scalar_table::<tables::ArmyUpgradeProduced, _>(
                 projection,
-                outcome(&self.produced),
+                self.produced.outcome,
                 &self.produced.rows,
                 |r| (r.army as u128) << 64 | (r.delivery_ordinal as u128) << 32 | r.ordinal as u128,
                 |r| rows::ArmyUpgradeProducedRow {
@@ -1999,7 +1819,7 @@ impl Captured {
                 },
             ),
             table::<tables::ProductionLicenses, _>(
-                outcome(&self.licenses),
+                self.licenses.outcome,
                 &self.licenses.rows,
                 |r| rows::ProductionLicenseRow {
                     country: r.country,
@@ -2011,7 +1831,7 @@ impl Captured {
             conveyors(&self.conveyors, &self.conveyor_name_bytes).into(),
             deployment_lines(&self.deployment_lines, &self.line_custom_name_bytes).into(),
             table::<tables::DeploymentManpower, _>(
-                outcome(&self.deployment_manpower),
+                self.deployment_manpower.outcome,
                 &self.deployment_manpower.rows,
                 |r| rows::DeploymentManpowerRow {
                     line: r.line,
@@ -2023,7 +1843,7 @@ impl Captured {
             )
             .into(),
             table::<tables::DeploymentEquipment, _>(
-                outcome(&self.deployment_equipment),
+                self.deployment_equipment.outcome,
                 &self.deployment_equipment.rows,
                 |r| rows::DeploymentEquipmentRow {
                     line: r.line,
@@ -2044,7 +1864,7 @@ fn license_records(
     rows: &CaptureRows<cproduction_status::LicenseRecordRow>,
     arena: &Arena<u64>,
 ) -> TableView {
-    let result = outcome(rows);
+    let result = rows.outcome;
     if let Outcome::Unavailable { reason } = result {
         return unavailable(reason);
     }
@@ -2081,26 +1901,10 @@ fn span(arena: &[u64], start: usize, len: usize) -> Option<&[u64]> {
     arena.get(start..start.checked_add(len)?)
 }
 
-/// Uniform access to the four deployment buffers, which hold different rows but
-/// share one traversal, one consistency window and one name arena.
-trait DeploymentRows {
-    fn compare(&mut self, second: Outcome) -> bool;
-    fn add_mismatch(&mut self);
-}
-
-impl<R: Default + Clone + PartialEq> DeploymentRows for CaptureRows<R> {
-    fn compare(&mut self, second: Outcome) -> bool {
-        CaptureRows::compare(self, second)
-    }
-    fn add_mismatch(&mut self) {
-        self.mismatches += 1;
-    }
-}
-
 /// Conveyor names live in a shared arena; a span outside it fails the table
 /// rather than publishing a truncated or borrowed-from-elsewhere name.
 fn conveyors(rows: &CaptureRows<cdeployment_status::ConveyorRow>, arena: &Arena<u8>) -> TableView {
-    let result = outcome(rows);
+    let result = rows.outcome;
     if let Outcome::Unavailable { reason } = result {
         return unavailable(reason);
     }
@@ -2137,7 +1941,7 @@ fn deployment_lines(
     rows: &CaptureRows<cdeployment_status::LineRow>,
     arena: &Arena<u8>,
 ) -> TableView {
-    let result = outcome(rows);
+    let result = rows.outcome;
     if let Outcome::Unavailable { reason } = result {
         return unavailable(reason);
     }
@@ -2194,41 +1998,21 @@ pub(crate) fn complete_source<T>(source: &[T], outcome: Outcome) -> Result<&[T],
     }
 }
 
-fn sources_changed<T: PartialEq>(
-    first: Result<&[T], &'static str>,
-    second: Result<&[T], &'static str>,
-) -> bool {
-    matches!((first, second), (Ok(first), Ok(second)) if first != second)
-}
-
-fn capture_rows<R: Default + Clone + PartialEq>(
-    rows: &mut CaptureRows<R>,
-    needed: bool,
-    mut walk: impl FnMut(&mut [R]) -> Outcome,
-) -> bool {
-    rows.checked = needed;
+fn capture_rows<R>(rows: &mut CaptureRows<R>, mut walk: impl FnMut(&mut [R]) -> Outcome) {
     rows.outcome = walk(&mut rows.rows);
-    if !needed {
-        return false;
-    }
-    let second = walk(&mut rows.second);
-    rows.compare(second)
 }
 
-fn capture_text<R: Default + Clone + PartialEq>(
+fn capture_text<R>(
     rows: &mut CaptureRows<R>,
     arena: &mut Arena<u8>,
-    needed: bool,
-    first: Result<&[cequipment_variant::RegistryRow], &'static str>,
-    second: Result<&[cequipment_variant::RegistryRow], &'static str>,
+    source: Result<&[cequipment_variant::RegistryRow], &'static str>,
     mut walk: impl FnMut(
         &[cequipment_variant::RegistryRow],
-        &mut [R],
-        &mut [u8],
+        &mut Vec<R>,
+        &mut Vec<u8>,
     ) -> cequipment_variant::TextOutcome,
-) -> bool {
-    rows.checked = needed;
-    let result = match first {
+) {
+    let result = match source {
         Ok(source) => walk(source, &mut rows.rows, &mut arena.first),
         Err(reason) => cequipment_variant::TextOutcome {
             outcome: Outcome::Unavailable { reason },
@@ -2239,34 +2023,6 @@ fn capture_text<R: Default + Clone + PartialEq>(
     rows.outcome = result.outcome;
     arena.len = result.bytes_len;
     arena.required = result.required_bytes;
-    if !needed {
-        return false;
-    }
-    let result = match second {
-        Ok(source) => walk(source, &mut rows.second, &mut arena.second),
-        Err(reason) => cequipment_variant::TextOutcome {
-            outcome: Outcome::Unavailable { reason },
-            bytes_len: 0,
-            required_bytes: 0,
-        },
-    };
-    rows.compare(result.outcome);
-    rows.mismatches += usize::from(!arena.compare(result.bytes_len, result.required_bytes));
-    full_match(rows.outcome, result.outcome, rows.mismatches)
-}
-
-fn checked_mismatches<T>(rows: &CaptureRows<T>) -> usize {
-    if rows.checked { rows.mismatches } else { 0 }
-}
-
-fn outcome<T>(rows: &CaptureRows<T>) -> Outcome {
-    if rows.checked && rows.mismatches != 0 {
-        Outcome::Unavailable {
-            reason: "production table changed during double read",
-        }
-    } else {
-        rows.outcome
-    }
 }
 
 fn text(arena: &[u8], span: cequipment_variant::TextSpan) -> Option<&[u8]> {
@@ -2278,7 +2034,7 @@ fn checked_text<'a, T, const N: usize>(
     arena: &'a Arena<u8>,
     spans: impl Fn(&T) -> [cequipment_variant::TextSpan; N],
 ) -> Result<&'a [u8], TableView> {
-    let result = outcome(rows);
+    let result = rows.outcome;
     if let Outcome::Unavailable { reason } = result {
         return Err(unavailable(reason));
     }
@@ -2308,7 +2064,7 @@ fn definitions(
         Ok(bytes) => bytes,
         Err(failure) => return failure,
     };
-    table::<tables::VariantDefinitions, _>(outcome(rows), &rows.rows, |r| {
+    table::<tables::VariantDefinitions, _>(rows.outcome, &rows.rows, |r| {
         rows::VariantDefinitionRow {
             id: r.identity.id,
             equipment_token: r.identity.equipment_token,
@@ -2330,7 +2086,7 @@ fn modules(rows: &CaptureRows<equipment_module_container::Row>, arena: &Arena<u8
         Ok(bytes) => bytes,
         Err(failure) => return failure,
     };
-    table::<tables::VariantModules, _>(outcome(rows), &rows.rows, |r| rows::VariantModuleRow {
+    table::<tables::VariantModules, _>(rows.outcome, &rows.rows, |r| rows::VariantModuleRow {
         variant: r.variant,
         source_ordinal: r.source_ordinal,
         slot: r.slot,
@@ -2345,7 +2101,7 @@ fn upgrades(rows: &CaptureRows<cequipment_upgrades_instance::Row>, arena: &Arena
         Ok(bytes) => bytes,
         Err(failure) => return failure,
     };
-    table::<tables::VariantUpgrades, _>(outcome(rows), &rows.rows, |r| rows::VariantUpgradeRow {
+    table::<tables::VariantUpgrades, _>(rows.outcome, &rows.rows, |r| rows::VariantUpgradeRow {
         variant: r.variant,
         source_ordinal: r.source_ordinal,
         definition_token: r.definition_token,
@@ -2354,7 +2110,7 @@ fn upgrades(rows: &CaptureRows<cequipment_upgrades_instance::Row>, arena: &Arena
     })
 }
 
-/// Shared synthetic address space for the hourly production-rest
+/// Shared synthetic address space for the scheduled production-rest
 /// copy/decode split: one country with one line, one stockpile entry,
 /// one licence, one licence record with one handle, and a one-conveyor
 /// deployment queue with one line, manpower and equipment.
@@ -2780,14 +2536,12 @@ pub(crate) mod production_rest_test_kit {
     }
 
     pub(crate) fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> Captured {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+        let mut captured = Captured::with_capacities(capacities);
         let divisions = Sources {
-            first: &[],
-            first_outcome: Outcome::Rows { len: 0 },
-            second: &[],
-            second_outcome: Outcome::Rows { len: 0 },
+            rows: &[],
+            outcome: Outcome::Rows { len: 0 },
         };
-        let _ = captured.acquire(memory, 0, BASE, &[true; N], divisions, 0, true);
+        let _ = captured.acquire(memory, 0, BASE, divisions, 0, true);
         captured.rest_raw_mode = false;
         captured
     }
@@ -2796,31 +2550,22 @@ pub(crate) mod production_rest_test_kit {
         memory: &impl engine::Memory,
         capacities: &Capacities,
     ) -> (Captured, ProductionRestCopyReport, ProductionRestJob) {
-        let mut captured = Captured::with_capacities(capacities, &[0; N]);
+        let mut captured = Captured::with_capacities(capacities);
         let ctx = ProductionRestCopyContext {
             base: 0,
             game_state: BASE,
-            needed: [true; 8],
         };
         let mut first = ProductionRestJob::new();
-        let mut second = ProductionRestJob::new();
-        let report = crate::extended::production::copy_production_rest_refresh(
-            memory,
-            ctx,
-            &mut first,
-            Some(&mut second),
-        );
-        captured.apply_production_rest_report(ctx.needed, &report);
+        let report =
+            crate::extended::production::copy_production_rest_refresh(memory, ctx, &mut first);
         assert!(report.raw_ok);
         captured.rest_raw_mode = report.raw_ok;
         // Typed walks skip while staged; the worker fills the buffers.
         let divisions = Sources {
-            first: &[],
-            first_outcome: Outcome::Rows { len: 0 },
-            second: &[],
-            second_outcome: Outcome::Rows { len: 0 },
+            rows: &[],
+            outcome: Outcome::Rows { len: 0 },
         };
-        let _ = captured.acquire(memory, 0, BASE, &[true; N], divisions, 0, true);
+        let _ = captured.acquire(memory, 0, BASE, divisions, 0, true);
         let mut ticks = [0u64; 8];
         captured.decode_production_rest_payload(0, BASE, &first, &mut ticks);
         (captured, report, first)
@@ -2898,203 +2643,147 @@ mod tests {
     use super::*;
 
     #[test]
-    fn production_rest_copy_report_bookkeeping_and_terminal_failure_are_table_local() {
-        let mut captured =
-            Captured::with_capacities(&production_rest_test_kit::capacities(), &[0; N]);
-        captured.rest_raw_mode = true;
-        captured.lines.outcome = Outcome::Rows { len: 1 };
-        captured.lines.mismatches = 9;
-        captured.stockpiles.outcome = Outcome::Rows { len: 1 };
-        captured.stockpiles.mismatches = 9;
-        captured.licenses.outcome = Outcome::Rows { len: 1 };
-        captured.licenses.mismatches = 9;
-        captured.conveyors.outcome = Outcome::Rows { len: 1 };
-        captured.conveyors.mismatches = 9;
-        captured.deployment_lines.outcome = Outcome::Rows { len: 1 };
-        captured.deployment_lines.mismatches = 9;
-        captured.deployment_manpower.outcome = Outcome::Rows { len: 1 };
-        captured.deployment_manpower.mismatches = 9;
-        captured.deployment_equipment.outcome = Outcome::Rows { len: 1 };
-        captured.deployment_equipment.mismatches = 9;
-        captured.license_records.outcome = Outcome::Rows { len: 1 };
-        captured.license_records.mismatches = 9;
-        captured.division_equipment.outcome = Outcome::Rows { len: 1 };
-        captured.division_equipment.checked = true;
-        captured.division_equipment.mismatches = 7;
-        let needed = std::array::from_fn(|index| index % 2 == 0);
-        let report = ProductionRestCopyReport {
-            raw_ok: false,
-            plan_failed: false,
-            matched: std::array::from_fn(|index| index % 3 != 0),
-            copy_ticks: std::array::from_fn(|index| index as u64 + 17),
-            raw_bytes: std::array::from_fn(|index| index as u64 + 41),
+    fn production_daily_groups_skip_native_reads_outside_their_slots() {
+        use production_rest_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        });
+        let divisions = [cequipment_variant_pool::DivisionSource {
+            pointer: kit::VARIANT,
+            division: 0x1234_0000_001a,
+            template: 1,
+            country: 2,
+        }];
+        let mut captured = Captured::with_capacities(&kit::capacities());
+        assert!(captured.division_details_active());
+        let skipped = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
         };
-        captured.apply_production_rest_report(needed, &report);
-        let states = [
-            (
-                captured.lines.checked,
-                captured.lines.mismatches,
-                captured.lines.outcome,
-            ),
-            (
-                captured.stockpiles.checked,
-                captured.stockpiles.mismatches,
-                captured.stockpiles.outcome,
-            ),
-            (
-                captured.licenses.checked,
-                captured.licenses.mismatches,
-                captured.licenses.outcome,
-            ),
-            (
-                captured.conveyors.checked,
-                captured.conveyors.mismatches,
-                captured.conveyors.outcome,
-            ),
-            (
-                captured.deployment_lines.checked,
-                captured.deployment_lines.mismatches,
-                captured.deployment_lines.outcome,
-            ),
-            (
-                captured.deployment_manpower.checked,
-                captured.deployment_manpower.mismatches,
-                captured.deployment_manpower.outcome,
-            ),
-            (
-                captured.deployment_equipment.checked,
-                captured.deployment_equipment.mismatches,
-                captured.deployment_equipment.outcome,
-            ),
-            (
-                captured.license_records.checked,
-                captured.license_records.mismatches,
-                captured.license_records.outcome,
-            ),
-        ];
-        for (index, (checked, mismatches, outcome)) in states.into_iter().enumerate() {
-            assert_eq!(checked, needed[index]);
-            assert_eq!(
-                mismatches,
-                usize::from(needed[index] && !report.matched[index])
+        for (hour, force_full) in (-24_i32..24).map(|hour| (hour, false)).chain([(0, true)]) {
+            let rest_active = force_full || hour.rem_euclid(24) == 8;
+            let divisions_active = force_full || hour.rem_euclid(24) == 2;
+            captured.rest_raw_mode = !rest_active;
+            captured.divisions_raw_mode = !divisions_active;
+            let native = read_accounting::Capture::new();
+            let ticks = captured.acquire(
+                &memory,
+                0,
+                kit::BASE,
+                Sources {
+                    rows: &divisions,
+                    outcome: Outcome::Rows { len: 1 },
+                },
+                hour,
+                force_full,
             );
-            assert_eq!(outcome, Outcome::Rows { len: 1 });
+            let counts = native.finish();
+            assert_eq!(captured.division_details_active(), divisions_active);
+            for (active, indices) in [
+                (rest_active, &[0, 1, 11, 12, 13, 14, 15, 16][..]),
+                (divisions_active, &[2, 7, 8, 9, 10][..]),
+            ] {
+                for &index in indices {
+                    if active {
+                        assert_ne!(captured.outcomes()[index], skipped, "{hour}: {index}");
+                    } else {
+                        assert_eq!(captured.outcomes()[index], skipped, "{hour}: {index}");
+                        assert_eq!(ticks[index], 0);
+                        assert_eq!(
+                            counts[TABLES[index].index()],
+                            engine::memory::ReadCounts::ZERO
+                        );
+                    }
+                }
+            }
+            assert_eq!(counts[TABLES[0].index()].spans > 0, rest_active);
+            assert_eq!(counts[TABLES[2].index()].spans > 0, divisions_active);
         }
-        assert!(captured.rest_raw_mode);
-        // A later successful report replaces stale mismatch bookkeeping.
-        captured.apply_production_rest_report(
-            [true; 8],
-            &ProductionRestCopyReport {
-                raw_ok: true,
-                matched: [true; 8],
-                ..report
-            },
-        );
-        let states = [
-            (
-                captured.lines.checked,
-                captured.lines.mismatches,
-                captured.lines.outcome,
-            ),
-            (
-                captured.stockpiles.checked,
-                captured.stockpiles.mismatches,
-                captured.stockpiles.outcome,
-            ),
-            (
-                captured.licenses.checked,
-                captured.licenses.mismatches,
-                captured.licenses.outcome,
-            ),
-            (
-                captured.conveyors.checked,
-                captured.conveyors.mismatches,
-                captured.conveyors.outcome,
-            ),
-            (
-                captured.deployment_lines.checked,
-                captured.deployment_lines.mismatches,
-                captured.deployment_lines.outcome,
-            ),
-            (
-                captured.deployment_manpower.checked,
-                captured.deployment_manpower.mismatches,
-                captured.deployment_manpower.outcome,
-            ),
-            (
-                captured.deployment_equipment.checked,
-                captured.deployment_equipment.mismatches,
-                captured.deployment_equipment.outcome,
-            ),
-            (
-                captured.license_records.checked,
-                captured.license_records.mismatches,
-                captured.license_records.outcome,
-            ),
-        ];
-        assert!(
-            states
-                .into_iter()
-                .all(|(checked, mismatches, outcome)| checked
-                    && mismatches == 0
-                    && outcome == Outcome::Rows { len: 1 })
-        );
-        let reason = "accepted acquisition worker stopped";
-        captured.fail_production_rest_capture(needed, reason);
-        let states = [
-            (
-                captured.lines.checked,
-                captured.lines.mismatches,
-                captured.lines.outcome,
-            ),
-            (
-                captured.stockpiles.checked,
-                captured.stockpiles.mismatches,
-                captured.stockpiles.outcome,
-            ),
-            (
-                captured.licenses.checked,
-                captured.licenses.mismatches,
-                captured.licenses.outcome,
-            ),
-            (
-                captured.conveyors.checked,
-                captured.conveyors.mismatches,
-                captured.conveyors.outcome,
-            ),
-            (
-                captured.deployment_lines.checked,
-                captured.deployment_lines.mismatches,
-                captured.deployment_lines.outcome,
-            ),
-            (
-                captured.deployment_manpower.checked,
-                captured.deployment_manpower.mismatches,
-                captured.deployment_manpower.outcome,
-            ),
-            (
-                captured.deployment_equipment.checked,
-                captured.deployment_equipment.mismatches,
-                captured.deployment_equipment.outcome,
-            ),
-            (
-                captured.license_records.checked,
-                captured.license_records.mismatches,
-                captured.license_records.outcome,
-            ),
-        ];
-        for (index, (checked, mismatches, outcome)) in states.into_iter().enumerate() {
-            assert_eq!(checked, needed[index]);
-            assert_eq!(mismatches, usize::from(needed[index]));
-            assert_eq!(outcome, Outcome::Unavailable { reason });
+    }
+
+    #[test]
+    fn variant_definitions_read_hourly_while_details_wait_for_their_slot() {
+        use production_rest_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        });
+        let registry = [cequipment_variant::RegistryRow::read(&memory.0, 0, kit::VARIANT).unwrap()];
+        let mut captured = Captured::with_capacities(&kit::capacities());
+        let skipped = Outcome::Unavailable {
+            reason: replay::cadence::SKIPPED_REASON,
+        };
+        for (hour, force_full) in (-24_i32..24).map(|hour| (hour, false)).chain([(0, true)]) {
+            let details_active = force_full || hour.rem_euclid(24) == 22;
+            let native = read_accounting::Capture::new();
+            let ticks = captured.variants.capture(
+                &memory,
+                0,
+                Sources {
+                    rows: &registry,
+                    outcome: Outcome::Rows { len: 1 },
+                },
+                hour,
+                force_full,
+            );
+            let counts = native.finish();
+            assert_ne!(captured.variants.definitions.outcome, skipped);
+            assert!(counts[TABLES[3].index()].spans > 0);
+            assert_eq!(counts[TABLES[4].index()].spans > 0, details_active);
+            for (index, table) in TABLES.iter().enumerate().take(7).skip(4) {
+                if details_active {
+                    assert_ne!(captured.outcomes()[index], skipped);
+                } else {
+                    assert_eq!(captured.outcomes()[index], skipped);
+                    assert_eq!(ticks[index], 0);
+                    assert_eq!(counts[table.index()], engine::memory::ReadCounts::ZERO);
+                }
+            }
+            if !details_active {
+                assert_eq!(
+                    (
+                        captured.variants.module_bytes.len,
+                        captured.variants.module_bytes.required
+                    ),
+                    (0, 0)
+                );
+                assert_eq!(
+                    (
+                        captured.variants.upgrade_bytes.len,
+                        captured.variants.upgrade_bytes.required
+                    ),
+                    (0, 0)
+                );
+            }
         }
+    }
+
+    #[test]
+    fn production_rest_terminal_failure_preserves_variant_and_division_tables() {
+        let mut captured = Captured::with_capacities(&production_rest_test_kit::capacities());
+        captured.rest_raw_mode = true;
+        captured.variants.definitions.outcome = Outcome::Rows { len: 1 };
+        captured.division_equipment.outcome = Outcome::Rows { len: 1 };
+        captured.fail_production_rest_capture("accepted acquisition failed");
         assert!(!captured.rest_raw_mode);
+        assert_eq!(
+            captured.variants.definitions.outcome,
+            Outcome::Rows { len: 1 }
+        );
         assert_eq!(
             captured.division_equipment.outcome,
             Outcome::Rows { len: 1 }
         );
-        assert!(captured.division_equipment.checked);
-        assert_eq!(captured.division_equipment.mismatches, 7);
+        for index in [0, 1, 11, 12, 13, 14, 15, 16] {
+            assert_eq!(
+                captured.outcomes()[index],
+                Outcome::Unavailable {
+                    reason: "accepted acquisition failed"
+                }
+            );
+        }
     }
 
     #[test]
@@ -3142,7 +2831,7 @@ mod tests {
 
     #[test]
     fn conversion_preserves_native_precision_full_keys_and_raw_control_bytes() {
-        let mut captured = Captured::with_capacities(&capacities(), &[0; N]);
+        let mut captured = Captured::with_capacities(&capacities());
         let army = 0xfedc_ba98_0000_001a;
         let variant = 0xffff_fffe_0000_0046;
         captured.lines.outcome = Outcome::Rows { len: 1 };
@@ -3208,8 +2897,8 @@ mod tests {
             equipment: variant,
             amount_raw: i64::MIN,
         };
-        captured.stats.outcome = Outcome::Rows { len: 1 };
-        captured.stats.rows[0] = cequipment_variant::StatsRow {
+        captured.variants.stats.outcome = Outcome::Rows { len: 1 };
+        captured.variants.stats.rows[0] = cequipment_variant::StatsRow {
             variant,
             values: [i64::MIN, -100_001, -1, 0, 1, 100_001, 7, 8, 9, i64::MAX],
         };
@@ -3247,7 +2936,7 @@ mod tests {
         );
         assert_eq!(
             complete::<tables::VariantStats>(&views[5])[0].values,
-            captured.stats.rows[0].values
+            captured.variants.stats.rows[0].values
         );
         assert_eq!(
             complete::<tables::ArmyUpgradeGroups>(&views[7])[0].priority,
@@ -3274,8 +2963,9 @@ mod tests {
         );
         assert_eq!(produced.amount_raw, i64::MIN);
 
-        // The projected path must use those same full-width keys when looking
-        // up an encoder baseline, including all three produced key components.
+        // Daily detail projections materialize their complete recovery rows,
+        // preserving the same full-width keys, including all three produced
+        // key components, even when a complete encoder baseline exists.
         let mut baseline = std::array::from_fn(|_| unavailable("not part of this fixture"));
         for (id, view) in TABLES.into_iter().zip(views) {
             baseline[id.index()] = view;
@@ -3294,9 +2984,14 @@ mod tests {
             .unwrap();
         let mut scratch = crate::projection::ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+        let original_inputs = captured.table_inputs(None);
         let inputs = captured.table_inputs(Some(&mut projection));
         for index in [2, 7, 8, 9, 10] {
-            assert!(matches!(inputs[index], TableInput::ComparedEqual(_)));
+            assert_eq!(inputs[index], original_inputs[index]);
+            assert!(matches!(
+                inputs[index],
+                TableInput::Sampled(TableView::Complete(_))
+            ));
         }
         captured.division_equipment.rows[0].template ^= 1;
         captured.groups.rows[0].priority ^= 1;
@@ -3304,7 +2999,10 @@ mod tests {
         captured.deliveries.rows[0].progress_raw = None;
         captured.produced.rows[0].amount_raw ^= 1;
         let inputs = captured.table_inputs(Some(&mut projection));
+        let converted = captured.table_inputs(None);
         for index in [2, 7, 8, 9, 10] {
+            assert_eq!(inputs[index], converted[index]);
+            assert_ne!(inputs[index], original_inputs[index]);
             assert!(matches!(
                 inputs[index],
                 TableInput::Sampled(TableView::Complete(_))
@@ -3314,7 +3012,7 @@ mod tests {
 
     #[test]
     fn licences_and_deployment_conversion_keep_order_names_and_signed_extrema() {
-        let mut captured = Captured::with_capacities(&capacities(), &[0; N]);
+        let mut captured = Captured::with_capacities(&capacities());
         let line = 0x0000_00c8_0000_003f_u64;
         let conveyor = 0xfedc_ba98_0000_0040_u64;
         captured.licenses.outcome = Outcome::Rows { len: 2 };
@@ -3501,7 +3199,7 @@ mod tests {
 
     #[test]
     fn a_licence_handle_span_outside_the_arena_fails_only_its_own_table() {
-        let mut captured = Captured::with_capacities(&capacities(), &[0; N]);
+        let mut captured = Captured::with_capacities(&capacities());
         captured.license_records.outcome = Outcome::Rows { len: 1 };
         captured.license_records.rows[0] = cproduction_status::LicenseRecordRow {
             equipment_start: 1,
@@ -3515,304 +3213,9 @@ mod tests {
         assert!(matches!(views[11], TableView::Complete(_)));
     }
 
-    /// The four deployment tables share one traversal, one consistency window
-    /// and one name arena, so a queue that moves between the two passes must
-    /// fail all four and a changed name alone must fail them too.
-    #[test]
-    fn a_changed_deployment_queue_fails_all_four_tables_and_a_changed_name_counts() {
-        use engine::{
-            carmy_manpower_values, ccountry, cdeployment_status as deployment, cequipment_variant,
-            cequipment_variant_pool, cgame_state, cmilitary_deployment,
-            cmilitary_deployment_conveyor as conveyor_layout, cmilitary_deployment_line,
-            cname_group_member, creferenced_division_template, memory::SliceMemory, msvc_string,
-        };
-        use std::cell::Cell;
-
-        const BASE: usize = 0x1000;
-        const COUNTRY: usize = 0x3000;
-        const STATUS: usize = 0x4000;
-        const QUEUE: usize = 0x4100;
-        const CONVEYOR: usize = 0x5000;
-        const LINE_ARRAY: usize = 0x5200;
-        const LINE: usize = 0x6000;
-        const NAME_OBJECT: usize = 0x6200;
-        const DEPLOYMENT: usize = 0x7000;
-        const TEMPLATE: usize = 0x7600;
-
-        fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
-            bytes[address - BASE..address - BASE + value.len()].copy_from_slice(value);
-        }
-        fn array(bytes: &mut [u8], header: usize, data: usize, count: u32) {
-            put(bytes, header, &(data as u64).to_le_bytes());
-            put(bytes, header + 8, &count.to_le_bytes());
-            put(bytes, header + 12, &count.to_le_bytes());
-        }
-
-        let mut bytes = vec![0_u8; 0x8000];
-        array(&mut bytes, BASE + cgame_state::COUNTRIES, 0x2000, 3);
-        array(&mut bytes, BASE + cgame_state::COUNTRY_LINKS, 0x2100, 3);
-        for slot in [1, 2] {
-            put(
-                &mut bytes,
-                0x2000 + slot * 8,
-                &(COUNTRY as u64).to_le_bytes(),
-            );
-            put(&mut bytes, 0x2100 + slot * 4, &1_u32.to_le_bytes());
-        }
-        put(
-            &mut bytes,
-            COUNTRY,
-            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(&mut bytes, COUNTRY + ccountry::ID, &2_u32.to_le_bytes());
-        put(
-            &mut bytes,
-            COUNTRY + ccountry::DEPLOYMENT_MANAGER,
-            &(STATUS as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            STATUS,
-            &(deployment::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            STATUS + deployment::OWNER,
-            &(COUNTRY as u64).to_le_bytes(),
-        );
-        array(&mut bytes, STATUS + deployment::CONVEYORS, QUEUE, 1);
-        put(&mut bytes, QUEUE, &(CONVEYOR as u64).to_le_bytes());
-        put(
-            &mut bytes,
-            CONVEYOR,
-            &(conveyor_layout::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            CONVEYOR + conveyor_layout::TYPE,
-            &0x0000_0001_0000_0040_u64.to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            CONVEYOR + conveyor_layout::TEMPLATE,
-            &(TEMPLATE as u64).to_le_bytes(),
-        );
-        put(&mut bytes, CONVEYOR + conveyor_layout::NAME, b"Panzer\0");
-        put(
-            &mut bytes,
-            CONVEYOR + conveyor_layout::NAME + msvc_string::LENGTH,
-            &6_u64.to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            CONVEYOR + conveyor_layout::NAME + msvc_string::CAPACITY,
-            &15_u64.to_le_bytes(),
-        );
-        array(&mut bytes, CONVEYOR + conveyor_layout::LINES, LINE_ARRAY, 1);
-        put(&mut bytes, LINE_ARRAY, &(LINE as u64).to_le_bytes());
-        put(
-            &mut bytes,
-            TEMPLATE,
-            &(creferenced_division_template::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            TEMPLATE + creferenced_division_template::TYPE,
-            &0x0000_0021_0000_0034_u64.to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            LINE,
-            &(cmilitary_deployment_line::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            LINE + cmilitary_deployment_line::TYPE,
-            &0x0000_0002_0000_003f_u64.to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            LINE + cmilitary_deployment_line::NAME,
-            &(NAME_OBJECT as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            LINE + cmilitary_deployment_line::DEPLOYMENT,
-            &(DEPLOYMENT as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            LINE + cmilitary_deployment_line::PARENT,
-            &(CONVEYOR as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            NAME_OBJECT,
-            &(cname_group_member::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            NAME_OBJECT + cname_group_member::OVERRIDE_NAME + msvc_string::LENGTH,
-            &0_u64.to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            NAME_OBJECT + cname_group_member::OVERRIDE_NAME + msvc_string::CAPACITY,
-            &msvc_string::INLINE_CAPACITY.to_le_bytes(),
-        );
-        put(&mut bytes, NAME_OBJECT + cname_group_member::FLAG_A, &[1]);
-        put(
-            &mut bytes,
-            DEPLOYMENT,
-            &(cmilitary_deployment::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            DEPLOYMENT + cmilitary_deployment::SECONDARY_VTABLE,
-            &(cmilitary_deployment::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            DEPLOYMENT + cmilitary_deployment::EQUIPMENT_POOL,
-            &(cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            DEPLOYMENT + cmilitary_deployment::OWNING_LINE,
-            &(LINE as u64).to_le_bytes(),
-        );
-        for offset in [
-            cmilitary_deployment::MANPOWER_HAVE,
-            cmilitary_deployment::MANPOWER_NEED,
-        ] {
-            put(
-                &mut bytes,
-                DEPLOYMENT + offset,
-                &(carmy_manpower_values::VTABLE_RVA as u64).to_le_bytes(),
-            );
-        }
-        let _ = cequipment_variant::VTABLE_RVA;
-
-        /// Flips one byte of the conveyor's training word on the second pass.
-        struct ChangingTraining<'a> {
-            bytes: &'a [u8],
-            copies: Cell<usize>,
-        }
-        impl Memory for ChangingTraining<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if !(SliceMemory {
-                    base: BASE,
-                    bytes: self.bytes,
-                })
-                .copy(address, output)
-                {
-                    return false;
-                }
-                if address == DEPLOYMENT && output.len() >= 8 {
-                    let copies = self.copies.get();
-                    self.copies.set(copies + 1);
-                }
-                if address == DEPLOYMENT + cmilitary_deployment::TRAINING && self.copies.get() > 1 {
-                    output[0] ^= 1;
-                }
-                true
-            }
-        }
-
-        let mut captured = Captured::with_capacities(&capacities(), &[0; N]);
-        let stable = SliceMemory {
-            base: BASE,
-            bytes: &bytes,
-        };
-        let (matched, _) = captured.acquire(
-            &stable,
-            0,
-            BASE,
-            &[true; N],
-            Sources {
-                first: &[],
-                first_outcome: Outcome::Rows { len: 0 },
-                second: &[],
-                second_outcome: Outcome::Rows { len: 0 },
-            },
-            0,
-            true,
-        );
-        assert_eq!(&matched[12..16], &[true; 4]);
-        assert_eq!(captured.conveyors.outcome, Outcome::Rows { len: 1 });
-
-        let mut captured = Captured::with_capacities(&capacities(), &[0; N]);
-        let changing = ChangingTraining {
-            bytes: &bytes,
-            copies: Cell::new(0),
-        };
-        let (matched, _) = captured.acquire(
-            &changing,
-            0,
-            BASE,
-            &[true; N],
-            Sources {
-                first: &[],
-                first_outcome: Outcome::Rows { len: 0 },
-                second: &[],
-                second_outcome: Outcome::Rows { len: 0 },
-            },
-            0,
-            true,
-        );
-        // Only the line row's own word moved, so the shared traversal reports the
-        // mismatch on the line table alone and leaves the other three matched.
-        assert_eq!(&matched[12..16], &[true, false, true, true]);
-        assert_eq!(&captured.checked_mismatches()[12..16], &[0, 1, 0, 0]);
-        assert!(matches!(
-            captured.tables()[13],
-            TableView::Unavailable { .. }
-        ));
-        for index in [12, 14, 15] {
-            assert!(
-                matches!(captured.tables()[index], TableView::Complete(_)),
-                "{index}"
-            );
-        }
-
-        // A conveyor array whose header is torn between the two passes fails
-        // every dependent table rather than publishing a shorter queue.
-        let mut broken = bytes.clone();
-        put(
-            &mut broken,
-            STATUS + deployment::CONVEYORS + 12,
-            &2_u32.to_le_bytes(),
-        );
-        let mut captured = Captured::with_capacities(&capacities(), &[0; N]);
-        let (matched, _) = captured.acquire(
-            &SliceMemory {
-                base: BASE,
-                bytes: &broken,
-            },
-            0,
-            BASE,
-            &[true; N],
-            Sources {
-                first: &[],
-                first_outcome: Outcome::Rows { len: 0 },
-                second: &[],
-                second_outcome: Outcome::Rows { len: 0 },
-            },
-            0,
-            true,
-        );
-        assert_eq!(&matched[12..16], &[false; 4]);
-        for index in 12..16 {
-            assert!(
-                matches!(captured.outcomes()[index], Outcome::Unavailable { .. }),
-                "{index}"
-            );
-        }
-    }
-
     #[test]
     fn a_conveyor_name_outside_the_arena_fails_only_its_own_table() {
-        let mut captured = Captured::with_capacities(&capacities(), &[0; N]);
+        let mut captured = Captured::with_capacities(&capacities());
         captured.conveyors.outcome = Outcome::Rows { len: 1 };
         captured.conveyors.rows[0] = cdeployment_status::ConveyorRow {
             handle: 1,
@@ -3829,7 +3232,7 @@ mod tests {
 
     #[test]
     fn a_line_custom_name_outside_the_arena_fails_only_its_own_table() {
-        let mut captured = Captured::with_capacities(&capacities(), &[0; N]);
+        let mut captured = Captured::with_capacities(&capacities());
         captured.conveyors.outcome = Outcome::Rows { len: 0 };
         captured.deployment_lines.outcome = Outcome::Rows { len: 1 };
         captured.deployment_lines.rows[0] = cdeployment_status::LineRow {
@@ -3846,11 +3249,11 @@ mod tests {
 
     #[test]
     fn arenas_preserve_bytes_and_native_ordinals_and_refuse_out_of_bounds_spans() {
-        let mut captured = Captured::with_capacities(&capacities(), &[0; N]);
-        captured.definition_bytes.first[..4].copy_from_slice(&[0xff, 0, 0x80, b'A']);
-        captured.definition_bytes.len = 4;
-        captured.definitions.outcome = Outcome::Rows { len: 1 };
-        captured.definitions.rows[0] = cequipment_variant::DefinitionRow {
+        let mut captured = Captured::with_capacities(&capacities());
+        captured.variants.definition_bytes.first[..4].copy_from_slice(&[0xff, 0, 0x80, b'A']);
+        captured.variants.definition_bytes.len = 4;
+        captured.variants.definitions.outcome = Outcome::Rows { len: 1 };
+        captured.variants.definitions.rows[0] = cequipment_variant::DefinitionRow {
             identity: cequipment_variant::Row {
                 id: u64::MAX,
                 equipment_token: u32::MAX,
@@ -3863,10 +3266,10 @@ mod tests {
             variant_name: TextSpan { start: 2, len: 0 },
             equipment_name: TextSpan { start: 2, len: 2 },
         };
-        captured.module_bytes.first[..2].copy_from_slice(&[0xff, 0]);
-        captured.module_bytes.len = 2;
-        captured.modules.outcome = Outcome::Rows { len: 2 };
-        captured.modules.rows[0] = equipment_module_container::Row {
+        captured.variants.module_bytes.first[..2].copy_from_slice(&[0xff, 0]);
+        captured.variants.module_bytes.len = 2;
+        captured.variants.modules.outcome = Outcome::Rows { len: 2 };
+        captured.variants.modules.rows[0] = equipment_module_container::Row {
             variant: u64::MAX,
             source_ordinal: 7,
             slot: 3,
@@ -3874,15 +3277,15 @@ mod tests {
             definition_active: 0xfe,
             definition_name: TextSpan { start: 0, len: 2 },
         };
-        captured.modules.rows[1] = equipment_module_container::Row {
+        captured.variants.modules.rows[1] = equipment_module_container::Row {
             source_ordinal: 1,
             slot: 9,
-            ..captured.modules.rows[0]
+            ..captured.variants.modules.rows[0]
         };
-        captured.upgrade_bytes.first[0] = 0xff;
-        captured.upgrade_bytes.len = 1;
-        captured.upgrades.outcome = Outcome::Rows { len: 1 };
-        captured.upgrades.rows[0] = cequipment_upgrades_instance::Row {
+        captured.variants.upgrade_bytes.first[0] = 0xff;
+        captured.variants.upgrade_bytes.len = 1;
+        captured.variants.upgrades.outcome = Outcome::Rows { len: 1 };
+        captured.variants.upgrades.rows[0] = cequipment_upgrades_instance::Row {
             variant: u64::MAX,
             source_ordinal: u32::MAX,
             definition_token: i32::MIN,
@@ -3915,7 +3318,7 @@ mod tests {
             (i32::MIN, u8::MAX)
         );
         assert_eq!(upgrade.definition_name, [0xff]);
-        captured.modules.rows[0].definition_name = TextSpan {
+        captured.variants.modules.rows[0].definition_name = TextSpan {
             start: usize::MAX,
             len: 2,
         };
@@ -3933,85 +3336,60 @@ mod tests {
     }
 
     #[test]
-    fn complete_census_is_distinct_from_a_readable_prefix_or_a_changed_empty_parent_set() {
-        let destination = [10usize, 20];
-        let truncated = Outcome::Truncated {
-            len: 2,
-            unread_rows: 1,
-        };
+    fn complete_census_distinguishes_empty_success_invalid_count_and_source_fault() {
+        let source = [10usize, 20];
         assert_eq!(
-            complete_source(&destination, truncated),
+            complete_source(
+                &source,
+                Outcome::Truncated {
+                    len: 2,
+                    unread_rows: 1
+                }
+            ),
             Err("source census incomplete")
         );
         assert_eq!(
-            complete_source(&destination, Outcome::Rows { len: 3 }),
+            complete_source(&source, Outcome::Rows { len: 3 }),
             Err("source row count exceeds acquired buffer")
         );
-        assert!(sources_changed(Ok(&[10usize][..]), Ok(&[20usize][..])));
-        assert!(!sources_changed(Ok(&[] as &[usize]), Ok(&[])));
-        assert!(complete_source(&destination, truncated).is_err());
         assert_eq!(
-            complete_source(&destination, Outcome::Rows { len: 0 }),
+            complete_source(&source, Outcome::Rows { len: 0 }),
             Ok(&[][..])
         );
-        let mut rows = CaptureRows::<u32>::new(2, 0);
-        let mut arena = Arena::new(2, 0);
+        let mut rows = CaptureRows::<u32>::new(2);
+        let mut arena = Arena::new(2);
         let mut calls = 0;
-        assert!(!capture_text(
-            &mut rows,
-            &mut arena,
-            true,
-            Err("failed census"),
-            Err("failed census"),
-            |_, _, _| {
-                calls += 1;
-                unreachable!()
-            }
-        ));
+        capture_text(&mut rows, &mut arena, Err("failed census"), |_, _, _| {
+            calls += 1;
+            unreachable!()
+        });
         assert_eq!(calls, 0);
         assert_eq!(
-            outcome(&rows),
+            rows.outcome,
             Outcome::Unavailable {
                 reason: "failed census"
             }
         );
+        assert_eq!((arena.len, arena.required), (0, 0));
     }
 
     #[test]
-    fn upgrade_tables_require_complete_stable_division_sources_independently() {
-        let mut bytes = vec![0_u8; 0x3000];
-        let army = 0x1000;
-        let group = 0x2000;
-        for (address, value) in [
-            (
-                army + engine::carmy::REQUESTS,
-                (group - carmy_upgrades_requests::IN_ARMY_REQUESTS) as u64,
-            ),
-            (group, carmy_upgrades_requests::VTABLE_RVA as u64),
-            (
-                group + carmy_upgrades_requests::PERSISTENT_SUBOBJECT,
-                carmy_upgrades_requests::PERSISTENT_VTABLE_RVA as u64,
-            ),
-            (group + carmy_upgrades_requests::ARMY, army as u64),
-        ] {
-            bytes[address..address + 8].copy_from_slice(&value.to_le_bytes());
+    fn division_details_require_a_complete_current_source_before_reading() {
+        struct Unreadable;
+        impl Memory for Unreadable {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("incomplete census must not reach live detail reads")
+            }
         }
-        let memory = engine::memory::SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        };
-        let first = [cequipment_variant_pool::DivisionSource {
-            pointer: army,
+        let source = [cequipment_variant_pool::DivisionSource {
+            pointer: 0x1000,
             division: 0x1234_0000_001a,
             template: 1,
             country: 7,
         }];
-        let mut second = first;
-        second[0].template = 2;
-        let mut captured = Captured::with_capacities(&capacities(), &[0; N]);
-        let mut needed = [false; N];
-        needed[7..11].fill(true);
-        for (failed, reason) in [
+        let mut captured = Captured::with_capacities(&capacities());
+        captured.rest_raw_mode = true;
+        for (outcome, reason) in [
             (
                 Outcome::Unavailable {
                     reason: "division parent unreadable",
@@ -4025,137 +3403,114 @@ mod tests {
                 },
                 "source census incomplete",
             ),
+            (
+                Outcome::Rows { len: 2 },
+                "source row count exceeds acquired buffer",
+            ),
         ] {
             captured.reset();
-            let (matched, _) = captured.acquire(
-                &memory,
+            captured.acquire(
+                &Unreadable,
                 0,
                 0,
-                &needed,
                 Sources {
-                    first: &first,
-                    first_outcome: failed,
-                    second: &first,
-                    second_outcome: failed,
+                    rows: &source,
+                    outcome,
                 },
                 0,
                 true,
             );
-            assert_eq!(&matched[7..11], &[false; 4]);
-            assert_eq!(
-                &captured.outcomes()[7..11],
-                &[Outcome::Unavailable { reason }; 4]
-            );
-        }
-        // Equipment has finished checking. Each upgrade table still rejects
-        // a changed parent census even when its own emitted children are empty.
-        for table in 7..11 {
-            captured.reset();
-            needed.fill(false);
-            needed[table] = true;
-            let (matched, _) = captured.acquire(
-                &memory,
-                0,
-                0,
-                &needed,
-                Sources {
-                    first: &first,
-                    first_outcome: Outcome::Rows { len: 1 },
-                    second: &second,
-                    second_outcome: Outcome::Rows { len: 1 },
-                },
-                0,
-                true,
-            );
-            assert!(!matched[table]);
-            assert_eq!(captured.checked_mismatches()[table], 1);
-            assert!(matches!(
-                captured.tables()[table],
-                TableView::Unavailable { .. }
-            ));
-            assert_eq!(captured.checked_mismatches()[2], 0);
-            for other in (7..11).filter(|&other| other != table) {
-                assert_eq!(captured.checked_mismatches()[other], 0);
-                assert!(matches!(captured.outcomes()[other], Outcome::Rows { .. }));
+            for index in [2, 7, 8, 9, 10] {
+                assert_eq!(captured.outcomes()[index], Outcome::Unavailable { reason });
             }
         }
     }
 
     #[test]
-    fn changed_text_fails_consistency_and_truncation_grows_off_thread() {
-        let mut rows = CaptureRows::<u32>::new(2, 0);
-        let mut arena = Arena::new(2, 0);
-        let mut value = 0;
-        assert!(!capture_text(
-            &mut rows,
-            &mut arena,
-            true,
-            Ok(&[]),
-            Ok(&[]),
-            |_, rows, arena| {
-                rows[0] = 7;
-                arena[0] = value;
-                value += 1;
-                TextOutcome {
-                    outcome: Outcome::Rows { len: 1 },
-                    bytes_len: 1,
-                    required_bytes: 1,
-                }
+    fn text_capture_keeps_first_bytes_and_primary_truncation_grows_off_thread() {
+        let mut rows = CaptureRows::<u32>::new(2);
+        let mut arena = Arena::new(2);
+        let mut calls = 0;
+        capture_text(&mut rows, &mut arena, Ok(&[]), |_, rows, arena| {
+            calls += 1;
+            rows[0] = 7;
+            arena[0] = 0xff;
+            TextOutcome {
+                outcome: Outcome::Rows { len: 1 },
+                bytes_len: 1,
+                required_bytes: 1,
             }
-        ));
-        assert_eq!(checked_mismatches(&rows), 1);
-        assert!(matches!(outcome(&rows), Outcome::Unavailable { .. }));
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(rows.rows[0], 7);
+        assert_eq!(arena.first[0], 0xff);
+        assert_eq!(rows.outcome, Outcome::Rows { len: 1 });
         let mut capacities = capacities();
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let mut captured = Captured::with_capacities(&capacities);
         captured.stockpiles.outcome = Outcome::Truncated {
             len: 2,
             unread_rows: 5,
         };
         captured.stockpiles.rows[0].ordinal = 0;
         captured.stockpiles.rows[1].ordinal = 1;
-        captured.module_bytes.required = 33;
+        captured.variants.module_bytes.required = 33;
         assert!(matches!(
             captured.tables()[1],
             TableView::Truncated { missing: 5, .. }
         ));
-        captured.grow(&mut capacities, &[0; N]);
-        assert!(captured.stockpiles.rows.len() >= 7);
-        assert!(captured.stockpiles.second.len() >= 7);
-        assert!(captured.module_bytes.first.len() >= 33);
+        captured.grow(&mut capacities);
+        assert!(
+            captured.stockpiles.rows.len() >= 7 && captured.variants.module_bytes.first.len() >= 33
+        );
         let allocated = captured.allocated_bytes();
-        captured.grow(&mut capacities, &[crate::sampling::CONSISTENCY_TARGET; N]);
-        assert!(captured.groups.second.is_empty() && captured.produced.second.is_empty());
-        assert!(captured.module_bytes.second.is_empty());
-        assert!(captured.allocated_bytes() < allocated);
+        captured.reset();
+        captured.grow(&mut capacities);
+        assert_eq!(captured.allocated_bytes(), allocated);
     }
 
     #[test]
-    fn each_table_stops_comparison_reads_without_waiting_for_variant_checks() {
-        let mut rows = CaptureRows::<u64>::new(2, 0);
-        let mut calls = 0;
-        assert!(!capture_rows(&mut rows, false, |rows| {
-            calls += 1;
-            rows[0] = 70;
-            Outcome::Rows { len: 1 }
-        }));
-        assert_eq!(calls, 1);
-        assert!(!rows.checked);
+    fn variant_loan_retains_buffers_and_adopts_worker_growth() {
         let mut capacities = capacities();
-        let mut successful = [crate::sampling::CONSISTENCY_TARGET; N];
-        successful[4] -= 1;
-        successful[8] -= 1;
-        let mut captured = Captured::with_capacities(&capacities, &successful);
-        assert!(captured.lines.second.is_empty() && captured.stockpiles.second.is_empty());
-        assert!(captured.division_equipment.second.is_empty());
-        assert!(!captured.requests.second.is_empty() && !captured.groups.second.is_empty());
-        assert!(!captured.modules.second.is_empty());
-        successful[8] += 1;
-        captured.grow(&mut capacities, &successful);
-        assert!(captured.requests.second.is_empty() && captured.groups.second.is_empty());
-        assert!(!captured.modules.second.is_empty());
-        successful[4] += 1;
-        captured.grow(&mut capacities, &successful);
-        assert!(captured.modules.second.is_empty());
+        let mut captured = Captured::with_capacities(&capacities);
+        let before = captured.allocated_bytes();
+        let mut variants = captured.take_variants();
+        assert_eq!(captured.variants.allocated_bytes(), 0);
+        assert_eq!(
+            captured.allocated_bytes() + variants.allocated_bytes(),
+            before
+        );
+        variants.definitions.rows.resize(33, Default::default());
+        variants.module_bytes.first.resize(65, 0);
+        let row_capacity = variants.definitions.rows.capacity();
+        let byte_capacity = variants.module_bytes.first.capacity();
+        variants.fail("variant worker stopped", 0, true);
+        captured.restore_variants(variants);
+        assert!(captured.outcomes()[3..7].iter().all(|outcome| {
+            *outcome
+                == Outcome::Unavailable {
+                    reason: "variant worker stopped",
+                }
+        }));
+        let allocated = captured.allocated_bytes();
+        captured.grow(&mut capacities);
+        assert_eq!(capacities.rows[3], row_capacity);
+        assert_eq!(capacities.module_bytes, byte_capacity);
+        assert_eq!(captured.allocated_bytes(), allocated);
+        let mut variants = captured.take_variants();
+        variants.fail("variant worker stopped", 0, false);
+        captured.restore_variants(variants);
+        for (index, table) in TABLES.iter().enumerate().take(7).skip(3) {
+            assert_eq!(
+                captured.outcomes()[index],
+                Outcome::Unavailable {
+                    reason: if replay::cadence::should_walk(*table, 0, false) {
+                        "variant worker stopped"
+                    } else {
+                        replay::cadence::SKIPPED_REASON
+                    }
+                }
+            );
+        }
     }
 
     #[test]
@@ -4168,8 +3523,7 @@ mod tests {
         };
         let capacities = kit::capacities();
         let direct = kit::direct(&memory, &capacities);
-        let (split, report, _) = kit::split(&memory, &capacities);
-        assert_eq!(report.matched, [true; 8]);
+        let (split, _, _) = kit::split(&memory, &capacities);
         kit::assert_matches_direct(&split, &direct);
         assert_eq!(split.lines.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.stockpiles.outcome, Outcome::Rows { len: 1 });
@@ -4208,7 +3562,6 @@ mod tests {
         ProductionRestCopyContext {
             base: 0,
             game_state: production_rest_test_kit::BASE,
-            needed: [true; 8],
         }
     }
 
@@ -4221,36 +3574,60 @@ mod tests {
             base: kit::BASE,
             bytes: &bytes,
         };
-        assert!(
-            copy_production_rest_refresh(&initial, fixture_plan_context(), &mut job, None).raw_ok
-        );
+        assert!(copy_production_rest_refresh(&initial, fixture_plan_context(), &mut job).raw_ok);
         assert!(!job.census.is_empty());
         job.log.prepare_read_plan();
         let cost = kit::PLINE + cproduction_line::COST - kit::BASE;
         bytes[cost..cost + 8].copy_from_slice(&999_i64.to_le_bytes());
-        let memory = PlanFixtureMemory {
+        let memory = engine::memory::CountedMemory::new(PlanFixtureMemory {
             bytes: &bytes,
             calls: Default::default(),
             fail: None,
-        };
-        let report = copy_production_rest_refresh(&memory, fixture_plan_context(), &mut job, None);
+        });
+        let native = read_accounting::Capture::new();
+        let report = copy_production_rest_refresh(&memory, fixture_plan_context(), &mut job);
+        let planned_counts = native.finish();
         assert!(report.raw_ok && !report.plan_failed);
         assert!(job.log.planned_capture_succeeded());
         assert!(
             job.census.is_empty(),
             "complete plan must skip the discovery producer"
         );
-        let planned_calls = memory.calls.take();
+        let planned_calls = memory.0.calls.take();
+        let mut expected_counts = read_accounting::ZERO;
+        expected_counts[TABLES[0].index()] = engine::memory::ReadCounts {
+            plan_calls: 1,
+            spans: planned_calls.iter().filter(|&&(_, len)| len != 0).count() as u64,
+            bytes: planned_calls.iter().map(|&(_, len)| len as u64).sum(),
+            ..engine::memory::ReadCounts::ZERO
+        };
+        assert!(expected_counts[TABLES[0].index()].spans > 0);
+        assert_eq!(planned_counts, expected_counts);
         let mut canonical = ProductionRestJob::new();
-        let fresh =
-            copy_production_rest_refresh(&memory, fixture_plan_context(), &mut canonical, None);
+        let native = read_accounting::Capture::new();
+        let fresh = copy_production_rest_refresh(&memory, fixture_plan_context(), &mut canonical);
+        let canonical_counts = native.finish();
         assert!(fresh.raw_ok);
-        assert_eq!(planned_calls, memory.calls.take());
+        assert_eq!(planned_calls, memory.0.calls.take());
+        let canonical_work = canonical_counts[TABLES[0].index()];
+        assert_eq!(canonical_work.plan_calls, 0);
+        assert_eq!(
+            canonical_work.spans,
+            planned_counts[TABLES[0].index()].spans
+        );
+        assert_eq!(
+            canonical_work.bytes,
+            planned_counts[TABLES[0].index()].bytes
+        );
+        expected_counts[TABLES[0].index()] = canonical_work;
+        assert_eq!(canonical_counts, expected_counts);
         assert!(job.log.logs_equal(&canonical.log));
         let capacities = kit::capacities();
-        let direct = kit::direct(&memory, &capacities);
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let direct = kit::direct(&memory.0, &capacities);
+        let mut captured = Captured::with_capacities(&capacities);
+        let native = read_accounting::Capture::new();
         captured.decode_production_rest_payload(0, kit::BASE, &job, &mut [0; 8]);
+        assert_eq!(native.finish(), read_accounting::ZERO);
         kit::assert_matches_direct(&captured, &direct);
         assert_eq!(captured.lines.rows[0].cost_raw, 999);
     }
@@ -4264,9 +3641,7 @@ mod tests {
             base: kit::BASE,
             bytes: &bytes,
         };
-        assert!(
-            copy_production_rest_refresh(&initial, fixture_plan_context(), &mut job, None).raw_ok
-        );
+        assert!(copy_production_rest_refresh(&initial, fixture_plan_context(), &mut job).raw_ok);
         job.log.prepare_read_plan();
         let next_variant = kit::BASE + bytes.len();
         let identity = bytes[kit::VARIANT - kit::BASE..kit::VARIANT - kit::BASE + 16].to_vec();
@@ -4279,8 +3654,7 @@ mod tests {
                 calls: Default::default(),
                 fail,
             };
-            let report =
-                copy_production_rest_refresh(&memory, fixture_plan_context(), &mut job, None);
+            let report = copy_production_rest_refresh(&memory, fixture_plan_context(), &mut job);
             assert!(report.raw_ok && !report.plan_failed);
             assert!(
                 !job.census.is_empty(),
@@ -4289,7 +3663,7 @@ mod tests {
             let planned_calls = memory.calls.take();
             let mut canonical = ProductionRestJob::new();
             let fresh =
-                copy_production_rest_refresh(&memory, fixture_plan_context(), &mut canonical, None);
+                copy_production_rest_refresh(&memory, fixture_plan_context(), &mut canonical);
             assert!(fresh.raw_ok && !fresh.plan_failed);
             assert_eq!(
                 planned_calls,
@@ -4303,60 +3677,6 @@ mod tests {
                 job.log.prepare_read_plan();
             }
         }
-    }
-
-    #[test]
-    fn production_plans_keep_cold_passes_independent() {
-        use super::production_rest_test_kit as kit;
-        struct Changing<'a> {
-            bytes: &'a [u8],
-            cost_reads: std::cell::Cell<u32>,
-        }
-        impl Memory for Changing<'_> {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                if !(engine::memory::SliceMemory {
-                    base: kit::BASE,
-                    bytes: self.bytes,
-                })
-                .copy(address, destination)
-                {
-                    return false;
-                }
-                if address == kit::PLINE + cproduction_line::COST {
-                    let next = self.cost_reads.get() + 1;
-                    self.cost_reads.set(next);
-                    destination[..8].copy_from_slice(&i64::from(next).to_le_bytes());
-                }
-                true
-            }
-        }
-        let bytes = kit::fixture();
-        let initial = engine::memory::SliceMemory {
-            base: kit::BASE,
-            bytes: &bytes,
-        };
-        let mut first = ProductionRestJob::new();
-        let mut second = ProductionRestJob::new();
-        let ctx = fixture_plan_context();
-        let report = copy_production_rest_refresh(&initial, ctx, &mut first, Some(&mut second));
-        assert!(report.raw_ok);
-        first.log.prepare_read_plan();
-        second.log.prepare_read_plan();
-        let changing = Changing {
-            bytes: &bytes,
-            cost_reads: Default::default(),
-        };
-        let report = copy_production_rest_refresh(&changing, ctx, &mut first, Some(&mut second));
-        assert!(report.raw_ok && !report.plan_failed);
-        assert!(first.log.planned_capture_succeeded() && second.log.planned_capture_succeeded());
-        assert!(first.census.is_empty() && second.census.is_empty());
-        assert_eq!(
-            changing.cost_reads.get(),
-            4,
-            "each independent pass observes both country aliases in the fixture"
-        );
-        assert!(!report.matched[0]);
-        assert_eq!(&report.matched[1..], &[true; 7]);
     }
 
     #[test]
@@ -4385,31 +3705,21 @@ mod tests {
                 license_handles: 64,
             };
             let direct = kit::direct(&memory, &capacities);
-            let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+            let mut captured = Captured::with_capacities(&capacities);
             let ctx = ProductionRestCopyContext {
                 base: 0,
                 game_state: kit::BASE,
-                needed: [true; 8],
             };
             let mut first = ProductionRestJob::new();
-            let mut second = ProductionRestJob::new();
-            let report = crate::extended::production::copy_production_rest_refresh(
-                &memory,
-                ctx,
-                &mut first,
-                Some(&mut second),
-            );
-            captured.apply_production_rest_report(ctx.needed, &report);
+            let report =
+                crate::extended::production::copy_production_rest_refresh(&memory, ctx, &mut first);
             assert!(report.raw_ok, "rows={rows:?}");
-            assert_eq!(report.matched, [true; 8], "rows={rows:?}");
             captured.rest_raw_mode = true;
             let divisions = Sources {
-                first: &[],
-                first_outcome: Outcome::Rows { len: 0 },
-                second: &[],
-                second_outcome: Outcome::Rows { len: 0 },
+                rows: &[],
+                outcome: Outcome::Rows { len: 0 },
             };
-            let _ = captured.acquire(&memory, 0, kit::BASE, &[true; N], divisions, 0, true);
+            let _ = captured.acquire(&memory, 0, kit::BASE, divisions, 0, true);
             let mut ticks = [0u64; 8];
             captured.decode_production_rest_payload(0, kit::BASE, &first, &mut ticks);
             kit::assert_matches_direct(&captured, &direct);
@@ -4434,98 +3744,27 @@ mod tests {
             license_handles: 0,
         };
         let direct = kit::direct(&memory, &capacities);
-        let (split, report, _) = {
-            let mut captured = Captured::with_capacities(&capacities, &[0; N]);
+        let (split, _, _) = {
+            let mut captured = Captured::with_capacities(&capacities);
             let ctx = ProductionRestCopyContext {
                 base: 0,
                 game_state: kit::BASE,
-                needed: [true; 8],
             };
             let mut first = ProductionRestJob::new();
-            let mut second = ProductionRestJob::new();
-            let report = crate::extended::production::copy_production_rest_refresh(
-                &memory,
-                ctx,
-                &mut first,
-                Some(&mut second),
-            );
-            captured.apply_production_rest_report(ctx.needed, &report);
+            let report =
+                crate::extended::production::copy_production_rest_refresh(&memory, ctx, &mut first);
             assert!(report.raw_ok);
             captured.rest_raw_mode = true;
             let divisions = Sources {
-                first: &[],
-                first_outcome: Outcome::Rows { len: 0 },
-                second: &[],
-                second_outcome: Outcome::Rows { len: 0 },
+                rows: &[],
+                outcome: Outcome::Rows { len: 0 },
             };
-            let _ = captured.acquire(&memory, 0, kit::BASE, &[true; N], divisions, 0, true);
+            let _ = captured.acquire(&memory, 0, kit::BASE, divisions, 0, true);
             let mut ticks = [0u64; 8];
             captured.decode_production_rest_payload(0, kit::BASE, &first, &mut ticks);
             (captured, report, first)
         };
-        assert_eq!(report.matched, [true; 8]);
         kit::assert_matches_direct(&split, &direct);
-    }
-
-    #[test]
-    fn production_rest_double_copy_compare_blocks_checks_on_tearing() {
-        use super::production_rest_test_kit as kit;
-        let bytes = kit::fixture();
-        let memory = engine::memory::SliceMemory {
-            base: kit::BASE,
-            bytes: &bytes,
-        };
-        let capacities = kit::capacities();
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
-        let ctx = ProductionRestCopyContext {
-            base: 0,
-            game_state: kit::BASE,
-            needed: [true; 8],
-        };
-        let mut first = ProductionRestJob::new();
-        let mut second = ProductionRestJob::new();
-        let report = crate::extended::production::copy_production_rest_refresh(
-            &memory,
-            ctx,
-            &mut first,
-            Some(&mut second),
-        );
-        captured.apply_production_rest_report(ctx.needed, &report);
-        assert!(report.raw_ok);
-        assert_eq!(report.matched, [true; 8]);
-        // A torn conveyor amount between the passes changes the log.
-        let mut torn = bytes.clone();
-        torn[0x5000 + engine::cmilitary_deployment_conveyor::AMOUNT - kit::BASE] ^= 0xff;
-        let torn_memory = engine::memory::SliceMemory {
-            base: kit::BASE,
-            bytes: &torn,
-        };
-        let mut after = ProductionRestJob::new();
-        let mut after_torn = ProductionRestJob::new();
-        {
-            let mut log = crate::raw::RawLog::<8>::new(1 << 17, 8 << 20);
-            let _ = &mut log;
-        }
-        let ctx_none = ProductionRestCopyContext {
-            base: 0,
-            game_state: kit::BASE,
-            needed: [false; 8],
-        };
-        let mut c2 = Captured::with_capacities(&capacities, &[0; N]);
-        let r1 = crate::extended::production::copy_production_rest_refresh(
-            &memory, ctx_none, &mut after, None,
-        );
-        c2.apply_production_rest_report(ctx_none.needed, &r1);
-        assert!(r1.raw_ok);
-        let r2 = crate::extended::production::copy_production_rest_refresh(
-            &torn_memory,
-            ctx_none,
-            &mut after_torn,
-            None,
-        );
-        c2.apply_production_rest_report(ctx_none.needed, &r2);
-        assert!(r2.raw_ok);
-        assert!(!after.log.logs_equal(&after_torn.log));
     }
 
     #[test]
@@ -4536,12 +3775,9 @@ mod tests {
             base: kit::BASE,
             bytes: &bytes,
         };
-        let capacities = kit::capacities();
-        let mut captured = Captured::with_capacities(&capacities, &[0; N]);
         let ctx = ProductionRestCopyContext {
             base: 0,
             game_state: kit::BASE,
-            needed: [true; 8],
         };
         let mut tiny = ProductionRestJob {
             log: crate::raw::RawLog::new(8, 8),
@@ -4549,10 +3785,8 @@ mod tests {
             census: Vec::new(),
             capacity_charge: crate::raw_memory::Charge::default(),
         };
-        let report = crate::extended::production::copy_production_rest_refresh(
-            &memory, ctx, &mut tiny, None,
-        );
-        captured.apply_production_rest_report(ctx.needed, &report);
+        let report =
+            crate::extended::production::copy_production_rest_refresh(&memory, ctx, &mut tiny);
         assert!(!report.raw_ok);
         assert!(tiny.log.overflowed);
         assert!(tiny.grow_for_next());

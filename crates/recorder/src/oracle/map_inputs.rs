@@ -1,4 +1,4 @@
-//! Saved operands for the three hourly map input tables added in format20.
+//! Saved operands for the three hourly map input tables.
 use super::*;
 
 fn eq<T: PartialEq + std::fmt::Debug>(report: &mut Report, label: &str, actual: T, expected: T) {
@@ -151,8 +151,8 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
                 counter.roster_ordinal,
                 saved.roster_ordinal,
             );
-        } else if report.recorded_format.is_some_and(|f| f.version() >= 23) {
-            return Err(invalid("format23 ShipModels counter payload absent"));
+        } else {
+            return Err(invalid("ShipModels counter payload absent"));
         }
         let pool = saved
             .equipment
@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn new_map_tables_compare_saved_fields_and_keep_legacy_absence_not_applicable() {
+    fn map_tables_compare_saved_fields_and_preserve_source_failures() {
         let (mut frame, mut saved, _, _) = super::super::tests::fixture();
         let division = (1_u64 << 32) | 51;
         let ship = (2_u64 << 32) | 51;
@@ -306,18 +306,6 @@ mod tests {
                 .iter()
                 .any(|d| d.contains("roster_ordinal"))
         );
-        for format in [
-            FormatVersion::LEGACY_14,
-            FormatVersion::LEGACY_17,
-            FormatVersion::LEGACY_18,
-            FormatVersion::LEGACY_19,
-        ] {
-            let mut report = Report::default();
-            report.record_tables(&frame, format);
-            compare(&frame, &saved, &mut report);
-            assert!(report.differences.is_empty());
-            assert!(report.failed_comparisons.is_empty());
-        }
         saved.ships.get_mut(&ship).unwrap().equipment = None;
         let mut report = Report::default();
         compare(&frame, &saved, &mut report);

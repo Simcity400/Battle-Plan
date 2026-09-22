@@ -34,6 +34,8 @@ The collector may decode owned copies after the callback. Those copies must be s
 
 Keep cached plans and copied buffers within their proved lifetime. Reloadable defines, weather structures and mutable definitions are not automatically session-static. Reuse native inputs only when identity, ownership and invalidation are established.
 
+[read_plan.rs](src/read_plan.rs) executes fresh exact reads with ordered comparisons of the owned values that selected later addresses. The native executor uses compact checked descriptors; geometry outside that representation keeps the ordinary ordered executor. Hints run only after their selecting controls pass and never acquire a value. A stopped plan exposes its completed prefix and attempted failure so a producer can continue without rereading it. Bounds validation alone does not prove a plan's dependency coverage or object lifetime.
+
 Use the instrumentation present on the checked-out branch and its actual counter definitions. Do not count decoding an owned copy as another native read, or report synthetic fixture savings as measured gameplay speed.
 
 Test readers with the existing synthetic-memory fixtures, including aliases, invalid pointers, short reads and capacity limits. Run the local checks in [AGENTS.md](../../AGENTS.md); a new capture domain also needs collector/replay integration and an oracle comparison or an explicit limitation.

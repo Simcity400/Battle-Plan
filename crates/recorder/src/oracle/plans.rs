@@ -1,4 +1,4 @@
-//! Exact saved plan operands; each new table is independently format-gated.
+//! Exact saved plan operands; each table is compared independently.
 use super::*;
 
 fn eq<T: PartialEq + std::fmt::Debug>(report: &mut Report, label: &str, actual: T, expected: T) {
@@ -241,10 +241,5 @@ mod tests {
         fronts(&frame, &saved, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
         saved.plans.orders.remove(&(group, 2));
-        let mut legacy = Report::default();
-        legacy.record_tables(&frame, FormatVersion::LEGACY_18);
-        compare(&frame, &saved, &mut legacy);
-        assert!(legacy.differences.is_empty());
-        assert!(legacy.failed_comparisons.is_empty());
     }
 }

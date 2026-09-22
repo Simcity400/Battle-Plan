@@ -484,11 +484,13 @@ mod tests {
                         owner: 1,
                         controller: 1,
                         victory_points: hour - 103,
+                        ..Default::default()
                     }])),
                     TableView::Complete(TableRows::States(vec![StateRow {
                         id: 1,
                         owner: 1,
                         controller: 1,
+                        ..Default::default()
                     }])),
                     TableView::Complete(TableRows::Divisions(vec![DivisionRow {
                         id: (1_u64 << 32) | 4713,

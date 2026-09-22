@@ -1,6 +1,5 @@
-//! Shared typed acquisition buffers. Allocation and growth happen on the spool thread.
+//! Shared typed acquisition buffers. Growth runs off the game thread.
 
-use crate::sampling::{CONSISTENCY_TARGET, full_match, mismatches};
 use engine::walk::Outcome;
 use std::mem::size_of;
 
@@ -10,39 +9,54 @@ const UNAVAILABLE: Outcome = Outcome::Unavailable {
 
 pub struct CaptureRows<R> {
     pub rows: Vec<R>,
-    pub second: Vec<R>,
     pub outcome: Outcome,
-    pub mismatches: usize,
-    pub checked: bool,
+    // Terminal publication failures must not erase pressure observed before
+    // the failure. Keep complete-row pressure and truncated demand distinct.
+    failed_len: usize,
+    failed_required: usize,
 }
 
-impl<R: Default + Clone + PartialEq> CaptureRows<R> {
-    pub fn new(capacity: usize, successful: u16) -> Self {
+impl<R: Default + Clone> CaptureRows<R> {
+    pub fn new(capacity: usize) -> Self {
         Self {
             rows: vec![R::default(); capacity],
-            second: comparison_rows(capacity, successful),
             outcome: UNAVAILABLE,
-            mismatches: 0,
-            checked: false,
+            failed_len: 0,
+            failed_required: 0,
         }
     }
 
     pub fn reset(&mut self) {
         self.outcome = UNAVAILABLE;
-        self.mismatches = 0;
-        self.checked = false;
+        self.failed_len = 0;
+        self.failed_required = 0;
     }
 
-    pub fn compare(&mut self, second: Outcome) -> bool {
-        self.mismatches = mismatches(self.outcome, &self.rows, second, &self.second);
-        full_match(self.outcome, second, self.mismatches)
+    /// Hide partial rows while preserving their off-thread growth demand.
+    pub(crate) fn fail(&mut self, outcome: Outcome) {
+        debug_assert!(matches!(outcome, Outcome::Unavailable { .. }));
+        match self.outcome {
+            Outcome::Rows { len } => self.failed_len = self.failed_len.max(len),
+            Outcome::Truncated { len, unread_rows } => {
+                self.failed_required = self
+                    .failed_required
+                    .max(len.saturating_add(unread_rows as usize));
+            }
+            Outcome::Unavailable { .. } => {}
+        }
+        self.outcome = outcome;
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        (self.rows.capacity() + self.second.capacity()) * size_of::<R>()
+        self.rows.capacity() * size_of::<R>()
     }
 
-    pub fn grow(&mut self, capacity: &mut usize, successful: u16) {
+    pub fn grow(&mut self, capacity: &mut usize) {
+        if self.failed_len > 0 && self.failed_len >= capacity.saturating_sub(*capacity / 4) {
+            let required = capacity.saturating_add(1);
+            grow_capacity(capacity, required);
+        }
+        grow_capacity(capacity, self.failed_required);
         match self.outcome {
             Outcome::Rows { len } if len > 0 && len >= capacity.saturating_sub(*capacity / 4) => {
                 let required = capacity.saturating_add(1);
@@ -54,7 +68,6 @@ impl<R: Default + Clone + PartialEq> CaptureRows<R> {
             _ => {}
         }
         grow_vec(&mut self.rows, *capacity);
-        comparison(&mut self.second, *capacity, successful);
     }
 }
 
@@ -68,40 +81,22 @@ pub(crate) fn grow_capacity(capacity: &mut usize, required: usize) {
     }
 }
 
-pub(crate) fn comparison_rows<T: Default + Clone>(capacity: usize, successful: u16) -> Vec<T> {
-    if successful >= CONSISTENCY_TARGET {
-        Vec::new()
-    } else {
-        vec![T::default(); capacity]
-    }
-}
-
 pub(crate) fn grow_vec<T: Default + Clone>(rows: &mut Vec<T>, capacity: usize) {
     if rows.len() < capacity {
         rows.resize(capacity, T::default());
     }
 }
 
-pub(crate) fn comparison<T: Default + Clone>(rows: &mut Vec<T>, capacity: usize, successful: u16) {
-    if successful >= CONSISTENCY_TARGET {
-        *rows = Vec::new();
-    } else {
-        grow_vec(rows, capacity);
-    }
-}
-
 pub struct Arena<T> {
     pub first: Vec<T>,
-    pub second: Vec<T>,
     pub len: usize,
     pub required: usize,
 }
 
-impl<T: Default + Clone + PartialEq> Arena<T> {
-    pub fn new(capacity: usize, successful: u16) -> Self {
+impl<T: Default + Clone> Arena<T> {
+    pub fn new(capacity: usize) -> Self {
         Self {
             first: vec![T::default(); capacity],
-            second: comparison_rows(capacity, successful),
             len: 0,
             required: 0,
         }
@@ -112,28 +107,52 @@ impl<T: Default + Clone + PartialEq> Arena<T> {
         self.required = 0;
     }
 
-    pub fn compare(&mut self, second_len: usize, second_required: usize) -> bool {
-        let matched = self.len == second_len
-            && self.required == second_required
-            && self
-                .first
-                .get(..self.len)
-                .zip(self.second.get(..second_len))
-                .is_some_and(|(first, second)| first == second);
-        self.required = self.required.max(second_required);
-        matched
-    }
-
-    pub fn grow(&mut self, capacity: &mut usize, successful: u16) {
+    pub fn grow(&mut self, capacity: &mut usize) {
         grow_capacity(capacity, self.required);
         if self.len > 0 && self.len >= capacity.saturating_sub(*capacity / 4) {
             grow_capacity(capacity, capacity.saturating_add(1));
         }
         grow_vec(&mut self.first, *capacity);
-        comparison(&mut self.second, *capacity, successful);
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        (self.first.capacity() + self.second.capacity()) * size_of::<T>()
+        self.first.capacity() * size_of::<T>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_publication_retains_growth_demand_until_reset() {
+        for observed in [
+            Outcome::Rows { len: 6 },
+            Outcome::Truncated {
+                len: 2,
+                unread_rows: 19,
+            },
+        ] {
+            for initial_capacity in [8, 32] {
+                let mut actual = CaptureRows::<u8>::new(8);
+                let mut expected = CaptureRows::<u8>::new(8);
+                actual.outcome = observed;
+                expected.outcome = observed;
+                let unavailable = Outcome::Unavailable {
+                    reason: "accepted job failed",
+                };
+                actual.fail(unavailable);
+                actual.fail(unavailable);
+                assert_eq!(actual.outcome, unavailable);
+                let mut actual_capacity = initial_capacity;
+                let mut expected_capacity = initial_capacity;
+                actual.grow(&mut actual_capacity);
+                expected.grow(&mut expected_capacity);
+                assert_eq!(actual_capacity, expected_capacity);
+                assert_eq!(actual.rows.len(), expected.rows.len());
+                actual.reset();
+                assert_eq!((actual.failed_len, actual.failed_required), (0, 0));
+            }
+        }
     }
 }

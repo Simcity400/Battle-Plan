@@ -191,6 +191,9 @@ fn replace_status(temp: &Path, path: &Path) -> io::Result<()> {
 
 struct WorkerWork {
     buffer_service: Distribution,
+    idle_flush_calls: u64,
+    idle_flush_ns: u64,
+    idle_flush_max_ns: u64,
     status_update: Distribution,
     queue_peak_observed: usize,
     started_qpc: i64,
@@ -201,6 +204,9 @@ impl WorkerWork {
     fn new() -> Self {
         Self {
             buffer_service: Distribution::default(),
+            idle_flush_calls: 0,
+            idle_flush_ns: 0,
+            idle_flush_max_ns: 0,
             status_update: Distribution::default(),
             queue_peak_observed: 0,
             started_qpc: sampling::qpc(),
@@ -217,6 +223,15 @@ impl WorkerWork {
         }
         let fields = &mut status["spool_work"];
         fields["buffer_service"] = self.buffer_service.json();
+        fields["idle_flush"] = json!({
+            "calls": self.idle_flush_calls,
+            "total_ns": self.idle_flush_ns,
+            "max_ns": self.idle_flush_max_ns,
+            "mean_ns": self.idle_flush_ns.checked_div(self.idle_flush_calls).unwrap_or(0),
+        });
+        fields["idle_flush_scope"] = json!(
+            "spool-thread wall in Processor::flush after draining ready buffers; includes periodic durable synchronization; separate from buffer_service and status_update"
+        );
         fields["status_update"] = self.status_update.json();
         fields["queue_peak_observed"] = json!(self.queue_peak_observed);
         let elapsed_ns = ((sampling::qpc() - self.started_qpc).max(0) as u128 * 1_000_000_000
@@ -370,6 +385,8 @@ fn run(module: HMODULE) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let mut hook =
         unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }?;
+    let mut portrait_hooks = unsafe { crate::portrait_changes::Hooks::new(&memory, base) }?;
+    let mut advisor_hooks = unsafe { crate::advisor_changes::Hooks::new(&memory, base) }?;
     let shared = Arc::new(Shared::new(base, hook.trampoline(), frequency as u64));
     let acquisition = acquisition::Pool::start(
         crate::acquisition::recommended_worker_count(),
@@ -383,9 +400,6 @@ fn run(module: HMODULE) -> Result<(), String> {
         .set(acquisition)
         .map_err(|_| "acquisition pool already initialized".to_string())?;
     let _payload_pools = decode::prepare_payload_pools();
-    shared
-        .pool_bytes
-        .fetch_add(decode::eta_workspace_bytes(), Ordering::Relaxed);
     let spool_id = Arc::new(AtomicU32::new(0));
     if config.cancel_file.exists() || detach.signaled() {
         return Err("recording cancelled before hook installation".into());
@@ -405,7 +419,22 @@ fn run(module: HMODULE) -> Result<(), String> {
     SHARED.store(Arc::as_ptr(&shared).cast_mut(), Ordering::Release);
     let deadline = Instant::now() + Duration::from_secs(15);
     while installation_error.is_none() {
-        match hook.set_enabled(true) {
+        match advisor_hooks
+            .set_enabled(true)
+            .and_then(|ready| {
+                if ready {
+                    portrait_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
+            .and_then(|ready| {
+                if ready {
+                    hook.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            }) {
             Ok(true) => break,
             Ok(false) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
             error => {
@@ -417,9 +446,19 @@ fn run(module: HMODULE) -> Result<(), String> {
     if installation_error.is_none() {
         ready.set();
     }
-    while installation_error.is_none() && !detach.signaled() && !spool.is_finished() {
+    while installation_error.is_none()
+        && !detach.signaled()
+        && !spool.is_finished()
+        && !decode::worker_finished()
+        && !shared.acquisition_failed()
+    {
         std::thread::sleep(Duration::from_millis(20));
     }
+    // A callback may be waiting for a reusable frame. Cancel that wait before
+    // restoring the hook and waiting for ACTIVE to reach zero; recording stays
+    // enabled until every callback already in the relay has returned.
+    shared.cancel_buffer_wait.store(true, Ordering::Release);
+    let decode_stopped_early = installation_error.is_none() && decode::worker_finished();
     // Never unwind through an enabled or partially published detour.
     loop {
         match hook.set_enabled(false) {
@@ -436,17 +475,46 @@ fn run(module: HMODULE) -> Result<(), String> {
     let pe_offset = read::<u32>(&memory, module as usize + 0x3c).unwrap_or(0) as usize;
     let image_size = read::<u32>(&memory, module as usize + pe_offset + 0x50).unwrap_or(0) as usize;
     let [relay, trampoline] = hook.executable_ranges();
-    let ranges = [
+    let mut ranges = vec![
         module as usize..module as usize + image_size,
         relay,
         trampoline,
     ];
+    ranges.extend(portrait_hooks.executable_ranges());
+    ranges.extend(advisor_hooks.executable_ranges());
     while spool_id.load(Ordering::Acquire) == 0 {
         std::thread::yield_now();
     }
     let acquisition = shared.acquisition.get().expect("initialized before hook");
     let mut owned_workers = acquisition.thread_ids();
     owned_workers.extend([spool_id.load(Ordering::Acquire), decode::worker_id()]);
+    wait_quiet(&ranges, image_size, &owned_workers, &dll_path);
+    // Keep mutation observation intact until the last acquisition has finished.
+    // Then restore its hooks and drain callbacks that entered during restoration.
+    loop {
+        match portrait_hooks.set_enabled(false) {
+            Ok(true) => break,
+            result => {
+                let _ = fs::write(
+                    dll_path.with_file_name("collector.error.txt"),
+                    format!("portrait hook detach pending: {result:?}"),
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    loop {
+        match advisor_hooks.set_enabled(false) {
+            Ok(true) => break,
+            result => {
+                let _ = fs::write(
+                    dll_path.with_file_name("collector.error.txt"),
+                    format!("advisor hook detach pending: {result:?}"),
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
     wait_quiet(&ranges, image_size, &owned_workers, &dll_path);
     // Keep sampling until even callbacks already in the relay have returned.
     // A delayed restore therefore never silently stops recording hours.
@@ -458,7 +526,7 @@ fn run(module: HMODULE) -> Result<(), String> {
     // their pooled frames and hand off to the spool ready queue; the existing
     // spool drain below then consumes them in order. Undrainable items use the
     // existing LossBatch gap path with no new reason strings.
-    decode::detach_drain();
+    let decode_outcome = decode::detach_drain();
     // Callback writers are now quiescent. The spool thread can take the final loss batch.
     shared.stop_spool.store(true, Ordering::Release);
     let spool_outcome = spool
@@ -470,9 +538,26 @@ fn run(module: HMODULE) -> Result<(), String> {
     if let Err(error) = acquisition_outcome {
         add_terminal_error(&mut spool_result, error);
     }
+    if shared.acquisition_failed() {
+        add_terminal_error(
+            &mut spool_result,
+            "game-thread acquisition panicked; recording stopped after draining completed captures"
+                .into(),
+        );
+    }
+    if let Err(error) = decode_outcome {
+        add_terminal_error(&mut spool_result, error);
+    } else if decode_stopped_early {
+        add_terminal_error(
+            &mut spool_result,
+            "decode worker stopped before detach".into(),
+        );
+    }
     wait_quiet(&ranges, image_size, &[], &dll_path);
     SHARED.store(ptr::null_mut(), Ordering::Release);
     drop(hook);
+    drop(portrait_hooks);
+    drop(advisor_hooks);
     drop(shared);
     if let Some(error) = installation_error {
         add_terminal_error(&mut spool_result, error);
@@ -584,11 +669,24 @@ fn set_drain_status(status: &mut Value, result: &Result<(), String>) {
 /// for raw families is acquisition-only (workers may overlap); `decode_ns` lives here, so
 /// the two are not comparable across threads (PLAN-appendix
 /// apples-to-oranges).
+/// Per-frame read counters and processed-frame totals remain untouched here;
+/// asynchronously sampled live counters have a different observation cohort.
 fn add_decode_status(status: &mut Value) {
     if !status.is_object() {
         *status = json!({});
     }
     status["decode_work"] = decode::calibration_json();
+    status["portrait_changes"] = crate::portrait_changes::status();
+    status["advisor_changes"] = crate::advisor_changes::status();
+    #[cfg(feature = "callback_profile")]
+    {
+        status["callback_profile"] = crate::callback_profile::status();
+    }
+    #[cfg(feature = "advisor_profile")]
+    {
+        status["advisor_profile"] = crate::extended::characters::advisors::profile::status();
+    }
+    status["replay_format"] = json!(replay::FORMAT_VERSION);
     status["sample_boundary"] = json!(sampling::SAMPLE_BOUNDARY.name());
     let shared_ptr = SHARED.load(Ordering::Acquire);
     if !shared_ptr.is_null() {
@@ -599,6 +697,34 @@ fn add_decode_status(status: &mut Value) {
             "calls": shared.native_tick_calls.load(Ordering::Relaxed),
             "scope": "asynchronously sampled cumulative original hourly-tick (trampoline) wall time since attach, including engine waits; excludes the entry read, the collect wait and all acquisition; not a recorder-free baseline or CPU time",
         });
+        let eta = &shared.eta_inputs;
+        let load = |slot: &std::sync::atomic::AtomicU64| slot.load(Ordering::Relaxed);
+        let eta_hours = load(&eta.hours);
+        let eta_mean = |value: u64| value.checked_div(eta_hours).unwrap_or(0);
+        status["eta_inputs"] = json!({
+            "hours": eta_hours,
+            "walks": load(&eta.walks),
+            "divisions": load(&eta.divisions),
+            "legs": load(&eta.legs),
+            "graph_ns": load(&eta.graph_ns),
+            "scan_ns": load(&eta.scan_ns),
+            "other_ns": load(&eta.other_ns),
+            "graph_mean_ns": eta_mean(load(&eta.graph_ns)),
+            "scan_mean_ns": eta_mean(load(&eta.scan_ns)),
+            "other_mean_ns": eta_mean(load(&eta.other_ns)),
+            "divisions_mean": eta_mean(load(&eta.divisions)),
+            "legs_mean": eta_mean(load(&eta.legs)),
+            "geometry_hits": load(&eta.geometry_hits),
+            "geometry_misses": load(&eta.geometry_misses),
+            "static_hits": load(&eta.static_hits),
+            "static_misses": load(&eta.static_misses),
+            "static_cleared": load(&eta.static_cleared),
+            "state_modifier_requests": load(&eta.state_modifier_requests),
+            "state_modifier_hits": load(&eta.state_modifier_hits),
+            "air_defense_requests": load(&eta.air_defense_requests),
+            "air_defense_hits": load(&eta.air_defense_hits),
+            "scope": "cumulative DivisionEtaInputs acquisition since attach, one observation per sampled hour. graph = the per-division composed speed graph, scan = the per-leg route scan, other = the route copy and the prepared speed tail; they sum to the acquisition wall inside its owning worker, not to game-thread block. geometry hits/misses count province/adjacency lookups answered from the pass memo versus read from memory; static hits/misses are the session map memo (distance, crossing, flags, terrain), and static_cleared counts hours that dropped it after a reload or a new census",
+        });
         if let Some(acquisition) = shared.acquisition.get() {
             let world = acquisition.world_calibration();
             let calibration = acquisition.calibration();
@@ -606,37 +732,46 @@ fn add_decode_status(status: &mut Value) {
             let block_calls = shared.native_tick_calls.load(Ordering::Relaxed);
             let phase_calls = shared.phase_calls.load(Ordering::Relaxed);
             let phase_mean = |ns: u64| ns.checked_div(phase_calls).unwrap_or(0);
+            let join_wait_by_role = crate::acquisition_jobs::ROLES
+                .iter()
+                .zip(&shared.join_wait)
+                .filter_map(|(role, wait)| {
+                    let wait = wait.load(Ordering::Relaxed);
+                    (wait > 0).then(|| (format!("{role:?}"), json!(phase_mean(wait))))
+                })
+                .collect::<serde_json::Map<_, _>>();
             status["acquisition_work"] = json!({
                 "collect_wait_ns": block_ns,
                 "calls": block_calls,
                 "mean_ns": block_ns.checked_div(block_calls).unwrap_or(0),
-                "collect_scope": "cumulative game-thread block per hour running the acquisition body at the tick's entry, before the trampoline (the whole main-thread exposure, over every recording tick including drops). Drive mean under the render gap for 90%; its per-hour percentiles are callback_work (the same body wall)",
+                "buffer_wait_ns": shared.buffer_wait_ns.load(Ordering::Relaxed),
+                "buffer_wait_calls": shared.buffer_wait_calls.load(Ordering::Relaxed),
+                "buffer_wait_max_ns": shared.buffer_wait_max_ns.load(Ordering::Relaxed),
+                "buffer_wait_scope": "game-thread wall waiting for one of the four reusable capture buffers; included in collect_wait_ns and successful callback_work, not additional acquisition work; cancellation during detach or worker failure retains the existing explicit loss accounting",
+                "collect_scope": "cumulative game-thread wall from taking a reusable buffer through live acquisition at tick entry, before the trampoline, including buffer waits and failed or cancelled captures; successful-capture percentiles are in callback_work",
                 "block_phases": {
                     "calls": phase_calls,
                     "setup_mean_ns": phase_mean(shared.phase_setup_ns.load(Ordering::Relaxed)),
                     "parallel_mean_ns": phase_mean(shared.phase_parallel_ns.load(Ordering::Relaxed)),
                     "parallel_inline_walk_mean_ns": phase_mean(shared.phase_inline_walk_ns.load(Ordering::Relaxed)),
-                    "parallel_noneta_join_mean_ns": phase_mean(shared.phase_noneta_join_ns.load(Ordering::Relaxed)),
-                    "eta_mean_ns": phase_mean(shared.phase_eta_ns.load(Ordering::Relaxed)),
+                    "parallel_join_mean_ns": phase_mean(shared.phase_join_ns.load(Ordering::Relaxed)),
+                    "segments_mean_ns": shared.phase_segments.iter().map(|segment| phase_mean(segment.load(Ordering::Relaxed))).collect::<Vec<_>>(),
+                    "segments_scope": sampling::SEGMENTS_SCOPE,
+                    "join_wait_by_role_mean_ns": join_wait_by_role,
                     "residual_mean_ns": phase_mean(shared.phase_residual_ns.load(Ordering::Relaxed)),
                 },
-                "block_phases_scope": "disjoint game-thread wall means summing to the per-frame body wall: setup = frame reset, entry clock and the country snapshot (a serial dependency, must be first); parallel = dispatching the reader pool, the inline countries/links/provinces/states/wars/factions walks and every non-ETA join, all on this one thread so the inline walks do not overlap the pool; eta = the serial DivisionEta barrier loop (2 barriers when its window is closed, 4 while open); residual = unit/country verification and decode enqueue. parallel splits into parallel_inline_walk (the contiguous game-thread typed walks) and parallel_noneta_join (wall this thread spends joining the already-dispatched non-ETA pool jobs, including any job it runs inline while helping drain); their sum is a touch under parallel (dispatch and world-report application are the small remainder). The critical path is setup then the serial parallel work then the eta barriers then residual",
+                "block_phases_scope": "disjoint game-thread wall means summing to the recorded acquisition body: setup = reusable-frame wait, frame reset and country authentication; parallel = shared input acquisition, request dispatch, result installation and sequential job joins; residual = completion bookkeeping before decode enqueue. parallel_inline_walk is a subset of parallel outside joins, measured over the collection span; parallel_join counts sequential completion spans and may include execution of the exact awaited job. Their sum leaves dispatch and other work outside that span. Worker durations overlap this game-thread wall and must not be added. Reusable-frame wait is separately reported but already included in setup, collect_wait_ns and callback_work",
                 "panics": shared.acquisition_panics.load(Ordering::Relaxed),
                 "workers": calibration,
-                "eta_read_witness": calibration.eta_country_cache.read_witness,
-                "eta_read_witness_scope": "cumulative returned range captures, including both cold passes and later country-verification failures; includes callback execution of queued jobs; journal sizes are maximum bounded army-scope observations, not total allocated pool bytes",
-                "eta_stage_qpc_frequency": shared.frequency,
-                "eta_stage_scope": "cumulative QPC ticks and call counts; walk includes resolver and scope-verification spans; transport may include modifier spans; pass-final supply, transport, modifier, primary and cache verification spans are disjoint from walk and one another; supply/modifier fallbacks are counted but execute outside resolver spans",
                 "dispatch_ns": shared.acquisition_dispatch_ns.load(Ordering::Relaxed),
                 "join_wait_ns": shared.acquisition_wait_ns.load(Ordering::Relaxed),
-                "join_scope": "game-thread completion spans; they may include exact-target caller execution when the awaited request is queued and FIFO execution of other ready jobs while the awaited target is already running, so they are not pure waits",
+                "join_scope": "sequential game-thread completion spans including bookkeeping and possible exact-target caller execution when the awaited request is still queued; no unrelated queued job is executed by a join",
                 "table_costs_overlap": true,
-                "country_snapshot_scope": "one immutable country authentication snapshot shared with acquisition workers; production-rest acquires fresh country inputs for both its discovery builder and read plan; payload counted once in pool_bytes; preparation and final verification charged once to Countries after all joins; worker calibration reports the borrowed snapshot status",
-                "eta_cost_scope": "sum of range acquisition and verification work plus request handoff; ranges may overlap each other and other families; shared country preparation/verification charged to Countries; failed worker cost is unavailable",
+                "country_snapshot_scope": "one immutable country authentication snapshot shared with acquisition workers; production-rest acquires fresh country inputs for its discovery builder and validates its current read plan; payload counted once in pool_bytes; preparation charged once to Countries; worker calibration reports the borrowed snapshot status",
                 "world_country_cache": world.country_cache,
                 "world_acquisition_ns": shared.ns(i64::try_from(world.acquisition_ticks).unwrap_or(i64::MAX)),
                 "world_last_error": world.last_error,
-                "world_cost_scope": "hourly owned World job on any acquisition participant; includes staging attempts; shared country preparation/verification charged once to Countries; typed fallback table costs exclude discarded staging attempts; overlaps other jobs and acquisition work; panicked/stopped worker cost is unavailable",
+                "world_cost_scope": "hourly owned World job on any acquisition participant; includes staging attempts; shared country preparation charged once to Countries; typed fallback table costs exclude discarded staging attempts; overlaps other jobs and acquisition work; panicked/stopped worker cost is unavailable",
             });
         }
     }
@@ -652,12 +787,18 @@ fn wait_quiet(
     loop {
         let outcome = if image_size == 0 {
             Err("collector image size unreadable".to_string())
-        } else if ACTIVE.load(Ordering::SeqCst) != 0 {
+        } else if ACTIVE.load(Ordering::SeqCst) != 0
+            || crate::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0
+            || crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
+        {
             Ok(false)
         } else {
             Threads::open_excluding(excluded_threads).and_then(|mut threads| {
                 let quiet = threads.suspend().and_then(|()| {
-                    if ACTIVE.load(Ordering::SeqCst) != 0 {
+                    if ACTIVE.load(Ordering::SeqCst) != 0
+                        || crate::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0
+                        || crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
+                    {
                         Ok(false)
                     } else {
                         threads.contains_ip(ranges).map(|present| !present)
@@ -696,8 +837,6 @@ fn spool_loop(
     let mut capacities = sampling::INITIAL_CAPACITIES;
     let mut map_capacities = crate::map_capture::MapCapacities::default();
     let mut extended_capacities = crate::extended::Capacities::default();
-    let mut successful = [0; sampling::CONSISTENCY_TABLES.len()];
-    let mut extended_successful = [0; replay::frame::TABLE_COUNT];
     let mut last_warning = None;
     let mut drain_result = Ok(());
     let mut startup_unknown = 0_u64;
@@ -722,8 +861,8 @@ fn spool_loop(
             frame.total_ns = shared.ns(elapsed.unwrap());
             let before_bytes = frame.allocated_bytes();
             if !shared.roster_ready.load(Ordering::Acquire) {
-                // Any readable post-tick clock publishes the roster before its
-                // buffer. These early callbacks have no attributable post-tick
+                // A readable entry clock publishes the roster before its
+                // buffer. These early callbacks have no attributable
                 // hour; retain their count until a session identity can be written.
                 startup_unknown = startup_unknown
                     .saturating_add(1)
@@ -735,16 +874,7 @@ fn spool_loop(
                             .map(|loss| loss.count)
                             .sum::<u64>(),
                     );
-                let _ = shared.free.push(index);
-                unsafe {
-                    shared.grow_pool(
-                        &capacities,
-                        &map_capacities,
-                        successful,
-                        &extended_capacities,
-                        extended_successful,
-                    )
-                };
+                shared.recycle_frame(index);
                 work.buffer_service
                     .record_ticks(sampling::qpc() - service_started, shared.frequency);
                 continue;
@@ -796,10 +926,13 @@ fn spool_loop(
                         "dropped_frames":shared.dropped.load(Ordering::Relaxed),
                     }),
                 );
-                if shared.stop_spool.load(Ordering::Acquire) {
+                if shared.stop_spool.load(Ordering::Acquire) || shared.free.is_empty() {
+                    // A persistent open failure cannot release a frame. Once
+                    // all frames are occupied, end the worker so the loader
+                    // cancels the callback wait and restores the hook.
                     let _ = processor.detach();
                     return Err(format!(
-                        "cannot open campaign spool at detach; retained observations remain unwritten: {error}"
+                        "cannot open campaign spool at detach or exhausted frame pool; retained observations remain unwritten: {error}"
                     ));
                 }
                 std::thread::sleep(Duration::from_millis(100));
@@ -815,32 +948,31 @@ fn spool_loop(
                     last_warning = Some(error.to_string());
                 }
             }
-            if let Err(error) = processor.frame(frame) {
-                last_warning = Some(error.to_string());
+            // Conversion owns every value needed by encoding and diagnostics.
+            // Return the capture storage before potentially slow output, except
+            // when a retry must be published before that storage can be reused.
+            let pending_write = match processor.prepare_frame(frame) {
+                Ok(prepared) if prepared.allows_early_recycle() => Some(prepared),
+                Ok(prepared) => {
+                    if let Err(error) = processor.write_prepared(prepared) {
+                        last_warning = Some(error.to_string());
+                    }
+                    None
+                }
+                Err(error) => {
+                    last_warning = Some(error.to_string());
+                    None
+                }
+            };
+            if processor.take_retry_full() {
+                shared.force_next.store(true, Ordering::Release);
             }
             let previous_capacities = capacities;
             let previous_map_capacities = map_capacities;
             let previous_extended_capacities = extended_capacities;
-            let previous_extended_complete =
-                extended_successful.map(|count| count >= sampling::CONSISTENCY_TARGET);
-            let previous_complete = successful.map(|count| count >= sampling::CONSISTENCY_TARGET);
-            successful = frame.consistency_successful;
-            extended_successful = frame.extended_successful;
-            let extended_complete =
-                extended_successful.map(|count| count >= sampling::CONSISTENCY_TARGET);
-            let source_checks = crate::extended::Captured::source_checks(
-                &extended_complete.map(|complete| !complete),
-            );
-            let complete = successful.map(|count| count >= sampling::CONSISTENCY_TARGET);
             frame.grow(&mut capacities);
-            frame.map.grow(
-                &mut map_capacities,
-                &frame.consistency_successful[6..crate::sampling::PROVINCE_CHECK],
-                source_checks,
-            );
-            frame
-                .extended
-                .grow(&mut extended_capacities, &extended_successful);
+            frame.map.grow(&mut map_capacities);
+            frame.extended.grow(&mut extended_capacities);
             let after_bytes = frame.allocated_bytes();
             if after_bytes >= before_bytes {
                 shared
@@ -854,27 +986,18 @@ fn spool_loop(
             if previous_capacities != capacities
                 || previous_map_capacities != map_capacities
                 || previous_extended_capacities != extended_capacities
-                || previous_complete != complete
-                || previous_extended_complete != extended_complete
             {
-                // Grow every idle buffer under its queue-index lease, so a FIFO of
-                // old capacities does not repeat the same truncation for 256 hours.
+                // Grow every idle buffer under its queue-index lease so old
+                // capacities do not repeat the same truncation on later hours.
                 for _ in 0..shared.free.len() {
                     let Some(idle_index) = shared.free.pop() else {
                         break;
                     };
                     let idle = unsafe { &mut *shared.frames[idle_index].load(Ordering::Acquire) };
                     let old_bytes = idle.allocated_bytes();
-                    idle.consistency_successful = successful;
-                    idle.extended_successful = extended_successful;
                     idle.grow(&mut capacities);
-                    idle.map.grow(
-                        &mut map_capacities,
-                        &idle.consistency_successful[6..crate::sampling::PROVINCE_CHECK],
-                        source_checks,
-                    );
-                    idle.extended
-                        .grow(&mut extended_capacities, &extended_successful);
+                    idle.map.grow(&mut map_capacities);
+                    idle.extended.grow(&mut extended_capacities);
                     let new_bytes = idle.allocated_bytes();
                     if new_bytes >= old_bytes {
                         shared
@@ -885,25 +1008,29 @@ fn spool_loop(
                             .pool_bytes
                             .fetch_sub((old_bytes - new_bytes) as u64, Ordering::Relaxed);
                     }
-                    let _ = shared.free.push(idle_index);
+                    shared.recycle_frame(idle_index);
                 }
             }
-            let _ = shared.free.push(index);
-            unsafe {
-                shared.grow_pool(
-                    &capacities,
-                    &map_capacities,
-                    successful,
-                    &extended_capacities,
-                    extended_successful,
-                )
-            };
+            shared.recycle_frame(index);
             work.buffer_service
                 .record_ticks(sampling::qpc() - service_started, shared.frequency);
+            // No reference to the recycled frame survives this point. Complete
+            // this write before preparing another frame or flushing: comparison
+            // tokens belong to the current encoder baseline.
+            if let Some(prepared) = pending_write
+                && let Err(error) = processor.write_prepared(prepared)
+            {
+                last_warning = Some(error.to_string());
+            }
         }
+        let flush_started = sampling::qpc();
         if let Err(error) = processor.flush() {
             last_warning = Some(error.to_string());
         }
+        let flush_ns = shared.ns(sampling::qpc() - flush_started);
+        work.idle_flush_calls += 1;
+        work.idle_flush_ns = work.idle_flush_ns.saturating_add(flush_ns);
+        work.idle_flush_max_ns = work.idle_flush_max_ns.max(flush_ns);
         if reported.elapsed() >= Duration::from_secs(1) || shared.stop_spool.load(Ordering::Acquire)
         {
             let status_started = sampling::qpc();
@@ -915,7 +1042,7 @@ fn spool_loop(
             });
             status["session"] = json!(session.id);
             status["pool_bytes"] = json!(shared.pool_bytes.load(Ordering::Relaxed));
-            status["pool_buffers"] = json!(shared.pool_buffers.load(Ordering::Relaxed));
+            status["pool_buffers"] = json!(sampling::BUFFERS);
             status["dropped_frames"] = json!(shared.dropped.load(Ordering::Relaxed));
             status["startup_unattributed_callbacks"] = json!(startup_unknown);
             status["drain_complete"] = json!(false);
@@ -973,7 +1100,7 @@ fn spool_loop(
             status["state"] = json!("detaching");
             status["session"] = json!(session.id);
             status["pool_bytes"] = json!(shared.pool_bytes.load(Ordering::Relaxed));
-            status["pool_buffers"] = json!(shared.pool_buffers.load(Ordering::Relaxed));
+            status["pool_buffers"] = json!(sampling::BUFFERS);
             status["dropped_frames"] = json!(shared.dropped.load(Ordering::Relaxed));
             status["drain_complete"] = json!(false);
             if let Some(error) = &last_warning {
@@ -1074,10 +1201,19 @@ mod tests {
 
     #[test]
     fn decode_status_merge_is_additive_and_keeps_existing_keys() {
-        let mut status = json!({"state": "recording", "hours": 3});
+        let mut status = json!({
+            "state": "recording", "hours": 3,
+            "table_reads_recorded": true, "table_reads_frames": 3,
+            "table_reads": [{"bytes": 42}], "table_total_reads": [{"bytes": 123}],
+        });
         add_decode_status(&mut status);
         assert_eq!(status["state"], "recording");
         assert_eq!(status["hours"], 3);
+        assert_eq!(status["replay_format"], replay::FORMAT_VERSION);
+        assert_eq!(status["table_reads_recorded"], true);
+        assert_eq!(status["table_reads_frames"], 3);
+        assert_eq!(status["table_reads"][0]["bytes"], 42);
+        assert_eq!(status["table_total_reads"][0]["bytes"], 123);
         assert_eq!(
             status["decode_work"]["relations_tables"][0],
             "RelationOpinions"

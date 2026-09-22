@@ -26,9 +26,6 @@ pub(crate) fn read(memory: &impl Memory, base: usize, pointer: usize) -> Result<
         is_convoy: field(memory, pointer, 8)?,
         target_group_member_count: field(memory, pointer, 0xc)?,
     };
-    if field::<u8>(memory, pointer, 0x10)? != present {
-        return Err("last-target optional changed");
-    }
     Ok(row)
 }
 
@@ -38,35 +35,30 @@ mod tests {
     #[test]
     fn absent_optional_does_not_read_inactive_storage_and_signed_count_survives() {
         let mut bytes = [0u8; 24];
-        assert_eq!(
-            read(
-                &crate::memory::SliceMemory {
-                    base: 0x1000,
-                    bytes: &bytes
-                },
-                0,
-                0x1000
-            ),
-            Ok(Row::default())
-        );
+        let memory = crate::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let census = crate::read_census::ReadCensus::new(&memory);
+        assert_eq!(read(&census, 0, 0x1000), Ok(Row::default()));
+        assert_eq!((census.calls(), census.bytes()), (1, 1));
         bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
         bytes[8] = 0xfe;
         bytes[0xc..0x10].copy_from_slice(&i32::MIN.to_le_bytes());
         bytes[0x10] = 1;
+        let memory = crate::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let census = crate::read_census::ReadCensus::new(&memory);
         assert_eq!(
-            read(
-                &crate::memory::SliceMemory {
-                    base: 0x1000,
-                    bytes: &bytes
-                },
-                0,
-                0x1000
-            ),
+            read(&census, 0, 0x1000),
             Ok(Row {
                 present: 1,
                 is_convoy: 0xfe,
                 target_group_member_count: i32::MIN
             })
         );
+        assert_eq!((census.calls(), census.bytes()), (4, 14));
     }
 }

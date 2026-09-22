@@ -39,14 +39,7 @@ fn with_identity<T>(
     {
         return Err("navy identity or owner mismatch");
     }
-    let value = consume()?;
-    if read::<u64>(memory, navy) != Some(primary)
-        || read::<u64>(memory, secondary_at) != Some(secondary)
-        || read::<u32>(memory, owner_at) != Some(owner)
-    {
-        return Err("navy identity changed");
-    }
-    Ok(value)
+    consume()
 }
 
 /// E90910 resolves the owning navy's +10 tag without reading its regional operand.
@@ -68,18 +61,26 @@ pub(crate) fn regional_operand(
     country: ccountry::Country,
     region: u32,
 ) -> Result<i64, &'static str> {
+    let array = regional_inputs(memory, base, state, navy, country)?;
+    let at = array
+        .element(region, 8)
+        .ok_or("navy regional operand outside array")?;
+    read::<i64>(memory, at).ok_or("navy regional operand unreadable")
+}
+
+/// Current authenticated array geometry; callers may share it only inside the
+/// same frozen acquisition, and must still read each requested region's value.
+pub(crate) fn regional_inputs(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    navy: usize,
+    country: ccountry::Country,
+) -> Result<Array, &'static str> {
     with_identity(memory, base, state, navy, country, || {
         let root = navy
             .checked_add(REGIONAL_OPERANDS)
             .ok_or("navy regional root overflow")?;
-        let array = Array::read(memory, root, 8).ok_or("navy regional array invalid")?;
-        let at = array
-            .element(region, 8)
-            .ok_or("navy regional operand outside array")?;
-        let value = read::<i64>(memory, at).ok_or("navy regional operand unreadable")?;
-        if Array::read(memory, root, 8) != Some(array) {
-            return Err("navy regional array changed");
-        }
-        Ok(value)
+        Array::read(memory, root, 8).ok_or("navy regional array invalid")
     })
 }

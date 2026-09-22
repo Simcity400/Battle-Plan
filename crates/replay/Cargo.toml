@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 crc32fast = "1"
+engine = { path = "../engine" }
 zstd = "0.13"
 
 [target.'cfg(windows)'.dependencies]

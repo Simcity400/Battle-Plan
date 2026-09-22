@@ -3,7 +3,6 @@
 use crate::{
     BranchId, Hour, KEYFRAME_INTERVAL,
     codec::{Decoder, invalid, put_string},
-    format::FormatVersion,
     rows::{self, DeltaRow, TableId, TableRows, TableSchema},
 };
 use std::{
@@ -51,8 +50,10 @@ pub struct DecodedFrame {
     pub metrics: Metrics,
 }
 
-/// Encoder-only input. Compared rows were freshly sampled and compared exactly
-/// with this encoder's complete baseline; this is not a skipped acquisition.
+/// Encoder-only input. Compared rows describe the current acquisition boundary
+/// and were compared exactly with this encoder's complete baseline. The producer
+/// may certify owned data through complete mutation observation; carrying older
+/// unchecked values does not satisfy this contract.
 /// Decoders and the wire format continue to use only `TableView`/`TableUpdate`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TableInput {
@@ -62,6 +63,14 @@ pub enum TableInput {
     /// its row-validation/equality result; enclosing-hour checks still run.
     SharedComplete(Arc<TableRows>),
     ComparedEqual(BaselineToken),
+    /// Every current key matches its baseline position, and every omitted row
+    /// was compared exactly with data certified for this boundary. Only differing rows own
+    /// new replay storage. Membership changes require a complete input.
+    ComparedChanges {
+        token: BaselineToken,
+        indices: Vec<usize>,
+        rows: TableRows,
+    },
 }
 
 impl From<TableView> for TableInput {
@@ -80,6 +89,15 @@ pub struct BaselineToken {
     branch: BranchId,
     hour: Hour,
     baseline: Hour,
+    row_updates: bool,
+}
+
+impl BaselineToken {
+    /// Shared recovery snapshots and tables with cross-row constraints cannot
+    /// be edited through sparse replacements.
+    pub fn allows_row_updates(self) -> bool {
+        self.row_updates
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,6 +147,27 @@ pub struct Frame {
     pub keyframe: bool,
     pub metrics: Metrics,
     pub tables: [TableUpdate; TABLE_COUNT],
+}
+
+/// Validated frame bytes produced without allocating an intermediate delta for
+/// each changed row. Its private payload cannot be modified by a spool caller.
+pub struct EncodedFrame {
+    pub(crate) branch: BranchId,
+    pub(crate) hour: Hour,
+    pub(crate) keyframe: bool,
+    pub(crate) bytes: Vec<u8>,
+}
+
+impl EncodedFrame {
+    // Reserve the spool envelope once; finalizing it needs neither another
+    // allocation nor a copy of the encoded frame.
+    pub(crate) const PREFIX_BYTES: usize = crate::spool::RECORD_HEADER_BYTES + 1;
+    pub fn decode(&self) -> io::Result<Frame> {
+        let mut input = Decoder::new(&self.bytes[Self::PREFIX_BYTES..]);
+        let frame = Frame::decode(&mut input)?;
+        input.finish()?;
+        Ok(frame)
+    }
 }
 
 fn put_count(out: &mut Vec<u8>, n: usize) -> io::Result<()> {
@@ -198,6 +237,16 @@ fn validate_singleton(table: TableId, rows: &TableRows, hour: Hour) -> io::Resul
 }
 
 impl Frame {
+    pub fn encoded(&self) -> io::Result<EncodedFrame> {
+        let mut bytes = vec![0; EncodedFrame::PREFIX_BYTES];
+        self.encode(&mut bytes)?;
+        Ok(EncodedFrame {
+            branch: self.branch,
+            hour: self.hour,
+            keyframe: self.keyframe,
+            bytes,
+        })
+    }
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
         self.encode_with_sizes(out).map(|_| ())
     }
@@ -211,13 +260,15 @@ impl Frame {
         out.extend_from_slice(&self.hour.to_le_bytes());
         out.push(u8::from(self.keyframe));
         out.extend_from_slice(&self.metrics.total_ns.to_le_bytes());
-        for ns in self.metrics.table_ns {
-            out.extend_from_slice(&ns.to_le_bytes());
+        // Timing entries and updates use the same table-id order.
+        for table in TableId::ALL {
+            out.extend_from_slice(&self.metrics.table_ns[table.index()].to_le_bytes());
         }
         out.extend_from_slice(&self.metrics.pool_bytes.to_le_bytes());
         out.extend_from_slice(&self.metrics.dropped_frames.to_le_bytes());
         let mut sizes = [0; TABLE_COUNT];
-        for (table, update) in TableId::ALL.into_iter().zip(&self.tables) {
+        for table in TableId::ALL {
+            let update = &self.tables[table.index()];
             let table_start = out.len();
             if self.keyframe
                 && !matches!(
@@ -279,19 +330,15 @@ impl Frame {
         Ok(sizes)
     }
 
-    /// `format` is the version of the file this payload came out of. A frame
-    /// carries exactly one timing entry and one update per table that version
-    /// recorded, and those tables are the leading entries of `TableId::ALL`,
-    /// so an older version is decoded by reading a shorter prefix.
-    pub fn decode(input: &mut Decoder<'_>, format: FormatVersion) -> io::Result<Self> {
-        Self::decode_selected(input, format, None)
+    /// Read one timing entry and one update for every recorded table.
+    pub fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        Self::decode_selected(input, None)
     }
 
     /// Parse and validate every update, retaining only the requested tables.
     /// Discarding unrelated rows immediately bounds their allocation lifetime.
     pub(crate) fn decode_selected(
         input: &mut Decoder<'_>,
-        format: FormatVersion,
         selected: Option<&[TableId]>,
     ) -> io::Result<Self> {
         let branch = input.u64()?;
@@ -299,8 +346,8 @@ impl Frame {
         let keyframe = input.bool()?;
         let total_ns = input.u64()?;
         let mut table_ns = [0; TABLE_COUNT];
-        for ns in &mut table_ns[..format.recorded_tables()] {
-            *ns = input.u64()?;
+        for table in TableId::ALL {
+            table_ns[table.index()] = input.u64()?;
         }
         let metrics = Metrics {
             total_ns,
@@ -309,16 +356,16 @@ impl Frame {
             dropped_frames: input.u64()?,
         };
         let mut tables = Vec::with_capacity(TABLE_COUNT);
-        for table in TableId::ALL.into_iter().take(format.recorded_tables()) {
+        for table in TableId::ALL {
             let update = match input.u8()? {
-                0 => TableUpdate::Snapshot(decode_rows(table, input, format)?),
+                0 => TableUpdate::Snapshot(decode_rows(table, input)?),
                 1 => {
                     let baseline = input.i32()?;
                     let count = decode_row_count(table, input, table.minimum_delta_bytes())?;
                     let mut changed = Vec::with_capacity(count);
                     let mut previous_key = 0;
                     for _ in 0..count {
-                        let row = rows::decode_delta_version(table, previous_key, input, format)?;
+                        let row = rows::decode_delta(table, previous_key, input)?;
                         previous_key = row.key;
                         changed.push(row);
                     }
@@ -346,7 +393,7 @@ impl Frame {
                         return Err(invalid("truncated table has no missing rows"));
                     }
                     TableUpdate::Truncated {
-                        rows: decode_rows(table, input, format)?,
+                        rows: decode_rows(table, input)?,
                         missing,
                     }
                 }
@@ -375,15 +422,6 @@ impl Frame {
                 }
             });
         }
-        // A table the file's version predates is reported through the same
-        // unavailable path a table the collector could not read takes, so every
-        // consumer already states it instead of drawing it.
-        let missing = format.missing_reason();
-        while tables.len() < TABLE_COUNT {
-            tables.push(TableUpdate::Unavailable {
-                reason: missing.clone(),
-            });
-        }
         Ok(Self {
             branch,
             hour,
@@ -399,57 +437,9 @@ fn encode_rows(table: TableId, values: &TableRows, out: &mut Vec<u8>) -> io::Res
     put_count(out, values.len())?;
     values.encode_rows(out)
 }
-fn decode_rows(
-    table: TableId,
-    input: &mut Decoder<'_>,
-    format: FormatVersion,
-) -> io::Result<TableRows> {
-    // Format25 extends the land combat-window operand rows in place: details
-    // rows gain a per-side HQ unit inside the nested sides blob, and division
-    // rows gain three trailing scalars (U32, I32, U8) under a 5-byte mask.
-    if table == TableId::LandCombatDetails && format.version() < 25 {
-        let count = decode_row_count(table, input, table.minimum_row_bytes())?;
-        let values = rows::decode_legacy_land_combat_details(count, input)?;
-        validate_rows(table, &values)?;
-        return Ok(values);
-    }
-    if table == TableId::Fleets && format.version() < 27 {
-        let count = decode_row_count(table, input, table.minimum_row_bytes() - 1)?;
-        let values = rows::decode_legacy_fleets(count, input)?;
-        validate_rows(table, &values)?;
-        return Ok(values);
-    }
-    if table == TableId::DivisionStatus && format.version() < 27 {
-        let count = decode_row_count(table, input, table.minimum_row_bytes() - 1)?;
-        let values = rows::decode_legacy_division_status(count, input)?;
-        validate_rows(table, &values)?;
-        return Ok(values);
-    }
-    if table == TableId::RaidProvinces && format.version() < 29 {
-        // Without the trailing list count and offer count, four bytes each.
-        let count = decode_row_count(table, input, table.minimum_row_bytes() - 8)?;
-        let values = rows::decode_legacy_raid_provinces(count, input)?;
-        validate_rows(table, &values)?;
-        return Ok(values);
-    }
-    if table == TableId::LandCombatDivisions && format.version() < 25 {
-        let count = decode_row_count(table, input, table.minimum_row_bytes() - 9)?;
-        let values = rows::decode_legacy_land_combat_divisions(count, input)?;
-        validate_rows(table, &values)?;
-        return Ok(values);
-    }
-    let legacy = table == TableId::ShipModels && format.version() < 23;
-    let minimum = if legacy {
-        table.minimum_row_bytes() - 4
-    } else {
-        table.minimum_row_bytes()
-    };
-    let count = decode_row_count(table, input, minimum)?;
-    let values = if legacy {
-        rows::decode_legacy_ship_models(count, input)?
-    } else {
-        table.decode_rows(count, input)?
-    };
+fn decode_rows(table: TableId, input: &mut Decoder<'_>) -> io::Result<TableRows> {
+    let count = decode_row_count(table, input, table.minimum_row_bytes())?;
+    let values = table.decode_rows(count, input)?;
     validate_rows(table, &values)?;
     Ok(values)
 }
@@ -524,6 +514,7 @@ pub struct FrameEncoder {
     keyframe_hour: Option<Hour>,
     identity: u64,
     revision: u64,
+    deleted: Vec<u8>,
 }
 
 impl Default for FrameEncoder {
@@ -533,6 +524,7 @@ impl Default for FrameEncoder {
             state: Baselines::default(),
             keyframe_hour: None,
             revision: 0,
+            deleted: Vec::new(),
             identity: NEXT_ID
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
                 .expect("encoder identity space exhausted"),
@@ -593,56 +585,95 @@ impl FrameEncoder {
                 branch,
                 hour,
                 baseline: *baseline,
+                row_updates: matches!(values, BaselineRows::Owned(_))
+                    && T::ID != TableId::Countries
+                    && !crate::cadence::is_staggered(T::ID),
             },
             values.as_ref().rows::<T>()?,
         ))
     }
 
-    fn complete_update(
-        &self,
+    fn encode_complete(
+        &mut self,
         table: TableId,
         values: &TableRows,
         hour: Hour,
         keyframe: bool,
-    ) -> io::Result<TableUpdate> {
+        output: &mut Vec<u8>,
+    ) -> io::Result<bool> {
         validate_complete(table, values, hour)?;
-        Ok(
-            match self.state.tables[table.index()]
-                .as_ref()
-                .filter(|_| !keyframe)
-            {
-                None => TableUpdate::Snapshot(values.clone()),
-                Some((baseline, previous)) if values == previous.as_ref() => {
-                    // Both typed slices have passed complete validation. Avoid a
-                    // keyed merge for an idle table, regardless of row ownership.
-                    TableUpdate::Unchanged {
-                        baseline: *baseline,
-                    }
-                }
-                Some((baseline, previous)) => {
-                    let (changed, deleted) = values.diff(previous.as_ref())?;
-                    if changed.is_empty() && deleted.is_empty() {
-                        TableUpdate::Unchanged {
-                            baseline: *baseline,
-                        }
-                    } else {
-                        TableUpdate::Delta {
-                            baseline: *baseline,
-                            changed,
-                            deleted,
-                        }
-                    }
-                }
-            },
-        )
+        let Some((baseline, previous)) = self.state.tables[table.index()]
+            .as_ref()
+            .filter(|_| !keyframe)
+        else {
+            output.push(0);
+            put_count(output, values.len())?;
+            values.encode_rows(output)?;
+            return Ok(false);
+        };
+        let start = output.len();
+        if values != previous.as_ref() {
+            output.push(1);
+            output.extend_from_slice(&baseline.to_le_bytes());
+            if values.encode_changes(previous.as_ref(), output, &mut self.deleted)? {
+                return Ok(false);
+            }
+            output.truncate(start);
+        }
+        output.push(2);
+        output.extend_from_slice(&baseline.to_le_bytes());
+        Ok(true)
     }
 
-    /// Segment recovery must call with force_keyframe; it may never reuse a failed write's delta.
+    fn validate_comparison(
+        &self,
+        token: BaselineToken,
+        table: TableId,
+        branch: BranchId,
+        hour: Hour,
+        keyframe: bool,
+    ) -> io::Result<()> {
+        if keyframe
+            || token.encoder != self.identity
+            || token.revision != self.revision
+            || table == TableId::Clock
+            || token.table != table
+            || token.branch != branch
+            || token.hour != hour
+            || self
+                .state
+                .last_hour
+                .and_then(|previous| previous.checked_add(1))
+                != Some(hour)
+            || self.state.tables[table.index()]
+                .as_ref()
+                .map(|entry| entry.0)
+                != Some(token.baseline)
+        {
+            return Err(invalid(
+                "compared table does not name the current complete baseline",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Materialize an editable frame for callers that need its decoded updates.
+    /// Recording uses encode_bytes directly and never performs this decoding.
     pub fn encode(&mut self, source: DecodedFrame, force_keyframe: bool) -> io::Result<Frame> {
         self.encode_input(source.into(), force_keyframe)
     }
 
     pub fn encode_input(&mut self, source: FrameInput, force_keyframe: bool) -> io::Result<Frame> {
+        self.encode_bytes(source, force_keyframe)?.decode()
+    }
+
+    /// Segment recovery forces a keyframe. Baselines commit only after all input
+    /// tables have been validated and encoded successfully into the owned payload.
+    pub fn encode_bytes(
+        &mut self,
+        source: FrameInput,
+        force_keyframe: bool,
+    ) -> io::Result<EncodedFrame> {
         let new_branch = self.state.branch != Some(source.branch);
         if !new_branch && self.state.last_hour.is_some_and(|hour| hour >= source.hour) {
             return Err(invalid("frame hour did not advance on its branch"));
@@ -652,9 +683,20 @@ impl FrameEncoder {
             .checked_add(1)
             .ok_or_else(|| invalid("encoder revision space exhausted"))?;
         let keyframe = self.needs_keyframe(source.branch, source.hour, force_keyframe);
-        let mut tables = Vec::with_capacity(TABLE_COUNT);
-        for (table, view) in TableId::ALL.into_iter().zip(&source.tables) {
-            let update = match view {
+        let mut output = vec![0; EncodedFrame::PREFIX_BYTES];
+        output.extend_from_slice(&source.branch.to_le_bytes());
+        output.extend_from_slice(&source.hour.to_le_bytes());
+        output.push(u8::from(keyframe));
+        output.extend_from_slice(&source.metrics.total_ns.to_le_bytes());
+        for table in TableId::ALL {
+            output.extend_from_slice(&source.metrics.table_ns[table.index()].to_le_bytes());
+        }
+        output.extend_from_slice(&source.metrics.pool_bytes.to_le_bytes());
+        output.extend_from_slice(&source.metrics.dropped_frames.to_le_bytes());
+        let mut unchanged = [false; TABLE_COUNT];
+        for table in TableId::ALL {
+            let view = &source.tables[table.index()];
+            unchanged[table.index()] = match view {
                 TableInput::SharedComplete(values) => {
                     if !keyframe
                         && !new_branch
@@ -662,126 +704,122 @@ impl FrameEncoder {
                             self.state.tables[table.index()].as_ref()
                         && Arc::ptr_eq(values, previous)
                     {
-                        // This exact allocation already passed complete validation.
-                        // It stays immutable while the private baseline owns an Arc;
-                        // only its relation to the new enclosing hour can change.
                         validate_singleton(table, values, source.hour)?;
-                        TableUpdate::Unchanged {
-                            baseline: *baseline,
-                        }
+                        output.push(2);
+                        output.extend_from_slice(&baseline.to_le_bytes());
+                        true
                     } else {
-                        self.complete_update(table, values, source.hour, keyframe)?
+                        self.encode_complete(table, values, source.hour, keyframe, &mut output)?
                     }
                 }
                 TableInput::ComparedEqual(token) => {
-                    if keyframe
-                        || token.encoder != self.identity
-                        || token.revision != self.revision
-                        || table == TableId::Clock
-                        || token.table != table
-                        || token.branch != source.branch
-                        || token.hour != source.hour
-                        || self
-                            .state
-                            .last_hour
-                            .and_then(|previous| previous.checked_add(1))
-                            != Some(source.hour)
-                        || self.state.tables[table.index()]
-                            .as_ref()
-                            .map(|entry| entry.0)
-                            != Some(token.baseline)
-                    {
-                        return Err(invalid(
-                            "compared table does not name the current complete baseline",
-                        ));
-                    }
-                    TableUpdate::Unchanged {
-                        baseline: token.baseline,
-                    }
+                    self.validate_comparison(*token, table, source.branch, source.hour, keyframe)?;
+                    output.push(2);
+                    output.extend_from_slice(&token.baseline.to_le_bytes());
+                    true
                 }
-                TableInput::Sampled(view) => match view {
-                    TableView::Complete(values) => {
-                        self.complete_update(table, values, source.hour, keyframe)?
-                    }
-                    TableView::Truncated { rows, missing } => {
-                        validate_rows(table, rows)?;
-                        if *missing == 0 {
-                            return Err(invalid("truncated table has no missing rows"));
-                        }
-                        if keyframe {
-                            TableUpdate::Unavailable {
-                                reason: format!("truncated at keyframe: {missing} rows not read"),
-                            }
-                        } else {
-                            TableUpdate::Truncated {
-                                rows: TableRows::empty(table),
-                                missing: *missing,
-                            }
-                        }
-                    }
-                    TableView::Unavailable { reason } => {
-                        if reason.is_empty() {
-                            return Err(invalid("unavailable table needs a reason"));
-                        }
-                        if reason == crate::cadence::SKIPPED_REASON
-                            && self.can_carry(table, source.branch, source.hour, force_keyframe)
-                        {
-                            TableUpdate::Unchanged {
-                                baseline: self.state.tables[table.index()].as_ref().unwrap().0,
-                            }
-                        } else {
-                            TableUpdate::Unavailable {
-                                reason: reason.clone(),
-                            }
-                        }
-                    }
-                },
-            };
-            tables.push(update);
-        }
-        let mut frame = Frame {
-            branch: source.branch,
-            hour: source.hour,
-            keyframe,
-            metrics: source.metrics,
-            tables: tables.try_into().unwrap(),
-        };
-
-        // Commit only after every table has passed validation and diffing.
-        // Complete source vectors become baselines; partial vectors move directly
-        // into the emitted update. No changed-table or unchanged-list clone occurs.
-        for ((index, view), update) in source.tables.into_iter().enumerate().zip(&mut frame.tables)
-        {
-            match update {
-                TableUpdate::Unchanged { .. } => {
-                    let baseline = self.state.tables[index]
-                        .as_mut()
-                        .expect("unchanged table has a validated baseline");
-                    baseline.0 = source.hour;
-                    if let TableInput::SharedComplete(rows) = view {
-                        // Adopt the latest equal refresh allocation so the
-                        // producer cache and baseline cannot retain two copies.
-                        // The emitted update still names the previous hour.
-                        baseline.1 = BaselineRows::Shared(rows);
-                    }
-                }
-                TableUpdate::Snapshot(_) | TableUpdate::Delta { .. } => {
-                    let rows = match view {
-                        TableInput::Sampled(TableView::Complete(rows)) => BaselineRows::Owned(rows),
-                        TableInput::SharedComplete(rows) => BaselineRows::Shared(rows),
-                        _ => unreachable!(),
-                    };
-                    self.state.tables[index] = Some((source.hour, rows));
-                }
-                TableUpdate::Truncated { rows, .. } => {
-                    let TableInput::Sampled(TableView::Truncated { rows: source, .. }) = view
+                TableInput::ComparedChanges {
+                    token,
+                    indices,
+                    rows,
+                } => {
+                    self.validate_comparison(*token, table, source.branch, source.hour, keyframe)?;
+                    let Some((_, BaselineRows::Owned(previous))) =
+                        self.state.tables[table.index()].as_ref()
                     else {
-                        unreachable!()
+                        return Err(invalid("row replacements require an owned baseline"));
                     };
-                    *rows = source;
-                    self.state.tables[index] = None;
+                    if !token.allows_row_updates() {
+                        return Err(invalid("table does not allow row replacements"));
+                    }
+                    validate_rows(table, rows)?;
+                    let start = output.len();
+                    output.push(1);
+                    output.extend_from_slice(&token.baseline.to_le_bytes());
+                    if rows.encode_replacements(previous, indices, &mut output)? {
+                        false
+                    } else {
+                        output.truncate(start);
+                        output.push(2);
+                        output.extend_from_slice(&token.baseline.to_le_bytes());
+                        true
+                    }
                 }
-                TableUpdate::Unavailable { .. } => self.state.tables[index] = None,
+                TableInput::Sampled(TableView::Complete(values)) => {
+                    self.encode_complete(table, values, source.hour, keyframe, &mut output)?
+                }
+                TableInput::Sampled(TableView::Truncated { rows, missing }) => {
+                    validate_rows(table, rows)?;
+                    if *missing == 0 {
+                        return Err(invalid("truncated table has no missing rows"));
+                    }
+                    if keyframe {
+                        output.push(4);
+                        put_string(
+                            &mut output,
+                            &format!("truncated at keyframe: {missing} rows not read"),
+                        )?;
+                    } else {
+                        output.push(3);
+                        output.extend_from_slice(&missing.to_le_bytes());
+                        put_count(&mut output, rows.len())?;
+                        rows.encode_rows(&mut output)?;
+                    }
+                    false
+                }
+                TableInput::Sampled(TableView::Unavailable { reason }) => {
+                    if reason.is_empty() {
+                        return Err(invalid("unavailable table needs a reason"));
+                    }
+                    if reason == crate::cadence::SKIPPED_REASON
+                        && self.can_carry(table, source.branch, source.hour, force_keyframe)
+                    {
+                        output.push(2);
+                        output.extend_from_slice(
+                            &self.state.tables[table.index()]
+                                .as_ref()
+                                .unwrap()
+                                .0
+                                .to_le_bytes(),
+                        );
+                        true
+                    } else {
+                        output.push(4);
+                        put_string(&mut output, reason)?;
+                        false
+                    }
+                }
+            };
+        }
+        for (table, view) in TableId::ALL.into_iter().zip(source.tables) {
+            let index = table.index();
+            if let TableInput::ComparedChanges { indices, rows, .. } = view {
+                let (hour, BaselineRows::Owned(previous)) = self.state.tables[index]
+                    .as_mut()
+                    .expect("validated replacement baseline")
+                else {
+                    unreachable!("validated owned replacement baseline")
+                };
+                previous.install_replacements(rows, &indices);
+                *hour = source.hour;
+            } else if unchanged[index] {
+                let baseline = self.state.tables[index]
+                    .as_mut()
+                    .expect("unchanged table has a validated baseline");
+                baseline.0 = source.hour;
+                if let TableInput::SharedComplete(rows) = view {
+                    baseline.1 = BaselineRows::Shared(rows);
+                }
+            } else {
+                self.state.tables[index] = match view {
+                    TableInput::Sampled(TableView::Complete(rows)) => {
+                        Some((source.hour, BaselineRows::Owned(rows)))
+                    }
+                    TableInput::SharedComplete(rows) => {
+                        Some((source.hour, BaselineRows::Shared(rows)))
+                    }
+                    _ => None,
+                };
             }
         }
         self.state.branch = Some(source.branch);
@@ -790,7 +828,12 @@ impl FrameEncoder {
         if keyframe {
             self.keyframe_hour = Some(source.hour);
         }
-        Ok(frame)
+        Ok(EncodedFrame {
+            branch: source.branch,
+            hour: source.hour,
+            keyframe,
+            bytes: output,
+        })
     }
 }
 
@@ -954,12 +997,7 @@ mod tests {
         let mut bytes = Vec::new();
         frame.encode(&mut bytes).unwrap();
         let selected = [TableId::Countries];
-        let projected = Frame::decode_selected(
-            &mut Decoder::new(&bytes),
-            FormatVersion::CURRENT,
-            Some(&selected),
-        )
-        .unwrap();
+        let projected = Frame::decode_selected(&mut Decoder::new(&bytes), Some(&selected)).unwrap();
         assert_eq!(
             projected.tables[TableId::Countries.index()],
             frame.tables[TableId::Countries.index()]
@@ -974,21 +1012,14 @@ mod tests {
         header.i32().unwrap();
         header.bool().unwrap();
         header.u64().unwrap();
-        for _ in 0..FormatVersion::CURRENT.recorded_tables() {
+        for _ in 0..TABLE_COUNT {
             header.u64().unwrap();
         }
         header.u64().unwrap();
         header.u64().unwrap();
         let offset = bytes.len() - header.remaining();
         bytes[offset] = u8::MAX;
-        assert!(
-            Frame::decode_selected(
-                &mut Decoder::new(&bytes),
-                FormatVersion::CURRENT,
-                Some(&selected)
-            )
-            .is_err()
-        );
+        assert!(Frame::decode_selected(&mut Decoder::new(&bytes), Some(&selected)).is_err());
     }
 
     #[test]
@@ -1124,8 +1155,9 @@ mod tests {
     fn shared_baselines_survive_cadence_and_owned_equal_inputs_without_reallocation() {
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::new();
+        let table = TableId::AdvisorRoles;
         let first = shared_input(source(1, 0));
-        let TableInput::SharedComplete(rows) = &first.tables[TableId::Characters.index()] else {
+        let TableInput::SharedComplete(rows) = &first.tables[table.index()] else {
             panic!()
         };
         let allocation = Arc::clone(rows);
@@ -1136,21 +1168,19 @@ mod tests {
             let expected = source(1, hour);
             let mut input: FrameInput = expected.clone().into();
             if hour != 2 {
-                input.tables[TableId::Characters.index()] =
-                    TableInput::Sampled(TableView::Unavailable {
-                        reason: crate::cadence::SKIPPED_REASON.into(),
-                    });
+                input.tables[table.index()] = TableInput::Sampled(TableView::Unavailable {
+                    reason: crate::cadence::SKIPPED_REASON.into(),
+                });
             }
             let frame = encoder.encode_input(input, false).unwrap();
             assert_eq!(
-                frame.tables[TableId::Characters.index()],
+                frame.tables[table.index()],
                 TableUpdate::Unchanged { baseline: hour - 1 }
             );
             assert_eq!(decoder.apply(&frame).unwrap(), expected);
-            let (_, BaselineRows::Shared(baseline)) = encoder.state.tables
-                [TableId::Characters.index()]
-            .as_ref()
-            .unwrap() else {
+            let (_, BaselineRows::Shared(baseline)) =
+                encoder.state.tables[table.index()].as_ref().unwrap()
+            else {
                 panic!()
             };
             assert!(Arc::ptr_eq(baseline, &allocation));
@@ -1528,6 +1558,187 @@ mod tests {
     }
 
     #[test]
+    fn row_replacements_match_full_frames_and_keep_untouched_allocations() {
+        let mut rows: Vec<_> = (0..4)
+            .map(|index| rows::SupplyNodeRow {
+                country: 7,
+                index,
+                path: vec![index, 0, index, u32::MAX],
+                ..Default::default()
+            })
+            .collect();
+        let current = |hour, rows: &[rows::SupplyNodeRow]| {
+            let mut frame = source(1, hour);
+            frame.tables[TableId::SupplyNodes.index()] =
+                TableView::Complete(TableRows::SupplyNodes(rows.to_vec()));
+            frame
+        };
+        let mut sparse = FrameEncoder::new();
+        let mut ordinary = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        let first = sparse.encode(current(0, &rows), false).unwrap();
+        ordinary.encode(current(0, &rows), false).unwrap();
+        decoder.apply(&first).unwrap();
+        let (_, original) = sparse
+            .comparison_baseline::<tables::SupplyNodes>(1, 1, false)
+            .unwrap();
+        let allocation = original.as_ptr();
+        let untouched_path = original[3].path.as_ptr();
+        for hour in 1..=4 {
+            let indices = match hour {
+                1 => {
+                    rows[1].available = i64::MIN;
+                    rows[1].path.push(99);
+                    vec![1]
+                }
+                2 => vec![1], // An equal replacement still emits Unchanged.
+                3 => {
+                    rows[0].consumed = i64::MAX;
+                    rows[2].path.reverse();
+                    vec![0, 2]
+                }
+                _ => vec![],
+            };
+            let (token, _) = sparse
+                .comparison_baseline::<tables::SupplyNodes>(1, hour, false)
+                .unwrap();
+            assert!(token.allows_row_updates());
+            let complete = current(hour, &rows);
+            let mut input: FrameInput = complete.clone().into();
+            input.tables[TableId::SupplyNodes.index()] = TableInput::ComparedChanges {
+                token,
+                rows: TableRows::SupplyNodes(
+                    indices.iter().map(|&index| rows[index].clone()).collect(),
+                ),
+                indices,
+            };
+            let actual = sparse.encode_bytes(input, false).unwrap();
+            let expected = ordinary
+                .encode_bytes(complete.clone().into(), false)
+                .unwrap();
+            assert_eq!(actual.bytes, expected.bytes);
+            assert_eq!(decoder.apply(&actual.decode().unwrap()).unwrap(), complete);
+            let (_, retained) = sparse
+                .comparison_baseline::<tables::SupplyNodes>(1, hour + 1, false)
+                .unwrap();
+            assert_eq!(retained.as_ptr(), allocation);
+            assert_eq!(retained[3].path.as_ptr(), untouched_path);
+        }
+    }
+
+    #[test]
+    fn row_replacements_reject_bad_positions_tokens_and_later_errors_atomically() {
+        let mut encoder = FrameEncoder::new();
+        encoder.encode(source(1, 0), false).unwrap();
+        let (token, old) = encoder
+            .comparison_baseline::<tables::Provinces>(1, 1, false)
+            .unwrap();
+        let original = old.to_vec();
+        let mut changed = original[0].clone();
+        changed.controller = u32::MAX;
+        let patch = |indices, rows| {
+            let mut input: FrameInput = source(1, 1).into();
+            input.tables[TableId::Provinces.index()] = TableInput::ComparedChanges {
+                token,
+                indices,
+                rows,
+            };
+            input
+        };
+        let valid = patch(vec![0], TableRows::Provinces(vec![changed.clone()]));
+        let mut cases = vec![
+            patch(vec![], TableRows::Provinces(vec![changed.clone()])),
+            patch(vec![0, 0], TableRows::Provinces(vec![changed.clone(); 2])),
+            patch(
+                vec![1, 0],
+                TableRows::Provinces(vec![original[1].clone(), changed.clone()]),
+            ),
+            patch(vec![2], TableRows::Provinces(vec![changed.clone()])),
+            patch(vec![1], TableRows::Provinces(vec![changed.clone()])),
+            patch(vec![0], TableRows::States(vec![])),
+        ];
+        let mut later_error = valid.clone();
+        let later = TableId::ALL.into_iter().next_back().unwrap();
+        assert!(later.index() > TableId::Provinces.index());
+        later_error.tables[later.index()] =
+            TableView::Complete(TableRows::Clock(Vec::new())).into();
+        cases.push(later_error);
+        let mut wrong_branch = valid.clone();
+        wrong_branch.branch += 1;
+        cases.push(wrong_branch);
+        let mut wrong_hour = valid.clone();
+        wrong_hour.hour += 1;
+        cases.push(wrong_hour);
+        for invalid in cases {
+            assert!(encoder.encode_input(invalid, false).is_err());
+            let (current, retained) = encoder
+                .comparison_baseline::<tables::Provinces>(1, 1, false)
+                .unwrap();
+            assert_eq!(current, token);
+            assert_eq!(retained, original);
+        }
+        assert!(encoder.encode_input(valid.clone(), true).is_err());
+        let mut other = FrameEncoder::new();
+        other.encode(source(1, 0), false).unwrap();
+        assert!(other.encode_input(valid.clone(), false).is_err());
+        let mut expected = source(1, 1);
+        expected.tables[TableId::Provinces.index()] =
+            TableView::Complete(TableRows::Provinces(vec![changed, original[1].clone()]));
+        let actual = encoder.encode_input(valid.clone(), false).unwrap();
+        let expected = other.encode(expected, false).unwrap();
+        assert_eq!(actual, expected);
+        let mut stale = valid;
+        stale.hour = 2;
+        assert!(encoder.encode_input(stale, false).is_err());
+    }
+
+    #[test]
+    fn row_replacements_cannot_edit_shared_or_cross_row_validated_baselines() {
+        for shared in [false, true] {
+            let mut encoder = FrameEncoder::new();
+            let first = source(1, 0);
+            encoder
+                .encode_input(
+                    if shared {
+                        shared_input(first)
+                    } else {
+                        first.into()
+                    },
+                    false,
+                )
+                .unwrap();
+            let (token, rows) = encoder
+                .comparison_baseline::<tables::Countries>(1, 1, false)
+                .unwrap();
+            assert!(!token.allows_row_updates());
+            let mut input: FrameInput = source(1, 1).into();
+            input.tables[TableId::Countries.index()] = TableInput::ComparedChanges {
+                token,
+                indices: vec![0],
+                rows: TableRows::Countries(rows.to_vec()),
+            };
+            assert!(encoder.encode_input(input, false).is_err());
+            let (token, rows) = encoder
+                .comparison_baseline::<tables::Provinces>(1, 1, false)
+                .unwrap();
+            assert_eq!(token.allows_row_updates(), !shared);
+            if shared {
+                let mut input: FrameInput = source(1, 1).into();
+                input.tables[TableId::Provinces.index()] = TableInput::ComparedChanges {
+                    token,
+                    indices: vec![0],
+                    rows: TableRows::Provinces(vec![rows[0].clone()]),
+                };
+                assert!(encoder.encode_input(input, false).is_err());
+            }
+            let (token, _) = encoder
+                .comparison_baseline::<tables::ScriptVariables>(1, 1, false)
+                .unwrap();
+            assert!(!token.allows_row_updates());
+        }
+    }
+
+    #[test]
     fn cadence_marker_carries_identical_validated_rows_without_input_clones() {
         let mut ordinary = FrameEncoder::new();
         let mut carried = FrameEncoder::new();
@@ -1555,7 +1766,7 @@ mod tests {
     #[test]
     fn cadence_carry_requires_complete_same_branch_non_keyframe_baseline() {
         let mut encoder = FrameEncoder::new();
-        let table = TableId::Characters;
+        let table = TableId::AdvisorRoles;
         assert!(!encoder.can_carry(table, 1, 1, false));
         encoder.encode(source(1, 0), false).unwrap();
         assert!(encoder.can_carry(table, 1, 1, false));
@@ -1584,6 +1795,28 @@ mod tests {
         partial.tables[table.index()] = TableView::Truncated { rows, missing: 1 };
         encoder.encode(partial, false).unwrap();
         assert!(!encoder.can_carry(table, 1, 4, false));
+    }
+
+    #[test]
+    fn cadence_marker_cannot_turn_a_missing_hourly_capture_into_fresh_rows() {
+        let mut encoder = FrameEncoder::new();
+        encoder.encode(source(1, 0), false).unwrap();
+        let mut skipped = source(1, 1);
+        for table in [TableId::Characters, TableId::Divisions, TableId::Countries] {
+            assert!(!crate::cadence::is_staggered(table));
+            assert!(!encoder.can_carry(table, 1, 1, false));
+            skipped.tables[table.index()] = TableView::Unavailable {
+                reason: crate::cadence::SKIPPED_REASON.into(),
+            };
+        }
+        let frame = encoder.encode(skipped, false).unwrap();
+        for table in [TableId::Characters, TableId::Divisions, TableId::Countries] {
+            assert!(matches!(
+                &frame.tables[table.index()],
+                TableUpdate::Unavailable { reason } if reason == crate::cadence::SKIPPED_REASON
+            ));
+            assert!(encoder.state.tables[table.index()].is_none());
+        }
     }
 
     fn source(branch: BranchId, hour: Hour) -> DecodedFrame {
@@ -1641,6 +1874,7 @@ mod tests {
                         id: 8,
                         owner: 7,
                         controller: 2,
+                        movement_infrastructure: 0,
                     }])),
                     TableView::Complete(TableRows::Divisions(vec![division(
                         0x1234_5678_0000_0035,
@@ -1697,6 +1931,9 @@ mod tests {
             owner: 7,
             controller,
             victory_points: 50,
+            terrain_flags: 1,
+            terrain_index: 2,
+            fort_positive: 0,
         }
     }
 
@@ -1743,7 +1980,7 @@ mod tests {
         let mut bytes = Vec::new();
         frame.encode(&mut bytes).unwrap();
         let mut decoder = Decoder::new(&bytes);
-        let result = Frame::decode(&mut decoder, FormatVersion::CURRENT).unwrap();
+        let result = Frame::decode(&mut decoder).unwrap();
         decoder.finish().unwrap();
         assert_eq!(&result, frame);
         result
@@ -1771,7 +2008,7 @@ mod tests {
             // A key-only bound accepts this count before reserving all rows.
             assert_eq!(Decoder::new(&bytes).count(1).unwrap(), claimed as usize);
             let mut input = Decoder::new(&bytes);
-            let error = decode_rows(table, &mut input, FormatVersion::CURRENT).unwrap_err();
+            let error = decode_rows(table, &mut input).unwrap_err();
             assert_eq!(
                 error.to_string(),
                 "collection length exceeds remaining payload"
@@ -1812,7 +2049,7 @@ mod tests {
             let mut bytes = 2_u32.to_le_bytes().to_vec();
             bytes.resize(4 + payload, 0);
             let mut input = Decoder::new(&bytes);
-            let error = decode_rows(table, &mut input, FormatVersion::CURRENT).unwrap_err();
+            let error = decode_rows(table, &mut input).unwrap_err();
             assert_eq!(
                 error.to_string(),
                 "singleton table cannot contain multiple rows"
@@ -1836,7 +2073,7 @@ mod tests {
                     frame
                         .tables
                         .iter()
-                        .all(|t| matches!(t, TableUpdate::Snapshot(_)))
+                        .all(|table| matches!(table, TableUpdate::Snapshot(_)))
                 ),
                 101 => assert_eq!(
                     frame.tables[TableId::Countries.index()],
@@ -2038,6 +2275,7 @@ mod tests {
                         id: 8,
                         owner: 0,
                         controller: u32::MAX,
+                        movement_infrastructure: 0,
                     }]));
             }
             if hour == 2 {
@@ -2050,6 +2288,7 @@ mod tests {
                         id: 8,
                         owner: 0,
                         controller: 2,
+                        movement_infrastructure: 0,
                     }]),
                     missing: 10,
                 };
@@ -2526,7 +2765,7 @@ mod tests {
         rows::encode_row(&division(u64::MAX, 1, 2), 0, &mut bytes).unwrap();
         // This independently encoded +1 follows u64::MAX in the snapshot list.
         rows::encode_row(&division(1, 3, 4), 0, &mut bytes).unwrap();
-        assert!(decode_rows(table, &mut Decoder::new(&bytes), FormatVersion::CURRENT).is_err());
+        assert!(decode_rows(table, &mut Decoder::new(&bytes)).is_err());
 
         let mut encoder = FrameEncoder::new();
         encoder.encode(source(1, 0).clone(), false).unwrap();
@@ -2542,7 +2781,7 @@ mod tests {
         put_count(&mut bytes, 2).unwrap();
         crate::codec::put_varint(&mut bytes, u128::from(u64::MAX));
         crate::codec::put_varint(&mut bytes, 1);
-        assert!(Frame::decode(&mut Decoder::new(&bytes), FormatVersion::CURRENT).is_err());
+        assert!(Frame::decode(&mut Decoder::new(&bytes)).is_err());
     }
 
     #[test]
@@ -2787,7 +3026,10 @@ mod tests {
                 "requires every field",
             ),
             (
-                vec![DeltaRow { mask: 16, ..change }],
+                vec![DeltaRow {
+                    mask: 128,
+                    ..change
+                }],
                 vec![],
                 "unknown bits",
             ),
@@ -2873,7 +3115,7 @@ mod tests {
         let mut bytes = Vec::new();
         valid.encode(&mut bytes).unwrap();
         bytes[12] = 1; // The keyframe byte follows the u64 branch and i32 hour.
-        assert!(Frame::decode(&mut Decoder::new(&bytes), FormatVersion::CURRENT).is_err());
+        assert!(Frame::decode(&mut Decoder::new(&bytes)).is_err());
         assert_eq!(decoder.apply(&wire(&valid)).unwrap(), expected);
     }
 

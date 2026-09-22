@@ -20,14 +20,9 @@
 //! - a failed or unparsable span stops only the sub-path that needs it; the
 //!   replay fails identically from the same recorded spans, so later extras
 //!   are harmless;
-//! - pool overflow aborts the whole copy: the caller falls back to the typed
-//!   walk (identical rows through the existing path) and enqueues nothing.
-//!
-//! Conservative rule (as the research pilot): any live failure attributed to
-//! a table blocks that table's check even when both copies agree, so
-//! same-hour tearing never advances the windows. A readable-but-invalid
-//! refresh (deterministic fault, both copies equal) still counts its check
-//! while emitting the identical Unavailable outcome.
+//! - pool overflow aborts the copy and grows staging capacity on recycle.
+//!   The caller may use the typed fallback only before a prepared source
+//!   observation; afterward, that capture fails without repeating live reads.
 
 use crate::raw_plan::{Attempt, CapturePlan, Observations, Request};
 use engine::Memory;
@@ -325,6 +320,10 @@ pub struct RawLog<const N: usize> {
     // decode worker; clear() on the copy side leaves it untouched.
     index: RefCell<Option<RecordedIndex>>,
     plan: CapturePlan<N>,
+    /// A complete plan loans its immutable span vector until decode/recycle.
+    planned_spans_loaned: bool,
+    /// Most recent prepared backend wall time; excludes continuation and span restoration.
+    pub(crate) backend_ns: u64,
     capacity_charge: crate::raw_memory::Charge,
 }
 
@@ -350,6 +349,8 @@ impl<const N: usize> RawLog<N> {
             has_bulk: false,
             index: RefCell::new(None),
             plan: CapturePlan::default(),
+            planned_spans_loaned: false,
+            backend_ns: 0,
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         log.update_capacity_charge();
@@ -372,7 +373,9 @@ impl<const N: usize> RawLog<N> {
 
     /// Reset lengths for reuse, keeping every capacity. No allocation.
     pub fn clear(&mut self) {
+        self.return_planned_spans();
         self.spans.clear();
+        self.backend_ns = 0;
         self.bytes.clear();
         self.fault = [false; N];
         self.raw_bytes = [0; N];
@@ -403,6 +406,18 @@ impl<const N: usize> RawLog<N> {
         self.update_capacity_charge();
     }
 
+    /// The producer opts in only after its scattered native observations and
+    /// auxiliary state have the same complete-plan/ordered-resume contract.
+    pub(crate) fn initialize_scattered_read_plan(
+        &mut self,
+        reads: usize,
+        controls: usize,
+        bytes: usize,
+    ) {
+        self.initialize_read_plan(reads, controls, bytes);
+        self.plan.scattered = true;
+    }
+
     /// Begin on an empty log with the same fresh provider used by the producer.
     /// False requires running that producer before finish_planned_capture().
     pub(crate) fn begin_planned_capture(&mut self, memory: &impl Memory, key: [usize; 4]) -> bool {
@@ -422,12 +437,12 @@ impl<const N: usize> RawLog<N> {
             self.bytes.observations.as_mut().unwrap().get_mut().eligible = false;
             return false;
         }
-        let Some(compiled) = &self.plan.compiled else {
+        let Some(compiled) = &mut self.plan.compiled else {
             return false;
         };
         if self.plan.retire
             || compiled.key != key
-            || compiled.spans > self.spans.capacity()
+            || compiled.spans.len() > self.spans.capacity()
             || compiled.plan.destination_len() > self.bytes.capacity()
         {
             self.plan.retire = true;
@@ -435,7 +450,9 @@ impl<const N: usize> RawLog<N> {
         }
         let backend_started = std::time::Instant::now();
         let outcome = memory.execute_read_plan(&compiled.plan, &mut self.bytes.storage);
-        CapturePlan::<N>::note_backend_elapsed(backend_started.elapsed());
+        let backend_elapsed = backend_started.elapsed();
+        self.backend_ns = backend_elapsed.as_nanos().min(u64::MAX as u128) as u64;
+        CapturePlan::<N>::note_backend_elapsed(backend_elapsed);
         let Some(outcome) = outcome else {
             // Unsupported execution guarantees that no source read occurred.
             return false;
@@ -447,20 +464,11 @@ impl<const N: usize> RawLog<N> {
                 self.bytes.used = compiled.plan.destination_len();
                 self.has_bulk = compiled.has_bulk;
                 self.raw_bytes = compiled.raw_bytes;
-                self.spans.extend(
-                    compiled
-                        .requests
-                        .iter()
-                        .filter(|request| request.len != 0)
-                        .map(|request| Span {
-                            addr: request.address,
-                            len: request.len as u32,
-                            ok: true,
-                            mask: request.mask,
-                            start: request.start as u32,
-                            bulk: request.bulk,
-                        }),
-                );
+                // The geometry is immutable for this successful acquisition.
+                // Loan it to owned decoding rather than copying every span on
+                // the game critical path. Recycle returns the same allocation.
+                std::mem::swap(&mut self.spans, &mut compiled.spans);
+                self.planned_spans_loaned = true;
                 self.plan.attempt = Attempt::Complete;
                 self.plan.note_execution(completed, false);
                 self.bytes.observations.as_mut().unwrap().get_mut().active = false;
@@ -512,6 +520,19 @@ impl<const N: usize> RawLog<N> {
         self.plan.blocked
     }
 
+    pub(crate) fn planning(&self) -> bool {
+        self.plan.active
+    }
+
+    /// Retain the producer's current, validated lookahead in a prepared pass.
+    /// Observing the selecting raw bytes creates controls before this hint.
+    pub(crate) fn prefetch(&self, address: usize, len: usize) {
+        if let Some(observations) = &self.bytes.observations {
+            observations.borrow_mut().hint(address, len);
+        }
+        engine::prefetch::span(address, len);
+    }
+
     /// Capacity exhaustion after a prepared source observation must not enter
     /// an outer fresh typed retry. Keep its fault bits clear so normal worker
     /// growth can repair capacity before the next independent capture.
@@ -519,18 +540,38 @@ impl<const N: usize> RawLog<N> {
         self.planned_capture_failed() || (self.overflowed && self.plan.source_observed)
     }
 
-    #[cfg(test)]
     pub(crate) fn planned_capture_succeeded(&self) -> bool {
         self.plan.attempt == Attempt::Complete && !self.plan.blocked
     }
 
+    /// Compound acquisitions cannot retry an earlier section's planned source
+    /// observations when a later section exhausts its staging storage.
+    pub(crate) fn planned_source_observed(&self) -> bool {
+        self.plan.source_observed
+    }
+
+    /// Request retirement without dropping owned storage on the acquisition thread.
+    pub(crate) fn invalidate_read_plan(&mut self) {
+        self.plan.retire = true;
+        self.plan.sealed = false;
+    }
+
     /// Worker-only compilation and retirement, before clear/recycle.
     pub(crate) fn prepare_read_plan(&mut self) {
+        self.return_planned_spans();
         let len = self.bytes.len();
         if let Some(observations) = &mut self.bytes.observations {
             self.plan
                 .prepare(observations.get_mut(), self.has_bulk, self.raw_bytes, len);
             self.update_capacity_charge();
+        }
+    }
+
+    fn return_planned_spans(&mut self) {
+        if self.planned_spans_loaned {
+            let compiled = self.plan.compiled.as_mut().expect("loaned plan geometry");
+            std::mem::swap(&mut self.spans, &mut compiled.spans);
+            self.planned_spans_loaned = false;
         }
     }
 
@@ -602,6 +643,12 @@ impl<const N: usize> RawLog<N> {
         if self.plan.blocked {
             return None;
         }
+        // Empty fields consume neither source memory nor destination bytes.
+        // Exclude them from the prepared trace and its continuation ordinal;
+        // the next nonempty observation still matches address/width/scope.
+        if len == 0 {
+            return self.take_scalar(memory, addr, len, mask, bulk);
+        }
         let result = if self.plan.prefix_cursor < self.plan.prefix_len {
             let index = self.plan.prefix_cursor;
             let request = self
@@ -634,6 +681,7 @@ impl<const N: usize> RawLog<N> {
                         bulk,
                     });
                     self.bytes.used = request.start + len;
+                    self.has_bulk |= bulk;
                     self.raw_bytes[lowest_table(mask)] += len as u64;
                 }
                 Some(request.start)
@@ -726,6 +774,7 @@ impl<const N: usize> RawLog<N> {
             start: start as u32,
             bulk,
         });
+        self.has_bulk |= bulk;
         self.raw_bytes[lowest_table(mask)] += len as u64;
         Some(start)
     }
@@ -765,7 +814,10 @@ impl<const N: usize> RawLog<N> {
         lengths: [usize; M],
         masks: [u32; M],
     ) -> Option<([usize; M], usize)> {
-        if !self.allow_unplanned_operation() {
+        if !self.plan.scattered && !self.allow_unplanned_operation() {
+            return None;
+        }
+        if self.plan.blocked {
             return None;
         }
         if self.overflowed {
@@ -792,7 +844,32 @@ impl<const N: usize> RawLog<N> {
             self.overflowed = true;
             return None;
         }
+        if self.plan.active && self.plan.prefix_cursor < self.plan.prefix_len {
+            // A changed control or failed read can stop inside this scatter.
+            // Replay its ordered prefix through take_inner, then acquire only
+            // the untouched suffix. Full scatter admission still precedes it.
+            for index in 0..M {
+                match self.take_inner(
+                    memory,
+                    addresses[index],
+                    lengths[index],
+                    masks[index],
+                    false,
+                ) {
+                    Some(start) => starts[index] = start,
+                    None if self.plan.blocked => return None,
+                    None => return Some((starts, index)),
+                }
+            }
+            return Some((starts, M));
+        }
         let completed = {
+            if PREFETCH && let Some(observations) = &self.bytes.observations {
+                let mut observations = observations.borrow_mut();
+                for (address, len) in addresses.into_iter().zip(lengths) {
+                    observations.hint(address, len);
+                }
+            }
             let mut remaining = &mut self.bytes.storage[start..end];
             let mut destinations: [&mut [u8]; M] = std::array::from_fn(|_| &mut [][..]);
             for (destination, len) in destinations.iter_mut().zip(lengths) {
@@ -839,6 +916,31 @@ impl<const N: usize> RawLog<N> {
                 lengths[completed] as u32,
                 masks[completed],
             );
+        }
+        if self.plan.active && self.plan.scattered {
+            self.plan.canonical_reads += 1;
+            let observations = self.bytes.observations.as_mut().unwrap().get_mut();
+            observations.after_reads += lengths[..M.min(completed + 1)]
+                .iter()
+                .filter(|&&len| len != 0)
+                .count();
+            observations.eligible &= completed == M;
+            for index in 0..completed {
+                if lengths[index] == 0 {
+                    continue;
+                }
+                if self.plan.requests.len() == self.plan.requests.capacity() {
+                    observations.eligible = false;
+                    break;
+                }
+                self.plan.requests.push(Request {
+                    address: addresses[index],
+                    len: lengths[index],
+                    start: starts[index],
+                    mask: masks[index],
+                    bulk: false,
+                });
+            }
         }
         Some((starts, completed))
     }
@@ -970,80 +1072,10 @@ impl<const N: usize> RawLog<N> {
         !self.plan.blocked
     }
 
-    #[allow(dead_code)]
+    /// Compare staged implementations in synthetic-memory tests only.
+    #[cfg(test)]
     pub fn logs_equal(&self, other: &Self) -> bool {
         self.spans == other.spans && self.bytes == other.bytes
-    }
-
-    /// Per-partition equality for independently-walked tables. Compares only
-    /// the spans whose mask carries `slot`'s bit (shared census spans carry
-    /// several bits and gate every dependent partition; private spans carry
-    /// one bit and gate only their own). Byte contents compare per span, not
-    /// whole-pool, so tearing one table's private bytes flips only that
-    /// table's partition. `has_bulk` is log-level and must agree, otherwise
-    /// the bulk-serving mode differs and every partition disagrees.
-    /// Callers still gate each slot by its own live-fault bits:
-    /// `matched[slot] = partition_equal(slot) && !fault[slot]`.
-    pub fn partition_equal(&self, other: &Self, slot: usize) -> bool {
-        debug_assert!(slot < N, "partition slot out of range");
-        if slot >= N {
-            return false;
-        }
-        // Overflowed logs never compare equal per partition: the caller
-        // falls back to the typed walk and enqueues nothing.
-        if self.overflowed || other.overflowed {
-            return false;
-        }
-        if self.has_bulk != other.has_bulk {
-            return false;
-        }
-        let bit = 1u32 << slot;
-        // Filter in record order; the copy is deterministic so shared and
-        // private spans interleave identically when the underlying bytes do.
-        let mut left_count = 0usize;
-        let mut right_count = 0usize;
-        for span in &self.spans {
-            if span.mask & bit != 0 {
-                left_count += 1;
-            }
-        }
-        for span in &other.spans {
-            if span.mask & bit != 0 {
-                right_count += 1;
-            }
-        }
-        if left_count != right_count {
-            return false;
-        }
-        let mut left_iter = self.spans.iter().filter(|span| span.mask & bit != 0);
-        let mut right_iter = other.spans.iter().filter(|span| span.mask & bit != 0);
-        loop {
-            match (left_iter.next(), right_iter.next()) {
-                (None, None) => return true,
-                (Some(left), Some(right)) => {
-                    if left.addr != right.addr
-                        || left.len != right.len
-                        || left.ok != right.ok
-                        || left.mask != right.mask
-                        || left.bulk != right.bulk
-                    {
-                        return false;
-                    }
-                    if left.ok {
-                        let left_bytes = self
-                            .bytes
-                            .get(left.start as usize..left.start as usize + left.len as usize);
-                        let right_bytes = other
-                            .bytes
-                            .get(right.start as usize..right.start as usize + right.len as usize);
-                        if left_bytes != right_bytes {
-                            return false;
-                        }
-                    }
-                }
-                _ => return false,
-            }
-        }
     }
 }
 
@@ -1158,6 +1190,56 @@ mod read_plan_tests {
     }
 
     #[test]
+    fn complete_plan_loans_geometry_for_decode_and_returns_it_before_reuse_or_retirement() {
+        let mut log = log();
+        let staging = log.spans.as_ptr();
+        let first = linked_script(0x2000, [1; 4]);
+        assert!(!log.begin_planned_capture(&first, [1; 4]));
+        linked(&first, &mut log);
+        log.finish_planned_capture();
+        first.complete();
+        log.prepare_read_plan();
+        let geometry = log.plan.compiled.as_ref().unwrap().spans.as_ptr();
+        log.clear();
+
+        for value in [2, 3] {
+            let fresh = linked_script(0x2000, [value; 4]);
+            assert!(log.begin_planned_capture(&fresh, [1; 4]));
+            log.finish_planned_capture();
+            fresh.complete();
+            assert_eq!(log.spans.as_ptr(), geometry);
+            let recorded = Recorded::build(&log);
+            let mut bytes = [0; 4];
+            assert!(recorded.copy(0x2000, &mut bytes));
+            assert_eq!(bytes, [value; 4]);
+            drop(recorded);
+            // Both normal recycle and clear without preparation return the loan.
+            if value == 2 {
+                log.prepare_read_plan();
+            }
+            log.clear();
+            assert_eq!(log.spans.as_ptr(), staging);
+            assert_eq!(log.plan.compiled.as_ref().unwrap().spans.as_ptr(), geometry);
+        }
+
+        let fresh = linked_script(0x2000, [4; 4]);
+        assert!(log.begin_planned_capture(&fresh, [1; 4]));
+        log.finish_planned_capture();
+        fresh.complete();
+        log.invalidate_read_plan();
+        log.prepare_read_plan();
+        assert!(log.plan.compiled.is_none());
+        assert_eq!(log.spans.as_ptr(), staging);
+        log.clear();
+        let changed = linked_script(0x3000, [5; 4]);
+        assert!(!log.begin_planned_capture(&changed, [1; 4]));
+        linked(&changed, &mut log);
+        log.finish_planned_capture();
+        changed.complete();
+        assert_eq!(log.spans[1].addr, 0x3000);
+    }
+
+    #[test]
     fn failed_occurrence_is_replayed_once_and_partial_bytes_stay_unpublished() {
         let mut log = log();
         let first = Script::new(vec![
@@ -1194,7 +1276,7 @@ mod read_plan_tests {
     }
 
     #[test]
-    fn duplicate_observations_empty_takes_and_terminal_controls_keep_their_ordinals() {
+    fn duplicate_observations_keep_their_ordinals_without_empty_trace_entries() {
         let mut log = log();
         let walk = |memory: &Script, log: &mut RawLog<2>| {
             assert_eq!(log.take(memory, 0, 0, 3), Some(0));
@@ -1219,7 +1301,7 @@ mod read_plan_tests {
         walk(&first, &mut log);
         log.finish_planned_capture();
         log.prepare_read_plan();
-        assert_eq!(log.plan.compiled.as_ref().unwrap().requests.len(), 5);
+        assert_eq!(log.plan.compiled.as_ref().unwrap().requests.len(), 3);
         log.clear();
         let fresh = sequence();
         assert!(log.begin_planned_capture(&fresh, [0; 4]));
@@ -1227,6 +1309,69 @@ mod read_plan_tests {
         fresh.complete();
         assert_eq!(log.spans.len(), 3);
         assert_eq!(&log.bytes[..], &[1, 2, 1]);
+    }
+
+    #[test]
+    fn empty_scatter_slots_preserve_changed_controls_and_every_failed_prefix() {
+        fn walk(source: &Script, log: &mut RawLog<2>) {
+            let Some((starts, 5)) = log.take_scattered(
+                source,
+                [0, 0x10, usize::MAX, 0x20, 0],
+                [0, 1, 0, 1, 0],
+                [3, 1, 2, 2, 1],
+            ) else {
+                return;
+            };
+            let target = if log.bytes[starts[1]] == 1 {
+                0x30
+            } else {
+                0x40
+            };
+            assert_eq!(log.take(source, usize::MAX, 0, 3), Some(2));
+            log.take(source, target, 1, 2);
+        }
+        for changed in [false, true] {
+            for failure in [None, Some(0), Some(1), Some(2)] {
+                let mut prepared = log();
+                prepared.initialize_scattered_read_plan(16, 16, 128);
+                let baseline = Script::new(vec![
+                    (0x10, Some(vec![1])),
+                    (0x20, Some(vec![2])),
+                    (0x30, Some(vec![3])),
+                ]);
+                assert!(!prepared.begin_planned_capture(&baseline, [0; 4]));
+                walk(&baseline, &mut prepared);
+                prepared.finish_planned_capture();
+                baseline.complete();
+                prepared.prepare_read_plan();
+                assert_eq!(prepared.plan.compiled.as_ref().unwrap().requests.len(), 3);
+                prepared.clear();
+                let mut reads = vec![
+                    (0x10, Some(vec![if changed { 4 } else { 1 }])),
+                    (0x20, Some(vec![5])),
+                    (if changed { 0x40 } else { 0x30 }, Some(vec![6])),
+                ];
+                if let Some(index) = failure {
+                    reads[index].1 = None;
+                    reads.truncate(index + 1);
+                }
+                let fresh = Script::new(reads.clone());
+                let mut direct = log();
+                walk(&fresh, &mut direct);
+                fresh.complete();
+                let fresh = Script::new(reads);
+                if !prepared.begin_planned_capture(&fresh, [0; 4]) {
+                    walk(&fresh, &mut prepared);
+                }
+                prepared.finish_planned_capture();
+                fresh.complete();
+                assert!(!prepared.planned_capture_failed());
+                assert_eq!(prepared.spans, direct.spans);
+                assert_eq!(&prepared.bytes[..], &direct.bytes[..]);
+                assert_eq!(prepared.fault, direct.fault);
+                assert_eq!(prepared.raw_bytes, direct.raw_bytes);
+            }
+        }
     }
 
     #[test]
@@ -1378,6 +1523,7 @@ mod read_plan_tests {
             for failed in [false, true] {
                 for consume_prefix in [false, true] {
                     let mut log = log();
+                    log.initialize_scattered_read_plan(16, 16, 128);
                     let first = Script::new(vec![(0x10, Some(vec![1]))]);
                     assert!(!log.begin_planned_capture(&first, [0; 4]));
                     assert_eq!(log.take(&first, 0x10, 1, 1), Some(0));
@@ -1408,12 +1554,15 @@ mod read_plan_tests {
                         consume_prefix.then_some(([usize::from(!failed)], 1))
                     );
                     assert!(log.plan.retire);
-                    assert!(!log.bytes.observations.as_ref().unwrap().borrow().eligible);
+                    assert_eq!(
+                        log.bytes.observations.as_ref().unwrap().borrow().eligible,
+                        consume_prefix && !failed
+                    );
                     assert_eq!(log.planned_capture_failed(), !consume_prefix);
                     if consume_prefix {
                         assert_eq!(log.fault, [failed, false]);
                         assert_eq!(log.raw_bytes, [u64::from(!failed), 1]);
-                        assert_eq!(log.bytes.last(), Some(&7));
+                        assert_eq!(log.bytes[log.bytes.len() - 1], 7);
                     } else {
                         assert_eq!(log.fault, [true; 2]);
                         assert!(log.spans.is_empty());
@@ -1423,7 +1572,7 @@ mod read_plan_tests {
                     log.finish_planned_capture();
                     changed.complete();
                     log.prepare_read_plan();
-                    assert!(log.plan.compiled.is_none());
+                    assert_eq!(log.plan.compiled.is_some(), consume_prefix && !failed);
                 }
             }
         }
@@ -2222,7 +2371,6 @@ mod tests {
         assert_eq!(log.take(&memory, 0x1000, 4, 1), Some(0));
         assert_eq!(other.take(&memory, 0x1000, 4, 1), Some(0));
         assert!(log.logs_equal(&other));
-        assert!(log.partition_equal(&other, 0));
         assert_eq!(format!("{:?}", log.bytes), "[9, 8, 7, 6]");
         assert!(log.bytes.get(4).is_none());
         log.clear();
@@ -2531,9 +2679,6 @@ mod tests {
         assert_eq!(actual.spans.capacity(), expected.spans.capacity());
         assert_eq!(actual.bytes.capacity(), expected.bytes.capacity());
         assert_eq!(actual.grow_for_next(), expected.grow_for_next());
-        for slot in 0..3 {
-            assert_eq!(actual.partition_equal(expected, slot), !actual.overflowed);
-        }
     }
 
     #[test]
@@ -4393,7 +4538,7 @@ mod tests {
         log.take(&first, 0x1000, 4, 0x01);
         log.take(&second, 0x1000, 4, 0x01);
         let recorded = Recorded::build(&log);
-        // Witness-before/after pairs observe their own values in order.
+        // Repeated exact-key requests observe their own values in order.
         let mut out = [0u8; 4];
         assert!(recorded.copy(0x1000, &mut out));
         assert_eq!(out, [3, 3, 3, 3]);
@@ -4404,39 +4549,6 @@ mod tests {
         assert!(recorded.copy(0x1000, &mut out));
         assert_eq!(out, [9, 3, 3, 3]);
         assert!(!recorded.copy(0x2000, &mut out));
-    }
-
-    #[test]
-    fn partition_equal_isolates_private_bytes_and_shares_census() {
-        let bytes = [5u8; 64];
-        let memory = SliceMemory {
-            base: 0x1000,
-            bytes: &bytes,
-        };
-        let mut first = RawLog::<2>::new(8, 64);
-        let mut second = RawLog::<2>::new(8, 64);
-        // Shared census span (both bits) plus one private span per slot.
-        first.take(&memory, 0x1000, 4, 0x03);
-        first.take(&memory, 0x1010, 4, 0x01);
-        first.take(&memory, 0x1020, 4, 0x02);
-        second.take(&memory, 0x1000, 4, 0x03);
-        second.take(&memory, 0x1010, 4, 0x01);
-        second.take(&memory, 0x1020, 4, 0x02);
-        assert!(first.partition_equal(&second, 0));
-        assert!(first.partition_equal(&second, 1));
-        // Tear slot 1's private bytes: only slot 1 flips.
-        let private_start = second.spans[2].start as usize;
-        second.bytes[private_start] ^= 0xff;
-        assert!(first.partition_equal(&second, 0));
-        assert!(!first.partition_equal(&second, 1));
-        assert!(!first.logs_equal(&second));
-        // Tear the shared census: both partitions flip.
-        let census_start = second.spans[0].start as usize;
-        second.bytes[census_start] ^= 0xff;
-        // Slot 0 still compares its private span equal, but the shared
-        // census differs, so slot 0 now disagrees as well.
-        assert!(!first.partition_equal(&second, 0));
-        assert!(!first.partition_equal(&second, 1));
     }
 
     #[test]

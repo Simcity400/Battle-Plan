@@ -2741,7 +2741,26 @@ impl Viewer {
         );
         // The water animates, so the window keeps drawing.
         ui.ctx().request_repaint();
-        response.on_hover_text("Drag to pan · Scroll to zoom");
+        // The game shows a moving division's arrival in its counter's tooltip, so the
+        // hovered counter's line replaces the map's own hint.
+        let arrival = point.filter(|_| !over_combat).and_then(|point| {
+            let hit = self
+                .counter_report
+                .arrivals
+                .iter()
+                .rev()
+                .find(|hit| hit.contains(point))?;
+            let arrival = map::counter_eta::arrival(document.playback.hour(), hit.remaining)?;
+            Some(map::counter_eta::sentence(
+                &arrival,
+                hit.ours,
+                &date(arrival.hour),
+            ))
+        });
+        match arrival {
+            Some(text) => response.on_hover_text(text),
+            None => response.on_hover_text("Drag to pan · Scroll to zoom"),
+        };
         self.rendered = Some(Playhead {
             branch: document.playback.branch(),
             hour: document.playback.hour(),

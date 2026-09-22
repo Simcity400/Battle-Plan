@@ -91,22 +91,85 @@ fn field<T: crate::memory::Raw>(
         .ok_or("reinforcement input unreadable")
 }
 
+/// Preserve the original field order, including a late checked-address failure.
+/// A failed field may be partial; no later span is read and nothing is retried.
+fn copy_input_spans<const N: usize>(
+    memory: &impl Memory,
+    sources: [(usize, usize); N],
+    destinations: &mut [&mut [u8]; N],
+) -> Result<(), &'static str> {
+    let addresses = sources.map(|(pointer, offset)| pointer.checked_add(offset));
+    if addresses.iter().any(Option::is_none) {
+        // No read has started. Preserve the scalar prefix instead of turning
+        // an arithmetic failure into a request at a sentinel address.
+        for (address, destination) in addresses.into_iter().zip(destinations) {
+            let address = address.ok_or("reinforcement input unreadable")?;
+            if !crate::read_slice(memory, address, destination) {
+                return Err("reinforcement input unreadable");
+            }
+        }
+        return Ok(());
+    }
+    if memory.copy_scattered(addresses.map(Option::unwrap), destinations) == N {
+        Ok(())
+    } else {
+        Err("reinforcement input unreadable")
+    }
+}
+
+fn formation_flags(memory: &impl Memory, army: usize) -> Result<[u8; 4], &'static str> {
+    let mut values = [[0; 1]; 4];
+    copy_input_spans(
+        memory,
+        [carmy::RETREAT, 0x24d, 0x2ae, 0x2e].map(|offset| (army, offset)),
+        &mut values.each_mut().map(|value| value.as_mut_slice()),
+    )?;
+    Ok(values.map(|value| value[0]))
+}
+
+fn supply_scalars(
+    memory: &impl Memory,
+    base: usize,
+    army: usize,
+) -> Result<[i64; 8], &'static str> {
+    let mut values = [[0; 8]; 8];
+    let mut fields = values.iter_mut();
+    copy_input_spans(
+        memory,
+        [
+            (army, 0x600),
+            (army, 0x610),
+            (army, 0x40),
+            (army, 0x58),
+            (army, 0x498),
+            (base, 0x0331_91c0),
+            (base, 0x0331_9394),
+            (base, 0x0331_94e0),
+        ],
+        &mut std::array::from_fn(|index| {
+            &mut fields.next().unwrap()[..if (4..7).contains(&index) { 4 } else { 8 }]
+        }),
+    )?;
+    Ok(std::array::from_fn(|index| {
+        if (4..7).contains(&index) {
+            i64::from(i32::from_le_bytes(values[index][..4].try_into().unwrap()))
+        } else {
+            i64::from_le_bytes(values[index])
+        }
+    }))
+}
+
 fn pointer(memory: &impl Memory, p: usize, o: usize) -> Result<usize, &'static str> {
     field::<u64>(memory, p, o).map(|p| p as usize)
 }
 
-fn array(
-    memory: &impl Memory,
-    p: usize,
-    o: usize,
-    stride: usize,
-) -> Result<(Array, [u8; 16]), &'static str> {
+fn array(memory: &impl Memory, p: usize, o: usize, stride: usize) -> Result<Array, &'static str> {
     let header = field(memory, p, o)?;
     let array = Array::from_header(header, stride).ok_or("reinforcement array invalid")?;
     if array.count > ARRAY_LIMIT {
         return Err("reinforcement array bound exceeded");
     }
-    Ok((array, header))
+    Ok(array)
 }
 
 fn element(array: Array, index: u32, stride: usize) -> Result<usize, &'static str> {
@@ -152,8 +215,8 @@ fn append_modifiers(
         };
         *len += 1;
     }
-    // The owning pass authenticates and independently verifies this optional
-    // complete raw country snapshot. Never memoize a derived effective value.
+    // The owning pass supplies this authenticated complete raw country snapshot.
+    // Never memoize a derived effective value.
     let mut shared = true;
     for term in &mut output[start..*len] {
         if let Some(value) = memory.modifier_accumulator_value(accumulator, term.key) {
@@ -164,10 +227,8 @@ fn append_modifiers(
             shared = false;
         }
     }
-    let mut source_header = None;
     if !shared {
-        let (entries, header) = array(memory, accumulator, 0, 16)?;
-        source_header = Some(header);
+        let entries = array(memory, accumulator, 0, 16)?;
         for term in &mut output[start..*len] {
             term.raw = 0;
             term.present = 0;
@@ -211,11 +272,6 @@ fn append_modifiers(
             term.feature_selector = u32::from_le_bytes(bytes[8..].try_into().unwrap());
         }
     }
-    if source_header.is_some_and(|header| field::<[u8; 16]>(memory, accumulator, 0) != Ok(header))
-        || pointer(memory, base, metadata::TABLE_RVA)? != table
-    {
-        return Err("reinforcement modifier source changed");
-    }
     Ok(())
 }
 
@@ -231,7 +287,7 @@ fn state_accumulator(
 ) -> Result<usize, &'static str> {
     use crate::cstate;
     auth(memory, base, state, cstate::VTABLE_RVA)?;
-    let (links, _) = array(memory, game, cgame_state::COUNTRY_LINKS, 4)?;
+    let links = array(memory, game, cgame_state::COUNTRY_LINKS, 4)?;
     let canonical = |raw: u32| field::<u32>(memory, element(links, raw, 4)?, 0);
     let hash = canonical(owner)?;
     let header = field::<[u8; 17]>(memory, state, cstate::COUNTRY_MODIFIERS)?;
@@ -260,22 +316,17 @@ fn state_accumulator(
         }
         let raw = field::<u32>(memory, bucket, 8)?;
         if raw == owner || (raw != 0 && owner != 0 && canonical(raw)? == hash) {
-            selected = Some((bucket, raw));
+            selected = Some(bucket);
             break;
         }
         if probe == 255 {
             return Err("reinforcement state hash bound exceeded");
         }
     }
-    if field::<[u8; 17]>(memory, state, cstate::COUNTRY_MODIFIERS)? != header
-        || selected.is_some_and(|(p, raw)| field::<u32>(memory, p, 8) != Ok(raw))
-    {
-        return Err("reinforcement state hash changed");
-    }
     selected
         .map_or_else(
             || state.checked_add(cstate::RESOURCE_MODIFIER + 0x10),
-            |(p, _)| p.checked_add(0x20),
+            |p| p.checked_add(0x20),
         )
         .ok_or("reinforcement state accumulator overflow")
 }
@@ -294,7 +345,7 @@ fn acclimatization(
     if active == 0 {
         return Ok(());
     }
-    let (entries, header) = array(memory, object, 8, 16)?;
+    let entries = array(memory, object, 8, 16)?;
     let count = entries.count as usize;
     if count > ACCLIMATIZATION_LIMIT {
         return Err("reinforcement acclimatization bound exceeded");
@@ -312,9 +363,6 @@ fn acclimatization(
     row.scalar_values[0] = field(memory, object, 0x38)?;
     row.scalar_values[1] = field(memory, active, 0x30)?;
     row.acclimatization_count = count;
-    if pointer(memory, object, 0x20)? != active || field::<[u8; 16]>(memory, object, 8)? != header {
-        return Err("reinforcement acclimatization changed");
-    }
     Ok(())
 }
 
@@ -325,7 +373,7 @@ fn supply_terms(
     row: &mut ContextRow,
     output: &mut [SupplyTerm],
 ) -> Result<(), &'static str> {
-    let (entries, header) = array(memory, template, 0xc0, 16)?;
+    let entries = array(memory, template, 0xc0, 16)?;
     let count = entries.count as usize;
     if count > SUPPLY_TERM_LIMIT {
         return Err("reinforcement supply term bound exceeded");
@@ -344,9 +392,6 @@ fn supply_terms(
         };
     }
     row.supply_term_count = count;
-    if field::<[u8; 16]>(memory, template, 0xc0)? != header {
-        return Err("reinforcement supply terms changed");
-    }
     Ok(())
 }
 
@@ -387,11 +432,11 @@ fn infrastructure(
     if row.flags[10] != 0
         && field::<i32>(memory, status, cbuilding_status::BUILDING_INDEX_COUNT)? != 0
     {
-        let (indices, _) = array(memory, status, cbuilding_status::BUILDING_INDICES, 4)?;
+        let indices = array(memory, status, cbuilding_status::BUILDING_INDICES, 4)?;
         let ordinal = field::<u32>(memory, definition, cbuilding_template::DATABASE_ORDINAL)?;
         let index = field::<i32>(memory, element(indices, ordinal, 4)?, 0)?;
         if index != cbuilding_status::NO_BUILDING_INDEX {
-            let (buildings, _) = array(memory, status, cbuilding_status::BUILDINGS, 8)?;
+            let buildings = array(memory, status, cbuilding_status::BUILDINGS, 8)?;
             let building = pointer(
                 memory,
                 element(
@@ -410,11 +455,6 @@ fn infrastructure(
                     i64::from(field::<i16>(memory, building, cbuilding::HEALTHY_LEVEL)?);
             }
         }
-    }
-    if pointer(memory, base, cbuilding_database::SINGLETON_RVA)? != database
-        || pointer(memory, database, 0x3b0)? != definition
-    {
-        return Err("reinforcement infrastructure changed");
     }
     Ok(())
 }
@@ -437,7 +477,7 @@ fn air(
     let diplomacy = pointer(memory, owner.pointer, 0xf88)?;
     let mut active = field::<i32>(memory, diplomacy, 0xa4)? != 0;
     if !active {
-        let (relations, _) = array(memory, diplomacy, 0x20, 8)?;
+        let relations = array(memory, diplomacy, 0x20, 8)?;
         for i in 0..relations.count {
             let relation = pointer(memory, element(relations, i, 8)?, 0)?;
             if field::<u32>(memory, relation, 8)? == 0x380a {
@@ -451,10 +491,10 @@ fn air(
         return Ok(());
     }
     let manager = pointer(memory, game, cgame_state::STRATEGIC_AIR_MANAGER)?;
-    let (countries, _) = array(memory, manager, 0x30, 8)?;
+    let countries = array(memory, manager, 0x30, 8)?;
     let country = pointer(memory, element(countries, owner.canonical_slot, 8)?, 0)?;
     let index = field::<i32>(memory, region, 0x60)?;
-    let (regions, _) = array(memory, country, 0xe0, 0xa0)?;
+    let regions = array(memory, country, 0xe0, 0xa0)?;
     let index = u32::try_from(index).map_err(|_| "reinforcement air region negative")?;
     let entry = element(regions, index, 0xa0)?;
     row.flags[7] = 1;
@@ -491,7 +531,7 @@ fn transport_intel_lane(
         return Err("reinforcement transport intel owner mismatch");
     }
     auth(memory, base, source, ccountry_intel::VTABLE_RVA)?;
-    let (rows, header) = array(
+    let rows = array(
         memory,
         source,
         ccountry_intel::DATA,
@@ -501,23 +541,15 @@ fn transport_intel_lane(
         Some(row) => field(memory, row, country_intel_row::NAVY)?,
         None => 0,
     };
-    if field::<[u8; 16]>(memory, source, ccountry_intel::DATA)? != header
-        || field::<i32>(memory, target, ccountry_intel::OWNER)? != raw
-    {
-        return Err("reinforcement transport intel changed");
-    }
     Ok(value)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn transport_context(
     memory: &impl Memory,
     base: usize,
     game: usize,
     army: usize,
     location: usize,
-    transfer: usize,
-    expected_handle: u64,
     modifiers: &mut [ModifierTerm],
     terms: &mut [TransportTerm],
 ) -> Result<ContextRow, &'static str> {
@@ -543,7 +575,7 @@ fn transport_context(
     row.ids[7] = region_id;
     let manager = pointer(memory, game, cgame_state::WEATHER_MANAGER)?;
     auth(memory, base, manager, cweather_manager::VTABLE_RVA)?;
-    let (weather, weather_header) = array(
+    let weather = array(
         memory,
         manager,
         cweather_manager::REGIONS,
@@ -583,8 +615,7 @@ fn transport_context(
             if pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)? != owner.pointer {
                 return Err("reinforcement transport diplomacy backlink mismatch");
             }
-            let (enemies, header) =
-                array(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRIES, 4)?;
+            let enemies = array(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRIES, 4)?;
             if enemies.count as usize > TRANSPORT_TERM_LIMIT {
                 return Err("reinforcement transport enemy bound exceeded");
             }
@@ -630,12 +661,6 @@ fn transport_context(
                     )?,
                 };
                 row.transport_term_count += 1;
-                if pointer(memory, enemy.pointer, ccountry::INTEL_TABLE)? != enemy_intel
-                    || pointer(memory, enemy.pointer, ccountry::DIPLOMACY_STATUS)?
-                        != enemy_diplomacy
-                {
-                    return Err("reinforcement transport enemy sources changed");
-                }
             }
             for (index, rva) in [
                 (25, 0x0331_e100),
@@ -669,35 +694,14 @@ fn transport_context(
                 metadata_table,
                 0x29 * metadata::STRIDE + metadata::CATEGORY_MASK,
             )?);
-            if field::<[u8; 16]>(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRIES)? != header
-                || pointer(memory, owner.pointer, ccountry::INTEL_TABLE)? != owner_intel
-                || pointer(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)? != diplomacy
-                || pointer(memory, base, 0x0331_7cc8)? != definitions
-                || pointer(memory, definitions, 0xf8)? != definition
-            {
-                return Err("reinforcement transport sources changed");
-            }
         }
     }
-    if pointer(memory, army, carmy::NAVAL_TRANSFER_MEMBERSHIP)? != transfer
-        || pointer(memory, army, cunit::LOCATION)? != location
-        || field::<u64>(memory, army, cunit::HANDLE)? != expected_handle
-        || field::<u32>(memory, army, cunit::LOGICAL_OWNER)? != owner_raw
-        || pointer(memory, location, cprovince::STRATEGIC_REGION)? != region
-        || field::<[u8; 16]>(memory, manager, cweather_manager::REGIONS)? != weather_header
-        || pointer(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA)? != callback
-        || field::<u32>(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA)? != row.ids[5]
-    {
-        return Err("reinforcement transport identity changed");
-    }
-    auth(memory, base, army, carmy::VTABLE_RVA)?;
     Ok(row)
 }
 
 /// Authenticated pointer-free, bounded raw speed graph. Source selectors follow
 /// native predicates; numeric operands retain their native integer bits. The
 /// naval-transfer branch owns the separate regional weather/enemy/intel graph.
-/// Caller must compare complete rows/arenas in its own consistency window.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_context(
     memory: &impl Memory,
@@ -726,8 +730,6 @@ pub fn capture_context(
             game,
             army,
             location,
-            transfer,
-            expected_handle,
             modifiers,
             transport_terms,
         );
@@ -757,7 +759,7 @@ pub fn capture_context(
     let actual_state = pointer(memory, location, cprovince::STATE)?;
     let mut row = ContextRow::default();
     row.ids[0] = field(memory, location, cprovince::ID)?;
-    let (route, route_header) = array(memory, army, cunit::ORDINARY_ROUTE_DATA, 4)?;
+    let route = array(memory, army, cunit::ORDINARY_ROUTE_DATA, 4)?;
     let next = if route.count == 0 {
         0
     } else {
@@ -766,10 +768,7 @@ pub fn capture_context(
     if next != 0 {
         row.ids[1] = field(memory, next, cprovince::ID)?;
     }
-    row.flags[0] = field(memory, army, carmy::RETREAT)?;
-    row.flags[1] = field(memory, army, 0x24d)?;
-    row.flags[2] = field(memory, army, 0x2ae)?;
-    row.flags[3] = field(memory, army, 0x2e)?;
+    row.flags[..4].copy_from_slice(&formation_flags(memory, army)?);
     row.flags[5] = u8::from(carmy::movement_attacking(memory, base, game, army)?);
     use crate::modifier_definition as metadata;
     let callback = pointer(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA)?;
@@ -851,7 +850,7 @@ pub fn capture_context(
             &mut row.modifier_count,
         )?;
     }
-    let (categories, category_header) = array(memory, selected, 0x508, 8)?;
+    let categories = array(memory, selected, 0x508, 8)?;
     if categories.count as usize > MODIFIER_LIMIT.saturating_sub(row.modifier_count) {
         return Err("reinforcement category bound exceeded");
     }
@@ -873,13 +872,12 @@ pub fn capture_context(
     air(memory, base, game, army, stats, location, &mut row)?;
     if row.flags[2] == 0 {
         row.flags[11] = 1;
-        for (index, offset) in [(2, 0x600), (3, 0x610), (4, 0x40), (10, 0x58)] {
-            row.scalar_values[index] = field(memory, army, offset)?;
+        for (index, value) in [2, 3, 4, 10, 5, 6, 7, 8]
+            .into_iter()
+            .zip(supply_scalars(memory, base, army)?)
+        {
+            row.scalar_values[index] = value;
         }
-        row.scalar_values[5] = i64::from(field::<i32>(memory, army, 0x498)?);
-        row.scalar_values[6] = i64::from(field::<i32>(memory, base, 0x0331_91c0)?);
-        row.scalar_values[7] = i64::from(field::<i32>(memory, base, 0x0331_9394)?);
-        row.scalar_values[8] = field(memory, base, 0x0331_94e0)?;
         supply_terms(memory, base, template, &mut row, supply)?;
         if row.flags[3] == 0
             && !ccountry::has_core_supply_access(
@@ -913,22 +911,6 @@ pub fn capture_context(
         pointer(memory, next, cprovince::STATE)?
     };
     infrastructure(memory, base, infrastructure_state, &mut row)?;
-    if field::<u64>(memory, army, cunit::HANDLE)? != expected_handle
-        || pointer(memory, army, cunit::STAT_BLOCK)? != stats
-        || pointer(memory, army, cunit::LOCATION)? != location
-        || pointer(memory, army, carmy::STANDARD_TEMPLATE)? != template
-        || field::<[u8; 8]>(memory, army, cunit::ROSTER_OWNER)? != owners
-        || field::<[u8; 16]>(memory, army, cunit::ORDINARY_ROUTE_DATA)? != route_header
-        || field::<[u8; 16]>(memory, selected, 0x508)? != category_header
-        || crate::carmy_leader::movement_accumulator(memory, base, army)? != leader
-        || countries.resolve(owner_raw)?.pointer != owner.pointer
-        || pointer(memory, base, metadata::ELIGIBILITY_CALLBACK_RVA)? != callback
-        || field::<u32>(memory, base, metadata::TRADE_FEATURE_FLAGS_RVA)? != row.ids[5]
-    {
-        return Err("reinforcement source identity changed");
-    }
-    auth(memory, base, army, carmy::VTABLE_RVA)?;
-    auth(memory, base, stats, crate::csub_unit_definition::VTABLE_RVA)?;
     Ok(row)
 }
 
@@ -936,7 +918,159 @@ pub fn capture_context(
 mod tests {
     use super::*;
     use crate::memory::SliceMemory;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
+
+    struct PacketMemory {
+        fields: Vec<(usize, Vec<u8>)>,
+        reads: RefCell<Vec<(usize, usize)>>,
+        scatters: Cell<usize>,
+        fault: Option<usize>,
+    }
+
+    impl PacketMemory {
+        fn new(fields: &[(usize, Vec<u8>)], fault: Option<usize>) -> Self {
+            Self {
+                fields: fields.to_vec(),
+                reads: RefCell::default(),
+                scatters: Cell::new(0),
+                fault,
+            }
+        }
+    }
+
+    impl Memory for PacketMemory {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let ordinal = self.reads.borrow().len();
+            self.reads.borrow_mut().push((address, output.len()));
+            if self.fault == Some(ordinal) {
+                let partial = output.len().div_ceil(2);
+                output[..partial].fill(0xed);
+                return false;
+            }
+            let Some((_, value)) = self
+                .fields
+                .iter()
+                .find(|(source, value)| *source == address && value.len() == output.len())
+            else {
+                return false;
+            };
+            output.copy_from_slice(value);
+            true
+        }
+
+        fn copy_scattered<const N: usize>(
+            &self,
+            addresses: [usize; N],
+            destinations: &mut [&mut [u8]; N],
+        ) -> usize {
+            self.scatters.set(self.scatters.get() + 1);
+            for (ordinal, (address, destination)) in
+                addresses.into_iter().zip(destinations).enumerate()
+            {
+                if !self.copy(address, destination) {
+                    return ordinal;
+                }
+            }
+            N
+        }
+    }
+
+    #[test]
+    fn packets_preserve_native_values_exact_spans_and_every_fault_prefix() {
+        let fields = [
+            (0x124c, vec![0xff]),
+            (0x124d, vec![0x80]),
+            (0x12ae, vec![0]),
+            (0x102e, vec![0x7f]),
+            (0x1600, i64::MIN.to_le_bytes().to_vec()),
+            (0x1610, i64::MAX.to_le_bytes().to_vec()),
+            (0x1040, (-1_i64).to_le_bytes().to_vec()),
+            (0x1058, 0_i64.to_le_bytes().to_vec()),
+            (0x1498, i32::MIN.to_le_bytes().to_vec()),
+            (0x0331_91c0, i32::MAX.to_le_bytes().to_vec()),
+            (0x0331_9394, (-1_i32).to_le_bytes().to_vec()),
+            (0x0331_94e0, (-987_654_i64).to_le_bytes().to_vec()),
+        ];
+        let values = [
+            0xff,
+            0x80,
+            0,
+            0x7f,
+            i64::MIN,
+            i64::MAX,
+            -1,
+            0,
+            i64::from(i32::MIN),
+            i64::from(i32::MAX),
+            -1,
+            -987_654,
+        ];
+        for supply in [false, true] {
+            let range = if supply { 4..12 } else { 0..4 };
+            let fields = &fields[range.clone()];
+            let trace: Vec<_> = fields
+                .iter()
+                .map(|(at, bytes)| (*at, bytes.len()))
+                .collect();
+            for fault in std::iter::once(None).chain((0..fields.len()).map(Some)) {
+                let memory = PacketMemory::new(fields, fault);
+                let result = if supply {
+                    supply_scalars(&memory, 0, 0x1000).map(Vec::from)
+                } else {
+                    formation_flags(&memory, 0x1000)
+                        .map(|flags| flags.into_iter().map(i64::from).collect())
+                };
+                let expected = fault.map_or_else(
+                    || Ok(values[range.clone()].to_vec()),
+                    |_| Err("reinforcement input unreadable"),
+                );
+                assert_eq!(result, expected);
+                assert_eq!(memory.scatters.get(), 1);
+                assert_eq!(
+                    *memory.reads.borrow(),
+                    trace[..fault.map_or(fields.len(), |n| n + 1)]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn packet_failure_keeps_partial_field_and_later_destinations_untouched() {
+        let fields = [
+            (0, vec![0xcc; 4]),
+            (0x1000, vec![1, 2, 3, 4]),
+            (0x1010, vec![5, 6, 7, 8]),
+            (0x1020, vec![9, 10, 11, 12]),
+        ];
+        let memory = PacketMemory::new(&fields, Some(1));
+        let mut values = [[0xa5; 4]; 3];
+        assert_eq!(
+            copy_input_spans(
+                &memory,
+                [(0x1000, 0), (0x1000, 0x10), (0x1000, 0x20)],
+                &mut values.each_mut().map(|value| value.as_mut_slice()),
+            ),
+            Err("reinforcement input unreadable")
+        );
+        assert_eq!(values, [[1, 2, 3, 4], [0xed, 0xed, 0xa5, 0xa5], [0xa5; 4]]);
+        assert_eq!(*memory.reads.borrow(), [(0x1000, 4), (0x1010, 4)]);
+        let mut zero = [0; 4];
+        assert!(PacketMemory::new(&fields, None).copy(0, &mut zero));
+        assert_eq!(zero, [0xcc; 4]);
+        let memory = PacketMemory::new(&fields, None);
+        let mut values = [[0xa5; 4]; 3];
+        assert_eq!(
+            copy_input_spans(
+                &memory,
+                [(0x1000, 0), (usize::MAX, 1), (0x1000, 0x20)],
+                &mut values.each_mut().map(|value| value.as_mut_slice()),
+            ),
+            Err("reinforcement input unreadable")
+        );
+        assert_eq!(values, [[1, 2, 3, 4], [0xa5; 4], [0xa5; 4]]);
+        assert_eq!(*memory.reads.borrow(), [(0x1000, 4)]);
+        assert_eq!(memory.scatters.get(), 0);
+    }
 
     struct Counted<T> {
         inner: T,
@@ -996,7 +1130,7 @@ mod tests {
         assert_eq!(output[1].metadata_flags, 7);
         assert_eq!(output[1].scope, 4);
         assert_eq!(output[2].key, 7);
-        assert_eq!((counted.copies.get(), counted.bytes.get()), (6, 76));
+        assert_eq!((counted.copies.get(), counted.bytes.get()), (4, 52));
         assert_eq!(
             append_modifiers(
                 &WithMetadata(&bytes),
@@ -1053,7 +1187,7 @@ mod tests {
         append_modifiers(&memory, 0, 0x99999, 1, &[4, 5], &mut output, &mut len).unwrap();
         assert_eq!(output[1].raw, -654321);
         assert_eq!(output[0].present, 0);
-        assert_eq!(memory.copies.get(), 3);
+        assert_eq!(memory.copies.get(), 2);
     }
 
     #[test]
@@ -1089,6 +1223,13 @@ mod tests {
         impl Memory for Source<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 assert_ne!(address, 0x1000 + carmy::STANDARD_TEMPLATE);
+                assert!(
+                    ![
+                        0x124c, 0x124d, 0x12ae, 0x102e, 0x1600, 0x1610, 0x1040, 0x1058, 0x1498
+                    ]
+                    .contains(&address),
+                    "naval transfer reached a normal land packet"
+                );
                 if [
                     crate::modifier_definition::ELIGIBILITY_CALLBACK_RVA,
                     crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,

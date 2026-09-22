@@ -14,6 +14,9 @@ mod acquisition_gather;
 mod acquisition_jobs;
 mod acquisition_states;
 mod acquisition_wars;
+mod advisor_changes;
+#[cfg(feature = "callback_profile")]
+mod callback_profile;
 mod decode;
 mod division_census;
 mod division_detail;
@@ -22,13 +25,16 @@ mod history;
 mod hook;
 mod map_capture;
 mod map_spool;
+mod portrait_changes;
 mod projection;
 mod raw;
 mod raw_memory;
 mod raw_plan;
+mod read_accounting;
 mod roster;
 mod runtime;
 mod sampling;
+mod snapshot_plan;
 mod spooling;
 mod table_capture;
 
