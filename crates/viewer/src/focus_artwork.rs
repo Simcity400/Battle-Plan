@@ -1,6 +1,6 @@
 //! Localised focus names and authored goal sprites from verified recorded layers.
 use base64::Engine;
-use desktop_protocol::dashboard_data::{FocusArtwork, FocusReply, FocusRequest};
+use desktop_protocol::dashboard_data::{FocusArtwork, FocusReply, FocusRequest, ResearchReply};
 use installed_content::{ResolveOptions, content::ResolvedContent};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -13,6 +13,8 @@ use std::{
 
 pub(crate) struct Context {
     options: ResolveOptions,
+    research: bool,
+    technology_equipment: BTreeMap<String, String>,
     content: Arc<ResolvedContent>,
     allow_unverified: bool,
     artwork_cache: BTreeMap<String, (FocusArtwork, Vec<String>)>,
@@ -37,7 +39,24 @@ impl Context {
         options: ResolveOptions,
         allow: bool,
     ) -> io::Result<Self> {
-        let mut warnings = vec!["Focus artwork comes from the recorded content stack; visual assets are outside content hash coverage.".into()];
+        Self::load_kind(replay, content, options, allow, false)
+    }
+    pub(crate) fn load_research(
+        replay: &replay::container::Replay,
+        content: Arc<ResolvedContent>,
+        options: ResolveOptions,
+        allow: bool,
+    ) -> io::Result<Self> {
+        Self::load_kind(replay, content, options, allow, true)
+    }
+    fn load_kind(
+        replay: &replay::container::Replay,
+        content: Arc<ResolvedContent>,
+        options: ResolveOptions,
+        allow: bool,
+        research: bool,
+    ) -> io::Result<Self> {
+        let mut warnings = vec!["Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".into()];
         crate::content_verification::check_verification(
             "recording",
             &replay.identity.verification,
@@ -52,9 +71,23 @@ impl Context {
                 &mut warnings,
             )?;
         }
-        let (definitions, definition_warnings) = installed_content::focus::read(&content.layers)?;
-        let point_days = installed_content::focus::point_days(&content.layers)?;
+        let (definitions, definition_warnings) = if research {
+            (BTreeMap::new(), Vec::new())
+        } else {
+            installed_content::focus::read(&content.layers)?
+        };
+        let point_days = if research {
+            None
+        } else {
+            installed_content::focus::point_days(&content.layers)?
+        };
         warnings.extend(definition_warnings);
+        let (technology_equipment, technology_warnings) = if research {
+            installed_content::technology::read_equipment(&content.layers)?
+        } else {
+            (BTreeMap::new(), Vec::new())
+        };
+        warnings.extend(technology_warnings);
         let localisation = installed_content::localisation::read(&content.layers, "english")?;
         let sprites = installed_content::gfx::read(&content.layers)?;
         for (label, count) in [
@@ -68,6 +101,8 @@ impl Context {
         }
         Ok(Self {
             options,
+            research,
+            technology_equipment,
             content,
             allow_unverified: allow,
             artwork_cache: BTreeMap::new(),
@@ -87,6 +122,11 @@ impl Context {
             .unwrap_or_else(|| format!("{token}_desc"));
         self.localisation
             .get(&key)
+            .or_else(|| {
+                self.technology_equipment
+                    .get(token)
+                    .and_then(|equipment| self.localisation.get(&format!("{equipment}_desc")))
+            })
             .and_then(|text| localised(text, &self.localisation))
     }
     fn base_duration_days(&self, token: &str) -> Option<f64> {
@@ -98,6 +138,11 @@ impl Context {
         let key = definition.map(|d| d.localisation.as_str()).unwrap_or(token);
         self.localisation
             .get(key)
+            .or_else(|| {
+                self.technology_equipment
+                    .get(token)
+                    .and_then(|equipment| self.localisation.get(equipment))
+            })
             .and_then(|s| localised(s, &self.localisation))
     }
     fn artwork(&self, token: &str) -> io::Result<FocusArtwork> {
@@ -107,6 +152,13 @@ impl Context {
             let Some(sprite) = definition
                 .and_then(|d| d.icon.as_ref())
                 .and_then(|id| self.sprites.sprites.get(id))
+                // The installed technology interface declares GFX_<technology>_medium
+                // (e.g. basic_machine_tools). Resolve only actual authored sprites.
+                .or_else(|| {
+                    self.research
+                        .then(|| self.sprites.sprites.get(&format!("GFX_{token}_medium")))
+                        .flatten()
+                })
             else {
                 return Ok(None);
             };
@@ -181,7 +233,6 @@ impl Context {
         history: analytics::FocusHistory,
         cancelled: &AtomicBool,
     ) -> io::Result<FocusReply> {
-        let mut warnings = self.warnings.clone();
         let tokens: BTreeSet<_> = history
             .segments
             .iter()
@@ -195,14 +246,89 @@ impl Context {
                     .chain(segment.order.continuous.as_deref())
             })
             .collect();
+        let (artwork, warnings) = self.catalogue(tokens, cancelled)?;
+        Ok(FocusReply {
+            source_id: query.source_id.clone(),
+            revision: query.revision.clone(),
+            branch_id: query.branch_id.clone(),
+            tag: query.tag.clone(),
+            history,
+            artwork,
+            warnings,
+        })
+    }
+    pub(crate) fn research_reply(
+        &mut self,
+        query: &FocusRequest,
+        mut history: analytics::ResearchHistory,
+        cancelled: &AtomicBool,
+    ) -> io::Result<ResearchReply> {
+        let tokens = history
+            .slots
+            .iter()
+            .flat_map(|s| {
+                s.entries
+                    .iter()
+                    .map(|e| e.token.as_str())
+                    .chain(s.states.iter().filter_map(|state| state.token.as_deref()))
+            })
+            .collect();
+        let (artwork, mut warnings) = self.catalogue(tokens, cancelled)?;
+        for slot in &mut history.slots {
+            for state in &mut slot.states {
+                if let Some(modifiers) = state.details.as_mut().and_then(|d| d.modifiers.as_mut()) {
+                    for source in modifiers.components.iter_mut().flat_map(|c| &mut c.sources) {
+                        if let Some(token) = &source.token {
+                            source.name = localised(
+                                self.localisation.get(token).unwrap_or(token.as_str()),
+                                &self.localisation,
+                            )
+                            .filter(|name| name.len() <= 4096);
+                        }
+                    }
+                }
+                for bonus in state
+                    .details
+                    .as_mut()
+                    .and_then(|d| d.bonuses.as_mut())
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(token) = &bonus.token {
+                        bonus.name = self
+                            .localisation
+                            .get(token)
+                            .and_then(|text| localised(text, &self.localisation))
+                            .filter(|name| name.len() <= 4096);
+                    }
+                }
+            }
+        }
+        warnings.push("Research dates are observation bounds. Elapsed durations use observed assignments across slots; initial progress and gaps can leave the full duration unknown. Base duration is derived separately from recorded cost operands. Technologies without observed slot assignments are not assigned to a column.".into());
+        Ok(ResearchReply {
+            source_id: query.source_id.clone(),
+            revision: query.revision.clone(),
+            branch_id: query.branch_id.clone(),
+            tag: query.tag.clone(),
+            history,
+            artwork,
+            warnings,
+        })
+    }
+    fn catalogue(
+        &mut self,
+        tokens: BTreeSet<&str>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<(Vec<FocusArtwork>, Vec<String>)> {
+        let mut warnings = self.warnings.clone();
         if tokens.len() > 2048 {
-            return Err(crate::invalid("Focus artwork catalogue exceeds its limit"));
+            return Err(crate::invalid("Widget artwork catalogue exceeds its limit"));
         }
         let mut artwork = Vec::new();
         let mut bytes = 0;
         for token in tokens {
             if cancelled.load(Ordering::Acquire) {
-                return Err(crate::invalid("Focus request cancelled"));
+                return Err(crate::invalid("Widget request cancelled"));
             }
             if !self.artwork_cache.contains_key(token) {
                 let mut messages = Vec::new();
@@ -236,20 +362,12 @@ impl Context {
             let (art, messages) = &self.artwork_cache[token];
             bytes += artwork_bytes(art);
             if bytes > 8 * 1024 * 1024 {
-                return Err(crate::invalid("Focus artwork exceeds output budget"));
+                return Err(crate::invalid("Widget artwork exceeds output budget"));
             }
             warnings.extend(messages.iter().cloned());
             artwork.push(art.clone());
         }
-        Ok(FocusReply {
-            source_id: query.source_id.clone(),
-            revision: query.revision.clone(),
-            branch_id: query.branch_id.clone(),
-            tag: query.tag.clone(),
-            history,
-            artwork,
-            warnings,
-        })
+        Ok((artwork, warnings))
     }
 }
 

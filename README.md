@@ -2,7 +2,7 @@
 
 Record a Hearts of Iron IV campaign, replay it on an interactive map, and explore its statistics over time.
 
-The recorder reads the game's state without controlling the game. The desktop app has a native **Campaign map** tab and an **Overview** dashboard. The dashboard includes national focus order with game names and artwork, alongside placeholder panels for future analytics widgets. Recordings use `.battleplan` files; playback does not need access to live game memory.
+The recorder reads the game's state without controlling the game. The desktop app has a native **Campaign map** tab and an **Overview** dashboard. The dashboard includes national focus order and research-slot history with game names and artwork, alongside placeholder panels for future analytics widgets. Recordings use `.battleplan` files; playback does not need access to live game memory.
 
 ## Start here
 

@@ -23,7 +23,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
-pub const N: usize = 19;
+pub const N: usize = 22;
 
 #[derive(Default)]
 struct NativeShadow<R> {
@@ -165,6 +165,9 @@ pub const TABLES: [TableId; N] = [
     TableId::PowerBalanceMembers,
     TableId::PowerBalanceRanges,
     TableId::PowerBalanceOverrides,
+    TableId::ResearchInputs,
+    TableId::ResearchAppliedBonuses,
+    TableId::ResearchModifiers,
 ];
 /// Name, local cost anchor and local members. Reports sum member ticks;
 /// physically shared walks charge their anchor once and leave followers zero.
@@ -183,6 +186,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("Preferred tactic and operands", 11, &[11, 12]),
     ("Technology sharing", 13, &[13, 14]),
     ("Power balance and children", 15, &[15, 16, 17, 18]),
+    ("Hourly research inputs, bonuses and modifiers", 19, &[19, 20, 21]),
 ];
 
 /// Callback-local inputs for an exclusively owned governance acquisition.
@@ -223,7 +227,7 @@ impl Default for Capacities {
         Self {
             rows: [
                 512, 8192, 32768, 2048, 4096, 512, 2048, 16384, 512, 8192, 4096, 512, 512, 128,
-                1024, 128, 512, 1024, 512,
+                1024, 128, 512, 1024, 512, 2048, 4096, 16384,
             ],
             focus_text: 131072,
             definition_text: 262144,
@@ -274,6 +278,9 @@ pub struct Captured {
     balances: CaptureRows<power_balance_record::Row>,
     balance_members: CaptureRows<power_balance_record::MemberRow>,
     ranges: CaptureRows<power_balance_range::Row>,
+    research_inputs: CaptureRows<engine::research_inputs::Row>,
+    research_bonuses: CaptureRows<engine::research_inputs::BonusRow>,
+    research_modifiers: CaptureRows<engine::research_modifiers::Row>,
     overrides: CaptureRows<power_balance_gfx_override::Row>,
     focus_text: Arena<u8>,
     definition_text: Arena<u8>,
@@ -341,6 +348,9 @@ impl Captured {
             balances: CaptureRows::new(capacity.rows[15]),
             balance_members: CaptureRows::new(capacity.rows[16]),
             ranges: CaptureRows::new(capacity.rows[17]),
+            research_inputs: CaptureRows::new(capacity.rows[19]),
+            research_bonuses: CaptureRows::new(capacity.rows[20]),
+            research_modifiers: CaptureRows::new(capacity.rows[21]),
             overrides: CaptureRows::new(capacity.rows[18]),
             focus_text: Arena::new(capacity.focus_text),
             definition_text: Arena::new(capacity.definition_text),
@@ -420,6 +430,9 @@ impl Captured {
             balance_members = 16,
             ranges = 17,
             overrides = 18,
+            research_bonuses = 20,
+            research_modifiers = 21,
+            research_inputs = 19,
         );
         CaptureReport::default()
     }
@@ -444,6 +457,9 @@ impl Captured {
         self.balance_members.reset();
         self.ranges.reset();
         self.overrides.reset();
+        self.research_bonuses.reset();
+        self.research_modifiers.reset();
+        self.research_inputs.reset();
         self.focus_text.reset();
         self.definition_text.reset();
         self.party_text.reset();
@@ -479,6 +495,9 @@ impl Captured {
             + self.balance_members.allocated_bytes()
             + self.ranges.allocated_bytes()
             + self.overrides.allocated_bytes()
+            + self.research_bonuses.allocated_bytes()
+            + self.research_modifiers.allocated_bytes()
+            + self.research_inputs.allocated_bytes()
             + self.focus_text.allocated_bytes()
             + self.definition_text.allocated_bytes()
             + self.party_text.allocated_bytes()
@@ -515,6 +534,9 @@ impl Captured {
         self.balances.grow(&mut capacity.rows[15]);
         self.balance_members.grow(&mut capacity.rows[16]);
         self.ranges.grow(&mut capacity.rows[17]);
+        self.research_inputs.grow(&mut capacity.rows[19]);
+        self.research_bonuses.grow(&mut capacity.rows[20]);
+        self.research_modifiers.grow(&mut capacity.rows[21]);
         self.overrides.grow(&mut capacity.rows[18]);
         capacity.party_countries = capacity.rows[6];
         capacity.idea_countries = capacity.rows[7];
@@ -556,6 +578,9 @@ impl Captured {
             self.balance_members.outcome,
             self.ranges.outcome,
             self.overrides.outcome,
+            self.research_inputs.outcome,
+            self.research_bonuses.outcome,
+            self.research_modifiers.outcome,
         ]
     }
 
@@ -580,6 +605,9 @@ impl Captured {
             balances: &mut self.balances.rows,
             balance_members: &mut self.balance_members.rows,
             ranges: &mut self.ranges.rows,
+            research_inputs: &mut self.research_inputs.rows,
+            research_bonuses: &mut self.research_bonuses.rows,
+            research_modifiers: &mut self.research_modifiers.rows,
             overrides: &mut self.overrides.rows,
             focus_text: &mut self.focus_text.first,
             definition_text: &mut self.definition_text.first,
@@ -634,6 +662,9 @@ impl Captured {
         self.balance_members.outcome = first.outcomes[16];
         self.ranges.outcome = first.outcomes[17];
         self.overrides.outcome = first.outcomes[18];
+        self.research_bonuses.outcome = first.outcomes[20];
+        self.research_modifiers.outcome = first.outcomes[21];
+        self.research_inputs.outcome = first.outcomes[19];
         self.focus_text.len = first.lens[0];
         self.focus_text.required = first.required[0];
         self.definition_text.len = first.lens[1];
@@ -736,6 +767,9 @@ struct Buffers<'a> {
     balances: &'a mut [power_balance_record::Row],
     balance_members: &'a mut [power_balance_record::MemberRow],
     ranges: &'a mut [power_balance_range::Row],
+    research_inputs: &'a mut [engine::research_inputs::Row],
+    research_bonuses: &'a mut [engine::research_inputs::BonusRow],
+    research_modifiers: &'a mut [engine::research_modifiers::Row],
     overrides: &'a mut [power_balance_gfx_override::Row],
     focus_text: &'a mut [u8],
     definition_text: &'a mut Vec<u8>,
@@ -817,7 +851,19 @@ fn acquire(
     if enabled[11] {
         o.ticks[11] += elapsed(started);
     }
-    if enabled[..13].iter().any(|&value| value) {
+    let started = qpc();
+    let research_context = if enabled[19] {
+        engine::research_inputs::Context::read(memory, base)
+    } else {
+        Err("research inputs not sampled")
+    };
+    if enabled[19] {
+        o.ticks[19] += elapsed(started);
+    }
+    let started = qpc();
+    let modifier_context = if enabled[21] { engine::research_modifiers::Context::read(memory, base) } else { Err("research modifiers not sampled") };
+    if enabled[21] { o.ticks[19] += elapsed(started); }
+    if enabled[..13].iter().chain(&enabled[19..]).any(|&value| value) {
         let started = qpc();
         let countries = read_accounting::with_table(TABLES[5], || {
             ccountry::Reader::new(memory, base, game_state)
@@ -825,9 +871,9 @@ fn acquire(
         o.ticks[5] += elapsed(started);
         match countries {
             Err(reason) => {
-                for (outcome, &active) in o.outcomes[..13].iter_mut().zip(&enabled[..13]) {
-                    if active {
-                        *outcome = Outcome::Unavailable { reason };
+                for index in (0..13).chain(19..N) {
+                    if enabled[index] {
+                        o.outcomes[index] = Outcome::Unavailable { reason };
                     }
                 }
             }
@@ -840,11 +886,9 @@ fn acquire(
                         Ok(Some(country)) => country,
                         Ok(None) => continue,
                         Err(reason) => {
-                            for (outcome, &active) in
-                                o.outcomes[..13].iter_mut().zip(&enabled[..13])
-                            {
-                                if active {
-                                    *outcome = Outcome::Unavailable { reason };
+                            for index in (0..13).chain(19..N) {
+                                if enabled[index] {
+                                    o.outcomes[index] = Outcome::Unavailable { reason };
                                 }
                             }
                             break;
@@ -912,6 +956,24 @@ fn acquire(
                         );
                         append(&mut o.outcomes[3], result);
                         o.ticks[3] += elapsed(started);
+                    }
+                    if enabled[19] {
+                        let started = qpc();
+                        let input_start = o.outcomes[19].len();
+                        let (inputs, bonuses) = engine::research_inputs::walk_country(memory, base,
+                            country.pointer, country.id, research_context,
+                            &mut b.research_inputs[o.outcomes[19].len()..],
+                            &mut b.research_bonuses[o.outcomes[20].len()..]);
+                        if enabled[21] {
+                            let modifiers = match inputs {
+                                Outcome::Rows { len } => engine::research_modifiers::walk_country(memory, base, &countries, country, modifier_context, &b.research_inputs[input_start..input_start + len], &mut b.research_modifiers[o.outcomes[21].len()..]),
+                                _ => Outcome::Unavailable { reason: "research modifier assignments incomplete" },
+                            };
+                            append(&mut o.outcomes[21], modifiers);
+                        }
+                        append(&mut o.outcomes[19], inputs);
+                        append(&mut o.outcomes[20], bonuses);
+                        o.ticks[19] += elapsed(started);
                     }
                     if enabled[5] {
                         let _reads = read_accounting::table(TABLES[5]);
@@ -1897,6 +1959,43 @@ impl Captured {
                     gfx: balance_copy(r.gfx),
                 },
             )),
+            wrap(view::<tables::ResearchInputs, _>(&self.research_inputs, |_| true, |r| rows::ResearchInputRow {
+                country: r.slot.country,
+                index: r.slot.index,
+                technology_handle: r.slot.technology_handle,
+                technology_present: r.slot.technology_present,
+                token: r.token.as_bytes().to_vec(),
+                classifier: r.classifier,
+                level: r.level,
+                progress_raw: r.progress_raw,
+                cost_raw: r.cost_raw,
+                cost_scale_raw: r.cost_scale_raw,
+                cost_debug: r.cost_debug,
+                research_speed_raw: r.slot.research_speed_raw,
+                banked_days_raw: r.slot.banked_days_raw,
+                applied_days_raw: r.slot.applied_days_raw,
+                ahead_reduction_raw: r.ahead_reduction_raw,
+                speed_bonus_raw: r.speed_bonus_raw,
+                bonus_count: r.bonus_count,
+            })),
+
+            wrap(view::<tables::ResearchAppliedBonuses, _>(&self.research_bonuses, |_| true, |r| rows::ResearchAppliedBonusRow {
+                country: r.country,
+                index: r.index,
+                ordinal: r.ordinal,
+                technology_handle: r.technology_handle,
+                id: r.value.id,
+                resolved: r.resolved,
+                name: r.value.name.as_bytes().to_vec(),
+                ahead_reduction_raw: r.value.ahead_reduction_raw,
+                speed_bonus_raw: r.value.speed_bonus_raw,
+                cost_reduction_raw: r.cost_reduction_raw,
+            })),
+            wrap(view::<tables::ResearchModifiers, _>(&self.research_modifiers, |_| true, |r| rows::ResearchModifierRow {
+                country: r.country, index: r.index, ordinal: r.ordinal, technology_handle: r.technology_handle,
+                kind: match r.kind { engine::research_modifiers::Kind::Technology => rows::ResearchModifierRow::TECHNOLOGY, engine::research_modifiers::Kind::CountrySpeed => rows::ResearchModifierRow::COUNTRY_SPEED, engine::research_modifiers::Kind::CategorySpeed => rows::ResearchModifierRow::CATEGORY_SPEED, engine::research_modifiers::Kind::DesignTeam => rows::ResearchModifierRow::DESIGN_TEAM, engine::research_modifiers::Kind::Experience => rows::ResearchModifierRow::EXPERIENCE, engine::research_modifiers::Kind::Sharing => rows::ResearchModifierRow::SHARING, engine::research_modifiers::Kind::License => rows::ResearchModifierRow::LICENSE, engine::research_modifiers::Kind::Scientist => rows::ResearchModifierRow::SCIENTIST, engine::research_modifiers::Kind::Year => rows::ResearchModifierRow::YEAR, engine::research_modifiers::Kind::AheadFactor => rows::ResearchModifierRow::AHEAD_FACTOR, engine::research_modifiers::Kind::MinimumSpeed => rows::ResearchModifierRow::MINIMUM_SPEED, engine::research_modifiers::Kind::CountrySource => rows::ResearchModifierRow::COUNTRY_SOURCE, engine::research_modifiers::Kind::IdeaSource => rows::ResearchModifierRow::IDEA_SOURCE, engine::research_modifiers::Kind::ScriptSource => rows::ResearchModifierRow::SCRIPT_SOURCE, engine::research_modifiers::Kind::ScientistSource => rows::ResearchModifierRow::SCIENTIST_SOURCE, engine::research_modifiers::Kind::SharingMultiplier => rows::ResearchModifierRow::SHARING_MULTIPLIER, engine::research_modifiers::Kind::SharingMaximum => rows::ResearchModifierRow::SHARING_MAXIMUM, engine::research_modifiers::Kind::ModifierMetadata => rows::ResearchModifierRow::MODIFIER_METADATA, engine::research_modifiers::Kind::ScientistCategory => rows::ResearchModifierRow::SCIENTIST_CATEGORY, engine::research_modifiers::Kind::SharingMember => rows::ResearchModifierRow::SHARING_MEMBER, engine::research_modifiers::Kind::SharingPredecessor => rows::ResearchModifierRow::SHARING_PREDECESSOR, engine::research_modifiers::Kind::SharingFilter => rows::ResearchModifierRow::SHARING_FILTER, engine::research_modifiers::Kind::SharingCategory => rows::ResearchModifierRow::SHARING_CATEGORY, engine::research_modifiers::Kind::SharingDoctrine => rows::ResearchModifierRow::SHARING_DOCTRINE, engine::research_modifiers::Kind::SharingMissingMember => rows::ResearchModifierRow::SHARING_MISSING_MEMBER }, raw: r.raw, auxiliary: r.auxiliary, count: r.count, source_id: r.source_id, name: r.name.as_bytes().to_vec(),
+            })),
+
         ]
     }
 }
@@ -1955,6 +2054,53 @@ pub(crate) fn research_shadow_fixture(progress: i64) -> Captured {
 mod tests {
     use super::*;
     use engine::cnational_focus;
+
+    #[test]
+    fn hourly_research_conversion_preserves_native_inputs_and_bonus_failures() {
+        let mut captured = Captured::vacant();
+        let mut input = engine::research_inputs::Row::default();
+        input.slot.country = 11;
+        input.slot.index = 2;
+        input.slot.technology_present = 1;
+        input.slot.technology_handle = 77;
+        input.token.bytes[..3].copy_from_slice(b"abc");
+        input.token.len = 3;
+        input.progress_raw = i64::MAX;
+        input.speed_bonus_raw = i64::MIN;
+        captured.research_inputs.rows.push(input);
+        captured.research_inputs.outcome = Outcome::Rows { len: 1 };
+        captured.research_bonuses.outcome = Outcome::Unavailable { reason: "bonus read failed" };
+        let tables = captured.tables();
+        let TableView::Complete(TableRows::ResearchInputs(rows)) = &tables[19] else { panic!("inputs missing") };
+        assert_eq!(rows[0].index, 2);
+        assert_eq!(rows[0].token, b"abc");
+        assert_eq!(rows[0].progress_raw, i64::MAX);
+        assert_eq!(rows[0].speed_bonus_raw, i64::MIN);
+        assert!(matches!(&tables[20], TableView::Unavailable { .. }));
+        for table in [TableId::ResearchInputs, TableId::ResearchAppliedBonuses, TableId::ResearchModifiers] {
+            for hour in 0..8 { assert!(replay::cadence::should_walk(table, hour, false)); }
+        }
+    }
+
+    #[test]
+    fn hourly_modifier_conversion_preserves_identity_signed_operands_and_source_text() {
+        let mut captured = Captured::vacant();
+        let mut row = engine::research_modifiers::Row {
+            country: 11, index: u32::MAX, ordinal: 7,
+            kind: engine::research_modifiers::Kind::CountrySource,
+            raw: i64::MIN, auxiliary: i64::MAX, count: u32::MAX, source_id: 91,
+            ..Default::default()
+        };
+        row.name.bytes[..4].copy_from_slice(b"idea"); row.name.len = 4;
+        captured.research_modifiers.rows.push(row);
+        captured.research_modifiers.outcome = Outcome::Rows { len: 1 };
+        let tables = captured.tables();
+        let TableView::Complete(TableRows::ResearchModifiers(rows)) = &tables[21] else { panic!("modifiers missing") };
+        assert_eq!((rows[0].country, rows[0].index, rows[0].ordinal), (11, u32::MAX, 7));
+        assert_eq!((rows[0].raw, rows[0].auxiliary, rows[0].count), (i64::MIN, i64::MAX, u32::MAX));
+        assert_eq!(rows[0].kind, rows::ResearchModifierRow::COUNTRY_SOURCE);
+        assert_eq!(rows[0].name, b"idea");
+    }
 
     #[test]
     fn owned_governance_vacancy_has_no_buffer_allocation() {

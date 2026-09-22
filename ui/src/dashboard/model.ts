@@ -6,6 +6,7 @@ import { widgetDefinition, widgetUnavailable } from './definitions.ts';
 
 export const TRAILING_HOURS = 168;
 export const PREFETCH_HOURS = 96;
+export const WIDGET_CONTENT_SCALES = [50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200] as const;
 export const GRID_COLUMNS = { lg: 12, md: 12, sm: 6, xs: 2 } as const;
 export type Breakpoint = keyof typeof GRID_COLUMNS;
 export type Alignment = 'calendar' | 'anchors';
@@ -30,6 +31,7 @@ export interface WidgetSpec {
   kind: WidgetKind;
   configVersion: number;
   title: string;
+  contentScale?: number;
   trackIds: string[];
   countries: CountrySelection;
   metric: MetricKey;
@@ -68,7 +70,7 @@ export function createWidget(kind: WidgetKind, trackId: string, id: string = new
   return {
     id, kind, configVersion: definition.version, title: definition.title, campaign: 'default',
     trackIds: [trackId], countries: { kind: 'selected' }, metric: 'politicalPower',
-    time: { mode: definition.defaultTime },
+    time: { mode: definition.defaultTime }, contentScale: 100,
   };
 }
 

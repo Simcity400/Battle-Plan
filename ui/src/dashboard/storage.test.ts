@@ -1,12 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultTemplate } from './model.ts';
+import { defaultTemplate, WIDGET_CONTENT_SCALES } from './model.ts';
 import { loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, saveLayouts } from './storage.ts';
 
 function memoryStorage() {
   const values = new Map<string, string>();
   return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
 }
+
+test('widget content scales migrate, persist independently and reject invalid saved values', () => {
+  const storage = memoryStorage();
+  const { library } = loadLayouts(storage);
+  const widgets = library.layouts[0].template.widgets;
+  delete widgets[0].contentScale;
+  widgets[1].contentScale = 70;
+  assert.equal(saveLayouts(library, storage), null);
+  const restored = loadLayouts(storage).library.layouts[0].template.widgets;
+  assert.equal(restored[0].contentScale, 100);
+  assert.equal(restored[1].contentScale, 70);
+  assert.deepEqual(restored[1].time, widgets[1].time);
+  for (const scale of WIDGET_CONTENT_SCALES) {
+    widgets[1].contentScale = scale;
+    assert.equal(parseLayoutLibrary(library)?.layouts[0].template.widgets[1].contentScale, scale);
+  }
+  for (const invalid of [0, -50, 201, 75.5, NaN, Infinity, null, '70']) {
+    const raw = structuredClone(library);
+    Object.assign(raw.layouts[0].template.widgets[1], { contentScale: invalid });
+    assert.equal(parseLayoutLibrary(raw), null);
+  }
+});
 
 test('migrates a single saved layout without overwriting the original', () => {
   const storage = memoryStorage();

@@ -102,6 +102,14 @@ fn compare_pack(
     attempt!("Focus", compare_focus);
     attempt!("CompletedFocuses", compare_completed_focuses);
     attempt!("Research", compare_research);
+    if frame.complete::<tables::ResearchModifiers>().is_ok() {
+        report.limitation("research modifier operands and sources have synthetic coverage, but no fresh-save or live-rate oracle validation", "ResearchModifiers");
+    }
+    if frame.complete::<tables::ResearchInputs>().is_ok()
+        || frame.complete::<tables::ResearchAppliedBonuses>().is_ok()
+    {
+        report.limitation("hourly research inputs and applied-bonus attribution have synthetic reader/codec coverage but no fresh-save oracle validation; the existing Research comparison covers only its own staggered tables", "ResearchInputs, ResearchAppliedBonuses");
+    }
     attempt!("DecisionCounts", compare_decision_counts);
     attempt!("Decisions", compare_decisions);
     attempt!("DynamicModifiers", compare_modifiers);

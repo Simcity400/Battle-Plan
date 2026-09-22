@@ -63,6 +63,10 @@ pub enum DataCommand {
         id: String,
         request: FocusRequest,
     },
+    ResearchHistory {
+        id: String,
+        request: FocusRequest,
+    },
     LandOwners {
         id: String,
         #[serde(rename = "sourceId")]
@@ -86,6 +90,7 @@ impl DataCommand {
             | Self::Query { id, .. }
             | Self::CountryFlags { id, .. }
             | Self::FocusHistory { id, .. }
+            | Self::ResearchHistory { id, .. }
             | Self::LandOwners { id, .. }
             | Self::Cancel { id } => Some(id),
             Self::Release { .. } => None,
@@ -134,6 +139,18 @@ pub struct FocusReply {
     pub branch_id: String,
     pub tag: String,
     pub history: analytics::FocusHistory,
+    pub artwork: Vec<FocusArtwork>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchReply {
+    pub source_id: String,
+    pub revision: String,
+    pub branch_id: String,
+    pub tag: String,
+    pub history: analytics::ResearchHistory,
     pub artwork: Vec<FocusArtwork>,
     pub warnings: Vec<String>,
 }

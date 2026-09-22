@@ -391,6 +391,28 @@ pub async fn dashboard_focus_history(
 }
 
 #[tauri::command]
+pub async fn dashboard_research_history(
+    window: WebviewWindow,
+    host: State<'_, NativeHost>,
+    service: State<'_, DashboardService>,
+    query: desktop_protocol::dashboard_data::FocusRequest,
+    request_id: String,
+) -> Result<ProjectedResponse, String> {
+    query.validate()?;
+    request(
+        &window,
+        &host,
+        &service,
+        request_id.clone(),
+        DataCommand::ResearchHistory {
+            id: request_id,
+            request: query,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn dashboard_country_flags(
     window: WebviewWindow,
     host: State<'_, NativeHost>,

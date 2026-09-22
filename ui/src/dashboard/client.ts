@@ -1,9 +1,11 @@
 import type { ContentFolders, CountrySeries, MapBounds, ReplayMetadata } from '../api';
 import type { LandOwners } from '../generated/analytics';
-import type { FocusHistory } from '../generated/analytics';
+import type { FocusHistory, ResearchHistory } from '../generated/analytics';
 
 export interface FocusRequest { sourceId: string; revision: string; branchId: string; tag: string }
 export interface FocusReply extends FocusRequest { history: FocusHistory; artwork: { token: string; name: string | null; description: string | null; baseDurationDays: number | null; icon: string | null }[]; warnings: string[] }
+
+export interface ResearchReply extends FocusRequest { history: ResearchHistory; artwork: FocusReply['artwork']; warnings: string[] }
 
 /** Runtime source identity. Saved layouts keep source roles, not these handles. */
 export interface DashboardSource {
@@ -68,6 +70,7 @@ export interface DashboardMapState {
 }
 
 export interface DashboardClient {
+  researchHistory?(request: FocusRequest, signal: AbortSignal): Promise<ResearchReply>;
   focusHistory?(request: FocusRequest, signal: AbortSignal): Promise<FocusReply>;
   mapSettings?(sourceId: string, revision: string, settings: CampaignMapSettings | null, signal: AbortSignal, target?: MapSettingsTarget): Promise<MapSettingsReply>;
   contentFolders?(signal: AbortSignal): Promise<ContentFolders>;

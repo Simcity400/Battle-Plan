@@ -1,0 +1,46 @@
+//! CLimitedUseTechCostReduction. Serializer 1413BAFA0 writes name +30, ID +50
+//! and fixed5 reduction +08. EC1440 selects from status +100; EC43A0 appends
+//! the selected IDs to the same applied-ID list as speed/ahead bonuses.
+//! EC0360/EC03D0 allocate both kinds from status's shared +13c ID counter.
+use crate::{
+    Memory,
+    climited_use_tech_bonus::Value,
+    msvc_string::{Descriptor, Text},
+    read,
+};
+
+pub const VTABLE_RVA: usize = 0x0295_e4c0;
+pub const NAME: usize = 0x30;
+pub const ID: usize = 0x50;
+pub const REDUCTION: usize = 0x08;
+
+pub(crate) fn value(
+    memory: &impl Memory,
+    pointer: usize,
+    id: i32,
+) -> Result<(Value, i64), &'static str> {
+    let descriptor = Descriptor::read(
+        memory,
+        pointer
+            .checked_add(NAME)
+            .ok_or("cost bonus address overflow")?,
+    )?;
+    let mut name = Text::<512>::default();
+    descriptor.copy(memory, &mut name.bytes)?;
+    name.len = descriptor.len;
+    let reduction = read::<i64>(
+        memory,
+        pointer
+            .checked_add(REDUCTION)
+            .ok_or("cost bonus address overflow")?,
+    )
+    .ok_or("cost reduction unreadable")?;
+    Ok((
+        Value {
+            id,
+            name,
+            ..Default::default()
+        },
+        reduction,
+    ))
+}

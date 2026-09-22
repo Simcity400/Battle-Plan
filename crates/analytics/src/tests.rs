@@ -19,6 +19,367 @@ use crate::{
 
 const CAMPAIGN: &[u8] = b"analytics-test";
 
+fn research_replay(frames: Vec<DecodedFrame>) -> Replay {
+    Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()
+}
+
+#[test]
+fn hourly_research_is_independent_of_staggered_catalogue_and_never_falls_back_after_failure() {
+    let mut frame = research_frame(1, 100, &[Some(1)], &[]);
+    fixture_research_inputs(&mut frame);
+    for table in [
+        TableId::ResearchSlots,
+        TableId::ResearchTechnologies,
+        TableId::TechnologyDefinitions,
+        TableId::ResearchAppliedBonuses,
+    ] {
+        frame.tables[table.index()] = TableView::Unavailable {
+            reason: "independent table failure".into(),
+        };
+    }
+    let histories =
+        crate::research_branch(&research_replay(vec![frame]), 1, &AtomicBool::new(false)).unwrap();
+    let slot = &histories["GER"].slots[0];
+    assert_eq!(slot.entries[0].token, "tech_1");
+    assert!(slot.states[0].details.as_ref().unwrap().bonuses.is_none());
+    let mut frame = research_frame(1, 100, &[Some(1)], &[]);
+    frame.tables[TableId::ResearchInputs.index()] = TableView::Unavailable {
+        reason: "hourly inputs failed".into(),
+    };
+    assert!(
+        crate::research_branch(&research_replay(vec![frame]), 1, &AtomicBool::new(false))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+fn research_frame(
+    branch: u64,
+    hour: i32,
+    assignments: &[Option<u32>],
+    completed: &[u32],
+) -> DecodedFrame {
+    use replay::rows::{ResearchSlotRow, ResearchTechnologyRow, TechnologyDefinitionRow};
+    let mut frame = source(branch, hour, Some(1));
+    frame.tables[TableId::ResearchInputs.index()] = TableView::Unavailable {
+        reason: "fixture hourly research".into(),
+    };
+    frame.tables[TableId::ResearchSlots.index()] = TableView::Complete(TableRows::ResearchSlots(
+        assignments
+            .iter()
+            .enumerate()
+            .map(|(index, handle)| ResearchSlotRow {
+                country: 11,
+                index: index as u32,
+                technology_handle: handle.unwrap_or(0),
+                technology_present: u8::from(handle.is_some()),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    frame.tables[TableId::ResearchTechnologies.index()] =
+        TableView::Complete(TableRows::ResearchTechnologies(
+            (1..=4)
+                .map(|handle| {
+                    let done = completed.contains(&handle);
+                    ResearchTechnologyRow {
+                        country: 11,
+                        technology_handle: handle,
+                        level: i32::from(done),
+                        researched: u8::from(done),
+                        classifier: if done {
+                            engine::ctechnology::CLASSIFIER_COMPLETED
+                        } else {
+                            engine::ctechnology::CLASSIFIER_ACTIVE
+                        },
+                        ..Default::default()
+                    }
+                })
+                .collect(),
+        ));
+    frame.tables[TableId::TechnologyDefinitions.index()] =
+        TableView::Complete(TableRows::TechnologyDefinitions(
+            (1..=4)
+                .map(|technology_handle| TechnologyDefinitionRow {
+                    technology_handle,
+                    id: format!("tech_{technology_handle}").into_bytes(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    frame
+}
+
+#[test]
+fn research_records_slot_growth_completions_switches_idle_and_unknown_initial_duration() {
+    let replay = research_replay(vec![
+        research_frame(1, 100, &[Some(1), None], &[]),
+        research_frame(1, 101, &[Some(1), Some(2)], &[]),
+        research_frame(1, 102, &[Some(3), Some(4), None], &[1]),
+        research_frame(1, 103, &[None, Some(4), Some(2)], &[1]),
+    ]);
+    let histories = crate::research_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let history = &histories["GER"];
+    assert_eq!(
+        history.coverage,
+        [crate::ResearchCoverage {
+            first_hour: 100,
+            last_hour: 103
+        }]
+    );
+    assert_eq!(history.slots.len(), 3);
+    let first = &history.slots[0].entries;
+    assert_eq!(first[0].token, "tech_1");
+    assert_eq!(first[0].started_after_hour, None);
+    assert_eq!(first[0].outcome, crate::ResearchOutcome::Completed);
+    assert_eq!(first[0].ended_by_hour, Some(102));
+    assert_eq!(first[1].outcome, crate::ResearchOutcome::Switched);
+    assert_eq!(first[1].started_after_hour, Some(101));
+    assert_eq!(
+        history.slots[1].entries[0].outcome,
+        crate::ResearchOutcome::Switched
+    );
+    assert_eq!(
+        history.slots[1].entries[1].outcome,
+        crate::ResearchOutcome::Active
+    );
+    assert_eq!(history.slots[2].availability[0].first_hour, 102);
+    assert_eq!(history.slots[2].entries[0].first_observed_hour, 103);
+}
+
+#[test]
+fn research_slot_states_preserve_effects_idle_and_gaps_without_hourly_duplicates() {
+    let mut frames = vec![
+        research_frame(1, 100, &[Some(1)], &[]),
+        research_frame(1, 101, &[Some(1)], &[]),
+        research_frame(1, 102, &[Some(1)], &[]),
+        research_frame(1, 103, &[None], &[]),
+        research_frame(1, 105, &[Some(1)], &[]),
+    ];
+    for frame in &mut frames {
+        let TableView::Complete(TableRows::ResearchSlots(slots)) =
+            &mut frame.tables[TableId::ResearchSlots.index()]
+        else {
+            panic!()
+        };
+        slots[0].research_speed_raw = if frame.hour == 102 { 200_000 } else { 150_000 };
+        slots[0].applied_days_raw = 3_000_000;
+        slots[0].banked_days_raw = i64::MAX;
+        let TableView::Complete(TableRows::ResearchTechnologies(technologies)) =
+            &mut frame.tables[TableId::ResearchTechnologies.index()]
+        else {
+            panic!()
+        };
+        technologies[0].ahead_reduction_years_raw = 200_000;
+        technologies[0].progress_raw = i64::from(frame.hour); // Progress changes do not duplicate stable effects.
+    }
+    let histories =
+        crate::research_branch(&research_replay(frames), 1, &AtomicBool::new(false)).unwrap();
+    let slot = &histories["GER"].slots[0];
+    assert_eq!(slot.states.len(), 4);
+    assert_eq!(
+        (slot.states[0].first_hour, slot.states[0].last_hour),
+        (100, 101)
+    );
+    assert_eq!(slot.states[0].entry_first_observed_hour, Some(100));
+    assert_eq!(slot.states[0].speed_multiplier_raw, "150000");
+    assert_eq!(slot.states[0].banked_days_raw, i64::MAX.to_string());
+    assert_eq!(slot.states[0].applied_days_raw, "3000000");
+    assert_eq!(
+        slot.states[0].ahead_reduction_years_raw.as_deref(),
+        Some("200000")
+    );
+    assert_eq!(slot.states[1].speed_multiplier_raw, "200000");
+    assert_eq!(slot.states[2].token, None);
+    assert_eq!(slot.states[2].entry_first_observed_hour, None);
+    assert_eq!(slot.states[2].ahead_reduction_years_raw, None);
+    assert_eq!(slot.states[3].entry_first_observed_hour, Some(105));
+    assert_eq!(slot.availability.len(), 2);
+}
+
+#[test]
+fn research_never_dates_through_gaps_or_country_reuse_and_cache_is_branch_scoped() {
+    let mut missing = research_frame(1, 101, &[Some(1)], &[]);
+    missing.tables[TableId::ResearchSlots.index()] = TableView::Unavailable {
+        reason: "synthetic gap".into(),
+    };
+    let mut reused = research_frame(1, 104, &[Some(2)], &[1]);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut reused.tables[TableId::Countries.index()]
+    {
+        rows[0].id = 11;
+    }
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[
+            records(
+                1,
+                vec![
+                    research_frame(1, 100, &[Some(1)], &[]),
+                    missing,
+                    research_frame(1, 102, &[Some(1)], &[]),
+                    research_frame(1, 103, &[Some(2)], &[1]),
+                    reused,
+                ],
+            ),
+            records(2, vec![research_frame(2, 100, &[Some(4)], &[])]),
+        ],
+    )
+    .unwrap();
+    let mut cache = crate::ResearchCache::default();
+    let cancel = AtomicBool::new(false);
+    let history = cache.get(&replay, 1, "GER", &cancel).unwrap();
+    assert_eq!(history.coverage.len(), 2);
+    assert_eq!(history.coverage[0].last_hour, 100);
+    let entries = &history.slots[0].entries;
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[0].outcome, crate::ResearchOutcome::Unknown);
+    assert_eq!(entries[0].last_observed_hour, 100);
+    assert_eq!(entries[1].started_after_hour, None);
+    assert_eq!(entries[2].outcome, crate::ResearchOutcome::Unknown);
+    assert_eq!(entries[3].started_after_hour, None);
+    assert_eq!(
+        cache.get(&replay, 2, "GER", &cancel).unwrap().slots[0].entries[0].token,
+        "tech_4"
+    );
+    assert_eq!(cache.get(&replay, 1, "GER", &cancel).unwrap(), history);
+    assert!(cache.get(&replay, 1, "FRA", &cancel).is_err());
+    assert!(
+        cache
+            .get(&replay, 1, "GER", &AtomicBool::new(true))
+            .is_err()
+    );
+}
+
+#[test]
+fn research_cache_keeps_country_requests_independent() {
+    let mut frame = research_frame(1, 100, &[Some(1)], &[]);
+    fixture_research_inputs(&mut frame);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut frame.tables[TableId::Countries.index()]
+    {
+        let mut second = rows[0].clone();
+        second.id = 9002;
+        second.canonical_slot = 8;
+        second.tag = b"ENG".to_vec();
+        rows.push(second);
+    }
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut frame.tables[TableId::CountryLinks.index()]
+    {
+        rows.push(CountryLinkRow {
+            id: 9002,
+            canonical_slot: 8,
+        });
+    }
+    if let TableView::Complete(TableRows::ResearchInputs(rows)) =
+        &mut frame.tables[TableId::ResearchInputs.index()]
+    {
+        let mut second = rows[0].clone();
+        second.country = 9002;
+        second.technology_handle = 2;
+        second.token = b"tech_2".to_vec();
+        rows.push(second);
+    }
+    let replay = research_replay(vec![frame]);
+    let cancel = AtomicBool::new(false);
+    let mut cache = crate::ResearchCache::default();
+    let german = cache.get(&replay, 1, "GER", &cancel).unwrap();
+    let british = cache.get(&replay, 1, "ENG", &cancel).unwrap();
+    assert_eq!(german.slots[0].entries[0].token, "tech_1");
+    assert_eq!(british.slots[0].entries[0].token, "tech_2");
+    assert_eq!(cache.get(&replay, 1, "GER", &cancel).unwrap(), german);
+    assert_eq!(cache.get(&replay, 1, "ENG", &cancel).unwrap(), british);
+}
+
+#[test]
+fn research_missing_definitions_or_truncated_technologies_are_not_empty_research() {
+    for table in [
+        TableId::ResearchSlots,
+        TableId::ResearchTechnologies,
+        TableId::TechnologyDefinitions,
+    ] {
+        let mut frame = research_frame(1, 100, &[Some(1)], &[]);
+        frame.tables[table.index()] = TableView::Unavailable {
+            reason: "synthetic unavailable".into(),
+        };
+        assert!(
+            crate::research_branch(&research_replay(vec![frame]), 1, &AtomicBool::new(false))
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let mut frame = research_frame(1, 100, &[Some(1)], &[]);
+    frame.tables[TableId::TechnologyDefinitions.index()] =
+        TableView::Complete(TableRows::TechnologyDefinitions(Vec::new()));
+    assert!(
+        crate::research_branch(&research_replay(vec![frame]), 1, &AtomicBool::new(false))
+            .unwrap()
+            .is_empty()
+    );
+    let mut frame = research_frame(1, 100, &[Some(1)], &[]);
+    if let TableView::Complete(TableRows::CountryLinks(links)) =
+        &mut frame.tables[TableId::CountryLinks.index()]
+    {
+        links.retain(|link| link.id != 11);
+    }
+    assert!(
+        crate::research_branch(&research_replay(vec![frame]), 1, &AtomicBool::new(false))
+            .unwrap()
+            .is_empty()
+    );
+    let mut frame = research_frame(1, 100, &[Some(1)], &[]);
+    frame.tables[TableId::ResearchTechnologies.index()] = TableView::Truncated {
+        rows: TableRows::ResearchTechnologies(Vec::new()),
+        missing: 1,
+    };
+    assert!(
+        crate::research_branch(&research_replay(vec![frame]), 1, &AtomicBool::new(false))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn research_repeat_levels_and_removed_slots_preserve_distinct_assignments() {
+    let mut first = research_frame(1, 100, &[Some(1), Some(2)], &[1]);
+    if let TableView::Complete(TableRows::ResearchTechnologies(rows)) =
+        &mut first.tables[TableId::ResearchTechnologies.index()]
+    {
+        rows[0].classifier = engine::ctechnology::CLASSIFIER_ACTIVE;
+    }
+    let mut second = first.clone();
+    second.hour = 101;
+    if let TableView::Complete(TableRows::ResearchTechnologies(rows)) =
+        &mut second.tables[TableId::ResearchTechnologies.index()]
+    {
+        rows[0].level = 2;
+    }
+    let mut third = second.clone();
+    third.hour = 102;
+    if let TableView::Complete(TableRows::ResearchSlots(rows)) =
+        &mut third.tables[TableId::ResearchSlots.index()]
+    {
+        rows.pop();
+    }
+    let histories = crate::research_branch(
+        &research_replay(vec![first, second, third]),
+        1,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let slots = &histories["GER"].slots;
+    assert_eq!(slots[0].entries.len(), 2);
+    assert_eq!(
+        slots[0].entries[0].outcome,
+        crate::ResearchOutcome::Completed
+    );
+    assert_eq!(slots[0].entries[0].level, 1);
+    assert_eq!(slots[0].entries[1].level, 2);
+    assert_eq!(slots[1].entries[0].outcome, crate::ResearchOutcome::Unknown);
+    assert_eq!(slots[1].availability[0].last_hour, 101);
+}
+
 fn focus_countries_frame(
     branch: u64,
     hour: i32,
@@ -547,9 +908,63 @@ fn records(branch: u64, frames: Vec<DecodedFrame>) -> Vec<Record> {
     out.extend(
         frames
             .into_iter()
-            .map(|frame| Record::Frame(encoder.encode(frame, false).unwrap())),
+            .map(|mut frame| {
+                // Existing research scenarios describe a logical observation.
+                // Populate the hourly companion from those same fixture values.
+                if matches!(&frame.tables[TableId::ResearchInputs.index()], TableView::Unavailable { reason } if reason == "fixture hourly research") {
+                    fixture_research_inputs(&mut frame);
+                }
+                Record::Frame(encoder.encode(frame, false).unwrap())
+            }),
     );
     out
+}
+
+fn fixture_research_inputs(frame: &mut DecodedFrame) {
+    use replay::rows::{ResearchInputRow, tables};
+    let input = (|| {
+        let slots = frame.complete::<tables::ResearchSlots>().ok()?;
+        let techs = frame.complete::<tables::ResearchTechnologies>().ok()?;
+        let definitions = frame.complete::<tables::TechnologyDefinitions>().ok()?;
+        slots
+            .iter()
+            .map(|s| {
+                let mut row = ResearchInputRow {
+                    country: s.country,
+                    index: s.index,
+                    technology_handle: s.technology_handle,
+                    technology_present: s.technology_present,
+                    research_speed_raw: s.research_speed_raw,
+                    banked_days_raw: s.banked_days_raw,
+                    applied_days_raw: s.applied_days_raw,
+                    ..Default::default()
+                };
+                if s.technology_present != 0 {
+                    let t = techs.iter().find(|t| {
+                        t.country == s.country && t.technology_handle == s.technology_handle
+                    })?;
+                    row.token = definitions
+                        .iter()
+                        .find(|d| d.technology_handle == s.technology_handle)?
+                        .id
+                        .clone();
+                    row.level = t.level;
+                    row.classifier = t.classifier;
+                    row.progress_raw = t.progress_raw;
+                    row.ahead_reduction_raw = t.ahead_reduction_years_raw;
+                }
+                Some(row)
+            })
+            .collect::<Option<Vec<_>>>()
+    })();
+    frame.tables[TableId::ResearchInputs.index()] = input.map_or_else(
+        || TableView::Unavailable {
+            reason: "fixture research unavailable".into(),
+        },
+        |rows| TableView::Complete(TableRows::ResearchInputs(rows)),
+    );
+    frame.tables[TableId::ResearchAppliedBonuses.index()] =
+        TableView::Complete(TableRows::ResearchAppliedBonuses(vec![]));
 }
 
 fn open(segments: Vec<Vec<Record>>) -> Analytics {

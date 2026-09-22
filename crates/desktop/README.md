@@ -93,3 +93,5 @@ The native export dialog accepts an optional dashboard view ID and carries it th
 Map-settings requests forward a global, campaign or widget target through the existing bounded service. Global requests require no recording; campaign/widget requests retain source/revision validation.
 
 `dashboard_focus_order` forwards national-focus requests over the shared data channel. The native loader projects completion order and resolves game artwork; the host does not decode replay tables or resolve assets itself.
+
+`dashboard_research_history` forwards research-slot history through the same cancellable projected-response channel. Replay scanning and artwork preparation stay in the native loader; the desktop and browser transports validate response identity before presenting it.

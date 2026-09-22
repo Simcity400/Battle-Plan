@@ -42,6 +42,64 @@ completedByHour: number | null, };
 export type FocusOrder = { countryName: string, completed: Array<FocusEntry>, current: string | null, continuous: string | null, paused: boolean, };
 export type FocusSegment = { firstHour: number, lastHour: number, order: FocusOrder, };
 export type FocusHistory = { segments: Array<FocusSegment>, };
+export type ResearchCoverage = { firstHour: number, lastHour: number, };
+export type ResearchOutcome = "active" | "completed" | "switched" | "unknown";
+export type ResearchEntry = { token: string, technologyHandle: number,
+/**
+ * Breaks attribution across missing hours or a changed country identity.
+ */
+continuityStartHour: number,
+/**
+ * Completed level when this assignment was first observed.
+ */
+level: number, firstObservedHour: number,
+/**
+ * Earlier differing observation; null for initial assignments and gaps.
+ */
+startedAfterHour: number | null, lastObservedHour: number,
+/**
+ * First observation of the outcome. Never expose it before this hour.
+ */
+endedByHour: number | null,
+/**
+ * Completion classification may arrive on a later inventory refresh.
+ */
+outcomeObservedHour?: number | null, outcome: ResearchOutcome, };
+export type ResearchSlotState = { firstHour: number, lastHour: number, token: string | null, entryFirstObservedHour: number | null,
+/**
+ * Native fixed5 operands. Strings preserve the complete signed i64 range.
+ */
+speedMultiplierRaw: string, bankedDaysRaw: string, appliedDaysRaw: string, aheadReductionYearsRaw: string | null, details?: ResearchDetails | null, };
+export type ResearchDetails = {
+/**
+ * Ceiling at the segment's first hour. Subtract complete days elapsed within
+ * this segment. Never inferred from future completion.
+ */
+remainingDays: number | null,
+/**
+ * None means attribution unavailable; empty means no applied IDs.
+ */
+bonuses: Array<ResearchBonus> | null, modifiers?: ResearchModifiers | null, };
+export type ResearchModifiers = { components: Array<ResearchModifier>, totalBonusRaw: string, year: number, aheadFactorRaw: string, minimumSpeedRaw: string, };
+export type ResearchModifier = { kind: string, raw: string, sources: Array<ResearchModifierSource>, };
+export type ResearchModifierSource = { token: string | null, name: string | null, raw: string, };
+export type ResearchBonus = { id: number, token: string | null, name: string | null, speedBonusRaw: string | null, costReductionRaw?: string | null, aheadReductionYearsRaw: string | null, };
+export type ResearchSlotHistory = { index: number, availability: Array<ResearchCoverage>, entries: Array<ResearchEntry>,
+/**
+ * Recorded slot effects and assignment, compressed only across equal consecutive hours.
+ */
+states: Array<ResearchSlotState>,
+/**
+ * Progress/cost observations are compressed separately so daily progress
+ * does not duplicate the complete modifier/source tree.
+ */
+progress: Array<ResearchProgress>, };
+export type ResearchProgress = { firstHour: number, lastHour: number, entryFirstObservedHour: number,
+/**
+ * Base duration in fixed5 days, calculated from recorded cost operands.
+ */
+baseDaysRaw: string | null, progressRaw: string, };
+export type ResearchHistory = { coverage: Array<ResearchCoverage>, slots: Array<ResearchSlotHistory>, };
 export type CountrySeriesRequest = { branchId: string, countryId: string,
 /**
  * Defaults to 1200; requests outside 1..=1200 are rejected.

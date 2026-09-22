@@ -9,7 +9,7 @@ use analytics::{
 use desktop_protocol::{
     dashboard_data::{
         CountryFlagReply, CountryFlagRequest, DataCommand, DataEvent, FocusReply, FocusRequest,
-        LandOwnersReply, MAX_REPLY_BYTES, ReplyChunks, SourceReply,
+        LandOwnersReply, MAX_REPLY_BYTES, ReplyChunks, ResearchReply, SourceReply,
     },
     replay_revision,
 };
@@ -62,6 +62,8 @@ pub struct SharedSource {
     flags: Mutex<Option<crate::country_flags::FlagContext>>,
     focuses: Mutex<Option<crate::focus_artwork::Context>>,
     focus_history: Mutex<analytics::FocusCache>,
+    research_artwork: Mutex<Option<crate::focus_artwork::Context>>,
+    research_history: Mutex<analytics::ResearchCache>,
     content: Mutex<
         Option<(
             installed_content::ResolveOptions,
@@ -143,6 +145,7 @@ enum Payload {
     Query(QueryResultHandle),
     Flags(CountryFlagReply),
     Focus(FocusReply),
+    Research(ResearchReply),
     LandOwners(LandOwnersReply),
     MapSettings(crate::map_settings::Reply),
 }
@@ -154,6 +157,7 @@ impl Payload {
             Self::Query(result) => bounded_json(&**result, &request.cancelled),
             Self::Flags(result) => bounded_json(result, &request.cancelled),
             Self::Focus(result) => bounded_json(result, &request.cancelled),
+            Self::Research(result) => bounded_json(result, &request.cancelled),
             Self::MapSettings(result) => bounded_json(result, &request.cancelled),
             Self::LandOwners(result) => bounded_json(result, &request.cancelled),
         }
@@ -351,6 +355,8 @@ impl Inner {
             flags: Mutex::new(None),
             focuses: Mutex::new(None),
             focus_history: Mutex::new(analytics::FocusCache::default()),
+            research_artwork: Mutex::new(None),
+            research_history: Mutex::new(analytics::ResearchCache::default()),
             content: Mutex::new(None),
             land_owners: Mutex::new(None),
             handle,
@@ -456,6 +462,13 @@ enum LoadJob {
         source: Arc<SharedSource>,
     },
     Focus {
+        request: Arc<Request>,
+        query: FocusRequest,
+        source: Arc<SharedSource>,
+        options: installed_content::ResolveOptions,
+        allow_unverified: bool,
+    },
+    Research {
         request: Arc<Request>,
         query: FocusRequest,
         source: Arc<SharedSource>,
@@ -733,6 +746,62 @@ impl Service {
                                 match result {
                                     Ok(reply) => {
                                         pending.ready.push_back((request, Payload::Focus(reply)))
+                                    }
+                                    Err(error) => pending
+                                        .errors
+                                        .push_back((request, bounded_text(&error, 2048))),
+                                }
+                            }
+                            drop(pending);
+                            load_inner.signal.notify();
+                            continue;
+                        }
+                        LoadJob::Research {
+                            request,
+                            query,
+                            source,
+                            options,
+                            allow_unverified,
+                        } => {
+                            if request.cancelled() {
+                                continue;
+                            }
+                            let result = (|| -> Result<ResearchReply, String> {
+                                let mut cache =
+                                    source.research_artwork.lock().map_err(|error| error.to_string())?;
+                                if !cache
+                                    .as_ref()
+                                    .is_some_and(|cached| cached.matches(&options, allow_unverified))
+                                {
+                                    *cache = Some(
+                                        crate::focus_artwork::Context::load_research(
+                                            &source.replay(),
+                                            source.content(&options).map_err(|e| e.to_string())?,
+                                            options,
+                                            allow_unverified,
+                                        )
+                                        .map_err(|error| error.to_string())?,
+                                    );
+                                }
+                                let branch = query.branch_id.parse().map_err(|_| "Invalid research branch")?;
+                                let mut history = source.research_history.lock().map_err(|error| error.to_string())?;
+                                let history = history.get(&source.replay(), branch, &query.tag, &request.cancelled).map_err(|e| e.to_string())?;
+                                cache
+                                    .as_mut()
+                                    .ok_or("Research artwork unavailable")?
+                                    .research_reply(&query, history, &request.cancelled)
+                                    .map_err(|error| error.to_string())
+                            })();
+                            let mut pending = load_inner
+                                .pending
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner());
+                            if pending.current(&request)
+                                && !load_inner.closed.load(Ordering::Acquire)
+                            {
+                                match result {
+                                    Ok(reply) => {
+                                        pending.ready.push_back((request, Payload::Research(reply)))
                                     }
                                     Err(error) => pending
                                         .errors
@@ -1137,6 +1206,57 @@ impl Service {
                     self.inner.error(
                         request,
                         "The asset loader is busy. Retry the focus widget.".into(),
+                    );
+                }
+            }
+            DataCommand::ResearchHistory { id, request: query } => {
+                let Some(request) = self.inner.begin(id) else {
+                    return;
+                };
+                if let Err(error) = query.validate() {
+                    self.inner.error(request, error.into());
+                    return;
+                }
+                let source = match self.source(&query.source_id) {
+                    Ok(source) if source.key().revision == query.revision => source,
+                    _ => {
+                        self.inner
+                            .error(request, "Research source is unavailable or changed".into());
+                        return;
+                    }
+                };
+                let Some((options, allow_unverified)) = self
+                    .inner
+                    .flag_options
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone()
+                else {
+                    self.inner.error(
+                        request,
+                        "Choose the game and user folders in the native viewer to load research artwork"
+                            .into(),
+                    );
+                    return;
+                };
+                let job = LoadJob::Research {
+                    request: Arc::clone(&request),
+                    query,
+                    source,
+                    options,
+                    allow_unverified,
+                };
+                let accepted = self
+                    .inner
+                    .loader
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .as_ref()
+                    .is_some_and(|loader| loader.try_send(job).is_ok());
+                if !accepted {
+                    self.inner.error(
+                        request,
+                        "The asset loader is busy. Retry the research widget.".into(),
                     );
                 }
             }
@@ -1583,6 +1703,8 @@ pub(crate) mod tests {
             flags: Mutex::new(None),
             focuses: Mutex::new(None),
             focus_history: Mutex::new(analytics::FocusCache::default()),
+            research_artwork: Mutex::new(None),
+            research_history: Mutex::new(analytics::ResearchCache::default()),
             content: Mutex::new(None),
             land_owners: Mutex::new(None),
             handle,

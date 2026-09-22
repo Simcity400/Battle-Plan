@@ -6,6 +6,7 @@ import { formatDateTime } from '../analytics/calendar';
 import { recordingName } from '../api';
 import { Icon } from '../Icons';
 import type { BoundTrack, DashboardTemplate, WidgetSpec } from './model';
+import { WIDGET_CONTENT_SCALES } from './model';
 import type { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import { resolveWidgetCampaign } from './campaigns';
@@ -76,9 +77,16 @@ export function WidgetSettings({ widget, template, tracks, client, onChange, def
   const definition = widgetDefinition(widget.kind);
   const linked = widget.time.mode === 'follow';
   return <div className="widget-settings-content">
-    <button type="button" className="widget-live-toggle" aria-pressed={linked} disabled={!definition?.timeModes.includes('follow') || !definition.timeModes.includes('campaign')}
+    <label className="field"><span>Content scale</span><select value={widget.contentScale ?? 100}
+      onChange={event => onChange({ ...widget, contentScale: Number(event.currentTarget.value) })}>
+      {WIDGET_CONTENT_SCALES.map(scale => <option key={scale} value={scale}>{scale}%{scale === 100 ? ' (default)' : ''}</option>)}
+    </select></label>
+    {widget.kind === 'research' ? <label className="field"><span>View</span><select value={linked ? 'follow' : 'campaign'}
+      onChange={event => onChange({ ...widget, time: { mode: event.currentTarget.value === 'follow' ? 'follow' : 'campaign' } })}>
+      <option value="campaign">History</option><option value="follow">Live playback</option>
+    </select></label> : <button type="button" className="widget-live-toggle" aria-pressed={linked} disabled={!definition?.timeModes.includes('follow') || !definition.timeModes.includes('campaign')}
       onClick={() => onChange({ ...widget, time: { mode: linked ? 'campaign' : 'follow' } })}>
-      <Icon name="link" /><span>Live playback</span><strong>{linked ? 'On' : 'Off'}</strong></button>
+      <Icon name="link" /><span>Live playback</span><strong>{linked ? 'On' : 'Off'}</strong></button>}
     <label className="field"><span>Title</span><input value={title} maxLength={160} onBlur={() => setTitle(widget.title)} onChange={event => {
       const value = event.currentTarget.value;
       setTitle(value);

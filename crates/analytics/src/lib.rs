@@ -14,6 +14,7 @@ mod land_owners;
 mod projection;
 mod query;
 mod reduce;
+mod research;
 mod runtime;
 mod scan;
 mod source;
@@ -24,6 +25,7 @@ pub use focus::{FocusBranch, FocusCache, focus_branch, focus_history, focus_orde
 pub use job::{CountryScan, ScanStep};
 pub use land_owners::land_owners;
 pub use query::*;
+pub use research::{ResearchCache, research_branch};
 pub use runtime::{AnalyticsRuntime, QuerySubscription, RuntimeLimits, RuntimeStats};
 pub use scan::Analytics;
 pub use source::{SourceHandle, source_revision};

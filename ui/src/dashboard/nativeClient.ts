@@ -1,5 +1,6 @@
+import { validateResearchReply } from './researchData';
 import { validateFocusReply } from './focusData';
-import type { FocusReply } from './client';
+import type { FocusReply, ResearchReply } from './client';
 import { newId } from '../ids.ts';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -69,6 +70,11 @@ export const nativeDashboardClient: DashboardClient = {
   async focusHistory(query, signal) {
     const reply = await request<FocusReply>('dashboard_focus_history', () => ({ query }), signal);
     return validateFocusReply(reply, query);
+  },
+
+  async researchHistory(query, signal) {
+    const reply = await request<ResearchReply>('dashboard_research_history', () => ({ query }), signal);
+    return validateResearchReply(reply, query);
   },
   async countryFlags(query, signal) {
     const result = await request<CountryFlagReply>('dashboard_country_flags', () => ({ query }), signal);

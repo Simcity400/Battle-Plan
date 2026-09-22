@@ -1,4 +1,4 @@
-import { defaultTemplate, GRID_COLUMNS } from './model.ts';
+import { defaultTemplate, GRID_COLUMNS, WIDGET_CONTENT_SCALES } from './model.ts';
 import type { Breakpoint, CountrySelection, DashboardTemplate, GridItem, GridLayouts, OffsetWindow, SourceRole, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import type { MetricKey } from '../analytics/model';
 import { widgetDefinition } from './definitions.ts';
@@ -68,6 +68,7 @@ export function parseTemplate(input: unknown): DashboardTemplate | null {
     if (object(widget) && widget.campaign !== undefined && widget.campaign !== 'default' && widget.campaign !== 'tracks') return null;
     if (!object(widget) || !id(widget.id) || !text(widget.title) || !id(widget.kind)
       || !(widget.configVersion === undefined || integer(widget.configVersion, 1, 65535))
+      || !(widget.contentScale === undefined || WIDGET_CONTENT_SCALES.some(scale => scale === widget.contentScale))
       || !Array.isArray(widget.trackIds) || !widget.trackIds.length || !widget.trackIds.every((value) => typeof value === 'string' && trackIds.has(value))
       || !metricKeys.has(String(widget.metric)) || widgets.some((item) => item.id === widget.id)) return null;
     const countries = selection(widget.countries);
@@ -75,7 +76,7 @@ export function parseTemplate(input: unknown): DashboardTemplate | null {
     if (!countries || !time) return null;
     const campaign = widget.campaign === 'default' || (widget.campaign === undefined && widget.trackIds.length === 1 && widget.trackIds[0] === 'main' && time.mode !== 'pin') ? 'default' : 'tracks';
     widgets.push({ campaign, id: widget.id, kind: widget.kind, configVersion: widget.configVersion ?? 1, title: widget.title,
-      trackIds: [...new Set(widget.trackIds as string[])], metric: widget.metric as MetricKey, countries, time });
+      trackIds: [...new Set(widget.trackIds as string[])], metric: widget.metric as MetricKey, countries, time, contentScale: (widget.contentScale as number | undefined) ?? 100 });
   }
   const layouts: GridLayouts = {};
   for (const breakpoint of Object.keys(GRID_COLUMNS) as Breakpoint[]) {

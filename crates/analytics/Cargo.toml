@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+engine = { path = "../engine" }
 replay = { path = "../replay" }
 serde = { version = "1", features = ["derive"] }
 ts-rs = "11.1"

@@ -1,0 +1,482 @@
+use super::*;
+use crate::memory::{RecordLayout, RecordSources, SliceMemory};
+use std::cell::{Cell, RefCell};
+const COUNTRY: usize = 0x100;
+const STATUS: usize = 0x10000;
+const SLOT: usize = 0x12000;
+const TECH: usize = 0x13000;
+const TEMPLATE: usize = 0x14000;
+const BONUS: usize = 0x15000;
+const SLOTS: usize = 0x17000;
+const IDS: usize = 0x18000;
+const BONUSES: usize = 0x18100;
+
+fn put<const N: usize>(bytes: &mut [u8], at: usize, value: [u8; N]) {
+    bytes[at..at + N].copy_from_slice(&value);
+}
+fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+    put(bytes, at, (data as u64).to_le_bytes());
+    put(bytes, at + 8, count.to_le_bytes());
+    put(bytes, at + 12, count.to_le_bytes());
+}
+fn text(bytes: &mut [u8], at: usize, token: &[u8]) {
+    bytes[at..at + token.len()].copy_from_slice(token);
+    put(bytes, at + 16, (token.len() as u64).to_le_bytes());
+    put(bytes, at + 24, 15_u64.to_le_bytes());
+}
+fn fixture(active: bool, applied: bool) -> Vec<u8> {
+    let mut b = vec![0; 0x20000];
+    put(
+        &mut b,
+        COUNTRY + crate::ccountry::TECHNOLOGY_STATUS,
+        (STATUS as u64).to_le_bytes(),
+    );
+    put(
+        &mut b,
+        STATUS,
+        (ctechnology_status::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    put(
+        &mut b,
+        STATUS + ctechnology_status::COUNTRY,
+        (COUNTRY as u64).to_le_bytes(),
+    );
+    array(
+        &mut b,
+        STATUS + ctechnology_status::RESEARCH_SLOTS_DATA,
+        SLOTS,
+        1,
+    );
+    put(&mut b, SLOTS, (SLOT as u64).to_le_bytes());
+    put(
+        &mut b,
+        SLOT,
+        (cresearch_slot::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    put(
+        &mut b,
+        SLOT + cresearch_slot::STATUS,
+        (STATUS as u64).to_le_bytes(),
+    );
+    put(
+        &mut b,
+        SLOT + cresearch_slot::TECHNOLOGY_HANDLE,
+        (if active {
+            7
+        } else {
+            cresearch_slot::IDLE_HANDLE
+        })
+        .to_le_bytes(),
+    );
+    put(
+        &mut b,
+        SLOT + cresearch_slot::RESEARCH_SPEED,
+        150_000_i64.to_le_bytes(),
+    );
+    if active {
+        put(
+            &mut b,
+            SLOT + cresearch_slot::TECHNOLOGY,
+            (TECH as u64).to_le_bytes(),
+        );
+        put(&mut b, TECH, (ctechnology::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut b,
+            TECH + ctechnology::DEFINITION_INDEX,
+            7_u32.to_le_bytes(),
+        );
+        put(
+            &mut b,
+            TECH + ctechnology::STATUS,
+            (STATUS as u64).to_le_bytes(),
+        );
+        put(
+            &mut b,
+            TECH + ctechnology::TEMPLATE,
+            (TEMPLATE as u64).to_le_bytes(),
+        );
+        put(
+            &mut b,
+            TECH + ctechnology::CLASSIFIER,
+            ctechnology::CLASSIFIER_ACTIVE.to_le_bytes(),
+        );
+        put(
+            &mut b,
+            TECH + ctechnology::LIVE_PROGRESS,
+            500_000_i64.to_le_bytes(),
+        );
+        put(
+            &mut b,
+            TEMPLATE + ctechnology_template::DATABASE_INDEX,
+            1_i32.to_le_bytes(),
+        );
+        put(
+            &mut b,
+            TEMPLATE + ctechnology_template::TECHNOLOGY_HANDLE,
+            7_u32.to_le_bytes(),
+        );
+        put(
+            &mut b,
+            TEMPLATE + ctechnology_template::RESEARCH_COST,
+            2_000_000_i64.to_le_bytes(),
+        );
+        text(&mut b, TEMPLATE + ctechnology_template::ID, b"radio");
+        array(
+            &mut b,
+            TECH + ctechnology::APPLIED_BONUS_IDS,
+            IDS,
+            u32::from(applied),
+        );
+    }
+    if applied {
+        put(&mut b, IDS, (-7_i32).to_le_bytes());
+        array(
+            &mut b,
+            STATUS + ctechnology_status::LIMITED_BONUSES,
+            BONUSES,
+            1,
+        );
+        put(&mut b, BONUSES, (BONUS as u64).to_le_bytes());
+        put(&mut b, BONUS, (bonus::VTABLE_RVA as u64).to_le_bytes());
+        put(&mut b, BONUS + bonus::ID, (-7_i32).to_le_bytes());
+        text(&mut b, BONUS + bonus::NAME, b"bonus_radio");
+        put(
+            &mut b,
+            BONUS + bonus::SPEED_BONUS,
+            100_000_i64.to_le_bytes(),
+        );
+        put(
+            &mut b,
+            BONUS + bonus::AHEAD_REDUCTION,
+            200_000_i64.to_le_bytes(),
+        );
+    }
+    b
+}
+
+struct MemoryTrace<'a> {
+    source: SliceMemory<'a>,
+    calls: Cell<usize>,
+    reads: RefCell<Vec<(usize, usize)>>,
+    fault: Option<usize>,
+}
+impl<'a> MemoryTrace<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            source: SliceMemory { base: 0, bytes },
+            calls: Cell::new(0),
+            reads: RefCell::new(vec![]),
+            fault: None,
+        }
+    }
+    fn field(&self, address: usize, out: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push((address, out.len()));
+        if self
+            .fault
+            .is_some_and(|at| address <= at && at < address.saturating_add(out.len()))
+        {
+            if !out.is_empty() {
+                out[0] = 0xff;
+            }
+            return false;
+        }
+        self.source.copy(address, out)
+    }
+}
+impl Memory for MemoryTrace<'_> {
+    fn copy(&self, address: usize, out: &mut [u8]) -> bool {
+        self.calls.set(self.calls.get() + 1);
+        self.field(address, out)
+    }
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        out: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.calls.set(self.calls.get() + 1);
+        for (i, (&at, span)) in addresses.iter().zip(out).enumerate() {
+            if !span.is_empty() && !self.field(at, span) {
+                return i;
+            }
+        }
+        N
+    }
+    fn copy_records(
+        &self,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
+        out: &mut [u8],
+    ) -> usize {
+        // Let the established implementation enumerate exact spans; count this
+        // as one native guarded batch, not as one guard per decoded field.
+        struct Fields<'a, 'b>(&'a MemoryTrace<'b>);
+        impl Memory for Fields<'_, '_> {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                self.0.field(at, out)
+            }
+        }
+        self.calls.set(self.calls.get() + 1);
+        Fields(self).copy_records(sources, layout, out)
+    }
+}
+fn capture(memory: &impl Memory, rows: &mut [Row], bonuses: &mut [BonusRow]) -> (Outcome, Outcome) {
+    walk_country(
+        memory,
+        0,
+        COUNTRY,
+        11,
+        Ok(Context {
+            cost_scale_raw: 100_000,
+            cost_debug: 0,
+        }),
+        rows,
+        bonuses,
+    )
+}
+
+#[test]
+fn idle_and_unbonused_slots_skip_bonus_roster_and_catalogue() {
+    for (active, expected_calls) in [(false, 5), (true, 8)] {
+        let b = fixture(active, false);
+        let m = MemoryTrace::new(&b);
+        let mut rows = [Row::default()];
+        assert_eq!(
+            capture(&m, &mut rows, &mut []),
+            (Outcome::Rows { len: 1 }, Outcome::Rows { len: 0 })
+        );
+        assert_eq!(m.calls.get(), expected_calls);
+        assert!(!m.reads.borrow().iter().any(|&(at, _)| at
+            == STATUS + ctechnology_status::LIMITED_BONUSES
+            || at == STATUS + ctechnology_status::TECHNOLOGIES_DATA));
+        if active {
+            assert_eq!(rows[0].token.as_bytes(), b"radio");
+            assert_eq!(rows[0].progress_raw, 500_000);
+        }
+    }
+}
+
+#[test]
+fn applied_ids_join_exact_names_and_raw_values() {
+    let b = fixture(true, true);
+    let m = MemoryTrace::new(&b);
+    let mut rows = [Row::default()];
+    let mut bonuses = [BonusRow::default()];
+    assert_eq!(
+        capture(&m, &mut rows, &mut bonuses),
+        (Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 })
+    );
+    assert_eq!(m.calls.get(), 14);
+    assert_eq!(bonuses[0].value.id, -7);
+    assert_eq!(bonuses[0].value.name.as_bytes(), b"bonus_radio");
+    assert_eq!(bonuses[0].value.speed_bonus_raw, 100_000);
+    assert_eq!(bonuses[0].value.ahead_reduction_raw, 200_000);
+    assert_eq!(bonuses[0].resolved, 1);
+}
+
+#[test]
+fn native_slot_indices_survive_permutation_and_shared_bonuses_are_read_once() {
+    let mut b = fixture(true, true);
+    let second = SLOT + 0x100;
+    b.copy_within(SLOT..SLOT + 0x48, second);
+    put(&mut b, SLOT + cresearch_slot::INDEX, 1_u32.to_le_bytes());
+    array(
+        &mut b,
+        STATUS + ctechnology_status::RESEARCH_SLOTS_DATA,
+        SLOTS,
+        2,
+    );
+    put(&mut b, SLOTS + 8, (second as u64).to_le_bytes());
+    let m = MemoryTrace::new(&b);
+    let mut rows = [Row::default(); 2];
+    let mut bonuses = [BonusRow::default(); 2];
+    assert_eq!(
+        capture(&m, &mut rows, &mut bonuses),
+        (Outcome::Rows { len: 2 }, Outcome::Rows { len: 2 })
+    );
+    assert_eq!(rows.map(|r| r.slot.index), [0, 1]);
+    assert_eq!(bonuses.map(|r| r.index), [0, 1]);
+    assert_eq!(m.calls.get(), 19);
+    for address in [
+        STATUS + ctechnology_status::LIMITED_BONUSES,
+        BONUS + bonus::NAME,
+    ] {
+        assert_eq!(
+            m.reads
+                .borrow()
+                .iter()
+                .filter(|&&(at, _)| at == address)
+                .count(),
+            1
+        );
+    }
+    put(&mut b, SLOT + cresearch_slot::INDEX, 0_u32.to_le_bytes());
+    assert!(matches!(
+        capture(&MemoryTrace::new(&b), &mut rows, &mut bonuses).0,
+        Outcome::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn truncation_is_exact_and_bonus_faults_do_not_discard_progress() {
+    let b = fixture(true, true);
+    let m = MemoryTrace::new(&b);
+    let mut rows = [Row::default()];
+    assert_eq!(
+        capture(&m, &mut rows, &mut []),
+        (
+            Outcome::Rows { len: 1 },
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 1
+            }
+        )
+    );
+    assert!(!m.reads.borrow().iter().any(|&(at, _)| at == BONUSES));
+    let result = capture(&m, &mut [], &mut []);
+    assert_eq!(
+        result.0,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 1
+        }
+    );
+    assert!(matches!(result.1, Outcome::Unavailable { .. }));
+    let mut bonuses = [BonusRow::default()];
+    for fault in [
+        IDS,
+        BONUSES,
+        BONUS,
+        BONUS + bonus::NAME,
+        BONUS + bonus::SPEED_BONUS,
+    ] {
+        let mut m = MemoryTrace::new(&b);
+        m.fault = Some(fault);
+        let result = capture(&m, &mut rows, &mut bonuses);
+        assert_eq!(result.0, Outcome::Rows { len: 1 });
+        assert!(matches!(result.1, Outcome::Unavailable { .. }));
+    }
+    for fault in [
+        COUNTRY + crate::ccountry::TECHNOLOGY_STATUS,
+        STATUS,
+        SLOTS,
+        SLOT,
+        TECH,
+        TEMPLATE + ctechnology_template::ID,
+        TECH + ctechnology::APPLIED_SPEED_BONUS,
+    ] {
+        let mut m = MemoryTrace::new(&b);
+        m.fault = Some(fault);
+        assert!(matches!(
+            capture(&m, &mut rows, &mut bonuses).0,
+            Outcome::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
+fn unresolved_ids_are_retained_and_wrong_owners_are_rejected() {
+    let mut b = fixture(true, true);
+    put(&mut b, IDS, 99_i32.to_le_bytes());
+    let mut rows = [Row::default()];
+    let mut bonuses = [BonusRow::default()];
+    assert_eq!(
+        capture(&MemoryTrace::new(&b), &mut rows, &mut bonuses).1,
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(bonuses[0].value.id, 99);
+    assert_eq!(bonuses[0].resolved, 0);
+    put(&mut b, SLOT + cresearch_slot::STATUS, 0_u64.to_le_bytes());
+    assert!(matches!(
+        capture(&MemoryTrace::new(&b), &mut rows, &mut bonuses).0,
+        Outcome::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn cost_reduction_ids_use_their_own_layout_and_only_unresolved_ids_need_that_roster() {
+    use crate::climited_use_tech_cost_reduction as cost;
+    let mut b = fixture(true, true);
+    let pointer = BONUS + 0x200;
+    let roster = BONUSES + 0x100;
+    put(&mut b, IDS, 99_i32.to_le_bytes());
+    array(
+        &mut b,
+        STATUS + ctechnology_status::COST_REDUCTIONS,
+        roster,
+        1,
+    );
+    put(&mut b, roster, (pointer as u64).to_le_bytes());
+    put(&mut b, pointer, (cost::VTABLE_RVA as u64).to_le_bytes());
+    put(&mut b, pointer + cost::ID, 99_i32.to_le_bytes());
+    text(&mut b, pointer + cost::NAME, b"doctrine_bonus");
+    put(&mut b, pointer + cost::REDUCTION, 25_000_i64.to_le_bytes());
+    let mut rows = [Row::default()];
+    let mut bonuses = [BonusRow::default()];
+    assert_eq!(
+        capture(&MemoryTrace::new(&b), &mut rows, &mut bonuses).1,
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(bonuses[0].value.name.as_bytes(), b"doctrine_bonus");
+    assert_eq!(bonuses[0].cost_reduction_raw, Some(25_000));
+    assert_eq!(bonuses[0].value.speed_bonus_raw, 0);
+    put(&mut b, IDS, (-7_i32).to_le_bytes());
+    let mut m = MemoryTrace::new(&b);
+    m.fault = Some(STATUS + ctechnology_status::COST_REDUCTIONS);
+    assert_eq!(
+        capture(&m, &mut rows, &mut bonuses).1,
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(bonuses[0].cost_reduction_raw, None);
+    assert!(
+        !m.reads
+            .borrow()
+            .iter()
+            .any(|&(at, _)| at == STATUS + ctechnology_status::COST_REDUCTIONS)
+    );
+}
+
+#[test]
+fn bonus_rosters_are_bounded_before_reading_entries_and_stop_after_resolution() {
+    let mut bytes = fixture(true, true);
+    array(
+        &mut bytes,
+        STATUS + ctechnology_status::LIMITED_BONUSES,
+        BONUSES,
+        4097,
+    );
+    let memory = MemoryTrace::new(&bytes);
+    let mut requested = BonusRow::default();
+    requested.value.id = -7;
+    assert_eq!(
+        resolve_bonuses(&memory, 0, STATUS, &mut [requested]),
+        Err("research bonus roster limit exceeded")
+    );
+    assert_eq!(memory.calls.get(), 1);
+    assert_eq!(memory.reads.borrow().len(), 1);
+
+    array(
+        &mut bytes,
+        STATUS + ctechnology_status::LIMITED_BONUSES,
+        BONUSES,
+        4096,
+    );
+    for index in 0..64 {
+        put(
+            &mut bytes,
+            BONUSES + index * 8,
+            (BONUS as u64).to_le_bytes(),
+        );
+    }
+    let memory = MemoryTrace::new(&bytes);
+    let mut requested = [requested];
+    assert_eq!(resolve_bonuses(&memory, 0, STATUS, &mut requested), Ok(()));
+    assert_eq!(requested[0].resolved, 1);
+    assert!(
+        !memory
+            .reads
+            .borrow()
+            .iter()
+            .any(|&(at, _)| at == BONUSES + 64 * 8)
+    );
+    assert!(memory.calls.get() < 10);
+}

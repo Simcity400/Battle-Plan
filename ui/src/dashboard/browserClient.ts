@@ -1,5 +1,6 @@
+import { validateResearchReply } from './researchData';
 import { validateFocusReply } from './focusData';
-import type { FocusReply } from './client';
+import type { FocusReply, ResearchReply } from './client';
 import type { MapSettingsReply, DashboardClient, DashboardSource, CountryFlagReply, LandOwnersReply, ReplayLibrary } from './client';
 import type { QueryResult } from '../generated/analytics';
 import { newId } from '../ids';
@@ -57,6 +58,11 @@ export const browserDashboardClient: DashboardClient = {
   async focusHistory(query, signal) {
     const reply = await request<FocusReply>({ type: 'focusHistory', request: query }, signal);
     return validateFocusReply(reply, query);
+  },
+
+  async researchHistory(query, signal) {
+    const reply = await request<ResearchReply>({ type: 'researchHistory', request: query }, signal);
+    return validateResearchReply(reply, query);
   },
   async countryFlags(query, signal) {
     const reply = await request<CountryFlagReply>({ type: 'countryFlags', request: query }, signal);

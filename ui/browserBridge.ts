@@ -172,7 +172,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             command = { type: 'mapSettings', sourceId: input.sourceId, revision: input.revision, settings: input.settings ?? null, target: input.target ?? { scope: 'campaign' } };
           } else if (input.type === 'landOwners') {
             command = { type: 'landOwners', sourceId: input.sourceId, revision: input.revision };
-          } else if (input.type === 'query' || input.type === 'countryFlags' || input.type === 'focusHistory') {
+          } else if (input.type === 'query' || input.type === 'countryFlags' || input.type === 'focusHistory' || input.type === 'researchHistory') {
             command = { type: input.type, request: input.request };
           } else if (input.type === 'release') {
             child?.stdin.write(`${JSON.stringify({ type: 'release', sourceId: input.sourceId })}\n`);

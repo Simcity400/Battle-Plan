@@ -12,6 +12,7 @@ import type { MapTarget, MapViewsStore } from './geometry';
 import type { DashboardClient } from './client';
 import { resolveWidgetCampaign } from './campaigns';
 import { widgetUnavailable } from './definitions';
+import ResearchWidget from './ResearchWidget';
 import NationalFocusWidget from './NationalFocusWidget';
 
 export interface WidgetRuntime {
@@ -20,7 +21,7 @@ export interface WidgetRuntime {
   client: DashboardClient; alignment: Alignment; nativeHidden: boolean;
 }
 interface Props { widget: WidgetSpec; runtime: WidgetRuntime; active?: boolean; mapOptions?: MapOptions; headerSlot?: HTMLElement | null; onDiagnostics?: (warnings: string[]) => void }
-const renderers: Readonly<Record<string, (props: Props) => React.ReactNode>> = { map: MapWidget, placeholder: Placeholder, 'national-focus': NationalFocusWidget };
+const renderers: Readonly<Record<string, (props: Props) => React.ReactNode>> = { map: MapWidget, placeholder: Placeholder, 'national-focus': NationalFocusWidget, research: ResearchWidget };
 export function WidgetBody({ widget, runtime, active = true, mapOptions, headerSlot, onDiagnostics }: Props) {
   const resolved = useMemo(() => resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId), [widget, runtime.campaignTracks, runtime.defaultRoleId]);
   const unavailable = widgetUnavailable(widget);
