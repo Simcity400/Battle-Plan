@@ -144,7 +144,7 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
             })
         })
         .fold(0, |mask, count| mask | count);
-    crate::map_settings::set_sample_counts(sample_mask);
+    dashboard::map_settings::set_sample_counts(sample_mask);
     wgpu::DeviceDescriptor {
         label: Some("Battle Plan viewer"),
         required_features: features,

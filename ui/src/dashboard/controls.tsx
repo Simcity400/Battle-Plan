@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties } from 'react';
-import DateTimePicker from '../analytics/DateTimePicker';
-import PlaybackSpeed from './PlaybackSpeed';
-import { formatDateTime } from '../analytics/calendar';
-import { recordingName } from '../api';
-import { Icon } from '../Icons';
+import DateTimePicker from '../components/DateTimePicker';
+import PlaybackSpeed from '../components/PlaybackSpeed';
+import { formatDateTime } from './calendar';
+import { recordingName } from '../shell/api';
+import { Icon } from '../components/Icons';
 import type { BoundTrack, DashboardTemplate, WidgetSpec } from './model';
 import { WIDGET_CONTENT_SCALES } from './model';
 import type { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import { resolveWidgetCampaign } from './campaigns';
 import { timelineGaps } from './timelineGaps';
-import CountryPicker from './CountryPicker';
+import CountryPicker from '../components/CountryPicker';
 import type { DashboardClient } from './client';
 
 
@@ -81,12 +81,9 @@ export function WidgetSettings({ widget, template, tracks, client, onChange, def
       onChange={event => onChange({ ...widget, contentScale: Number(event.currentTarget.value) })}>
       {WIDGET_CONTENT_SCALES.map(scale => <option key={scale} value={scale}>{scale}%{scale === 100 ? ' (default)' : ''}</option>)}
     </select></label>
-    {widget.kind === 'research' ? <label className="field"><span>View</span><select value={linked ? 'follow' : 'campaign'}
-      onChange={event => onChange({ ...widget, time: { mode: event.currentTarget.value === 'follow' ? 'follow' : 'campaign' } })}>
-      <option value="campaign">History</option><option value="follow">Live playback</option>
-    </select></label> : <button type="button" className="widget-live-toggle" aria-pressed={linked} disabled={!definition?.timeModes.includes('follow') || !definition.timeModes.includes('campaign')}
+    <button type="button" className="widget-live-toggle" aria-pressed={linked} disabled={!definition?.timeModes.includes('follow') || !definition.timeModes.includes('campaign')}
       onClick={() => onChange({ ...widget, time: { mode: linked ? 'campaign' : 'follow' } })}>
-      <Icon name="link" /><span>Live playback</span><strong>{linked ? 'On' : 'Off'}</strong></button>}
+      <Icon name="link" /><span>Live playback</span><strong>{linked ? 'On' : 'Off'}</strong></button>
     <label className="field"><span>Title</span><input value={title} maxLength={160} onBlur={() => setTitle(widget.title)} onChange={event => {
       const value = event.currentTarget.value;
       setTitle(value);
@@ -101,7 +98,7 @@ export function WidgetSettings({ widget, template, tracks, client, onChange, def
       <option value="__default">Default campaign</option>
       {template.roles.map(role => <option key={role.id} value={role.id}>{tracks.find(track => track.roleId === role.id) ? recordingName(tracks.find(track => track.roleId === role.id)!.source.path) : `${role.label} - unavailable`}</option>)}
     </select></label>
-    {widget.kind !== 'placeholder' && <CountryPicker field key={reference?.source.id ?? 'unbound'} source={reference?.source} client={client}
+    {definition?.data !== false && <CountryPicker field key={reference?.source.id ?? 'unbound'} source={reference?.source} client={client}
       countries={reference?.source.metadata.countries ?? []} playerCountryId={reference?.source.metadata.playerCountryId ?? null}
       selectedTag={widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : defaultCountryTag}
       onChange={tag => onChange({ ...widget, countries: tag && tag !== defaultCountryTag ? { kind: 'tags', tags: [tag] } : { kind: 'selected' } })} />}

@@ -6,10 +6,11 @@
 //! and eframe calls set_visible after its first paint. The subclass below keeps
 //! only this process's creation-context HWND a child, with host-owned geometry.
 
-use desktop_protocol::{
+use dashboard::protocol::{
     DashboardMapState, DashboardMapView, EVENT_PREFIX, MAX_MESSAGE_BYTES, NativeCommand,
-    NativeEvent, ViewBounds, ViewerState, dashboard_data::DataEvent, validate_map_views,
+    NativeEvent, ViewBounds, ViewerState, validate_map_views,
 };
+use dashboard::transport::DataEvent;
 use eframe::egui;
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 use std::{
@@ -89,7 +90,7 @@ fn validate_snapshot(path: &str, revision: &str) -> Result<(), String> {
 /// a close is terminal, including if more input has already reached the pipe.
 #[derive(Default)]
 pub struct Pending {
-    pub actions: VecDeque<desktop_protocol::MapAction>,
+    pub actions: VecDeque<dashboard::protocol::MapAction>,
     pub standalone: bool,
     pub open: Option<OpenRequest>,
     pub seek: Option<Seek>,
@@ -123,7 +124,7 @@ impl Pending {
                 if self.actions.len() >= 16 {
                     return Err("Map controls queue is full".into());
                 }
-                if let desktop_protocol::MapAction::Unload { path } = &action {
+                if let dashboard::protocol::MapAction::Unload { path } = &action {
                     let path = std::path::Path::new(path);
                     if self
                         .open
@@ -255,7 +256,7 @@ impl ReportedState {
 
 #[derive(Default)]
 struct Outgoing {
-    details: Option<desktop_protocol::MapDetails>,
+    details: Option<dashboard::protocol::MapDetails>,
     ready: Option<String>,
     state: Option<ReportedState>,
     error: Option<String>,
@@ -437,7 +438,7 @@ impl Parent {
             ctx: cc.egui_ctx.clone(),
         });
         let output_target = Arc::downgrade(&shared);
-        let service = crate::dashboard_data::Service::new(Arc::new(move |event| {
+        let service = dashboard::Service::new(Arc::new(move |event| {
             output_target
                 .upgrade()
                 .is_some_and(|shared| shared.data(event))
@@ -590,12 +591,12 @@ pub struct Controller {
     last_report: Option<Instant>,
     closing: bool,
     output_done: mpsc::Receiver<()>,
-    service: Arc<crate::dashboard_data::Service>,
+    service: Arc<dashboard::Service>,
     last_maps: Option<Vec<DashboardMapState>>,
 }
 
 impl Controller {
-    pub fn service(&self) -> Arc<crate::dashboard_data::Service> {
+    pub fn service(&self) -> Arc<dashboard::Service> {
         Arc::clone(&self.service)
     }
 
@@ -641,7 +642,7 @@ impl Controller {
         self.window.visible()
     }
 
-    pub fn report_details(&self, mut details: desktop_protocol::MapDetails) {
+    pub fn report_details(&self, mut details: dashboard::protocol::MapDetails) {
         // Keep diagnostic responses below the control pipe's frame budget.
         // Budget escaped JSON bytes, not characters (which can expand sixfold).
         let mut bytes = 0;
@@ -1179,13 +1180,13 @@ mod tests {
         pending.push(open.clone()).unwrap();
         pending
             .push(NativeCommand::MapAction {
-                action: desktop_protocol::MapAction::Unload { path: "B".into() },
+                action: dashboard::protocol::MapAction::Unload { path: "B".into() },
             })
             .unwrap();
         assert!(pending.open.is_some());
         pending
             .push(NativeCommand::MapAction {
-                action: desktop_protocol::MapAction::Unload { path: "A".into() },
+                action: dashboard::protocol::MapAction::Unload { path: "A".into() },
             })
             .unwrap();
         assert!(pending.open.is_none());

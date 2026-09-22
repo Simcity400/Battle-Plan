@@ -5,8 +5,8 @@ mod native;
 mod replay_library;
 mod video;
 
+use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
-use desktop_protocol::{DashboardMapView, ViewBounds};
 use native::{HostStatus, NativeHost};
 use std::path::PathBuf;
 use tauri::{Manager, State, WebviewWindow};
@@ -36,7 +36,7 @@ fn select_native_view(host: State<'_, NativeHost>, dashboard: bool) -> Result<()
 #[tauri::command]
 fn map_action(
     host: State<'_, NativeHost>,
-    action: desktop_protocol::MapAction,
+    action: dashboard::protocol::MapAction,
 ) -> Result<(), String> {
     host.map_action(action)
 }
@@ -53,7 +53,7 @@ async fn export_map(host: State<'_, NativeHost>, view_id: Option<String>) -> Res
     .await
     .map_err(|e| e.to_string())?;
     if let Some(path) = path {
-        host.map_action(desktop_protocol::MapAction::Export {
+        host.map_action(dashboard::protocol::MapAction::Export {
             path: path.to_string_lossy().into_owned(),
             view_id,
         })?;
@@ -173,11 +173,7 @@ fn main() {
             open_replay,
             seek_map,
             dashboard_service::dashboard_open_source,
-            dashboard_service::dashboard_query,
-            dashboard_service::dashboard_country_flags,
-            dashboard_service::dashboard_focus_history,
-            dashboard_service::dashboard_research_history,
-            dashboard_service::dashboard_land_owners,
+            dashboard_service::dashboard_product,
             dashboard_service::dashboard_map_settings,
             dashboard_service::dashboard_cancel,
             dashboard_service::dashboard_release_source,

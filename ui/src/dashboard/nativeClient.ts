@@ -1,22 +1,20 @@
-import { validateResearchReply } from './researchData';
-import { validateFocusReply } from './focusData';
-import type { FocusReply, ResearchReply } from './client';
-import { newId } from '../ids.ts';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { desktopAvailable } from '../api';
-import type { ReplayMetadata as GeneratedMetadata, QueryRequest, QueryResult } from '../generated/analytics';
-import type { CountryFlagReply, MapSettingsReply, DashboardClient, DashboardMapState, DashboardSource, LandOwnersReply, ReplayLibrary } from './client';
-
-interface OpenedSource {
-  id: string;
-  path: string;
-  revision: string;
-  metadata: GeneratedMetadata;
-}
+import { newId } from '../shell/ids.ts';
+import { desktopAvailable } from '../shell/api';
+import type { SourceReply } from '../generated/dashboard';
+import type { DashboardClient, DashboardMapState, DashboardSource, MapSettingsReply, ProductReply, ReplayLibrary } from './client';
 
 function cancelled(): DOMException {
   return new DOMException('Request cancelled', 'AbortError');
+}
+
+/** Data replies arrive as raw JSON bytes; the host never parses them. */
+async function rawInvoke<T>(command: string, args: Record<string, unknown>): Promise<T> {
+  const result = await invoke<unknown>(command, args);
+  if (result instanceof ArrayBuffer) return JSON.parse(new TextDecoder().decode(result)) as T;
+  if (result instanceof Uint8Array) return JSON.parse(new TextDecoder().decode(result)) as T;
+  return result as T;
 }
 
 async function request<T>(
@@ -31,7 +29,7 @@ async function request<T>(
   const abort = () => { void invoke('dashboard_cancel', { requestId }).catch(() => {}); };
   signal.addEventListener('abort', abort, { once: true });
   try {
-    const result = await invoke<T>(command, { ...args(requestId), requestId });
+    const result = await rawInvoke<T>(command, { ...args(requestId), requestId });
     if (signal.aborted) {
       await releaseLate?.(result).catch(() => {});
       throw cancelled();
@@ -50,74 +48,25 @@ async function releaseSource(sourceId: string): Promise<void> {
 }
 
 export const nativeDashboardClient: DashboardClient = {
-  async mapSettings(sourceId, revision, settings, signal, target = { scope: 'campaign' }) {
-    const reply = await request<MapSettingsReply>('dashboard_map_settings', () => ({ sourceId, revision, settings, target }), signal);
-    if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');
-    if (!reply.inheritedSettings) throw new Error('The app or local bridge needs updating to support global and widget settings.');
-    return reply;
-  },
   available: desktopAvailable,
   replayLibrary: () => invoke<ReplayLibrary>('replay_library'),
   setReplayFolder: folder => invoke<ReplayLibrary>('set_replay_folder', { folder }),
   chooseReplayFolder: initial => invoke<string | null>('choose_replay_folder', { initial: initial ?? null }),
   chooseRecording: () => invoke<string | null>('choose_recording'),
-  async landOwners(sourceId, revision, signal) {
-    const result = await request<LandOwnersReply>('dashboard_land_owners', () => ({ sourceId, revision }), signal);
-    if (result.sourceId !== sourceId || result.revision !== revision) throw new Error('Countries do not match this recording');
-    return result;
-  },
 
-  async focusHistory(query, signal) {
-    const reply = await request<FocusReply>('dashboard_focus_history', () => ({ query }), signal);
-    return validateFocusReply(reply, query);
-  },
-
-  async researchHistory(query, signal) {
-    const reply = await request<ResearchReply>('dashboard_research_history', () => ({ query }), signal);
-    return validateResearchReply(reply, query);
-  },
-  async countryFlags(query, signal) {
-    const result = await request<CountryFlagReply>('dashboard_country_flags', () => ({ query }), signal);
-    if (result.size !== query.size || result.sourceId !== query.sourceId || result.revision !== query.revision || result.branchId !== query.branchId || result.hour !== query.hour
-      || result.flags.some((flag) => !query.tags.includes(flag.tag) || flag.width < 1 || flag.height < 1 || flag.width > 128 || flag.height > 128 || flag.pixels.length !== flag.width * flag.height * 4)) {
-      throw new Error('Country flags do not match this recording.');
-    }
-    return { ...result, flags: result.flags.map((flag) => ({ ...flag, pixels: new Uint8ClampedArray(flag.pixels) })) };
+  async mapSettings(sourceId, revision, settings, signal, target = { scope: 'campaign' }) {
+    const reply = await request<MapSettingsReply>('dashboard_map_settings', () => ({ sourceId, revision, settings, target }), signal);
+    if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');
+    return reply;
   },
 
   async openSource(path, signal): Promise<DashboardSource> {
-    const source = await request<OpenedSource>(
-      'dashboard_open_source', () => ({ path }), signal, (late) => releaseSource(late.id),
-    );
-    return {
-      id: source.id, path: source.path, revision: source.revision,
-      metadata: { ...source.metadata, revision: source.revision },
-    };
+    const source = await request<SourceReply>('dashboard_open_source', () => ({ path }), signal, late => releaseSource(late.id));
+    return { id: source.id, path: source.path, revision: source.revision, metadata: { ...source.metadata, revision: source.revision } };
   },
 
-  async query(query, signal, priority) {
-    const kind = query.kind === 'exact' ? 'exactWindow' : 'history';
-    const result = await request<QueryResult>('dashboard_query', (requestId) => {
-      const wire: QueryRequest = {
-        scopeId: requestId, generation: '1', sourceId: query.sourceId,
-        revision: query.revision, branchId: query.branchId, countryIds: query.countryIds,
-        firstHour: query.firstHour, lastHour: query.lastHour, kind,
-        maxPoints: query.kind === 'exact' ? query.lastHour - query.firstHour + 1 : query.maxPoints,
-        priority: priority ?? (query.kind === 'exact' ? 'current' : 'history'),
-      };
-      return { query: wire };
-    }, signal);
-    if (result.revision !== query.revision || result.branchId !== query.branchId
-      || result.firstHour !== query.firstHour || result.lastHour !== query.lastHour || result.kind !== kind
-      || result.maxPoints !== query.maxPoints
-      || JSON.stringify([...result.countryIds].sort()) !== JSON.stringify([...new Set(query.countryIds)].sort())) {
-      throw new Error('The analytics result does not match this recording and time selection.');
-    }
-    return {
-      // The native cache key is shared across leases; keep the widget's binding.
-      sourceId: query.sourceId, revision: result.revision,
-      series: result.series.map((series) => ({ ...series, revision: result.revision })),
-    };
+  product<T>(query: import('./client').ProductRequest, signal: AbortSignal) {
+    return request<ProductReply<T>>('dashboard_product', () => ({ query }), signal);
   },
 
   releaseSource,
@@ -128,6 +77,6 @@ export const nativeDashboardClient: DashboardClient = {
 
   async onMapStates(callback) {
     if (!desktopAvailable) return () => {};
-    return listen<DashboardMapState[]>('dashboard-map-state', (event) => callback(event.payload));
+    return listen<DashboardMapState[]>('dashboard-map-state', event => callback(event.payload));
   },
 };

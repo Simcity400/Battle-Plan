@@ -1,6 +1,6 @@
-import { Popover, usePopover } from '../ui/Popover';
+import { Popover, usePopover } from '../components/Popover';
 import { useId } from 'react';
-import { Icon } from '../Icons';
+import { Icon } from '../components/Icons';
 import { widgetDefinitions } from './definitions';
 
 export default function WidgetPicker({ disabled, onAdd, onOpen }: { disabled: boolean; onAdd: (kind: string) => void; onOpen: () => void }) {
@@ -13,9 +13,9 @@ export default function WidgetPicker({ disabled, onAdd, onOpen }: { disabled: bo
       popoverTarget={id} aria-haspopup="dialog" aria-expanded={open} onClick={onOpen}><Icon name="plus" /></button>
     <Popover menu={menu} id={id} className="widget-picker" aria-label="Add a widget">
       <div className="widget-picker-heading"><strong>Add a widget</strong><button type="button" className="dash-icon-button" aria-label="Close widget picker" popoverTarget={id} popoverTargetAction="hide"><Icon name="close" /></button></div>
-      <div className="widget-picker-items">{widgetDefinitions.map((definition) => <button type="button" key={definition.kind} disabled={disabled} onClick={() => {
+      <div className="widget-picker-items">{widgetDefinitions().map((definition) => <button type="button" key={definition.kind} disabled={disabled} onClick={() => {
         menu.close(); onAdd(definition.kind);
-      }}><Icon name={definition.kind === 'map' ? 'globe' : 'grid'} /><span>{definition.kind === 'placeholder' ? 'Empty panel' : definition.title}</span><Icon name="plus" /></button>)}</div>
+      }}><Icon name={definition.icon} /><span>{definition.title}</span><Icon name="plus" /></button>)}</div>
     </Popover>
   </>;
 }

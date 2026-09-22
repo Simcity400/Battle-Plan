@@ -1,11 +1,8 @@
-import { newId } from '../ids.ts';
-import type { CountryMetadata, CountrySeries, CountrySeriesPoint } from '../api';
-import type { MetricKey } from '../analytics/model';
-import type { DashboardQuery, DashboardSource } from './client';
-import { widgetDefinition, widgetUnavailable } from './definitions.ts';
+import { newId } from '../shell/ids.ts';
+import type { DashboardSource } from './client';
+import { widgetDefinition } from './definitions.ts';
 
 export const TRAILING_HOURS = 168;
-export const PREFETCH_HOURS = 96;
 export const WIDGET_CONTENT_SCALES = [50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200] as const;
 export const GRID_COLUMNS = { lg: 12, md: 12, sm: 6, xs: 2 } as const;
 export type Breakpoint = keyof typeof GRID_COLUMNS;
@@ -34,7 +31,6 @@ export interface WidgetSpec {
   contentScale?: number;
   trackIds: string[];
   countries: CountrySelection;
-  metric: MetricKey;
   time: WidgetTime;
 }
 export interface GridItem { i: string; x: number; y: number; w: number; h: number; minW?: number; minH?: number }
@@ -55,13 +51,6 @@ export interface BoundTrack extends TrackSpec {
   axisOffset: number;
   selectedTag: string | null;
 }
-export interface SeriesLayer {
-  id: string;
-  label: string;
-  track: BoundTrack;
-  series: CountrySeries;
-  window: HourWindow;
-}
 export interface Inspection { trackId: string; sourceId: string; revision: string; branchId: string; countryId: string; hour: number }
 
 export function createWidget(kind: WidgetKind, trackId: string, id: string = newId()): WidgetSpec {
@@ -69,7 +58,7 @@ export function createWidget(kind: WidgetKind, trackId: string, id: string = new
   if (!definition) throw new Error(`Unknown widget type: ${kind}`);
   return {
     id, kind, configVersion: definition.version, title: definition.title, campaign: 'default',
-    trackIds: [trackId], countries: { kind: 'selected' }, metric: 'politicalPower',
+    trackIds: [trackId], countries: { kind: 'selected' },
     time: { mode: definition.defaultTime }, contentScale: 100,
   };
 }
@@ -86,13 +75,15 @@ export function defaultTemplate(): DashboardTemplate {
     ['panel-3', 'Country comparison', 0, 15, 7, 7],
     ['panel-4', 'Campaign notes', 7, 22, 5, 7],
   ] as const;
-  const widgets = panels.map(([id, title]) => ({ ...createWidget(id === 'map' ? 'map' : id === 'panel-1' ? 'national-focus' : 'placeholder', 'main', id), title }));
-  const wide = panels.map(([i, , x, y, w, h]) => ({ i, x, y, w, h, minW: i === 'map' ? 3 : 2, minH: i === 'map' ? 8 : 3 }));
+  const kindOf = (id: string) => id === 'map' ? 'map' : id === 'panel-1' ? 'national-focus' : 'placeholder';
+  const minSize = (id: string) => widgetDefinition(kindOf(id))?.minSize ?? { w: 1, h: 4 };
+  const widgets = panels.map(([id, title]) => ({ ...createWidget(kindOf(id), 'main', id), title }));
+  const wide = panels.map(([i, , x, y, w, h]) => ({ i, x, y, w, h, minW: minSize(i).w, minH: minSize(i).h }));
   const narrow = (cols: number) => {
     let y = 0;
     return panels.map(([i]) => {
       const h = i === 'map' ? 11 : i.startsWith('summary') ? 3 : 6;
-      const item = { i, x: 0, y, w: cols, h, minW: Math.min(cols, 2), minH: i === 'map' ? 8 : 3 };
+      const item = { i, x: 0, y, w: cols, h, minW: Math.min(cols, minSize(i).w), minH: minSize(i).h };
       y += h;
       return item;
     });
@@ -161,99 +152,6 @@ export function pinTime(widget: WidgetSpec, tracks: BoundTrack[], position: numb
     if (window) windows[track.id] = { firstOffset: window.firstHour - track.branch.firstHour, lastOffset: window.lastHour - track.branch.firstHour };
   }
   return { mode: 'pin', windows };
-}
-
-export function selectCountries(track: BoundTrack, selection: CountrySelection): { countries: CountryMetadata[]; missing: string[] } {
-  const catalogue = new Map<string, CountryMetadata>();
-  for (const country of track.source.metadata.countries) {
-    if (!catalogue.has(country.id) || country.observedBranchId === track.branch.id) catalogue.set(country.id, country);
-  }
-  const countries = [...catalogue.values()];
-  if (selection.kind === 'all') return { countries, missing: countries.length ? [] : ['No observed country identities'] };
-  if (selection.kind === 'selected' && track.selectedTag == null) {
-    const country = countries.find((item) => item.id === track.source.metadata.playerCountryId);
-    return { countries: country ? [country] : [], missing: country ? [] : ['Recorded player country unavailable'] };
-  }
-  const tags = selection.kind === 'tags' ? selection.tags : [track.selectedTag!];
-  return { countries: countries.filter((item) => tags.includes(item.tag)),
-    missing: tags.filter((tag) => !countries.some((country) => country.tag === tag)).map((tag) => `${tag} unavailable in this recording`) };
-}
-
-/** Exact windows overlap so adjacent chunks are ready before the cursor arrives. */
-export function exactWindow(track: BoundTrack, hour: number, next = false): HourWindow | null {
-  if (hour < track.branch.firstHour || hour > track.branch.lastHour) return null;
-  const start = track.branch.firstHour + Math.floor((hour - track.branch.firstHour) / PREFETCH_HOURS) * PREFETCH_HOURS
-    + (next ? PREFETCH_HOURS : 0);
-  return { firstHour: Math.max(track.branch.firstHour, start - TRAILING_HOURS + 1),
-    lastHour: Math.min(track.branch.lastHour, start + 2 * PREFETCH_HOURS - 1) };
-}
-
-export function makeQueries(widget: WidgetSpec, track: BoundTrack, tracks: BoundTrack[], position: number, prefetch = false): DashboardQuery[] {
-  const definition = widgetDefinition(widget.kind);
-  if (!definition || definition.data !== 'countries' || widgetUnavailable(widget)) return [];
-  const requested = resolveWindow(widget, track, tracks, position);
-  if (!requested) return [];
-  const exact = definition.scope === 'moment' || widget.time.mode === 'follow';
-  if (prefetch && (!exact || widget.time.mode !== 'follow')) return [];
-  const target = definition.scope === 'history' && widget.time.mode === 'follow' && requested.firstHour <= track.branch.lastHour
-    ? Math.min(requested.lastHour, track.branch.lastHour) : requested.lastHour;
-  const window = exact ? exactWindow(track, target, prefetch) : requested;
-  if (!window) return [];
-  const firstHour = Math.max(track.branch.firstHour, window.firstHour);
-  const lastHour = Math.min(track.branch.lastHour, window.lastHour);
-  if (firstHour > lastHour) return [];
-  const { countries } = selectCountries(track, widget.countries);
-  const requests: DashboardQuery[] = [];
-  // Bound each response while retaining all selected countries across batches.
-  for (let i = 0; i < countries.length; i += 24) {
-    const countryIds = countries.slice(i, i + 24).map((item) => item.id);
-    requests.push({ sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id,
-      countryIds, firstHour, lastHour, kind: exact ? 'exact' : 'history',
-      maxPoints: exact ? lastHour - firstHour + 1 : Math.min(600, Math.floor(1200 / countryIds.length)) });
-  }
-  return requests;
-}
-
-export function exactPoint(series: CountrySeries, hour: number): CountrySeriesPoint | null {
-  // No nearest-observation or last-retained fallback: a gap stays a gap.
-  return series.points.find((point) => point.firstHour === hour && point.lastHour === hour) ?? null;
-}
-
-/** Join normalized transport chunks, never join branches or invent gap samples. */
-export function mergeSeriesChunks(chunks: CountrySeries[]): CountrySeries[] {
-  const groups = new Map<string, CountrySeries[]>();
-  for (const chunk of chunks) {
-    const group = groups.get(chunk.countryId) ?? [];
-    group.push(chunk);
-    groups.set(chunk.countryId, group);
-  }
-  return [...groups.values()].map((group) => {
-    const first = group[0];
-    if (group.length === 1) return first;
-    if (group.some((chunk) => chunk.branchId !== first.branchId || chunk.sessionId !== first.sessionId
-      || chunk.revision !== first.revision || chunk.valueScale !== first.valueScale)) throw new Error('Country chunks have different source identities or value scales.');
-    const points: CountrySeriesPoint[] = [];
-    for (const point of group.flatMap((chunk) => chunk.points).sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour)) {
-      const previous = points.at(-1);
-      if (previous && previous.lastHour >= point.firstHour) {
-        if (previous.firstHour === point.firstHour && previous.lastHour === point.lastHour && JSON.stringify(previous) === JSON.stringify(point)) continue;
-        throw new Error('Country chunks contain conflicting or overlapping intervals. Refresh this recording.');
-      }
-      points.push(point);
-    }
-    const countries = new Map<string, CountryMetadata>();
-    for (const chunk of group) for (const country of chunk.countries) {
-      if ((countries.get(country.id)?.observedHour ?? -Infinity) <= country.observedHour) countries.set(country.id, country);
-    }
-    return { ...first, firstHour: Math.min(...group.map((chunk) => chunk.firstHour)), lastHour: Math.max(...group.map((chunk) => chunk.lastHour)),
-      points, country: group.reduce<CountryMetadata | null>((country, chunk) => chunk.country ?? country, null), countries: [...countries.values()],
-      coverage: points.reduce((coverage, point) => ({ recordedHours: coverage.recordedHours + point.recordedHours,
-        gapHours: coverage.gapHours + point.gapHours, unavailableHours: coverage.unavailableHours + point.unavailableHours,
-        absentHours: coverage.absentHours + point.absentHours }), { recordedHours: 0, gapHours: 0, unavailableHours: 0, absentHours: 0 }),
-      downsampled: group.some((chunk) => chunk.downsampled), warnings: [...new Set(group.flatMap((chunk) => chunk.warnings))],
-      sampleBoundary: [...new Set(group.map((chunk) => chunk.sampleBoundary).filter(Boolean))].join(' · '),
-    };
-  });
 }
 
 export function addGridItem(layouts: GridLayouts, widget: WidgetSpec): GridLayouts {

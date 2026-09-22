@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { errorMessage } from '../api';
-import type { CountryMetadata } from '../api';
+import { errorMessage } from '../shell/api';
+import type { CountryMetadata } from '../shell/api';
 import type { DashboardClient, DashboardSource } from './client';
-import { countryData } from './countryData';
+import { forgetProducts } from './products.ts';
 import { EffectLifetime } from './effectLifetime';
 
 export interface SourceBinding { source: DashboardSource | null; loading: boolean; error: string | null }
@@ -14,7 +14,7 @@ export function useSourceRoles(client: DashboardClient) {
   const mounted = useRef(false);
   const lifetime = useRef(new EffectLifetime());
 
-  const release = useCallback((source: DashboardSource) => { countryData(client).release(source.id); void client.releaseSource(source.id).catch(() => {}); }, [client]);
+  const release = useCallback((source: DashboardSource) => { forgetProducts(client, source.id); void client.releaseSource(source.id).catch(() => {}); }, [client]);
   const remove = useCallback((roleId: string) => {
     controllers.current.get(roleId)?.abort();
     controllers.current.delete(roleId);

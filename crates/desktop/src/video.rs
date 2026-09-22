@@ -168,7 +168,7 @@ pub fn video_settings(
             apply_scale(&window, &game)?;
         }
         if host.status().ready {
-            host.map_action(desktop_protocol::MapAction::Vsync {
+            host.map_action(dashboard::protocol::MapAction::Vsync {
                 enabled: game.vsync,
             })?;
         }
@@ -203,7 +203,7 @@ pub fn set_video_settings(
             apply_scale(&window, &settings)?;
         }
         if host.status().ready {
-            host.map_action(desktop_protocol::MapAction::Vsync {
+            host.map_action(dashboard::protocol::MapAction::Vsync {
                 enabled: settings.vsync,
             })?;
         }
@@ -212,7 +212,7 @@ pub fn set_video_settings(
     if let Err(error) = result {
         let _ = apply_scale(&window, &previous);
         if host.status().ready {
-            let _ = host.map_action(desktop_protocol::MapAction::Vsync {
+            let _ = host.map_action(dashboard::protocol::MapAction::Vsync {
                 enabled: previous.vsync,
             });
         }

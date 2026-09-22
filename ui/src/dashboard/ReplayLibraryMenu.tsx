@@ -1,13 +1,13 @@
-import { Popover, usePopover } from '../ui/Popover';
+import { Popover, usePopover } from '../components/Popover';
 import { useEffect, useId, useState } from 'react';
 import type { DashboardClient, ReplayFile } from './client';
 import type { Campaign } from './campaigns';
 import { campaignSlots, sameCampaignPath } from './campaigns';
 import type { SourceBinding } from './sources';
 import type { ReplayLibraryState } from './replayLibrary';
-import ReplayFolderSetting from '../ReplayFolderSetting';
-import { Icon } from '../Icons';
-import ReplayFilename from './ReplayFilename';
+import ReplayFolderSetting from '../shell/ReplayFolderSetting';
+import { Icon } from '../components/Icons';
+import ReplayFilename from '../components/ReplayFilename';
 
 const replayFilename = (path: string) => path.replaceAll('\\', '/').split('/').pop()!;
 

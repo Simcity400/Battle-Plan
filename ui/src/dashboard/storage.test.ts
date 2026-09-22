@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultTemplate, WIDGET_CONTENT_SCALES } from './model.ts';
 import { loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, saveLayouts } from './storage.ts';
+import '../widgets/definitions.ts';
 
 function memoryStorage() {
   const values = new Map<string, string>();

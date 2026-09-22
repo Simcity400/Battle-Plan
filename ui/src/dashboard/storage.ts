@@ -1,8 +1,6 @@
 import { defaultTemplate, GRID_COLUMNS, WIDGET_CONTENT_SCALES } from './model.ts';
 import type { Breakpoint, CountrySelection, DashboardTemplate, GridItem, GridLayouts, OffsetWindow, SourceRole, TrackSpec, WidgetSpec, WidgetTime } from './model';
-import type { MetricKey } from '../analytics/model';
 import { widgetDefinition } from './definitions.ts';
-import { metrics } from '../analytics/model.ts';
 import { MAX_ROLES, MAX_TRACKS } from './campaigns.ts';
 
 const STORAGE_KEY = 'hoi4-replay.workspace-template.v1';
@@ -14,7 +12,6 @@ export interface LayoutLibrary {
   layouts: { id: string; template: DashboardTemplate }[];
 }
 type LayoutStorage = Pick<Storage, 'getItem' | 'setItem'>;
-const metricKeys = new Set<string>(metrics.map((metric) => metric.key));
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value != null && !Array.isArray(value);
 const integer = (value: unknown, min = -4_294_967_296, max = 4_294_967_296): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max;
 const text = (value: unknown, max = 160): value is string => typeof value === 'string' && value.length > 0 && value.length <= max;
@@ -70,13 +67,13 @@ export function parseTemplate(input: unknown): DashboardTemplate | null {
       || !(widget.configVersion === undefined || integer(widget.configVersion, 1, 65535))
       || !(widget.contentScale === undefined || WIDGET_CONTENT_SCALES.some(scale => scale === widget.contentScale))
       || !Array.isArray(widget.trackIds) || !widget.trackIds.length || !widget.trackIds.every((value) => typeof value === 'string' && trackIds.has(value))
-      || !metricKeys.has(String(widget.metric)) || widgets.some((item) => item.id === widget.id)) return null;
+      || widgets.some((item) => item.id === widget.id)) return null;
     const countries = selection(widget.countries);
     const time = timeMode(widget.time, trackIds);
     if (!countries || !time) return null;
     const campaign = widget.campaign === 'default' || (widget.campaign === undefined && widget.trackIds.length === 1 && widget.trackIds[0] === 'main' && time.mode !== 'pin') ? 'default' : 'tracks';
     widgets.push({ campaign, id: widget.id, kind: widget.kind, configVersion: widget.configVersion ?? 1, title: widget.title,
-      trackIds: [...new Set(widget.trackIds as string[])], metric: widget.metric as MetricKey, countries, time, contentScale: (widget.contentScale as number | undefined) ?? 100 });
+      trackIds: [...new Set(widget.trackIds as string[])], countries, time, contentScale: (widget.contentScale as number | undefined) ?? 100 });
   }
   const layouts: GridLayouts = {};
   for (const breakpoint of Object.keys(GRID_COLUMNS) as Breakpoint[]) {

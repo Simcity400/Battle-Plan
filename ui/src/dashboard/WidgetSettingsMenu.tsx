@@ -1,6 +1,6 @@
-import { Popover, PopoverHeading, usePopover } from '../ui/Popover';
+import { Popover, PopoverHeading, usePopover } from '../components/Popover';
 import { useId } from 'react';
-import { Icon } from '../Icons';
+import { Icon } from '../components/Icons';
 import { WidgetSettings } from './controls';
 import type { DashboardTemplate, WidgetSpec } from './model';
 import type { WidgetRuntime } from './widgets';

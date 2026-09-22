@@ -8,7 +8,6 @@ publish.workspace = true
 
 [dependencies]
 replay = { path = "../replay" }
-analytics = { path = "../analytics" }
 engine = { path = "../engine" }
 installed-content = { path = "../installed-content" }
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
@@ -20,6 +19,6 @@ rfd = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
-desktop-protocol = { path = "../desktop-protocol" }
+dashboard = { path = "../dashboard" }
 raw-window-handle = "0.6"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

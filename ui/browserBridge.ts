@@ -32,7 +32,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     const args = [...(gameDir ? ['--game-dir', gameDir] : []), ...(userDir ? ['--user-dir', userDir] : [])];
     const process = spawn(path.join(root, '.cargo-target/debug/dashboard-bridge.exe'), args, { cwd: root, windowsHide: true });
     child = process;
-    process.on('error', () => { if (child === process) fail('Build the browser bridge with cargo build -p viewer --bin dashboard-bridge -j 1.'); });
+    process.on('error', () => { if (child === process) fail('Build the browser bridge with cargo build -p dashboard --bin dashboard-bridge.'); });
     process.on('exit', () => { if (child === process) fail('The recording bridge stopped. Reopen the recording to reconnect.'); });
     process.stdin.on('error', () => { if (child === process) fail('The recording bridge connection closed. Reopen the recording to reconnect.'); });
     process.stderr.on('data', (data: Buffer) => console.error(`[recording bridge] ${data.toString().slice(0, 2048)}`));
@@ -167,13 +167,11 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             command = { type: 'open', path: location.target, revision: '' };
           } else if (input.type === 'mapSettings') {
             const binary = await stat(path.join(root, '.cargo-target/debug/dashboard-bridge.exe'));
-            const source = await stat(path.join(root, 'crates/viewer/src/map_settings.rs'));
+            const source = await stat(path.join(root, 'crates/dashboard/src/map_settings.rs'));
             if (binary.mtimeMs < source.mtimeMs) throw new Error('Map settings are unavailable in this server version. The local data bridge needs updating.');
             command = { type: 'mapSettings', sourceId: input.sourceId, revision: input.revision, settings: input.settings ?? null, target: input.target ?? { scope: 'campaign' } };
-          } else if (input.type === 'landOwners') {
-            command = { type: 'landOwners', sourceId: input.sourceId, revision: input.revision };
-          } else if (input.type === 'query' || input.type === 'countryFlags' || input.type === 'focusHistory' || input.type === 'researchHistory') {
-            command = { type: input.type, request: input.request };
+          } else if (input.type === 'product') {
+            command = { type: 'product', request: input.request };
           } else if (input.type === 'release') {
             child?.stdin.write(`${JSON.stringify({ type: 'release', sourceId: input.sourceId })}\n`);
             response.end('{}'); return;

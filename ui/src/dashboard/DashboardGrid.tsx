@@ -3,17 +3,14 @@ import { Responsive, useContainerWidth } from 'react-grid-layout';
 import type { Layout, ResponsiveLayouts } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
-import { Icon } from '../Icons';
+import { Icon } from '../components/Icons';
+import type { MapOptions } from '../shell/api';
 import { createWidget, GRID_COLUMNS } from './model';
-import { widgetDefinition } from './definitions';
 import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
-import MapControls from './MapControls';
-import { WidgetSettings } from './controls';
-import { resolveWidgetCampaign } from './campaigns';
-import type { MapOptions } from '../api';
+import { widgetDefinition } from './definitions';
+import type { WidgetRuntime } from './definitions';
 import WidgetSettingsMenu from './WidgetSettingsMenu';
 import { WidgetBody } from './widgets';
-import type { WidgetRuntime } from './widgets';
 
 interface Props {
   template: DashboardTemplate;
@@ -48,6 +45,7 @@ function DashboardGrid({ template, runtime, editing, onLayouts, onApply, onRemov
   </div>;
 }
 
+/** Common chrome for every widget: header, drag grip, settings and the scaled body. */
 function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: Omit<Props, 'onLayouts'> & { widget: WidgetSpec }) {
   const element = useRef<HTMLElement>(null);
   const [active, setActive] = useState(true);
@@ -62,28 +60,25 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     return () => observer.disconnect();
   }, []);
   const [mapOptions, setMapOptions] = useState<MapOptions>({ country: null, fog: true });
-  const reset = widgetDefinition(widget.kind) ? () => {
+  const definition = widgetDefinition(widget.kind);
+  const reset = definition ? () => {
     onApply(createWidget(widget.kind, template.tracks[0].id, widget.id));
     setMapOptions({ country: null, fog: true });
   } : undefined;
-  const resolved = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);
-  const mapTrack = runtime.tracks.find(track => track.id === resolved.trackIds[0]);
   const missing = widget.trackIds.filter((id) => !runtime.tracks.some((track) => track.id === id));
+  const HeaderControls = definition?.headerControls;
   return <article ref={element} className={`dash-widget kind-${widget.kind}`} aria-label={widget.title}>
     <header className="dash-widget-header">
       {editing && <span className="dash-drag-grip" data-tooltip="Drag to move this view" aria-hidden="true">⠿</span>}
-      <Icon name={widget.kind === 'map' ? 'globe' : 'grid'} />
-      <div className="dash-widget-title"><h2 data-tooltip={widget.title}>{widget.title}{widget.kind === 'national-focus' && <span ref={setHeaderSlot} />}</h2>
-        {widget.kind !== 'placeholder' && <span>{widget.trackIds.map((id) => template.tracks.find((track) => track.id === id)?.label ?? 'Missing track').join(' + ')}</span>}</div>
-      {widget.kind === 'map' ? <MapControls compact viewId={widget.id} source={mapTrack?.source ?? null} client={runtime.client} metadata={mapTrack?.source.metadata ?? null}
-        branchId={mapTrack?.branch.id ?? null} onBranch={id => { if (mapTrack) runtime.onMapBranch(mapTrack.id, id); }} options={mapOptions} onOptions={setMapOptions} onRemove={editing ? () => onRemove(widget.id) : undefined} onReset={reset}>
-        <details className="map-menu-section map-widget-options"><summary>Widget settings</summary>
-          <WidgetSettings widget={widget} template={template} tracks={runtime.tracks} client={runtime.client} defaultRoleId={runtime.defaultRoleId}
-            onChange={onApply} />
-        </details>
-      </MapControls> : <WidgetSettingsMenu diagnostics={editing ? diagnostics : []} widget={widget} template={template} runtime={runtime} onApply={onApply} onRemove={editing ? () => onRemove(widget.id) : undefined} onReset={reset} />}
+      <Icon name={definition?.icon ?? 'grid'} />
+      <div className="dash-widget-title"><h2 data-tooltip={widget.title}>{widget.title}<span ref={setHeaderSlot} /></h2>
+        {definition?.data !== false && <span>{widget.trackIds.map((id) => template.tracks.find((track) => track.id === id)?.label ?? 'Missing track').join(' + ')}</span>}</div>
+      {HeaderControls
+        ? <HeaderControls widget={widget} runtime={runtime} template={template} editing={editing} onApply={onApply} onRemove={() => onRemove(widget.id)} onReset={reset}
+          mapOptions={mapOptions} onMapOptions={setMapOptions} diagnostics={editing ? diagnostics : []} />
+        : <WidgetSettingsMenu diagnostics={editing ? diagnostics : []} widget={widget} template={template} runtime={runtime} onApply={onApply} onRemove={editing ? () => onRemove(widget.id) : undefined} onReset={reset} />}
     </header>
-    {missing.length > 0 && runtime.tracks.some((track) => widget.trackIds.includes(track.id)) && <div className="dash-inline-warning">{missing.map((id) => template.tracks.find((track) => track.id === id)?.label ?? id).join(', ')} unavailable. Ready tracks remain visible.</div>}
+    {missing.length > 0 && runtime.tracks.some((track) => widget.trackIds.includes(track.id)) && <div className="dash-inline-warning">{missing.map((id) => template.tracks.find((track) => track.id === id)?.label ?? id).join(', ')} unavailable</div>}
     <div className="dash-widget-content"><div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
       <WidgetBody widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} onDiagnostics={setDiagnostics} />
     </div></div>

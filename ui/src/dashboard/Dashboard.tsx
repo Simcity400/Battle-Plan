@@ -1,17 +1,17 @@
-import { Popover, usePopover } from '../ui/Popover';
-import { newId } from '../ids.ts';
+import { Popover, usePopover } from '../components/Popover';
+import { newId } from '../shell/ids.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { desktopAvailable, errorMessage, recordingName, seekMap, mapAction } from '../api';
-import type { MapOptions, ReplayMetadata } from '../api';
-import MapControls from './MapControls';
-import { Icon } from '../Icons';
+import { desktopAvailable, errorMessage, recordingName, seekMap, mapAction } from '../shell/api';
+import type { MapOptions, ReplayMetadata } from '../shell/api';
+import MapControls from '../components/MapControls';
+import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
 import { addGridItem, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate } from './model';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { loadLayouts, MAX_LAYOUTS, parseTemplate, saveLayouts } from './storage';
 import { PlaybackController } from './playback';
-import { QueryStore } from './queries';
+import '../widgets';
 import { MapViewsStore } from './geometry';
 import { useSourceRoles } from './sources';
 import { PlaybackStrip } from './controls';
@@ -20,9 +20,9 @@ import type { ReplayLibraryState } from './replayLibrary';
 import DashboardGrid from './DashboardGrid';
 import './dashboard.css';
 import WidgetPicker from './WidgetPicker';
-import CountryPicker from './CountryPicker';
+import CountryPicker from '../components/CountryPicker';
 import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, sameCampaignPath } from './campaigns';
-import { hasMapOverlay, isMapOverlay } from '../mapOverlays';
+import { hasMapOverlay, isMapOverlay } from '../shell/mapOverlays';
 import type { Campaign } from './campaigns';
 import { followMapPlayback } from './mapPlayback';
 
@@ -63,7 +63,6 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
   const mounted = useRef(false);
   const roles = useSourceRoles(client);
   const clock = useMemo(() => new PlaybackController(), []);
-  const queries = useMemo(() => new QueryStore(client), [client]);
   const maps = useMemo(() => new MapViewsStore(client, clock), [client, clock]);
   const sourceMap = useMemo(() => new Map(Object.entries(roles.bindings).flatMap(([roleId, binding]) => binding.source ? [[roleId, binding.source] as [string, DashboardSource]] : [])), [roles.bindings]);
   const tracks = useMemo(() => bindTracks(template, sourceMap), [template.tracks, template.roles, template.alignment, sourceMap]);
@@ -122,9 +121,8 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
       document.removeEventListener('beforetoggle', beforeToggle, true);
       document.removeEventListener('toggle', afterToggle, true);
       clock.stop();
-      queries.clear();
     };
-  }, [clock, maps, queries]);
+  }, [clock, maps]);
 
   const update = useCallback((change: (previous: DashboardTemplate) => DashboardTemplate) => {
     setTemplate((previous) => change(includeCampaigns(previous, campaignsRef.current)));
@@ -267,8 +265,8 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
     if (index >= 0) { clock.stop(); setSelectedBranches(previous => ({ ...previous, [trackId]: index })); }
   }, [tracks, clock]);
 
-  const runtime = useMemo(() => ({ onMapBranch, tracks, clock, queries, maps, client, campaignTracks: template.tracks, defaultRoleId, alignment: template.alignment, nativeHidden }),
-    [onMapBranch, tracks, clock, queries, maps, client, template.tracks, template.alignment, defaultRoleId, nativeHidden]);
+  const runtime = useMemo(() => ({ onMapBranch, tracks, clock, maps, client, campaignTracks: template.tracks, defaultRoleId, alignment: template.alignment, nativeHidden }),
+    [onMapBranch, tracks, clock, maps, client, template.tracks, template.alignment, defaultRoleId, nativeHidden]);
 
 
   return <div className="dashboard">

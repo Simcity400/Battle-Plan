@@ -51,10 +51,16 @@ export class ResourceCache<T> {
     });
   }
 
+  /** Forget every entry of a source, cancelling loads still in flight. */
   deleteSource(sourceId: string): void {
     for (const [key, entry] of this.entries) if (JSON.parse(key)[0] === sourceId) {
       this.entries.delete(key); entry.controller.abort();
     }
+  }
+
+  /** Forget only completed entries of a source; loads in flight keep their consumers. */
+  deleteSettled(sourceId: string): void {
+    for (const [key, entry] of this.entries) if (entry.settled && JSON.parse(key)[0] === sourceId) this.entries.delete(key);
   }
 
   private trim(): void {

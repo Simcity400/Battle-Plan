@@ -1,23 +1,17 @@
 mod app;
 mod combat;
 mod compare;
-mod content_verification;
-mod country_flags;
-mod dashboard_data;
 mod dashboard_maps;
 mod document;
 mod embedded;
-mod focus_artwork;
 mod hours;
-mod local_config;
 mod map;
-mod map_settings;
 mod playback;
 mod render;
 mod table_access;
 mod worker_priority;
 
-use local_config::Config;
+use dashboard::Config;
 
 use map::{camera::Camera, frame::DayNight, political};
 // names

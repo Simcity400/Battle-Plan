@@ -1,6 +1,6 @@
 # desktop
 
-The Tauri host for the replay application. **Map** embeds the existing native viewer; **Analytics** hosts the widget dashboard. The host owns folder selection and the replay library, the native process and an asynchronous query proxy. Recording data and analytics execution live in the native runtime, shared with its map consumers.
+The Tauri host for the replay application. **Map** embeds the existing native viewer; **Overview** hosts the widget dashboard. The host owns folder selection and the replay library, the native process and an asynchronous data proxy. Recording data and widget products live in the native viewer process, shared with its map consumers.
 
 ## Develop
 
@@ -66,11 +66,11 @@ Unloading a campaign retires its cached standalone map and clears matching resta
 
 The host launches its sibling viewer, contains it in a Windows job object and requests graceful shutdown before the bounded forced-reap fallback. Closing the app or stopping development must not leave an owned viewer process behind. Both host and child require per-monitor-v2 DPI awareness.
 
-`dashboard_service.rs` tracks independent requests and assembles bounded projected responses. Cancellation and admission are ordered so a cancelled source-open cannot start later and leak a binding. Large JSON parsing uses a bounded number of background slots, leaving the native pipe reader available for map status. The response admission charge survives assembly and parsing until delivery.
+`dashboard_service.rs` tracks independent requests and reassembles bounded fragmented replies. Cancellation and admission are ordered so a cancelled source-open cannot start later and leak a binding. The host never parses a reply: the assembled JSON goes to the frontend as raw bytes. One `dashboard_product` command carries every widget data request by product key; `dashboard_open_source`, `dashboard_map_settings`, `dashboard_cancel` and `dashboard_release_source` are the rest of the data surface.
 
 `native.rs` selects the active geometry owner before tabs mount or unmount. Late cleanup from the dashboard cannot hide the standalone map, and vice versa. Map layouts are replacement snapshots; data commands have their own bounded queue. Native process failure terminates pending requests rather than leaving widgets loading indefinitely. A restarted process requires sources to be reopened; old source handles are not valid in it. Lease IDs include a fresh service namespace so delayed releases cannot close sources in a restarted process.
 
-The native data service opens one shared source for a canonical path and revision and returns independently releasable client bindings. Several maps and charts may reference it. Closing one widget cannot cancel another consumer's shared query. See the [architecture plan](../../docs/analytics-dashboard.md) for the ownership model and prototype limits.
+The native data service opens one shared source for a canonical path and revision and returns independently releasable client bindings. Several maps and charts may reference it. Closing one widget cannot cancel another consumer's shared query. See the [dashboard architecture](../../docs/dashboard.md) for the ownership model and limits.
 
 ## Where to work
 
@@ -78,11 +78,7 @@ The Campaign map settings pop-down sends `map_action` commands to the existing v
 
 All three Settings folder fields have Browse buttons. The native dialogs belong to the app window, identify the requested folder in their titles and start in the field's current directory when valid. Cancelling preserves the field. Game/user selections remain drafts until Apply game folders; replay-folder selection saves immediately.
 
-Host implementation is under [src](src/). The [protocol crate](../desktop-protocol/README.md) owns shared messages; [analytics](../analytics/README.md) owns queries and types; [ui](../../ui/README.md) owns layout and charts. See [AGENTS.md](../../AGENTS.md) for checks. Exercise open, tab switching, seek, cancellation, close and development shutdown when lifecycle behavior changes.
-
-The `dashboard_country_flags` command forwards cancellable flag requests through the existing projected-response budget. Resolution and decoding stay in the viewer; the desktop host does not independently resolve mods or expose arbitrary asset paths.
-
-`dashboard_land_owners` forwards campaign-wide ownership discovery over the same data channel. The native source caches the result; frontend country selection merges newly discovered identities into session metadata without changing saved layouts or the default campaign.
+Host implementation is under [src](src/). The [dashboard crate](../dashboard/README.md) owns the protocol, products and generated types; [ui](../../ui/README.md) owns layout and widgets. See [AGENTS.md](../../AGENTS.md) for checks. Exercise open, tab switching, seek, cancellation, close and development shutdown when lifecycle behavior changes.
 
 `replay_library.rs` lists replay filenames recursively without decoding recording data. The Settings folder is shared with browser development through the user configuration file described in the frontend guide. Folder selection and the recording library's manual file picker use native system dialogs; Load opens through the existing source service. Choosing an individual recording does not change the replay folder. Directory listing runs off the UI thread, excludes hidden folders and symbolic links, and has a traversal budget. Unloading the current default selects another loaded campaign, or clears the default and hides the native map when none remain.
 
@@ -91,7 +87,3 @@ The `dashboard_country_flags` command forwards cancellable flag requests through
 The native export dialog accepts an optional dashboard view ID and carries it through the map action. The frontend uses this from the shared map menu in widget headers; standalone export omits the ID.
 
 Map-settings requests forward a global, campaign or widget target through the existing bounded service. Global requests require no recording; campaign/widget requests retain source/revision validation.
-
-`dashboard_focus_order` forwards national-focus requests over the shared data channel. The native loader projects completion order and resolves game artwork; the host does not decode replay tables or resolve assets itself.
-
-`dashboard_research_history` forwards research-slot history through the same cancellable projected-response channel. Replay scanning and artwork preparation stay in the native loader; the desktop and browser transports validate response identity before presenting it.

@@ -20,7 +20,7 @@ For frontend or analytics data-type changes:
 ```powershell
 npm.cmd run check:ui
 npm.cmd run build:ui
-cargo run -p analytics --bin export-types -- --check
+cargo run -p dashboard --bin export-types -- --check
 ```
 
 Unit tests use pure functions and synthetic memory, not the game or a capture corpus. Recorder/viewer integration also needs the relevant fresh-save oracle and existing smoke workflow in the [recorder guide](crates/recorder/README.md).

@@ -1,83 +1,26 @@
-//! Async proxy for native projected queries. No replay bytes or decoder live here.
-//! Response assembly is bounded; parsing never occupies the native pipe reader.
+//! Async proxy for native data requests. No replay bytes or decoder live here.
+//! Replies are reassembled from bounded fragments and handed to the frontend
+//! as raw JSON bytes; the host never parses them.
 
-use analytics::QueryRequest;
-use desktop_protocol::{
-    dashboard_data::{DataCommand, DataEvent, MAX_REPLY_BYTES, ReplyAssembler},
-    replay_revision,
+use dashboard::{
+    protocol::replay_revision,
+    transport::{DataCommand, DataEvent, MapSettingsTarget, ProductRequest, ReplyAssembler},
 };
-use serde::{Serialize, Serializer};
-use serde_json::Value;
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::Mutex,
 };
-use tauri::{AppHandle, Manager, State, WebviewWindow};
-use tokio::sync::{Semaphore, oneshot};
+use tauri::{AppHandle, Manager, State, WebviewWindow, ipc::Response};
+use tokio::sync::oneshot;
 
 use crate::native::NativeHost;
 
 const MAX_PENDING: usize = 64;
-const ASSEMBLY_BUDGET: usize = 64 * 1024 * 1024;
 const CANCELLED: &str = "Dashboard request cancelled";
 
-#[derive(Default)]
-struct ResponseBudget(AtomicUsize);
-
-struct BytePermit {
-    budget: Arc<ResponseBudget>,
-    bytes: usize,
-}
-
-impl ResponseBudget {
-    fn reserve(self: &Arc<Self>, bytes: usize) -> Result<BytePermit, String> {
-        if bytes == 0 || bytes > MAX_REPLY_BYTES {
-            return Err("Dashboard response exceeds its byte budget".into());
-        }
-        self.0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(bytes)
-                    .filter(|next| *next <= ASSEMBLY_BUDGET)
-            })
-            .map_err(|_| "Dashboard responses occupy the memory budget. Retry this view.")?;
-        Ok(BytePermit {
-            budget: Arc::clone(self),
-            bytes,
-        })
-    }
-}
-
-impl Drop for BytePermit {
-    fn drop(&mut self) {
-        self.budget.0.fetch_sub(self.bytes, Ordering::AcqRel);
-    }
-}
-
-struct RawReply {
-    json: String,
-    permit: BytePermit,
-}
-
-/// Retain the response admission charge until Tauri serializes the parsed DTO.
-/// This bounds input-equivalent bytes, not allocator overhead or Value expansion.
-pub struct ProjectedResponse {
-    value: Value,
-    _permit: BytePermit,
-}
-
-impl Serialize for ProjectedResponse {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.value.serialize(serializer)
-    }
-}
-
 struct PendingReply {
-    reply: oneshot::Sender<Result<RawReply, String>>,
+    reply: oneshot::Sender<Result<String, String>>,
     assembler: ReplyAssembler,
-    permit: Option<BytePermit>,
 }
 
 #[derive(Default)]
@@ -101,7 +44,7 @@ impl Requests {
         }
     }
 
-    fn begin(&mut self, id: &str) -> Result<oneshot::Receiver<Result<RawReply, String>>, String> {
+    fn begin(&mut self, id: &str) -> Result<oneshot::Receiver<Result<String, String>>, String> {
         if id.is_empty() || id.len() > 128 || id.contains('\0') {
             return Err("Invalid dashboard request identifier".into());
         }
@@ -123,27 +66,15 @@ impl Requests {
             PendingReply {
                 reply,
                 assembler: ReplyAssembler::default(),
-                permit: None,
             },
         );
         Ok(receive)
     }
 }
 
+#[derive(Default)]
 pub struct DashboardService {
     requests: Mutex<Requests>,
-    budget: Arc<ResponseBudget>,
-    parsers: Arc<Semaphore>,
-}
-
-impl Default for DashboardService {
-    fn default() -> Self {
-        Self {
-            requests: Mutex::new(Requests::default()),
-            budget: Arc::default(),
-            parsers: Arc::new(Semaphore::new(2)),
-        }
-    }
 }
 
 impl DashboardService {
@@ -153,7 +84,7 @@ impl DashboardService {
         host: &NativeHost,
         id: &str,
         command: DataCommand,
-    ) -> Result<oneshot::Receiver<Result<RawReply, String>>, String> {
+    ) -> Result<oneshot::Receiver<Result<String, String>>, String> {
         host.ensure_started(window)?;
         // Admission and native enqueue are atomic with cancellation. The native
         // receiver releases its own lock before calling receive_data below.
@@ -193,12 +124,11 @@ impl DashboardService {
 
     pub fn shutdown(&self) {
         self.fail_all("The dashboard data connection closed", true);
-        self.parsers.close();
     }
 }
 
-/// Only bounded fragment assembly runs on the native reader. Completed strings
-/// move to their awaiting command, which uses one of two parsing slots.
+/// Only bounded fragment assembly runs on the native reader. Completed replies
+/// move to their awaiting command.
 pub fn receive_data(app: &AppHandle, event: DataEvent) {
     let service = app.state::<DashboardService>();
     let mut requests = service
@@ -220,23 +150,13 @@ pub fn receive_data(app: &AppHandle, event: DataEvent) {
             fragment,
         } => {
             if let Some(entry) = requests.pending.get_mut(&id) {
-                let result = (|| {
-                    if entry.permit.is_none() {
-                        entry.permit = Some(service.budget.reserve(total_bytes as usize)?);
-                    }
-                    entry.assembler.push(sequence, total_bytes, last, &fragment)
-                })();
-                match result {
+                match entry.assembler.push(sequence, total_bytes, last, &fragment) {
                     Ok(Some(json)) => {
                         let entry = requests
                             .pending
                             .remove(&id)
                             .expect("response still pending");
-                        let raw = RawReply {
-                            json,
-                            permit: entry.permit.expect("assembled reply has byte permit"),
-                        };
-                        if entry.reply.send(Ok(raw)).is_err() {
+                        if entry.reply.send(Ok(json)).is_err() {
                             cancel = Some(id);
                         }
                     }
@@ -281,15 +201,11 @@ async fn request(
     service: &DashboardService,
     id: String,
     command: DataCommand,
-) -> Result<ProjectedResponse, String> {
+) -> Result<Response, String> {
     let receive = service.submit(window, host, &id, command)?;
-    let raw = receive
+    let json = receive
         .await
         .map_err(|_| "Dashboard response channel closed".to_owned())??;
-    let permit = Arc::clone(&service.parsers)
-        .acquire_owned()
-        .await
-        .map_err(|_| "Dashboard is closing")?;
     if service
         .requests
         .lock()
@@ -298,29 +214,8 @@ async fn request(
     {
         return Err(CANCELLED.into());
     }
-    let parsed = tauri::async_runtime::spawn_blocking(move || {
-        let _parser = permit;
-        serde_json::from_str(&raw.json)
-            .map(|value| ProjectedResponse {
-                value,
-                _permit: raw.permit,
-            })
-            .map_err(|error| format!("Invalid dashboard response: {error}"))
-    })
-    .await
-    .map_err(|error| error.to_string())?;
-    if parsed.is_err() {
-        let _ = host.send_data(window, DataCommand::Cancel { id: id.clone() });
-    }
-    if service
-        .requests
-        .lock()
-        .map_err(|error| error.to_string())?
-        .cancelled(&id)
-    {
-        return Err(CANCELLED.into());
-    }
-    parsed
+    // The frontend parses the JSON once; the host only checked its framing.
+    Ok(Response::new(json.into_bytes()))
 }
 
 #[tauri::command]
@@ -330,7 +225,7 @@ pub async fn dashboard_open_source(
     service: State<'_, DashboardService>,
     path: String,
     request_id: String,
-) -> Result<ProjectedResponse, String> {
+) -> Result<Response, String> {
     let path = crate::replay_path(&path)?;
     let revision = replay_revision(&path).map_err(|error| error.to_string())?;
     request(
@@ -348,110 +243,22 @@ pub async fn dashboard_open_source(
 }
 
 #[tauri::command]
-pub async fn dashboard_query(
+pub async fn dashboard_product(
     window: WebviewWindow,
     host: State<'_, NativeHost>,
     service: State<'_, DashboardService>,
-    query: QueryRequest,
+    query: ProductRequest,
     request_id: String,
-) -> Result<ProjectedResponse, String> {
-    request(
-        &window,
-        &host,
-        &service,
-        request_id.clone(),
-        DataCommand::Query {
-            id: request_id,
-            request: query,
-        },
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn dashboard_focus_history(
-    window: WebviewWindow,
-    host: State<'_, NativeHost>,
-    service: State<'_, DashboardService>,
-    query: desktop_protocol::dashboard_data::FocusRequest,
-    request_id: String,
-) -> Result<ProjectedResponse, String> {
+) -> Result<Response, String> {
     query.validate()?;
     request(
         &window,
         &host,
         &service,
         request_id.clone(),
-        DataCommand::FocusHistory {
+        DataCommand::Product {
             id: request_id,
             request: query,
-        },
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn dashboard_research_history(
-    window: WebviewWindow,
-    host: State<'_, NativeHost>,
-    service: State<'_, DashboardService>,
-    query: desktop_protocol::dashboard_data::FocusRequest,
-    request_id: String,
-) -> Result<ProjectedResponse, String> {
-    query.validate()?;
-    request(
-        &window,
-        &host,
-        &service,
-        request_id.clone(),
-        DataCommand::ResearchHistory {
-            id: request_id,
-            request: query,
-        },
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn dashboard_country_flags(
-    window: WebviewWindow,
-    host: State<'_, NativeHost>,
-    service: State<'_, DashboardService>,
-    query: desktop_protocol::dashboard_data::CountryFlagRequest,
-    request_id: String,
-) -> Result<ProjectedResponse, String> {
-    query.validate()?;
-    request(
-        &window,
-        &host,
-        &service,
-        request_id.clone(),
-        DataCommand::CountryFlags {
-            id: request_id,
-            request: query,
-        },
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn dashboard_land_owners(
-    window: WebviewWindow,
-    host: State<'_, NativeHost>,
-    service: State<'_, DashboardService>,
-    source_id: String,
-    revision: String,
-    request_id: String,
-) -> Result<ProjectedResponse, String> {
-    request(
-        &window,
-        &host,
-        &service,
-        request_id.clone(),
-        DataCommand::LandOwners {
-            id: request_id,
-            source_id,
-            revision,
         },
     )
     .await
@@ -464,12 +271,12 @@ pub async fn dashboard_map_settings(
     window: WebviewWindow,
     host: State<'_, NativeHost>,
     service: State<'_, DashboardService>,
-    target: Option<desktop_protocol::dashboard_data::MapSettingsTarget>,
+    target: Option<MapSettingsTarget>,
     source_id: String,
     revision: String,
-    settings: Option<desktop_protocol::CampaignMapSettings>,
+    settings: Option<dashboard::protocol::CampaignMapSettings>,
     request_id: String,
-) -> Result<ProjectedResponse, String> {
+) -> Result<Response, String> {
     request(
         &window,
         &host,
@@ -511,21 +318,37 @@ mod tests {
     #[test]
     fn cancellation_before_admission_cannot_create_an_orphaned_open() {
         let mut requests = Requests::default();
-        requests.remember_cancel("cancelled-open");
-        assert!(requests.begin("cancelled-open").is_err());
-        assert!(requests.begin("other-widget").is_ok());
-        assert_eq!(requests.pending.len(), 1);
+        requests.remember_cancel("open-1");
+        assert_eq!(requests.begin("open-1").unwrap_err(), CANCELLED);
+        let receive = requests.begin("open-2").unwrap();
+        assert!(
+            requests.begin("open-2").is_err(),
+            "ids cannot be reused while pending"
+        );
+        drop(receive);
+        for index in 0..MAX_PENDING * 5 {
+            requests.remember_cancel(&format!("old-{index}"));
+        }
+        assert_eq!(requests.cancelled.len(), MAX_PENDING * 4);
+        assert!(
+            requests.begin("open-1").is_ok(),
+            "evicted tombstones no longer block an id"
+        );
     }
 
     #[test]
-    fn response_budget_remains_charged_after_assembly_until_owner_drops() {
-        let budget = Arc::new(ResponseBudget::default());
-        let first = budget.reserve(MAX_REPLY_BYTES).unwrap();
-        let second = budget.reserve(MAX_REPLY_BYTES).unwrap();
-        assert!(budget.reserve(1).is_err());
-        drop(first);
-        assert!(budget.reserve(1).is_ok());
-        drop(second);
-        assert_eq!(budget.0.load(Ordering::Acquire), 0);
+    fn assembled_replies_are_delivered_once_and_errors_replace_them() {
+        let mut requests = Requests::default();
+        let mut receive = requests.begin("p-1").unwrap();
+        let entry = requests.pending.get_mut("p-1").unwrap();
+        assert_eq!(entry.assembler.push(0, 6, false, "{\"a").unwrap(), None);
+        let json = entry.assembler.push(1, 6, true, "\":1").unwrap().unwrap();
+        let entry = requests.pending.remove("p-1").unwrap();
+        entry.reply.send(Ok(json)).unwrap();
+        assert_eq!(receive.try_recv().unwrap().unwrap(), "{\"a\":1");
+        assert!(
+            requests.begin("p-1").is_ok(),
+            "a delivered id may be reused"
+        );
     }
 }

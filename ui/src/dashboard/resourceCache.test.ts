@@ -85,3 +85,18 @@ test('oversized artwork is served but not retained', async () => {
   await cache.get('["a"]', load, signal());
   assert.equal(calls, 2);
 });
+
+test('forgetting settled entries leaves loads in flight for their consumers', async () => {
+  const cache = new ResourceCache<number>(10, 10, () => 1);
+  let calls = 0;
+  let release: (value: number) => void = () => {};
+  const gate = new Promise<number>(resolve => { release = resolve; });
+  assert.equal(await cache.get('["a","settled"]', async () => ++calls, signal()), 1);
+  const pending = cache.get('["a","pending"]', () => gate, signal());
+  await flush();
+  cache.deleteSettled('a');
+  release(7);
+  assert.equal(await pending, 7);
+  assert.equal(await cache.get('["a","settled"]', async () => ++calls, signal()), 2);
+  assert.equal(await cache.get('["a","pending"]', async () => 99, signal()), 7);
+});

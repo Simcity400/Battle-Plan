@@ -1,10 +1,10 @@
 //! Hosts the existing native viewer, with a bounded pipe for control messages.
 
-use desktop_protocol::{
+use dashboard::protocol::{
     DashboardMapState, DashboardMapView, EVENT_PREFIX, MAX_MESSAGE_BYTES, NativeCommand,
-    NativeEvent, ViewBounds, ViewerState, dashboard_data::DataCommand, replay_revision,
-    validate_map_views,
+    NativeEvent, ViewBounds, ViewerState, replay_revision, validate_map_views,
 };
+use dashboard::transport::DataCommand;
 use serde::Serialize;
 use std::{
     collections::VecDeque,
@@ -19,7 +19,7 @@ use tauri::{AppHandle, Emitter, WebviewWindow};
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostStatus {
-    pub map_details: Option<desktop_protocol::MapDetails>,
+    pub map_details: Option<dashboard::protocol::MapDetails>,
     pub running: bool,
     pub ready: bool,
     pub visible: bool,
@@ -55,7 +55,7 @@ impl SeekTarget {
 
 #[derive(Default)]
 struct Pending {
-    actions: VecDeque<desktop_protocol::MapAction>,
+    actions: VecDeque<dashboard::protocol::MapAction>,
     standalone: bool,
     bounds: Option<ViewBounds>,
     visibility: Option<bool>,
@@ -284,10 +284,10 @@ impl NativeHost {
             .clone()
     }
 
-    pub fn map_action(&self, action: desktop_protocol::MapAction) -> Result<(), String> {
+    pub fn map_action(&self, action: dashboard::protocol::MapAction) -> Result<(), String> {
         action.validate().map_err(str::to_owned)?;
         let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let desktop_protocol::MapAction::Unload { path } = &action
+        if let dashboard::protocol::MapAction::Unload { path } = &action
             && inner.process.is_none()
         {
             inner.forget_recording(path);
@@ -299,7 +299,7 @@ impl NativeHost {
         if inner.pending.actions.len() >= 16 {
             return Err("Map controls are busy; try again".into());
         }
-        if let desktop_protocol::MapAction::Unload { path } = &action {
+        if let dashboard::protocol::MapAction::Unload { path } = &action {
             inner.forget_recording(path);
         }
         inner.pending.actions.push_back(action);
@@ -468,7 +468,7 @@ impl NativeHost {
         inner
             .pending
             .actions
-            .push_back(desktop_protocol::MapAction::Vsync { enabled: vsync });
+            .push_back(dashboard::protocol::MapAction::Vsync { enabled: vsync });
         inner.process = Some(Process { child, _job: job });
         drop(inner);
 

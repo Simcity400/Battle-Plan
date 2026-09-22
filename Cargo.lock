@@ -60,17 +60,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
-name = "analytics"
-version = "0.1.0"
-dependencies = [
- "engine",
- "replay",
- "serde",
- "serde_json",
- "ts-rs",
-]
-
-[[package]]
 name = "android-activity"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -808,6 +797,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashboard"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "engine",
+ "installed-content",
+ "png 0.18.1",
+ "replay",
+ "rfd",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
 name = "dbus"
 version = "0.9.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -888,15 +893,6 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "desktop-protocol"
-version = "0.1.0"
-dependencies = [
- "analytics",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -3822,8 +3818,7 @@ dependencies = [
 name = "replay-desktop"
 version = "0.1.0"
 dependencies = [
- "analytics",
- "desktop-protocol",
+ "dashboard",
  "installed-content",
  "rfd",
  "serde",
@@ -5366,10 +5361,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "viewer"
 version = "0.1.0"
 dependencies = [
- "analytics",
  "base64 0.22.1",
  "bytemuck",
- "desktop-protocol",
+ "dashboard",
  "eframe",
  "engine",
  "installed-content",

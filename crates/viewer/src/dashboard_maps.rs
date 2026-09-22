@@ -16,14 +16,13 @@ use std::{
     time::Duration,
 };
 
-use analytics::SourceKey;
-use desktop_protocol::{DashboardMapState, DashboardMapView, ViewBounds};
+use dashboard::protocol::{DashboardMapState, DashboardMapView, ViewBounds};
+use dashboard::{Service, Source, SourceKey};
 use eframe::{egui, wgpu};
 
 use crate::{
     Config, Options,
     app::{Viewer, date, load_scene},
-    dashboard_data::{Service, SharedSource},
     document::{Content, Document, InitialHour},
     hours::{Resources, SharedDecoder},
     map::scene::Scene,
@@ -40,7 +39,7 @@ struct MapSourceKey {
 struct MapSource {
     texture_quality: u8,
     visual_mods: Option<Vec<String>>,
-    source: Arc<SharedSource>,
+    source: Arc<Source>,
     decoder: Arc<SharedDecoder>,
     content: Option<Arc<Content>>,
     error: Option<String>,
@@ -249,7 +248,7 @@ impl DashboardMaps {
             return Err("Wait for the map widget to finish loading before exporting".into());
         }
         view.viewer.host_map_action(
-            desktop_protocol::MapAction::Export {
+            dashboard::protocol::MapAction::Export {
                 path,
                 view_id: None,
             },
@@ -292,12 +291,7 @@ impl DashboardMaps {
         self.waiting_source = path;
     }
 
-    pub fn seed_content(
-        &mut self,
-        source: Arc<SharedSource>,
-        content: Arc<Content>,
-        config: &Config,
-    ) {
+    pub fn seed_content(&mut self, source: Arc<Source>, content: Arc<Content>, config: &Config) {
         if !same_config(&self.config, config)
             || source.path() != content.source_path.as_path()
             || content.visual_mods != self.service.map_settings(&source.replay()).visual_mods

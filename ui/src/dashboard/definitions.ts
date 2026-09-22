@@ -1,38 +1,80 @@
-import type { WidgetSpec, WidgetTime } from './model';
+import type { ComponentType } from 'react';
+import type { IconName } from '../components/Icons';
+import type { MapOptions } from '../shell/api';
+import type { DashboardClient } from './client';
+import type { MapViewsStore } from './geometry';
+import type { Alignment, BoundTrack, DashboardTemplate, TrackSpec, WidgetSpec, WidgetTime } from './model';
+import type { PlaybackController } from './playback';
 
-/** Code-owned capabilities. Renderers live in widgets.tsx; the scheduler uses
- * these data/time contracts and never switches on a widget's type. */
-export interface WidgetDefinition {
+/** What every widget receives from the dashboard. Widgets never open files or
+ * start their own clock; they read products and follow the shared playback. */
+export interface WidgetRuntime {
+  campaignTracks: TrackSpec[];
+  defaultRoleId: string | null;
+  tracks: BoundTrack[];
+  clock: PlaybackController;
+  maps: MapViewsStore;
+  onMapBranch: (trackId: string, branchId: string) => void;
+  client: DashboardClient;
+  alignment: Alignment;
+  nativeHidden: boolean;
+}
+
+export interface WidgetProps {
+  widget: WidgetSpec;
+  runtime: WidgetRuntime;
+  active: boolean;
+  mapOptions: MapOptions;
+  /** A span inside the widget header for a short live summary. */
+  headerSlot: HTMLElement | null;
+  onDiagnostics: (warnings: string[]) => void;
+}
+
+export interface HeaderControlsProps {
+  widget: WidgetSpec;
+  runtime: WidgetRuntime;
+  template: DashboardTemplate;
+  editing: boolean;
+  onApply: (widget: WidgetSpec) => void;
+  onRemove?: () => void;
+  onReset?: () => void;
+  mapOptions: MapOptions;
+  onMapOptions: (options: MapOptions) => void;
+  diagnostics: string[];
+}
+
+/** Pure widget metadata: safe to import in node tests. */
+export interface WidgetMeta {
   kind: string;
   version: number;
   title: string;
+  icon: IconName;
   timeModes: readonly WidgetTime['mode'][];
-  defaultTime: WidgetTime['mode'] & ('follow' | 'campaign');
+  defaultTime: 'follow' | 'campaign';
   scope: 'moment' | 'history';
-  data: 'native' | 'countries' | 'focus' | 'research' | 'none';
+  /** Reads recording data: shows the track label and a country choice. */
+  data: boolean;
   minSize: { w: number; h: number };
   defaultSize: { w: number; h: number };
 }
 
-const registered: WidgetDefinition[] = [
-  { kind: 'research', version: 1, title: 'Research', timeModes: ['campaign', 'follow', 'pin'],
-    defaultTime: 'campaign', scope: 'moment', data: 'research', minSize: { w: 3, h: 5 }, defaultSize: { w: 7, h: 10 } },
-  { kind: 'national-focus', version: 1, title: 'National focus', timeModes: ['campaign', 'follow', 'pin'],
-    defaultTime: 'campaign', scope: 'moment', data: 'focus', minSize: { w: 3, h: 5 }, defaultSize: { w: 5, h: 10 } },
-  { kind: 'map', version: 1, title: 'Campaign map', timeModes: ['campaign', 'follow', 'pin'],
-    defaultTime: 'follow', scope: 'moment', data: 'native', minSize: { w: 3, h: 8 }, defaultSize: { w: 7, h: 11 } },
-  { kind: 'placeholder', version: 1, title: 'Untitled panel', timeModes: ['campaign', 'follow'],
-    defaultTime: 'campaign', scope: 'moment', data: 'none', minSize: { w: 2, h: 3 }, defaultSize: { w: 4, h: 6 } },
-];
-export const widgetDefinitions: readonly WidgetDefinition[] = registered;
-const definitions = new Map(registered.map((definition) => [definition.kind, definition]));
-/** Register code-defined data products before mounting the dashboard. */
-export function registerWidgetDefinition(definition: WidgetDefinition): void {
-  if (definitions.has(definition.kind)) throw new Error(`Widget type already registered: ${definition.kind}`);
-  definitions.set(definition.kind, definition);
-  registered.push(definition);
+export interface WidgetDefinition extends WidgetMeta {
+  render?: ComponentType<WidgetProps>;
+  /** Replaces the default settings gear, as the map's pop-down does. */
+  headerControls?: ComponentType<HeaderControlsProps>;
 }
-export function widgetDefinition(kind: string): WidgetDefinition | undefined { return definitions.get(kind); }
+
+/** The React half of a widget; its folder's index.ts exports one. */
+export type WidgetRenderer = Pick<WidgetDefinition, 'render' | 'headerControls'>;
+
+const registry = new Map<string, WidgetDefinition>();
+
+/** Register widgets; a later registration of the same kind adds to the earlier one. */
+export function registerWidgets(definitions: readonly WidgetDefinition[]): void {
+  for (const definition of definitions) registry.set(definition.kind, { ...registry.get(definition.kind), ...definition });
+}
+export function widgetDefinitions(): WidgetDefinition[] { return [...registry.values()]; }
+export function widgetDefinition(kind: string): WidgetDefinition | undefined { return registry.get(kind); }
 
 export function widgetUnavailable(widget: WidgetSpec): string | null {
   const definition = widgetDefinition(widget.kind);

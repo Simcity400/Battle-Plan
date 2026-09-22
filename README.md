@@ -15,11 +15,11 @@ npm.cmd ci
 npm.cmd run dev
 ```
 
-Choose **Recordings**, set your replay folder when prompted (or in Settings), and load a campaign from the list. The map also needs the matching game and user folders; Analytics can read the recording without map assets.
+Choose **Recordings**, set your replay folder when prompted (or in Settings), and load a campaign from the list. The map also needs the matching game and user folders; Overview widgets can read the recording without map assets.
 
 To make a recording, follow the [recorder guide](crates/recorder/README.md). For builds, launch arguments and desktop packaging, see the [desktop guide](crates/desktop/README.md).
 
-The [dashboard architecture and prototype plan](docs/analytics-dashboard.md) describes shared playback, whole-campaign analysis, comparisons and widget ownership.
+The [dashboard architecture](docs/dashboard.md) describes the crate groups, the data-product flow and the identity and time rules widgets follow.
 
 ## Find your way around
 
@@ -32,11 +32,10 @@ Each crate's README explains its responsibility, important rules and development
 | [recorder](crates/recorder/README.md) | Attach/detach, replay finalization, inspection and save comparison. |
 | [replay](crates/replay/README.md) | Shared recording format, tables, branches, cadence and sample history. |
 | [installed-content](crates/installed-content/README.md) | Game assets, text saves, content layers and identity verification. |
-| [viewer](crates/viewer/README.md) | Native map, playback, game-derived visuals and image export. |
-| [analytics](crates/analytics/README.md) | Asset-independent replay queries and frontend data types. |
+| [viewer](crates/viewer/README.md) | The native map process: rendering, playback, game-derived visuals and image export. |
+| [dashboard](crates/dashboard/README.md) | Widget data products, the native data service, the host/viewer protocol and the generated frontend types. |
 | [desktop](crates/desktop/README.md) | Tauri host and the native viewer's lifecycle. |
-| [desktop-protocol](crates/desktop-protocol/README.md) | Messages shared by the desktop host and viewer. |
-| [ui](ui/README.md) | React interface, charts and the game-calendar picker. |
+| [ui](ui/README.md) | React interface: shell, shared components, the widget framework and one folder per widget. |
 
 ## Working on the project
 

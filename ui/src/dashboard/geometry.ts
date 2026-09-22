@@ -1,6 +1,6 @@
 import { useCallback, useSyncExternalStore } from 'react';
-import { errorMessage } from '../api';
-import type { MapBounds } from '../api';
+import { errorMessage } from '../shell/api';
+import type { MapBounds } from '../shell/api';
 import type { DashboardClient, DashboardMapState, DashboardMapView } from './client';
 import type { PlaybackController, PlaybackSnapshot } from './playback';
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { defaultTemplate } from './model.ts';
 import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, resolveWidgetCampaign, sameCampaignPath } from './campaigns.ts';
 import { parseTemplate } from './storage.ts';
+import '../widgets/definitions.ts';
 
 const campaigns = [{ id: 'primary', label: 'Campaign A', path: 'C:/a.battleplan' }, { id: 'second', label: 'Campaign B', path: 'C:/b.battleplan' }];
 

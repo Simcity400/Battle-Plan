@@ -26,7 +26,7 @@ opt-level = 2
 [profile.dev.package.installed-content]
 opt-level = 2
 
-[profile.dev.package.analytics]
+[profile.dev.package.dashboard]
 opt-level = 2
 
 # Replay loading decompresses large blocks. Keep the native codec optimized in

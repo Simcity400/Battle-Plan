@@ -1,4 +1,4 @@
-import type { RecordingGap } from '../generated/analytics.ts';
+import type { RecordingGap } from '../generated/dashboard.ts';
 
 /** Inclusive hour cells, clipped to the shared clock's bounds. Never bridge branches. */
 export function timelineGaps(gaps: readonly RecordingGap[], offset: number, first: number, last: number) {

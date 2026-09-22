@@ -230,7 +230,7 @@ struct LoadedReplay {
     document: Document,
     scene: Scene,
     revision: Option<String>,
-    source: Option<Arc<crate::dashboard_data::SharedSource>>,
+    source: Option<Arc<dashboard::Source>>,
     decoder: Option<Arc<hours::SharedDecoder>>,
     config: Config,
 }
@@ -253,7 +253,7 @@ pub struct Viewer {
     dashboard_active: bool,
     dashboard_map: bool,
     shared_resources: Option<Arc<hours::Resources>>,
-    source: Option<Arc<crate::dashboard_data::SharedSource>>,
+    source: Option<Arc<dashboard::Source>>,
     source_decoder: Option<Arc<hours::SharedDecoder>>,
     loaded_config: Option<Config>,
     rendered: Option<Playhead>,
@@ -290,7 +290,7 @@ pub struct Viewer {
     // colour
     /// Whether the map is graded through the engine's post chain.
     postfx: bool,
-    pub(crate) graphics: desktop_protocol::MapGraphics,
+    pub(crate) graphics: dashboard::protocol::MapGraphics,
     map_preferences_seen: Option<(String, Option<Vec<String>>, u32, u8)>,
     // hours
     /// The timeline's position; the map follows it as hours are built.
@@ -389,7 +389,7 @@ pub(crate) fn load_scene(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     document: &Document,
-    graphics: desktop_protocol::MapGraphics,
+    graphics: dashboard::protocol::MapGraphics,
 ) -> std::io::Result<Scene> {
     let mut scene = Scene::new(device, queue, &document.assets, &document.icons, graphics)?;
     scene.set_borders(
@@ -424,7 +424,7 @@ impl Viewer {
         if let Some(embedded) = &self.embedded {
             embedded
                 .service()
-                .configure_flags(&self.config, self.options.allow_unverified);
+                .configure_content(&self.config, self.options.allow_unverified);
         }
     }
 
@@ -479,7 +479,7 @@ impl Viewer {
         if let Some(embedded) = &embedded {
             embedded
                 .service()
-                .configure_flags(&config, options.allow_unverified);
+                .configure_content(&config, options.allow_unverified);
         }
         // capture: `--window-dump` arms the readback before the first frame, so
         // every frame it draws is a capture frame and the animation clock never
@@ -687,7 +687,7 @@ impl Viewer {
         &mut self,
         ui: &mut egui::Ui,
         frame: &eframe::Frame,
-        target: &desktop_protocol::DashboardMapView,
+        target: &dashboard::protocol::DashboardMapView,
     ) {
         self.perspective.country = target.options.country.clone().map_or(
             map::perspective::Country::Recorded,
@@ -737,8 +737,8 @@ impl Viewer {
 
     pub(crate) fn map_state(
         &self,
-        target: &desktop_protocol::DashboardMapView,
-    ) -> desktop_protocol::DashboardMapState {
+        target: &dashboard::protocol::DashboardMapView,
+    ) -> dashboard::protocol::DashboardMapState {
         let error = self.error.clone().or_else(|| {
             self.shown
                 .as_ref()
@@ -752,7 +752,7 @@ impl Viewer {
                 && shown.hour == target.hour
                 && shown.fraction == target.fraction
         }) && self.rendered_sequence == target.sequence;
-        desktop_protocol::DashboardMapState {
+        dashboard::protocol::DashboardMapState {
             id: target.id.clone(),
             source_id: Some(target.source_id.clone()),
             revision: Some(target.revision.clone()),
@@ -830,7 +830,7 @@ impl Viewer {
                 .map_settings(&replay);
             self.graphics = preferences.graphics;
             let selection = (
-                crate::map_settings::campaign_key(&replay),
+                dashboard::map_settings::campaign_key(&replay),
                 preferences.visual_mods.clone(),
                 preferences.graphics.samples,
                 preferences.graphics.texture_quality,
@@ -988,11 +988,11 @@ impl Viewer {
 
     pub(crate) fn host_map_action(
         &mut self,
-        action: desktop_protocol::MapAction,
+        action: dashboard::protocol::MapAction,
         ctx: &egui::Context,
         frame: &mut eframe::Frame,
     ) {
-        use desktop_protocol::MapAction;
+        use dashboard::protocol::MapAction;
         match action {
             MapAction::Unload { path } => {
                 if self.unload_recording(std::path::Path::new(&path)) {
@@ -1109,7 +1109,7 @@ impl Viewer {
         }
         let mut seen = std::collections::HashSet::new();
         messages.retain(|message| seen.insert(message.clone()));
-        embedded.report_details(desktop_protocol::MapDetails {
+        embedded.report_details(dashboard::protocol::MapDetails {
             content_ready: self.config.resolve_options().is_ok(),
             error: self.error.clone(),
             game: self.config.game_dir.to_string_lossy().into_owned(),
@@ -1133,7 +1133,7 @@ impl Viewer {
             .as_ref()
             .filter(|shown| shown.epoch == self.epoch);
         embedded.report(
-            desktop_protocol::ViewerState {
+            dashboard::protocol::ViewerState {
                 path: self
                     .document
                     .as_ref()
@@ -1219,7 +1219,7 @@ impl Viewer {
             };
             let result = (|| -> Result<LoadedReplay, String> {
                 let revision = if verify_revision {
-                    let revision = desktop_protocol::replay_revision(&path)
+                    let revision = dashboard::protocol::replay_revision(&path)
                         .map_err(|error| error.to_string())?;
                     if expected_revision
                         .as_ref()
@@ -3121,14 +3121,55 @@ mod tests {
 
     #[test]
     fn unload_releases_standalone_admission_and_discards_a_late_loader() {
-        let runtime = Arc::new(
-            analytics::AnalyticsRuntime::new(analytics::RuntimeLimits {
-                max_sources: 1,
-                ..Default::default()
-            })
+        use replay::{
+            container::Replay,
+            identity::{Identity, Roster, SampleBoundary, SessionStart, Verification},
+            spool::Record,
+        };
+        let path = PathBuf::from("memory.battleplan");
+        let session = SessionStart {
+            id: 1,
+            process_id: 1,
+            process_start_time: 1,
+            qpc_frequency: 10_000_000,
+            sample_boundary: SampleBoundary::EndOfHour,
+            identity: Identity {
+                game_version: "synthetic".into(),
+                exe_hash: [1; 32],
+                exe_size: 1,
+                vanilla_hash: [2; 32],
+                dlc: vec![],
+                mods: vec![],
+                coverage_policy: 1,
+                language: "l_english".into(),
+                recorder_version: "test".into(),
+                collector_hash: [3; 32],
+                verification: Verification::Verified {
+                    launcher: Roster::default(),
+                    memory: Roster::default(),
+                },
+            },
+        };
+        let replay = Arc::new(
+            Replay::from_records(
+                b"unload-test".to_vec(),
+                &[vec![Record::SessionStart(session)]],
+            )
             .unwrap(),
         );
-        let path = PathBuf::from("memory.battleplan");
+        let source = Arc::new(
+            dashboard::Source::from_replay(
+                dashboard::SourceKey {
+                    source_id: "source-test".into(),
+                    revision: "revision-test".into(),
+                },
+                path.clone(),
+                replay,
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap(),
+        );
+        let witness = Arc::downgrade(&source);
         let mut viewer = Viewer::create(
             Config::default(),
             Options {
@@ -3140,15 +3181,11 @@ mod tests {
             None,
             None,
         );
-        viewer.source = Some(crate::dashboard_data::tests::source(&runtime));
-        assert!(runtime.stats().source_bytes > 0);
+        viewer.source = Some(source);
         assert!(!viewer.unload_recording(std::path::Path::new("another.battleplan")));
-        assert_eq!(runtime.stats().sources, 1);
+        assert_eq!(witness.strong_count(), 1);
         assert!(viewer.unload_recording(&path));
-        assert_eq!(runtime.stats().source_bytes, 0);
-        let replacement = crate::dashboard_data::tests::source(&runtime);
-        assert_eq!(runtime.stats().sources, 1);
-        drop(replacement);
+        assert_eq!(witness.strong_count(), 0);
         let (send, receive) = mpsc::channel();
         viewer.loading = Some(receive);
         send.send(Err("obsolete load failure".into())).unwrap();
