@@ -9,8 +9,6 @@ use crate::{Memory, carmy, ccountry, cgame_state, cpdx_array::Array, cprovince, 
 pub const MODIFIER_LIMIT: usize = 96;
 pub const SUPPLY_TERM_LIMIT: usize = 64;
 pub const ACCLIMATIZATION_LIMIT: usize = 64;
-pub const TRANSPORT_TERM_LIMIT: usize = 64;
-const ARRAY_LIMIT: u32 = 4096;
 
 /// Scopes:0 country;1 selected contextual leader;2 location-state;
 ///3 province weather;4 region weather;5 priority subunit;6 category;
@@ -163,13 +161,13 @@ fn pointer(memory: &impl Memory, p: usize, o: usize) -> Result<usize, &'static s
     field::<u64>(memory, p, o).map(|p| p as usize)
 }
 
+/// Bounded only by the live native header (count <= capacity <= i32::MAX and
+/// an in-range extent, validated by `Array::from_header`). Several of these
+/// arrays are indexed by canonical country slot (country links, air manager
+/// countries, intel rows), so no reader-chosen count may refuse them.
 fn array(memory: &impl Memory, p: usize, o: usize, stride: usize) -> Result<Array, &'static str> {
     let header = field(memory, p, o)?;
-    let array = Array::from_header(header, stride).ok_or("reinforcement array invalid")?;
-    if array.count > ARRAY_LIMIT {
-        return Err("reinforcement array bound exceeded");
-    }
-    Ok(array)
+    Array::from_header(header, stride).ok_or("reinforcement array invalid")
 }
 
 fn element(array: Array, index: u32, stride: usize) -> Result<usize, &'static str> {
@@ -544,6 +542,7 @@ fn transport_intel_lane(
     Ok(value)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn transport_context(
     memory: &impl Memory,
     base: usize,
@@ -551,7 +550,8 @@ fn transport_context(
     army: usize,
     location: usize,
     modifiers: &mut [ModifierTerm],
-    terms: &mut [TransportTerm],
+    terms: &mut Vec<TransportTerm>,
+    start: usize,
 ) -> Result<ContextRow, &'static str> {
     use crate::{
         ccountry_intel, cdiplomacy_status, cstatic_modifier, cstrategic_navy_manager,
@@ -615,10 +615,9 @@ fn transport_context(
             if pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)? != owner.pointer {
                 return Err("reinforcement transport diplomacy backlink mismatch");
             }
+            // E8DC30 visits every enemy reference in +98/+A4 and appends to a
+            // growable CPdxArray: the native header count is the only bound.
             let enemies = array(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRIES, 4)?;
-            if enemies.count as usize > TRANSPORT_TERM_LIMIT {
-                return Err("reinforcement transport enemy bound exceeded");
-            }
             for index in 0..enemies.count {
                 let raw = field::<u32>(memory, element(enemies, index, 4)?, 0)?;
                 let enemy = countries.resolve(raw)?;
@@ -635,10 +634,7 @@ fn transport_context(
                 }
                 let enemy_intel = pointer(memory, enemy.pointer, ccountry::INTEL_TABLE)?;
                 auth(memory, base, enemy_intel, ccountry_intel::VTABLE_RVA)?;
-                let output = terms
-                    .get_mut(row.transport_term_count)
-                    .ok_or("reinforcement transport term arena full")?;
-                *output = TransportTerm {
+                let term = TransportTerm {
                     country: raw,
                     regional_value: cstrategic_navy_manager::regional_operand(
                         memory, base, game, enemy, region_id,
@@ -660,6 +656,15 @@ fn transport_context(
                         owner,
                     )?,
                 };
+                // Grow one slot per term whose reads all succeeded, never from
+                // the unverified header count; Vec growth is amortized.
+                let slot = start
+                    .checked_add(row.transport_term_count)
+                    .ok_or("reinforcement transport term index overflow")?;
+                if terms.len() <= slot {
+                    terms.resize(slot + 1, TransportTerm::default());
+                }
+                terms[slot] = term;
                 row.transport_term_count += 1;
             }
             for (index, rva) in [
@@ -702,6 +707,10 @@ fn transport_context(
 /// Authenticated pointer-free, bounded raw speed graph. Source selectors follow
 /// native predicates; numeric operands retain their native integer bits. The
 /// naval-transfer branch owns the separate regional weather/enemy/intel graph.
+/// Its enemy terms are written to `transport_terms[transport_start..]`, growing
+/// the caller-owned vector as needed, so call it only where the caller may
+/// allocate (the acquisition worker, never the hourly callback). Entries past
+/// the returned count are unspecified scratch.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_context(
     memory: &impl Memory,
@@ -712,7 +721,8 @@ pub fn capture_context(
     modifiers: &mut [ModifierTerm],
     supply: &mut [SupplyTerm],
     acclimatization_terms: &mut [AcclimatizationTerm],
-    transport_terms: &mut [TransportTerm],
+    transport_terms: &mut Vec<TransportTerm>,
+    transport_start: usize,
 ) -> Result<ContextRow, &'static str> {
     auth(memory, base, army, carmy::VTABLE_RVA)?;
     if expected_handle == 0 || field::<u64>(memory, army, cunit::HANDLE)? != expected_handle {
@@ -732,6 +742,7 @@ pub fn capture_context(
             location,
             modifiers,
             transport_terms,
+            transport_start,
         );
     }
     let template = pointer(memory, army, carmy::STANDARD_TEMPLATE)?;
@@ -1255,7 +1266,8 @@ mod tests {
             &mut [],
             &mut [],
             &mut [],
-            &mut [],
+            &mut Vec::new(),
+            0,
         )
         .unwrap();
         assert_eq!(row.flags[11], 2);
@@ -1304,5 +1316,259 @@ mod tests {
             acclimatization(&memory, 0x100, &mut row, &mut terms[..1]),
             Err("reinforcement acclimatization arena full")
         );
+    }
+
+    /// Chunked sparse memory: a read succeeds only inside one written chunk,
+    /// so every field the reader touches must be written explicitly.
+    #[derive(Default)]
+    struct Sparse(std::collections::BTreeMap<usize, Vec<u8>>);
+    impl Sparse {
+        fn put(&mut self, at: usize, bytes: &[u8]) {
+            self.0.insert(at, bytes.to_vec());
+        }
+        fn u64(&mut self, at: usize, value: u64) {
+            self.put(at, &value.to_le_bytes());
+        }
+        fn u32(&mut self, at: usize, value: u32) {
+            self.put(at, &value.to_le_bytes());
+        }
+        fn array(&mut self, at: usize, data: usize, count: u32) {
+            let mut header = [0; 16];
+            header[..8].copy_from_slice(&(data as u64).to_le_bytes());
+            header[8..12].copy_from_slice(&count.to_le_bytes());
+            header[12..].copy_from_slice(&count.to_le_bytes());
+            self.put(at, &header);
+        }
+    }
+    impl Memory for Sparse {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let Some((start, bytes)) = self.0.range(..=address).next_back() else {
+                return false;
+            };
+            let offset = address - start;
+            match bytes.get(offset..offset + output.len()) {
+                Some(source) => {
+                    output.copy_from_slice(source);
+                    true
+                }
+                None => false,
+            }
+        }
+    }
+
+    const GAME: usize = 0x10_0000;
+    const ARMY: usize = 0x20_0000;
+    const HANDLE: u64 = 0x77;
+    fn diplomacy_at(slot: usize) -> usize {
+        0x800_0000 + slot * 0x400
+    }
+
+    /// Owner plus `enemies` distinct countries (canonical slot == raw id).
+    /// Enemies divisible by 7 are capitulated and by 11 have no fog network,
+    /// so the retained terms keep native order with the native skips.
+    fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
+        use crate::{
+            ccountry_intel, cdiplomacy_status, country_intel_row, cstatic_modifier,
+            cstrategic_navy, cstrategic_navy_manager, cstrategic_region, cweather_manager,
+            modifier_definition as metadata, province_definition,
+        };
+        const STATS: usize = 0x21_0000;
+        const LOCATION: usize = 0x22_0000;
+        const REGION: usize = 0x23_0000;
+        const WEATHER: usize = 0x24_0000;
+        const DEFINITIONS: usize = 0x25_0000;
+        const STATIC: usize = 0x26_0000;
+        const META: usize = 0x27_0000;
+        const NAVY_MANAGER: usize = 0x28_0000;
+        const NAVIES: usize = 0x29_0000;
+        const COUNTRIES: usize = 0x2a_0000;
+        const LINKS: usize = 0x2b_0000;
+        const ENEMIES: usize = 0x2c_0000;
+        const OWNER_ROWS: usize = 0x2d_0000;
+        let country = |slot: usize| 0x100_0000 + slot * 0x1000;
+        let intel = |slot: usize| 0x1000_0000 + slot * 0x100;
+        let intel_rows = |slot: usize| 0x1800_0000 + slot * 0x40;
+        let navy = |slot: usize| 0x2000_0000 + slot * 0x100;
+        let regional = |slot: usize| 0x3000_0000 + slot * 0x100;
+        let slots = enemies as usize + 2;
+        let mut m = Sparse::default();
+        m.u64(ARMY, carmy::VTABLE_RVA as u64);
+        m.u64(ARMY + cunit::HANDLE, HANDLE);
+        m.u64(ARMY + carmy::NAVAL_TRANSFER_MEMBERSHIP, 1);
+        m.u64(ARMY + cunit::STAT_BLOCK, STATS as u64);
+        m.u64(ARMY + cunit::LOCATION, LOCATION as u64);
+        m.u32(ARMY + cunit::LOGICAL_OWNER, 1);
+        m.u64(STATS, crate::csub_unit_definition::VTABLE_RVA as u64);
+        m.u64(LOCATION, cprovince::VTABLE_RVA as u64);
+        m.u64(LOCATION + cprovince::DEFINITION, LOCATION as u64 + 0x1000);
+        m.u32(LOCATION + cprovince::ID, 14);
+        m.u32(LOCATION + 0x1000 + province_definition::ID, 14);
+        m.u64(LOCATION + cprovince::STRATEGIC_REGION, REGION as u64);
+        m.u64(REGION, cstrategic_region::VTABLE_RVA as u64);
+        m.u32(REGION + cstrategic_region::ID, 22);
+        m.u64(GAME + cgame_state::WEATHER_MANAGER, WEATHER as u64);
+        m.u64(WEATHER, cweather_manager::VTABLE_RVA as u64);
+        m.array(WEATHER + cweather_manager::REGIONS, 0, 0);
+        m.u32(metadata::TRADE_FEATURE_FLAGS_RVA, 1 << 4);
+        m.u64(metadata::ELIGIBILITY_CALLBACK_RVA, 0);
+        m.u64(0x0331_7cc8, DEFINITIONS as u64);
+        m.u64(DEFINITIONS + 0xf8, STATIC as u64);
+        m.u64(STATIC, cstatic_modifier::VTABLE_RVA as u64);
+        m.array(STATIC + cstatic_modifier::ACCUMULATOR, 0, 0);
+        m.u64(metadata::TABLE_RVA, META as u64);
+        m.u32(
+            META + 0x29 * metadata::STRIDE + metadata::CATEGORY_MASK,
+            0xabc,
+        );
+        for (index, rva) in [0x0331_e100, 0x0331_d5b0, 0x0331_d620, 0x0331_e550]
+            .into_iter()
+            .enumerate()
+        {
+            m.put(rva, &(-(index as i64) - 1).to_le_bytes());
+        }
+        m.u64(
+            GAME + cgame_state::STRATEGIC_NAVY_MANAGER,
+            NAVY_MANAGER as u64,
+        );
+        m.u64(NAVY_MANAGER, cstrategic_navy_manager::VTABLE_RVA as u64);
+        m.array(
+            NAVY_MANAGER + cstrategic_navy_manager::NAVIES,
+            NAVIES,
+            slots as u32,
+        );
+        m.array(GAME + cgame_state::COUNTRIES, COUNTRIES, slots as u32);
+        m.array(GAME + cgame_state::COUNTRY_LINKS, LINKS, slots as u32);
+        let mut countries = vec![0; slots * 8];
+        let mut links = vec![0; slots * 4];
+        let mut navies = vec![0; slots * 8];
+        let mut owner_rows = vec![0; slots * country_intel_row::STRIDE];
+        let mut expected = Vec::new();
+        for slot in 1..slots {
+            let c = country(slot);
+            countries[slot * 8..slot * 8 + 8].copy_from_slice(&(c as u64).to_le_bytes());
+            links[slot * 4..slot * 4 + 4].copy_from_slice(&(slot as u32).to_le_bytes());
+            navies[slot * 8..slot * 8 + 8].copy_from_slice(&(navy(slot) as u64).to_le_bytes());
+            let row = slot * country_intel_row::STRIDE + country_intel_row::NAVY;
+            owner_rows[row..row + 8].copy_from_slice(&(1000 + slot as i64).to_le_bytes());
+            m.u64(c, ccountry::VTABLE_RVA as u64);
+            m.u32(c + ccountry::ID, slot as u32);
+            let fog = i32::from(slot % 11 != 0);
+            m.put(c + ccountry::FOG_NETWORK_TABLE_COUNT, &fog.to_le_bytes());
+            m.u64(c + ccountry::DIPLOMACY_STATUS, diplomacy_at(slot) as u64);
+            m.u64(c + ccountry::INTEL_TABLE, intel(slot) as u64);
+            m.u64(diplomacy_at(slot), cdiplomacy_status::VTABLE_RVA as u64);
+            m.u64(diplomacy_at(slot) + cdiplomacy_status::COUNTRY, c as u64);
+            let capitulated = u8::from(slot % 7 == 0);
+            m.put(
+                diplomacy_at(slot) + cdiplomacy_status::CAPITULATED,
+                &[capitulated],
+            );
+            m.u64(intel(slot), ccountry_intel::VTABLE_RVA as u64);
+            m.put(
+                intel(slot) + ccountry_intel::OWNER,
+                &(slot as i32).to_le_bytes(),
+            );
+            m.u64(navy(slot), cstrategic_navy::VTABLE_RVA as u64);
+            m.u64(
+                navy(slot) + cstrategic_navy::SECONDARY,
+                cstrategic_navy::SECONDARY_VTABLE_RVA as u64,
+            );
+            m.u32(navy(slot) + cstrategic_navy::OWNER, slot as u32);
+            m.array(
+                navy(slot) + cstrategic_navy::REGIONAL_OPERANDS,
+                regional(slot),
+                23,
+            );
+            let mut operands = vec![0; 23 * 8];
+            operands[22 * 8..].copy_from_slice(&(slot as i64 * 10).to_le_bytes());
+            m.put(regional(slot), &operands);
+            if slot == 1 {
+                m.array(c + ccountry::MODIFIER_ACCUMULATOR, 0, 0);
+                m.array(
+                    diplomacy_at(slot) + cdiplomacy_status::ENEMY_COUNTRIES,
+                    ENEMIES,
+                    enemies,
+                );
+                m.array(intel(slot) + ccountry_intel::DATA, OWNER_ROWS, slots as u32);
+            } else {
+                m.array(intel(slot) + ccountry_intel::DATA, intel_rows(slot), 2);
+                let mut rows = vec![0; 2 * country_intel_row::STRIDE];
+                let row = country_intel_row::STRIDE + country_intel_row::NAVY;
+                rows[row..row + 8].copy_from_slice(&(-(slot as i64)).to_le_bytes());
+                m.put(intel_rows(slot), &rows);
+                if slot % 7 != 0 && slot % 11 != 0 {
+                    expected.push(TransportTerm {
+                        country: slot as u32,
+                        regional_value: slot as i64 * 10,
+                        own_intel: 1000 + slot as i64,
+                        enemy_intel: -(slot as i64),
+                    });
+                }
+            }
+        }
+        let raws: Vec<u8> = (2..slots as u32).flat_map(u32::to_le_bytes).collect();
+        m.put(ENEMIES, &raws);
+        m.put(COUNTRIES, &countries);
+        m.put(LINKS, &links);
+        m.put(NAVIES, &navies);
+        m.put(OWNER_ROWS, &owner_rows);
+        (m, expected)
+    }
+
+    #[test]
+    fn transport_terms_follow_every_native_enemy_into_caller_storage() {
+        for enemies in [3, 5_000] {
+            let (memory, expected) = transport_fixture(enemies);
+            let sentinel = TransportTerm {
+                country: 0xdead,
+                ..TransportTerm::default()
+            };
+            // Earlier divisions' admitted terms stay untouched; this call writes
+            // from its start and grows the vector past its current length.
+            let mut terms = vec![sentinel; 4];
+            let row = capture_context(
+                &memory,
+                0,
+                GAME,
+                ARMY,
+                HANDLE,
+                &mut [ModifierTerm::default(); 2],
+                &mut [],
+                &mut [],
+                &mut terms,
+                2,
+            )
+            .unwrap();
+            assert_eq!(row.flags[11], 2);
+            assert_eq!(row.scalar_values[25..30], [-1, -2, -3, -4, 0xabc]);
+            assert_eq!(row.transport_term_count, expected.len());
+            assert_eq!(terms[..2], [sentinel; 2]);
+            assert_eq!(terms[2..2 + expected.len()], expected[..]);
+            if enemies > 64 {
+                assert!(expected.len() > 64 && expected.len() < enemies as usize);
+            }
+        }
+    }
+
+    #[test]
+    fn transport_enemy_failure_is_not_a_shorter_enemy_list() {
+        let (mut memory, _) = transport_fixture(5_000);
+        // A torn enemy late in a long list fails the whole context.
+        memory
+            .0
+            .remove(&(diplomacy_at(4_901) + crate::cdiplomacy_status::CAPITULATED));
+        let result = capture_context(
+            &memory,
+            0,
+            GAME,
+            ARMY,
+            HANDLE,
+            &mut [ModifierTerm::default(); 2],
+            &mut [],
+            &mut [],
+            &mut Vec::new(),
+            0,
+        );
+        assert_eq!(result, Err("reinforcement input unreadable"));
     }
 }

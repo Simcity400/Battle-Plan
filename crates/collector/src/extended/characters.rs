@@ -1914,7 +1914,7 @@ pub(crate) struct CharactersJob {
     advisor_dynamic: Option<Box<CharactersJob>>,
     advisor_cache: Option<advisors::Cache>,
     advisor_section_complete: bool,
-    _census_charge: crate::raw_memory::Charge,
+    census_charge: crate::raw_memory::Charge,
 }
 
 /// Auxiliary bindings whose selecting character/unit bytes are controls in the
@@ -2044,7 +2044,7 @@ impl CharactersJob {
         let mut log = crate::raw::RawLog::new(spans, bytes);
         let trace_capacity = spans.min(1 << 18);
         log.initialize_scattered_read_plan(trace_capacity, trace_capacity, bytes.min(4 << 20));
-        let census = (part == 0).then(|| ccharacter_manager::PortraitCensus::new(ccharacter_manager::PortraitCensus::LIMIT));
+        let census = (part == 0).then(|| ccharacter_manager::PortraitCensus::new(ccharacter_manager::PortraitCensus::INITIAL_CAPACITY));
         let mut census_charge = crate::raw_memory::Charge::default();
         census_charge.set(crate::raw_memory::Capacity {
             auxiliary_vectors: census.as_ref().map_or(0, |census| census.allocated_bytes() as u64),
@@ -2066,7 +2066,7 @@ impl CharactersJob {
             advisor_dynamic: None,
             advisor_cache: None,
             advisor_section_complete: false,
-            _census_charge: census_charge,
+            census_charge,
         }
     }
 
@@ -2111,6 +2111,7 @@ impl CharactersJob {
     pub fn grow_for_next(&self) -> bool {
         self.advisor_cache.as_ref().is_some_and(advisors::Cache::needs_growth)
             || self.log.grow_for_next() || self.traits.grow_for_next()
+            || self.portrait_census.as_ref().is_some_and(|census| census.needs_growth())
             || self.source_bindings.as_ref().is_some_and(|plan| plan.overflowed)
             || self.advisor_dynamic.as_ref().is_some_and(|job| job.grow_for_next())
     }
@@ -2121,6 +2122,19 @@ impl CharactersJob {
     }
 
     pub fn grow(&mut self) {
+        // Every portrait lease returns before recycle. The grown census was
+        // incomplete, so retire any prepared program: the next pass must
+        // rediscover the roster to publish it.
+        if let Some(census) = self.portrait_census.as_mut().and_then(Arc::get_mut)
+            && census.needs_growth()
+        {
+            census.grow();
+            self.census_charge.set(crate::raw_memory::Capacity {
+                auxiliary_vectors: census.allocated_bytes() as u64,
+                ..Default::default()
+            });
+            self.log.invalidate_read_plan();
+        }
         if let Some(cache) = &mut self.advisor_cache { cache.grow(); }
         self.log.grow();
         self.traits.grow();
@@ -3524,6 +3538,10 @@ fn copy_roster(memory: &impl Memory, base: usize, game_state: usize, job: &mut C
         let Some(arrays) = copy_roster_headers(memory, base, game_state, job, source_mask) else { return; };
         arrays
     };
+    // Demand the whole native roster even if staging stops this pass early.
+    if let Some(census) = census.as_mut() {
+        census.expect(arrays[0].count as usize + arrays[1].count as usize);
+    }
     copy_roster_entries(memory, base, game_state, job, census, arrays, &mut dead);
 }
 
@@ -5013,6 +5031,14 @@ mod tests {
         job.portrait_census = Some(Arc::new(ccharacter_manager::PortraitCensus::new(2)));
         copy_characters_refresh(&kit::memory(&baseline), ctx, &mut job);
         assert!(job.portrait_census().is_none(), "bounded census must not publish a prefix");
+        // The short census demands the whole native roster and grows off-thread
+        // in one step; the next pass publishes it.
+        assert!(job.grow_for_next());
+        job.grow();
+        job.clear();
+        assert!(!job.portrait_census.as_ref().unwrap().needs_growth());
+        copy_characters_refresh(&kit::memory(&baseline), ctx, &mut job);
+        assert_eq!(job.portrait_census().unwrap().rows(ctx.base, ctx.game_state).unwrap(), rows);
     }
 
     #[test]
@@ -5688,6 +5714,82 @@ mod tests {
             assert!(matches!(result.outcome, Outcome::Rows { .. }));
         }
         assert_eq!(memory.failures.get(), 0);
+    }
+
+    #[test]
+    fn active_abilities_count_every_row_and_token_past_capacity_for_one_growth_step() {
+        use engine::{cability, cgame_state};
+        const COUNTRIES: u32 = 5000;
+        const GAME_STATE: usize = 0x1000;
+        const CTAB: usize = 0x10000;
+        const LTAB: usize = 0x20000;
+        const COUNTRY0: usize = 0x30000;
+        // Country objects overlap: only +0 (vtable), +8 (id) and the ability
+        // header at +0x15b8 (0x28 within a 0x50 stride) are populated.
+        const STRIDE: usize = 0x50;
+        const RECORDS: usize = 0x100000;
+        const DEFINITION: usize = 0x180000;
+        let put = |bytes: &mut Vec<u8>, at: usize, value: &[u8]| {
+            bytes[at..at + value.len()].copy_from_slice(value)
+        };
+        let header = |bytes: &mut Vec<u8>, at: usize, data: usize, count: u32| {
+            bytes[at..at + 8].copy_from_slice(&(data as u64).to_le_bytes());
+            bytes[at + 8..at + 12].copy_from_slice(&count.to_le_bytes());
+            bytes[at + 12..at + 16].copy_from_slice(&count.to_le_bytes());
+        };
+        let mut bytes = vec![0; 0x190000];
+        header(&mut bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, COUNTRIES + 1);
+        header(&mut bytes, GAME_STATE + cgame_state::COUNTRY_LINKS, LTAB, COUNTRIES + 1);
+        for slot in 1..=COUNTRIES {
+            let country = COUNTRY0 + (slot as usize - 1) * STRIDE;
+            let record = RECORDS + (slot as usize - 1) * active_ability_record::STRIDE;
+            put(&mut bytes, CTAB + slot as usize * 8, &(country as u64).to_le_bytes());
+            put(&mut bytes, LTAB + slot as usize * 4, &slot.to_le_bytes());
+            put(&mut bytes, country, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+            put(&mut bytes, country + ccountry::ID, &slot.to_le_bytes());
+            header(&mut bytes, country + ccountry::ACTIVE_ABILITIES, record, 1);
+            put(
+                &mut bytes,
+                record + active_ability_record::DEFINITION,
+                &(DEFINITION as u64).to_le_bytes(),
+            );
+        }
+        put(&mut bytes, DEFINITION, &(cability::VTABLE_RVA as u64).to_le_bytes());
+        put(&mut bytes, DEFINITION + cability::TOKEN, b"ability");
+        put(&mut bytes, DEFINITION + cability::TOKEN_LENGTH, &7_u64.to_le_bytes());
+        put(&mut bytes, DEFINITION + cability::TOKEN_CAPACITY, &15_u64.to_le_bytes());
+        assert!(COUNTRY0 + COUNTRIES as usize * STRIDE + ccountry::ACTIVE_ABILITIES < RECORDS);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let defaults = Capacities::default();
+        let (mut row_capacity, mut byte_capacity) = (defaults.rows[6], defaults.bytes[6]);
+        let total = COUNTRIES as usize;
+        assert!(total > row_capacity && total * 7 > byte_capacity);
+        let mut rows = vec![active_ability_record::Row::default(); row_capacity];
+        let mut arena = vec![0; byte_capacity];
+        let first = walk_abilities(&memory, 0, GAME_STATE, &mut rows, &mut arena);
+        assert_eq!(
+            first.outcome,
+            Outcome::Truncated {
+                len: row_capacity,
+                unread_rows: (total - row_capacity) as u32
+            }
+        );
+        assert_eq!(first.required_bytes, total * 7);
+        crate::table_capture::grow_capacity(&mut row_capacity, total);
+        crate::table_capture::grow_capacity(&mut byte_capacity, first.required_bytes);
+        let mut rows = vec![active_ability_record::Row::default(); row_capacity];
+        let mut arena = vec![0; byte_capacity];
+        let second = walk_abilities(&memory, 0, GAME_STATE, &mut rows, &mut arena);
+        assert_eq!(second.outcome, Outcome::Rows { len: total });
+        assert_eq!((second.bytes_len, second.required_bytes), (total * 7, total * 7));
+        for (index, row) in rows[..total].iter().enumerate() {
+            assert_eq!((row.country, row.ordinal), (index as u32 + 1, 0));
+            assert_eq!((row.token_start, row.token_len), (index * 7, 7));
+            assert_eq!(&arena[row.token_start..row.token_start + 7], b"ability");
+        }
     }
 
     #[test]

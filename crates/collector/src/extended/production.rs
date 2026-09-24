@@ -659,7 +659,7 @@ impl ProductionRestJob {
             // above that so steady state never overflows.
             log,
             game_state: 0,
-            census: Vec::with_capacity(512),
+            census: Vec::with_capacity(crate::country_scale::census_rows(512)),
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         job.update_capacity_charge();
@@ -685,6 +685,14 @@ impl ProductionRestJob {
         self.log.grow();
         crate::raw::double_capacity(&mut self.census);
         self.update_capacity_charge();
+    }
+
+    /// Off the game thread: hold one census row per observed country slot so
+    /// the first hour after a large save loads does not overflow.
+    pub fn presize_countries(&mut self) {
+        if crate::country_scale::reserve_census(&mut self.census) {
+            self.update_capacity_charge();
+        }
     }
 
     fn update_capacity_charge(&mut self) {

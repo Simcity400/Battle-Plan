@@ -11,7 +11,8 @@ pub struct ReplayMetadata {
     pub name: String,
     pub format: u16,
     pub branches: Vec<BranchMetadata>,
-    /// Observations from each branch's first readable country snapshot. Later
+    /// Observations from each branch's first readable country snapshot, one
+    /// per (slot, tag) at its first observation in branch order. Later
     /// products add their catalogue; this is never a census of all hours.
     pub countries: Vec<CountryMetadata>,
     /// The recorded player's canonical slot, from the first readable snapshot.

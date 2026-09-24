@@ -17,6 +17,7 @@ mod acquisition_wars;
 mod advisor_changes;
 #[cfg(feature = "callback_profile")]
 mod callback_profile;
+mod country_scale;
 mod decode;
 mod division_census;
 mod division_detail;

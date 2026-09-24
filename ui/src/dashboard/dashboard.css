@@ -147,10 +147,14 @@
 .country-picker-search > svg { position: absolute; left: 12px; width: 15px; height: 15px; color: var(--muted); pointer-events: none; }
 .country-picker-search > input { padding-left: 32px; }
 .country-picker-list { max-height: 340px; overflow-y: auto; margin: 0 -2px; padding: 0 2px; }
-.country-picker-list > button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 6px 8px; border: 0; border-radius: var(--r-sm); background: transparent; text-align: left; font-size: 13px; transition: background var(--t-fast) var(--ease); }
-.country-picker-list > button > span:not(.country-flag) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.country-picker-list > button:hover, .country-picker-list > button:focus-visible { background: var(--hover); outline-offset: -2px; }
-.country-picker-list > button[aria-pressed='true'] { background: var(--selection-soft); }
+/* Rows are virtualised: only rows in view exist, absolutely placed at index x
+   row height. The height matches COUNTRY_ROW_HEIGHT in countryList.ts. */
+.country-picker-options { position: relative; outline: none; }
+.country-picker-option { position: absolute; left: 0; right: 0; display: flex; align-items: center; gap: 10px; height: 36px; padding: 6px 8px; border-radius: var(--r-sm); font-size: 13px; cursor: pointer; transition: background var(--t-fast) var(--ease); }
+.country-picker-option > span:not(.country-flag) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.country-picker-option:hover, .country-picker-options:focus-visible .country-picker-option[data-active] { background: var(--hover); }
+.country-picker-options:focus-visible .country-picker-option[data-active] { outline: 2px solid var(--accent); outline-offset: -2px; }
+.country-picker-option[aria-selected='true'] { background: var(--selection-soft); }
 .country-picker-list small { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; color: var(--quiet); }
 .country-selected-mark { width: 15px; height: 15px; color: var(--selection); }
 .country-picker-empty { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 0; padding: 18px 8px; color: var(--muted); font-size: 12px; text-align: center; }

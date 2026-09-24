@@ -411,7 +411,7 @@ pub(super) fn bind(
                     ongoing,
                 )
                 .into_iter()
-                .find(|n| document.icons.combat.sprites.contains_key(n))
+                .find(|n| document.icons.combat.has_sprite(n))
                 {
                     out.values.insert(
                         "header_container/terrain_background".into(),
@@ -502,7 +502,7 @@ fn weather_icons(out: &mut Bindings, document: &Document, weather: &WeatherRegio
         let (sprite, frame) = token.split_once(':').map_or((token, 0), |(s, f)| {
             (s, f.parse::<u32>().unwrap_or(1).saturating_sub(1))
         });
-        if document.icons.combat.sprites.contains_key(sprite) {
+        if document.icons.combat.has_sprite(sprite) {
             let mut values = Values::new();
             values.insert(
                 "icon".into(),

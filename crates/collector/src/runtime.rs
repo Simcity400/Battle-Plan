@@ -7,7 +7,10 @@ use crate::{
     sampling::{self, ACTIVE, SHARED, Shared},
     spooling::{Distribution, Processor},
 };
-use engine::{PINNED_BUILD, build::hash_executable, cgame_state, memory::LiveMemory, read};
+use engine::{
+    PINNED_BUILD, build::hash_executable, cgame_state, country_memory::SeedStatus,
+    memory::LiveMemory, read,
+};
 use replay::{codec::Decoder, identity::SessionStart};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -387,7 +390,22 @@ fn run(module: HMODULE) -> Result<(), String> {
         unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }?;
     let mut portrait_hooks = unsafe { crate::portrait_changes::Hooks::new(&memory, base) }?;
     let mut advisor_hooks = unsafe { crate::advisor_changes::Hooks::new(&memory, base) }?;
-    let shared = Arc::new(Shared::new(base, hook.trampoline(), frequency as u64));
+    // Size every country-proportional buffer from the live registry before
+    // the hook exists. At the main menu the registry may still be empty; the
+    // spool thread then raises capacities as soon as a save fills it.
+    let slots = crate::country_scale::observe(&memory, base).unwrap_or(0);
+    crate::country_scale::note_slots(slots);
+    let mut sizing = crate::country_scale::Sizing::for_slots(slots);
+    sizing.content = engine::cdlc_manager::observe_counts(&memory, base);
+    if let Some(rows) = crate::country_scale::observe_country_intel(&memory, base) {
+        sizing.extended.raise_for_country_intel(rows);
+    }
+    let shared = Arc::new(Shared::with_sizing(
+        base,
+        hook.trampoline(),
+        frequency as u64,
+        &sizing,
+    ));
     let acquisition = acquisition::Pool::start(
         crate::acquisition::recommended_worker_count(),
         acquisition::MAX_JOBS,
@@ -412,7 +430,14 @@ fn run(module: HMODULE) -> Result<(), String> {
         .name("hoi4-spool".into())
         .spawn(move || {
             spool_thread_id.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
-            spool_loop(&spool_shared, &config, session, processor, &spool_status)
+            spool_loop(
+                &spool_shared,
+                &config,
+                session,
+                processor,
+                &spool_status,
+                sizing,
+            )
         })
         .map_err(|e| e.to_string())?;
     let mut installation_error = decode::start_worker().err();
@@ -827,16 +852,99 @@ fn wait_quiet(
     }
 }
 
+/// Throttled observation of the live country registry for buffer sizing.
+/// Header words only; nothing observed here is recorded.
+#[derive(Default)]
+struct RegistryWatch {
+    last: Option<Instant>,
+    slots: usize,
+    last_intel: Option<Instant>,
+    intel_rows: usize,
+}
+
+impl RegistryWatch {
+    const INTERVAL: Duration = Duration::from_millis(50);
+    /// The intel total walks every country's table header, so it is sampled
+    /// less often than the three registry headers.
+    const INTEL_INTERVAL: Duration = Duration::from_secs(1);
+
+    /// A larger registry than any seen before, at most every `INTERVAL`.
+    fn poll(&mut self, memory: &impl engine::Memory, base: usize) -> Option<usize> {
+        if self
+            .last
+            .is_some_and(|last| last.elapsed() < Self::INTERVAL)
+        {
+            return None;
+        }
+        self.last = Some(Instant::now());
+        let slots = crate::country_scale::observe(memory, base)?;
+        (slots > self.slots).then(|| {
+            self.slots = slots;
+            slots
+        })
+    }
+
+    /// A larger dense CountryIntel total than any seen, at most every
+    /// `INTEL_INTERVAL`. Intel vectors fill after a save's registry does.
+    fn poll_intel(&mut self, memory: &impl engine::Memory, base: usize) -> Option<usize> {
+        if self
+            .last_intel
+            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+        {
+            return None;
+        }
+        self.last_intel = Some(Instant::now());
+        let rows = crate::country_scale::observe_country_intel(memory, base)?;
+        (rows > self.intel_rows).then(|| {
+            self.intel_rows = rows;
+            rows
+        })
+    }
+}
+
+/// Grow every idle frame to the current capacities under its queue lease.
+fn grow_idle_frames(
+    shared: &Shared,
+    capacities: &mut [usize; 9],
+    map_capacities: &mut crate::map_capture::MapCapacities,
+    extended_capacities: &mut crate::extended::Capacities,
+) {
+    for _ in 0..shared.free.len() {
+        let Some(idle_index) = shared.free.pop() else {
+            break;
+        };
+        let idle = unsafe { &mut *shared.frames[idle_index].load(Ordering::Acquire) };
+        let old_bytes = idle.allocated_bytes();
+        idle.grow(capacities);
+        idle.map.grow(map_capacities);
+        idle.extended.grow(extended_capacities);
+        let new_bytes = idle.allocated_bytes();
+        if new_bytes >= old_bytes {
+            shared
+                .pool_bytes
+                .fetch_add((new_bytes - old_bytes) as u64, Ordering::Relaxed);
+        } else {
+            shared
+                .pool_bytes
+                .fetch_sub((old_bytes - new_bytes) as u64, Ordering::Relaxed);
+        }
+        shared.recycle_frame(idle_index);
+    }
+}
+
 fn spool_loop(
     shared: &Shared,
     config: &Config,
     mut session: SessionStart,
     mut processor: Processor,
     status_path: &Path,
+    sizing: crate::country_scale::Sizing,
 ) -> Result<Option<String>, String> {
-    let mut capacities = sampling::INITIAL_CAPACITIES;
-    let mut map_capacities = crate::map_capture::MapCapacities::default();
-    let mut extended_capacities = crate::extended::Capacities::default();
+    let mut capacities = sizing.core;
+    let mut map_capacities = sizing.map;
+    let mut extended_capacities = sizing.extended;
+    let live = unsafe { LiveMemory::new() };
+    let mut registry = RegistryWatch::default();
     let mut last_warning = None;
     let mut drain_result = Ok(());
     let mut startup_unknown = 0_u64;
@@ -989,27 +1097,15 @@ fn spool_loop(
             {
                 // Grow every idle buffer under its queue-index lease so old
                 // capacities do not repeat the same truncation on later hours.
-                for _ in 0..shared.free.len() {
-                    let Some(idle_index) = shared.free.pop() else {
-                        break;
-                    };
-                    let idle = unsafe { &mut *shared.frames[idle_index].load(Ordering::Acquire) };
-                    let old_bytes = idle.allocated_bytes();
-                    idle.grow(&mut capacities);
-                    idle.map.grow(&mut map_capacities);
-                    idle.extended.grow(&mut extended_capacities);
-                    let new_bytes = idle.allocated_bytes();
-                    if new_bytes >= old_bytes {
-                        shared
-                            .pool_bytes
-                            .fetch_add((new_bytes - old_bytes) as u64, Ordering::Relaxed);
-                    } else {
-                        shared
-                            .pool_bytes
-                            .fetch_sub((old_bytes - new_bytes) as u64, Ordering::Relaxed);
-                    }
-                    shared.recycle_frame(idle_index);
-                }
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
+            }
+            if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
+                shared.offer_country_cache(required_cells);
             }
             shared.recycle_frame(index);
             work.buffer_service
@@ -1021,6 +1117,47 @@ fn spool_loop(
                 && let Err(error) = processor.write_prepared(prepared)
             {
                 last_warning = Some(error.to_string());
+            }
+        }
+        // A save load rebuilds the country registry before its first hourly
+        // tick; presize every buffer while the game is still loading.
+        if let Some(slots) = registry.poll(&live, shared.base) {
+            crate::country_scale::note_slots(slots);
+            decode::presize_country_pools();
+            let mut raised = crate::country_scale::Sizing {
+                core: capacities,
+                map: map_capacities,
+                extended: extended_capacities,
+                country_cells: 0,
+                content: engine::cdlc_manager::Counts::default(),
+            };
+            raised.raise_for_slots(slots);
+            shared.offer_country_cache(raised.country_cells);
+            if raised.core != capacities
+                || raised.map != map_capacities
+                || raised.extended != extended_capacities
+            {
+                capacities = raised.core;
+                map_capacities = raised.map;
+                extended_capacities = raised.extended;
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
+            }
+        }
+        if let Some(rows) = registry.poll_intel(&live, shared.base) {
+            let before = extended_capacities;
+            extended_capacities.raise_for_country_intel(rows);
+            if extended_capacities != before {
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
             }
         }
         let flush_started = sampling::qpc();
@@ -1137,6 +1274,63 @@ fn spool_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A registry whose three headers report `count` elements.
+    struct Registry(std::cell::Cell<u32>);
+
+    impl engine::Memory for Registry {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            const STATE: usize = 0x1000;
+            let mut bytes = [0_u8; 0x400];
+            for field in [
+                cgame_state::COUNTRIES,
+                cgame_state::COUNTRY_LINKS,
+                cgame_state::COUNTRY_TAGS,
+            ] {
+                bytes[field..field + 8].copy_from_slice(&0x9000_u64.to_le_bytes());
+                bytes[field + 8..field + 12].copy_from_slice(&self.0.get().to_le_bytes());
+                bytes[field + 12..field + 16].copy_from_slice(&self.0.get().to_le_bytes());
+            }
+            if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+                output.copy_from_slice(&(STATE as u64).to_le_bytes());
+                return true;
+            }
+            let Some(offset) = address.checked_sub(STATE) else {
+                return false;
+            };
+            match bytes.get(offset..offset + output.len()) {
+                Some(source) => {
+                    output.copy_from_slice(source);
+                    true
+                }
+                None => false,
+            }
+        }
+    }
+
+    #[test]
+    fn registry_watch_reports_growth_once_and_ignores_torn_or_smaller_counts() {
+        let memory = Registry(std::cell::Cell::new(0));
+        let mut watch = RegistryWatch::default();
+        // The main menu has an empty registry: nothing to presize.
+        assert_eq!(watch.poll(&memory, 0), None);
+        // A save loads 5,001 slots; the next poll after the interval sees it.
+        memory.0.set(5_001);
+        watch.last = None;
+        assert_eq!(watch.poll(&memory, 0), Some(5_001));
+        // Throttled, then unchanged.
+        assert_eq!(watch.poll(&memory, 0), None);
+        watch.last = None;
+        assert_eq!(watch.poll(&memory, 0), None);
+        // A smaller registry never shrinks capacities.
+        memory.0.set(400);
+        watch.last = None;
+        assert_eq!(watch.poll(&memory, 0), None);
+        // A count past the engine's u16 slot ceiling is a torn read, not a size.
+        memory.0.set(1 << 20);
+        watch.last = None;
+        assert_eq!(watch.poll(&memory, 0), None);
+    }
 
     #[test]
     fn status_rename_retries_only_transient_errors_before_deadline() {

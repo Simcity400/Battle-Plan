@@ -66,6 +66,17 @@ impl Default for Capacities {
         }
     }
 }
+impl Capacities {
+    /// RaidCountries has one row per canonical slot and Nukes exactly two
+    /// per country (`cnuke::TYPE_COUNT`); Projects holds each country's pool
+    /// of special-project definitions (the default's per-country factor).
+    pub(crate) fn raise_for_countries(&mut self, slots: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows[1], rows(slots, 64));
+        raise(&mut self.rows[4], rows(slots, 2));
+        raise(&mut self.rows[5], rows(slots, 1));
+    }
+}
 
 pub struct Captured {
     programs: CaptureRows<nproject_cprogram::Row>,
@@ -600,7 +611,7 @@ impl ProjectsJob {
             log: RawLog::new(1 << 20, 48 << 20),
             game_state: 0,
             active: false,
-            census: Vec::with_capacity(512),
+            census: Vec::with_capacity(crate::country_scale::census_rows(512)),
             pointers: Vec::with_capacity(32768),
             capacity_charge: crate::raw_memory::Charge::default(),
         };
@@ -628,6 +639,14 @@ impl ProjectsJob {
         crate::raw::double_capacity(&mut self.census);
         crate::raw::double_capacity(&mut self.pointers);
         self.update_capacity_charge();
+    }
+
+    /// Off the game thread: hold one census row per observed country slot so
+    /// the first hour after a large save loads does not overflow.
+    pub fn presize_countries(&mut self) {
+        if crate::country_scale::reserve_census(&mut self.census) {
+            self.update_capacity_charge();
+        }
     }
 
     fn update_capacity_charge(&mut self) {

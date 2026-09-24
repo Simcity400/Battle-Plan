@@ -69,6 +69,12 @@ pub struct Captured {
     intel: CaptureRows<unit_viewer_entry::Row>,
     registrations: CaptureRows<cair_base::RegistrationRow>,
     wings: Arena<u64>,
+    /// Dense per-walk country-link resolver for the registrations walk. It is
+    /// sized from the live link count off the game thread (worker preparation
+    /// or `grow`); a shorter cache only repeats resolves, never changes rows.
+    resolved: Vec<cair_base::ResolvedLink>,
+    /// Live link count observed by the last registrations walk.
+    required_links: usize,
     active: [bool; N],
     /// Owned hourly payload staged for direct worker installation. Preserved
     /// across reset and cleared only after the current payload is installed.
@@ -128,6 +134,8 @@ impl Captured {
             intel: CaptureRows::new(capacity.rows[4]),
             registrations: CaptureRows::new(capacity.rows[5]),
             wings: Arena::new(capacity.wings),
+            resolved: Vec::new(),
+            required_links: 0,
             active: [true; N],
             radar_raw_mode: false,
             intel_raw_mode: false,
@@ -157,6 +165,7 @@ impl Captured {
             + self.intel.allocated_bytes()
             + self.registrations.allocated_bytes()
             + self.wings.allocated_bytes()
+            + self.resolved.capacity() * size_of::<cair_base::ResolvedLink>()
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -173,6 +182,14 @@ impl Captured {
         grow_capacity(&mut capacity.wings, self.wings.first.len());
         self.registrations.grow(&mut capacity.rows[5]);
         self.wings.grow(&mut capacity.wings);
+        self.grow_resolver(self.required_links);
+    }
+
+    /// Size the dense resolver to a live link count. Off the game thread only.
+    fn grow_resolver(&mut self, links: usize) {
+        if links > self.resolved.len() {
+            self.resolved.resize(links, None);
+        }
     }
 
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
@@ -293,8 +310,10 @@ impl Captured {
                 cair_base::RegistrationBuffers {
                     registrations: &mut self.registrations.rows,
                     wings: &mut self.wings.first,
+                    resolved: &mut self.resolved,
                 },
             );
+            self.required_links = first.required_links;
             arena_first(
                 &mut self.registrations,
                 &mut self.wings,
@@ -524,8 +543,10 @@ impl Captured {
             cair_base::RegistrationBuffers {
                 registrations: &mut self.registrations.rows,
                 wings: &mut self.wings.first,
+                resolved: &mut self.resolved,
             },
         );
+        self.required_links = first.required_links;
         arena_first(
             &mut self.registrations,
             &mut self.wings,
@@ -715,6 +736,7 @@ impl Captured {
             cair_base::RegistrationBuffers {
                 registrations: &mut captured.registrations.rows,
                 wings: &mut captured.wings.first,
+                resolved: &mut captured.resolved,
             },
         );
         arena_first(
@@ -725,6 +747,11 @@ impl Captured {
             first.required_wings,
         );
         captured.registrations_snapshot()
+    }
+
+    /// Dense resolver length and the live link demand last observed.
+    pub(crate) fn resolver_sizes(&self) -> (usize, usize) {
+        (self.resolved.len(), self.required_links)
     }
 
     /// Snapshot of the decoded registrations half for harness comparison.

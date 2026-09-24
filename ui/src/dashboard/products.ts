@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { DashboardClient, ProductReply, ProductRequest } from './client';
 import { validateProductReply } from './client.ts';
 import { ResourceCache } from './resourceCache.ts';
+import { forgetFlags } from './flagCache.ts';
 
 /** One shared, bounded cache of product replies per client. Identical requests
  * share one native round trip; playback reads the cached full-branch data. */
@@ -33,11 +34,13 @@ export async function loadTransientProduct<T>(client: DashboardClient, request: 
 /** Forget every cached product of a source when it is released; in-flight loads are cancelled. */
 export function forgetProducts(client: DashboardClient, sourceId: string): void {
   cache(client).deleteSource(sourceId);
+  forgetFlags(client, sourceId);
 }
 
 /** Forget completed products of a source so they are requested again; loads in flight are untouched. */
 export function forgetSettledProducts(client: DashboardClient, sourceId: string): void {
   cache(client).deleteSettled(sourceId);
+  forgetFlags(client, sourceId);
 }
 
 export interface ProductState<T> { data?: T; error?: string; retry: () => void }

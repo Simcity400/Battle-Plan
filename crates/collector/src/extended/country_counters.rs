@@ -19,6 +19,12 @@ impl Default for Capacities {
         Self { rows: 512 }
     }
 }
+impl Capacities {
+    /// One row per canonical country slot.
+    pub(crate) fn raise_for_countries(&mut self, slots: usize) {
+        crate::country_scale::raise(&mut self.rows, crate::country_scale::rows(slots, 1));
+    }
+}
 
 pub struct Captured {
     rows: CaptureRows<ccountry::CounterInputsRow>,

@@ -106,13 +106,10 @@ impl MapAction {
         match self {
             Self::Unload { path } => validate_local_path(path)?,
             Self::Configure { options } => {
-                if options.country.as_ref().is_some_and(|tag| {
-                    tag.len() != 3
-                        || !tag
-                            .bytes()
-                            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
-                }) {
-                    return Err("Choose a three-character country tag");
+                // The same check as every product, so any tag a widget can
+                // pick is one the map accepts.
+                if let Some(tag) = &options.country {
+                    crate::products::validate_tag(tag)?;
                 }
             }
             Self::Export { path, view_id } => {
@@ -520,13 +517,22 @@ mod tests {
             },
         };
         assert!(action.validate().is_ok());
-        let invalid = MapAction::Configure {
+        let configure = |tag: &str| MapAction::Configure {
             options: MapOptions {
-                country: Some("not-a-tag".into()),
+                country: Some(tag.into()),
                 ..Default::default()
             },
         };
-        assert!(invalid.validate().is_err());
+        // Every tag a product accepts is a tag the map accepts, with no
+        // vanilla character set: modded and lower-case tags included.
+        for tag in ["Z01", "mod", "A_1", "Ä01", "LONG_MOD_TAG"] {
+            assert!(crate::products::validate_tag(tag).is_ok());
+            assert!(configure(tag).validate().is_ok(), "{tag}");
+        }
+        for tag in ["", "A\0B", &"A".repeat(129)] {
+            assert!(crate::products::validate_tag(tag).is_err());
+            assert!(configure(tag).validate().is_err());
+        }
         assert!(
             MapAction::Folders {
                 game: String::new(),

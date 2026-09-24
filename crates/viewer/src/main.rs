@@ -6,6 +6,7 @@ mod document;
 mod embedded;
 mod hours;
 mod map;
+mod parallel;
 mod playback;
 mod render;
 mod table_access;
@@ -705,6 +706,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             None,
             0,
         )?;
+        // Each frame settles its own flag and portrait decodes, in request
+        // order, so a dump lays out the same cells on every run.
+        document.icons.lazy.set_background(false);
         let session = document.playback.session();
         if let Some(session) = document
             .playback
@@ -837,7 +841,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mut window = combat::Window::default();
             let selection = selector.resolve(&document)?;
             window.open(selection);
-            if let Some(drawn) = window.draw(&document, options.size, &options.perspective)? {
+            // Draw until every flag and portrait the window asked for is decoded.
+            let drawn = loop {
+                let before = document.icons.lazy.version();
+                let drawn = window.draw(&document, options.size, &options.perspective)?;
+                document.icons.lazy.settle();
+                if document.icons.lazy.version() == before {
+                    break drawn;
+                }
+            };
+            if let Some(drawn) = drawn {
                 println!("Combat window: {selection:?}, rect {:?}", drawn.rect);
                 for warning in &drawn.warnings {
                     eprintln!("Warning: {warning}");
@@ -1195,12 +1208,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for line in document.icons.fonts.summary() {
             println!("Font: {line}");
         }
-        println!(
-            "Localisation: {} keys, e.g. GER_fascism={:?} VICTORY_POINTS_6521={:?}",
-            document.names.localisation.len(),
-            document.names.localisation.get("GER_fascism"),
-            document.names.localisation.get("VICTORY_POINTS_6521")
-        );
+        println!("Localisation: {} keys", document.names.localisation.len());
         println!(
             "Names: {} country areas, {} state areas, {} glyph vertices at layer alpha {:?};              province graph {} edges; {} icon pages",
             placements.country.len(),
@@ -1299,9 +1307,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         println!(
-            "Counter assets: {} sprite sheets, {} small flags and {} unit-type frames packed{}",
+            "Counter assets: {} sprite sheets, {} small flags indexed ({} decoded, {} refused), {} lazy texture bytes resident and {} unit-type frames packed{}",
             document.icons.counters.sheet_count(),
             document.icons.counters.flags.len(),
+            document.icons.counters.flags.loaded(),
+            document.icons.counters.flags.rejected(),
+            document.icons.lazy.resident_bytes(),
             document.icons.counters.types.len(),
             if counter_report.missing_flags.is_empty() {
                 String::new()

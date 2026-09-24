@@ -68,7 +68,9 @@ export function useSourceRoles(client: DashboardClient) {
     const updates = new Map<string, DashboardSource>();
     for (const [roleId, source] of sources.current) {
       if (source.id !== sourceId || source.revision !== revision) continue;
-      const identity = (country: CountryMetadata) => `${country.observedBranchId}:${country.id}:${country.tag}`;
+      // One entry per (slot, tag), as the native catalogues: another branch's
+      // witness of a known country adds nothing a lookup by slot or tag can see.
+      const identity = (country: CountryMetadata) => `${country.id}:${country.tag}`;
       const known = new Set(source.metadata.countries.map(identity));
       const added = countries.filter(country => { const key = identity(country); if (known.has(key)) return false; known.add(key); return true; });
       if (!added.length) continue;

@@ -17,7 +17,7 @@
 //! Depth is off and the batch runs after every world pass, so it always wins
 //! against the terrain, the water and the country names.
 
-use std::io;
+use std::{collections::HashMap, io, sync::Arc};
 
 use eframe::wgpu;
 use installed_content::{ResolvedLayers, gfx, image::dds};
@@ -25,6 +25,7 @@ use installed_content::{ResolvedLayers, gfx, image::dds};
 use super::{
     // counters
     counters::CounterAssets,
+    lazy_icons::{DYNAMIC_BASE, LazyTextures},
     scene::{Targets, sampler_entry, texture_entry},
     text,
     textures::{Bound, ColorSpace, upload},
@@ -87,6 +88,8 @@ pub struct MapIcons {
     pub counters: CounterAssets,
     /// The raid map icon's frame strip, glyphs and raid types.
     pub raids: super::raids::RaidAssets,
+    /// Flags and portraits decoded on first draw, above [`DYNAMIC_BASE`].
+    pub lazy: Arc<LazyTextures>,
 }
 
 impl MapIcons {
@@ -103,10 +106,24 @@ impl MapIcons {
         let fonts = text::Fonts::load(layers, &mut images)?;
         let sprites = gfx::sprites(layers)?;
         let victory_points = load_sheet(layers, &sprites, VICTORY_POINT_STRIP, &mut images)?;
+        // Flag and portrait reads happen after this load returns, so the lazy
+        // stores keep their own handle on the layers.
+        let shared = Arc::new(layers.clone());
+        let lazy = LazyTextures::new();
         // counters
-        let counters = CounterAssets::load(layers, defines, &sprites, &mut images)?;
-        let combat = crate::combat::Assets::load(layers, defines, &sprites, &mut images)?;
+        let counters = CounterAssets::load(&shared, defines, &sprites, &mut images, &lazy)?;
+        let combat = crate::combat::Assets::load(
+            &shared,
+            defines,
+            &sprites,
+            &counters.flags,
+            &mut images,
+            &lazy,
+        )?;
         let raids = super::raids::RaidAssets::load(layers, &mut images)?;
+        if images.len() >= DYNAMIC_BASE {
+            return Err(invalid("more static icon pages than texture ids"));
+        }
         Ok(Self {
             combat,
             images,
@@ -114,6 +131,7 @@ impl MapIcons {
             victory_points,
             counters,
             raids,
+            lazy,
         })
     }
 }
@@ -183,7 +201,7 @@ pub struct Quad {
     pub rotation: f32,
     // counters
     /// The sort key [`layer`] builds; see it for the field order.
-    pub layer: u32,
+    pub layer: u64,
 }
 
 // counters
@@ -197,8 +215,32 @@ pub struct Quad {
 /// glyphs onto one page without ever letting one counter's flag overtake
 /// another counter's plate. `icon` wraps at 16 children per window, which is
 /// more than any window this pass draws.
-pub const fn layer(priority: u32, icon: u32, child: u32) -> u32 {
-    priority * 1_000_000 + icon * 16 + child
+///
+/// The key is 64-bit so every `u32` icon ordinal keeps its own range under its
+/// priority: the icon count grows with the countries and units a recording
+/// holds, and a narrower key let icon 62,500 of one priority collide with the
+/// next priority's first icon.
+pub const fn layer(priority: u32, icon: u32, child: u32) -> u64 {
+    priority as u64 * PRIORITY_STRIDE + icon as u64 * 16 + child as u64
+}
+
+/// Keys one priority spans: room for every `u32` icon of 16 children.
+const PRIORITY_STRIDE: u64 = 1 << 40;
+
+/// The priority a [`layer`] key was built with.
+pub const fn layer_priority(layer: u64) -> u64 {
+    layer / PRIORITY_STRIDE
+}
+
+/// The icon ordinal of a [`layer`] key, within its priority.
+#[cfg(test)]
+pub const fn layer_icon(layer: u64) -> u64 {
+    layer % PRIORITY_STRIDE / 16
+}
+
+/// What moves a [`layer`] key by `icons` whole icons.
+pub const fn icon_offset(icons: u32) -> u64 {
+    icons as u64 * 16
 }
 
 /// A frame's worth of screen-space quads, in the order the caller pushed them.
@@ -207,7 +249,7 @@ pub struct Batch {
     pub quads: Vec<Quad>,
     // counters
     /// The layer subsequent pushes are tagged with.
-    layer: u32,
+    layer: u64,
 }
 
 impl Batch {
@@ -217,7 +259,7 @@ impl Batch {
 
     // counters
     /// Tags every later push with this sort layer.
-    pub fn at_layer(&mut self, layer: u32) {
+    pub fn at_layer(&mut self, layer: u64) {
         self.layer = layer;
     }
 
@@ -458,10 +500,25 @@ struct Run {
     range: std::ops::Range<u32>,
 }
 
+/// A lazy texture on the GPU, at the revision it was uploaded from.
+struct DynamicPage {
+    revision: u64,
+    _texture: Bound,
+    group: wgpu::BindGroup,
+}
+
 /// The screen-space pipeline and the frame's vertices.
 pub struct SpritePass {
     pipeline: wgpu::RenderPipeline,
     bind_groups: Vec<wgpu::BindGroup>,
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    /// The content's lazy textures, mirrored into `dynamic` by [`SpritePass::sync`].
+    lazy: Arc<LazyTextures>,
+    synced: Option<u64>,
+    dynamic: HashMap<usize, DynamicPage>,
+    /// Lazy textures the device refused, at the revision it refused.
+    failed: HashMap<usize, u64>,
     vertices: wgpu::Buffer,
     capacity: u64,
     runs: Vec<Run>,
@@ -477,6 +534,7 @@ impl SpritePass {
         device: &wgpu::Device,
         samples: u32,
         textures: &IconTextures,
+        lazy: &Arc<LazyTextures>,
         format: wgpu::TextureFormat,
     ) -> io::Result<Self> {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -542,11 +600,97 @@ impl SpritePass {
         Ok(Self {
             pipeline,
             bind_groups,
+            layout,
+            sampler: textures.screen_clamp().clone(),
+            lazy: Arc::clone(lazy),
+            synced: None,
+            dynamic: HashMap::new(),
+            failed: HashMap::new(),
             vertices: buffer(device, INITIAL_VERTICES),
             capacity: INITIAL_VERTICES,
             runs: Vec::new(),
             count: 0,
         })
+    }
+
+    /// Mirrors the content's lazy textures: uploads new and changed ones and
+    /// drops evicted ones. Costs one atomic read when nothing changed.
+    ///
+    /// A texture the device refuses is warned about once and left undrawn,
+    /// rather than failing every frame's render; a later revision of it is
+    /// tried again.
+    pub fn sync(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let version = self.lazy.version();
+        if self.synced == Some(version) {
+            return;
+        }
+        let resident = self.lazy.snapshot();
+        let uploaded: HashMap<usize, u64> = self
+            .dynamic
+            .iter()
+            .map(|(id, page)| (*id, page.revision))
+            .collect();
+        let revisions: Vec<(usize, u64)> = resident
+            .iter()
+            .map(|(id, entry)| (*id, entry.revision))
+            .collect();
+        let plan = plan_sync(&uploaded, &self.failed, &revisions);
+        for id in &plan.drop {
+            self.dynamic.remove(id);
+            self.failed.remove(id);
+        }
+        for (id, entry) in resident {
+            if !plan.upload.contains(&id) {
+                continue;
+            }
+            let texture = match upload(
+                device,
+                queue,
+                &format!("lazy icon {}", id - DYNAMIC_BASE),
+                &entry.texture,
+                ColorSpace::Linear,
+            ) {
+                Ok(texture) => texture,
+                Err(error) => {
+                    if self.failed.insert(id, entry.revision).is_none() {
+                        eprintln!("Warning: an icon texture is not drawn: {error}");
+                    }
+                    self.dynamic.remove(&id);
+                    continue;
+                }
+            };
+            self.failed.remove(&id);
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("lazy icon"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+            self.dynamic.insert(
+                id,
+                DynamicPage {
+                    revision: entry.revision,
+                    _texture: texture,
+                    group,
+                },
+            );
+        }
+        self.synced = Some(version);
+    }
+
+    /// The bind group of a static page or a resident lazy texture.
+    fn group(&self, texture: usize) -> Option<&wgpu::BindGroup> {
+        self.bind_groups
+            .get(texture)
+            .or_else(|| self.dynamic.get(&texture).map(|page| &page.group))
     }
 
     /// Turns one frame's quads into vertices, grouped by texture.
@@ -563,6 +707,15 @@ impl SpritePass {
     ) {
         self.runs.clear();
         self.count = 0;
+        // The lazy textures this frame draws stay pinned in their LRU.
+        self.lazy.mark_drawn(
+            batch
+                .quads
+                .iter()
+                .map(|quad| quad.texture)
+                .filter(|texture| *texture >= DYNAMIC_BASE)
+                .collect::<std::collections::BTreeSet<_>>(),
+        );
         if batch.is_empty() || size[0] == 0 || size[1] == 0 {
             return;
         }
@@ -575,7 +728,7 @@ impl SpritePass {
         let mut vertices: Vec<Vertex> = Vec::with_capacity(order.len() * 6);
         for index in order {
             let quad = batch.quads[index];
-            if quad.texture >= self.bind_groups.len() {
+            if self.group(quad.texture).is_none() {
                 continue;
             }
             let x0 = quad.rect[0].round();
@@ -652,7 +805,10 @@ impl SpritePass {
         pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         for run in &self.runs {
-            pass.set_bind_group(0, &self.bind_groups[run.texture], &[]);
+            let Some(group) = self.group(run.texture) else {
+                continue;
+            };
+            pass.set_bind_group(0, group, &[]);
             pass.draw(run.range.clone(), 0..1);
         }
     }
@@ -661,6 +817,40 @@ impl SpritePass {
     pub fn quad_count(&self) -> u32 {
         self.count / 6
     }
+}
+
+/// What [`SpritePass::sync`] does with the lazy textures.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SyncPlan {
+    /// Uploaded or refused textures that are no longer resident.
+    drop: Vec<usize>,
+    /// Resident textures to upload: new, changed, or a new revision of one
+    /// the device refused. A refused revision is not tried again.
+    upload: Vec<usize>,
+}
+
+fn plan_sync(
+    uploaded: &HashMap<usize, u64>,
+    failed: &HashMap<usize, u64>,
+    resident: &[(usize, u64)],
+) -> SyncPlan {
+    let live: std::collections::HashSet<usize> = resident.iter().map(|(id, _)| *id).collect();
+    let mut drop: Vec<usize> = uploaded
+        .keys()
+        .chain(failed.keys())
+        .filter(|id| !live.contains(id))
+        .copied()
+        .collect();
+    drop.sort_unstable();
+    drop.dedup();
+    let upload = resident
+        .iter()
+        .filter(|(id, revision)| {
+            uploaded.get(id) != Some(revision) && failed.get(id) != Some(revision)
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    SyncPlan { drop, upload }
 }
 
 fn buffer(device: &wgpu::Device, vertices: u64) -> wgpu::Buffer {
@@ -752,6 +942,50 @@ mod tests {
         assert_eq!(naval.frame_uv(10), [10.0 / 11.0, 0.0, 1.0, 1.0]);
         // `mapicon_building_airbase_large.dds` is 309 wide with 7 frames.
         assert_eq!(strip(7, 309).frame_size()[0], 44.0);
+    }
+
+    #[test]
+    fn layer_keys_stay_distinct_and_ordered_past_62500_icons() {
+        // The old `priority * 1_000_000 + icon * 16 + child` key made icon
+        // 62,500 of priority 5 equal to priority 6's first key.
+        assert_ne!(layer(5, 62_500, 0), layer(6, 0, 0));
+        assert!(layer(5, 62_500, 0) < layer(6, 0, 0));
+        assert!(layer(5, u32::MAX, 15) < layer(6, 0, 0));
+        let mut keys: Vec<u64> = (0..200_000u32)
+            .flat_map(|icon| [layer(10, icon, 0), layer(10, icon, 15)])
+            .collect();
+        let count = keys.len();
+        assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+        keys.dedup();
+        assert_eq!(keys.len(), count);
+        let key = layer(20, 150_000, 3);
+        assert_eq!(layer_priority(key), 20);
+        assert_eq!(layer_icon(key), 150_000);
+        assert_eq!(layer(10, 7, 2) + icon_offset(70_000), layer(10, 70_007, 2));
+    }
+
+    #[test]
+    fn a_refused_upload_is_skipped_until_its_texture_changes() {
+        let base = DYNAMIC_BASE;
+        let uploaded = HashMap::from([(base, 1), (base + 1, 3)]);
+        let failed = HashMap::from([(base + 2, 5)]);
+        // base + 1 changed, base + 2 still at its refused revision, base + 3 new,
+        // and base was evicted.
+        let resident = [(base + 1, 4), (base + 2, 5), (base + 3, 0)];
+        assert_eq!(
+            plan_sync(&uploaded, &failed, &resident),
+            SyncPlan {
+                drop: vec![base],
+                upload: vec![base + 1, base + 3],
+            }
+        );
+        // A later revision of the refused texture is tried again, and an
+        // evicted refused texture is forgotten.
+        assert_eq!(
+            plan_sync(&uploaded, &failed, &[(base + 2, 6)]).upload,
+            [base + 2]
+        );
+        assert_eq!(plan_sync(&HashMap::new(), &failed, &[]).drop, [base + 2]);
     }
 
     #[test]

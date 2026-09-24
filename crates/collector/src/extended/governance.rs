@@ -245,6 +245,23 @@ impl Default for Capacities {
         }
     }
 }
+impl Capacities {
+    /// One row per canonical country for Focus, Politics, DecisionCounts and
+    /// both preferred-tactic tables; PoliticalParties (and its country arena)
+    /// one per country and ideology group, ResearchSlots and ResearchInputs
+    /// one per country and research slot. The per-country factors keep the
+    /// defaults' ratios; larger content still grows on demand.
+    pub(crate) fn raise_for_countries(&mut self, slots: usize) {
+        use crate::country_scale::{raise, rows};
+        for index in [0, 5, 8, 11, 12] {
+            raise(&mut self.rows[index], rows(slots, 1));
+        }
+        for index in [3, 6, 19] {
+            raise(&mut self.rows[index], rows(slots, 4));
+        }
+        raise(&mut self.party_countries, self.rows[6]);
+    }
+}
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 struct CountryRow<R> {

@@ -524,3 +524,189 @@ fn scientist_hash_collisions_keep_each_raw_category_without_summing() {
         Outcome::Unavailable { .. }
     ));
 }
+
+/// Sharing members well beyond any reader-chosen count. Raw ids 2..=`OTHERS`+1
+/// resolve to a second country without the technology; raw 1 (the walking
+/// country, which has it) is the last member.
+const OTHERS: u32 = 4_999;
+const LINKS: usize = 0x30000;
+const COUNTRY2: usize = 0x46000;
+const STATUS2: usize = 0x48000;
+fn many_member_fixture() -> Fixture {
+    let mut f = Fixture::new();
+    f.bytes.resize(0x70000, 0);
+    let slots = OTHERS + 2;
+    f.array(GAME + crate::cgame_state::COUNTRY_LINKS, LINKS, slots);
+    f.put(LINKS + 4, 1_u32.to_le_bytes());
+    for raw in 2..slots as usize {
+        f.put(LINKS + raw * 4, 2_u32.to_le_bytes());
+    }
+    f.put(0x2000 + 2 * 8, (COUNTRY2 as u64).to_le_bytes());
+    f.put(COUNTRY2, (ccountry::VTABLE_RVA as u64).to_le_bytes());
+    f.put(COUNTRY2 + 8, 2_u32.to_le_bytes());
+    f.put(
+        COUNTRY2 + ccountry::TECHNOLOGY_STATUS,
+        (STATUS2 as u64).to_le_bytes(),
+    );
+    f.put(
+        STATUS2,
+        (crate::ctechnology_status::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    f.put(
+        STATUS2 + crate::ctechnology_status::COUNTRY,
+        (COUNTRY2 as u64).to_le_bytes(),
+    );
+    // The walking country's own technology instance, as in the alias test.
+    f.array(
+        STATUS + crate::ctechnology_status::TECHNOLOGIES_DATA,
+        0x8400,
+        1,
+    );
+    f.put(0x8400, (TECH as u64).to_le_bytes());
+    f.put(TECH, (crate::ctechnology::VTABLE_RVA as u64).to_le_bytes());
+    f.put(TECH + 8, 7_u32.to_le_bytes());
+    f.put(TECH + 0x158, (STATUS as u64).to_le_bytes());
+    f.put(TECH + 0x160, (TEMPLATE as u64).to_le_bytes());
+    f.put(TECH + 0x174, 1_i32.to_le_bytes());
+    f
+}
+
+fn member_rows(rows: &[Row]) -> Vec<(Kind, u32)> {
+    rows.iter()
+        .filter(|r| matches!(r.kind, Kind::SharingMember | Kind::SharingMissingMember))
+        .map(|r| (r.kind, r.source_id))
+        .collect()
+}
+
+fn expected_members() -> Vec<(Kind, u32)> {
+    (2..OTHERS + 2)
+        .map(|raw| (Kind::SharingMissingMember, raw))
+        .chain(std::iter::once((Kind::SharingMember, 1)))
+        .collect()
+}
+
+#[test]
+fn sharing_member_rosters_are_bounded_only_by_their_native_headers() {
+    const MEMBERS: usize = 0x36000;
+    const BONUSES: usize = 0x3b000;
+    let mut f = many_member_fixture();
+    let count = OTHERS + 1;
+    f.array(STATUS + 0x118, 0x8000, 1);
+    f.put(0x8000, 0x8100_u64.to_le_bytes());
+    f.put(0x8100, (sharing::FACTION_VTABLE as u64).to_le_bytes());
+    f.put(0x8108, 4_u32.to_le_bytes());
+    f.put(0x8110, 10_000_i64.to_le_bytes());
+    f.array(0x8118, MEMBERS, count);
+    f.array(0x8130, BONUSES, count);
+    for (index, raw) in (2..OTHERS + 2).chain(std::iter::once(1)).enumerate() {
+        f.put(MEMBERS + index * 4, raw.to_le_bytes());
+        f.put(BONUSES + index * 8, (index as i64 + 100).to_le_bytes());
+    }
+    let mut rows = vec![Row::default(); 6_000];
+    let result = f.capture(&[f.input()], &mut rows);
+    assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
+    let rows = &rows[..result.len()];
+    let group = rows.iter().find(|r| r.kind == Kind::Sharing).unwrap();
+    // The walking country's own bonus is the parallel entry of its last slot.
+    assert_eq!(
+        (group.raw, group.auxiliary, group.count),
+        (10_000, i64::from(OTHERS) + 100, count)
+    );
+    assert_eq!(member_rows(rows), expected_members());
+}
+
+#[test]
+fn faction_member_pointer_rosters_are_bounded_only_by_their_native_headers() {
+    const TEMPLATE2: usize = 0x49000;
+    const FACTION: usize = 0x4a000;
+    const DIPLOMACY: usize = 0x4b000;
+    const POINTERS: usize = 0x4c000;
+    const MEMBERS: usize = 0x56000;
+    let mut f = many_member_fixture();
+    f.array(STATUS + 0x118, 0x8000, 1);
+    f.put(0x8000, 0x8100_u64.to_le_bytes());
+    f.put(
+        0x8100,
+        (crate::ctechnology_sharing_group::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    f.put(0x8108, 9_u32.to_le_bytes());
+    f.put(0x8110, 3_000_i64.to_le_bytes());
+    f.array(0x8118, 0x8200, 1);
+    f.put(0x8200, 1_u32.to_le_bytes());
+    f.array(0x8130, 0x8300, 1);
+    f.put(0x8300, 2_500_i64.to_le_bytes());
+    f.put(0x8148, (TEMPLATE2 as u64).to_le_bytes());
+    f.put(TEMPLATE2, 0x0292_d8f0_u64.to_le_bytes());
+    f.text(TEMPLATE2 + 0x10, b"faction_share");
+    f.put(TEMPLATE2 + 0x78, [1]);
+    f.put(
+        COUNTRY + ccountry::DIPLOMACY_STATUS,
+        (DIPLOMACY as u64).to_le_bytes(),
+    );
+    f.put(
+        DIPLOMACY + crate::cdiplomacy_status::FACTION,
+        (FACTION as u64).to_le_bytes(),
+    );
+    f.put(FACTION, (crate::cfaction::VTABLE_RVA as u64).to_le_bytes());
+    let count = OTHERS + 1;
+    f.array(FACTION + crate::cfaction::MEMBERS, POINTERS, count);
+    for (index, raw) in (2..OTHERS + 2).chain(std::iter::once(1)).enumerate() {
+        let member = MEMBERS + index * 16;
+        f.put(POINTERS + index * 8, (member as u64).to_le_bytes());
+        f.put(member + 8, raw.to_le_bytes());
+    }
+    let mut rows = vec![Row::default(); 6_000];
+    let result = f.capture(&[f.input()], &mut rows);
+    assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
+    let rows = &rows[..result.len()];
+    let group = rows.iter().find(|r| r.kind == Kind::Sharing).unwrap();
+    assert_eq!(
+        (group.raw, group.auxiliary, group.count, group.source_id),
+        (3_000, 2_500, count, 9)
+    );
+    assert_eq!(group.name.as_bytes(), b"faction_share");
+    assert_eq!(member_rows(rows), expected_members());
+}
+
+/// The witness memo keeps the first 512 distinct (member, template) keys of a
+/// pass: a repeated early member costs no read, a repeated member first seen
+/// after the memo filled is read again, and rows never depend on either.
+#[test]
+fn sharing_witness_memo_keeps_its_first_keys_without_changing_rows() {
+    const MEMBERS: usize = 0x36000;
+    const BONUSES: usize = 0x3b000;
+    let run = |roster: &[u32]| {
+        let mut f = many_member_fixture();
+        f.array(STATUS + 0x118, 0x8000, 1);
+        f.put(0x8000, 0x8100_u64.to_le_bytes());
+        f.put(0x8100, (sharing::FACTION_VTABLE as u64).to_le_bytes());
+        f.array(0x8118, MEMBERS, roster.len() as u32);
+        f.array(0x8130, BONUSES, roster.len() as u32);
+        for (index, raw) in roster.iter().enumerate() {
+            f.put(MEMBERS + index * 4, raw.to_le_bytes());
+        }
+        let mut rows = vec![Row::default(); 1_000];
+        let result = f.capture(&[f.input()], &mut rows);
+        assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
+        let members: Vec<_> = member_rows(&rows[..result.len()])
+            .into_iter()
+            .map(|(_, raw)| raw)
+            .collect();
+        assert_eq!(members, roster);
+        f.reads.take().len()
+    };
+    let distinct: Vec<u32> = (2..602).collect();
+    // After the walking country (raw 1) the own-membership scan has stopped,
+    // so an extra member costs only its witness reads (both rosters take ten
+    // member pages).
+    let with = |extra: u32| {
+        let mut roster = distinct.clone();
+        roster.extend([1, extra]);
+        roster
+    };
+    let mut plain = distinct.clone();
+    plain.push(1);
+    let baseline = run(&plain);
+    assert_eq!(run(&with(2)), baseline);
+    assert!(run(&with(600)) > baseline);
+}

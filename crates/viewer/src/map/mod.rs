@@ -4,6 +4,7 @@
 // counters
 pub mod aircraft;
 pub mod allegiance;
+pub mod atlas_pages;
 // borders
 pub mod border_pass;
 pub mod borders;
@@ -34,6 +35,7 @@ pub mod trains;
 // names
 pub mod labels;
 pub mod layers;
+pub mod lazy_icons;
 // the map's table frame
 pub mod mapframe;
 pub mod name_pass;

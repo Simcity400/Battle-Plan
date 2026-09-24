@@ -1743,13 +1743,20 @@ pub(crate) struct AirBasesJob {
     seen_links: Vec<(u32, u32)>,
     /// Direct-map hints into `seen_links`, reset each pass. Collisions use
     /// the authoritative list, never a second observation of live memory.
+    /// Once grown to the live link count every resolvable raw has its own cell.
     seen_link_index: Vec<usize>,
+    /// Live census demand observed this pass: canonical country slots (the
+    /// country count less the sentinel) and country links. Growth sizes
+    /// `census` and `seen_links` to these in one step, even when the pass also
+    /// recorded a source fault, so a large census cannot keep overflowing.
+    required_census: usize,
+    required_links: usize,
     capacity_charge: crate::raw_memory::Charge,
 }
 
 impl AirBasesJob {
     pub fn new() -> Self {
-        let seen_links = Vec::with_capacity(1024);
+        let seen_links = Vec::with_capacity(crate::country_scale::census_rows(1024));
         let seen_link_index = vec![usize::MAX; seen_links.capacity()];
         let mut job = Self {
             // Late-campaign worst case is 396 bases with 5,148 registration
@@ -1760,9 +1767,11 @@ impl AirBasesJob {
             game_state: 0,
             registration_demand: None,
             aces_active: false,
-            census: Vec::with_capacity(1024),
+            census: Vec::with_capacity(crate::country_scale::census_rows(1024)),
             seen_links,
             seen_link_index,
+            required_census: 0,
+            required_links: 0,
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         job.update_capacity_charge();
@@ -1777,19 +1786,46 @@ impl AirBasesJob {
         self.census.clear();
         self.seen_links.clear();
         self.seen_link_index.fill(usize::MAX);
+        self.required_census = 0;
+        self.required_links = 0;
     }
 
     pub fn grow_for_next(&self) -> bool {
         self.log.grow_for_next()
+            || self.required_census > self.census.capacity()
+            || self.required_links > self.seen_links.capacity()
     }
 
+    /// Off-thread only. Census storage jumps to the observed live demand;
+    /// otherwise it keeps the existing doubling after a staging overflow.
     pub fn grow(&mut self) {
+        fn grow_to<T>(rows: &mut Vec<T>, required: usize) {
+            if required > rows.capacity() {
+                rows.reserve_exact(required - rows.len());
+            } else {
+                crate::raw::double_capacity(rows);
+            }
+        }
         self.log.grow();
-        crate::raw::double_capacity(&mut self.census);
-        crate::raw::double_capacity(&mut self.seen_links);
+        grow_to(&mut self.census, self.required_census);
+        grow_to(&mut self.seen_links, self.required_links);
         self.seen_link_index
             .resize(self.seen_links.capacity(), usize::MAX);
         self.seen_link_index.fill(usize::MAX);
+        self.update_capacity_charge();
+    }
+
+    /// Off the game thread: one census row and one link hint per observed
+    /// country slot, so a large save's first hour does not overflow.
+    pub fn presize_countries(&mut self) {
+        let census = crate::country_scale::reserve_census(&mut self.census);
+        if crate::country_scale::reserve_census(&mut self.seen_links) {
+            self.seen_link_index
+                .resize(self.seen_links.capacity(), usize::MAX);
+            self.seen_link_index.fill(usize::MAX);
+        } else if !census {
+            return;
+        }
         self.update_capacity_charge();
     }
 
@@ -2152,12 +2188,15 @@ fn bases_link(
 /// same spans (a mismatch fatal to one walk may be unread by another).
 /// Returns the parsed link array with its country count for the resolve
 /// mirror, or `None` only when the headers themselves are undiscoverable.
+/// `required` receives the live [canonical slot, link] demand as soon as both
+/// headers parse, so an overflowing census still sizes its growth exactly.
 fn copy_air_bases_census(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine::Memory,
     base: usize,
     game_state: usize,
     census: &mut Vec<(usize, u32)>,
+    required: [&mut usize; 2],
     mask: u32,
 ) -> Option<(Array, u32)> {
     let countries_start = bspan(
@@ -2182,6 +2221,9 @@ fn copy_air_bases_census(
     if countries.count < 2 || links.count == 0 {
         return None;
     }
+    let [required_census, required_links] = required;
+    *required_census = countries.count as usize - 1;
+    *required_links = links.count as usize;
     let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
     for slot in 1..countries.count {
         let pointer_addr = (slot as usize)
@@ -2886,6 +2928,7 @@ fn copy_air_bases_pass(
             base,
             game_state,
             &mut job.census,
+            [&mut job.required_census, &mut job.required_links],
             census_mask,
         )
     });
@@ -4753,6 +4796,7 @@ mod tests {
                     engine::cair_base::RegistrationBuffers {
                         registrations: &mut registrations,
                         wings: &mut wings,
+                        resolved: &mut [],
                     },
                 );
                 assert_eq!((prefix.wings_len, prefix.required_wings), (2, 2));
@@ -5193,11 +5237,176 @@ mod tests {
             census: Vec::new(),
             seen_links: Vec::new(),
             seen_link_index: Vec::new(),
+            required_census: 0,
+            required_links: 0,
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         let report = super::copy_air_bases_refresh(&memory, ctx, &mut tiny);
         assert!(!report.raw_ok);
         assert_eq!(tiny.registration_demand, None);
+    }
+
+    /// 5,000 countries, far above the initial 1,024-entry census and link
+    /// stores. One host base files a container at every country slot except
+    /// slot five, whose country object is unreadable: that census fault must
+    /// not stop growth, and it touches no published row. After one off-thread
+    /// growth the owned payload decodes exactly like the typed walks.
+    #[test]
+    fn air_bases_census_grows_once_to_five_thousand_countries() {
+        use crate::extended::fog;
+        use engine::{
+            cair_base, ccountry, ccountry_air_container, cgame_state, cstrategic_air_manager,
+        };
+        const COUNTRIES: u32 = 5_001;
+        const GAME: usize = 0x10000;
+        const MANAGER: usize = 0x20000;
+        const HOSTS: usize = 0x21000;
+        const HOST: usize = 0x22000;
+        const TABLE: usize = 0x30000;
+        const LINKS: usize = 0x40000;
+        const OBJECTS: usize = 0x50000;
+        const SLOTS: usize = 0x70000;
+        const CONTAINERS: usize = 0x100000;
+        const UNREADABLE: u32 = 5;
+        let put32 = |bytes: &mut Vec<u8>, at: usize, value: u32| {
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        };
+        let put64 = |bytes: &mut Vec<u8>, at: usize, value: u64| {
+            bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        let header = |bytes: &mut Vec<u8>, at: usize, data: usize, count: u32| {
+            put64(bytes, at, data as u64);
+            put32(bytes, at + 8, count);
+            put32(bytes, at + 12, count);
+        };
+        let mut bytes = vec![0; CONTAINERS + COUNTRIES as usize * 0x100];
+        header(&mut bytes, GAME + cgame_state::COUNTRIES, TABLE, COUNTRIES);
+        header(&mut bytes, GAME + cgame_state::COUNTRY_LINKS, LINKS, COUNTRIES);
+        put64(
+            &mut bytes,
+            GAME + cgame_state::STRATEGIC_AIR_MANAGER,
+            MANAGER as u64,
+        );
+        put64(
+            &mut bytes,
+            MANAGER,
+            cstrategic_air_manager::VTABLE_RVA as u64,
+        );
+        header(
+            &mut bytes,
+            MANAGER + cstrategic_air_manager::STATELESS_AIR_BASES,
+            HOSTS,
+            1,
+        );
+        put64(&mut bytes, HOSTS, HOST as u64);
+        put64(&mut bytes, HOST, cair_base::VTABLE_RVA as u64);
+        put64(
+            &mut bytes,
+            HOST + cair_base::HANDLE,
+            (0x43_u64 << 32) | u64::from(cair_base::TYPE),
+        );
+        put64(&mut bytes, HOST + cair_base::HOST_REFERENCE, (3 << 32) | 51);
+        header(
+            &mut bytes,
+            HOST + cair_base::COUNTRY_CONTAINERS,
+            SLOTS,
+            COUNTRIES,
+        );
+        for slot in 1..COUNTRIES {
+            let object = if slot == UNREADABLE {
+                0x7fff_0000_0000
+            } else {
+                OBJECTS + slot as usize * 16
+            };
+            put64(&mut bytes, TABLE + slot as usize * 8, object as u64);
+            put32(&mut bytes, LINKS + slot as usize * 4, slot);
+            if slot == UNREADABLE {
+                continue;
+            }
+            put64(&mut bytes, object, ccountry::VTABLE_RVA as u64);
+            put32(&mut bytes, object + ccountry::ID, slot);
+            let container = CONTAINERS + slot as usize * 0x100;
+            put64(
+                &mut bytes,
+                container,
+                ccountry_air_container::VTABLE_RVA as u64,
+            );
+            put32(
+                &mut bytes,
+                container + ccountry_air_container::COUNTRY,
+                slot,
+            );
+            put64(&mut bytes, SLOTS + slot as usize * 8, container as u64);
+        }
+        let memory = kit_memory(&bytes);
+        let ctx = AirBasesCopyContext {
+            hour: 0,
+            force_full: false,
+            base: 0,
+            game_state: GAME,
+        };
+        let mut job = AirBasesJob::new();
+        assert!(job.census.capacity() < COUNTRIES as usize - 1);
+        let report = copy_air_bases_refresh(&memory, ctx, &mut job);
+        assert!(!report.raw_ok, "the initial census store overflows");
+        assert!(job.log.fault.iter().any(|fault| *fault));
+        assert!(!job.log.grow_for_next(), "staging alone would never grow");
+        assert!(job.grow_for_next());
+        job.grow();
+        job.clear();
+        assert!(job.census.capacity() >= COUNTRIES as usize - 1);
+        assert!(job.seen_links.capacity() >= COUNTRIES as usize);
+        assert_eq!(job.seen_link_index.len(), job.seen_links.capacity());
+        let report = copy_air_bases_refresh(&memory, ctx, &mut job);
+        assert!(report.raw_ok);
+        assert!(!job.grow_for_next());
+
+        let rows = COUNTRIES as usize;
+        let mut air = Captured::with_capacities(&Capacities::default());
+        let mut ticks = [0; AIR_BASES_N];
+        air.decode_air_bases_payload(0, &job, &mut ticks);
+        let mut bases = vec![cair_base::Row::default(); 4];
+        let direct_bases = cair_base::walk(&memory, 0, GAME, &mut bases);
+        assert_eq!(direct_bases, Outcome::Rows { len: 1 });
+        assert_eq!(air.bases.outcome, direct_bases);
+        assert_eq!(air.bases.rows[0], bases[0]);
+        let direct = fog::Captured::collect_registrations_direct(rows, 1, &memory, 0, GAME);
+        assert_eq!(direct.outcome, Outcome::Rows { len: rows - 2 });
+        assert!(
+            direct
+                .rows
+                .iter()
+                .zip((1..COUNTRIES).filter(|slot| *slot != UNREADABLE))
+                .all(|(row, slot)| (row.slot, row.country) == (slot, slot))
+        );
+        let fog_capacities = fog::Capacities {
+            rows: [0, 0, 0, 0, 0, rows],
+            radar_provinces: 0,
+            area_provinces: 0,
+            wings: 1,
+        };
+        let mut owned = fog::Captured::with_capacities(&fog_capacities);
+        // The first decode has no resolver yet; it records the live demand,
+        // and growth after it serves every later decode from the dense cache.
+        for expected_len in [0, rows] {
+            owned.registrations_raw_mode = true;
+            owned.decode_registrations_payload(0, &job, &mut ticks);
+            assert_eq!(owned.resolver_sizes(), (expected_len, rows));
+            let decoded = owned.registrations_snapshot();
+            assert_eq!(decoded.outcome, direct.outcome);
+            assert_eq!(decoded.rows, direct.rows);
+            assert_eq!(decoded.wings, direct.wings);
+            owned.grow(&mut fog::Capacities {
+                rows: [0, 0, 0, 0, 0, rows],
+                radar_provinces: 0,
+                area_provinces: 0,
+                wings: 1,
+            });
+        }
+    }
+
+    fn kit_memory(bytes: &[u8]) -> engine::memory::SliceMemory<'_> {
+        engine::memory::SliceMemory { base: 0, bytes }
     }
 
     #[test]

@@ -370,8 +370,10 @@ impl Destination<'_> {
                             let mut acclimatization =
                                 [reinforcement::AcclimatizationTerm::default();
                                     reinforcement::ACCLIMATIZATION_LIMIT];
-                            let mut transport_terms = [reinforcement::TransportTerm::default();
-                                reinforcement::TRANSPORT_TERM_LIMIT];
+                            // Enemy transport terms go straight into the arena
+                            // past its admitted length; the reader grows it on
+                            // this worker, one successfully read term at a time.
+                            let transport_start = self.reinforcement_progress[3].len;
                             let result =
                                 carmy_combat_inputs::capture_stats(memory, base, pointer, handle)
                                     .and_then(|stats| {
@@ -395,7 +397,8 @@ impl Destination<'_> {
                                                     &mut reinforcement_modifiers,
                                                     &mut supply_terms,
                                                     &mut acclimatization,
-                                                    &mut transport_terms,
+                                                    self.transport_terms,
+                                                    transport_start,
                                                 )
                                                 .and_then(|reinforcement| {
                                                     carmy_combat_inputs::capture_manpower(
@@ -445,7 +448,6 @@ impl Destination<'_> {
                                         );
                                         grow_vec(self.supply_terms, starts[1] + counts[1]);
                                         grow_vec(self.acclimatization, starts[2] + counts[2]);
-                                        grow_vec(self.transport_terms, starts[3] + counts[3]);
                                         self.reinforcement_modifiers
                                             [starts[0]..starts[0] + counts[0]]
                                             .copy_from_slice(&reinforcement_modifiers[..counts[0]]);
@@ -453,8 +455,8 @@ impl Destination<'_> {
                                             .copy_from_slice(&supply_terms[..counts[1]]);
                                         self.acclimatization[starts[2]..starts[2] + counts[2]]
                                             .copy_from_slice(&acclimatization[..counts[2]]);
-                                        self.transport_terms[starts[3]..starts[3] + counts[3]]
-                                            .copy_from_slice(&transport_terms[..counts[3]]);
+                                        // Transport terms were written in place at
+                                        // starts[3]; admission only advances the length.
                                         for (p, count) in
                                             self.reinforcement_progress.iter_mut().zip(counts)
                                         {
@@ -1749,6 +1751,89 @@ mod tests {
         assert_eq!(divisions[0].direction, 9263);
         assert_eq!(divisions[0].direction_group, -3);
         assert_eq!(divisions[0].template_frames, 3);
+    }
+
+    /// The reinforcement reader writes enemy transport terms straight into the
+    /// arena past its admitted length and grows it on the worker; a division
+    /// with thousands of enemies projects every term in native order and the
+    /// grown arena feeds the next capacity.
+    #[test]
+    fn transport_terms_beyond_the_default_arena_project_every_enemy() {
+        let mut c = Capacities {
+            combats: 1,
+            census_participants: 1,
+            details: 1,
+            divisions: 2,
+            sides: 1,
+            rosters: 1,
+            modifier_members: 1,
+            modifiers: 1,
+            width_terms: 1,
+            manpower: 1,
+            reinforcement_modifiers: 1,
+            supply_terms: 1,
+            acclimatization: 1,
+            transport_terms: 1,
+            tactic_candidates: 1,
+            tactic_weights: 1,
+            tactic_unlocks: 1,
+            division_commanders: 1,
+            commander_keys: 2,
+            window_divisions: 1,
+        };
+        let mut captured = Captured::with_capacities(&c);
+        let enemies = 5_000;
+        let term = |index: usize| reinforcement::TransportTerm {
+            country: index as u32 + 2,
+            regional_value: index as i64 * 10,
+            own_intel: i64::MIN + index as i64,
+            enemy_intel: -(index as i64),
+        };
+        // What the reader leaves behind: the arena grown past its capacity.
+        captured
+            .transport_terms
+            .first
+            .resize(1 + enemies, reinforcement::TransportTerm::default());
+        captured.transport_terms.first[0] = term(usize::MAX >> 40);
+        for index in 0..enemies {
+            captured.transport_terms.first[1 + index] = term(index);
+        }
+        captured.transport_terms.len = 1 + enemies;
+        captured.transport_terms.required = 1 + enemies;
+        captured.divisions.outcome = Outcome::Rows { len: 2 };
+        for (ordinal, row) in captured.divisions.rows[..2].iter_mut().enumerate() {
+            row.combat = 0x1000_0000_003e;
+            row.ordinal = ordinal as u32;
+        }
+        captured.divisions.rows[0].reinforcement.transport_term_count = 1;
+        captured.divisions.rows[1].reinforcement_starts[3] = 1;
+        captured.divisions.rows[1].reinforcement.transport_term_count = enemies;
+        let [
+            _,
+            TableView::Complete(replay::rows::TableRows::LandCombatDivisions(divisions)),
+            _,
+        ] = captured.tables()
+        else {
+            panic!("complete land divisions were not projected")
+        };
+        assert_eq!(divisions[0].reinforcement_transport.len(), 1);
+        let projected = &divisions[1].reinforcement_transport;
+        assert_eq!(projected.len(), enemies);
+        for (index, row) in projected.iter().enumerate() {
+            let expected = term(index);
+            assert_eq!(
+                (row.country, row.regional_value, row.own_intel, row.enemy_intel),
+                (
+                    expected.country,
+                    expected.regional_value,
+                    expected.own_intel,
+                    expected.enemy_intel
+                )
+            );
+        }
+        captured.grow(&mut c);
+        assert!(c.transport_terms > enemies);
+        assert!(captured.transport_terms.first.len() >= c.transport_terms);
     }
 
     #[test]

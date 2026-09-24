@@ -62,6 +62,13 @@ impl Default for Capacities {
         }
     }
 }
+impl Capacities {
+    /// OccupationSettings has one row per canonical country.
+    pub(crate) fn raise_for_countries(&mut self, slots: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows[5], rows(slots, 1));
+    }
+}
 
 pub(crate) struct Buildings {
     state_buildings: CaptureRows<cbuilding::Row>,
@@ -678,7 +685,7 @@ impl ConstructionRestJob {
             // so steady state never overflows.
             log: RawLog::new(1 << 17, 8 << 20),
             game_state: 0,
-            census: Vec::with_capacity(512),
+            census: Vec::with_capacity(crate::country_scale::census_rows(512)),
             settings_required: 0,
             law_bytes_required: 0,
             law_demand_overflowed: false,
@@ -709,6 +716,14 @@ impl ConstructionRestJob {
         self.log.grow();
         crate::raw::double_capacity(&mut self.census);
         self.update_capacity_charge();
+    }
+
+    /// Off the game thread: hold one census row per observed country slot so
+    /// the first hour after a large save loads does not overflow.
+    pub fn presize_countries(&mut self) {
+        if crate::country_scale::reserve_census(&mut self.census) {
+            self.update_capacity_charge();
+        }
     }
 
     fn update_capacity_charge(&mut self) {

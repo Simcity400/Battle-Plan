@@ -742,16 +742,97 @@ impl Pending {
 }
 
 /// Recently decoded frames the coordinator keeps, so a step back or a
-/// rebuild for a new perspective decodes nothing.
+/// rebuild for a new perspective decodes nothing. Also the bound of the weak
+/// frame and snapshot registries, which hold no frame data themselves.
 const FRAME_CACHE: usize = 96;
+
+/// Estimated decoded bytes the coordinator's own frame cache may hold.
+///
+/// A decoded hour grows with the recording's countries and units, so a fixed
+/// count of hours is not a fixed amount of memory. The cache keeps at most
+/// [`FRAME_CACHE`] hours and, past this budget, only the hours the current
+/// want still reaches ([`FrameCache::evict`]).
+const FRAME_CACHE_BYTES: u64 = 2 << 30;
+
+/// Bytes one decoded row is estimated at: the fixed part of the widest
+/// ordinary rows, not counting their variable-length strings.
+const ESTIMATED_ROW_BYTES: u64 = 96;
+
+/// A decoded hour's estimated size in memory, from its row counts.
+fn estimated_bytes(current: &Current) -> u64 {
+    match current {
+        Current::Frame(frame) => frame
+            .tables
+            .iter()
+            .map(|table| match table {
+                replay::frame::TableView::Complete(rows)
+                | replay::frame::TableView::Truncated { rows, .. } => rows.len() as u64,
+                replay::frame::TableView::Unavailable { .. } => 0,
+            })
+            .sum::<u64>()
+            .saturating_mul(ESTIMATED_ROW_BYTES),
+        Current::Gap { .. } => 0,
+    }
+}
+
+/// The coordinator's recently decoded hours, least recently used first,
+/// bounded by count and by estimated bytes.
+#[derive(Default)]
+struct FrameCache {
+    frames: BTreeMap<(BranchId, Hour), Current>,
+    /// Every cached hour with its estimated bytes, least recently used first.
+    order: VecDeque<((BranchId, Hour), u64)>,
+    bytes: u64,
+}
+
+impl FrameCache {
+    /// A cached hour; the hit makes it the most recently used.
+    fn get(&mut self, key: &(BranchId, Hour)) -> Option<Current> {
+        let current = self.frames.get(key)?.clone();
+        if let Some(at) = self.order.iter().position(|(cached, _)| cached == key)
+            && let Some(entry) = self.order.remove(at)
+        {
+            self.order.push_back(entry);
+        }
+        Some(current)
+    }
+
+    fn contains_key(&self, key: &(BranchId, Hour)) -> bool {
+        self.frames.contains_key(key)
+    }
+
+    fn insert(&mut self, key: (BranchId, Hour), current: Current) {
+        let bytes = estimated_bytes(&current);
+        if let Some(old) = self.frames.insert(key, current) {
+            self.bytes = self.bytes.saturating_sub(estimated_bytes(&old));
+            self.order.retain(|(at, _)| *at != key);
+        }
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.order.push_back((key, bytes));
+    }
+
+    /// Drops the least recently used hours past [`FRAME_CACHE`], and past
+    /// `budget` bytes while more than `keep` hours remain: the hours a want
+    /// reaches were just used, so they stay.
+    fn evict(&mut self, budget: u64, keep: usize) {
+        while self.order.len() > FRAME_CACHE
+            || (self.bytes > budget && self.order.len() > keep.max(1))
+        {
+            let Some((old, bytes)) = self.order.pop_front() else {
+                break;
+            };
+            self.frames.remove(&old);
+            self.bytes = self.bytes.saturating_sub(bytes);
+        }
+    }
+}
 
 struct Coordinator {
     content: Arc<Content>,
     playback: Playback,
     shared_decoder: Option<Arc<SharedDecoder>>,
     requested: Arc<Mutex<Option<(u64, Want)>>>,
-    frames: BTreeMap<(BranchId, Hour), Current>,
-    order: VecDeque<(BranchId, Hour)>,
+    frames: FrameCache,
     weather: Arc<SharedWeather>,
     strategic: Option<Arc<LayerPlane>>,
     want: Option<Want>,
@@ -919,7 +1000,7 @@ impl Coordinator {
             return decoder.frame(branch, hour);
         }
         if let Some(current) = self.frames.get(&(branch, hour)) {
-            return Ok(current.clone());
+            return Ok(current);
         }
         let mut passed = Vec::new();
         let frames = &self.frames;
@@ -938,13 +1019,12 @@ impl Coordinator {
             .chain([(hour, current.clone())])
         {
             self.frames.insert((branch, at), current);
-            self.order.push_back((branch, at));
         }
-        while self.order.len() > FRAME_CACHE {
-            if let Some(old) = self.order.pop_front() {
-                self.frames.remove(&old);
-            }
-        }
+        // Every hour the want reaches, and the step back, stay decoded.
+        let keep = self.want.as_ref().map_or(1, |want| {
+            1 + want.ahead.max(0) as usize + want.behind.max(0) as usize + behind.max(0) as usize
+        });
+        self.frames.evict(FRAME_CACHE_BYTES, keep);
         Ok(current)
     }
 
@@ -1327,8 +1407,7 @@ impl Pipeline {
             playback: Playback::unloaded(Arc::clone(&replay))?,
             shared_decoder,
             requested: Arc::clone(&requested),
-            frames: BTreeMap::new(),
-            order: VecDeque::new(),
+            frames: FrameCache::default(),
             weather,
             strategic: None,
             want: None,
@@ -1457,6 +1536,74 @@ impl Dropper {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A decoded hour whose `Countries` table holds `rows` rows.
+    fn sized_frame(hour: Hour, rows: usize) -> Current {
+        use replay::{
+            frame::{DecodedFrame, Metrics, TableView},
+            rows::{CountryRow, TableId, TableRows},
+        };
+        let mut tables = std::array::from_fn(|_| TableView::Unavailable {
+            reason: "not needed".into(),
+        });
+        tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+            (0..rows)
+                .map(|slot| CountryRow {
+                    canonical_slot: slot as u32,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        Current::Frame(Arc::new(DecodedFrame {
+            branch: 1,
+            hour,
+            tables,
+            metrics: Metrics::default(),
+        }))
+    }
+
+    #[test]
+    fn the_frame_cache_is_bounded_by_bytes_but_keeps_the_wanted_hours() {
+        let mut cache = FrameCache::default();
+        // Each hour is estimated at 1,000 rows.
+        let each = 1_000 * ESTIMATED_ROW_BYTES;
+        for hour in 0..10 {
+            cache.insert((1, hour), sized_frame(hour, 1_000));
+        }
+        assert_eq!(cache.bytes, 10 * each);
+        // A budget of four hours keeps the newest four.
+        cache.evict(4 * each, 2);
+        assert_eq!(cache.frames.len(), 4);
+        assert!(cache.contains_key(&(1, 9)) && !cache.contains_key(&(1, 5)));
+        assert_eq!(cache.bytes, 4 * each);
+        // The hours a want reaches stay even over budget.
+        cache.evict(0, 3);
+        assert_eq!(cache.frames.len(), 3);
+        // A hit makes an hour the most recently used: hour 7 outlives 8.
+        assert!(cache.get(&(1, 7)).is_some());
+        cache.evict(2 * each, 1);
+        assert!(cache.contains_key(&(1, 7)) && cache.contains_key(&(1, 9)));
+        assert!(!cache.contains_key(&(1, 8)));
+        cache.insert((1, 8), sized_frame(8, 1_000));
+        // Replacing an hour does not count it twice.
+        cache.insert((1, 9), sized_frame(9, 500));
+        assert_eq!(cache.frames.len(), 3);
+        assert_eq!(cache.bytes, 2 * each + 500 * ESTIMATED_ROW_BYTES);
+        // The count bound still applies to hours that cost nothing.
+        let mut gaps = FrameCache::default();
+        for hour in 0..(FRAME_CACHE as i32 + 10) {
+            gaps.insert(
+                (1, hour),
+                Current::Gap {
+                    branch: 1,
+                    hour,
+                    reason: String::new(),
+                },
+            );
+        }
+        gaps.evict(FRAME_CACHE_BYTES, 1);
+        assert_eq!(gaps.frames.len(), FRAME_CACHE);
+    }
 
     fn test_view() -> View {
         View {

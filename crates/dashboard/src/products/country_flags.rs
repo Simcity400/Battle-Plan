@@ -16,7 +16,7 @@ use replay::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     io,
     sync::{
         Arc,
@@ -447,7 +447,8 @@ pub struct FlagContext {
     content: Arc<ResolvedContent>,
     /// The normal, medium and small cells from the content's defines.
     cells: [[u32; 2]; 3],
-    choices: Vec<FlagChoice>,
+    /// The first choice per tag, in raw country id order.
+    choices: HashMap<String, FlagChoice>,
     branch_id: String,
     hour: i32,
     warnings: Vec<String>,
@@ -488,12 +489,15 @@ impl FlagContext {
                 )));
             }
         };
-        let choices = choices(&frame)?;
+        let mut by_tag = HashMap::new();
+        for choice in choices(&frame)? {
+            by_tag.entry(choice.tag.clone()).or_insert(choice);
+        }
         Ok(Self {
             options,
             content,
             cells,
-            choices,
+            choices: by_tag,
             branch_id: request.branch_id.clone(),
             hour: request.hour,
             warnings,
@@ -512,7 +516,7 @@ impl FlagContext {
             if cancelled.load(Ordering::Acquire) {
                 return Err(invalid("Flag request cancelled"));
             }
-            let Some(choice) = self.choices.iter().find(|choice| &choice.tag == tag) else {
+            let Some(choice) = self.choices.get(tag) else {
                 warnings.push(format!("{tag}: country identity unavailable at this hour"));
                 continue;
             };
@@ -668,7 +672,10 @@ mod tests {
             size: CountryFlagSize::Full,
         };
         assert!(CountryFlags::validate(&params).is_ok());
-        params.tags = vec!["../secret".into()];
+        // Request tags are lookup keys; asset names come from recorded rows.
+        params.tags = vec!["A\0B".into()];
+        assert!(CountryFlags::validate(&params).is_err());
+        params.tags = vec![String::new()];
         assert!(CountryFlags::validate(&params).is_err());
         params.tags = vec!["Z01".into(); 33];
         assert!(CountryFlags::validate(&params).is_err());

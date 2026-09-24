@@ -495,12 +495,11 @@ pub(super) fn bind(
             let progress = rows::<tables::LandCombatProgress>(frame)?;
             if let (Some(progress), Some(bar), Some(icon)) = (
                 progress.rows().iter().find(|row| row.combat == id),
-                document.icons.combat.sprites.get("GFX_landcombat_progress"),
+                document.icons.combat.sprite("GFX_landcombat_progress"),
                 document
                     .icons
                     .combat
-                    .sprites
-                    .get("GFX_land_battle_heading_indicator_strip"),
+                    .sprite("GFX_land_battle_heading_indicator_strip"),
             ) {
                 let (frame, x) = heading(
                     scores,

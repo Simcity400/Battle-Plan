@@ -54,6 +54,17 @@ impl Default for Capacities {
         }
     }
 }
+impl Capacities {
+    /// CountryFuel and CountryExperience hold one row per canonical country;
+    /// CountryResources one per country and resource definition (the
+    /// default's eight per country covers the vanilla roster; more grows).
+    pub(crate) fn raise_for_countries(&mut self, slots: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows[0], rows(slots, 1));
+        raise(&mut self.rows[1], rows(slots, 1));
+        raise(&mut self.rows[7], rows(slots, 8));
+    }
+}
 
 pub struct Captured {
     fuel: CaptureRows<ccountry_fuel_status::Row>,

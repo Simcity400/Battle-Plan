@@ -322,6 +322,9 @@ pub struct Viewer {
     // names
     placements: Option<Placements>,
     placements_at: Option<(replay::BranchId, i32, bool)>,
+    /// A placement of the hour on screen for a changed state-layer flag,
+    /// running off the UI thread while the current one keeps drawing.
+    names_job: Option<NamesJob>,
     /// `None` until the first frame seeds it settled at that frame's own camera
     /// height; see [`Viewer::map`].
     fade: Option<LayerFade>,
@@ -358,11 +361,13 @@ pub struct Viewer {
         replay::BranchId,
         i32,
         map::perspective::Choice,
-        map::counters::HourTables,
+        crate::document::OverlayTables,
     )>,
     /// Which country the counters are drawn for; the header's own control sets
     /// it and [`Document::perspective`] is kept in step with it.
     perspective: map::perspective::Choice,
+    /// The viewing-country chooser's tag filter.
+    country_filter: String,
     // capture
     /// The readback to run once the next frame is drawn; F12 and
     /// `--window-dump` both arm it.
@@ -570,6 +575,7 @@ impl Viewer {
             // names
             placements: None,
             placements_at: None,
+            names_job: None,
             fade: None,
             last_frame: Instant::now(),
             label_report: LabelReport::default(),
@@ -581,6 +587,7 @@ impl Viewer {
             overlay_at: None,
             overlay_tables: None,
             perspective,
+            country_filter: String::new(),
             // capture
             capture,
             capture_note: None,
@@ -1342,6 +1349,7 @@ impl Viewer {
         // names
         self.placements = None;
         self.placements_at = None;
+        self.names_job = None;
         self.fade = None;
         // counters
         self.overlay = None;
@@ -2579,12 +2587,41 @@ impl Viewer {
         });
         let names_key = (document.playback.branch(), document.playback.hour(), states);
         if self.placements_at != Some(names_key) {
-            match now.place_names(states) {
-                Ok(placements) => {
-                    self.placements = Some(placements);
-                    self.placements_at = Some(names_key);
+            let same_hour = self
+                .placements_at
+                .is_some_and(|(branch, hour, _)| (branch, hour) == (names_key.0, names_key.1));
+            match &document.playback.current() {
+                // Only the state layer changed: place it on a worker and keep
+                // drawing the hour's country layer until it arrives, so the
+                // cutoff never stalls the frame on a whole-map placement.
+                crate::playback::Current::Frame(frame) if same_hour => {
+                    if self
+                        .names_job
+                        .as_ref()
+                        .is_none_or(|job| job.key != names_key)
+                    {
+                        self.names_job = Some(NamesJob::spawn(
+                            names_key,
+                            Arc::clone(&document.content),
+                            Arc::clone(frame),
+                            ui.ctx().clone(),
+                        ));
+                    }
                 }
-                Err(error) => return Err(error.to_string()),
+                _ => match now.place_names(states) {
+                    Ok(placements) => {
+                        self.placements = Some(placements);
+                        self.placements_at = Some(names_key);
+                        self.names_job = None;
+                    }
+                    Err(error) => return Err(error.to_string()),
+                },
+            }
+            if let Some(job) = self.names_job.take_if(|job| job.key == names_key)
+                && let Some(result) = job.poll(&mut self.names_job)
+            {
+                self.placements = Some(result.map_err(|error| error.to_string())?);
+                self.placements_at = Some(names_key);
             }
         }
         laps.lap("names");
@@ -2598,7 +2635,17 @@ impl Viewer {
             self.perspective.clone(),
         );
         let overlay_timer = Instant::now();
-        if self.overlay_at.as_ref() != Some(&overlay_key) {
+        // A background flag or portrait load repaints the window, which then
+        // lays the overlay out again with what it decoded.
+        if !document.icons.lazy.has_wake() {
+            let ctx = ui.ctx().clone();
+            document.icons.lazy.set_wake(move || ctx.request_repaint());
+        }
+        let stale = self
+            .prepared_overlay
+            .as_ref()
+            .is_some_and(|prepared| prepared.is_stale(&now));
+        if stale || self.overlay_at.as_ref() != Some(&overlay_key) {
             let tables_key = (
                 document.playback.branch(),
                 document.playback.hour(),
@@ -2749,6 +2796,15 @@ impl Viewer {
                 laps.line()
             ));
         }
+        // A capture waits until every flag and portrait its frame asked for
+        // has decoded and been laid out, as a headless dump does.
+        if let Some(capture) = self.capture.as_mut() {
+            let before = document.icons.lazy.version();
+            document.icons.lazy.settle();
+            if document.icons.lazy.version() != before {
+                capture.remaining = capture.remaining.max(1);
+            }
+        }
         self.save_capture(state, document, camera, pixels, &warnings, ui.ctx());
         self.map_warnings = warnings;
         self.profile_frame += 1;
@@ -2888,18 +2944,34 @@ impl eframe::App for Viewer {
                 egui::ComboBox::from_id_salt("viewing_country")
                     .selected_text(selected)
                     .show_ui(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.country_filter)
+                                .hint_text("Filter tags"),
+                        );
                         ui.selectable_value(
                             &mut self.perspective.country,
                             map::perspective::Country::Recorded,
                             "Recorded player",
                         );
-                        for tag in country_tags {
-                            ui.selectable_value(
-                                &mut self.perspective.country,
-                                map::perspective::Country::Tag(tag.clone()),
-                                tag,
-                            );
-                        }
+                        // Only the rows in view are laid out, and a tag is
+                        // cloned only when it is picked, so the list costs the
+                        // same at thousands of countries as at a few.
+                        let shown = filter_tags(country_tags, &self.country_filter);
+                        let row = ui.spacing().interact_size.y;
+                        egui::ScrollArea::vertical()
+                            .max_height(row * 16.0)
+                            .show_rows(ui, row, shown.len(), |ui, range| {
+                                for tag in &shown[range] {
+                                    let picked = matches!(
+                                        &self.perspective.country,
+                                        map::perspective::Country::Tag(current) if current == tag
+                                    );
+                                    if ui.selectable_label(picked, *tag).clicked() && !picked {
+                                        self.perspective.country =
+                                            map::perspective::Country::Tag((*tag).to_owned());
+                                    }
+                                }
+                            });
                     })
                     .response
                     .on_hover_text(
@@ -3134,9 +3206,75 @@ pub(crate) fn date(hour: i32) -> String {
     )
 }
 
+/// The chooser's tags that contain `filter`, ignoring ASCII case, in order.
+fn filter_tags<'a>(tags: &'a [String], filter: &str) -> Vec<&'a str> {
+    let filter = filter.trim().to_ascii_uppercase();
+    tags.iter()
+        .map(String::as_str)
+        .filter(|tag| filter.is_empty() || tag.to_ascii_uppercase().contains(&filter))
+        .collect()
+}
+
+/// One off-thread name placement for the hour on screen.
+struct NamesJob {
+    key: (replay::BranchId, i32, bool),
+    result: mpsc::Receiver<std::io::Result<Placements>>,
+}
+
+impl NamesJob {
+    fn spawn(
+        key: (replay::BranchId, i32, bool),
+        content: Arc<crate::document::Content>,
+        frame: Arc<replay::frame::DecodedFrame>,
+        ctx: egui::Context,
+    ) -> Self {
+        let (send, result) = mpsc::channel();
+        std::thread::spawn(move || {
+            let placed = crate::document::Hour::new(&content, &frame, 0.0).place_names(key.2);
+            let _ = send.send(placed);
+            ctx.request_repaint();
+        });
+        Self { key, result }
+    }
+
+    /// The finished placement, or puts the job back into `slot` to wait.
+    fn poll(self, slot: &mut Option<Self>) -> Option<std::io::Result<Placements>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => {
+                *slot = Some(self);
+                None
+            }
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(std::io::Error::other(
+                "the name placement worker stopped",
+            ))),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chooser_filters_thousands_of_tags_without_cloning_them() {
+        let tags: Vec<String> = (0..15_000).map(|index| format!("T{index:04}")).collect();
+        assert_eq!(filter_tags(&tags, "").len(), 15_000);
+        // Case and surrounding space are ignored; the order is the tag order.
+        let found = filter_tags(&tags, " t1234 ");
+        assert_eq!(found.first(), Some(&"T1234"));
+        assert_eq!(found.len(), 1 + 10);
+        let found = filter_tags(&tags, "999");
+        assert!(found.iter().all(|tag| tag.contains("999")));
+        assert!(std::ptr::eq(
+            found[0],
+            tags.iter()
+                .find(|tag| tag.contains("999"))
+                .unwrap()
+                .as_str()
+        ));
+        assert!(filter_tags(&tags, "ZZZ").is_empty());
+    }
 
     #[test]
     fn unload_releases_standalone_admission_and_discards_a_late_loader() {

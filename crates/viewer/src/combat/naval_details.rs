@@ -175,7 +175,7 @@ fn active(
                 String::from_utf8_lossy(&first.sprite)
             )
         };
-        let Some(asset) = document.icons.combat.sprites.get(&name) else {
+        let Some(asset) = document.icons.combat.sprite(&name) else {
             out.warnings.push(format!(
                 "NavalCombatShips slot {}: declared sprite {name} is unavailable; row omitted.",
                 first.battle_slot
@@ -340,8 +340,7 @@ pub(super) fn escape_bar_x(width: f32, document: &Document) -> f32 {
     let bar = document
         .icons
         .combat
-        .sprites
-        .get("GFX_naval_combat_escape_bar")
+        .sprite("GFX_naval_combat_escape_bar")
         .map_or(54.0, |s| s.size[0]);
     (width / 2.0).trunc() - (bar / 2.0).trunc() - 1.0
 }
@@ -386,7 +385,7 @@ fn bar(values: &mut Values, key: &str, value: f32, width: f32, document: &Docume
     center_icon(values, key, name, width, document);
 }
 fn center_icon(values: &mut Values, key: &str, name: &str, width: f32, document: &Document) {
-    if let Some(asset) = document.icons.combat.sprites.get(name) {
+    if let Some(asset) = document.icons.combat.sprite(name) {
         // CENTER_UP already contributes width/2. Native retains authored x.
         values.entry(key.into()).or_default().offset[0] =
             (width / 2.0).trunc() - width / 2.0 - (asset.size[0] / 2.0).trunc();
@@ -502,7 +501,7 @@ fn result(
                 "GFX_unit_{}_icon_medium_black",
                 String::from_utf8_lossy(&group[0].sprite)
             );
-            if document.icons.combat.sprites.contains_key(&name) {
+            if document.icons.combat.has_sprite(&name) {
                 sprite(&mut values, "fleet", name);
             } else {
                 hide(&mut values, "fleet");
@@ -524,7 +523,7 @@ fn result(
                 "GFX_navalcombat_ship_icon_{}",
                 String::from_utf8_lossy(&group[0].sprite)
             );
-            if document.icons.combat.sprites.contains_key(&name) {
+            if document.icons.combat.has_sprite(&name) {
                 values.insert(
                     "equipment".into(),
                     Widget {

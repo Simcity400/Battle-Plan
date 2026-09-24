@@ -317,6 +317,27 @@ packs!(
     weather
 );
 
+impl Capacities {
+    /// Presize every table whose rows scale with the number of country slots,
+    /// so a large mod's first hour is not truncated. Never lowers a capacity.
+    pub fn raise_for_countries(&mut self, slots: usize) {
+        self.country_appearance.raise_for_countries(slots);
+        self.country_counters.raise_for_countries(slots);
+        self.economy.raise_for_countries(slots);
+        self.governance.raise_for_countries(slots);
+        self.intel.raise_for_countries(slots);
+        self.session.raise_for_countries(slots);
+        self.projects.raise_for_countries(slots);
+        self.supply_trains.raise_for_countries(slots);
+        self.construction.raise_for_countries(slots);
+    }
+
+    /// Presize CountryIntel from the live dense record total.
+    pub fn raise_for_country_intel(&mut self, native_rows: usize) {
+        self.intel.raise_for_country_intel(native_rows);
+    }
+}
+
 impl Captured {
     /// Freeze this callback's primary activity before any shared source visitor.
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {

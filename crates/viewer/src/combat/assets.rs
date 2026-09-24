@@ -1,23 +1,35 @@
 //! Only combat-window assets; all interface bytes pass through the resolved layers.
 use super::layout::{Node, number, string, value};
-use crate::map::{sprites::SpriteSheet, text};
+use crate::map::{
+    counters::FlagAtlas,
+    lazy_icons::{LazyImages, LazyTextures, Lookup},
+    sprites::SpriteSheet,
+    text,
+};
 use installed_content::{
     ResolvedLayers,
     defines::Defines,
-    flags::{self, FlagSet},
+    flags::FlagSet,
     fonts, gfx, gui,
-    image::{Rgba8Image, dds, tga},
+    image::{dds, tga},
 };
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     io,
+    sync::Arc,
 };
+
+/// Combat portrait textures kept resident at once beyond the ones on screen.
+const COMBAT_PORTRAIT_CAPACITY: usize = 256;
 
 /// One wanted sprite's file reads, resolved up front so the merge below
 /// keeps the warning order and texture ids of the serial load.
 enum WantedSprite {
     Skip,
     Warn(String),
+    /// A leader portrait: decoded the first time a window draws it.
+    Lazy(String),
     Load {
         progress: bool,
         first: String,
@@ -29,6 +41,7 @@ enum WantedSprite {
 fn is_uncovered(path: &str) -> bool {
     path.starts_with("gfx/leaders/") || path.starts_with("gfx/texticons/")
 }
+#[derive(Clone)]
 pub struct Sprite {
     pub sheet: SpriteSheet,
     pub second: Option<SpriteSheet>,
@@ -43,9 +56,16 @@ pub struct Sprite {
 }
 pub struct Assets {
     pub windows: BTreeMap<String, Node>,
-    pub sprites: BTreeMap<String, Sprite>,
+    sprites: BTreeMap<String, Sprite>,
+    /// Leader portrait sprites by name: their texture and declaration, drawn
+    /// once `portraits` has decoded the texture.
+    lazy_sprites: BTreeMap<String, (String, gfx::SpriteType)>,
+    portraits: Arc<LazyImages>,
     pub fonts: BTreeMap<String, text::Font>,
-    pub flags: BTreeMap<String, Flag>,
+    /// The normal set, decoded as windows draw it.
+    flags: Arc<FlagAtlas>,
+    /// The counters' small set, which inline markers draw from.
+    small_flags: Arc<FlagAtlas>,
     /// The small flag cell every [`Flag::inline`] is drawn at.
     pub inline_flag_size: [f32; 2],
     pub tactic_pictures: BTreeMap<String, String>,
@@ -54,10 +74,116 @@ pub struct Assets {
     pub text_colors: fonts::TextColors,
     pub warnings: Vec<String>,
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Flag {
     pub texture: usize,
     pub uv: [f32; 4],
     pub inline: Option<(usize, [f32; 4])>,
+}
+
+impl Assets {
+    /// A declared sprite, or a leader portrait once its texture has decoded;
+    /// one not decoded yet is queued and draws nothing for that frame.
+    pub fn sprite(&self, name: &str) -> Option<Cow<'_, Sprite>> {
+        if let Some(sprite) = self.sprites.get(name) {
+            return Some(Cow::Borrowed(sprite));
+        }
+        let (first, declaration) = self.lazy_sprites.get(name)?;
+        let Lookup::Loaded { texture, size } = self.portraits.get(first) else {
+            return None;
+        };
+        let sheet = SpriteSheet {
+            name: first.clone(),
+            texture,
+            frames: 1,
+            size,
+        };
+        Some(Cow::Owned(build_sprite(
+            name,
+            declaration,
+            sheet,
+            false,
+            None,
+        )))
+    }
+
+    /// Whether `name` is a sprite a window can draw: a declared one, or a
+    /// leader portrait whose texture is not known to be unreadable.
+    pub fn has_sprite(&self, name: &str) -> bool {
+        self.sprites.contains_key(name)
+            || self
+                .lazy_sprites
+                .get(name)
+                .is_some_and(|(first, _)| self.portraits.peek(first) != Lookup::Failed)
+    }
+
+    /// Whether a normal-set flag file exists for `key` and is not known to be
+    /// unreadable: the key the bindings choose among a country's candidates.
+    pub fn has_flag(&self, key: &str) -> bool {
+        self.flags.contains(key)
+    }
+
+    /// The normal-set flag of `key`, queued when not decoded yet.
+    pub fn flag(&self, key: &str) -> Option<Flag> {
+        let (texture, uv) = self.flags.get(key)?;
+        Some(Flag {
+            texture,
+            uv,
+            inline: self.inline_flag(key),
+        })
+    }
+
+    /// The small flag an inline marker draws for `key`.
+    ///
+    /// A group flag falls back to its tag's plain flag. The tag is the key's
+    /// first three bytes because `CCountryDatabase::load_tags` (`14070e900`)
+    /// accepts only tags of exactly three bytes.
+    pub fn inline_flag(&self, key: &str) -> Option<(usize, [f32; 4])> {
+        if !self.has_flag(key) {
+            return None;
+        }
+        match key.get(..3) {
+            Some(tag) if tag != key => self.small_flags.resolve(&[key, tag]),
+            _ => self.small_flags.resolve(&[key]),
+        }
+    }
+}
+
+/// One combat sprite from its declaration and its first texture's sheet.
+fn build_sprite(
+    name: &str,
+    declaration: &gfx::SpriteType,
+    mut sheet: SpriteSheet,
+    progress: bool,
+    second: Option<SpriteSheet>,
+) -> Sprite {
+    sheet.frames = declaration.frames;
+    sheet.name = name.to_owned();
+    let size = value(&declaration.items, "size")
+        .and_then(|v| v.items())
+        .map(|items| {
+            [
+                number(items, "x", sheet.frame_size()[0]),
+                number(items, "y", sheet.frame_size()[1]),
+            ]
+        })
+        .unwrap_or(sheet.frame_size());
+    Sprite {
+        sheet,
+        second,
+        size,
+        vertical: string(&declaration.items, "horizontal") == Some("no"),
+        progress,
+        start_end: string(&declaration.items, "effectFile")
+            .is_some_and(|file| file.ends_with("progress_startend.lua")),
+        border: (declaration
+            .kind
+            .eq_ignore_ascii_case("corneredTileSpriteType"))
+        .then(|| value(&declaration.items, "borderSize").and_then(|v| v.items()))
+        .flatten()
+        .map(|items| [number(items, "x", 0.0), number(items, "y", 0.0)]),
+        tiling_center: string(&declaration.items, "tilingCenter") == Some("yes"),
+    }
 }
 fn path(raw: &str) -> String {
     raw.split(['/', '\\'])
@@ -172,11 +298,14 @@ fn expand_gui(document: &mut installed_content::parser::Document) {
 }
 impl Assets {
     pub fn load(
-        layers: &ResolvedLayers,
+        shared: &Arc<ResolvedLayers>,
         defines: &Defines,
         declarations: &BTreeMap<String, gfx::SpriteType>,
+        small: &Arc<FlagAtlas>,
         images: &mut Vec<dds::Texture>,
+        lazy: &Arc<LazyTextures>,
     ) -> io::Result<Self> {
+        let layers: &ResolvedLayers = shared;
         // Combat widgets also reference the naval leader module's nested .gfx.
         let mut declarations = declarations.clone();
         let nested = "interface/building_roster/naval_leader_module.gfx";
@@ -362,6 +491,13 @@ impl Assets {
             if is_uncovered(&first) {
                 uncovered_portraits = true;
             }
+            let second = string(&declaration.items, "textureFile2").map(path);
+            // A plain leader portrait decodes on first draw: a content set can
+            // declare one for every character of thousands of countries.
+            if !progress && second.is_none() && first.starts_with("gfx/leaders/") {
+                planned.push((name, WantedSprite::Lazy(first)));
+                continue;
+            }
             if !first_paths.contains(&first) {
                 first_paths.push(first.clone());
             }
@@ -370,30 +506,29 @@ impl Assets {
                 WantedSprite::Load {
                     progress,
                     first,
-                    second: string(&declaration.items, "textureFile2").map(path),
+                    second,
                 },
             ));
         }
-        // First textures decode on scoped threads; the merge keeps the
-        // serial warning order and texture ids.
-        let mut firsts: BTreeMap<String, io::Result<dds::Texture>> = std::thread::scope(|scope| {
-            first_paths
-                .iter()
-                .map(|path| {
-                    scope.spawn(move || {
-                        (path.clone(), decode_image(layers, path, is_uncovered(path)))
-                    })
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|handle| handle.join().expect("combat sprite decoder panicked"))
-                .collect()
-        });
+        // First textures decode on a bounded pool; the merge keeps the serial
+        // warning order and texture ids.
+        let mut firsts: BTreeMap<String, io::Result<dds::Texture>> =
+            crate::parallel::map(&first_paths, |path| {
+                (path.clone(), decode_image(layers, path, is_uncovered(path)))
+            })
+            .into_iter()
+            .collect();
+        let mut lazy_sprites = BTreeMap::new();
         for (name, sprite) in planned {
             let (progress, first, second) = match sprite {
                 WantedSprite::Skip => continue,
                 WantedSprite::Warn(warning) => {
                     warnings.push(warning);
+                    continue;
+                }
+                WantedSprite::Lazy(first) => {
+                    let declaration = declarations[&name].clone();
+                    lazy_sprites.insert(name, (first, declaration));
                     continue;
                 }
                 WantedSprite::Load {
@@ -405,7 +540,7 @@ impl Assets {
             let declaration = declarations
                 .get(&name)
                 .expect("wanted sprite declared up front");
-            let mut sheet = match decoded.get(&first).cloned() {
+            let sheet = match decoded.get(&first).cloned() {
                 Some(sheet) => sheet,
                 None => {
                     match firsts
@@ -431,39 +566,24 @@ impl Assets {
                     }
                 }
             };
-            sheet.frames = declaration.frames;
-            sheet.name = name.clone();
-            let size = value(&declaration.items, "size")
-                .and_then(|v| v.items())
-                .map(|items| {
-                    [
-                        number(items, "x", sheet.frame_size()[0]),
-                        number(items, "y", sheet.frame_size()[1]),
-                    ]
-                })
-                .unwrap_or(sheet.frame_size());
             let second = second
                 .map(|p| load_image(layers, &p, images, false))
                 .transpose()?;
-            sprites.insert(
-                name,
-                Sprite {
-                    sheet,
-                    second,
-                    size,
-                    vertical: string(&declaration.items, "horizontal") == Some("no"),
-                    progress,
-                    start_end: string(&declaration.items, "effectFile")
-                        .is_some_and(|file| file.ends_with("progress_startend.lua")),
-                    border: (declaration
-                        .kind
-                        .eq_ignore_ascii_case("corneredTileSpriteType"))
-                    .then(|| value(&declaration.items, "borderSize").and_then(|v| v.items()))
-                    .flatten()
-                    .map(|items| [number(items, "x", 0.0), number(items, "y", 0.0)]),
-                    tiling_center: string(&declaration.items, "tilingCenter") == Some("yes"),
-                },
-            );
+            let sprite = build_sprite(&name, declaration, sheet, progress, second);
+            sprites.insert(name, sprite);
+        }
+        let reader = Arc::clone(shared);
+        let portraits = LazyImages::new(
+            "combat portrait",
+            Arc::new(move |path: &str| decode_image(&reader, path, true)),
+            COMBAT_PORTRAIT_CAPACITY,
+            lazy,
+        );
+        if !lazy_sprites.is_empty() {
+            warnings.push(format!(
+                "Combat UI: {} leader portrait sprites decode when a window first draws them; one whose texture cannot be read stays empty.",
+                lazy_sprites.len()
+            ));
         }
         if uncovered_portraits {
             warnings.push("Combat portraits and inline icons under gfx/leaders and gfx/texticons are outside this recording's content hash coverage; their visual identity is UNVERIFIED without a covered content manifest.".into());
@@ -483,36 +603,37 @@ impl Assets {
         // sampled shield alpha at twice its resolution, preserving native2:1
         // linear minification and keeping the authored overlay a separate draw.
         let mask = tga::decode(&layers.read("gfx/interface/shield_small_mask.tga")?)?;
-        let mut normal = flag_atlas(
-            layers,
+        let cell = FlagSet::Normal.cell(defines)?;
+        let flags = crate::map::counters::flag_set(
+            shared,
             FlagSet::Normal,
-            FlagSet::Normal.cell(defines)?,
-            Some(&mask),
-            images,
-            &mut warnings,
+            cell,
+            move |image| {
+                let [cell_width, cell_height] = cell.map(|side| side as usize);
+                let [mask_width, mask_height] = [mask.width as usize, mask.height as usize];
+                for row in 0..cell_height {
+                    for column in 0..cell_width {
+                        let at = (row * mask_height / cell_height * mask_width
+                            + column * mask_width / cell_width)
+                            * 4
+                            + 3;
+                        image.pixels[(row * cell_width + column) * 4 + 3] = mask.pixels[at];
+                    }
+                }
+            },
+            lazy,
         )?;
-        let small_cell = FlagSet::Small.cell(defines)?;
-        let small = flag_atlas(
-            layers,
-            FlagSet::Small,
-            small_cell,
-            None,
-            images,
-            &mut warnings,
-        )?;
-        for (key, flag) in &mut normal {
-            if let Some(inline) = small
-                .get(key)
-                .or_else(|| key.get(..3).and_then(|tag| small.get(tag)))
-            {
-                flag.inline = Some((inline.texture, inline.uv));
-            }
-        }
+        // The inline markers draw from the counters' small set: the same
+        // `gfx/flags/small` files at the same defines cell, decoded once.
+        let small_cell = small.cell_size();
         Ok(Self {
             windows,
             sprites,
+            lazy_sprites,
+            portraits,
             fonts,
-            flags: normal,
+            flags,
+            small_flags: Arc::clone(small),
             inline_flag_size: small_cell.map(|side| side as f32),
             tactic_pictures,
             score_defines: super::land_details::ScoreDefines::load(layers)?,
@@ -521,84 +642,4 @@ impl Assets {
             warnings,
         })
     }
-}
-
-/// One bounded atlas per native flag class, independent of replay length.
-fn flag_atlas(
-    layers: &ResolvedLayers,
-    set: FlagSet,
-    cell: [u32; 2],
-    mask: Option<&installed_content::image::Rgba8Image>,
-    images: &mut Vec<dds::Texture>,
-    warnings: &mut Vec<String>,
-) -> io::Result<BTreeMap<String, Flag>> {
-    let directory = set.directory();
-    let files: Vec<_> = layers
-        .paths()
-        .filter(|p| {
-            p.strip_prefix(directory)
-                .is_some_and(|name| !name.contains('/') && name.ends_with(".tga"))
-        })
-        .collect();
-    let (columns, [width, height]) = crate::map::counters::flag_page(files.len(), cell, directory)?;
-    let texture = images.len();
-    let mut pixels = vec![0; (width * height * 4) as usize];
-    let mut atlas = BTreeMap::new();
-    // Flag files read and decode on scoped threads; the pack below runs in
-    // file order, so grid positions and warnings match the serial load.
-    let decoded: Vec<io::Result<Option<Rgba8Image>>> = std::thread::scope(|scope| {
-        files
-            .iter()
-            .map(|file| scope.spawn(move || Ok(flags::decode(&layers.read(file)?, cell))))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|handle| handle.join().expect("combat flag decoder panicked"))
-            .collect()
-    });
-    for (index, (file, image)) in files.into_iter().zip(decoded).enumerate() {
-        let Some(image) = image? else {
-            warnings.push(format!(
-                "Combat UI: {file} is not an uncompressed 24/32-bit {}x{} Targa; omitted.",
-                cell[0], cell[1]
-            ));
-            continue;
-        };
-        let x = index as u32 % columns * cell[0];
-        let y = index as u32 / columns * cell[1];
-        for row in 0..cell[1] {
-            for column in 0..cell[0] {
-                let from = ((row * cell[0] + column) * 4) as usize;
-                let to = (((y + row) * width + x + column) * 4) as usize;
-                pixels[to..to + 4].copy_from_slice(&image.pixels[from..from + 4]);
-                if let Some(mask) = mask {
-                    let at = ((row * mask.height / cell[1] * mask.width
-                        + column * mask.width / cell[0])
-                        * 4
-                        + 3) as usize;
-                    pixels[to + 3] = mask.pixels[at];
-                }
-            }
-        }
-        atlas.insert(
-            file.trim_start_matches(directory)
-                .trim_end_matches(".tga")
-                .into(),
-            Flag {
-                texture,
-                uv: [
-                    x as f32 / width as f32,
-                    y as f32 / height as f32,
-                    (x + cell[0]) as f32 / width as f32,
-                    (y + cell[1]) as f32 / height as f32,
-                ],
-                inline: None,
-            },
-        );
-    }
-    images.push(dds::Texture::from_rgba8(installed_content::image::Rgba8Image {
-        width,
-        height,
-        pixels,
-    }));
-    Ok(atlas)
 }

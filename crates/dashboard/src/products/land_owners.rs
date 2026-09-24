@@ -2,7 +2,7 @@
 use super::{LoadContext, Product};
 use crate::{
     CountryMetadata, LandOwners, Source,
-    metadata::{MAX_BLOCK_RAW_BYTES, mapped_slot, short_text, validate_campaign},
+    metadata::{mapped_slot, short_text, validate_campaign},
 };
 use replay::{
     container::Replay,
@@ -11,16 +11,20 @@ use replay::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeSet, HashMap},
     io,
     sync::atomic::{AtomicBool, Ordering},
 };
 use ts_rs::TS;
 
-const MAX_COUNTRIES: usize = 4096;
-
 /// Includes positive ownership observations from every recorded branch. Control
 /// and cores do not establish ownership; unavailable intervals add no countries.
+///
+/// One entry per (tag, slot), witnessed on the lowest branch that saw it own
+/// land (its first observation there), so the reply scales with countries and
+/// not with countries x branches. Entries are ordered by tag, then witness
+/// branch, then slot: the first entry of a tag is its lowest (branch, slot)
+/// observation, as when every branch was listed.
 pub fn land_owners(replay: &Replay, cancelled: &AtomicBool) -> io::Result<LandOwners> {
     let check = || {
         if cancelled.load(Ordering::Acquire) {
@@ -32,7 +36,8 @@ pub fn land_owners(replay: &Replay, cancelled: &AtomicBool) -> io::Result<LandOw
             Ok(())
         }
     };
-    let mut countries = BTreeMap::<(String, u64, u32), CountryMetadata>::new();
+    // Slot -> (recorded tag, witness branch, entry); a slot holds very few tags.
+    let mut countries = HashMap::<u32, Vec<(Vec<u8>, u64, CountryMetadata)>>::new();
     let mut incomplete = !replay.gaps.is_empty();
     let selected = [
         TableId::Campaign,
@@ -42,11 +47,6 @@ pub fn land_owners(replay: &Replay, cancelled: &AtomicBool) -> io::Result<LandOw
     ];
     for block in &replay.index {
         check()?;
-        if block.raw_length > MAX_BLOCK_RAW_BYTES {
-            return Err(io::Error::other(
-                "Country discovery block exceeds its memory budget",
-            ));
-        }
         let frames = match replay.read_block_selected(block, &selected) {
             Ok(frames) => frames,
             Err(_) => {
@@ -100,33 +100,44 @@ pub fn land_owners(replay: &Replay, cancelled: &AtomicBool) -> io::Result<LandOw
                 if row.tag.is_empty() || !owners.remove(&slot) {
                     continue;
                 }
-                let tag = short_text(&String::from_utf8_lossy(&row.tag), 512);
-                let key = (tag.clone(), frame.branch, slot);
-                if countries.contains_key(&key) {
+                let tags = countries.entry(slot).or_default();
+                let known = tags.iter().position(|(tag, _, _)| *tag == row.tag);
+                if known.is_some_and(|index| tags[index].1 <= frame.branch) {
                     continue;
                 }
-                if countries.len() >= MAX_COUNTRIES {
-                    return Err(io::Error::other(
-                        "Country discovery exceeds its output budget",
-                    ));
-                }
-                countries.insert(
-                    key,
+                let entry = (
+                    row.tag.clone(),
+                    frame.branch,
                     CountryMetadata {
                         id: slot.to_string(),
-                        tag,
+                        tag: short_text(&String::from_utf8_lossy(&row.tag), 512),
                         name: short_text(&String::from_utf8_lossy(&row.name), 512),
                         observed_branch_id: frame.branch.to_string(),
                         observed_hour: frame.hour,
                     },
                 );
+                match known {
+                    Some(index) => tags[index] = entry,
+                    None => tags.push(entry),
+                }
             }
             incomplete |= !owners.is_empty();
         }
     }
     check()?;
+    let mut countries: Vec<_> = countries
+        .into_iter()
+        .flat_map(|(slot, tags)| {
+            tags.into_iter()
+                .map(move |(_, branch, country)| (branch, slot, country))
+        })
+        .collect();
+    countries.sort_unstable_by(|a, b| (&a.2.tag, a.0, a.1).cmp(&(&b.2.tag, b.0, b.1)));
     Ok(LandOwners {
-        countries: countries.into_values().collect(),
+        countries: countries
+            .into_iter()
+            .map(|(_, _, country)| country)
+            .collect(),
         warnings: if incomplete {
             vec!["Some ownership history is unavailable. Only countries with recorded land ownership are listed.".into()]
         } else {

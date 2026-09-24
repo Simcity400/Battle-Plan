@@ -3,12 +3,16 @@ import type { CountryFlagImage, CountryFlagReply, CountryFlagSize } from '../gen
 import type { DashboardClient, DashboardSource } from '../dashboard/client';
 import { loadProduct } from '../dashboard/products';
 
-export function CountryFlag({ image }: { image?: CountryFlagImage }) {
+/** Straight-alpha RGBA, as a product reply carries it or as the flag store keeps it. */
+export interface FlagPixels { width: number; height: number; pixels: ArrayLike<number> }
+
+export function CountryFlag({ image }: { image?: FlagPixels }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const context = canvas.current?.getContext('2d');
     if (!context || !image) return;
-    context.putImageData(new ImageData(new Uint8ClampedArray(image.pixels), image.width, image.height), 0, 0);
+    const pixels = image.pixels instanceof Uint8ClampedArray ? image.pixels : Uint8ClampedArray.from(image.pixels);
+    context.putImageData(new ImageData(pixels as Uint8ClampedArray<ArrayBuffer>, image.width, image.height), 0, 0);
   }, [image]);
   return image ? <canvas ref={canvas} className="country-flag" width={image.width} height={image.height} aria-hidden="true" />
     : <span className="country-flag country-flag-unavailable" aria-hidden="true" />;

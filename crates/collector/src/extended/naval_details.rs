@@ -71,6 +71,9 @@ pub struct Captured {
     commanders: Arena<engine::naval_commander_inputs::Row>,
     weapon_sources: Arena<naval_ship_modifier_inputs::SourceRow>,
     weapon_terms: Arena<naval_ship_modifier_inputs::ModifierTerm>,
+    /// Side country tags; grown by the worker at admission, retained on recycle.
+    summary_countries: Vec<u32>,
+    summary_countries_len: usize,
 }
 impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -110,6 +113,8 @@ impl Captured {
             commanders: Arena::new(c.commanders),
             weapon_sources: Arena::new(c.weapon_sources),
             weapon_terms: Arena::new(c.weapon_terms),
+            summary_countries: Vec::new(),
+            summary_countries_len: 0,
         }
     }
     pub fn reset(&mut self) {
@@ -126,6 +131,7 @@ impl Captured {
         self.commanders.reset();
         self.weapon_sources.reset();
         self.weapon_terms.reset();
+        self.summary_countries_len = 0;
         self.required_groups = 0;
     }
     pub fn allocated_bytes(&self) -> usize {
@@ -143,6 +149,7 @@ impl Captured {
             + self.weapon_sources.allocated_bytes()
             + self.weapon_terms.allocated_bytes()
             + self.groups.capacity() * size_of::<usize>()
+            + self.summary_countries.capacity() * size_of::<u32>()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
         // Adopt allocations made by the worker before replenishing other
@@ -195,6 +202,8 @@ impl Captured {
             commander_inputs: &mut self.commanders.first,
             commander_inputs_len: 0,
             commander_inputs_required: 0,
+            summary_countries: &mut self.summary_countries,
+            summary_countries_len: 0,
             weapon_sources: &mut self.weapon_sources.first,
             weapon_terms: &mut self.weapon_terms.first,
             weapon_lengths: [0; 2],
@@ -237,6 +246,7 @@ impl Captured {
         self.weapon_sources.required = buffers.weapon_required[0];
         self.weapon_terms.len = buffers.weapon_lengths[1];
         self.weapon_terms.required = buffers.weapon_required[1];
+        self.summary_countries_len = buffers.summary_countries_len;
         self.required_groups = first.capture.required_group_capacity;
         let mut ticks = first.read_ticks;
         let total = qpc().saturating_sub(capture_started).max(0) as u64;
@@ -271,7 +281,8 @@ impl Captured {
                             recent_join_penalty: s.summary.recent_join_penalty,
                             escort_bonus: s.summary.escort_bonus,
                             is_attacker: s.summary.is_attacker,
-                            countries: s.summary.countries[..s.summary.country_count].to_vec(),
+                            countries: range(&self.summary_countries, s.summary.countries)
+                                .to_vec(),
                             modifiers: s.summary.modifiers.map(|scope| {
                                 scope.map(|m| rows::NavalCombatSummaryModifier {
                                     raw: m.raw,

@@ -278,7 +278,7 @@ fn land(
             bytes(&detail.terrain_name),
             if snow { "_winter" } else { "" }
         );
-        if document.icons.combat.sprites.contains_key(&terrain) {
+        if document.icons.combat.has_sprite(&terrain) {
             sprite(&mut out.values, "terrain_picture", terrain);
         }
     }

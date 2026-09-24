@@ -49,6 +49,8 @@ Keep typed walks in pool jobs. Document necessary game-thread exceptions beside 
 
 `Role::priority()` orders queued jobs by their dependencies, lower first and FIFO among equals. The independent character role jobs start early enough to overlap later dispatch, although their results are joined at the typed-fallback boundary. Short, early-joined jobs must not wait behind large, late-joined jobs. A join waits only for its own job: it must not execute unrelated queued work, and jobs must not submit other jobs.
 
+Tables with one or a fixed few rows per country slot are sized from the live country registry, never from a vanilla count: once before the hook is installed and again whenever the spool thread sees the registry grow (a save loaded after attaching at the main menu fills it before its first hourly tick). [country_scale.rs](src/country_scale.rs) owns the per-table factors; the same observation presizes the country authentication cache, which the hook swaps in without allocating, and the raw-copy job censuses. Nothing caps the country count below the engine's own u16 slot ceiling.
+
 Reuse spare sets and return loaned buffers through the matching restore path. Their boxes hold allocation-free vacant packs while parked; the real preallocated packs move into the worker and back. Do not fill spare placeholders with default-capacity buffers. Keep allocation and capacity growth off the game thread.
 
 Keep these outcomes distinct:

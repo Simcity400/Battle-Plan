@@ -11,7 +11,7 @@ use engine::{
     Memory, ccountry, ccountry_intel, ccountry_intel_network, ccountry_operation_manager,
     ccountry_operation_token_manager, ccryptology, ccurrent_autonomy_status, cdiplomacy_status,
     cflag_manager, cgame_state, cintelligence_agency, coperation_instance, coperative_leader,
-    country_intel_row,
+    country_intel_row, cwar_relation,
     cpdx_array::Array,
     crelation_status, cscript_flag, cstate,
     csubject_relation::{self, Name},
@@ -118,6 +118,29 @@ impl Default for Capacities {
             variable_names: 512 * 1024,
             tokens: 32_768,
         }
+    }
+}
+impl Capacities {
+    /// At most one row per canonical country for Capitulation, Subjects,
+    /// Autonomy and IntelligenceAgencies; ScriptVariables has one scope row
+    /// for the global scope, every country and every state.
+    pub(crate) fn raise_for_countries(&mut self, slots: usize) {
+        use crate::country_scale::{raise, rows};
+        for index in [0, 1, 2, 3] {
+            raise(&mut self.rows[index], rows(slots, 1));
+        }
+        let states = Self::default().rows[8];
+        raise(&mut self.rows[8], rows(slots, 1).saturating_add(states));
+    }
+
+    /// CountryIntel keeps at most one row per native record, and every owner's
+    /// vector is indexed by target slot, so the live dense total
+    /// (`ccountry_intel::native_rows`) bounds the first hour. Nonzero intel is
+    /// dense among live countries (~0.9 x live^2 rows), so the sparse table
+    /// needs close to that bound when every state is its own country.
+    pub(crate) fn raise_for_country_intel(&mut self, native_rows: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows[15], rows(native_rows, 1));
     }
 }
 
@@ -262,6 +285,15 @@ pub struct Captured {
     /// Decode-only scratch, rebuilt from the current frozen census. Entries
     /// are first country indices, never pointers retained from an earlier job.
     relation_country_index: Vec<usize>,
+    /// Decode-only scratch: implicit (unstaged) matrix indices whose own
+    /// target check fails, in ascending order, rebuilt for every payload.
+    relation_implicit_faults: Vec<(u32, &'static str)>,
+    /// Dense country authentication cells for the typed relation walk, sized
+    /// by `grow` from the census and link headers the last walk observed.
+    relation_resolver: crelation_status::Resolver,
+    /// Owned-membership snapshot and resolver for the subject walk, sized by
+    /// `grow` from the last walk's observed demand. Empty storage is correct.
+    subject_snapshot: cwar_relation::OwnedSnapshotScratch,
     country_intel: CaptureRows<country_intel_row::Row>,
     intel_scratch: Vec<u8>,
     subject_names: Arena<u8>,
@@ -324,6 +356,9 @@ impl Captured {
             relation_opinions: CaptureRows::new(capacity.rows[13]),
             relation_tuples: CaptureRows::new(capacity.rows[14]),
             relation_country_index: Vec::new(),
+            relation_implicit_faults: Vec::new(),
+            relation_resolver: crelation_status::Resolver::default(),
+            subject_snapshot: cwar_relation::OwnedSnapshotScratch::default(),
             country_intel: CaptureRows::new(capacity.rows[15]),
             intel_scratch: vec![0; capacity.intel_scratch],
             subject_names: Arena::new(capacity.subject_names),
@@ -383,6 +418,9 @@ impl Captured {
             + self.relation_opinions.allocated_bytes()
             + self.relation_tuples.allocated_bytes()
             + self.relation_country_index.capacity() * size_of::<usize>()
+            + self.relation_implicit_faults.capacity() * size_of::<(u32, &'static str)>()
+            + self.relation_resolver.allocated_bytes()
+            + self.subject_snapshot.allocated_bytes()
             + self.country_intel.allocated_bytes()
             + self.intel_scratch.capacity()
             + self.subject_names.allocated_bytes()
@@ -409,6 +447,10 @@ impl Captured {
         self.incoming_actions.grow(&mut capacity.rows[12]);
         self.relation_opinions.grow(&mut capacity.rows[13]);
         self.relation_tuples.grow(&mut capacity.rows[14]);
+        // Relation storage is sized only from what its own walks observed, so
+        // a vacant or never-walked pack allocates nothing here.
+        self.relation_resolver.grow();
+        self.subject_snapshot.grow(0);
         self.country_intel.grow(&mut capacity.rows[15]);
         // The intel scratch is a fixed copy window, not a row capacity: it bounds
         // how many 0x20-byte records one bulk copy moves, and a country longer
@@ -584,7 +626,14 @@ impl Captured {
                 &mut self.subject_names,
                 |rows, names| {
                     let _reads = read_accounting::table(TABLES[1]);
-                    ArenaRead::from(csubject_relation::walk(memory, base, state, rows, names))
+                    ArenaRead::from(csubject_relation::walk_owned(
+                        memory,
+                        base,
+                        state,
+                        rows,
+                        names,
+                        &mut self.subject_snapshot,
+                    ))
                 },
             );
             ticks[1] = elapsed(begin);
@@ -667,13 +716,14 @@ impl Captured {
             let anchor = if active[14] { 14 } else { 13 };
             let _reads = read_accounting::table(TABLES[anchor]);
             let begin = qpc();
-            let result = crelation_status::walk(
+            let result = crelation_status::walk_with(
                 memory,
                 base,
                 state,
                 &mut self.relation_opinions.rows,
                 &mut self.relation_tuples.rows,
                 [active[13], active[14]],
+                &mut self.relation_resolver,
             );
             if active[13] {
                 self.relation_opinions.outcome =
@@ -1586,8 +1636,14 @@ pub(crate) struct OwnerMeta {
     pub matrix_header: [u8; 16],
     pub matrix_header_ok: bool,
     pub matrix_err: Option<&'static str>,
+    /// Staged slot records: byte range in `slot_pool` and the parallel range
+    /// of their matrix indices in `slot_indices`.
     pub slot_start: usize,
     pub slot_len: usize,
+    pub index_start: usize,
+    pub index_len: usize,
+    /// Matrix slots 1..=slot_count were copied; unstaged ones are implicit.
+    pub slot_count: u32,
     pub tuple_start: usize,
     pub tuple_len: usize,
 }
@@ -1605,8 +1661,11 @@ pub(crate) struct RelationsJob {
     pub metas: Vec<OwnerMeta>,
     /// Initialized backing storage retained across refreshes. Only the current
     /// `slot_used` prefix belongs to this payload; inactive spans are ignored.
+    /// It holds only staged (non-implicit) slots plus one batch of gather room.
     pub slot_pool: Vec<u8>,
     pub slot_used: usize,
+    /// Matrix index of each staged record, in staging order.
+    pub slot_indices: Vec<u32>,
     pub tuples: Vec<TupleOcc>,
     pub reader_err: Option<&'static str>,
     pub country_err: Option<&'static str>,
@@ -1627,6 +1686,7 @@ impl RelationsJob {
             metas: Vec::with_capacity(512),
             slot_pool: vec![0; 8 << 20],
             slot_used: 0,
+            slot_indices: Vec::with_capacity((8 << 20) / crelation_status::RECORD_BYTES),
             tuples: Vec::with_capacity(8192),
             reader_err: None,
             country_err: None,
@@ -1649,6 +1709,7 @@ impl RelationsJob {
         self.highest_slot = 0;
         self.metas.clear();
         self.slot_used = 0;
+        self.slot_indices.clear();
         self.tuples.clear();
         self.reader_err = None;
         self.country_err = None;
@@ -1674,6 +1735,9 @@ impl RelationsJob {
         double(&mut self.metas);
         double(&mut self.slot_pool);
         self.slot_pool.resize(self.slot_pool.capacity(), 0);
+        let records = self.slot_pool.len() / crelation_status::RECORD_BYTES;
+        self.slot_indices
+            .reserve_exact(records.saturating_sub(self.slot_indices.len()));
         double(&mut self.tuples);
         self.update_capacity_charge();
     }
@@ -1685,6 +1749,7 @@ impl RelationsJob {
                 + vector_bytes(&self.links)
                 + vector_bytes(&self.metas)
                 + vector_bytes(&self.slot_pool)
+                + vector_bytes(&self.slot_indices)
                 + vector_bytes(&self.tuples),
             ..Default::default()
         });
@@ -1720,6 +1785,26 @@ fn relations_fit_len(used: usize, capacity: usize, need: usize) -> bool {
     need <= capacity.saturating_sub(used)
 }
 
+/// True when decode can reconstruct this matrix slot exactly without its
+/// bytes: the status vtable, a raw target equal to the matrix index, and, for
+/// each active table, a zero opinion or an empty valid serializable vector.
+/// Such a slot produces no row, and its only remaining check (resolving the
+/// index as its own target) is owner-independent, so decode replays it from
+/// the frozen links. Every other slot, including any irregular or failing
+/// one, is staged with its complete copied bytes.
+fn implicit_relation_slot(
+    status_vtable: u64,
+    slot: u32,
+    record: &[u8; crelation_status::RECORD_BYTES],
+    active: [bool; 2],
+) -> bool {
+    let header: [u8; 16] = record[16..].try_into().unwrap();
+    u64::from_le_bytes(record[..8].try_into().unwrap()) == status_vtable
+        && u32::from_le_bytes(record[8..12].try_into().unwrap()) == slot
+        && (!active[0] || i32::from_le_bytes(record[12..16].try_into().unwrap()) == 0)
+        && (!active[1] || Array::from_header(header, 8).is_some_and(|array| array.count == 0))
+}
+
 /// Build once on the worker, bounded by the highest authenticated census
 /// slot. `Reader::at` publishes only canonical slots inside the country table;
 /// raw links (including bad or unused aliases) never determine this allocation.
@@ -1736,6 +1821,31 @@ fn prepare_relation_country_index(index: &mut Vec<usize>, countries: &[CountrySn
         let first = &mut index[country.canonical_slot as usize];
         if *first == usize::MAX {
             *first = country_index;
+        }
+    }
+}
+
+/// The typed walk resolves every slot's raw target and requires it to be that
+/// slot. For an implicit slot the target is its own index, so the outcome is
+/// the same for every owner: one pass over the covered indices finds each
+/// implicit slot that would fail, with its exact reason.
+fn prepare_implicit_slot_faults(
+    faults: &mut Vec<(u32, &'static str)>,
+    job: &RelationsJob,
+    country_index: &[usize],
+) {
+    faults.clear();
+    let covered = job
+        .metas
+        .iter()
+        .map(|meta| meta.slot_count)
+        .max()
+        .unwrap_or(0);
+    for slot in 1..=covered {
+        match relations_lookup(job, country_index, slot) {
+            Ok(target) if target.canonical_slot == slot => {}
+            Ok(_) => faults.push((slot, "relation status target differs from matrix slot")),
+            Err(reason) => faults.push((slot, reason)),
         }
     }
 }
@@ -1790,7 +1900,6 @@ fn copy_relations_pass(
             return tallies;
         }
     };
-    let _ = status_vtable;
     let countries = match ccountry::Reader::new(memory, base, game_state) {
         Err(reason) => {
             job.reader_err = Some(reason);
@@ -1941,8 +2050,10 @@ fn copy_relations_pass(
             break;
         }
         meta.slot_start = job.slot_used;
+        meta.index_start = job.slot_indices.len();
         meta.tuple_start = job.tuples.len();
         let mut index = 1u32;
+        let mut covered = 0u32;
         let mut failed = false;
         while index < matrix.count && !failed {
             let len = (matrix.count - index).min(crelation_status::BATCH as u32) as usize;
@@ -1984,16 +2095,21 @@ fn copy_relations_pass(
             if failed {
                 break;
             }
+            // A whole batch is gathered in place before it is filtered, so
+            // both pools need room for every slot of the batch.
             if !relations_fit_len(
                 job.slot_used,
                 job.slot_pool.len(),
                 len * crelation_status::RECORD_BYTES,
+            ) || !relations_fit_len(
+                job.slot_indices.len(),
+                job.slot_indices.capacity(),
+                len,
             ) {
                 job.overflowed = true;
                 return tallies;
             }
             let slot_base = job.slot_used;
-            job.slot_used += len * crelation_status::RECORD_BYTES;
             let copied = crelation_status::copy_slots(
                 memory,
                 &pointers[..len],
@@ -2003,18 +2119,22 @@ fn copy_relations_pass(
             tallies.bytes[anchor] += (len * slot_bytes) as u64;
             if copied < len * fields.len() {
                 meta.matrix_err = Some("relation matrix slot fields unreadable");
-                // Publish only completed records. Partial fields and retained
-                // suffix bytes never belong to the current payload.
-                let completed = copied / fields.len();
-                job.slot_used = slot_base + completed * crelation_status::RECORD_BYTES;
+                // The owner's recorded fault decides both tables before any
+                // slot is decoded, so nothing from this batch is staged.
                 break;
             }
             // Tuple census per slot, in native vector order. Serializable
             // headers come from already-copied slot bytes (discovery only).
+            // Each slot is then staged only when decode cannot reconstruct it
+            // exactly (see `implicit_relation_slot`), so staging grows with
+            // the rows and irregular slots, not with the square of the census.
+            let mut staged = 0usize;
             for offset in 0..len {
-                let record: &[u8; crelation_status::RECORD_BYTES] = job.slot_pool[slot_base
-                    + offset * crelation_status::RECORD_BYTES
-                    ..slot_base + (offset + 1) * crelation_status::RECORD_BYTES]
+                let slot = index + offset as u32;
+                covered = slot;
+                let at = slot_base + offset * crelation_status::RECORD_BYTES;
+                let record: [u8; crelation_status::RECORD_BYTES] = job.slot_pool
+                    [at..at + crelation_status::RECORD_BYTES]
                     .try_into()
                     .unwrap();
                 let serializable = if active[1] {
@@ -2049,6 +2169,15 @@ fn copy_relations_pass(
                         opinion_recorded += 1;
                     }
                 }
+                // Stage before the tuple census: a tuple fault stays local to
+                // this slot, so decode must reach this record in matrix order.
+                if !implicit_relation_slot(status_vtable, slot, &record, active) {
+                    let to = slot_base + staged * crelation_status::RECORD_BYTES;
+                    job.slot_pool
+                        .copy_within(at..at + crelation_status::RECORD_BYTES, to);
+                    job.slot_indices.push(slot);
+                    staged += 1;
+                }
                 if active[1]
                     && !copy_slot_tuples(
                         memory,
@@ -2076,9 +2205,12 @@ fn copy_relations_pass(
                     break;
                 }
             }
+            job.slot_used = slot_base + staged * crelation_status::RECORD_BYTES;
             index += len as u32;
         }
+        meta.slot_count = covered;
         meta.slot_len = job.slot_used - meta.slot_start;
+        meta.index_len = job.slot_indices.len() - meta.index_start;
         meta.tuple_len = job.tuples.len() - meta.tuple_start;
         tallies.ticks[anchor] += elapsed(started);
         let terminal = failed || meta.matrix_err.is_some();
@@ -2393,6 +2525,11 @@ impl Captured {
         let mut tuple_reserved_released = 0usize;
         if job.reader_err.is_none() && job.country_err.is_none() && job.top_err.is_none() {
             prepare_relation_country_index(&mut self.relation_country_index, &job.countries);
+            prepare_implicit_slot_faults(
+                &mut self.relation_implicit_faults,
+                job,
+                &self.relation_country_index,
+            );
             for meta in &job.metas {
                 let (opinion_outcome, tuple_outcome) = decode_owner_relations(
                     base,
@@ -2400,6 +2537,7 @@ impl Captured {
                     meta,
                     job,
                     &self.relation_country_index,
+                    &self.relation_implicit_faults,
                     &mut self.relation_opinions.rows[opinion_len..],
                     &mut self.relation_tuples.rows[tuple_len..],
                     &mut tuple_reserved_released,
@@ -2461,6 +2599,7 @@ fn decode_owner_relations(
     meta: &OwnerMeta,
     job: &RelationsJob,
     country_index: &[usize],
+    implicit_faults: &[(u32, &'static str)],
     opinions: &mut [crelation_status::OpinionRow],
     tuples: &mut [crelation_status::TupleRow],
     _released: &mut usize,
@@ -2550,18 +2689,51 @@ fn decode_owner_relations(
             return (unavailable, unavailable);
         }
     };
+    let indices = match job
+        .slot_indices
+        .get(meta.index_start..meta.index_start + meta.index_len)
+    {
+        Some(indices) if indices.len() * crelation_status::RECORD_BYTES == slots.len() => indices,
+        _ => {
+            let unavailable = Outcome::Unavailable {
+                reason: "relation matrix slot fields unreadable",
+            };
+            return (unavailable, unavailable);
+        }
+    };
     let mut opinion_len = 0usize;
     let mut opinion_unread = 0u32;
     let mut tuple_len = 0usize;
     let mut tuple_unread = 0u32;
     let mut occ_index = 0usize;
-    // Slot order is matrix order; tuple occs are grouped per slot in vector
-    // order. Walk the slots and consume occs in the same order the copy
-    // recorded them.
-    for (slot_offset, slot_bytes) in slots
+    // Staged and implicit slots merge in matrix order, so the first failing
+    // slot of either kind decides this owner exactly as in the typed walk.
+    // Implicit slots produce no row; only their owner-independent target
+    // fault can matter. Tuple occs are grouped per staged slot in vector
+    // order and consumed in the order the copy recorded them.
+    let mut faults = implicit_faults.iter().copied().peekable();
+    let mut previous = 0u32;
+    for (slot_bytes, &slot_index) in slots
         .chunks_exact(crelation_status::RECORD_BYTES)
-        .enumerate()
+        .zip(indices)
     {
+        if slot_index <= previous || slot_index > meta.slot_count {
+            let unavailable = Outcome::Unavailable {
+                reason: "relation matrix slot fields unreadable",
+            };
+            return (unavailable, unavailable);
+        }
+        previous = slot_index;
+        while let Some(&(fault, reason)) = faults.peek() {
+            if fault > slot_index {
+                break;
+            }
+            faults.next();
+            if fault < slot_index {
+                let unavailable = Outcome::Unavailable { reason };
+                return (unavailable, unavailable);
+            }
+        }
         let record: &[u8; crelation_status::RECORD_BYTES] = match slot_bytes.try_into() {
             Ok(record) => record,
             Err(_) => {
@@ -2585,8 +2757,7 @@ fn decode_owner_relations(
                 return (unavailable, unavailable);
             }
         };
-        // Matrix slot index mirrors the walk's `index + offset` census.
-        let slot_index = 1 + slot_offset as u32;
+        // The staged matrix index mirrors the walk's `index + offset` census.
         if target.canonical_slot != slot_index {
             let unavailable = Outcome::Unavailable {
                 reason: "relation status target differs from matrix slot",
@@ -2705,6 +2876,12 @@ fn decode_owner_relations(
             occ_index += chunk;
             first += chunk as u32;
         }
+    }
+    if let Some((fault, reason)) = faults.next()
+        && fault <= meta.slot_count
+    {
+        let unavailable = Outcome::Unavailable { reason };
+        return (unavailable, unavailable);
     }
     if occ_index != occs.len() {
         let unavailable = Outcome::Unavailable {
@@ -4747,17 +4924,31 @@ mod tests {
             let report = copy_relations_refresh(&memory, context, &mut job);
             assert!(report.raw_ok);
             assert_eq!((job.slot_pool.as_ptr(), job.slot_pool.len()), storage);
-            let slots = if generation == 1 { 6 } else { 9 };
-            assert_eq!(job.slot_used, slots * crelation_status::RECORD_BYTES);
+            // Of the 9 (or, without country 3, 6) copied matrix slots only the
+            // two opinions and the tuple slot are staged; every other slot is
+            // implicit and reconstructed by decode.
+            assert_eq!(job.slot_indices, [2, 3, 3]);
+            assert_eq!(job.slot_used, 3 * crelation_status::RECORD_BYTES);
             if generation == 0 {
                 assert!(intel.relation_country_index.is_empty());
                 assert_eq!(intel.allocated_bytes(), allocated);
             }
             intel.decode_relations_payload(relations_kit::BASE, &job, &mut [0; 2]);
             relations_kit::assert_matches_direct(&intel, &direct);
+            // Without country 3 its implicit slot fails with the typed reason.
+            assert_eq!(
+                intel.relation_implicit_faults,
+                if generation == 1 {
+                    vec![(3, "country link resolves to null country")]
+                } else {
+                    Vec::new()
+                }
+            );
             assert_eq!(
                 intel.allocated_bytes() - allocated,
                 intel.relation_country_index.capacity() * size_of::<usize>()
+                    + intel.relation_implicit_faults.capacity()
+                        * size_of::<(u32, &'static str)>()
             );
             // The index must be reconstructed, even when a pooled payload's
             // country ordering changes without its length changing.
@@ -4796,11 +4987,15 @@ mod tests {
             tuple_cap: 16,
         };
         // A failed page reservation leaves allocation and initialized storage
-        // unchanged. Only the explicit off-capture grow can add room.
+        // unchanged. Only the explicit off-capture grow can add room. Each
+        // batch needs gather room for all its slots before filtering: owners
+        // one and two stage three slots in total, and owner three's batch no
+        // longer fits in five records.
         let storage = (job.slot_pool.as_ptr(), job.slot_pool.len());
         assert!(!copy_relations_refresh(&memory, context, &mut job).raw_ok);
         assert_eq!((job.slot_pool.as_ptr(), job.slot_pool.len()), storage);
         assert_eq!(job.slot_used, 3 * crelation_status::RECORD_BYTES);
+        assert_eq!(job.slot_indices, [2, 3, 3]);
         job.grow();
         let storage = (job.slot_pool.as_ptr(), job.slot_pool.len());
         let mut captured = relations_kit::intel_captured(16, 16);
@@ -4808,10 +5003,13 @@ mod tests {
         captured.decode_relations_payload(relations_kit::BASE, &job, &mut [0; 2]);
         relations_kit::assert_matches_direct(&captured, &relations_kit::direct(&memory, 16, 16));
 
+        // The owner's recorded short gather decides both tables, so no slot of
+        // the failed batch, complete or not, is staged.
         let short = ShortSlot { memory };
         assert!(copy_relations_refresh(&short, context, &mut job).raw_ok);
-        assert_eq!(job.metas[0].slot_len, crelation_status::RECORD_BYTES);
-        assert_eq!(job.slot_used, crelation_status::RECORD_BYTES);
+        assert_eq!(job.metas[0].slot_len, 0);
+        assert_eq!(job.slot_used, 0);
+        assert!(job.slot_indices.is_empty());
         assert_eq!(job.metas.len(), 1);
         job.slot_pool[job.slot_used..].fill(0xff);
         captured.decode_relations_payload(relations_kit::BASE, &job, &mut [0; 2]);
@@ -4820,7 +5018,7 @@ mod tests {
         // All scheduled bytes are replaced after the short gather; poisoned
         // inactive storage cannot become an opinion, tuple or error.
         assert!(copy_relations_refresh(&short.memory, context, &mut job).raw_ok);
-        assert_eq!(job.slot_used, 9 * crelation_status::RECORD_BYTES);
+        assert_eq!(job.slot_used, 3 * crelation_status::RECORD_BYTES);
         assert_eq!((job.slot_pool.as_ptr(), job.slot_pool.len()), storage);
         captured.decode_relations_payload(relations_kit::BASE, &job, &mut [0; 2]);
         relations_kit::assert_matches_direct(
@@ -5993,6 +6191,7 @@ mod tests {
             metas: Vec::new(),
             slot_pool: Vec::new(),
             slot_used: 0,
+            slot_indices: Vec::new(),
             tuples: Vec::new(),
             reader_err: None,
             country_err: None,

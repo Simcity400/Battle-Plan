@@ -1,8 +1,13 @@
 //! CSubjectRelation, a directed overlord-to-subject relation.
 
 use crate::{
-    Memory, autonomy_state_definition, ccountry, cdiplomacy_status, cpdx_array::Array, crelation,
-    crelation_status, memory::Raw, msvc_string, read, read_slice, walk::Outcome,
+    Memory, autonomy_state_definition, ccountry, cdiplomacy_status,
+    cpdx_array::Array,
+    crelation, crelation_status,
+    cwar_relation::{MembershipReasons, OwnedSnapshotScratch, scan_occurrence},
+    memory::Raw,
+    msvc_string, read, read_slice,
+    walk::Outcome,
 };
 
 /// CSubjectRelation primary vtable; build_profile.rs:349, confirmed by pinned-image RTTI.
@@ -60,7 +65,36 @@ pub fn walk(
     output: &mut [Row],
     names: &mut [u8],
 ) -> NameWalk {
-    walk_from(memory, base, game_state, output, names, false)
+    let mut pass = Pass {
+        resolver: &mut crelation_status::Resolver::default(),
+        ownership: None,
+    };
+    walk_from(memory, base, game_state, output, names, false, &mut pass)
+}
+
+/// `walk` with caller-owned storage, grown off the game thread from what the
+/// previous pass observed. An overlord with S subjects and K owned relations
+/// is visited from every subject; its owned vector is scanned once and then
+/// answered from the counted snapshot, instead of S complete K-entry scans.
+/// Country and diplomacy authentication is reused through dense cells. Rows,
+/// order and outcomes are identical for every storage size, including empty.
+pub fn walk_owned(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut [Row],
+    names: &mut [u8],
+    scratch: &mut OwnedSnapshotScratch,
+) -> NameWalk {
+    scratch.begin();
+    let mut resolver = std::mem::take(&mut scratch.resolver);
+    let mut pass = Pass {
+        resolver: &mut resolver,
+        ownership: Some(&mut *scratch),
+    };
+    let result = walk_from(memory, base, game_state, output, names, false, &mut pass);
+    scratch.resolver = resolver;
+    result
 }
 
 /// Independent matrix census for bounded consistency validation. This root does
@@ -73,7 +107,28 @@ pub fn walk_matrix(
     output: &mut [Row],
     names: &mut [u8],
 ) -> NameWalk {
-    walk_from(memory, base, game_state, output, names, true)
+    let mut pass = Pass {
+        resolver: &mut crelation_status::Resolver::default(),
+        ownership: None,
+    };
+    walk_from(memory, base, game_state, output, names, true, &mut pass)
+}
+
+/// Original messages of the subject ownership scans, shared with the war
+/// walker's owned-membership snapshot.
+const SUBJECT_MEMBERSHIP: MembershipReasons = MembershipReasons {
+    vector: "subject relation vector unreadable or invalid",
+    pointer: "subject relation vector entry unreadable or outside array",
+    null: "null subject ownership entry",
+    mismatch: "subject ownership cross-link count mismatch",
+    changed: "subject ownership snapshot changed or became unreadable",
+    budget: "subject ownership rescans exceed the census budget; snapshot storage grows for the next pass",
+};
+
+/// Per-walk reusable storage; both parts may be empty.
+struct Pass<'s> {
+    resolver: &'s mut crelation_status::Resolver,
+    ownership: Option<&'s mut OwnedSnapshotScratch>,
 }
 
 fn walk_from(
@@ -83,9 +138,14 @@ fn walk_from(
     output: &mut [Row],
     names: &mut [u8],
     matrix: bool,
+    pass: &mut Pass<'_>,
 ) -> NameWalk {
     let result = (|| {
         let reader = Reader::new(memory, base, game_state)?;
+        pass.resolver.begin(&reader.countries);
+        if let Some(scratch) = pass.ownership.as_deref_mut() {
+            scratch.set_census(reader.countries.count());
+        }
         let mut found_country = false;
         let (mut len, mut bytes_len, mut required_bytes) = (0, 0_usize, 0_usize);
         let mut unread_rows = 0_u32;
@@ -102,7 +162,9 @@ fn walk_from(
                 continue;
             };
             found_country = true;
-            let diplomacy = reader.diplomacy(country)?;
+            let diplomacy = pass
+                .resolver
+                .diplomacy(country, || reader.diplomacy(country))?;
             let source = reader.array(
                 diplomacy,
                 if matrix {
@@ -113,6 +175,9 @@ fn walk_from(
             )?;
             if matrix && source.count <= highest_slot {
                 return Err("subject matrix does not cover country ordinals");
+            }
+            if !matrix && let Some(scratch) = pass.ownership.as_deref_mut() {
+                scratch.observe_owned(source.count);
             }
             let mut matrix_pointers = [0; 64];
             for index in 0..source.count {
@@ -135,9 +200,16 @@ fn walk_from(
                     }
                     entry
                 };
-                let Some(mut row) = reader.relation(pointer, country, matrix.then_some(index))?
-                else {
-                    continue;
+                let mut row = match reader.relation(pointer, country, matrix.then_some(index), pass)
+                {
+                    Ok(Some(row)) => row,
+                    Ok(None) => continue,
+                    Err(reason) => {
+                        if reason == SUBJECT_MEMBERSHIP.budget {
+                            reader.observe_remaining(slot + 1, pass);
+                        }
+                        return Err(reason);
+                    }
                 };
                 let state = reader.pointer(pointer, AUTONOMY_STATE)?;
                 let (source, name_len) = definition_name(memory, state)?;
@@ -386,6 +458,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         diplomacy: usize,
         target: ccountry::Country,
         relation: usize,
+        pass: &mut Pass<'_>,
     ) -> Result<usize, &'static str> {
         let matrix = self.array(diplomacy, cdiplomacy_status::RELATIONS)?;
         let status = self.element(matrix, target.canonical_slot)?;
@@ -394,7 +467,12 @@ impl<'a, M: Memory> Reader<'a, M> {
         }
         self.status(status, diplomacy)?;
         let target_ref = self.field::<u32>(status, crelation_status::TARGET_COUNTRY)?;
-        if self.countries.resolve(target_ref)?.canonical_slot != target.canonical_slot {
+        if pass
+            .resolver
+            .resolve(&self.countries, target_ref)?
+            .canonical_slot
+            != target.canonical_slot
+        {
             return Err("subject relation target differs from matrix slot");
         }
         if self.pointer(status, crelation_status::SUBJECT_RELATION)? != relation {
@@ -403,29 +481,54 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(status)
     }
 
+    /// After a rescan-budget failure, records the owned-vector headers of the
+    /// countries the pass did not reach so one off-thread growth covers the
+    /// whole world. The pass has already failed; a fault only ends this early.
+    fn observe_remaining(&self, from: u32, pass: &mut Pass<'_>) {
+        for slot in from..self.countries.count() {
+            let country = match self.countries.at(slot) {
+                Ok(Some(country)) => country,
+                Ok(None) => continue,
+                Err(_) => break,
+            };
+            let Ok(diplomacy) = pass.resolver.diplomacy(country, || self.diplomacy(country)) else {
+                break;
+            };
+            let Ok(owned) = self.array(diplomacy, cdiplomacy_status::OWNED_RELATIONS) else {
+                break;
+            };
+            if let Some(scratch) = pass.ownership.as_deref_mut() {
+                scratch.observe_owned(owned.count);
+            }
+        }
+    }
+
+    /// Counts `relation` in the vector at `root + offset`. Diplomacy-owned
+    /// vectors, which grow with a country's relation count, use the pass's
+    /// snapshot when one is supplied; all other vectors hold one country pair.
     fn occurrence(
         &self,
         root: usize,
         offset: usize,
         relation: usize,
         expected: u32,
+        pass: &mut Pass<'_>,
     ) -> Result<(), &'static str> {
+        if offset == cdiplomacy_status::OWNED_RELATIONS
+            && expected == 1
+            && let Some(scratch) = pass.ownership.as_deref_mut()
+        {
+            return scratch.membership(self.memory, root, relation, SUBJECT_MEMBERSHIP);
+        }
         let array = self.array(root, offset)?;
-        let mut found = 0;
-        for index in 0..array.count {
-            let pointer = self.element(array, index)?;
-            if pointer == 0 {
-                return Err("null subject ownership entry");
-            }
-            if pointer == relation {
-                found += 1;
-            }
-        }
-        if found == expected {
-            Ok(())
-        } else {
-            Err("subject ownership cross-link count mismatch")
-        }
+        scan_occurrence(
+            self.memory,
+            array,
+            relation,
+            expected,
+            SUBJECT_MEMBERSHIP,
+            |_| {},
+        )
     }
 
     fn relation(
@@ -433,6 +536,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         pointer: usize,
         owner: ccountry::Country,
         matrix_index: Option<u32>,
+        pass: &mut Pass<'_>,
     ) -> Result<Option<Row>, &'static str> {
         self.vtable(pointer, VTABLE_RVA, "subject relation vtable mismatch")?;
         if self.field::<u32>(pointer, TYPE_ID)? != TYPE_VALUE {
@@ -443,8 +547,8 @@ impl<'a, M: Memory> Reader<'a, M> {
         }
         let overlord = self.field::<u32>(pointer, OVERLORD)?;
         let subject = self.field::<u32>(pointer, SUBJECT)?;
-        let first = self.countries.resolve(overlord)?;
-        let second = self.countries.resolve(subject)?;
+        let first = pass.resolver.resolve(&self.countries, overlord)?;
+        let second = pass.resolver.resolve(&self.countries, subject)?;
         if first.canonical_slot == second.canonical_slot {
             return Err("subject endpoints resolve to same country");
         }
@@ -458,28 +562,36 @@ impl<'a, M: Memory> Reader<'a, M> {
         if matrix_index.is_some_and(|index| index != target.canonical_slot) {
             return Err("subject relation stored in wrong matrix slot");
         }
-        let first_diplomacy = self.diplomacy(first)?;
-        let second_diplomacy = self.diplomacy(second)?;
-        let first_status = self.pair_status(first_diplomacy, second, pointer)?;
-        let second_status = self.pair_status(second_diplomacy, first, pointer)?;
+        let first_diplomacy = pass.resolver.diplomacy(first, || self.diplomacy(first))?;
+        let second_diplomacy = pass.resolver.diplomacy(second, || self.diplomacy(second))?;
+        let first_status = self.pair_status(first_diplomacy, second, pointer, pass)?;
+        let second_status = self.pair_status(second_diplomacy, first, pointer, pass)?;
         if matrix_index.is_none() {
             for diplomacy in [first_diplomacy, second_diplomacy] {
-                self.occurrence(diplomacy, cdiplomacy_status::OWNED_RELATIONS, pointer, 1)?;
+                self.occurrence(
+                    diplomacy,
+                    cdiplomacy_status::OWNED_RELATIONS,
+                    pointer,
+                    1,
+                    pass,
+                )?;
             }
             for status in [first_status, second_status] {
-                self.occurrence(status, crelation_status::SUBRELATIONS, pointer, 1)?;
+                self.occurrence(status, crelation_status::SUBRELATIONS, pointer, 1, pass)?;
             }
             self.occurrence(
                 first_status,
                 crelation_status::SERIALIZABLE_RELATIONS,
                 pointer,
                 1,
+                pass,
             )?;
             self.occurrence(
                 second_status,
                 crelation_status::SERIALIZABLE_RELATIONS,
                 pointer,
                 0,
+                pass,
             )?;
         }
         if owner.canonical_slot != first.canonical_slot {
@@ -835,5 +947,300 @@ mod tests {
             capture(&bytes, false, &mut [Row::default(); 1], &mut names).outcome,
             Outcome::Unavailable { .. }
         ));
+    }
+
+    /// Bump-allocated synthetic address space for census-scale fixtures.
+    struct Space {
+        bytes: Vec<u8>,
+    }
+
+    impl Space {
+        fn alloc(&mut self, size: usize) -> usize {
+            let at = (self.bytes.len() + 15) & !15;
+            self.bytes.resize(at + size, 0);
+            at
+        }
+
+        fn vector(&mut self, header: usize, values: &[u64]) {
+            let data = if values.is_empty() {
+                0
+            } else {
+                self.alloc(values.len() * 8)
+            };
+            array(&mut self.bytes, header, data, values);
+        }
+    }
+
+    /// `countries` canonical countries; country 1 is the overlord of every
+    /// other one, and its owned vector holds all those subjects.
+    fn overlord_census(countries: usize) -> (Vec<u8>, Vec<Row>) {
+        let mut space = Space {
+            bytes: vec![0; 0x2000],
+        };
+        let census = space.alloc((countries + 1) * 8);
+        let links = space.alloc((countries + 1) * 4);
+        // 24-byte cells: vtable and id, then a later country's diplomacy
+        // pointer (0xf88 = 165 * 24 + 16), so objects overlap without clashing.
+        let objects = space.alloc(24 * (countries + 2 + ccountry::DIPLOMACY_STATUS / 24));
+        let country = |slot: usize| objects + 24 * slot;
+        let mut pointers = vec![u64::MAX];
+        pointers.extend((1..=countries).map(|slot| country(slot) as u64));
+        array(
+            &mut space.bytes,
+            GS + cgame_state::COUNTRIES,
+            census,
+            &pointers,
+        );
+        p64(
+            &mut space.bytes,
+            GS + cgame_state::COUNTRY_LINKS,
+            links as u64,
+        );
+        for offset in [8, 12] {
+            p32(
+                &mut space.bytes,
+                GS + cgame_state::COUNTRY_LINKS + offset,
+                countries as u32 + 1,
+            );
+        }
+        for slot in 0..=countries {
+            p32(&mut space.bytes, links + slot * 4, slot as u32);
+        }
+        let mut diplomacy = vec![0; countries + 1];
+        for (slot, root) in diplomacy.iter_mut().enumerate().skip(1) {
+            let at = country(slot);
+            p64(&mut space.bytes, at, ccountry::VTABLE_RVA as u64);
+            p32(&mut space.bytes, at + ccountry::ID, slot as u32);
+            *root = space.alloc(0x290);
+            p64(
+                &mut space.bytes,
+                at + ccountry::DIPLOMACY_STATUS,
+                *root as u64,
+            );
+            p64(
+                &mut space.bytes,
+                *root,
+                cdiplomacy_status::VTABLE_RVA as u64,
+            );
+            p64(
+                &mut space.bytes,
+                *root + cdiplomacy_status::COUNTRY,
+                at as u64,
+            );
+        }
+        let definition = space.alloc(0x40);
+        let name = definition + autonomy_state_definition::NAME;
+        space.bytes[name..name + 6].copy_from_slice(b"puppet");
+        p64(&mut space.bytes, name + msvc_string::LENGTH, 6);
+        p64(&mut space.bytes, name + msvc_string::CAPACITY, 15);
+        let status = |space: &mut Space, owner: usize, target: usize, relation: usize, first| {
+            let at = space.alloc(0x2a0);
+            p64(&mut space.bytes, at, crelation_status::VTABLE_RVA as u64);
+            p64(
+                &mut space.bytes,
+                at + crelation_status::DIPLOMACY_STATUS,
+                diplomacy[owner] as u64,
+            );
+            p32(
+                &mut space.bytes,
+                at + crelation_status::TARGET_COUNTRY,
+                target as u32,
+            );
+            p64(
+                &mut space.bytes,
+                at + crelation_status::SUBJECT_RELATION,
+                relation as u64,
+            );
+            space.vector(at + crelation_status::SUBRELATIONS, &[relation as u64]);
+            if first {
+                space.vector(
+                    at + crelation_status::SERIALIZABLE_RELATIONS,
+                    &[relation as u64],
+                );
+            }
+            at
+        };
+        let mut hub_matrix = vec![0_u64; countries + 1];
+        let mut hub_owned = Vec::new();
+        let mut rows = Vec::new();
+        for subject in 2..=countries {
+            let relation = space.alloc(0x68);
+            p64(&mut space.bytes, relation, VTABLE_RVA as u64);
+            p32(&mut space.bytes, relation + TYPE_ID, TYPE_VALUE);
+            p32(&mut space.bytes, relation + OVERLORD, 1);
+            p32(&mut space.bytes, relation + SUBJECT, subject as u32);
+            p32(&mut space.bytes, relation + START_HOUR, subject as u32);
+            p32(&mut space.bytes, relation + crelation::END_HOUR, u32::MAX);
+            p64(&mut space.bytes, relation + AUTONOMY_RATIO, subject as u64);
+            p64(
+                &mut space.bytes,
+                relation + AUTONOMY_STATE,
+                definition as u64,
+            );
+            hub_matrix[subject] = status(&mut space, 1, subject, relation, true) as u64;
+            let back = status(&mut space, subject, 1, relation, false);
+            let matrix = space.alloc(16);
+            p64(&mut space.bytes, matrix + 8, back as u64);
+            p64(
+                &mut space.bytes,
+                diplomacy[subject] + cdiplomacy_status::RELATIONS,
+                matrix as u64,
+            );
+            for offset in [8, 12] {
+                p32(
+                    &mut space.bytes,
+                    diplomacy[subject] + cdiplomacy_status::RELATIONS + offset,
+                    2,
+                );
+            }
+            space.vector(
+                diplomacy[subject] + cdiplomacy_status::OWNED_RELATIONS,
+                &[relation as u64],
+            );
+            hub_owned.push(relation as u64);
+            rows.push(Row {
+                overlord: 1,
+                subject: subject as u32,
+                start_hour: subject as i32,
+                end_hour: -1,
+                autonomy_ratio: subject as i64,
+                state: Name {
+                    start: rows.len() * 6,
+                    len: 6,
+                },
+                ..Row::default()
+            });
+        }
+        space.vector(diplomacy[1] + cdiplomacy_status::RELATIONS, &hub_matrix);
+        space.vector(
+            diplomacy[1] + cdiplomacy_status::OWNED_RELATIONS,
+            &hub_owned,
+        );
+        (space.bytes, rows)
+    }
+
+    /// Counts guarded reads of one address range.
+    struct CountingMemory<'a> {
+        bytes: &'a [u8],
+        watched: std::ops::Range<usize>,
+        hits: std::cell::Cell<usize>,
+    }
+
+    impl Memory for CountingMemory<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if self.watched.contains(&address) {
+                self.hits.set(self.hits.get() + 1);
+            }
+            SliceMemory {
+                base: 0,
+                bytes: self.bytes,
+            }
+            .copy(address, destination)
+        }
+    }
+
+    #[test]
+    fn owned_subject_walk_matches_the_plain_walk_and_scans_each_owner_once() {
+        let (bytes, expected) = overlord_census(600);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let mut plain = vec![Row::default(); 600];
+        let mut plain_names = vec![0; 600 * 6];
+        let plain_walk = walk(&memory, 0, GS, &mut plain, &mut plain_names);
+        assert_eq!(plain_walk.outcome, Outcome::Rows { len: 599 });
+        assert_eq!(plain[..599], expected[..]);
+        for grown in [false, true] {
+            let mut scratch = OwnedSnapshotScratch::default();
+            if grown {
+                let mut rows = vec![Row::default(); 600];
+                let mut names = vec![0; 600 * 6];
+                walk_owned(&memory, 0, GS, &mut rows, &mut names, &mut scratch);
+                scratch.grow(0);
+            }
+            let mut rows = vec![Row::default(); 600];
+            let mut names = vec![0; 600 * 6];
+            let owned = walk_owned(&memory, 0, GS, &mut rows, &mut names, &mut scratch);
+            assert_eq!(owned, plain_walk);
+            assert_eq!(rows, plain);
+            assert_eq!(names, plain_names);
+            // Empty storage is the plain walk; grown storage installs the
+            // overlord's vector once and answers every later visit from it.
+            assert_eq!(scratch.stats().installed > 0, grown);
+        }
+    }
+
+    #[test]
+    fn owned_subject_walk_at_census_scale_is_linear_in_relations() {
+        // 15,000 countries, one overlord of 14,999 subjects: the plain walk
+        // scans the overlord's 14,999-entry vector for every subject from
+        // both endpoints (about 4.5e8 element reads).
+        const COUNTRIES: usize = 15_000;
+        let (bytes, expected) = overlord_census(COUNTRIES);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        // A cold pass (no storage) fails cleanly once its complete rescans
+        // pass the census budget, instead of stalling on 4.5e8 reads; it
+        // still records the whole world's demand. A small test budget keeps
+        // this fixture fast.
+        let mut scratch = OwnedSnapshotScratch::default();
+        scratch.rescan_override = Some(1_000_000);
+        let mut rows = vec![Row::default(); COUNTRIES];
+        let mut names = vec![0; COUNTRIES * 6];
+        let hub = {
+            let reader = Reader::new(&memory, 0, GS).unwrap();
+            let country = reader.countries.at(1).unwrap().unwrap();
+            let diplomacy = reader.diplomacy(country).unwrap();
+            reader
+                .array(diplomacy, cdiplomacy_status::OWNED_RELATIONS)
+                .unwrap()
+        };
+        let counting = CountingMemory {
+            bytes: &bytes,
+            watched: hub.data..hub.data + hub.count as usize * 8,
+            hits: std::cell::Cell::new(0),
+        };
+        let cold = walk_owned(&counting, 0, GS, &mut rows, &mut names, &mut scratch);
+        assert_eq!(cold, unavailable(SUBJECT_MEMBERSHIP.budget));
+        assert!(counting.hits.get() <= 1_000_000 + 3 * hub.count as usize);
+        scratch.grow(0);
+        let allocated = scratch.allocated_bytes();
+        counting.hits.set(0);
+        let result = walk_owned(&counting, 0, GS, &mut rows, &mut names, &mut scratch);
+        assert_eq!(
+            result,
+            NameWalk {
+                outcome: Outcome::Rows { len: COUNTRIES - 1 },
+                bytes_len: (COUNTRIES - 1) * 6,
+                required_bytes: (COUNTRIES - 1) * 6,
+            }
+        );
+        assert_eq!(rows[..COUNTRIES - 1], expected[..]);
+        assert!(
+            names[..(COUNTRIES - 1) * 6]
+                .chunks(6)
+                .all(|name| name == b"puppet")
+        );
+        assert_eq!(scratch.allocated_bytes(), allocated);
+        // The outer census reads each hub entry once; the snapshot adds one
+        // more complete scan, instead of 2 x 14,999 scans.
+        assert!(
+            counting.hits.get() <= 2 * hub.count as usize,
+            "{}",
+            counting.hits.get()
+        );
+        assert_eq!(scratch.stats().installed, 1);
+        // Output capacity still truncates honestly, never by country count.
+        let short = walk_owned(&memory, 0, GS, &mut rows[..10], &mut names, &mut scratch);
+        assert_eq!(
+            short.outcome,
+            Outcome::Truncated {
+                len: 10,
+                unread_rows: (COUNTRIES - 11) as u32
+            }
+        );
     }
 }

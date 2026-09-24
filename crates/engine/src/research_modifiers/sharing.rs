@@ -58,7 +58,9 @@ impl Country {
             }
             let members = array(&bytes[24..40], 4)?;
             let bonuses = array(&bytes[48..64], 8)?;
-            if members.count != bonuses.count || members.count > 4096 {
+            // D6D9B0 scans +18/+24 to its live count and indexes the parallel
+            // +30 bonuses by the same ordinal: the headers are the only bound.
+            if members.count != bonuses.count {
                 return Err("research sharing members invalid");
             }
             let mut group = Group {
@@ -189,9 +191,7 @@ fn references(
     mut visit: impl FnMut(u32) -> Result<bool, &'static str>,
     mut found: impl FnMut(u32) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    if source.count > 4096 {
-        return Err("research sharing member limit exceeded");
-    }
+    // Bounded by the validated native header only; members are countries.
     let mut bytes = [0; 256];
     let mut first = 0;
     while first < source.count {
@@ -244,14 +244,22 @@ struct Witness {
     present: bool,
     predecessors: Array,
 }
+/// Per-country-pass memo of member witnesses keyed by (raw member, template).
+/// It retains the first `entries.len()` distinct keys; further members are
+/// still read, just not memoised. An open-addressed index at load <= 1/2 keeps
+/// each lookup to a few probes, so a faction of thousands of members costs a
+/// linear number of comparisons rather than a scan of every stored witness.
 pub(super) struct Witnesses {
     entries: [Witness; 512],
+    /// 1-based entry index per slot; zero is empty. Twice the entry count.
+    slots: [u16; 1024],
     len: usize,
 }
 impl Default for Witnesses {
     fn default() -> Self {
         Self {
             entries: [Witness::default(); 512],
+            slots: [0; 1024],
             len: 0,
         }
     }
@@ -279,11 +287,21 @@ impl Witnesses {
         group: u32,
         out: &mut Output<'_>,
     ) -> Result<(), &'static str> {
-        let witness = if let Some(w) = self.entries[..self.len]
-            .iter()
-            .find(|w| w.country == raw && w.template == input.template_pointer)
-        {
-            *w
+        let mask = self.slots.len() - 1;
+        let hash = (u64::from(raw) ^ (input.template_pointer as u64).rotate_left(32))
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let mut slot = (hash >> 32) as usize & mask;
+        let mut hit = None;
+        while self.slots[slot] != 0 {
+            let entry = self.entries[usize::from(self.slots[slot]) - 1];
+            if entry.country == raw && entry.template == input.template_pointer {
+                hit = Some(entry);
+                break;
+            }
+            slot = (slot + 1) & mask;
+        }
+        let witness = if let Some(w) = hit {
+            w
         } else {
             let country = countries.resolve(raw)?;
             let owner = crate::ctechnology_status::copy_status(memory, country.pointer)?;
@@ -333,8 +351,10 @@ impl Witnesses {
                 }
             }
             if self.len < self.entries.len() {
+                // `slot` is the empty slot that ended the probe above.
                 self.entries[self.len] = witness;
                 self.len += 1;
+                self.slots[slot] = self.len as u16;
             }
             witness
         };

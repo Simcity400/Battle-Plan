@@ -43,6 +43,16 @@ const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
 pub const SEGMENTS: usize = 15;
 pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first dispatch burst; 1 division inputs copy + divisions/intel dispatch + character parts, relations, ordinary, slow and supply parts; 2 World join + governance/presentation/ETA dispatch; 3 unused; 4 AirWing join + wing install; 5 mid joins (divisions..intel) + Naval dispatch; 6 character roster join + portrait/Gated dispatch + Naval join; 7 map sample; 8 Orders join + Late dispatch + core joins; 9 supply/portraits/order/relations/ordinary/slow/gated/governance/character role joins; 10 capture_tables; 11 presentation + ETA joins; 12 Late join + capture_tables_late; 13 visibility + failure handling; 14 ShipModels join";
 pub const INITIAL_CAPACITIES: [usize; 9] = [512, 20_000, 1024, 2048, 4096, 1024, 64, 1024, 16_384];
+
+/// Countries has one row per canonical slot and CountryLinks one per raw
+/// link id; FactionMembers holds each country at most once. Order counters and
+/// the war snapshot follow the Countries capacity when the frame grows.
+pub fn raise_for_countries(core: &mut [usize; 9], slots: usize) {
+    let rows = crate::country_scale::rows(slots, 1);
+    for index in [0, 2, 7] {
+        crate::country_scale::raise(&mut core[index], rows);
+    }
+}
 /// Where the collector samples: at the entry of the hooked hourly tick, before
 /// the trampoline runs, so a frame labelled with +468 is the state at the end
 /// of that hour. Recorded in every session so readers know which instant it is.
@@ -263,6 +273,9 @@ pub struct Captured {
 }
 
 impl Captured {
+    /// Vanilla-sized frame for synthetic tests; production frames come from
+    /// `Shared::with_sizing`.
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::with_capacities(
             &INITIAL_CAPACITIES,
@@ -271,7 +284,7 @@ impl Captured {
         )
     }
 
-    fn with_capacities(
+    pub(crate) fn with_capacities(
         capacities: &[usize; 9],
         map_capacities: &MapCapacities,
         extended_capacities: &extended::Capacities,
@@ -542,6 +555,19 @@ pub struct Shared {
     /// The lexer's maximum token id at the last dictionary walk; a change
     /// means tokens were appended and the static dictionary is walked again.
     pub lexical_max: AtomicI32,
+    /// A larger country authentication cache prepared off the game thread.
+    /// The hook swaps it in with a non-blocking `try_lock` and parks the old
+    /// one in `retired` for the spool thread to free: no allocation or
+    /// deallocation happens on the game thread.
+    pub country_cache_swap: Mutex<CountryCacheSwap>,
+    /// Cells of the installed country cache, published by the game thread.
+    pub country_cache_cells: AtomicUsize,
+}
+
+#[derive(Default)]
+pub struct CountryCacheSwap {
+    pub next: Option<Arc<Cache>>,
+    pub retired: Option<Arc<Cache>>,
 }
 
 // Each frame index has exactly one owner: a queue, the game thread inside the
@@ -550,9 +576,28 @@ pub struct Shared {
 unsafe impl Sync for Shared {}
 
 impl Shared {
+    /// Registry-free sizing for synthetic tests; the loader uses `with_sizing`.
+    #[cfg(test)]
     pub fn new(base: usize, trampoline: usize, frequency: u64) -> Self {
-        let roster = Box::new(Roster::new());
-        let country_cache = Arc::new(Cache::with_capacity(8192));
+        Self::with_sizing(
+            base,
+            trampoline,
+            frequency,
+            &crate::country_scale::Sizing::for_slots(0),
+        )
+    }
+
+    /// Every frame and the country cache are allocated from `sizing`, which
+    /// the loader derives from the live country registry before hooking.
+    pub fn with_sizing(
+        base: usize,
+        trampoline: usize,
+        frequency: u64,
+        sizing: &crate::country_scale::Sizing,
+    ) -> Self {
+        let roster = Box::new(Roster::with_counts(sizing.content));
+        let country_cache = Arc::new(Cache::with_capacity(sizing.country_cells));
+        let country_cells = country_cache.capacity();
         let pool_bytes = roster.allocated_bytes() + country_cache.allocated_bytes();
         let shared = Self {
             acquisition: OnceLock::new(),
@@ -597,12 +642,59 @@ impl Shared {
             eta_inputs: EtaInputStats::default(),
             force_next: AtomicBool::new(false),
             lexical_max: AtomicI32::new(-1),
+            country_cache_swap: Mutex::new(CountryCacheSwap::default()),
+            country_cache_cells: AtomicUsize::new(country_cells),
         };
         for index in 0..BUFFERS {
             // No callback or spool thread can observe Shared during construction.
-            unsafe { shared.publish_frame(index, Box::new(Captured::new())) };
+            let frame = Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended);
+            unsafe { shared.publish_frame(index, Box::new(frame)) };
         }
         shared
+    }
+
+    /// Spool thread: free a retired cache and offer a larger one when the
+    /// live registry or a capacity-limited census asks for more cells.
+    pub fn offer_country_cache(&self, cells: usize) {
+        let Ok(mut swap) = self.country_cache_swap.lock() else {
+            return;
+        };
+        if let Some(retired) = swap.retired.take() {
+            self.pool_bytes
+                .fetch_sub(retired.allocated_bytes() as u64, Ordering::Relaxed);
+            drop(retired);
+        }
+        let installed = self.country_cache_cells.load(Ordering::Acquire);
+        let offered = swap.next.as_ref().map_or(0, |next| next.capacity());
+        if cells > installed && cells > offered {
+            if let Some(previous) = swap.next.take() {
+                self.pool_bytes
+                    .fetch_sub(previous.allocated_bytes() as u64, Ordering::Relaxed);
+            }
+            let next = Arc::new(Cache::with_capacity(cells));
+            self.pool_bytes
+                .fetch_add(next.allocated_bytes() as u64, Ordering::Relaxed);
+            swap.next = Some(next);
+        }
+    }
+
+    /// Game thread, before preparing the hour's country snapshot: install an
+    /// offered cache without blocking, allocating or freeing.
+    pub(crate) fn install_offered_country_cache(&self) {
+        let Ok(mut swap) = self.country_cache_swap.try_lock() else {
+            return;
+        };
+        if swap.retired.is_some() {
+            return;
+        }
+        let Some(next) = swap.next.take() else {
+            return;
+        };
+        let cells = next.capacity();
+        // Every previous lease was returned before this callback began.
+        let current = unsafe { &mut *self.country_cache.get() };
+        swap.retired = Some(std::mem::replace(current, next));
+        self.country_cache_cells.store(cells, Ordering::Release);
     }
 
     /// Initialize one slot before Shared can be observed by any worker or hook.
@@ -1079,6 +1171,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             frame.extended.prepare_hour(clock.hour, force_full);
             let state = clock.game_state as usize;
             let cache_begin = qpc();
+            shared.install_offered_country_cache();
             let country_snapshot =
                 crate::read_accounting::with_table(replay::rows::TableId::Countries, || {
                     Cache::prepare_shared(

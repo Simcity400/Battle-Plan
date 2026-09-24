@@ -456,7 +456,7 @@ fn focus_branch_cache_keeps_countries_branches_and_gaps_independent() {
     )
     .unwrap();
     let cancel = AtomicBool::new(false);
-    let projection = crate::focus_branch(&replay, 1, &cancel).unwrap();
+    let projection = crate::focus_branch(&replay, 1, None, &cancel).unwrap();
     assert_eq!(projection.countries.len(), 2);
     let mut cache = crate::FocusCache::default();
     for tag in ["GER", "FRA", "GER", "FRA"] {
@@ -818,13 +818,12 @@ fn land_owner_scan_honors_cancellation_and_block_budget() {
             .kind(),
         std::io::ErrorKind::Interrupted
     );
-    replay.index[0].raw_length = crate::metadata::MAX_BLOCK_RAW_BYTES + 1;
-    assert!(
-        crate::land_owners(&replay, &AtomicBool::new(false))
-            .unwrap_err()
-            .to_string()
-            .contains("memory budget")
-    );
+    // The container refuses an oversized block before decompressing it; the
+    // product reports the gap instead of trusting a partial catalogue.
+    replay.index[0].raw_length = replay::container::MAX_BLOCK_RAW_BYTES as u64 + 1;
+    let owners = crate::land_owners(&replay, &AtomicBool::new(false)).unwrap();
+    assert!(owners.countries.is_empty());
+    assert!(!owners.warnings.is_empty());
 }
 
 fn session(id: u64) -> SessionStart {
@@ -1036,7 +1035,7 @@ fn focus_progress_runs_compress_equal_hours_and_never_bridge_gaps() {
         )],
     )
     .unwrap();
-    let history = crate::focus_branch(&replay, 1, &AtomicBool::new(false))
+    let history = crate::focus_branch(&replay, 1, None, &AtomicBool::new(false))
         .unwrap()
         .countries["GER"]
         .clone();
@@ -1057,6 +1056,7 @@ fn focus_progress_runs_compress_equal_hours_and_never_bridge_gaps() {
     let limited = crate::products::national_focus::focus_branch_within(
         &replay,
         1,
+        None,
         &AtomicBool::new(false),
         4 * run,
     )
@@ -1072,4 +1072,172 @@ fn focus_progress_runs_compress_equal_hours_and_never_bridge_gaps() {
             .collect::<Vec<_>>(),
         [(100, 101), (102, 102)]
     );
+}
+
+/// A unique three-byte tag per country, as the engine's tag loader allows.
+fn scale_tag(index: u32) -> Vec<u8> {
+    const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let digit = |place: u32| DIGITS[(index / place % 62) as usize];
+    vec![digit(62 * 62), digit(62), digit(1)]
+}
+
+/// Every province its own country: `count` countries with realistic names,
+/// each owning one state.
+fn scale_frame(branch: u64, hour: i32, count: u32) -> DecodedFrame {
+    let mut frame = source(branch, hour, Some(1));
+    frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (0..count)
+            .map(|index| CountryRow {
+                id: 100_000 + index,
+                canonical_slot: index,
+                tag: scale_tag(index),
+                name: format!("Free Province of Westmarch-{index}").into_bytes(),
+                ..CountryRow::default()
+            })
+            .collect(),
+    ));
+    frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (0..count)
+            .map(|index| CountryLinkRow {
+                id: 100_000 + index,
+                canonical_slot: index,
+            })
+            .collect(),
+    ));
+    frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        (0..count)
+            .map(|index| replay::rows::StateRow {
+                id: index + 1,
+                owner: 100_000 + index,
+                controller: 100_000 + index,
+                movement_infrastructure: 0,
+            })
+            .collect(),
+    ));
+    frame
+}
+
+#[test]
+fn metadata_catalogue_lists_every_country_once_across_branches_within_the_reply_budget() {
+    const COUNTRIES: u32 = 65_535;
+    let branches: Vec<_> = (1..=3)
+        .map(|branch| records(branch, vec![scale_frame(branch, 100, COUNTRIES)]))
+        .collect();
+    let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &branches).unwrap());
+    let metadata = crate::metadata::read(
+        &replay,
+        Path::new("scale.battleplan"),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    // Not countries x branches: each country once, at its first branch.
+    assert_eq!(metadata.countries.len(), COUNTRIES as usize);
+    assert!(
+        metadata
+            .countries
+            .iter()
+            .all(|country| country.observed_branch_id == "1")
+    );
+    let reply = crate::transport::SourceReply {
+        id: "lease".into(),
+        path: metadata.path.clone(),
+        revision: "revision".into(),
+        metadata,
+    };
+    let bytes = serde_json::to_vec(&reply).unwrap().len();
+    assert!(
+        bytes < crate::transport::MAX_REPLY_BYTES / 2,
+        "{bytes} bytes for {COUNTRIES} countries"
+    );
+}
+
+#[test]
+fn land_owners_list_every_country_once_across_branches() {
+    const COUNTRIES: u32 = 5_000;
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[
+            records(2, vec![scale_frame(2, 90, COUNTRIES)]),
+            records(
+                1,
+                vec![
+                    scale_frame(1, 100, COUNTRIES),
+                    scale_frame(1, 101, COUNTRIES),
+                ],
+            ),
+            records(3, vec![scale_frame(3, 80, COUNTRIES)]),
+        ],
+    )
+    .unwrap();
+    let result = crate::land_owners(&replay, &AtomicBool::new(false)).unwrap();
+    assert_eq!(result.countries.len(), COUNTRIES as usize);
+    assert!(result.warnings.is_empty());
+    // Sorted by tag, each witnessed at its first hour on the lowest branch.
+    assert!(
+        result
+            .countries
+            .windows(2)
+            .all(|pair| pair[0].tag < pair[1].tag)
+    );
+    assert!(
+        result.countries.iter().all(|country| (
+            country.observed_branch_id.as_str(),
+            country.observed_hour
+        ) == ("1", 100))
+    );
+    let bytes = serde_json::to_vec(&result).unwrap().len();
+    assert!(
+        bytes < crate::transport::MAX_REPLY_BYTES / 4,
+        "{bytes} bytes"
+    );
+}
+
+#[test]
+fn focus_budget_is_per_requested_country_not_per_recording() {
+    use replay::rows::{CompletedFocusRow, FocusRow};
+    const COUNTRIES: u32 = 5_000;
+    // An hourly change for every country: 105,000 segments across the
+    // recording, more than one scan may hold, but 21 for any one country.
+    let frames = (0..21)
+        .map(|step| {
+            let mut frame = scale_frame(1, 100 + step, COUNTRIES);
+            frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(
+                (0..COUNTRIES)
+                    .map(|index| FocusRow {
+                        country: 100_000 + index,
+                        completed_count: 1,
+                        ..FocusRow::default()
+                    })
+                    .collect(),
+            ));
+            frame.tables[TableId::CompletedFocuses.index()] =
+                TableView::Complete(TableRows::CompletedFocuses(
+                    (0..COUNTRIES)
+                        .map(|index| CompletedFocusRow {
+                            country: 100_000 + index,
+                            ordinal: 0,
+                            token: format!("focus_{step}").into_bytes(),
+                        })
+                        .collect(),
+                ));
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let cancel = AtomicBool::new(false);
+    let mut cache = crate::FocusCache::default();
+    for index in [0, 2_777, COUNTRIES - 1] {
+        let tag = String::from_utf8(scale_tag(index)).unwrap();
+        let (history, progress_stopped) = cache.get(&replay, 1, &tag, &cancel).unwrap();
+        assert_eq!(progress_stopped, None);
+        assert_eq!(history.segments.len(), 21);
+        assert_eq!(history.at(120).unwrap().completed[0].token, "focus_20");
+        assert_eq!(
+            history.at(100).unwrap().country_name,
+            format!("Free Province of Westmarch-{index}")
+        );
+    }
+    // The same recording scanned for every country at once exceeds the scan
+    // budget, which is why a request never scans other countries.
+    assert!(crate::focus_branch(&replay, 1, None, &cancel).is_err());
 }

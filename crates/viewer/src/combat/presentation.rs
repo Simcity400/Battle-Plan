@@ -116,17 +116,12 @@ fn portrait(
 ) {
     // A present leader whose portrait cannot resolve uses this native default,
     // not land combat's distinct no-commander silhouette (140B3A100).
-    if document
-        .icons
-        .combat
-        .sprites
-        .contains_key("GFX_leader_unknown")
-    {
+    if document.icons.combat.has_sprite("GFX_leader_unknown") {
         sprite(&mut out.values, key, "GFX_leader_unknown".into());
         out.values.entry(key.into()).or_default().hidden = false;
     }
     match select_portrait(presentation, category) {
-        Ok(asset) if document.icons.combat.sprites.contains_key(&asset.key()) => {
+        Ok(asset) if document.icons.combat.has_sprite(&asset.key()) => {
             sprite(&mut out.values, key, asset.key());
             out.values.entry(key.into()).or_default().hidden = false;
         }
@@ -155,7 +150,7 @@ fn traits(out: &mut Bindings, document: &Document, key: &str, traits: &[LandComb
         } else {
             let token = String::from_utf8_lossy(&value.token);
             let requested = format!("GFX_trait_{token}");
-            let selected = if document.icons.combat.sprites.contains_key(&requested) {
+            let selected = if document.icons.combat.has_sprite(&requested) {
                 requested
             } else {
                 // 141C61C40's actual missing-declaration fallback.
@@ -212,7 +207,7 @@ pub(super) fn bind(
                         .combat
                         .tactic_pictures
                         .get(token.as_ref())
-                        .filter(|name| document.icons.combat.sprites.contains_key(*name))
+                        .filter(|name| document.icons.combat.has_sprite(name))
                     {
                         sprite(&mut out.values, &key, picture.clone());
                         out.values.entry(key).or_default().hidden = false;

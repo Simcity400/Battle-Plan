@@ -3,7 +3,7 @@ use super::{CountryParams, LoadContext, Product, artwork};
 use crate::{
     Artwork, ResearchBonus, ResearchCoverage, ResearchDetails, ResearchEntry, ResearchHistory,
     ResearchOutcome, ResearchProgress, ResearchSlotHistory, ResearchSlotState, Source,
-    metadata::{MAX_BLOCK_RAW_BYTES, validate_campaign},
+    metadata::validate_campaign,
 };
 use replay::{
     container::Replay,
@@ -753,11 +753,6 @@ fn research_branch_selected(
     let mut countries: BTreeMap<String, Country> = BTreeMap::new();
     for block in replay.index.iter().filter(|b| b.branch == branch) {
         check_cancel(cancelled)?;
-        if block.raw_length > MAX_BLOCK_RAW_BYTES {
-            return Err(io::Error::other(
-                "Research data block exceeds memory budget",
-            ));
-        }
         let mut decoder = FrameDecoder::for_tables(&selected);
         let Ok(frames) = replay.read_block_selected(block, &selected) else {
             continue;
@@ -788,16 +783,17 @@ fn research_branch_selected(
                 continue;
             }
             for country in rows {
+                // Compare the tag before any per-country work.
+                if selected_tag.is_some_and(|selected| selected.as_bytes() != country.tag) {
+                    continue;
+                }
                 let Ok(canonical) = crate::metadata::mapped_slot(country, links) else {
                     continue;
                 };
                 let Ok(tag) = std::str::from_utf8(&country.tag) else {
                     continue;
                 };
-                if tag.is_empty()
-                    || tag.len() > 512
-                    || selected_tag.is_some_and(|selected| selected != tag)
-                {
+                if tag.is_empty() || tag.len() > 512 {
                     continue;
                 }
                 let ids: Vec<_> = links

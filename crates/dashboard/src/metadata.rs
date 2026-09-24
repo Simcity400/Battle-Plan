@@ -2,7 +2,7 @@
 //! every product uses.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     io,
     path::Path,
     sync::{
@@ -22,9 +22,6 @@ use replay::{
 use crate::{BranchMetadata, CountryMetadata, RecordingGap, ReplayMetadata, invalid};
 
 const MAX_WARNINGS: usize = 32;
-const MAX_COUNTRIES: usize = 4096;
-/// Admission limit on a recorded block's raw length before decompression.
-pub const MAX_BLOCK_RAW_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Branch ranges, gaps and each branch's first readable country catalogue.
 pub fn read(
@@ -55,17 +52,13 @@ pub fn read(
     if !metadata.content_verified {
         warn(&mut metadata.warnings, "The recorder did not verify the content identity. The dashboard reads recorded values only and does not verify local game assets.".into());
     }
+    let mut known = HashSet::new();
     for branch in &replay.branches {
         check_cancel(cancelled)?;
         let mut catalogue = Catalogue::default();
         let Some(block) = replay.index.iter().find(|block| block.branch == branch.id) else {
             continue;
         };
-        if block.raw_length > MAX_BLOCK_RAW_BYTES {
-            return Err(invalid(
-                "Initial catalogue block exceeds the raw-block budget",
-            ));
-        }
         match replay.read_block(block) {
             Ok(frames) => {
                 let mut decoder = FrameDecoder::new();
@@ -85,7 +78,7 @@ pub fn read(
                         }
                     };
                     if let Ok((rows, links)) = country_tables(decoded) {
-                        catalogue.observe(rows, links, branch.id, frame.hour)?;
+                        catalogue.observe(rows, links, branch.id, frame.hour);
                         if metadata.player_country_id.is_none() {
                             metadata.player_country_id =
                                 player_slot(decoded, links).map(|slot| slot.to_string());
@@ -100,7 +93,7 @@ pub fn read(
             ),
         }
         let countries = catalogue.finish(&mut metadata.warnings);
-        merge_countries(&mut metadata, countries);
+        merge_countries(&mut metadata.countries, &mut known, countries);
     }
     check_cancel(cancelled)?;
     Ok(metadata)
@@ -222,34 +215,18 @@ pub(crate) struct Catalogue {
 }
 
 impl Catalogue {
-    pub(crate) fn observe_mapped(
-        &mut self,
-        row: &CountryRow,
-        slot: Option<u32>,
-        branch: BranchId,
-        hour: i32,
-    ) -> io::Result<()> {
+    fn observe_mapped(&mut self, row: &CountryRow, slot: Option<u32>, branch: BranchId, hour: i32) {
         let Some(slot) = slot else {
             self.bad_mapping = true;
-            return Ok(());
+            return;
         };
-        if self.rows.contains_key(&slot) {
-            return Ok(());
-        }
-        if self.rows.len() >= MAX_COUNTRIES {
-            return Err(invalid("Country catalogue exceeds its budget"));
-        }
-        self.rows.insert(
-            slot,
-            CountryMetadata {
-                id: slot.to_string(),
-                tag: short_text(&String::from_utf8_lossy(&row.tag), 512),
-                name: short_text(&String::from_utf8_lossy(&row.name), 512),
-                observed_branch_id: branch.to_string(),
-                observed_hour: hour,
-            },
-        );
-        Ok(())
+        self.rows.entry(slot).or_insert_with(|| CountryMetadata {
+            id: slot.to_string(),
+            tag: short_text(&String::from_utf8_lossy(&row.tag), 512),
+            name: short_text(&String::from_utf8_lossy(&row.name), 512),
+            observed_branch_id: branch.to_string(),
+            observed_hour: hour,
+        });
     }
 
     fn observe(
@@ -258,11 +235,10 @@ impl Catalogue {
         links: &[CountryLinkRow],
         branch: BranchId,
         hour: i32,
-    ) -> io::Result<()> {
+    ) {
         for row in rows {
-            self.observe_mapped(row, mapped_slot(row, links).ok(), branch, hour)?;
+            self.observe_mapped(row, mapped_slot(row, links).ok(), branch, hour);
         }
-        Ok(())
     }
 
     pub(crate) fn finish(self, warnings: &mut Vec<String>) -> Vec<CountryMetadata> {
@@ -273,16 +249,19 @@ impl Catalogue {
     }
 }
 
-fn merge_countries(metadata: &mut ReplayMetadata, countries: Vec<CountryMetadata>) {
+/// One entry per (slot, tag): a country that keeps its identity across branches
+/// is listed once, at its first observation in branch order, so the catalogue
+/// scales with countries rather than countries x branches. Every consumer looks
+/// countries up by slot or tag and takes the first match, which this keeps.
+fn merge_countries(
+    merged: &mut Vec<CountryMetadata>,
+    known: &mut HashSet<(String, String)>,
+    countries: Vec<CountryMetadata>,
+) {
     for country in countries {
-        if metadata
-            .countries
-            .iter()
-            .any(|old| old.id == country.id && old.observed_branch_id == country.observed_branch_id)
-        {
-            continue;
+        if known.insert((country.id.clone(), country.tag.clone())) {
+            merged.push(country);
         }
-        metadata.countries.push(country);
     }
 }
 

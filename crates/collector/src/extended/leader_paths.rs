@@ -21,6 +21,8 @@ impl Default for Capacities {
 
 pub struct Captured {
     rows: CaptureRows<cunit_leader::PortraitPathRow>,
+    /// One tag cell per country slot, sized from the observed table off-thread.
+    tag_memo: cunit_leader::PortraitTagMemo,
 }
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
@@ -35,16 +37,18 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
+            tag_memo: Default::default(),
         }
     }
     pub fn reset(&mut self) {
         self.rows.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.rows.allocated_bytes()
+        self.rows.allocated_bytes() + self.tag_memo.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
+        self.tag_memo.grow();
     }
     pub fn capture(
         &mut self,
@@ -55,8 +59,14 @@ impl Captured {
     ) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
-        self.rows.outcome =
-            cunit_leader::walk_portrait_paths(memory, base, state, sources, &mut self.rows.rows);
+        self.rows.outcome = cunit_leader::walk_portrait_paths_memo(
+            memory,
+            base,
+            state,
+            sources,
+            &mut self.rows.rows,
+            &mut self.tag_memo,
+        );
         [qpc().saturating_sub(begin).max(0) as u64]
     }
     pub fn outcomes(&self) -> [Outcome; N] {

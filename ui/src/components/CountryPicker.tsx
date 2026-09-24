@@ -1,11 +1,16 @@
 import { Popover, usePopover } from './Popover';
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CountryMetadata } from '../shell/api';
 import { Icon } from './Icons';
 import { CountryFlag } from './CountryFlag';
 import { forgetSettledProducts, loadProduct, loadTransientProduct } from '../dashboard/products';
+import { FlagStore, flagStore, loadListFlags } from '../dashboard/flagCache';
 import type { DashboardClient, DashboardSource, ProductRequest } from '../dashboard/client';
 import type { CountryFlagImage, CountryFlagParams, CountryFlagReply, CountryFlagSize, LandOwners } from '../generated/dashboard';
+import { COUNTRY_ROW_HEIGHT, countryChoices, filterChoices, moveIndex, revealRow, visibleRange } from './countryList';
+
+/** `.country-picker-list` max-height, used until the list is measured. */
+const LIST_HEIGHT = 340;
 
 function flagsRequest(context: { sourceId: string; revision: string; branchId: string; hour: number }, size: CountryFlagSize, tags: string[]): ProductRequest<CountryFlagParams> {
   return { sourceId: context.sourceId, revision: context.revision, product: 'country-flags', params: { branchId: context.branchId, hour: context.hour, tags, size } };
@@ -13,7 +18,9 @@ function flagsRequest(context: { sourceId: string; revision: string; branchId: s
 
 /** Flags are always the game's own files from the recording's content stack. The
  * header shows the country as the game's top bar does (`shield`) at `flagAt`, the
- * playback day; lists use the game's medium flags at each country's observed hour. */
+ * playback day; lists use the game's medium flags at each country's observed hour.
+ * The list renders only the rows in view and loads only their flags, so it costs
+ * the same at any country count. */
 export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, flagAt = null }: {
   countries: CountryMetadata[]; selectedTag: string | null; playerCountryId: string | null;
   onChange: (tag: string | null) => void; source: DashboardSource | null | undefined; client: DashboardClient;
@@ -21,26 +28,33 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   onReconnect?: () => void; field?: boolean; flagAt?: { branchId: string; hour: number } | null;
 }) {
   const id = useId();
+  const listId = `${id}-countries`;
+  const optionId = (index: number) => `${id}-country-${index}`;
   const menu = usePopover(field ? 'end' : 'start');
-  const { trigger, popup, open } = menu;
+  const { trigger, open } = menu;
+  const list = useRef<HTMLDivElement>(null);
+  const listbox = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState('');
+  const [active, setActive] = useState(-1);
+  const [view, setView] = useState({ scrollTop: 0, height: LIST_HEIGHT });
   const [retry, setRetry] = useState(0);
   const sourceKey = source ? `${source.id}:${source.revision}` : '';
   const [roster, setRoster] = useState<{ key: string; countries: CountryMetadata[]; error: string | null; warning: string | null }>({ key: '', countries: [], error: null, warning: null });
   const loading = !!source && roster.key !== sourceKey;
-  const choices = useMemo(() => {
-    const byTag = new Map<string, CountryMetadata>();
-    if (roster.key === sourceKey) for (const country of roster.countries) if (!byTag.has(country.tag)) byTag.set(country.tag, country);
-    return [...byTag.values()].sort((a, b) => (a.name || a.tag).localeCompare(b.name || b.tag));
-  }, [roster, sourceKey]);
-  const selected = selectedTag == null ? countries.find((country) => country.id === playerCountryId)
-    : choices.find((country) => country.tag === selectedTag) ?? countries.find((country) => country.tag === selectedTag);
-  const filtered = choices.filter((country) => `${country.name} ${country.tag}`.toLowerCase().includes(query.trim().toLowerCase()));
-  const [flagState, setFlagState] = useState<{ key: string; images: Record<string, CountryFlagImage>; error: string | null }>({ key: '', images: {}, error: null });
+  const choices = useMemo(() => roster.key === sourceKey ? countryChoices(roster.countries) : [], [roster, sourceKey]);
+  const byTag = useMemo(() => new Map(choices.map(({ country }) => [country.tag, country])), [choices]);
+  const selected = useMemo(() => selectedTag == null ? countries.find((country) => country.id === playerCountryId)
+    : byTag.get(selectedTag) ?? countries.find((country) => country.tag === selectedTag), [countries, playerCountryId, selectedTag, byTag]);
+  const filtered = useMemo(() => filterChoices(choices, query), [choices, query]);
+  const range = visibleRange(filtered.length, view.scrollTop, view.height);
+  const visible = open ? filtered.slice(range.start, range.end) : [];
+  const [flagState, setFlagState] = useState<{ key: string; loads: number; error: string | null }>({ key: '', loads: 0, error: null });
   const [headerFlag, setHeaderFlag] = useState<{ identity: string; key: string; image?: CountryFlagImage; error: string | null }>({ identity: '', key: '', error: null });
   const headerTag = selected?.tag ?? selectedTag;
   const headerSize: CountryFlagSize = field ? 'medium' : 'shield';
-  const flagImages = flagState.key === sourceKey ? flagState.images : {};
+  const flags = flagStore(client);
+  const flagOf = (country: CountryMetadata) => source
+    ? flags.get(FlagStore.key(source.id, source.revision, country.observedBranchId, country.observedHour, country.tag)) ?? undefined : undefined;
   const flagContext = useMemo(() => {
     if (!source?.metadata.branches.length) return null;
     const witness = selected ?? source.metadata.countries.find((country) => country.id === source.metadata.playerCountryId) ?? source.metadata.countries[0];
@@ -62,7 +76,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     const request = flagsRequest(headerContext, headerSize, [headerTag]);
     // Per-day requests bypass the shared cache so they cannot evict full-branch products.
     void (live ? loadTransientProduct<CountryFlagReply>(client, request, controller.signal) : loadProduct<CountryFlagReply>(client, request, controller.signal)).then(result => {
-      if (!controller.signal.aborted) setHeaderFlag({ identity: headerIdentity, key: headerKey, image: result.flags.find(image => image.tag === headerTag), error: result.warnings.join('\n') || null });
+      if (!controller.signal.aborted) setHeaderFlag({ identity: headerIdentity, key: headerKey, image: result.flags.find(image => image.tag === headerTag), error: null });
     }).catch(error => {
       // An unreadable hour shows no flag rather than carrying one across it.
       if (!controller.signal.aborted) setHeaderFlag({ identity: headerIdentity, key: headerKey, image: undefined, error: String(error) });
@@ -82,36 +96,43 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     });
     return () => controller.abort();
   }, [sourceKey, client, onCountries, retry]);
+  // Only the rows in view ask for flags; stored flags are never requested again.
+  // JSON escapes line breaks, so one line per row keeps the key exact.
+  const visibleTargets = visible.map(({ country }) => JSON.stringify([country.observedBranchId, country.observedHour, country.tag])).join('\n');
   useEffect(() => {
-    if (!source || !choices.length) return;
+    if (!source || !visibleTargets) return;
+    const targets = visibleTargets.split('\n').map(line => {
+      const [branchId, hour, tag] = JSON.parse(line) as [string, number, string];
+      return { branchId, hour, tag };
+    });
     const controller = new AbortController();
-    void (async () => {
-      const images: Record<string, CountryFlagImage> = {};
-      let warning: string | null = null;
-      try {
-        const groups = new Map<string, CountryMetadata[]>();
-        for (const country of choices) {
-          const key = `${country.observedBranchId}:${country.observedHour}`;
-          const group = groups.get(key) ?? []; group.push(country); groups.set(key, group);
-        }
-        for (const group of groups.values()) for (let start = 0; start < group.length; start += 32) {
-          const result = await loadProduct<CountryFlagReply>(client, flagsRequest({ sourceId: source.id, revision: source.revision, branchId: group[0].observedBranchId, hour: group[0].observedHour }, 'medium', group.slice(start, start + 32).map((country) => country.tag)), controller.signal);
-          if (controller.signal.aborted) return;
-          for (const image of result.flags) images[image.tag] = image;
-          warning = result.warnings.length ? result.warnings.join('\n') : warning;
-          setFlagState(previous => ({ key: sourceKey, images: { ...(previous.key === sourceKey ? previous.images : {}), ...images }, error: warning }));
-        }
-      } catch (error) {
-        if (!controller.signal.aborted) setFlagState(previous => ({ key: sourceKey, images: { ...(previous.key === sourceKey ? previous.images : {}), ...images }, error: String(error) }));
-      }
-    })();
+    // Reply warnings describe the recording (such as its content coverage), not
+    // a failed flag; only a failed request counts as a flag error.
+    void loadListFlags(client, source, targets, controller.signal).then(() => {
+      if (!controller.signal.aborted) setFlagState(previous => ({ key: sourceKey, loads: (previous.key === sourceKey ? previous.loads : 0) + 1, error: null }));
+    }).catch(error => {
+      if (!controller.signal.aborted) setFlagState(previous => ({ key: sourceKey, loads: previous.key === sourceKey ? previous.loads : 0, error: String(error) }));
+    });
     return () => controller.abort();
-  }, [source, sourceKey, client, choices, retry]);
+  }, [source, sourceKey, client, visibleTargets, retry]);
+  useLayoutEffect(() => {
+    if (open && list.current) setView({ scrollTop: list.current.scrollTop, height: list.current.clientHeight || LIST_HEIGHT });
+  }, [open]);
+  const scrollTo = (scrollTop: number) => {
+    if (list.current) list.current.scrollTop = scrollTop;
+    setView(previous => ({ ...previous, scrollTop }));
+  };
+  const reset = () => { setActive(-1); scrollTo(0); };
+  const moveTo = (index: number) => {
+    setActive(index);
+    scrollTo(revealRow(index, list.current?.scrollTop ?? view.scrollTop, list.current?.clientHeight || view.height));
+  };
   const retryCountries = () => {
     if (onReconnect && [roster.error, flagError].some(error => error?.includes('source is unavailable or changed'))) onReconnect();
     else { if (source && flagError) forgetSettledProducts(client, source.id); setRetry(value => value + 1); }
   };
   const choose = (tag: string | null) => { onChange(tag); menu.close(); };
+  const flagsMissing = flagState.key === sourceKey && !!flagState.error && !visible.some(({ country }) => flagOf(country));
   return <div className={field ? 'field widget-country-field' : 'header-control header-country'}>
     <span className={field ? undefined : 'sr-only'}>Country</span>
     <button ref={trigger} type="button" className={field ? 'widget-country-trigger' : 'header-country-trigger'} disabled={!source} popoverTarget={id}
@@ -122,22 +143,43 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
       <Icon name="chevron-down" />
     </button>
     <Popover menu={menu} portal={!field} id={id} aria-label="Choose country" className="country-picker"
-      onToggle={(event) => { if (event.newState === 'closed') setQuery(''); }}>
+      onToggle={(event) => { if (event.newState === 'closed') { setQuery(''); reset(); } }}>
       {open && <>
-        <div className="country-picker-search"><Icon name="search" /><input data-popover-autofocus aria-label="Search countries" placeholder="Search countries or tags" value={query} onChange={(event) => setQuery(event.currentTarget.value)}
-          onKeyDown={(event) => { if (event.key === 'ArrowDown') { event.preventDefault(); popup.current?.querySelector<HTMLButtonElement>('.country-picker-list button')?.focus(); } }} /><span className="pill">{choices.length}</span></div>
-        <div className="country-picker-list" onKeyDown={(event) => {
-          const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')];
-          const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-          if (index < 0 || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
-          event.preventDefault();
-          const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
-          buttons[next]?.focus();
+        <div className="country-picker-search"><Icon name="search" /><input data-popover-autofocus aria-label="Search countries" placeholder="Search countries or tags" aria-controls={listId} value={query}
+          onChange={(event) => { setQuery(event.currentTarget.value); reset(); }}
+          onKeyDown={(event) => {
+            if (event.key === 'ArrowDown' && filtered.length) { event.preventDefault(); listbox.current?.focus({ preventScroll: true }); moveTo(0); }
+          }} /><span className="pill">{choices.length}</span></div>
+        <div ref={list} className="country-picker-list" onScroll={(event) => {
+          const { scrollTop, clientHeight } = event.currentTarget;
+          setView({ scrollTop, height: clientHeight || LIST_HEIGHT });
         }}>
-          {filtered.map((country) => <button type="button" key={country.tag} aria-pressed={selected?.tag === country.tag} onClick={() => choose(country.tag)}>
-            <CountryFlag image={flagImages[country.tag]} /><span>{country.name || country.tag}</span><small>{country.tag}</small>{selected?.tag === country.tag && <Icon name="check" className="country-selected-mark" />}
-          </button>)}
-          {flagError && !Object.keys(flagImages).length && <div className="country-picker-note"><Icon name="alert" /><span>Flags unavailable</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>}
+          <div ref={listbox} id={listId} role="listbox" aria-label="Countries" tabIndex={filtered.length ? 0 : -1} className="country-picker-options"
+            aria-activedescendant={active >= 0 && active < filtered.length ? optionId(active) : undefined}
+            style={{ height: filtered.length * COUNTRY_ROW_HEIGHT }}
+            // Mark the first row in view without scrolling: a click focuses the
+            // list before its own row receives the click.
+            onFocus={(event) => { if (event.target === event.currentTarget && active < 0 && filtered.length) setActive(Math.min(filtered.length - 1, Math.ceil(view.scrollTop / COUNTRY_ROW_HEIGHT))); }}
+            onKeyDown={(event) => {
+              if ((event.key === 'Enter' || event.key === ' ') && active >= 0 && active < filtered.length) {
+                event.preventDefault(); choose(filtered[active].country.tag); return;
+              }
+              const next = moveIndex(event.key, active, filtered.length);
+              if (next == null) return;
+              event.preventDefault();
+              moveTo(next);
+            }}>
+            {visible.map(({ country }, offset) => {
+              const index = range.start + offset;
+              const chosen = selected?.tag === country.tag;
+              return <div key={country.tag} id={optionId(index)} role="option" aria-selected={chosen} aria-setsize={filtered.length} aria-posinset={index + 1}
+                className="country-picker-option" data-active={index === active || undefined} style={{ top: index * COUNTRY_ROW_HEIGHT }}
+                onClick={() => choose(country.tag)}>
+                <CountryFlag image={flagOf(country)} /><span>{country.name || country.tag}</span><small>{country.tag}</small>{chosen && <Icon name="check" className="country-selected-mark" />}
+              </div>;
+            })}
+          </div>
+          {flagsMissing && <div className="country-picker-note"><Icon name="alert" /><span>Flags unavailable</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>}
           {loading && <p className="country-picker-empty" role="status"><span className="spinner" />Finding countries that owned land…</p>}
           {!loading && roster.error && <div className="country-picker-note" data-tooltip={roster.error}><Icon name="alert" /><span>Could not load countries</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>}
           {!loading && roster.warning && <div className="country-picker-note" data-tooltip={roster.warning}><Icon name="info" /><span>Some ownership history is unavailable</span></div>}

@@ -2,12 +2,12 @@
 use super::{CountryParams, LoadContext, Product, artwork};
 use crate::{
     Artwork, FocusEntry, FocusHistory, FocusOrder, FocusProgress, FocusSegment, Source,
-    metadata::{MAX_BLOCK_RAW_BYTES, validate_campaign},
+    metadata::validate_campaign,
 };
 use replay::{container::Replay, frame::FrameDecoder, rows::tables};
 use serde::Serialize;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -24,7 +24,8 @@ pub fn focus_order(
     focus_history(replay, branch, tag, cancelled)?.at(hour)
 }
 
-/// Shared branch projection: every country is collected in one replay pass.
+/// A branch projection of the scanned countries: one requested country, or
+/// every country when no tag is selected.
 pub struct FocusBranch {
     pub countries: BTreeMap<String, FocusHistory>,
     pub retained_bytes: usize,
@@ -41,11 +42,23 @@ const PROGRESS_BUDGET_BYTES: usize = 48 * 1024 * 1024;
 /// A progress run's retained size: the struct plus its decimal string.
 const PROGRESS_RUN_BYTES: usize = std::mem::size_of::<FocusProgress>() + 20;
 
-/// Country requests reuse one branch scan. The budget is shared by all cached
-/// branches; switching countries never evicts another country's projection.
+const MAX_CACHED_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CACHED_COUNTRIES: usize = 16;
+
+/// Each request scans only its own country, so the memory budget and the work
+/// never grow with how many countries the recording holds. Recently viewed
+/// countries stay cached within one shared byte budget.
 #[derive(Default)]
 pub struct FocusCache {
-    branches: std::collections::VecDeque<(u64, FocusBranch)>,
+    countries: std::collections::VecDeque<CachedCountry>,
+}
+
+struct CachedCountry {
+    branch: u64,
+    tag: String,
+    history: FocusHistory,
+    bytes: usize,
+    progress_stopped: Option<i32>,
 }
 
 impl FocusCache {
@@ -62,32 +75,42 @@ impl FocusCache {
                 "Focus request cancelled",
             ));
         }
-        if let Some(index) = self.branches.iter().position(|(id, _)| *id == branch) {
-            let entry = self.branches.remove(index).unwrap();
-            self.branches.push_back(entry);
-        } else {
-            let result = focus_branch(replay, branch, cancelled)?;
-            while !self.branches.is_empty()
-                && (self.branches.len() >= 4
-                    || self
-                        .branches
-                        .iter()
-                        .map(|(_, b)| b.retained_bytes)
-                        .sum::<usize>()
-                        + result.retained_bytes
-                        > 64 * 1024 * 1024)
-            {
-                self.branches.pop_front();
-            }
-            self.branches.push_back((branch, result));
-        }
-        let branch = &self.branches.back().unwrap().1;
-        branch
+        if let Some(index) = self
             .countries
-            .get(tag)
-            .cloned()
-            .map(|history| (history, branch.progress_stopped))
-            .ok_or_else(|| io::Error::other("No recorded focus history for this country"))
+            .iter()
+            .position(|entry| entry.branch == branch && entry.tag == tag)
+        {
+            let entry = self.countries.remove(index).unwrap();
+            self.countries.push_back(entry);
+        } else {
+            let mut result = focus_branch(replay, branch, Some(tag), cancelled)?;
+            let history = result
+                .countries
+                .remove(tag)
+                .ok_or_else(|| io::Error::other("No recorded focus history for this country"))?;
+            let bytes = result.retained_bytes;
+            while !self.countries.is_empty()
+                && (self.countries.len() >= MAX_CACHED_COUNTRIES
+                    || self
+                        .countries
+                        .iter()
+                        .map(|entry| entry.bytes)
+                        .sum::<usize>()
+                        + bytes
+                        > MAX_CACHED_BYTES)
+            {
+                self.countries.pop_front();
+            }
+            self.countries.push_back(CachedCountry {
+                branch,
+                tag: tag.to_owned(),
+                history,
+                bytes,
+                progress_stopped: result.progress_stopped,
+            });
+        }
+        let entry = self.countries.back().unwrap();
+        Ok((entry.history.clone(), entry.progress_stopped))
     }
 }
 
@@ -112,24 +135,34 @@ pub fn focus_history(
     tag: &str,
     cancelled: &AtomicBool,
 ) -> io::Result<FocusHistory> {
-    focus_branch(replay, branch, cancelled)?
+    focus_branch(replay, branch, Some(tag), cancelled)?
         .countries
         .remove(tag)
         .ok_or_else(|| io::Error::other("No recorded focus history for this country"))
 }
 
+/// Scans one branch for `selected_tag`, or for every country when it is None.
+/// The memory budget applies to the scanned countries only.
 pub fn focus_branch(
     replay: &Replay,
     branch: u64,
+    selected_tag: Option<&str>,
     cancelled: &AtomicBool,
 ) -> io::Result<FocusBranch> {
-    focus_branch_within(replay, branch, cancelled, PROGRESS_BUDGET_BYTES)
+    focus_branch_within(
+        replay,
+        branch,
+        selected_tag,
+        cancelled,
+        PROGRESS_BUDGET_BYTES,
+    )
 }
 
 /// [`focus_branch`] with the progress budget given, so tests can reach it.
 pub(crate) fn focus_branch_within(
     replay: &Replay,
     branch: u64,
+    selected_tag: Option<&str>,
     cancelled: &AtomicBool,
     progress_budget: usize,
 ) -> io::Result<FocusBranch> {
@@ -161,11 +194,6 @@ pub(crate) fn focus_branch_within(
                 "Focus request cancelled",
             ));
         }
-        if block.raw_length > MAX_BLOCK_RAW_BYTES {
-            return Err(io::Error::other(
-                "Focus data block exceeds its memory budget",
-            ));
-        }
         let mut decoder = FrameDecoder::for_tables(&selected);
         let frames = match replay.read_block_selected(block, &selected) {
             Ok(frames) => frames,
@@ -193,6 +221,21 @@ pub(crate) fn focus_branch_within(
             ) else {
                 continue;
             };
+            // Only the scanned countries' rows are indexed: a selected tag
+            // costs the same however many countries the frame holds.
+            let wanted: Vec<_> = countries
+                .iter()
+                .filter(|country| selected_tag.is_none_or(|tag| tag.as_bytes() == country.tag))
+                .filter_map(|country| {
+                    crate::metadata::mapped_slot(country, links)
+                        .ok()
+                        .map(|slot| (country, slot))
+                })
+                .collect();
+            if wanted.is_empty() {
+                continue;
+            }
+            let slots: BTreeSet<u32> = wanted.iter().map(|(_, slot)| *slot).collect();
             let by_slot: BTreeMap<_, _> = focuses
                 .iter()
                 .filter_map(|focus| {
@@ -201,18 +244,17 @@ pub(crate) fn focus_branch_within(
                         .ok()
                         .map(|i| (links[i].canonical_slot, focus))
                 })
+                .filter(|(slot, _)| slots.contains(slot))
                 .collect();
+            let owners: BTreeSet<u32> = by_slot.values().map(|focus| focus.country).collect();
             let mut by_country: BTreeMap<_, Vec<_>> = BTreeMap::new();
-            for row in completed {
+            for row in completed.iter().filter(|row| owners.contains(&row.country)) {
                 by_country.entry(row.country).or_default().push(row);
             }
             for rows in by_country.values_mut() {
                 rows.sort_by_key(|r| r.ordinal);
             }
-            for country in countries {
-                let Ok(slot) = crate::metadata::mapped_slot(country, links) else {
-                    continue;
-                };
+            for (country, slot) in wanted {
                 let Some(focus) = by_slot.get(&slot) else {
                     continue;
                 };

@@ -12,8 +12,12 @@ use crate::{Memory, ccountry, cpdx_array::Array};
 
 const MAX_BYTES: usize = 32;
 const MAX_PROBES: usize = 16;
+/// Smallest filter; larger caches get four filter bits per cell so a mod-sized
+/// census (tens of thousands of countries) keeps a useful rejection rate.
 const FILTER_WORDS: usize = 256;
-const FILTER_BITS: usize = FILTER_WORDS * u64::BITS as usize;
+/// Distinct census reads per country slot, rounded up: the pointer, vtable,
+/// identity and up to three link words, with headroom for the doubling rule.
+const READS_PER_COUNTRY: usize = 8;
 
 #[derive(Clone, Copy)]
 struct Entry {
@@ -50,10 +54,12 @@ pub struct Cache {
     entries: Box<[Entry]>,
     // A negative filter only: passing still requires the exact entry lookup.
     // It is rebuilt from successfully inserted keys during each preparation.
-    filter: [u64; FILTER_WORDS],
+    filter: Box<[u64]>,
     // Cheap rejection before the mixed hash. Collisions only cause extra exact
     // lookups; this bitmap never supplies bytes or authenticates a country.
-    front_filter: [u64; FILTER_WORDS],
+    front_filter: Box<[u64]>,
+    /// Filter bit count minus one; both filters share the power-of-two size.
+    filter_mask: usize,
     lengths: u64,
     len: usize,
     observed_reads: usize,
@@ -110,10 +116,12 @@ impl Cache {
         } else {
             cells.next_power_of_two()
         };
+        let words = (cells / 16).max(FILTER_WORDS);
         Self {
             entries: vec![Entry::EMPTY; cells].into_boxed_slice(),
-            filter: [0; FILTER_WORDS],
-            front_filter: [0; FILTER_WORDS],
+            filter: vec![0; words].into_boxed_slice(),
+            front_filter: vec![0; words].into_boxed_slice(),
+            filter_mask: words * u64::BITS as usize - 1,
             lengths: 0,
             len: 0,
             observed_reads: 0,
@@ -130,12 +138,25 @@ impl Cache {
         self.entries.len()
     }
 
+    /// Cells for one complete census of `slots` country slots, so the first
+    /// hour of a mod with tens of thousands of countries is already cached.
+    /// The result never falls below `minimum`; growth stays with the caller.
+    pub fn cells_for_countries(slots: usize, minimum: usize) -> usize {
+        slots
+            .saturating_mul(READS_PER_COUNTRY)
+            .saturating_mul(2)
+            .max(minimum)
+            .checked_next_power_of_two()
+            .unwrap_or(usize::MAX)
+    }
+
     /// Owned entry/filter storage plus derived roster storage and context.
     /// Excludes allocator metadata and the shared owner's Arc control block.
     pub fn allocated_bytes(&self) -> usize {
         std::mem::size_of_val(self.entries.as_ref())
-            + std::mem::size_of_val(&self.filter)
-            + std::mem::size_of_val(&self.front_filter)
+            + std::mem::size_of_val(self.filter.as_ref())
+            + std::mem::size_of_val(self.front_filter.as_ref())
+            + std::mem::size_of_val(&self.filter_mask)
             + std::mem::size_of_val(&self.lengths)
             + std::mem::size_of_val(self.roster.as_ref())
             + std::mem::size_of_val(&self.roster)
@@ -224,8 +245,8 @@ impl Cache {
     }
 
     #[inline]
-    fn filter_bit(hash: usize) -> (usize, u64) {
-        let bit = hash & (FILTER_BITS - 1);
+    fn filter_bit(&self, hash: usize) -> (usize, u64) {
+        let bit = hash & self.filter_mask;
         (
             bit / u64::BITS as usize,
             1_u64 << (bit % u64::BITS as usize),
@@ -233,11 +254,11 @@ impl Cache {
     }
 
     #[inline]
-    fn front_filter_bit(address: usize, len: usize) -> (usize, u64) {
+    fn front_filter_bit(&self, address: usize, len: usize) -> (usize, u64) {
         // No multiplication or division on the frequent non-country miss.
         // Fold alignment bits as well as higher address bits; distribution
         // affects performance only. Insertion and lookup use the same key.
-        Self::filter_bit(address ^ (address >> 3) ^ (address >> 17) ^ (len << 9))
+        self.filter_bit(address ^ (address >> 3) ^ (address >> 17) ^ (len << 9))
     }
 
     #[inline(always)]
@@ -250,7 +271,7 @@ impl Cache {
         {
             return None;
         }
-        let (word, bit) = Self::front_filter_bit(address, len);
+        let (word, bit) = self.front_filter_bit(address, len);
         if self.front_filter[word] & bit == 0 {
             return None;
         }
@@ -264,7 +285,7 @@ impl Cache {
         // Possible front-filter hits retain the original mixed-hash filter
         // and full exact address/length comparison, including probe bounds.
         let hash = Self::hash(address, len);
-        let (word, bit) = Self::filter_bit(hash);
+        let (word, bit) = self.filter_bit(hash);
         if self.filter[word] & bit == 0 {
             return None;
         }
@@ -305,9 +326,9 @@ impl Cache {
                     entry.address = address;
                     entry.len = bytes.len();
                     entry.bytes[..bytes.len()].copy_from_slice(bytes);
-                    let (word, bit) = Self::filter_bit(hash);
+                    let (word, bit) = self.filter_bit(hash);
                     self.filter[word] |= bit;
-                    let (word, bit) = Self::front_filter_bit(address, bytes.len());
+                    let (word, bit) = self.front_filter_bit(address, bytes.len());
                     self.front_filter[word] |= bit;
                     self.lengths |= 1_u64 << bytes.len();
                     self.len += 1;
@@ -747,7 +768,7 @@ mod tests {
             for len in 1..=MAX_BYTES {
                 cache.observe(address, &bytes[..len]);
                 assert_eq!(cache.status, SeedStatus::Ready);
-                let (word, bit) = Cache::front_filter_bit(address, len);
+                let (word, bit) = cache.front_filter_bit(address, len);
                 assert_ne!(cache.front_filter[word] & bit, 0);
                 let entry = cache.find(address, len).expect("inserted key rejected");
                 assert_eq!(entry.address, address);
@@ -769,9 +790,9 @@ mod tests {
         cache.status = SeedStatus::Ready;
         let bytes = (ccountry::VTABLE_RVA as u64).to_le_bytes();
         cache.observe(0x2000, &bytes);
-        let key = Cache::front_filter_bit(0x2000, 8);
-        let collision = (1..=FILTER_BITS * 8)
-            .find(|&address| address != 0x2000 && Cache::front_filter_bit(address, 8) == key)
+        let key = cache.front_filter_bit(0x2000, 8);
+        let collision = (1..=(cache.filter_mask + 1) * 8)
+            .find(|&address| address != 0x2000 && cache.front_filter_bit(address, 8) == key)
             .expect("finite bitmap permits collisions");
         assert!(cache.find(collision, 8).is_none());
         source.fault.set(Some(collision));
@@ -795,10 +816,11 @@ mod tests {
         let source = Synthetic::countries();
         let mut cache = Cache::with_capacity(64);
         let allocated = cache.allocated_bytes();
-        assert_eq!(std::mem::size_of_val(&cache.front_filter), 2048);
+        assert_eq!(std::mem::size_of_val(cache.front_filter.as_ref()), 2048);
         let expected_allocated = std::mem::size_of_val(cache.entries.as_ref())
-            + std::mem::size_of_val(&cache.filter)
-            + std::mem::size_of_val(&cache.front_filter)
+            + std::mem::size_of_val(cache.filter.as_ref())
+            + std::mem::size_of_val(cache.front_filter.as_ref())
+            + std::mem::size_of_val(&cache.filter_mask)
             + std::mem::size_of_val(&cache.lengths)
             + std::mem::size_of_val(cache.roster.as_ref())
             + std::mem::size_of_val(&cache.roster)
@@ -812,11 +834,11 @@ mod tests {
             assert_eq!(memory.seed_status(), SeedStatus::Ready);
             let mut expected = [0; FILTER_WORDS];
             for entry in cache.entries.iter().filter(|entry| entry.len != 0) {
-                let (word, bit) = Cache::front_filter_bit(entry.address, entry.len);
+                let (word, bit) = cache.front_filter_bit(entry.address, entry.len);
                 expected[word] |= bit;
                 assert!(cache.find(entry.address, entry.len).is_some());
             }
-            assert_eq!(cache.front_filter, expected);
+            assert_eq!(*cache.front_filter, expected);
             assert!(expected.iter().any(|&word| word != 0));
             assert_eq!(cache.allocated_bytes(), allocated);
         }
@@ -826,14 +848,14 @@ mod tests {
             memory.seed_status(),
             SeedStatus::Unavailable { .. }
         ));
-        assert_eq!(cache.front_filter, [0; FILTER_WORDS]);
+        assert_eq!(*cache.front_filter, [0; FILTER_WORDS]);
         assert_eq!(cache.allocated_bytes(), allocated);
 
         let mut disabled = Cache::with_capacity(0);
         disabled.status = SeedStatus::Ready;
         disabled.observe(0x2000, &[1]);
         assert!(matches!(disabled.status, SeedStatus::Capacity { .. }));
-        assert_eq!(disabled.front_filter, [0; FILTER_WORDS]);
+        assert_eq!(*disabled.front_filter, [0; FILTER_WORDS]);
     }
 
     struct Synthetic {
@@ -964,22 +986,23 @@ mod tests {
     fn negative_filter_collisions_and_saturation_still_require_exact_keys() {
         // Pigeonhole-bounded search: page-aligned addresses exercise the same
         // existing full-address hash; two keys must share one filter bit.
-        let mut seen = vec![None; FILTER_BITS];
-        let (first, second) = (0..=FILTER_BITS)
+        let mut cache = Cache::with_capacity(64);
+        let filter_bits = cache.filter_mask + 1;
+        let mut seen = vec![None; filter_bits];
+        let (first, second) = (0..=filter_bits)
             .find_map(|index| {
                 let address = 0x1000 + index * 0x1000;
-                let bit = Cache::hash(address, 8) & (FILTER_BITS - 1);
+                let bit = Cache::hash(address, 8) & cache.filter_mask;
                 seen[bit]
                     .replace(address)
                     .map(|previous| (previous, address))
             })
             .expect("more distinct keys than filter bits must collide");
-        let mut cache = Cache::with_capacity(64);
         cache.status = SeedStatus::Ready;
         cache.observe(first, &[0x41; 8]);
         assert_eq!(
-            Cache::filter_bit(Cache::hash(first, 8)),
-            Cache::filter_bit(Cache::hash(second, 8))
+            cache.filter_bit(Cache::hash(first, 8)),
+            cache.filter_bit(Cache::hash(second, 8))
         );
         assert!(cache.find(second, 8).is_none());
         cache.observe(second, &[0x72; 8]);
@@ -1005,6 +1028,66 @@ mod tests {
         assert!(cache.find(first, 8).is_none());
     }
 
+    /// One country per province of a large mod: 15,000 countries in one
+    /// census. Sizing from the registry count caches the whole census on the
+    /// first hour; the old fixed 8,192 cells could not.
+    #[test]
+    fn census_of_fifteen_thousand_countries_fits_a_registry_sized_cache() {
+        const SLOTS: u32 = 15_001;
+        const STATE: usize = 0x1000;
+        const TABLE: usize = 0x1_0000;
+        const LINKS: usize = 0x4_0000;
+        const OBJECTS: usize = 0x6_0000;
+        let mut bytes = vec![0_u8; OBJECTS + SLOTS as usize * 0x10];
+        let mut put = |address: usize, value: &[u8]| {
+            bytes[address..address + value.len()].copy_from_slice(value);
+        };
+        for (offset, pointer) in [
+            (cgame_state::COUNTRIES, TABLE),
+            (cgame_state::COUNTRY_LINKS, LINKS),
+        ] {
+            put(STATE + offset, &(pointer as u64).to_le_bytes());
+            put(STATE + offset + 8, &SLOTS.to_le_bytes());
+            put(STATE + offset + 12, &SLOTS.to_le_bytes());
+        }
+        for slot in 1..SLOTS as usize {
+            let object = OBJECTS + slot * 0x10;
+            put(TABLE + slot * 8, &(object as u64).to_le_bytes());
+            put(LINKS + slot * 4, &(slot as u32).to_le_bytes());
+            put(object, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+            put(object + ccountry::ID, &(slot as u32).to_le_bytes());
+        }
+        let memory = crate::memory::SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+
+        let mut fixed = Cache::with_capacity(8192);
+        let status = fixed.prepare(&memory, 0, STATE).seed_status();
+        assert!(matches!(status, SeedStatus::Capacity { .. }));
+        assert_eq!(fixed.roster_len, 0);
+
+        let cells = Cache::cells_for_countries(SLOTS as usize, 8192);
+        let mut sized = Cache::with_capacity(cells);
+        let view = sized.prepare(&memory, 0, STATE);
+        assert_eq!(view.seed_status(), SeedStatus::Ready);
+        assert_eq!(sized.roster_len, SLOTS as usize);
+        assert!(
+            sized.roster[1..SLOTS as usize]
+                .iter()
+                .enumerate()
+                .all(|(index, country)| country
+                    .is_some_and(|c| c.canonical_slot as usize == index + 1))
+        );
+        // Scaled filters keep rejecting most unrelated reads at this size.
+        let set = sized
+            .front_filter
+            .iter()
+            .map(|w| w.count_ones())
+            .sum::<u32>() as usize;
+        assert!(set * 4 < sized.front_filter.len() * 64, "{set} bits set");
+    }
+
     #[test]
     fn negative_filter_learns_every_supported_width_and_reports_owned_storage() {
         let mut cache = Cache::with_capacity(256);
@@ -1022,6 +1105,7 @@ mod tests {
             cache.allocated_bytes(),
             256 * (std::mem::size_of::<Entry>() + std::mem::size_of::<Option<ccountry::Country>>())
                 + 2 * std::mem::size_of::<[u64; FILTER_WORDS]>()
+                + std::mem::size_of::<usize>()
                 + std::mem::size_of::<u64>()
                 + std::mem::size_of::<Box<[Option<ccountry::Country>]>>()
                 + 3 * std::mem::size_of::<usize>()
@@ -1030,6 +1114,7 @@ mod tests {
         assert_eq!(
             Cache::with_capacity(0).allocated_bytes(),
             2 * std::mem::size_of::<[u64; FILTER_WORDS]>()
+                + std::mem::size_of::<usize>()
                 + std::mem::size_of::<u64>()
                 + std::mem::size_of::<Box<[Option<ccountry::Country>]>>()
                 + 3 * std::mem::size_of::<usize>()
@@ -1056,11 +1141,13 @@ mod tests {
         assert_eq!(memory.cache.lengths, (1 << 4) | (1 << 8) | (1 << 16));
         let mut expected = [0; FILTER_WORDS];
         for entry in memory.cache.entries.iter().filter(|entry| entry.len != 0) {
-            let (word, bit) = Cache::filter_bit(Cache::hash(entry.address, entry.len));
+            let (word, bit) = memory
+                .cache
+                .filter_bit(Cache::hash(entry.address, entry.len));
             expected[word] |= bit;
             assert!(memory.cache.find(entry.address, entry.len).is_some());
         }
-        assert_eq!(memory.cache.filter, expected);
+        assert_eq!(*memory.cache.filter, expected);
         assert!(memory.cache.find(0x2008, 4).is_none());
         let before = source.guards.get();
         let scalar_before = source.scalar_reads.get();
@@ -1083,7 +1170,7 @@ mod tests {
             memory.seed_status(),
             SeedStatus::Unavailable { .. }
         ));
-        assert_eq!(memory.cache.filter, [0; FILTER_WORDS]);
+        assert_eq!(*memory.cache.filter, [0; FILTER_WORDS]);
         assert_eq!(memory.cache.lengths, 0);
     }
 

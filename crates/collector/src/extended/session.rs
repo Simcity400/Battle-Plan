@@ -52,6 +52,13 @@ impl Default for Capacities {
         }
     }
 }
+impl Capacities {
+    /// ThreatCountryAggregates is the engine's dense per-country cache.
+    pub(crate) fn raise_for_countries(&mut self, slots: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows[2], rows(slots.saturating_add(1), 1));
+    }
+}
 
 /// One acquisition pass: the three table outcomes plus its reason-arena use.
 struct Pass {

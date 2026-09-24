@@ -196,6 +196,7 @@ impl Window {
             rect,
             ..Drawn::default()
         };
+        drawn.batch.at_layer(window_layer(0));
         let mut painter = Painter {
             assets,
             drawn: &mut drawn,
@@ -295,7 +296,7 @@ impl Window {
                     let node = slider.child(name).expect("authored scrollbar button");
                     let origin = node.origin([0.0, 0.0, 0.0, 0.0])?;
                     let size = installed_content::gui::sprite(&node.items)
-                        .and_then(|key| assets.sprites.get(key))
+                        .and_then(|key| assets.sprite(key))
                         .map_or([0.0; 2], |sprite| sprite.size);
                     Ok((origin, size))
                 };
@@ -309,7 +310,7 @@ impl Window {
                         .expect("authored scrollbar track")
                         .items,
                 )
-                .and_then(|key| assets.sprites.get(key))
+                .and_then(|key| assets.sprite(key))
                 .map_or(0.0, |sprite| sprite.size[0]);
                 let track_x = slider
                     .child("Track")
@@ -321,7 +322,7 @@ impl Window {
                         .expect("authored scrollbar thumb")
                         .items,
                 )
-                .and_then(|key| assets.sprites.get(key))
+                .and_then(|key| assets.sprite(key))
                 .map_or(0.0, |sprite| sprite.size[1]);
                 let mut values = Values::new();
                 values.insert(
@@ -388,7 +389,7 @@ impl Window {
                         at[1] += value.offset[1];
                     }
                     if let Some(sprite) =
-                        installed_content::gui::sprite(&node.items).and_then(|key| assets.sprites.get(key))
+                        installed_content::gui::sprite(&node.items).and_then(|key| assets.sprite(key))
                     {
                         painter.drawn.scroll_buttons.push((
                             [at[0], at[1], sprite.size[0], sprite.size[1]],
@@ -531,6 +532,18 @@ enum Chunk {
     Icon(String),
     Flag(String),
 }
+/// The sprite-batch priority of the combat window: above every map-icon
+/// priority (`DEFAULT_PRIORITY_*`, the highest being combat icons at
+/// [`crate::map::counters::COMBAT_PRIORITY`]), so the open window covers the
+/// bases, labels, counters and combat icons behind it.
+const WINDOW_PRIORITY: u32 = 100;
+
+/// The layer of a window quad pushed after `quads` others: the window draws
+/// in push order, one icon ordinal per quad.
+fn window_layer(quads: usize) -> u64 {
+    crate::map::sprites::layer(WINDOW_PRIORITY, u32::try_from(quads).unwrap_or(u32::MAX), 0)
+}
+
 struct Painter<'a> {
     assets: &'a Assets,
     drawn: &'a mut Drawn,
@@ -572,13 +585,13 @@ impl Painter<'_> {
             }
             self.drawn
                 .batch
-                .at_layer(100_000_000 + self.drawn.batch.quads.len() as u32);
+                .at_layer(window_layer(self.drawn.batch.quads.len()));
             let sprite = data
                 .and_then(|d| d.sprite.as_deref())
                 .or_else(|| installed_content::gui::sprite(&child.items));
             if let Some(flag) = data
                 .and_then(|d| d.flag.as_ref())
-                .and_then(|key| self.assets.flags.get(key))
+                .and_then(|key| self.assets.flag(key))
             {
                 // 14162F510 offsets the masked-shield quad by (0,-1) on this
                 // renderer (-0.5,-0.5 on the other branch) in its y-up vertex
@@ -606,16 +619,16 @@ impl Painter<'_> {
                 // GFX_flag_small2's maskedShieldType draws the authored overlay
                 // over the large flag atlas. Inline country markers have no shield.
                 if sprite == Some("GFX_flag_small2")
-                    && let Some(overlay) = self.assets.sprites.get("GFX_flag_small2_not_masked")
+                    && let Some(overlay) = self.assets.sprite("GFX_flag_small2_not_masked")
                 {
                     self.drawn
                         .batch
-                        .at_layer(100_000_000 + self.drawn.batch.quads.len() as u32);
+                        .at_layer(window_layer(self.drawn.batch.quads.len()));
                     self.drawn
                         .batch
                         .scaled(&overlay.sheet, 0, origin, overlay.size, [1.0; 4]);
                 }
-            } else if let Some(sprite) = sprite.and_then(|name| self.assets.sprites.get(name)) {
+            } else if let Some(sprite) = sprite.and_then(|name| self.assets.sprite(name)) {
                 let scale = number(&child.items, "scale", 1.0);
                 let size = data
                     .and_then(|d| d.size)
@@ -630,7 +643,7 @@ impl Painter<'_> {
                 };
                 if sprite.progress {
                     let (at, rotation) = progress_turn(at, size, rotation);
-                    self.progress(sprite, at, size, rotation, data.and_then(|d| d.fill));
+                    self.progress(&sprite, at, size, rotation, data.and_then(|d| d.fill));
                 } else {
                     let frame = data
                         .and_then(|d| d.frame)
@@ -638,7 +651,7 @@ impl Painter<'_> {
                     let color = [1.0, 1.0, 1.0, data.and_then(|d| d.opacity).unwrap_or(1.0)];
                     match sprite.border {
                         Some(border) if size != sprite.size && rotation == 0.0 => {
-                            self.cornered(sprite, frame, at, size, border, color)
+                            self.cornered(&sprite, frame, at, size, border, color)
                         }
                         _ => self.drawn.batch.rotated(
                             &sprite.sheet,
@@ -812,11 +825,11 @@ impl Painter<'_> {
                 let remaining = width.map(|w| (origin[0] + w - x).max(0.0));
                 self.drawn
                     .batch
-                    .at_layer(100_000_000 + self.drawn.batch.quads.len() as u32);
+                    .at_layer(window_layer(self.drawn.batch.quads.len()));
                 match &chunk {
                     Chunk::Icon(name) => {
                         if remaining.is_none_or(|w| w >= advance)
-                            && let Some(sprite) = self.assets.sprites.get(name)
+                            && let Some(sprite) = self.assets.sprite(name)
                         {
                             self.drawn.batch.scaled(
                                 &sprite.sheet,
@@ -830,8 +843,7 @@ impl Painter<'_> {
                     Chunk::Flag(key) => {
                         let size = self.assets.inline_flag_size;
                         if remaining.is_none_or(|w| w >= size[0])
-                            && let Some((texture, uv)) =
-                                self.assets.flags.get(key).and_then(|flag| flag.inline)
+                            && let Some((texture, uv)) = self.assets.inline_flag(key)
                         {
                             // The small flag's top is five pixels below the
                             // line top in both Arial12 (pairJ_land_5.png) and
@@ -913,7 +925,7 @@ impl Painter<'_> {
     }
     fn length(&self, font: &text::Font, chunk: &Chunk) -> f32 {
         match chunk {
-            Chunk::Icon(name) => self.assets.sprites.get(name).map_or(0.0, |s| s.size[0]),
+            Chunk::Icon(name) => self.assets.sprite(name).map_or(0.0, |s| s.size[0]),
             Chunk::Flag(_) => INLINE_FLAG_ADVANCE,
             Chunk::Text(run, _) => text::measure(font, run),
         }
@@ -1287,6 +1299,31 @@ fn clip_quads(batch: &mut Batch, first: usize, clip: [f32; 4]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_combat_window_sorts_above_every_map_icon() {
+        use crate::map::{counters, labels, raids, sprites::layer};
+        let top_icon = [
+            counters::BASE_PRIORITY,
+            counters::COUNTER_PRIORITY,
+            counters::COMBAT_PRIORITY,
+            labels::PRIORITY,
+            raids::PRIORITY,
+        ]
+        .into_iter()
+        .map(|priority| layer(priority, u32::MAX, 15))
+        .max()
+        .unwrap();
+        assert!(window_layer(0) > top_icon);
+        // Window quads keep their push order among themselves.
+        assert!(window_layer(1) > window_layer(0));
+        assert!(window_layer(usize::MAX) >= window_layer(70_000));
+        // Sorted as the sprite pass sorts, the window's quads come last.
+        let icon = layer(counters::COMBAT_PRIORITY, 9, 3);
+        let mut keys = vec![window_layer(3), icon, window_layer(0)];
+        keys.sort();
+        assert_eq!(keys, [icon, window_layer(0), window_layer(3)]);
+    }
+
     use super::*;
 
     #[test]

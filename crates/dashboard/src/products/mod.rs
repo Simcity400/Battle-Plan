@@ -82,13 +82,13 @@ impl CountryParams {
     }
 }
 
+/// The one check for a requested country tag, shared by products and the map.
+/// Tags are lookup keys compared with recorded tags, never paths. The engine's
+/// tag loader (`CCountryDatabase` load_tags, `14070e900`) takes any non-NUL
+/// bytes, so no character set is assumed; only emptiness, NUL and a generous
+/// length bound are refused.
 pub fn validate_tag(tag: &str) -> Result<(), &'static str> {
-    if tag.is_empty()
-        || tag.len() > 128
-        || !tag
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
+    if tag.is_empty() || tag.len() > 128 || tag.contains('\0') {
         return Err("Invalid country tag");
     }
     Ok(())

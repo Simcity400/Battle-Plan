@@ -8,7 +8,9 @@ use crate::{
 use engine::{Memory, ccountry_supply_system, supply_node, supply_train_entry, walk::Outcome};
 use replay::{
     frame::TableInput,
-    rows::{SupplyNodeRow, TableId, TrainAllocation, TrainInventoryRow, tables},
+    rows::{
+        ByteRun, SparseBytes, SupplyNodeRow, TableId, TrainAllocation, TrainInventoryRow, tables,
+    },
 };
 
 #[cfg(test)]
@@ -42,7 +44,10 @@ pub struct Capacities {
     countries: usize,
     paths: usize,
     entries: usize,
+    /// Nonzero controller-access bytes across all countries.
     access: usize,
+    /// Maximal nonzero controller-access runs across all countries.
+    access_runs: usize,
 }
 impl Default for Capacities {
     fn default() -> Self {
@@ -52,7 +57,15 @@ impl Default for Capacities {
             paths: 131072,
             entries: 4096,
             access: 262144,
+            access_runs: 65536,
         }
+    }
+}
+impl Capacities {
+    /// TrainInventory has one row per country supply system.
+    pub(crate) fn raise_for_countries(&mut self, slots: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.countries, rows(slots, 1));
     }
 }
 /// One share of the node census: its rows and their path arena.
@@ -122,7 +135,10 @@ impl Part {
 pub struct Trains {
     countries: CaptureRows<ccountry_supply_system::TrainRow>,
     entries: Arena<supply_train_entry::Row>,
+    /// Nonzero controller-access bytes, run after run.
     access: Arena<u8>,
+    /// `[native start, length]` of each nonzero access run.
+    access_runs: Arena<[u32; 2]>,
 }
 impl Trains {
     fn new(c: &Capacities) -> Self {
@@ -130,6 +146,7 @@ impl Trains {
             countries: CaptureRows::new(c.countries),
             entries: Arena::new(c.entries),
             access: Arena::new(c.access),
+            access_runs: Arena::new(c.access_runs),
         }
     }
     pub(crate) fn vacant() -> Self {
@@ -137,22 +154,26 @@ impl Trains {
             countries: CaptureRows::new(0),
             entries: Arena::new(0),
             access: Arena::new(0),
+            access_runs: Arena::new(0),
         }
     }
     fn reset(&mut self) {
         self.countries.reset();
         self.entries.reset();
         self.access.reset();
+        self.access_runs.reset();
     }
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.countries.allocated_bytes()
             + self.entries.allocated_bytes()
             + self.access.allocated_bytes()
+            + self.access_runs.allocated_bytes()
     }
     fn grow(&mut self, c: &mut Capacities) {
         self.countries.grow(&mut c.countries);
         self.entries.grow(&mut c.entries);
         self.access.grow(&mut c.access);
+        self.access_runs.grow(&mut c.access_runs);
     }
     pub(crate) fn capture(&mut self, memory: &impl Memory, context: CaptureContext) -> u64 {
         let _reads = crate::read_accounting::table(TableId::TrainInventory);
@@ -165,12 +186,15 @@ impl Trains {
             &mut self.countries.rows,
             &mut self.entries.first,
             &mut self.access.first,
+            &mut self.access_runs.first,
         );
         self.countries.outcome = trains.outcome;
         self.entries.len = trains.entries;
         self.entries.required = trains.required_entries;
         self.access.len = trains.access;
         self.access.required = trains.required_access;
+        self.access_runs.len = trains.runs;
+        self.access_runs.required = trains.required_runs;
         qpc().saturating_sub(begin).max(0) as u64
     }
 }
@@ -376,18 +400,62 @@ impl Captured {
         let Some(rows) = trains.countries.rows.get(..outcome.len()) else {
             return unavailable("walker row count exceeds allocated buffer").into();
         };
-        let (Some(entries), Some(access)) = (
+        let (Some(entries), Some(access), Some(spans)) = (
             trains.entries.first.get(..trains.entries.len),
             trains.access.first.get(..trains.access.len),
+            trains.access_runs.first.get(..trains.access_runs.len),
         ) else {
             return unavailable("train payload exceeds captured arena").into();
         };
+        // Each row's runs must lie in the run arena and cover exactly its
+        // values, which must lie in the value arena.
+        let access_of = |r: &ccountry_supply_system::TrainRow| {
+            let runs = spans.get(r.runs_start..r.runs_start.checked_add(r.runs_len)?)?;
+            let values = access.get(r.values_start..r.values_start.checked_add(r.values_len)?)?;
+            let mut end = 0_u64;
+            let canonical = runs.iter().enumerate().all(|(index, [start, len])| {
+                let fits = *len != 0
+                    && (index == 0 || u64::from(*start) > end)
+                    && u64::from(*start) + u64::from(*len) <= u64::from(r.access_count);
+                end = u64::from(*start) + u64::from(*len);
+                fits
+            });
+            (canonical && runs.iter().map(|[_, len]| *len as usize).sum::<usize>() == values.len())
+                .then_some((runs, values))
+        };
         if rows.iter().any(|r| {
             r.entries_start.checked_add(r.entries_len).is_none_or(|end| end > entries.len())
-                || r.access_start.checked_add(r.access_len).is_none_or(|end| end > access.len())
+                || access_of(r).is_none()
         }) {
             return unavailable("train row exceeds captured payload arena").into();
         }
+        let same_access = |r: &ccountry_supply_system::TrainRow, previous: &SparseBytes| {
+            let (runs, mut values) = access_of(r).expect("checked above");
+            r.access_count == previous.len
+                && runs.len() == previous.runs.len()
+                && runs.iter().zip(&previous.runs).all(|([start, len], run)| {
+                    let (head, rest) = values.split_at(*len as usize);
+                    values = rest;
+                    *start == run.start && head == run.bytes.as_slice()
+                })
+        };
+        let sparse_access = |r: &ccountry_supply_system::TrainRow| {
+            let (runs, mut values) = access_of(r).expect("checked above");
+            SparseBytes {
+                len: r.access_count,
+                runs: runs
+                    .iter()
+                    .map(|[start, len]| {
+                        let (head, rest) = values.split_at(*len as usize);
+                        values = rest;
+                        ByteRun {
+                            start: *start,
+                            bytes: head.to_vec(),
+                        }
+                    })
+                    .collect(),
+            }
+        };
         project_table::<tables::TrainInventory, _>(
             projection, outcome, rows,
             |r| r.country as u128,
@@ -397,7 +465,7 @@ impl Captured {
                     && entries[r.entries_start..r.entries_start + r.entries_len].iter()
                         .zip(&previous.allocations)
                         .all(|(entry, prior)| entry.variant == prior.variant && entry.count == prior.count)
-                    && access[r.access_start..r.access_start + r.access_len] == previous.controller_access
+                    && same_access(r, &previous.controller_access)
             },
             |r| {
                 TrainInventoryRow {
@@ -411,9 +479,7 @@ impl Captured {
                             count: e.count,
                         })
                         .collect(),
-                    controller_access: access
-                        [r.access_start..r.access_start + r.access_len]
-                        .to_vec(),
+                    controller_access: sparse_access(r),
                 }
             },
         )
@@ -425,7 +491,7 @@ mod tests {
     use super::*;
     fn projection_fixture() -> Captured {
         let capacities = Capacities {
-            nodes: 2, countries: 1, paths: 4, entries: 3, access: 3,
+            nodes: 2, countries: 1, paths: 4, entries: 3, access: 3, access_runs: 2,
         };
         let mut capture = Captured::with_capacities(&capacities);
         // Exercise merging and reordering independently of production's
@@ -449,7 +515,7 @@ mod tests {
         capture.trains.countries.outcome = Outcome::Rows { len: 1 };
         capture.trains.countries.rows[0] = ccountry_supply_system::TrainRow {
             country: 99, node_count: u32::MAX, entries_start: 0, entries_len: 3,
-            access_start: 0, access_len: 3,
+            access_count: 3, runs_start: 0, runs_len: 1, values_start: 0, values_len: 2,
         };
         capture.trains.entries.first.copy_from_slice(&[
             supply_train_entry::Row { variant: 0, count: i32::MIN },
@@ -457,8 +523,11 @@ mod tests {
             supply_train_entry::Row { variant: 0, count: 0 },
         ]);
         capture.trains.entries.len = 3;
-        capture.trains.access.first.copy_from_slice(&[0, 255, 128]);
-        capture.trains.access.len = 3;
+        // The native array [0, 255, 128]: one run of two nonzero bytes at 1.
+        capture.trains.access.first[..2].copy_from_slice(&[255, 128]);
+        capture.trains.access.len = 2;
+        capture.trains.access_runs.first[0] = [1, 2];
+        capture.trains.access_runs.len = 1;
         capture
     }
 
@@ -509,8 +578,8 @@ mod tests {
                 20 => current.trains.countries.rows[0].entries_len -= 1,
                 21 => current.trains.entries.first[0].variant = u64::MAX,
                 22 => current.trains.entries.first[0].count = i32::MAX,
-                23 => current.trains.countries.rows[0].access_len -= 1,
-                24 => current.trains.access.first[2] ^= 64,
+                23 => current.trains.countries.rows[0].access_count += 1,
+                24 => current.trains.access.first[1] ^= 64,
                 25 => current.trains.entries.first.swap(0, 1),
                 26 => current.parts[0].nodes.outcome = Outcome::Unavailable { reason: "node fault" },
                 27 => current.trains.countries.outcome = Outcome::Truncated { len: 1, unread_rows: 1 },
@@ -562,6 +631,7 @@ mod tests {
             paths: 2,
             entries: 0,
             access: 0,
+            access_runs: 0,
         };
         let mut capture = Captured::with_capacities(&c);
         capture.parts[0].nodes.rows[0] = supply_node::Row {
@@ -606,6 +676,7 @@ mod tests {
             paths: 2,
             entries: 0,
             access: 0,
+            access_runs: 0,
         };
         let mut capture = Captured::with_capacities(&c);
         capture.parts[0].nodes.rows[0] = supply_node::Row {
@@ -654,6 +725,7 @@ mod tests {
             paths: 2,
             entries: 2,
             access: 2,
+            access_runs: 2,
         }
     }
     fn allocations(c: &Captured) -> [(usize, usize, usize); 5] {
@@ -703,8 +775,8 @@ mod tests {
                 capture.parts[0].nodes.rows[0].route.len = 1;
                 capture.trains.countries.rows[0].entries_start = usize::MAX;
                 capture.trains.countries.rows[0].entries_len = 1;
-                capture.trains.countries.rows[0].access_start = usize::MAX;
-                capture.trains.countries.rows[0].access_len = 1;
+                capture.trains.countries.rows[0].runs_start = usize::MAX;
+                capture.trains.countries.rows[0].runs_len = 1;
                 capture.parts[0].paths.len = 1;
                 capture.parts[0].paths.required = 9;
                 capture.trains.entries.len = 1;

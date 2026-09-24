@@ -748,6 +748,7 @@ pub mod shadow_owner_layout;
 pub mod shadow_target_layout;
 pub mod ship_class_database;
 pub mod ship_class_definition;
+pub(crate) mod slot_set;
 pub mod snow_mud_scene_constants_layout;
 pub mod snow_mud_staging_layout;
 pub mod sprite_constant_buffer_layout;

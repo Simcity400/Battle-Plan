@@ -78,6 +78,14 @@ impl Default for MapCapacities {
     }
 }
 
+impl MapCapacities {
+    /// HumanControllers has one row per authenticated canonical country
+    /// (`chuman::walk_controllers`); the other map tables follow activity.
+    pub fn raise_for_countries(&mut self, slots: usize) {
+        crate::country_scale::raise(&mut self.rows[1], crate::country_scale::rows(slots, 1));
+    }
+}
+
 /// Fleets, task forces and ships. Walked inside the ShipModels job, whose
 /// details the ships seed, so the game thread never runs the census.
 pub struct ShipCensus {

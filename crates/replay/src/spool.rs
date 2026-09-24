@@ -19,7 +19,10 @@ use crate::{
 pub const RECORD_MAGIC: [u8; 4] = *b"H4SV";
 /// Magic, recording version, payload length and payload CRC, all scalars little-endian.
 pub const RECORD_HEADER_BYTES: usize = 4 + 2 + 4 + 4;
-pub const MAX_RECORD_BYTES: usize = 128 * 1024 * 1024;
+/// One record carries one frame, and a frame must fit a replay block, so the
+/// block's raw limit is the only bound. A fixed smaller cap refused keyframes
+/// of campaigns with a few thousand countries (~150-240 MB at 1,500).
+pub const MAX_RECORD_BYTES: usize = crate::container::MAX_BLOCK_RAW_BYTES;
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,7 +206,7 @@ fn encode_frame_record(mut frame: EncodedFrame) -> io::Result<Vec<u8>> {
 fn seal_record(mut out: Vec<u8>) -> io::Result<Vec<u8>> {
     let length = out.len() - RECORD_HEADER_BYTES;
     if length > MAX_RECORD_BYTES {
-        return Err(invalid("spool record exceeds 128 MiB"));
+        return Err(invalid("spool record exceeds the replay block limit"));
     }
     let crc = crc32fast::hash(&out[RECORD_HEADER_BYTES..]);
     out[..4].copy_from_slice(&RECORD_MAGIC);

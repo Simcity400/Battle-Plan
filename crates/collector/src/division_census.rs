@@ -83,7 +83,11 @@ pub(crate) struct Census {
     census_result: Outcome,
     row_error: Option<&'static str>,
     core_root_error: Option<&'static str>,
+    /// Non-null division pointers, exact where read; after the roster storage
+    /// is exhausted each remaining native roster count is an upper bound.
     required: usize,
+    /// Every native roster slot of every canonical country, including nulls.
+    required_slots: usize,
     pub overflowed: bool,
     bytes: u64,
     core_roots: Option<CoreRoots>,
@@ -102,6 +106,7 @@ impl Default for Census {
             row_error: None,
             core_root_error: None,
             required: 0,
+            required_slots: 0,
             overflowed: false,
             bytes: 0,
             core_roots: None,
@@ -139,6 +144,7 @@ impl Census {
         self.row_error = None;
         self.core_root_error = None;
         self.required = 0;
+        self.required_slots = 0;
         self.overflowed = false;
         self.bytes = 0;
         self.core_roots = None;
@@ -180,7 +186,12 @@ impl Census {
             let inputs =
                 Arc::get_mut(shared).expect("division input leases released before growth");
             reserve(&mut inputs.seeds, target);
-            let slots = inputs.roster_slots.capacity().saturating_mul(2).max(16384);
+            // The overflowed census kept counting every remaining roster, so
+            // one step reaches the observed requirement.
+            let slots = self
+                .required_slots
+                .max(inputs.roster_slots.capacity().saturating_mul(2))
+                .max(16384);
             reserve(&mut inputs.roster_slots, slots);
         } else {
             self.unit_inputs = Some(Arc::new(UnitInputs::new(target)));
@@ -307,29 +318,17 @@ impl Census {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        let countries = Countries {
-            countries: self.array(
-                memory,
-                state,
-                cgame_state::COUNTRIES,
-                8,
-                "country array unreadable or invalid",
-            )?,
-            links: self.array(
-                memory,
-                state,
-                cgame_state::COUNTRY_LINKS,
-                4,
-                "country links unreadable or invalid",
-            )?,
-        };
-        if countries.countries.count < 2 {
-            return Err("country table has no country slots");
-        }
-        if countries.links.count == 0 {
-            return Err("country links have no sentinel slot");
-        }
+        // The engine reader reuses this callback's complete country census
+        // when the supplied memory carries it; otherwise it performs the same
+        // native pointer, vtable, identity and link checks slot by slot.
+        let reader = ccountry::Reader::new(memory, base, state)?;
+        let [countries, links] = reader.arrays();
+        let countries = Countries { countries, links };
         let mut found = false;
+        // Set once the owned roster storage is exhausted: every later roster
+        // is still visited, but only its native count is read, so the growth
+        // demand covers the whole census in one step.
+        let mut counting = false;
         let mut pointers = [0usize; BATCH];
         let mut pointer_bytes = [0u8; BATCH * 8];
         const POINTER: [RecordField; 1] = [RecordField {
@@ -339,30 +338,21 @@ impl Census {
         }];
         const POINTER_LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&POINTER, 8).expect("valid division pointer layout");
-        for slot in 1..countries.countries.count {
-            let pointer = countries.pointer(memory, slot)?;
-            if pointer == 0 {
+        // Native country loops (CGameState::DailyUpdate 0x1401d4c85 and
+        // 0x1401d5567, hourly 0x1401d81ab) dereference every slot without a
+        // null test: a non-null slot with another vtable is never legitimate.
+        for slot in 1..reader.count() {
+            // Keep the census's established reason for an unreadable slot.
+            let Some(country) = reader.at(slot).map_err(|reason| match reason {
+                "country pointer unreadable or outside country table" => {
+                    "country pointer unreadable"
+                }
+                other => other,
+            })?
+            else {
                 continue;
-            }
-            if read::<u64>(memory, pointer)
-                != base.checked_add(ccountry::VTABLE_RVA).map(|p| p as u64)
-            {
-                return Err("country vtable mismatch");
-            }
-            let id = pointer
-                .checked_add(ccountry::ID)
-                .and_then(|p| read::<u32>(memory, p))
-                .ok_or("country id unreadable")?;
-            let canonical = countries.canonical(memory, id)?;
-            if countries.canonical(memory, slot)? != canonical {
-                return Err("country slot and object resolve to different countries");
-            }
-            if countries.pointer(memory, canonical)? != pointer {
-                return Err("canonical country slot points to a different object");
-            }
-            if slot != canonical {
-                continue;
-            }
+            };
+            let (pointer, canonical) = (country.pointer, country.canonical_slot);
             found = true;
             let roster = self.array(
                 memory,
@@ -371,7 +361,12 @@ impl Census {
                 8,
                 "division roster unreadable or invalid",
             )?;
-            for first in (0..roster.count).step_by(BATCH) {
+            self.required_slots = self.required_slots.saturating_add(roster.count as usize);
+            if counting {
+                self.required = self.required.saturating_add(roster.count as usize);
+                continue;
+            }
+            'roster: for first in (0..roster.count).step_by(BATCH) {
                 let count = ((roster.count - first) as usize).min(BATCH);
                 for (i, p) in pointers.iter_mut().take(count).enumerate() {
                     *p = roster
@@ -399,8 +394,12 @@ impl Census {
                     ))
                     .map_err(|_| "division roster pointer unreadable")?;
                     if inputs.roster_slots.len() == inputs.roster_slots.capacity() {
-                        self.overflowed = true;
-                        return Err("division owned roster capacity exhausted");
+                        // Count this and every later slot of the roster as
+                        // an upper bound; no further pointer is copied.
+                        let unread = roster.count as usize - (first as usize + i);
+                        self.required = self.required.saturating_add(unread);
+                        counting = true;
+                        break 'roster;
                     }
                     inputs.roster_slots.push(Entry { pointer, canonical });
                     if pointer == 0 {
@@ -414,6 +413,10 @@ impl Census {
                     }
                 }
             }
+        }
+        if counting {
+            self.overflowed = true;
+            return Err("division owned roster capacity exhausted");
         }
         if self.overflowed {
             return Err("division owned census capacity exhausted");
@@ -568,13 +571,6 @@ struct Countries {
     links: Array,
 }
 impl Countries {
-    fn pointer(&self, memory: &impl Memory, slot: u32) -> Result<usize, &'static str> {
-        self.countries
-            .element(slot, 8)
-            .and_then(|p| read::<u64>(memory, p))
-            .and_then(|p| usize::try_from(p).ok())
-            .ok_or("country pointer unreadable")
-    }
     fn canonical(&self, memory: &impl Memory, raw: u32) -> Result<u32, &'static str> {
         if raw == 0 {
             return Err("country id is zero");
@@ -842,6 +838,244 @@ mod tests {
             }
             kit::memory(self.bytes).copy(address, output)
         }
+    }
+
+    /// Synthetic world of `countries` canonical countries, each with `per`
+    /// division slots pointing at one shared army object. Slot 0 is the
+    /// reserved sentinel; links are identity.
+    mod many {
+        use super::*;
+        pub(super) const GAME_STATE: usize = 0x1000;
+        pub(super) const CTAB: usize = 0x10000;
+        pub(super) const LTAB: usize = 0x30000;
+        pub(super) const COUNTRY0: usize = 0x40000;
+        pub(super) const COUNTRY_STRIDE: usize = 0x300;
+        pub(super) const ROSTERS: usize = 0x400000;
+        pub(super) const ARMY: usize = 0x430000;
+
+        fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
+            bytes[at..at + value.len()].copy_from_slice(value);
+        }
+        fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+            put(bytes, at, &(data as u64).to_le_bytes());
+            put(bytes, at + 8, &count.to_le_bytes());
+            put(bytes, at + 12, &count.to_le_bytes());
+        }
+        pub(super) fn country(slot: u32) -> usize {
+            COUNTRY0 + (slot as usize - 1) * COUNTRY_STRIDE
+        }
+        pub(super) fn roster(slot: u32, per: u32) -> usize {
+            ROSTERS + (slot as usize - 1) * per as usize * 8
+        }
+        pub(super) fn world(countries: u32, per: u32) -> Vec<u8> {
+            assert!(roster(countries + 1, per) <= ARMY);
+            let mut bytes = vec![0; 0x480000];
+            header(
+                &mut bytes,
+                GAME_STATE + cgame_state::COUNTRIES,
+                CTAB,
+                countries + 1,
+            );
+            header(
+                &mut bytes,
+                GAME_STATE + cgame_state::COUNTRY_LINKS,
+                LTAB,
+                countries + 1,
+            );
+            for slot in 1..=countries {
+                let object = country(slot);
+                put(
+                    &mut bytes,
+                    CTAB + slot as usize * 8,
+                    &(object as u64).to_le_bytes(),
+                );
+                put(&mut bytes, LTAB + slot as usize * 4, &slot.to_le_bytes());
+                put(
+                    &mut bytes,
+                    object,
+                    &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+                );
+                put(&mut bytes, object + ccountry::ID, &slot.to_le_bytes());
+                header(
+                    &mut bytes,
+                    object + ccountry::DIVISIONS,
+                    roster(slot, per),
+                    per,
+                );
+                for index in 0..per as usize {
+                    put(
+                        &mut bytes,
+                        roster(slot, per) + index * 8,
+                        &(ARMY as u64).to_le_bytes(),
+                    );
+                }
+            }
+            put(&mut bytes, ARMY, &(carmy::VTABLE_RVA as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                ARMY + carmy::SECONDARY_BASE,
+                &(carmy::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+            );
+            bytes
+        }
+    }
+
+    #[test]
+    fn roster_overflow_counts_every_country_and_grows_in_one_step() {
+        const COUNTRIES: u32 = 5000;
+        const PER: u32 = 4;
+        let total = (COUNTRIES * PER) as usize;
+        let bytes = many::world(COUNTRIES, PER);
+        let memory = Observed {
+            bytes: &bytes,
+            reads: RefCell::new(Vec::new()),
+            fault: None,
+            fault_at: None,
+        };
+        let mut census = Census::new();
+        let roster_capacity = census.unit_inputs().unwrap().roster_slots.capacity();
+        assert!(total > roster_capacity && total > census.entries.capacity());
+        census.capture_inputs(&memory, 0, many::GAME_STATE);
+        assert!(census.overflowed);
+        assert_eq!(
+            census.unit_inputs().unwrap().intel_sources().outcome,
+            Outcome::Unavailable {
+                reason: "division owned roster capacity exhausted"
+            }
+        );
+        // Every roster count was read, including those after the miss...
+        assert_eq!(census.required_slots, total);
+        assert_eq!(census.required, total);
+        // ...but no pointer page after the one that exhausted the storage.
+        let last = many::roster(COUNTRIES, PER);
+        assert!(
+            memory
+                .reads
+                .borrow()
+                .iter()
+                .any(|&(address, _)| { address == many::country(COUNTRIES) + ccountry::DIVISIONS })
+        );
+        assert!(
+            !memory
+                .reads
+                .borrow()
+                .iter()
+                .any(|&(address, _)| (last..last + PER as usize * 8).contains(&address))
+        );
+
+        census.grow();
+        census.clear();
+        census.capture_inputs(&memory, 0, many::GAME_STATE);
+        assert!(!census.overflowed);
+        let inputs = census.unit_inputs().unwrap();
+        assert_eq!(inputs.outcome(), Outcome::Rows { len: total });
+        assert_eq!(inputs.seeds().len(), total);
+        let intel = inputs.intel_sources();
+        assert_eq!(intel.outcome, Outcome::Rows { len: total });
+        for (index, entry) in intel.entries.iter().enumerate() {
+            assert_eq!(entry.pointer, many::ARMY);
+            assert_eq!(entry.canonical, index as u32 / PER + 1);
+        }
+    }
+
+    #[test]
+    fn entry_overflow_alone_also_grows_to_the_exact_count_in_one_step() {
+        // 9,000 non-null entries exceed the 8,192 entry storage while the
+        // 16,384 roster slots still fit.
+        const COUNTRIES: u32 = 4500;
+        const PER: u32 = 2;
+        let total = (COUNTRIES * PER) as usize;
+        let bytes = many::world(COUNTRIES, PER);
+        let memory = kit::memory(&bytes);
+        let mut census = Census::new();
+        census.capture_inputs(&memory, 0, many::GAME_STATE);
+        assert!(census.overflowed);
+        assert_eq!((census.required, census.required_slots), (total, total));
+        census.grow();
+        census.clear();
+        census.capture_inputs(&memory, 0, many::GAME_STATE);
+        assert_eq!(
+            census.unit_inputs().unwrap().outcome(),
+            Outcome::Rows { len: total }
+        );
+    }
+
+    #[test]
+    fn census_reuses_the_callback_country_roster_and_matches_the_native_checks() {
+        use engine::country_memory::{Cache, SeedStatus};
+        const COUNTRIES: u32 = 5000;
+        let bytes = many::world(COUNTRIES, 1);
+        let plain = kit::memory(&bytes);
+        let mut direct = Census::new();
+        direct.capture_inputs(&plain, 0, many::GAME_STATE);
+        let direct_entries = direct
+            .unit_inputs()
+            .unwrap()
+            .intel_sources()
+            .entries
+            .to_vec();
+        assert_eq!(direct_entries.len(), COUNTRIES as usize);
+
+        let mut owner = Arc::new(Cache::with_capacity(1 << 17));
+        let snapshot = Cache::prepare_shared(&mut owner, &plain, 0, many::GAME_STATE).unwrap();
+        assert_eq!(snapshot.view(&plain).seed_status(), SeedStatus::Ready);
+        let observed = Observed {
+            bytes: &bytes,
+            reads: RefCell::new(Vec::new()),
+            fault: None,
+            fault_at: None,
+        };
+        let view = snapshot.roster_view(&observed);
+        let mut reused = Census::new();
+        reused.capture_inputs(&view, 0, many::GAME_STATE);
+        assert_eq!(
+            reused.unit_inputs().unwrap().intel_sources().entries,
+            direct_entries
+        );
+        assert_eq!(
+            reused.unit_inputs().unwrap().outcome(),
+            direct.unit_inputs().unwrap().outcome()
+        );
+        // No country-table slot, link or country identity is read again:
+        // only each roster header, its pointer page and the division seeds.
+        let reads = observed.reads.borrow();
+        assert!(!reads.iter().any(|&(address, _)| {
+            (many::CTAB..many::LTAB + (COUNTRIES as usize + 1) * 4).contains(&address)
+                || (address >= many::COUNTRY0
+                    && address < many::country(COUNTRIES + 1)
+                    && (address - many::COUNTRY0) % many::COUNTRY_STRIDE != ccountry::DIVISIONS)
+        }));
+        assert_eq!(
+            reads
+                .iter()
+                .filter(|&&(address, _)| address >= many::COUNTRY0
+                    && address < many::country(COUNTRIES + 1))
+                .count(),
+            COUNTRIES as usize
+        );
+    }
+
+    #[test]
+    fn null_slots_are_skipped_but_a_foreign_object_fails_the_census() {
+        let mut bytes = many::world(4, 1);
+        // A null slot has no native precedent, but skipping it is harmless.
+        bytes[many::CTAB + 16..many::CTAB + 24].fill(0);
+        let mut census = Census::new();
+        census.capture_inputs(&kit::memory(&bytes), 0, many::GAME_STATE);
+        assert_eq!(
+            census.unit_inputs().unwrap().outcome(),
+            Outcome::Rows { len: 3 }
+        );
+        // Every native country loop dereferences each slot as a CCountry.
+        let foreign = many::country(3);
+        bytes[foreign..foreign + 8].copy_from_slice(&1_u64.to_le_bytes());
+        census.capture_inputs(&kit::memory(&bytes), 0, many::GAME_STATE);
+        assert_eq!(
+            census.unit_inputs().unwrap().outcome(),
+            Outcome::Unavailable {
+                reason: "country vtable mismatch"
+            }
+        );
     }
 
     #[test]

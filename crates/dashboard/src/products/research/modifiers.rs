@@ -13,8 +13,10 @@ pub(super) fn breakdown(input: &ResearchInputRow, rows: Option<&[R]>) -> Option<
     let shared = &country[country.partition_point(|r| r.index < u32::MAX)..];
     let slot = &country[country.partition_point(|r| r.index < input.index)
         ..country.partition_point(|r| r.index <= input.index)];
-    if shared.len() + slot.len() > 4096
-        || slot.is_empty()
+    // No row-count cap: a sharing group writes one member row per country, so
+    // any fixed limit would drop the breakdown for large groups. Every check
+    // below is linear in these rows, or bounded by the 32 groups.
+    if slot.is_empty()
         || shared.is_empty()
         || [shared, slot].iter().any(|rows| {
             rows.iter().enumerate().any(|(i, r)| {
@@ -431,6 +433,51 @@ mod tests {
             .raw = i64::MAX;
         assert!(breakdown(&input, Some(&rows)).is_none());
     }
+    #[test]
+    fn sharing_groups_with_thousands_of_member_countries_keep_their_breakdown() {
+        const MEMBERS: u32 = 5_000;
+        let (input, rows) = fixture();
+        let at = rows.partition_point(|r| r.index == 0);
+        let (slot, shared) = rows.split_at(at);
+        let mut rows = slot.to_vec();
+        let mut push = |mut row: R| -> u32 {
+            row.country = 7;
+            row.index = 0;
+            row.technology_handle = 22;
+            row.ordinal = rows.len() as u32;
+            rows.push(row);
+            rows.len() as u32 - 1
+        };
+        push(R {
+            kind: R::SHARING_DOCTRINE,
+            ..Default::default()
+        });
+        let group = push(R {
+            kind: R::SHARING,
+            raw: 1,
+            count: MEMBERS,
+            ..Default::default()
+        });
+        for source_id in 0..MEMBERS {
+            push(R {
+                kind: R::SHARING_MEMBER,
+                raw: 1,
+                auxiliary: 1,
+                count: group,
+                source_id,
+                ..Default::default()
+            });
+        }
+        rows.extend_from_slice(shared);
+        let m = breakdown(&input, Some(&rows)).unwrap();
+        let sharing = m.components.iter().find(|c| c.kind == "sharing").unwrap();
+        // One point per member, doubled by the fixture's +100% multiplier,
+        // within the fixture's 50,000 maximum.
+        assert_eq!(sharing.raw, "10000");
+        assert_eq!(sharing.sources[0].raw, "10000");
+        assert_eq!(m.total_bonus_raw, "30000");
+    }
+
     #[test]
     fn missing_tables_incomplete_rows_and_changed_assignments_never_become_zero() {
         let (input, mut rows) = fixture();

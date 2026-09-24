@@ -117,6 +117,8 @@ pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
 /// headroom several times over.
 pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
     let limits = adapter.limits();
+    // Atlases built on the CPU page to this side ([`crate::map::atlas_pages`]).
+    crate::map::atlas_pages::record_device_limit(limits.max_texture_dimension_2d);
     let features = adapter.features()
         & (wgpu::Features::TEXTURE_COMPRESSION_BC
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
