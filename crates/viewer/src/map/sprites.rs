@@ -47,12 +47,9 @@ pub struct SpriteSheet {
 }
 
 impl SpriteSheet {
-    /// One frame's size in device pixels.
-    ///
-    /// R2 section 5.7: two shipped strips do not divide evenly, and the engine
-    /// slices at `floor(w / n)` — `round(i * w / n)` shifts the naval-base
-    /// frames by up to 4 px. The 1 to 4 px of slack at the right edge is left
-    /// unused, exactly as the engine leaves it.
+    /// One frame's size in device pixels: `floor(w / n)` texels wide.
+    /// **UNVERIFIED** for strips that do not divide evenly: the game may draw
+    /// the frame `w / n` wide, a third of a pixel more on the naval-base strip.
     pub fn frame_size(&self) -> [f32; 2] {
         [
             (self.size[0] / self.frames.max(1)) as f32,
@@ -61,13 +58,21 @@ impl SpriteSheet {
     }
 
     /// The atlas rectangle of a zero-based frame, clamped to the last frame.
+    ///
+    /// Frames sit at `i / n` of the strip. The naval-base strip is 301 texels
+    /// for 11 frames and its glyphs are authored on that 27.36-texel pitch;
+    /// slicing at `i * floor(w / n)` drew frame `i` `0.36 * i` px right of the
+    /// game (measured on frames 0-7 in the 2026-09-24 L1a pairs) and cut the
+    /// gold badge's right edge.
     pub fn frame_uv(&self, frame: u32) -> [f32; 4] {
         let frames = self.frames.max(1);
         let index = frame.min(frames - 1);
-        let width = self.size[0] / frames;
-        let left = (index * width) as f32 / self.size[0].max(1) as f32;
-        let right = ((index + 1) * width) as f32 / self.size[0].max(1) as f32;
-        [left, 0.0, right, 1.0]
+        [
+            index as f32 / frames as f32,
+            0.0,
+            (index + 1) as f32 / frames as f32,
+            1.0,
+        ]
     }
 }
 
@@ -726,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn frames_slice_the_strip_at_floor_of_the_width() {
+    fn frames_slice_the_strip_evenly() {
         // `GFX_onmap_victorypoints_strip`: 580 x 27, 20 frames of 29 x 27.
         let vp = strip(20, 580);
         assert_eq!(vp.frame_size(), [29.0, 27.0]);
@@ -737,11 +742,11 @@ mod tests {
     }
 
     #[test]
-    fn a_strip_that_does_not_divide_evenly_leaves_the_slack_at_the_right() {
-        // R2 5.7: `mapicon_building_navalbase.dds` is 301 wide with 11 frames.
+    fn a_strip_that_does_not_divide_evenly_keeps_the_authored_pitch() {
+        // `mapicon_building_navalbase.dds` is 301 wide with 11 frames.
         let naval = strip(11, 301);
         assert_eq!(naval.frame_size()[0], 27.0);
-        assert_eq!(naval.frame_uv(10), [270.0 / 301.0, 0.0, 297.0 / 301.0, 1.0]);
+        assert_eq!(naval.frame_uv(10), [10.0 / 11.0, 0.0, 1.0, 1.0]);
         // `mapicon_building_airbase_large.dds` is 309 wide with 7 frames.
         assert_eq!(strip(7, 309).frame_size()[0], 44.0);
     }
