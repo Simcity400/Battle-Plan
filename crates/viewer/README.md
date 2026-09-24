@@ -55,6 +55,7 @@ Keep coordinate conversions with their caller: bitmap rows run downward, world Z
 
 A replay can preserve exact simulation values without preserving the native rendered instant. Water/global clocks, camera fades, overlap/stencil producers, particle populations and previous renderer state can require inputs that an hourly sample lacks. A seed alone does not recover their update history. Do not replace these omissions with guessed visibility, fabricated data or fitted colours.
 
+
 Check the relevant source notes and recording format before treating an old investigation as an open bug or a completed feature. A newer viewer cannot add absent fields to an old recording. Geometry agreement, shader agreement on identical inputs, screenshot similarity and gameplay performance are separate claims.
 
 ## Compare changes

@@ -95,14 +95,17 @@ impl MapIcons {
     /// `interface` and `gfx/interface` are covered content and go through
     /// [`ResolvedLayers::read`]; `gfx/fonts` is not, and [`text::Fonts::load`]
     /// states that limitation ([archived rendering notes](#) section 4).
-    pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
+    pub fn load(
+        layers: &ResolvedLayers,
+        defines: &installed_content::defines::Defines,
+    ) -> io::Result<Self> {
         let mut images = Vec::new();
         let fonts = text::Fonts::load(layers, &mut images)?;
         let sprites = gfx::sprites(layers)?;
         let victory_points = load_sheet(layers, &sprites, VICTORY_POINT_STRIP, &mut images)?;
         // counters
-        let counters = CounterAssets::load(layers, &sprites, &mut images)?;
-        let combat = crate::combat::Assets::load(layers, &sprites, &mut images)?;
+        let counters = CounterAssets::load(layers, defines, &sprites, &mut images)?;
+        let combat = crate::combat::Assets::load(layers, defines, &sprites, &mut images)?;
         let raids = super::raids::RaidAssets::load(layers, &mut images)?;
         Ok(Self {
             combat,

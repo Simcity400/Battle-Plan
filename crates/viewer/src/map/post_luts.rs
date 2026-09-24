@@ -3,7 +3,7 @@
 //! blend stores UNORM8 before the next reads it, and Restore samples the result,
 //! so the rounding matches the game's rather than a blend of sampled colours.
 
-use std::io;
+use std::{collections::HashMap, io};
 
 use eframe::wgpu;
 
@@ -22,6 +22,9 @@ pub(super) struct LutRenderer {
     output: wgpu::TextureView,
     /// One factor buffer per draw: three blends and the output copy.
     factors: [wgpu::Buffer; 4],
+    /// Bind groups by draw slot and sources, so a changing factor (a height
+    /// fade while zooming) reuses them instead of allocating per frame.
+    binds: HashMap<(usize, [LutSource; 4]), wgpu::BindGroup>,
     last: Option<(LutProgram, LutSource)>,
 }
 
@@ -176,6 +179,7 @@ impl LutRenderer {
             intermediate: std::array::from_fn(|_| target()),
             output: target(),
             factors,
+            binds: HashMap::new(),
             last: None,
         })
     }
@@ -205,37 +209,42 @@ impl LutRenderer {
             return;
         }
         for index in 0..=program.len {
-            let (sources, factors, target) = match program.operations[..program.len].get(index) {
-                Some(operation) => (
-                    operation.sources,
-                    operation.factors,
-                    &self.intermediate[index],
-                ),
-                None => ([result; 4], [0.0; 2], &self.output),
+            let (sources, factors) = match program.operations[..program.len].get(index) {
+                Some(operation) => (operation.sources, operation.factors),
+                None => ([result; 4], [0.0; 2]),
             };
             queue.write_buffer(
                 &self.factors[index],
                 0,
                 bytemuck::cast_slice(&[factors[0], factors[1], 0.0, 0.0]),
             );
-            let entries: Vec<_> = std::iter::once(wgpu::BindGroupEntry {
-                binding: 0,
-                resource: self.factors[index].as_entire_binding(),
-            })
-            .chain(
-                (1..)
-                    .zip(sources)
-                    .map(|(binding, source)| wgpu::BindGroupEntry {
-                        binding,
-                        resource: wgpu::BindingResource::TextureView(self.view(source)),
-                    }),
-            )
-            .collect();
-            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("post LUT blend inputs"),
-                layout: &self.layout,
-                entries: &entries,
-            });
+            let key = (index, sources);
+            if !self.binds.contains_key(&key) {
+                let entries: Vec<_> = std::iter::once(wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.factors[index].as_entire_binding(),
+                })
+                .chain(
+                    (1..)
+                        .zip(sources)
+                        .map(|(binding, source)| wgpu::BindGroupEntry {
+                            binding,
+                            resource: wgpu::BindingResource::TextureView(self.view(source)),
+                        }),
+                )
+                .collect();
+                let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("post LUT blend inputs"),
+                    layout: &self.layout,
+                    entries: &entries,
+                });
+                self.binds.insert(key, bind);
+            }
+            let target = if index < program.len {
+                &self.intermediate[index]
+            } else {
+                &self.output
+            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("post LUT blend"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -253,7 +262,7 @@ impl LutRenderer {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &bind, &[]);
+            pass.set_bind_group(0, &self.binds[&key], &[]);
             pass.draw(0..3, 0..1);
         }
         self.last = Some((program, result));

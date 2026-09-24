@@ -2,7 +2,7 @@
 
 use super::{LoadContext, Product, validate_tag};
 use crate::{Source, content, invalid};
-use installed_content::{ResolveOptions, content::ResolvedContent};
+use installed_content::{ResolveOptions, content::ResolvedContent, flags::FlagSet};
 use replay::{
     container::{Replay, SeekResult},
     frame::{DecodedFrame, TableView},
@@ -100,9 +100,22 @@ impl Product for CountryFlags {
             .as_ref()
             .is_some_and(|cached| cached.matches(&content.options, params))
         {
+            let resolved = source.content(&content.options)?;
+            // The cells are content facts: kept across hours, reread with new content.
+            let cells = match state.as_ref() {
+                Some(cached) if Arc::ptr_eq(&cached.content, &resolved) => cached.cells,
+                _ => {
+                    let defines = installed_content::defines::read(&resolved.layers)?;
+                    [
+                        FlagSet::Normal.cell(&defines)?,
+                        FlagSet::Small.cell(&defines)?,
+                    ]
+                }
+            };
             *state = Some(FlagContext::load(
                 source.replay(),
-                source.content(&content.options)?,
+                resolved,
+                cells,
                 content.options.clone(),
                 content.allow_unverified,
                 params,
@@ -210,6 +223,8 @@ fn flag_candidates(tag: &str, cosmetic: Option<&str>, ideology: Option<&str>) ->
 pub struct FlagContext {
     options: ResolveOptions,
     content: Arc<ResolvedContent>,
+    /// The normal and small cells from the content's defines.
+    cells: [[u32; 2]; 2],
     choices: Vec<FlagChoice>,
     branch_id: String,
     hour: i32,
@@ -228,6 +243,7 @@ impl FlagContext {
     fn load(
         replay: Arc<Replay>,
         content: Arc<ResolvedContent>,
+        cells: [[u32; 2]; 2],
         options: ResolveOptions,
         allow_unverified: bool,
         request: &CountryFlagParams,
@@ -254,6 +270,7 @@ impl FlagContext {
         Ok(Self {
             options,
             content,
+            cells,
             choices,
             branch_id: request.branch_id.clone(),
             hour: request.hour,
@@ -268,9 +285,9 @@ impl FlagContext {
     ) -> io::Result<CountryFlagReply> {
         let mut flags = Vec::new();
         let mut warnings = self.warnings.clone();
-        let directory = match request.size {
-            CountryFlagSize::Full => "gfx/flags",
-            CountryFlagSize::Small => "gfx/flags/small",
+        let (set, cell) = match request.size {
+            CountryFlagSize::Full => (FlagSet::Normal, self.cells[0]),
+            CountryFlagSize::Small => (FlagSet::Small, self.cells[1]),
         };
         for tag in &request.tags {
             if cancelled.load(Ordering::Acquire) {
@@ -290,22 +307,17 @@ impl FlagContext {
                 {
                     return Err(invalid("Invalid recorded flag asset name"));
                 }
-                let asset = format!("{directory}/{key}.tga");
+                let asset = format!("{}{key}.tga", set.directory());
                 let bytes = match self.content.layers.read_uncovered(&asset) {
                     Ok(bytes) => bytes,
                     Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                     Err(error) => return Err(error),
                 };
-                // Bound allocations before the shared TGA decoder reads authored extents.
-                if bytes.len() < 18 || bytes.len() > 8 * 1024 * 1024 {
-                    return Err(invalid("Flag image exceeds its input budget"));
-                }
-                let width = u16::from_le_bytes([bytes[12], bytes[13]]);
-                let height = u16::from_le_bytes([bytes[14], bytes[15]]);
-                if width == 0 || height == 0 || width > 2048 || height > 2048 {
-                    return Err(invalid("Flag image dimensions exceed their budget"));
-                }
-                let image = installed_content::image::tga::decode(&bytes)?;
+                // As `LoadFirstDecodableCountryFlag` (`14122a730`), a file the
+                // engine's decoder refuses falls through to the next candidate.
+                let Some(image) = installed_content::flags::decode(&bytes, cell) else {
+                    continue;
+                };
                 let scale = (image.width.max(image.height) as f64 / 128.0).max(1.0);
                 let width = (image.width as f64 / scale).round().max(1.0) as u32;
                 let height = (image.height as f64 / scale).round().max(1.0) as u32;

@@ -155,6 +155,19 @@ impl Defines {
             .ok_or_else(|| invalid(format!("NDefines.{section}.{name} is not a number")))
     }
 
+    /// `NDefines.<section>.<name>` through the native integer getter
+    /// (`LuaTable_ReadInt32`, `14205b690`): CVTTSD2SI to 64 bits, whose
+    /// out-of-range result is `i64::MIN`, then the low 32 bits.
+    pub fn int32(&self, section: &str, name: &str) -> io::Result<i32> {
+        let value = self.number(section, name)?.trunc();
+        let wide = if (-(2.0_f64.powi(63))..2.0_f64.powi(63)).contains(&value) {
+            value as i64
+        } else {
+            i64::MIN
+        };
+        Ok(wide as i32)
+    }
+
     /// A table define's numbers in `lua_next` order, as the native table
     /// loaders (`142059cf0`) walk it.
     pub fn numbers(&self, section: &str, name: &str) -> io::Result<Vec<f64>> {
@@ -251,6 +264,13 @@ mod tests {
         assert_eq!(values.number("NGame", "HOURS").unwrap(), 168.0);
         assert_eq!(values.number("NGame", "DAYS").unwrap(), 7.0);
         assert!(values.number("NGraphics", "NAME").is_err());
+        assert_eq!(values.int32("NGame", "HOURS").unwrap(), 168);
+        let wide =
+            defines(&["NDefines = { N = { A = -2.9, B = 4294967297, C = 1e300 } }"]).unwrap();
+        assert_eq!(
+            ["A", "B", "C"].map(|name| wide.int32("N", name).unwrap()),
+            [-2, 1, 0]
+        );
         assert_eq!(
             values.fixed5_array("NGame", "LEVELS").unwrap(),
             [0, 60_000, 100_002, -200_000]

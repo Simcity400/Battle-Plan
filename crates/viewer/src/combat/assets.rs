@@ -2,7 +2,10 @@
 use super::layout::{Node, number, string, value};
 use crate::map::{sprites::SpriteSheet, text};
 use installed_content::{
-    ResolvedLayers, fonts, gfx, gui,
+    ResolvedLayers,
+    defines::Defines,
+    flags::{self, FlagSet},
+    fonts, gfx, gui,
     image::{Rgba8Image, dds, tga},
 };
 use std::{
@@ -43,6 +46,8 @@ pub struct Assets {
     pub sprites: BTreeMap<String, Sprite>,
     pub fonts: BTreeMap<String, text::Font>,
     pub flags: BTreeMap<String, Flag>,
+    /// The small flag cell every [`Flag::inline`] is drawn at.
+    pub inline_flag_size: [f32; 2],
     pub tactic_pictures: BTreeMap<String, String>,
     pub score_defines: Option<super::land_details::ScoreDefines>,
     pub convoy_weapon_bound: Option<i64>,
@@ -168,6 +173,7 @@ fn expand_gui(document: &mut installed_content::parser::Document) {
 impl Assets {
     pub fn load(
         layers: &ResolvedLayers,
+        defines: &Defines,
         declarations: &BTreeMap<String, gfx::SpriteType>,
         images: &mut Vec<dds::Texture>,
     ) -> io::Result<Self> {
@@ -472,28 +478,29 @@ impl Assets {
                 ))
             })
             .collect::<io::Result<_>>()?;
-        // 14162FC20: maskedShieldType defaults to the large82x52 atlas;
-        // medium41x26 is a different ordinary-sprite path. Bake only the point
+        // 14162FC20: maskedShieldType defaults to the normal flag atlas; the
+        // medium one is a different ordinary-sprite path. Bake only the point
         // sampled shield alpha at twice its resolution, preserving native2:1
         // linear minification and keeping the authored overlay a separate draw.
         let mask = tga::decode(&layers.read("gfx/interface/shield_small_mask.tga")?)?;
-        let mut flags = flag_atlas(
+        let mut normal = flag_atlas(
             layers,
-            "gfx/flags/",
-            [82, 52],
+            FlagSet::Normal,
+            FlagSet::Normal.cell(defines)?,
             Some(&mask),
             images,
             &mut warnings,
         )?;
+        let small_cell = FlagSet::Small.cell(defines)?;
         let small = flag_atlas(
             layers,
-            "gfx/flags/small/",
-            [10, 7],
+            FlagSet::Small,
+            small_cell,
             None,
             images,
             &mut warnings,
         )?;
-        for (key, flag) in &mut flags {
+        for (key, flag) in &mut normal {
             if let Some(inline) = small
                 .get(key)
                 .or_else(|| key.get(..3).and_then(|tag| small.get(tag)))
@@ -505,7 +512,8 @@ impl Assets {
             windows,
             sprites,
             fonts,
-            flags,
+            flags: normal,
+            inline_flag_size: small_cell.map(|side| side as f32),
             tactic_pictures,
             score_defines: super::land_details::ScoreDefines::load(layers)?,
             convoy_weapon_bound: super::naval_environment::convoy_weapon_bound(layers)?,
@@ -518,12 +526,13 @@ impl Assets {
 /// One bounded atlas per native flag class, independent of replay length.
 fn flag_atlas(
     layers: &ResolvedLayers,
-    directory: &str,
+    set: FlagSet,
     cell: [u32; 2],
     mask: Option<&installed_content::image::Rgba8Image>,
     images: &mut Vec<dds::Texture>,
     warnings: &mut Vec<String>,
 ) -> io::Result<BTreeMap<String, Flag>> {
+    let directory = set.directory();
     let files: Vec<_> = layers
         .paths()
         .filter(|p| {
@@ -531,33 +540,31 @@ fn flag_atlas(
                 .is_some_and(|name| !name.contains('/') && name.ends_with(".tga"))
         })
         .collect();
-    let width = cell[0] * 32;
-    let height = cell[1] * (files.len() as u32).div_ceil(32).max(1);
+    let (columns, [width, height]) = crate::map::counters::flag_page(files.len(), cell, directory)?;
     let texture = images.len();
     let mut pixels = vec![0; (width * height * 4) as usize];
-    let mut flags = BTreeMap::new();
+    let mut atlas = BTreeMap::new();
     // Flag files read and decode on scoped threads; the pack below runs in
     // file order, so grid positions and warnings match the serial load.
-    let decoded: Vec<io::Result<Rgba8Image>> = std::thread::scope(|scope| {
+    let decoded: Vec<io::Result<Option<Rgba8Image>>> = std::thread::scope(|scope| {
         files
             .iter()
-            .map(|file| scope.spawn(move || tga::decode(&layers.read(file)?)))
+            .map(|file| scope.spawn(move || Ok(flags::decode(&layers.read(file)?, cell))))
             .collect::<Vec<_>>()
             .into_iter()
             .map(|handle| handle.join().expect("combat flag decoder panicked"))
             .collect()
     });
     for (index, (file, image)) in files.into_iter().zip(decoded).enumerate() {
-        let image = image?;
-        if [image.width, image.height] != cell {
+        let Some(image) = image? else {
             warnings.push(format!(
-                "Combat UI: {file} is not the native{}x{} flag size; omitted.",
+                "Combat UI: {file} is not an uncompressed 24/32-bit {}x{} Targa; omitted.",
                 cell[0], cell[1]
             ));
             continue;
-        }
-        let x = index as u32 % 32 * cell[0];
-        let y = index as u32 / 32 * cell[1];
+        };
+        let x = index as u32 % columns * cell[0];
+        let y = index as u32 / columns * cell[1];
         for row in 0..cell[1] {
             for column in 0..cell[0] {
                 let from = ((row * cell[0] + column) * 4) as usize;
@@ -572,7 +579,7 @@ fn flag_atlas(
                 }
             }
         }
-        flags.insert(
+        atlas.insert(
             file.trim_start_matches(directory)
                 .trim_end_matches(".tga")
                 .into(),
@@ -593,5 +600,5 @@ fn flag_atlas(
         height,
         pixels,
     }));
-    Ok(flags)
+    Ok(atlas)
 }

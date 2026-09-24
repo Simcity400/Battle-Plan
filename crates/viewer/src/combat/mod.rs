@@ -521,8 +521,6 @@ pub(crate) fn naval_bubble_progress(
 /// CCombatantEntry (1415BA240) writes into land division names. Bindings put
 /// the resolved flag-atlas key after it, ended by a space or the string end.
 pub(crate) const INLINE_FLAG: char = '\u{12}';
-/// The small `gfx/flags/small` cell.
-const INLINE_FLAG_SIZE: [f32; 2] = [10.0, 7.0];
 /// pairJ_land_5.png: right-aligned "<flag> 169th 'Madison' Division" (117 px
 /// of Arial12 text) starts 129 px before its box edge, and "<flag> 900
 /// Infantry Division" (101 px) 113 px before it. An attacker's trailing flag
@@ -830,21 +828,16 @@ impl Painter<'_> {
                         }
                     }
                     Chunk::Flag(key) => {
-                        if remaining.is_none_or(|w| w >= INLINE_FLAG_SIZE[0])
+                        let size = self.assets.inline_flag_size;
+                        if remaining.is_none_or(|w| w >= size[0])
                             && let Some((texture, uv)) =
                                 self.assets.flags.get(key).and_then(|flag| flag.inline)
                         {
-                            // The 10x7 flag's top is five pixels below the
+                            // The small flag's top is five pixels below the
                             // line top in both Arial12 (pairJ_land_5.png) and
                             // hoi_16mbs (pairJ_naval_5.png ship descriptions).
                             let top = y + 5.0;
-                            self.drawn.batch.cell(
-                                texture,
-                                [x, top],
-                                INLINE_FLAG_SIZE,
-                                uv,
-                                [1.0; 4],
-                            );
+                            self.drawn.batch.cell(texture, [x, top], size, uv, [1.0; 4]);
                         }
                     }
                     Chunk::Text(run, color) => {
