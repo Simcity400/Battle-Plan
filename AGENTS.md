@@ -5,6 +5,7 @@ Read the [project README](README.md) and the README for the component you are ch
 ## Keep these guarantees
 
 - Update affected format readers, writers and consumers together. Code owns version numbers, table IDs and cadence; do not duplicate those catalogs in prose.
+- Design for native mod compatibility. Resolve every content fact through the recorded content stack in [installed-content](crates/installed-content/README.md) (vanilla, DLC, then mods in recorded order). Never hard-code vanilla tags, IDs, counts, lists, defines, asset names, colours or localisation keys; collector tables size from live game data. Refuse unsupported content forms explicitly instead of assuming vanilla. Modded testing is not yet required.
 
 ## Validate locally
 
