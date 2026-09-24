@@ -9,13 +9,14 @@ export default function WidgetPicker({ disabled, onAdd, onOpen }: { disabled: bo
   const { trigger, open } = menu;
 
   return <>
-    <button ref={trigger} type="button" className="button quiet header-add-widget" aria-label="Add widget" data-tooltip="Add widget" disabled={disabled}
+    <button ref={trigger} type="button" className="icon-button header-add-widget" aria-label="Add widget" data-tooltip="Add a widget" disabled={disabled}
       popoverTarget={id} aria-haspopup="dialog" aria-expanded={open} onClick={onOpen}><Icon name="plus" /></button>
     <Popover menu={menu} id={id} className="widget-picker" aria-label="Add a widget">
-      <div className="widget-picker-heading"><strong>Add a widget</strong><button type="button" className="dash-icon-button" aria-label="Close widget picker" popoverTarget={id} popoverTargetAction="hide"><Icon name="close" /></button></div>
+      <div className="ui-popover-heading"><strong>Add a widget</strong><button type="button" className="icon-button ui-popover-action" aria-label="Close widget picker" popoverTarget={id} popoverTargetAction="hide"><Icon name="close" /></button></div>
       <div className="widget-picker-items">{widgetDefinitions().map((definition) => <button type="button" key={definition.kind} disabled={disabled} onClick={() => {
         menu.close(); onAdd(definition.kind);
-      }}><Icon name={definition.icon} /><span>{definition.title}</span><Icon name="plus" /></button>)}</div>
+      }}><span className="dash-widget-icon" aria-hidden="true"><Icon name={definition.icon} /></span>
+        <span><strong>{definition.title}</strong>{definition.description && <small>{definition.description}</small>}</span><Icon name="plus" /></button>)}</div>
     </Popover>
   </>;
 }

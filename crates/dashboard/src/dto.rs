@@ -108,6 +108,19 @@ pub struct FocusSegment {
 #[serde(rename_all = "camelCase")]
 pub struct FocusHistory {
     pub segments: Vec<FocusSegment>,
+    /// Recorded focus progress, compressed across equal consecutive hours.
+    pub progress: Vec<FocusProgress>,
+}
+
+/// `CNationalFocusProgress` progress: fixed5 days of work toward the current
+/// focus (the daily update adds the day's focus speed; idle days bank it).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusProgress {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    /// Exact signed fixed5 value as a decimal string.
+    pub progress_raw: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]

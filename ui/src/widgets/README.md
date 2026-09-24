@@ -4,7 +4,7 @@ Each folder is one widget: everything it owns lives there, and nothing elsewhere
 
 ```
 widgets/<name>/
-  definition.ts   pure metadata: kind, version, title, icon, time modes, sizes
+  definition.ts   pure metadata: kind, version, title, description, icon, time modes, history, sizes
   index.ts        the React renderer (and header controls if any)
   <Name>Widget.tsx
   <name>Data.ts   payload validation and local playback lookups, with tests
@@ -18,7 +18,7 @@ widgets/<name>/
 
 - The dashboard gives a widget `WidgetProps`: its spec, the shared runtime (tracks, clock, client, maps), whether it is on screen, the map options, a header slot and a diagnostics callback. See `dashboard/definitions.ts`.
 - Data comes from one product per request through `useProduct` in `dashboard/products.ts`. A product reply covers the whole branch, so following playback is a local lookup with no further requests.
-- Playback: subscribe with `usePlaybackHour` only when the widget follows the clock, and resolve the hour with `resolveWindow`.
+- Playback: subscribe with `usePlaybackHour` only when the widget follows the clock, and resolve the hour with `resolveWindow`. Every widget has its settings behind the gear in its header's top-right corner. A widget with `history: true` also gets a Live switch beside it: off shows the whole campaign as it stood at the end, on follows the timeline. Default to `campaign`. A widget that only makes sense at the playback moment, such as the map, sets `history: false` and always follows playback.
 - A widget never opens files, starts a clock or reads another widget's state. Header controls, icon and country choice come from its definition.
 - Validate the product payload shape in `<name>Data.ts`; the transport already checks source identity.
 - Register the Rust product in `crates/dashboard/src/products/`; regenerate `generated/dashboard.ts` when its types change.

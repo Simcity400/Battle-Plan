@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ResearchEntry, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
-import { completedResearchJourney, researchJourney, savedResearchCredit } from './researchJourney.ts';
+import { completedResearchJourney, researchJourney, researchTimeSplit, savedResearchCredit } from './researchJourney.ts';
+import { researchTimeRows } from './researchTimeBar.ts';
 import { researchAt, researchView } from './researchData.ts';
 
 const start = 43_800_000 + 1938 * 8760;
@@ -170,4 +171,31 @@ test('completed explanations clip immutable history at outcome knowledge and dis
   const replacement = structuredClone(history);
   replacement.slots[1].progress[0].progressRaw = '0';
   assert.equal(completedResearchJourney(replacement, 1, later)!.startKnown, true);
+});
+
+test('time out of a slot lengthens the Took row instead of replacing research time', () => {
+  const first = assignment(0, 0, 10, 100000n, 0n, 0n, 'switched');
+  const second = assignment(1, 20, 25, 100000n, 500000n, 1500000n, 'active');
+  const split = researchTimeSplit(researchJourney([first, second], second, second.entries[0]), true)!;
+  assert.equal(split.paused, 1000000n);
+  assert.equal(split.taken, 1500000n);
+  const rows = researchTimeRows(split, true)!;
+  assert.equal(rows.elapsed, 2500000n);
+  const value = (key: string) => rows.took.find(s => s.key === key)?.value;
+  assert.equal(value('core'), 1500000n, 'every researched day stays in the row');
+  assert.equal(value('paused'), 1000000n);
+  // Researched, paused and what came off still close exactly on Expected plus the pause.
+  assert.equal(rows.took.reduce((sum, s) => sum + s.value, 0n), rows.expectedTotal + split.paused);
+});
+
+test('after a witnessed start an unexplained surplus shows no breakdown', () => {
+  // Completed at a base of 180 days after only 90 days at 1x and no saved days.
+  const slot = assignment(0, 0, 90, 100000n, 0n, 0n, 'completed');
+  const journey = researchJourney([slot], slot, slot.entries[0]);
+  assert.equal(journey.startKnown, true);
+  assert.equal(researchTimeSplit(journey, false), null);
+  // Parked research started earlier is a real cause, shown as earlier progress.
+  const parked = assignment(0, 60, 150, 100000n, 3000000n, 9000000n, 'completed');
+  const split = researchTimeSplit(researchJourney([parked], parked, parked.entries[0]), false)!;
+  assert.equal(split.earlier, 6000000n);
 });

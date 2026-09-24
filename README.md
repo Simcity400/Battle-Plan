@@ -15,7 +15,7 @@ npm.cmd ci
 npm.cmd run dev
 ```
 
-Choose **Recordings**, set your replay folder when prompted (or in Settings), and load a campaign from the list. The map also needs the matching game and user folders; Overview widgets can read the recording without map assets.
+Choose **+** beside **Campaigns** in the sidebar, set your replay folder when prompted (or in Settings), and load a campaign from the list. The map also needs the matching game and user folders; Overview widgets can read the recording without map assets.
 
 To make a recording, follow the [recorder guide](crates/recorder/README.md). For builds, launch arguments and desktop packaging, see the [desktop guide](crates/desktop/README.md).
 

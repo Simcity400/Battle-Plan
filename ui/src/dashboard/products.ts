@@ -24,6 +24,12 @@ export function loadProduct<T>(client: DashboardClient, request: ProductRequest,
   }, signal).then(reply => reply.data as T);
 }
 
+/** Load one product without caching it: for per-hour requests that follow playback
+ * and would otherwise push the full-branch products out of the shared cache. */
+export async function loadTransientProduct<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal): Promise<T> {
+  return validateProductReply(await client.product<unknown>(request, signal), request).data as T;
+}
+
 /** Forget every cached product of a source when it is released; in-flight loads are cancelled. */
 export function forgetProducts(client: DashboardClient, sourceId: string): void {
   cache(client).deleteSource(sourceId);

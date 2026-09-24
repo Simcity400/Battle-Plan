@@ -50,7 +50,8 @@ export function Popover({ menu, portal = true, className = '', onToggle, childre
   }, [popup, setState]);
   const panel = <div {...props} ref={menu.popup} popover="auto" role="dialog" className={`ui-popover ${className}`}
     onBeforeToggle={event => {
-      if (event.target === event.currentTarget) event.currentTarget.style.visibility = 'hidden';
+      // Hide only while opening, until positioned; closing keeps it visible for the exit fade.
+      if (event.target === event.currentTarget && event.newState === 'open') event.currentTarget.style.visibility = 'hidden';
     }}
     onToggle={event => {
       // React delivers toggles from nested details and popovers to ancestors too.
@@ -70,9 +71,9 @@ export function PopoverHeading({ title, menu, onDelete, onReset }: {
   title: string; menu: ReturnType<typeof usePopover>; onDelete?: () => void; onReset?: () => void;
 }) {
   return <div className="ui-popover-heading"><strong>{title}</strong><div className="ui-popover-actions">
-    {onReset && <button type="button" className="ui-popover-action" aria-label="Reset widget settings" data-tooltip="Reset to defaults" onClick={onReset}><Icon name="refresh" /></button>}
-    {onDelete && <button type="button" className="ui-popover-action" aria-label="Delete widget" data-tooltip="Delete widget"
+    {onReset && <button type="button" className="icon-button ui-popover-action" aria-label="Reset widget settings" data-tooltip="Reset to defaults" onClick={onReset}><Icon name="refresh" /></button>}
+    {onDelete && <button type="button" className="icon-button ui-popover-action is-danger" aria-label="Delete widget" data-tooltip="Delete widget"
       onClick={() => { menu.close(); onDelete(); }}><Icon name="trash" /></button>}
-    <button type="button" className="ui-popover-action" aria-label={`Close ${title.toLowerCase()}`} onClick={menu.close}><Icon name="close" /></button>
+    <button type="button" className="icon-button ui-popover-action" aria-label={`Close ${title.toLowerCase()}`} onClick={menu.close}><Icon name="close" /></button>
   </div></div>;
 }

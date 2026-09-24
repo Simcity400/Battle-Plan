@@ -46,7 +46,16 @@ export type FocusEntry = { ordinal: number, token: string,
 completedByHour: number | null, };
 export type FocusOrder = { countryName: string, completed: Array<FocusEntry>, current: string | null, continuous: string | null, paused: boolean, };
 export type FocusSegment = { firstHour: number, lastHour: number, order: FocusOrder, };
-export type FocusHistory = { segments: Array<FocusSegment>, };
+export type FocusProgress = { firstHour: number, lastHour: number,
+/**
+ * Exact signed fixed5 value as a decimal string.
+ */
+progressRaw: string, };
+export type FocusHistory = { segments: Array<FocusSegment>,
+/**
+ * Recorded focus progress, compressed across equal consecutive hours.
+ */
+progress: Array<FocusProgress>, };
 export type ResearchCoverage = { firstHour: number, lastHour: number, };
 export type ResearchOutcome = "active" | "completed" | "switched" | "unknown";
 export type ResearchEntry = { token: string, technologyHandle: number,
@@ -125,10 +134,10 @@ id: string, path: string, revision: string, metadata: ReplayMetadata, };
 export type CountryParams = { branchId: string, tag: string, };
 export type FocusReply = { history: FocusHistory, artwork: Array<Artwork>, warnings: Array<string>, };
 export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>, warnings: Array<string>, };
-export type CountryFlagSize = "full" | "small";
+export type CountryFlagSize = "full" | "medium" | "small" | "shield";
 export type CountryFlagImage = { tag: string, asset: string, width: number, height: number,
 /**
- * RGBA bytes, at most 128 pixels on the longer side.
+ * Straight-alpha RGBA bytes, at most 128 pixels on the longer side.
  */
 pixels: Array<number>, };
 export type CountryFlagParams = { branchId: string, hour: number, tags: Array<string>, size: CountryFlagSize, };

@@ -1,7 +1,7 @@
 //! Compact focus history. Dates bound observed completions, never pre-recording events.
 use super::{CountryParams, LoadContext, Product, artwork};
 use crate::{
-    Artwork, FocusEntry, FocusHistory, FocusOrder, FocusSegment, Source,
+    Artwork, FocusEntry, FocusHistory, FocusOrder, FocusProgress, FocusSegment, Source,
     metadata::{MAX_BLOCK_RAW_BYTES, validate_campaign},
 };
 use replay::{container::Replay, frame::FrameDecoder, rows::tables};
@@ -28,7 +28,18 @@ pub fn focus_order(
 pub struct FocusBranch {
     pub countries: BTreeMap<String, FocusHistory>,
     pub retained_bytes: usize,
+    /// The first hour whose focus progress was not kept because progress
+    /// reached its own budget. Order history is unaffected; progress after it
+    /// is absent, never carried forward.
+    pub progress_stopped: Option<i32>,
 }
+
+/// Retained bytes for focus progress runs, apart from the order history's
+/// budget: progress changes daily for every country, so a long or heavily
+/// modded campaign stops recording progress instead of failing the product.
+const PROGRESS_BUDGET_BYTES: usize = 48 * 1024 * 1024;
+/// A progress run's retained size: the struct plus its decimal string.
+const PROGRESS_RUN_BYTES: usize = std::mem::size_of::<FocusProgress>() + 20;
 
 /// Country requests reuse one branch scan. The budget is shared by all cached
 /// branches; switching countries never evicts another country's projection.
@@ -44,7 +55,7 @@ impl FocusCache {
         branch: u64,
         tag: &str,
         cancelled: &AtomicBool,
-    ) -> io::Result<FocusHistory> {
+    ) -> io::Result<(FocusHistory, Option<i32>)> {
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -70,13 +81,12 @@ impl FocusCache {
             }
             self.branches.push_back((branch, result));
         }
-        self.branches
-            .back()
-            .unwrap()
-            .1
+        let branch = &self.branches.back().unwrap().1;
+        branch
             .countries
             .get(tag)
             .cloned()
+            .map(|history| (history, branch.progress_stopped))
             .ok_or_else(|| io::Error::other("No recorded focus history for this country"))
     }
 }
@@ -113,6 +123,16 @@ pub fn focus_branch(
     branch: u64,
     cancelled: &AtomicBool,
 ) -> io::Result<FocusBranch> {
+    focus_branch_within(replay, branch, cancelled, PROGRESS_BUDGET_BYTES)
+}
+
+/// [`focus_branch`] with the progress budget given, so tests can reach it.
+pub(crate) fn focus_branch_within(
+    replay: &Replay,
+    branch: u64,
+    cancelled: &AtomicBool,
+    progress_budget: usize,
+) -> io::Result<FocusBranch> {
     if cancelled.load(Ordering::Acquire) {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
@@ -129,9 +149,11 @@ pub fn focus_branch(
     let mut result = FocusBranch {
         countries: BTreeMap::new(),
         retained_bytes: 0,
+        progress_stopped: None,
     };
     let mut identities = BTreeMap::new();
     let mut segment_count = 0;
+    let mut progress_bytes = 0_usize;
     for block in replay.index.iter().filter(|b| b.branch == branch) {
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
@@ -211,6 +233,29 @@ pub fn focus_branch(
                 let history = result.countries.entry(tag.to_owned()).or_default();
                 let current = focus.current.as_deref().filter(|s| !s.is_empty());
                 let continuous = focus.continuous.as_deref().filter(|s| !s.is_empty());
+                // Progress changes once a day; runs never bridge a gap or an identity change.
+                match history.progress.last_mut() {
+                    Some(run)
+                        if result.progress_stopped.is_none()
+                            && same_identity
+                            && run.last_hour.checked_add(1) == Some(frame.hour)
+                            && run.progress_raw.parse::<i64>() == Ok(focus.progress) =>
+                    {
+                        run.last_hour = frame.hour;
+                    }
+                    _ if result.progress_stopped.is_some() => {}
+                    _ if progress_bytes + PROGRESS_RUN_BYTES > progress_budget => {
+                        result.progress_stopped = Some(frame.hour);
+                    }
+                    _ => {
+                        progress_bytes += PROGRESS_RUN_BYTES;
+                        history.progress.push(FocusProgress {
+                            first_hour: frame.hour,
+                            last_hour: frame.hour,
+                            progress_raw: focus.progress.to_string(),
+                        });
+                    }
+                }
                 if let Some(previous) = history.segments.last_mut() {
                     let order = &previous.order;
                     // Compare borrowed rows first: unchanged hours allocate no focus strings.
@@ -270,6 +315,8 @@ pub fn focus_branch(
             "Focus request cancelled",
         ));
     }
+    // The cache's shared budget counts both; only order history can fail the scan.
+    result.retained_bytes += progress_bytes;
     Ok(result)
 }
 
@@ -396,7 +443,7 @@ impl Product for NationalFocus {
         let content = context.content()?;
         let state = source.state::<State>();
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-        let history =
+        let (history, progress_stopped) =
             state
                 .history
                 .get(&source.replay(), params.branch(), &params.tag, cancelled)?;
@@ -414,7 +461,12 @@ impl Product for NationalFocus {
                     .chain(segment.order.continuous.as_deref())
             })
             .collect();
-        let (artwork, warnings) = art.catalogue(tokens, cancelled)?;
+        let (artwork, mut warnings) = art.catalogue(tokens, cancelled)?;
+        if let Some(hour) = progress_stopped {
+            warnings.push(format!(
+                "Focus progress is too large to keep in full; it is unavailable from hour {hour}."
+            ));
+        }
         Ok(FocusReply {
             history,
             artwork,

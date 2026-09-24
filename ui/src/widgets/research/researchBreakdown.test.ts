@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ResearchEntry, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
 import { researchAt, researchRateAt } from './researchData.ts';
-import { researchBreakdown, researchNumber, researchWork } from './researchBreakdown.ts';
+import { researchBreakdown, researchNumber, researchSplit, researchWork } from './researchBreakdown.ts';
+import { researchJourney, researchTimeSplit } from './researchJourney.ts';
 
 const start = 43_800_000 + 1938 * 8760;
 const assignment: ResearchEntry = {
@@ -30,6 +31,17 @@ function fixture(): ResearchSlotHistory {
       progressRaw: (BigInt(day <= 60 ? day * 2 : day <= 120 ? 120 + (day - 60) * 3 : 300 + (day - 120) * 2) * 50000n).toString(),
     })),
   };
+}
+
+/** Daily progress earned at the state's own rate: consistent evidence for a time split. */
+function recordedAt(slot: ResearchSlotHistory, only: ResearchSlotState, days: number, base: bigint): ResearchSlotHistory {
+  let done = 0n;
+  const progress = [];
+  for (let day = 0; day <= days; day++) {
+    progress.push({ firstHour: start + day * 24, lastHour: start + day * 24 + 23, entryFirstObservedHour: start, baseDaysRaw: base.toString(), progressRaw: done.toString() });
+    done += researchWork(only, start + day * 24, start + (day + 1) * 24)! / 24n;
+  }
+  return { ...slot, states: [only], progress };
 }
 
 test('a temporary bonus earns progress only during its active period', () => {
@@ -92,4 +104,61 @@ test('unknown starts and changing costs do not claim a full duration saving', ()
   assert.equal(result.complete, false);
   assert.equal(researchNumber(-123456n), '−1.2');
   assert.equal(researchNumber(9223372036854775807n, 2), '92233720368547.76');
+});
+
+test('time split: base, penalty and bonuses add up to the time actually taken', () => {
+  const slot = fixture();
+  const split = researchTimeSplit(researchJourney([slot], slot, assignment), false)!;
+  // 60 days at 1.5x earn 90 days of work, saving 30 of the 180-day base time.
+  assert.deepEqual({ ...split, modifiers: undefined }, { base: 18000000n, penalty: 0n, bonus: 3000000n, juggle: 0n, earlier: 0n, remaining: 0n,
+    paused: 0n, taken: 15000000n, modifiers: undefined, other: 0n, floored: false });
+  assert.deepEqual(split.modifiers.map(m => [m.label, m.days]), [['Research speed', 3000000n]]);
+});
+
+test('time split names every modifier source; a component keeps what its sources do not explain', () => {
+  const slot = fixture();
+  const boosted = state(0, 150, '30000');
+  const country = boosted.details!.modifiers!.components[0];
+  country.raw = '30000';
+  country.sources = [{ token: 'german_engineering', name: 'German Engineering', raw: '20000' }];
+  boosted.details!.modifiers!.components[1].raw = '-10000';
+  boosted.details!.modifiers!.totalBonusRaw = '20000';
+  slot.states = [boosted];
+  const split = researchTimeSplit(researchJourney([slot], slot, assignment), false)!;
+  // Each modifier saves its own value for each of the 150 days it applied.
+  assert.deepEqual(split.modifiers.map(m => [m.label, m.days]), [
+    ['German Engineering', 3000000n], ['Other research speed', 1500000n], ['Category bonus', -1500000n],
+  ]);
+  assert.equal(split.other, 0n);
+  assert.equal(split.modifiers.reduce((sum, m) => sum + m.days, 0n) + split.other, split.bonus);
+});
+
+test('the minimum research speed is its own part of the time, not blamed on a modifier', () => {
+  const slowed = state(0, 150, '-950000');
+  // 150 days at the clamped 0.1x complete a 15-day technology.
+  const slot = recordedAt(fixture(), slowed, 150, 1500000n);
+  // At -95% the formula would give 0.05x; the game clamps to 0.1x, which recovers time no modifier explains.
+  const split = researchTimeSplit(researchJourney([slot], slot, assignment), false)!;
+  assert.equal(split.floored, true);
+  assert.ok(split.other > 0n);
+  assert.equal(split.modifiers.reduce((sum, m) => sum + m.days, 0n) + split.other, split.bonus);
+});
+
+test('time split: the ahead-of-time penalty stretches the base, and active research keeps the rest as remaining', () => {
+  const ahead = state(0, 150, '0');
+  ahead.details!.modifiers!.year = 1939;
+  const slot = recordedAt(fixture(), ahead, 150, 18000000n);
+  const split = researchSplit(ahead, start, start + 24)!;
+  assert.equal(split.work + split.penalty - split.bonus, 100_000n * 24n);
+  assert.ok(split.penalty > 0n);
+  const clipped = researchAt({ coverage: slot.availability, slots: [slot] }, start + 30 * 24)![0];
+  const partial = researchTimeSplit(researchJourney([clipped], clipped, clipped.entries[0]), true)!;
+  assert.equal(partial.base + partial.penalty - partial.bonus - partial.juggle - partial.earlier - partial.remaining, partial.taken);
+  assert.equal(partial.taken, 3000000n);
+  assert.ok(partial.remaining > 0n);
+});
+
+test('time split refuses to guess across a recording gap', () => {
+  const slot = { ...fixture(), states: [state(0, 60, '0'), state(90, 150, '0')] };
+  assert.equal(researchTimeSplit(researchJourney([slot], slot, assignment), false), null);
 });

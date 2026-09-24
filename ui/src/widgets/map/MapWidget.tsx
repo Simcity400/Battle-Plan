@@ -30,16 +30,16 @@ export default function MapWidget({ widget, runtime, active, mapOptions }: Widge
   const nativeUnavailable = !runtime.client.available || runtime.client.nativeMaps === false;
   return <div className="dash-map-widget">
     <div className="dash-map-surface" ref={body}>
-      <div className="dash-map-placeholder" role={state?.error ? 'alert' : 'status'}><Icon name="map" />
+      <div className="dash-map-placeholder" role={state?.error ? 'alert' : 'status'}><span className="empty-icon">{state?.loading || (desired && !matched && !state?.error && !nativeUnavailable && !runtime.nativeHidden) ? <span className="spinner" /> : <Icon name={state?.error ? 'alert' : 'map'} />}</span>
         <strong>{nativeUnavailable ? 'Native map available in the desktop app' : runtime.nativeHidden ? 'Map hidden for layout controls'
           : state?.error ? 'This map could not be prepared' : !track ? 'Choose a source and track' : !desired ? 'No map at this time' : matched ? 'Native map' : 'Preparing this map…'}</strong>
         <p>{state?.error ?? (nativeUnavailable ? 'Open a recording in the desktop app to explore its campaign map.'
           : !desired && track ? 'The requested hour is outside this branch or its pin is unavailable.' : 'Follow the campaign as it unfolds, or pin a moment for comparison.')}</p>
-        {state?.error && <button className="button small" type="button" onClick={() => runtime.maps.retry(widget.id)}>Retry map</button>}
+        {state?.error && <button className="button small" type="button" onClick={() => runtime.maps.retry(widget.id)}><Icon name="refresh" />Retry map</button>}
       </div>
     </div>
     {runtime.client.nativeMaps !== false && state?.hour != null && <div className="dash-map-status">
-      <span>{formatDateTime(state.hour)}</span>{!matched && <span className="is-pending">Updating…</span>}
+      <span><Icon name="clock" />{formatDateTime(state.hour)}</span>{matched ? <span className="pill positive">{widget.time.mode === 'follow' ? 'Live' : widget.time.mode === 'pin' ? 'Pinned' : 'Campaign end'}</span> : <span className="pill warning">Updating…</span>}
     </div>}
   </div>;
 }

@@ -1,0 +1,155 @@
+// Colour math for themes. Everything is plain sRGB in, #rrggbb out; OKLCH is
+// only used to build perceptually even ramps and to solve text contrast.
+
+export interface Rgb { r: number; g: number; b: number }
+export interface Oklch { l: number; c: number; h: number }
+
+const clamp = (value: number, min = 0, max = 1) => Math.min(max, Math.max(min, value));
+
+/** Parses #rgb, #rgba, #rrggbb, #rrggbbaa, rgb() and rgba(); alpha is returned separately. */
+export function parseColorAlpha(value: unknown): { rgb: Rgb; alpha: number } | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim().toLowerCase();
+  const hex = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(text);
+  if (hex) {
+    const digits = hex[1].length <= 4 ? [...hex[1]].map(digit => digit + digit).join('') : hex[1];
+    const channel = (index: number) => parseInt(digits.slice(index * 2, index * 2 + 2), 16);
+    return { rgb: { r: channel(0), g: channel(1), b: channel(2) }, alpha: digits.length === 8 ? channel(3) / 255 : 1 };
+  }
+  const functional = /^rgba?\(\s*([^)]*)\)$/.exec(text);
+  if (!functional) return null;
+  const parts = functional[1].split(/\s*[,/]\s*|\s+/).filter(Boolean);
+  if (parts.length < 3 || parts.length > 4) return null;
+  const numbers = parts.map((part, index) => {
+    const percent = part.endsWith('%');
+    const number = Number(percent ? part.slice(0, -1) : part);
+    if (!Number.isFinite(number)) return NaN;
+    return index < 3 ? (percent ? number * 2.55 : number) : (percent ? number / 100 : number);
+  });
+  if (numbers.some(Number.isNaN)) return null;
+  return { rgb: { r: clamp(numbers[0], 0, 255), g: clamp(numbers[1], 0, 255), b: clamp(numbers[2], 0, 255) }, alpha: clamp(numbers[3] ?? 1) };
+}
+
+export function parseColor(value: unknown): Rgb | null {
+  return parseColorAlpha(value)?.rgb ?? null;
+}
+
+export function toHex({ r, g, b }: Rgb): string {
+  return `#${[r, g, b].map(channel => Math.round(clamp(channel, 0, 255)).toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** Normalises any accepted colour to #rrggbb, compositing translucency over `under`. */
+export function normalizeColor(value: unknown, under?: string): string | null {
+  const parsed = parseColorAlpha(value);
+  if (!parsed) return null;
+  const base = under ? parseColor(under) : null;
+  return toHex(base && parsed.alpha < 1 ? mixRgb(base, parsed.rgb, parsed.alpha) : parsed.rgb);
+}
+
+export function mixRgb(from: Rgb, to: Rgb, amount: number): Rgb {
+  const t = clamp(amount);
+  return { r: from.r + (to.r - from.r) * t, g: from.g + (to.g - from.g) * t, b: from.b + (to.b - from.b) * t };
+}
+
+export function mix(from: string, to: string, amount: number): string {
+  return toHex(mixRgb(parseColor(from) ?? { r: 0, g: 0, b: 0 }, parseColor(to) ?? { r: 0, g: 0, b: 0 }, amount));
+}
+
+const toLinear = (channel: number) => { const value = channel / 255; return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4; };
+const fromLinear = (value: number) => 255 * (value <= 0.0031308 ? value * 12.92 : 1.055 * value ** (1 / 2.4) - 0.055);
+
+export function luminance({ r, g, b }: Rgb): number {
+  return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+}
+
+export function contrast(first: Rgb, second: Rgb): number {
+  const [light, dark] = [luminance(first), luminance(second)].sort((a, b) => b - a);
+  return (light + 0.05) / (dark + 0.05);
+}
+
+export function isDark(color: Rgb): boolean {
+  // Equal contrast headroom for white and black text.
+  return luminance(color) < 0.179;
+}
+
+export function rgbToOklch({ r, g, b }: Rgb): Oklch {
+  const [lr, lg, lb] = [toLinear(r), toLinear(g), toLinear(b)];
+  const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+  const m = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+  const s = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+  const L = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
+  const A = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+  const B = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+  const hue = (Math.atan2(B, A) * 180) / Math.PI;
+  return { l: L, c: Math.hypot(A, B), h: hue < 0 ? hue + 360 : hue };
+}
+
+function oklchToLinear({ l, c, h }: Oklch): [number, number, number] {
+  const angle = (h * Math.PI) / 180;
+  const A = c * Math.cos(angle), B = c * Math.sin(angle);
+  const lp = (l + 0.3963377774 * A + 0.2158037573 * B) ** 3;
+  const mp = (l - 0.1055613458 * A - 0.0638541728 * B) ** 3;
+  const sp = (l - 0.0894841775 * A - 1.291485548 * B) ** 3;
+  return [
+    4.0767416621 * lp - 3.3077115913 * mp + 0.2309699292 * sp,
+    -1.2684380046 * lp + 2.6097574011 * mp - 0.3413193965 * sp,
+    -0.0041960863 * lp - 0.7034186147 * mp + 1.707614701 * sp,
+  ];
+}
+
+/** Maps into sRGB by reducing chroma, which keeps the requested lightness and hue. */
+export function oklchToRgb(color: Oklch): Rgb {
+  const target = { ...color, l: clamp(color.l), c: Math.max(0, color.c) };
+  let low = 0, high = target.c;
+  let linear = oklchToLinear(target);
+  const inGamut = (values: number[]) => values.every(value => value >= -0.0005 && value <= 1.0005);
+  if (!inGamut(linear)) {
+    for (let step = 0; step < 18; step++) {
+      const middle = (low + high) / 2;
+      if (inGamut(oklchToLinear({ ...target, c: middle }))) low = middle; else high = middle;
+    }
+    linear = oklchToLinear({ ...target, c: low });
+  }
+  const [r, g, b] = linear.map(value => fromLinear(clamp(value)));
+  return { r, g, b };
+}
+
+export function oklchHex(color: Oklch): string {
+  return toHex(oklchToRgb(color));
+}
+
+/** Moves lightness until the colour reaches `ratio` against `against`, or the end of the range. */
+export function solveLightness(color: Oklch, against: Rgb, ratio: number, direction: 'lighter' | 'darker'): Oklch {
+  const step = direction === 'lighter' ? 0.01 : -0.01;
+  let current = { ...color };
+  for (let index = 0; index < 100 && contrast(oklchToRgb(current), against) < ratio; index++) {
+    const next = clamp(current.l + step);
+    if (next === current.l) break;
+    current = { ...current, l: next };
+  }
+  return current;
+}
+
+/** Near-white or near-black text, whichever reads better on `background`. */
+export function readableText(background: Rgb, dark = '#0b0f14', light = '#ffffff'): string {
+  const darkRgb = parseColor(dark)!, lightRgb = parseColor(light)!;
+  return contrast(background, lightRgb) >= contrast(background, darkRgb) ? light : dark;
+}
+
+export interface Hsv { h: number; s: number; v: number }
+
+/** Hue in degrees, saturation and value in 0–1, for the colour picker. */
+export function rgbToHsv({ r, g, b }: Rgb): Hsv {
+  const [red, green, blue] = [r / 255, g / 255, b / 255];
+  const max = Math.max(red, green, blue), min = Math.min(red, green, blue), delta = max - min;
+  let h = 0;
+  if (delta) h = max === red ? ((green - blue) / delta) % 6 : max === green ? (blue - red) / delta + 2 : (red - green) / delta + 4;
+  h = (h * 60 + 360) % 360;
+  return { h, s: max ? delta / max : 0, v: max };
+}
+
+export function hsvToRgb({ h, s, v }: Hsv): Rgb {
+  const chroma = v * s, x = chroma * (1 - Math.abs(((h / 60) % 2) - 1)), m = v - chroma;
+  const [r, g, b] = h < 60 ? [chroma, x, 0] : h < 120 ? [x, chroma, 0] : h < 180 ? [0, chroma, x] : h < 240 ? [0, x, chroma] : h < 300 ? [x, 0, chroma] : [chroma, 0, x];
+  return { r: (r + m) * 255, g: (g + m) * 255, b: (b + m) * 255 };
+}

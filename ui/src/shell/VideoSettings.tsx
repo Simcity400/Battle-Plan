@@ -6,6 +6,11 @@ import { Icon } from '../components/Icons';
 interface VideoOptions { useGameSettings: boolean; uiScale: number; vsync: boolean }
 interface VideoReply { settings: VideoOptions; gameSettings: VideoOptions | null; gameSettingsError: string | null }
 
+const VSYNC = 'VSync';
+const INTERFACE_SCALE = 'Interface scale';
+/** Option row labels, in order; settings search reveals rows by these. */
+export const VIDEO_OPTION_LABELS = [VSYNC, INTERFACE_SCALE];
+
 export function useVideoSettings(enabled: boolean, userFolder?: string) {
   const [reply, setReply] = useState<VideoReply | null>(null);
   const [draft, setDraft] = useState<VideoOptions | null>(null);
@@ -39,10 +44,10 @@ export function useVideoSettings(enabled: boolean, userFolder?: string) {
 export default function VideoControls({ video, busy }: { video: ReturnType<typeof useVideoSettings>; busy: boolean }) {
   const enabled = !!video.draft && !busy;
   return <>
-    <label className="map-option-row"><span>VSync <span className="folder-info" tabIndex={0} role="img" aria-label="About VSync" data-tooltip="Synchronizes all native maps to the display to reduce tearing. This is a global graphics setting; browser preview uses the browser's presentation settings."><Icon name="info" /></span></span>
+    <label className="map-option-row"><span>{VSYNC} <span className="folder-info" tabIndex={0} role="img" aria-label="About VSync" data-tooltip="Synchronizes all native maps to the display to reduce tearing. This is a global graphics setting; browser preview uses the browser's presentation settings."><Icon name="info" /></span></span>
       {desktopAvailable ? <input type="checkbox" role="switch" disabled={!enabled} aria-checked={video.draft ? video.draft.vsync : 'mixed'} checked={video.draft?.vsync ?? false} onChange={event => video.update({ vsync: event.currentTarget.checked })} /> : <span className="graphics-unavailable">Desktop only</span>}
     </label>
-    <label className="map-option-row"><span>Interface scale <span className="folder-info" tabIndex={0} role="img" aria-label="About interface scale" data-tooltip="Changes the size of app text, menus and buttons. Map widget sizes still use the dashboard Edit handles. In browser preview, use browser zoom."><Icon name="info" /></span></span>
+    <label className="map-option-row"><span>{INTERFACE_SCALE} <span className="folder-info" tabIndex={0} role="img" aria-label="About interface scale" data-tooltip="Changes the size of app text, menus and buttons. Map widget sizes still use the dashboard Edit handles. In browser preview, use browser zoom."><Icon name="info" /></span></span>
       {desktopAvailable ? <select disabled={!enabled} value={video.draft?.uiScale ?? ''} onChange={event => video.update({ uiScale: Number(event.currentTarget.value) })}>
         {!video.draft && <option value="">{video.error ? 'Unavailable' : 'Loading...'}</option>}{[...new Set([...Array.from({ length: 16 }, (_, index) => 75 + index * 5), ...(video.draft ? [video.draft.uiScale] : [])])].sort((a, b) => a - b).map(scale => <option key={scale} value={scale}>{scale}%</option>)}
       </select> : <span className="graphics-unavailable">Browser zoom</span>}

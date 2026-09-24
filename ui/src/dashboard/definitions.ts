@@ -1,7 +1,8 @@
 import type { ComponentType } from 'react';
 import type { IconName } from '../components/Icons';
 import type { MapOptions } from '../shell/api';
-import type { DashboardClient } from './client';
+import type { DashboardClient, ReplayFile } from './client';
+import type { Campaign } from './campaigns';
 import type { MapViewsStore } from './geometry';
 import type { Alignment, BoundTrack, DashboardTemplate, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import type { PlaybackController } from './playback';
@@ -18,6 +19,11 @@ export interface WidgetRuntime {
   client: DashboardClient;
   alignment: Alignment;
   nativeHidden: boolean;
+  /** Open campaigns and the replay library, for a widget's campaign choice. */
+  campaigns: Campaign[];
+  recordings: ReplayFile[];
+  /** Points a widget at the default campaign (null), an open campaign's id or a recording path to open. */
+  assignCampaign: (widgetId: string, chosen: string | null) => Promise<void>;
 }
 
 export interface WidgetProps {
@@ -35,7 +41,8 @@ export interface HeaderControlsProps {
   runtime: WidgetRuntime;
   template: DashboardTemplate;
   editing: boolean;
-  onApply: (widget: WidgetSpec) => void;
+  /** `view` marks a view preference (Live, size) that saves immediately. */
+  onApply: (widget: WidgetSpec, view?: boolean) => void;
   onRemove?: () => void;
   onReset?: () => void;
   mapOptions: MapOptions;
@@ -48,12 +55,17 @@ export interface WidgetMeta {
   kind: string;
   version: number;
   title: string;
+  /** One line for the widget picker. */
+  description?: string;
   icon: IconName;
   timeModes: readonly WidgetTime['mode'][];
   defaultTime: 'follow' | 'campaign';
   scope: 'moment' | 'history';
   /** Reads recording data: shows the track label and a country choice. */
   data: boolean;
+  /** Has a meaningful whole-campaign view, so the header offers a Live switch.
+   * Without one (a map) the widget always follows playback. */
+  history: boolean;
   minSize: { w: number; h: number };
   defaultSize: { w: number; h: number };
 }

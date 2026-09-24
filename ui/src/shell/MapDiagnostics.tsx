@@ -1,31 +1,39 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { desktopAvailable, errorMessage, mapAction, recordingName } from './api';
 import type { DesktopState, ReplayMetadata } from './api';
 import { formatDateTime } from '../dashboard/calendar';
 import { Icon } from '../components/Icons';
+import { SettingsBlock } from './appearance/AppearanceSettings';
 
+/** Recording coverage and the native map's latest report, collected when the page opens. */
 export default function MapDiagnostics({ native, metadata }: { native: DesktopState | null; metadata: ReplayMetadata | null }) {
   const [error, setError] = useState<string | null>(null);
   const details = native?.mapDetails;
   const ready = desktopAvailable && !!native?.ready;
   const inspect = () => { setError(null); void mapAction({ kind: 'inspect' }).catch(cause => setError(errorMessage(cause))); };
-  return <section className="settings-section">
-    <details className="map-diagnostics" onToggle={event => { if (event.currentTarget.open && ready) inspect(); }}><summary>Diagnostics</summary><div>
-      <p className="settings-help">Recording coverage and the most recent native map report. Collected on demand.</p>
+  useEffect(() => { if (ready) inspect(); }, [ready]);
+  return <div className="diagnostics-settings">
+    <SettingsBlock id="diagnostics-recording" title="Recording">
       {metadata ? <>
-        <strong data-tooltip={metadata.path}>{recordingName(metadata.path)}</strong>
-        <p>Recording format {metadata.format} · {metadata.branches.length} {metadata.branches.length === 1 ? 'branch' : 'branches'}</p>
-        {metadata.warnings.map((warning, index) => <p key={index}>{warning}</p>)}
-        {metadata.branches.some(branch => branch.gaps == null) && <p>Gap metadata is unavailable from this bridge version. It needs a rebuild after benchmarking.</p>}
-        {metadata.branches.map(branch => <details key={branch.id}><summary>Branch {branch.id} · {formatDateTime(branch.firstHour)}</summary>
-          <p>Session {branch.sessionId} · {branch.sampleBoundary}</p>
-          {(branch.gaps ?? []).length === 0 ? <p>No reported capture gaps{branch.gaps == null ? ' available' : ''}.</p> : <ul>{branch.gaps.map((gap, index) => <li key={index}>{formatDateTime(gap.firstHour)} – {formatDateTime(gap.lastHour)}: {gap.reason}</li>)}</ul>}
+        <div className="settings-row"><span className="settings-row-text"><strong data-tooltip={metadata.path}>{recordingName(metadata.path)}</strong>
+          <small>Recording format {metadata.format} · {metadata.branches.length} {metadata.branches.length === 1 ? 'branch' : 'branches'}</small></span></div>
+        {(metadata.warnings.length > 0 || metadata.branches.some(branch => branch.gaps == null)) && <div className="settings-group-body diagnostics-list">
+          {metadata.warnings.map((warning, index) => <p key={index}>{warning}</p>)}
+          {metadata.branches.some(branch => branch.gaps == null) && <p>Gap metadata is unavailable from this bridge version. It needs a rebuild after benchmarking.</p>}
+        </div>}
+        {metadata.branches.map(branch => <details key={branch.id} className="settings-row diagnostics-branch"><summary><span className="settings-row-text"><strong>Branch {branch.id}</strong>
+          <small>{formatDateTime(branch.firstHour)} · session {branch.sessionId} · {branch.sampleBoundary}</small></span>
+          <span className={`pill${(branch.gaps ?? []).length ? ' warning' : ''}`}>{branch.gaps == null ? 'Gaps unavailable' : `${branch.gaps.length} ${branch.gaps.length === 1 ? 'gap' : 'gaps'}`}</span></summary>
+          {(branch.gaps ?? []).length === 0 ? <p>No reported capture gaps{branch.gaps == null ? ' available' : ''}.</p>
+            : <ul>{branch.gaps.map((gap, index) => <li key={index}>{formatDateTime(gap.firstHour)} – {formatDateTime(gap.lastHour)}: {gap.reason}</li>)}</ul>}
         </details>)}
-      </> : <p>No recording selected.</p>}
-      {ready && <button type="button" className="button" onClick={inspect}><Icon name="refresh" />Update map report</button>}
-      {error && <p className="map-menu-error" role="alert">{error}</p>}
-      {details && <><p>Native map: {details.path ? recordingName(details.path) : 'No map loaded'}{details.hour != null ? ` · ${formatDateTime(details.hour)}` : ''}</p>
-        <ul>{details.messages.map((message, index) => <li key={index}>{message}</li>)}</ul></>}
-    </div></details>
-  </section>;
+      </> : <div className="settings-row"><span className="settings-row-text"><strong>No recording selected</strong><small>Load a campaign to see its coverage and reported gaps.</small></span></div>}
+    </SettingsBlock>
+    <SettingsBlock id="diagnostics-map" title="Native map" actions={ready && <button type="button" className="button small quiet" onClick={inspect}><Icon name="refresh" />Update report</button>}>
+      <div className="settings-row"><span className="settings-row-text"><strong>{details?.path ? recordingName(details.path) : 'No map loaded'}</strong>
+        <small>{!desktopAvailable ? 'The native map runs in the desktop app.' : details?.hour != null ? formatDateTime(details.hour) : 'The most recent native map report, collected on demand.'}</small></span></div>
+      {error && <div className="settings-group-body"><p className="map-menu-error" role="alert">{error}</p></div>}
+      {details && details.messages.length > 0 && <div className="settings-group-body diagnostics-list"><ul>{details.messages.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
+    </SettingsBlock>
+  </div>;
 }

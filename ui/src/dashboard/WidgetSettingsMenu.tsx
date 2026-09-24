@@ -7,7 +7,7 @@ import type { WidgetRuntime } from './widgets';
 
 export default function WidgetSettingsMenu({ widget, template, runtime, onApply, onRemove, onReset, diagnostics = [] }: {
   diagnostics?: string[]; widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime;
-  onApply: (widget: WidgetSpec) => void; onRemove?: () => void; onReset?: () => void;
+  onApply: (widget: WidgetSpec, view?: boolean) => void; onRemove?: () => void; onReset?: () => void;
 }) {
   const id = useId();
   const menu = usePopover();
@@ -17,8 +17,7 @@ export default function WidgetSettingsMenu({ widget, template, runtime, onApply,
       popoverTarget={id} aria-haspopup="dialog" aria-expanded={open}><Icon name="settings" /></button>
     <Popover menu={menu} id={id} className="widget-settings-menu" aria-label={`${widget.title} settings`}>
       <PopoverHeading title="Widget settings" menu={menu} onDelete={onRemove} onReset={onReset} />
-      {open && <WidgetSettings widget={widget} template={template} tracks={runtime.tracks} client={runtime.client} defaultRoleId={runtime.defaultRoleId}
-        onChange={onApply} />}
+      {open && <WidgetSettings widget={widget} template={template} runtime={runtime} onChange={onApply} />}
       {open && diagnostics.length > 0 && <details className="widget-advanced"><summary>Data diagnostics ({diagnostics.length})</summary>
         <div>{diagnostics.map((message, index) => <p key={index}>{message}</p>)}</div></details>}
     </Popover>

@@ -31,7 +31,7 @@ export default function Tooltip() {
       tip.style.maxHeight = header ? `${Math.max(24, header.height - 8)}px` : '';
       const bounds = tip.getBoundingClientRect();
       const viewport = document.documentElement;
-      tip.style.left = `${Math.max(rail ? rail.left + 8 : 8, Math.min(anchor.left, (rail?.right ?? viewport.clientWidth) - bounds.width - 8))}px`;
+      tip.style.left = `${Math.max(rail ? rail.left + 8 : 8, Math.min(anchor.left + (anchor.width - bounds.width) / 2, (rail?.right ?? viewport.clientWidth) - bounds.width - 8))}px`;
       const above = !overlay && !!target.closest('.dash-widget-header');
       const top = !above && anchor.bottom + bounds.height <= viewport.clientHeight - 8 ? anchor.bottom : anchor.top - bounds.height;
       tip.style.top = `${Math.max(header ? header.top + 4 : 8, Math.min(top, (header?.bottom ?? viewport.clientHeight) - bounds.height - (header ? 4 : 8)))}px`;

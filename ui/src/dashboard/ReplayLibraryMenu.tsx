@@ -8,11 +8,15 @@ import type { ReplayLibraryState } from './replayLibrary';
 import ReplayFolderSetting from '../shell/ReplayFolderSetting';
 import { Icon } from '../components/Icons';
 import ReplayFilename from '../components/ReplayFilename';
+import { SourceFlag } from '../components/CountryFlag';
 
 const replayFilename = (path: string) => path.replaceAll('\\', '/').split('/').pop()!;
+const displayName = (path: string) => replayFilename(path).replace(/\.(?:battleplan|hoi4replay)$/i, '');
 
-export default function ReplayLibraryMenu({ library, client, campaigns, bindings, defaultId, onLoad, onUnload, onDefault, onOpenReady, slots, errors }: {
+export default function ReplayLibraryMenu({ library, client, campaigns, bindings, defaultId, countryTags, onLoad, onUnload, onDefault, onOpenReady, slots, errors }: {
   library: ReplayLibraryState; client: DashboardClient; campaigns: Campaign[]; bindings: Record<string, SourceBinding>; defaultId: string | null;
+  /** The country each campaign shows: the chosen one, else the recorded player. */
+  countryTags: Record<string, string | null>;
   onLoad: (path: string, label: string, slotId: string) => void; onUnload: (id: string) => void; onDefault: (id: string) => void;
   slots: ReturnType<typeof campaignSlots>; errors: Record<string, string>;
   onOpenReady?: (open: (() => void) | null) => void;
@@ -47,21 +51,39 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
     files.unshift({ path: campaign.path, name: campaign.label, folder: '' });
   }
   const rows = files.filter(file => `${file.name} ${file.folder}`.toLowerCase().includes(query.trim().toLowerCase()));
-  const defaultButton = (campaign: Campaign) => <button type="button" className="campaign-default" aria-pressed={campaign.id === defaultId}
-    aria-label={campaign.id === defaultId ? `${replayFilename(campaign.path)} is the default campaign` : `Set ${replayFilename(campaign.path)} as default`}
-    data-tooltip={campaign.id === defaultId ? 'Default campaign' : 'Set as default'} onClick={() => onDefault(campaign.id)}>{campaign.id === defaultId ? '★' : '☆'}</button>;
+  const visible = campaigns.filter(campaign => bindings[campaign.id]?.source || campaign.loading);
   return <div className="sidebar-campaigns">
-    <button ref={trigger} type="button" className="rail-button" popoverTarget={id} aria-haspopup="dialog" aria-expanded={open}><Icon name="folder" /><span>Recordings</span><Icon name="chevron-down" /></button>
-    <div className="loaded-campaigns">{campaigns.filter(campaign => bindings[campaign.id]?.source).map(campaign => <div className="loaded-campaign" key={campaign.id}>
-      <span className="campaign-loaded-dot" aria-label="Loaded" /><ReplayFilename className="campaign-name" path={campaign.path} />{defaultButton(campaign)}
-    </div>)}</div>
+    <div className="sidebar-group-heading"><span>Campaigns</span>
+      <button ref={trigger} type="button" className="icon-button small" popoverTarget={id} aria-haspopup="dialog" aria-expanded={open}
+        aria-label="Open a recording" data-tooltip="Open a recording"><Icon name="plus" /></button></div>
+    <div className="sidebar-menu loaded-campaigns" role="list" aria-label="Loaded campaigns">
+      {visible.map(campaign => {
+        const isDefault = campaign.id === defaultId;
+        const source = bindings[campaign.id]?.source;
+        const tag = countryTags[campaign.id] ?? null;
+        const country = tag ? source?.metadata.countries.find(item => item.tag === tag)?.name : undefined;
+        return <div className="loaded-campaign" role="listitem" key={campaign.id}>
+          <button type="button" className="sidebar-row campaign-row" disabled={!source} aria-current={isDefault ? 'true' : undefined}
+            aria-label={isDefault ? `${displayName(campaign.path)}, shown campaign` : `Show ${displayName(campaign.path)}`}
+            data-tooltip={[displayName(campaign.path), country].filter(Boolean).join(' · ')} onClick={() => onDefault(campaign.id)}>
+            {source ? <SourceFlag client={client} source={source} tag={tag} /> : <span className="campaign-loading"><span className="spinner" /></span>}
+            <span>{displayName(campaign.path)}</span>
+          </button>
+          {source && <button type="button" className="icon-button small campaign-unload" aria-label={`Unload ${displayName(campaign.path)}`} data-tooltip="Unload"
+            onClick={() => onUnload(campaign.id)}><Icon name="close" /></button>}
+        </div>;
+      })}
+      {!visible.length && <button type="button" className="sidebar-row sidebar-row-hint" onClick={() => popup.current?.showPopover()}>
+        <Icon name="folder-open" /><span>Open a recording…</span></button>}
+    </div>
     <Popover menu={menu} id={id} className="replay-library-menu" aria-label="Recordings"
       onToggle={event => { const next = event.newState === 'open'; if (next) void library.refresh(); else setQuery(''); }}>
       {open && <>
+        <div className="ui-popover-heading"><strong>Recordings</strong><button type="button" className="icon-button ui-popover-action" aria-label="Close recordings" onClick={menu.close}><Icon name="close" /></button></div>
         <div className="replay-library-tools">
-          <input data-popover-autofocus className="replay-library-search" aria-label="Search recordings" placeholder="Find a campaign…" value={query} onChange={event => setQuery(event.currentTarget.value)} />
-          <button type="button" className="replay-browse" aria-label="Browse for a recording" data-tooltip="Browse for a recording" disabled={picking || !canLoad || !client.chooseRecording} onClick={() => { void pickRecording(); }}>
-            {picking ? <span className="spinner" /> : <Icon name="folder" />}
+          <label className="search-field"><Icon name="search" /><input data-popover-autofocus className="replay-library-search" aria-label="Search recordings" placeholder="Find a campaign…" value={query} onChange={event => setQuery(event.currentTarget.value)} /></label>
+          <button type="button" className="button" aria-label="Browse for a recording" data-tooltip="Open a recording from anywhere on this computer" disabled={picking || !canLoad || !client.chooseRecording} onClick={() => { void pickRecording(); }}>
+            {picking ? <span className="spinner" /> : <Icon name="folder-open" />}Browse
           </button>
         </div>
         {pickError && <p className="dash-inline-warning" role="alert">{pickError}</p>}
@@ -76,17 +98,22 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
             const binding = campaign ? bindings[campaign.id] : null;
             const label = replayFilename(file.path);
             const error = binding?.error ?? Object.entries(errors).find(([path]) => sameCampaignPath(path, file.path))?.[1];
-            return <div className="replay-library-row" key={file.path}>
-              <span className={`campaign-loaded-dot${binding?.source ? '' : ' unloaded'}`} aria-label={binding?.source ? 'Loaded' : 'Not loaded'} data-tooltip={binding?.source ? 'Loaded' : 'Not loaded'} />
-              <div className="replay-library-name"><strong><ReplayFilename path={file.path} /></strong>{error && <small className="replay-library-error" role="alert">{error}</small>}</div>
-              {campaign && binding?.source && defaultButton(campaign)}
-              <button type="button" className="replay-load" disabled={campaign?.loading || binding?.loading || (!binding?.source && !campaign && !canLoad)} onClick={() => binding?.source && campaign ? onUnload(campaign.id) : onLoad(file.path, label, slotId)}>{campaign?.loading || binding?.loading ? 'Loading…' : binding?.source ? 'Unload' : 'Load'}</button>
+            const busy = campaign?.loading || binding?.loading;
+            return <div className={`replay-library-row${binding?.source ? ' is-loaded' : ''}`} key={file.path}>
+              <span className="replay-library-icon" aria-hidden="true"><Icon name="file" /></span>
+              <div className="replay-library-name"><strong><ReplayFilename path={file.path} /></strong>
+                {error ? <small className="replay-library-error" role="alert">{error}</small> : file.folder ? <small>{file.folder}</small> : null}</div>
+              {binding?.source && <span className="pill positive">{campaign?.id === defaultId ? 'Default' : 'Loaded'}</span>}
+              <button type="button" className={`button small${binding?.source ? ' quiet' : ''}`} disabled={busy || (!binding?.source && !campaign && !canLoad)}
+                onClick={() => binding?.source && campaign ? onUnload(campaign.id) : onLoad(file.path, label, slotId)}>
+                {busy ? <><span className="spinner" />Loading</> : binding?.source ? 'Unload' : 'Load'}</button>
             </div>;
           })}</div>
           {!rows.length && <p className="replay-library-empty">{library.loading ? 'Reading folder…' : query ? 'No matching recordings.' : 'No replays in this folder yet.'}</p>}
           {library.error && <p className="dash-inline-warning" role="alert">{library.error}</p>}
+          {library.folder && <div className="replay-library-folder"><Icon name="folder" /><span data-tooltip={library.folder}>{library.folder}</span></div>}
         </>}
-        {!library.folder && <><p className="replay-library-empty">Choose the folder where you keep your replays.</p><ReplayFolderSetting library={library} client={client} /></>}
+        {!library.folder && <div className="replay-library-setup"><p className="replay-library-empty">Choose the folder where you keep your replays.</p><ReplayFolderSetting library={library} client={client} /></div>}
       </>}
     </Popover>
   </div>;

@@ -11,16 +11,16 @@ import { addGridItem, bindTracks, branchSelections, clockBounds, createWidget, d
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { loadLayouts, MAX_LAYOUTS, parseTemplate, saveLayouts } from './storage';
 import { PlaybackController } from './playback';
+import { widgetDefinition } from './definitions';
 import '../widgets';
 import { MapViewsStore } from './geometry';
 import { useSourceRoles } from './sources';
-import { PlaybackStrip } from './controls';
+import { PlaybackCountryPicker, PlaybackStrip } from './controls';
 import ReplayLibraryMenu from './ReplayLibraryMenu';
 import type { ReplayLibraryState } from './replayLibrary';
 import DashboardGrid from './DashboardGrid';
 import './dashboard.css';
 import WidgetPicker from './WidgetPicker';
-import CountryPicker from '../components/CountryPicker';
 import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, sameCampaignPath } from './campaigns';
 import { hasMapOverlay, isMapOverlay } from '../shell/mapOverlays';
 import type { Campaign } from './campaigns';
@@ -31,6 +31,8 @@ interface Props { library: ReplayLibraryState; path: string | null; client: Dash
 export default function Dashboard({ path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, onMetadata, onMapError, playbackHost, campaignHost, onOpenReady }: Props) {
   const [restored] = useState(loadLayouts);
   const [library, setLibrary] = useState(restored.library);
+  const libraryRef = useRef(library);
+  libraryRef.current = library;
   const selectedLayout = library.layouts.find((entry) => entry.id === library.activeId)!;
   const [draftTemplate, setTemplate] = useState<DashboardTemplate>(selectedLayout.template);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -50,6 +52,13 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
   const [warning, setWarning] = useState<string | null>(restored.warning);
   const [savedTemplate, setSavedTemplate] = useState<DashboardTemplate | null>(null);
   const saved = savedTemplate === draftTemplate ? 'Layout saved on this device' : null;
+  const [savedVisible, setSavedVisible] = useState(false);
+  useEffect(() => {
+    if (!saved) return;
+    setSavedVisible(true);
+    const timer = setTimeout(() => setSavedVisible(false), 2800);
+    return () => clearTimeout(timer);
+  }, [saved, savedTemplate]);
   const [editing, setEditing] = useState(false);
   const saveMenu = usePopover();
   const saving = saveMenu.open;
@@ -127,9 +136,18 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
   const update = useCallback((change: (previous: DashboardTemplate) => DashboardTemplate) => {
     setTemplate((previous) => change(includeCampaigns(previous, campaignsRef.current)));
   }, []);
-  const applyWidget = useCallback((widget: WidgetSpec) => update((previous) => ({ ...previous,
-    widgets: previous.widgets.map((item) => item.id === widget.id ? widget : item),
-  })), [update]);
+  const applyWidget = useCallback((widget: WidgetSpec, view = false) => {
+    update((previous) => ({ ...previous, widgets: previous.widgets.map((item) => item.id === widget.id ? widget : item) }));
+    if (!view) return;
+    // View preferences (Live, size) save at once and never leave the layout unsaved.
+    const current = libraryRef.current;
+    const next = { ...current, layouts: current.layouts.map(entry => entry.id !== current.activeId ? entry : { ...entry, template: { ...entry.template,
+      widgets: entry.template.widgets.map(item => item.id === widget.id ? { ...item, time: widget.time, contentScale: widget.contentScale } : item) } }) };
+    const error = saveLayouts(next);
+    if (error) { setWarning(error); return; }
+    libraryRef.current = next;
+    setLibrary(next);
+  }, [update]);
   const removeWidget = useCallback((id: string) => update((previous) => ({ ...previous,
     widgets: previous.widgets.filter((widget) => widget.id !== id),
     layouts: Object.fromEntries(Object.entries(previous.layouts).map(([key, layout]) => [key, layout.filter((item) => item.i !== id)])),
@@ -172,13 +190,15 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
     setLibrary(next); setTemplate(entry.template); setSavedTemplate(null);
   };
 
-  const openCampaign = useCallback(async (chosen: string, label = recordingName(chosen), slotId?: string, reconnect = false) => {
+  /** Opens a recording into a campaign slot; resolves to the campaign's id once it is loaded. */
+  const openCampaign = useCallback(async (chosen: string, label = recordingName(chosen), slotId?: string, reconnect = false): Promise<string | null> => {
     const known = campaignsRef.current.find((item) => sameCampaignPath(item.path, chosen));
-    if (known && (!reconnect || known.loading)) return;
+    if (known && !reconnect) return known.loading ? null : known.id;
+    if (known?.loading) return null;
     const slots = campaignSlots(draftTemplate, campaignsRef.current);
     const slot = slotId === 'new' ? undefined : slotId ? slots.empty.find(role => role.id === slotId) : slots.empty[0];
-    if (slotId && slotId !== 'new' && !slot) { setActionError('That campaign slot is now occupied. Choose another slot.'); return; }
-    if (!known && !slot && !slots.canAdd) { setActionError('Unload a campaign before loading another.'); return; }
+    if (slotId && slotId !== 'new' && !slot) { setActionError('That campaign slot is now occupied. Choose another slot.'); return null; }
+    if (!known && !slot && !slots.canAdd) { setActionError('Unload a campaign before loading another.'); return null; }
     if (reconnect) clock.stop();
     const id = known?.id ?? slot?.id ?? newId();
     const campaign = { id, path: chosen, label: label.slice(0, 160), loading: true };
@@ -197,12 +217,12 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
           setCampaigns(campaignsRef.current);
           setLoadErrors(current => ({ ...current, [chosen]: errorMessage(cause) }));
         }
-        return;
+        return null;
       }
-      if (!mounted.current || !campaignsRef.current.includes(campaign)) return;
+      if (!mounted.current || !campaignsRef.current.includes(campaign)) return null;
     }
     const source = await roles.open(id, chosen, message => setLoadErrors(current => ({ ...current, [chosen]: message })));
-    if (!mounted.current || !campaignsRef.current.includes(campaign)) return;
+    if (!mounted.current || !campaignsRef.current.includes(campaign)) return null;
     campaignsRef.current = source ? campaignsRef.current.map(item => item === campaign ? { ...item, loading: false } : item)
       : campaignsRef.current.filter(item => item !== campaign);
     setCampaigns(campaignsRef.current);
@@ -218,7 +238,31 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
       }
       setDefaultRoleId((current) => defaultAfterOpen(current, id));
     }
+    return source ? id : null;
   }, [roles.open, roles.remove, roles.bindings, draftTemplate, template.tracks, clock]);
+
+  /** Points a widget at the default campaign (null) or a recording. A recording that is not
+   * loaded yet is opened once and shared, exactly as from the sidebar. */
+  const assignCampaign = useCallback(async (widgetId: string, chosen: string | null) => {
+    const pick = (roleId: string | null) => update(previous => ({ ...previous, widgets: previous.widgets.map(widget => {
+      if (widget.id !== widgetId) return widget;
+      const track = roleId === null ? null : previous.tracks.find(item => item.roleId === roleId);
+      if (roleId !== null && !track) return widget;
+      // Choosing the campaign it already follows changes nothing, not even a pinned moment.
+      if (roleId === null ? widget.campaign === 'default' : widget.campaign === 'tracks' && widget.trackIds[0] === track!.id) return widget;
+      // A pinned moment belongs to one recording's branch; a new campaign starts from the widget's default time.
+      const time = widget.time.mode === 'pin' ? { mode: widgetDefinition(widget.kind)?.defaultTime ?? 'campaign' } as const : widget.time;
+      return roleId === null ? { ...widget, campaign: 'default' as const, time } : { ...widget, campaign: 'tracks' as const, trackIds: [track!.id], time };
+    }) }));
+    if (chosen === null) { pick(null); return; }
+    const roleId = campaignsRef.current.find(item => item.id === chosen && !item.loading)?.id ?? await openCampaign(chosen);
+    if (!mounted.current) return;
+    if (roleId) { pick(roleId); return; }
+    // openCampaign reports its own failures beside the sidebar; the picker says why nothing changed.
+    throw new Error(campaignsRef.current.some(item => item.loading && sameCampaignPath(item.path, chosen))
+      ? 'That recording is still opening. Choose it again once it has loaded.'
+      : 'That recording could not be opened. The notice above the dashboard or the sidebar shows why.');
+  }, [update, openCampaign]);
 
   const unloadCampaign = async (id: string) => {
     const campaign = campaignsRef.current.find(campaign => campaign.id === id);
@@ -252,6 +296,10 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
     if (!campaignsRef.current.some((item) => sameCampaignPath(item.path, path))) void openCampaign(path);
   }, [path, client.available, openCampaign]);
   const defaultSource = defaultRoleId ? sourceMap.get(defaultRoleId) : null;
+  const countryTags = useMemo(() => Object.fromEntries(campaigns.map(campaign => {
+    const metadata = roles.bindings[campaign.id]?.source?.metadata;
+    return [campaign.id, selectedCountries[campaign.id] ?? metadata?.countries.find(country => country.id === metadata.playerCountryId)?.tag ?? null];
+  })), [campaigns, roles.bindings, selectedCountries]);
   useEffect(() => onMetadata(defaultSource?.metadata ?? null), [defaultSource, onMetadata]);
   useEffect(() => {
     const firstReady = campaigns.find((campaign) => roles.bindings[campaign.id]?.source);
@@ -265,71 +313,75 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
     if (index >= 0) { clock.stop(); setSelectedBranches(previous => ({ ...previous, [trackId]: index })); }
   }, [tracks, clock]);
 
-  const runtime = useMemo(() => ({ onMapBranch, tracks, clock, maps, client, campaignTracks: template.tracks, defaultRoleId, alignment: template.alignment, nativeHidden }),
-    [onMapBranch, tracks, clock, maps, client, template.tracks, template.alignment, defaultRoleId, nativeHidden]);
+  const recordings = replayLibrary.files;
+  const runtime = useMemo(() => ({ onMapBranch, tracks, clock, maps, client, campaignTracks: template.tracks, defaultRoleId, alignment: template.alignment, nativeHidden,
+    campaigns, recordings, assignCampaign }),
+    [onMapBranch, tracks, clock, maps, client, template.tracks, template.alignment, defaultRoleId, nativeHidden, campaigns, recordings, assignCampaign]);
 
 
   return <div className="dashboard">
-    {campaignHost && createPortal(<ReplayLibraryMenu library={replayLibrary} client={client} campaigns={campaigns} bindings={roles.bindings} defaultId={defaultRoleId}
+    {campaignHost && createPortal(<ReplayLibraryMenu library={replayLibrary} client={client} campaigns={campaigns} bindings={roles.bindings} defaultId={defaultRoleId} countryTags={countryTags}
       slots={campaignSlots(draftTemplate, campaigns)} errors={loadErrors} onLoad={(path, label, slotId) => { void openCampaign(path, label, slotId); }}
       onUnload={unloadCampaign} onDefault={setDefaultRoleId} onOpenReady={onOpenReady} />, campaignHost)}
     {(active || mapActive) && playbackHost && createPortal(<div className="header-workspace-bar">
-    <CountryPicker source={defaultSource} client={client} onCountries={roles.observeCountries} onReconnect={() => {
+    <PlaybackCountryPicker clock={clock} track={tracks.find(track => track.roleId === defaultRoleId)} source={defaultSource} client={client} onCountries={roles.observeCountries} onReconnect={() => {
       const campaign = campaignsRef.current.find(campaign => campaign.id === defaultRoleId);
       if (campaign) void openCampaign(campaign.path, campaign.label, undefined, true);
     }} countries={defaultSource?.metadata.countries ?? []} playerCountryId={defaultSource?.metadata.playerCountryId ?? null}
       selectedTag={template.roles.find((role) => role.id === defaultRoleId)?.selectedTag ?? null}
       onChange={(tag) => { if (defaultRoleId) setSelectedCountries((previous) => ({ ...previous, [defaultRoleId]: tag })); }} />
     <PlaybackStrip clock={clock} tracks={tracks} alignment={template.alignment} defaultRoleId={defaultRoleId} />
+    <div className="header-workspace-tools">
     {mapActive && <MapControls source={defaultSource ?? null} client={client} metadata={defaultSource?.metadata ?? null} branchId={tracks.find(track => track.roleId === defaultRoleId)?.branch.id ?? null}
       onBranch={id => { const track = tracks.find(track => track.roleId === defaultRoleId); if (track) onMapBranch(track.id, id); }}
       options={mapOptions} onOptions={setMapOptions} />}
-    {active && <div className="header-workspace-tools"><label className="header-control header-layout"><span className="sr-only">Layout</span>
-      <select aria-label="Saved layout" value={library.activeId} disabled={editing || dirty || campaigns.some(campaign => campaign.loading)} data-tooltip={editing || dirty ? 'Save or cancel changes before switching layouts' : selectedLayout.template.name}
-        onChange={(event) => selectLayout(event.currentTarget.value)}>
-        {library.layouts.map((entry) => <option key={entry.id} value={entry.id}>{entry.template.name}</option>)}
-      </select></label>
-      <div className="dash-toolbar">
-        {editing && <WidgetPicker disabled={template.widgets.length >= 48} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind) => {
+    {active && <>
+      {/* The layout picker and the editing tools share one slot, so the bar never shifts or grows. */}
+      <div className="toolbar-swap" data-editing={editing || dirty || undefined}>
+      <label className="header-layout"><Icon name="layers" /><span className="sr-only">Layout</span>
+        <select aria-label="Saved layout" value={library.activeId} disabled={editing || dirty || campaigns.some(campaign => campaign.loading)}
+          onChange={(event) => selectLayout(event.currentTarget.value)}>
+          {library.layouts.map((entry) => <option key={entry.id} value={entry.id}>{entry.template.name}</option>)}
+        </select></label>
+      <div className="dash-toolbar" role="toolbar" aria-label="Layout changes">
+        <span className="toolbar-slot" data-shown={editing || undefined}><WidgetPicker disabled={!editing || template.widgets.length >= 48} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind) => {
           const widget = createWidget(kind, template.tracks[0].id);
           update((previous) => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItem(previous.layouts, widget) }));
-        }} />}
-        <button ref={editButton} type="button" className={`button${editing ? ' primary' : ' quiet'}`} aria-label={editing ? 'Done arranging' : 'Edit layout'} data-tooltip={editing ? 'Done arranging' : 'Edit layout'} aria-pressed={editing} onClick={() => {
+        }} /></span>
+        <button type="button" className="icon-button header-reset toolbar-slot" data-shown={editing || undefined} aria-label="Reset layout" data-tooltip="Reset arrangement to default" onClick={() => {
+          update(() => ({ ...defaultTemplate(), name: template.name })); saveMenu.popup.current?.hidePopover();
+        }}><Icon name="refresh" /></button>
+        <button type="button" className="icon-button" aria-label="Cancel layout changes" data-tooltip="Discard layout changes" onClick={() => {
+          setTemplate(selectedLayout.template); setEditing(false); saveMenu.popup.current?.hidePopover(); editButton.current?.focus();
+        }}><Icon name="close" /></button>
+        <button ref={saveButton} type="button" className={`icon-button toolbar-save${dirty ? ' is-dirty' : ''}`} aria-label="Save layout" data-tooltip="Save layout" aria-expanded={saving} aria-haspopup="dialog" popoverTarget="layout-save-menu" onClick={() => {
+          setLayoutName(template.name); setSaveError(null);
+        }}><Icon name="save" /></button>
+      </div>
+      </div>
+      <button ref={editButton} type="button" className={`button toolbar-edit${editing ? ' primary' : ''}`} aria-label={editing ? 'Done arranging' : 'Edit layout'} data-tooltip={editing ? 'Done arranging' : 'Arrange widgets'} aria-pressed={editing} onClick={() => {
           saveMenu.popup.current?.hidePopover();
           setEditing(!editing);
-        }}><Icon name="edit" />{editing ? 'Done' : 'Edit'}</button>
-        {(editing || dirty) && <>
-          <button type="button" className="button quiet" aria-label="Cancel layout changes" data-tooltip="Cancel layout changes" onClick={() => {
-            setTemplate(selectedLayout.template); setEditing(false); saveMenu.popup.current?.hidePopover(); editButton.current?.focus();
-          }}><Icon name="close" /></button>
-          <button ref={saveButton} type="button" className="button primary" aria-label="Save layout" aria-expanded={saving} aria-haspopup="dialog" popoverTarget="layout-save-menu" onClick={() => {
-            setLayoutName(template.name); setSaveError(null);
-          }}><Icon name="save" />Save</button>
-        </>}
-        {editing && <button type="button" className="button quiet header-reset" aria-label="Reset layout" data-tooltip="Reset arrangement to default" onClick={() => {
-          update(() => ({ ...defaultTemplate(), name: template.name })); saveMenu.popup.current?.hidePopover();
-        }}><Icon name="refresh" /></button>}
-      </div>
+        }}><Icon name={editing ? 'check' : 'edit'} /><span className="toolbar-label">{editing ? 'Done' : 'Edit'}</span></button>
       <Popover menu={saveMenu} id="layout-save-menu" className="layout-save-menu" aria-label="Save layout options">
       {saving && <form onSubmit={event => { event.preventDefault(); persistLayout(false); }}>
-        <div className="layout-save-heading"><strong>Save layout</strong><button type="button" className="dash-icon-button" aria-label="Close save options" onClick={closeSave}><Icon name="close" /></button></div>
+        <div className="ui-popover-heading"><strong>Save layout</strong><button type="button" className="icon-button ui-popover-action" aria-label="Close save options" onClick={closeSave}><Icon name="close" /></button></div>
         <label className="field"><span>Layout name</span><input data-popover-autofocus aria-label="Layout name" value={layoutName} maxLength={160} onChange={(event) => { setLayoutName(event.currentTarget.value); setSaveError(null); }} /></label>
-        <p>Update this layout or keep it and save a new one.</p>
+        <p className="field-hint">Update this layout, or keep it and save your changes as a new one.</p>
         {saveError && <p className="layout-save-error" role="alert">{saveError}</p>}
         <div className="layout-save-actions"><button type="submit" className="button" disabled={!layoutName.trim()}>Update layout</button>
           <button type="button" className="button primary" disabled={!layoutName.trim() || library.layouts.length >= MAX_LAYOUTS} onClick={() => persistLayout(true)}>Save as new</button></div>
       </form>}
       </Popover>
-    </div>}
-    </div>, playbackHost)}
-    {(warning || actionError) && <div className="dash-banner" role="alert"><span>{actionError ?? warning}</span>
-      <button type="button" className="dash-icon-button" aria-label="Dismiss notice" onClick={() => { setActionError(null); setWarning(null); }}><Icon name="close" /></button></div>}
-    {saved && <div className="layout-saved" role="status">{saved}</div>}
-    <div className="dash-grid-scroll" ref={viewport}>
-      {active && <DashboardGrid template={template} runtime={runtime} editing={editing} onLayouts={layoutsChanged} onApply={applyWidget} onRemove={removeWidget} />}
-      {template.widgets.length === 0 && <div className="dash-empty dash-empty-dashboard"><Icon name="grid" /><h2>Make room for your campaign</h2><p>Choose Edit, then use the plus button to add a campaign map or a placeholder panel.</p></div>}
-
+    </>}
     </div>
-
+    </div>, playbackHost)}
+    {(warning || actionError) && <div className="dash-banner" role="alert"><Icon name="alert" /><span>{actionError ?? warning}</span>
+      <button type="button" className="icon-button small" aria-label="Dismiss notice" onClick={() => { setActionError(null); setWarning(null); }}><Icon name="close" /></button></div>}
+    {saved && savedVisible && <div className="layout-saved" role="status"><Icon name="check" />{saved}</div>}
+    <div className={`dash-grid-scroll${editing ? ' is-editing' : ''}`} ref={viewport}>
+      {active && <DashboardGrid template={template} runtime={runtime} editing={editing} onLayouts={layoutsChanged} onApply={applyWidget} onRemove={removeWidget} />}
+      {template.widgets.length === 0 && <div className="dash-empty dash-empty-dashboard"><span className="empty-icon"><Icon name="grid" /></span><strong>Make room for your campaign</strong><p>Choose Edit, then add a campaign map, a national focus or research panel, or an empty panel to plan around.</p></div>}
+    </div>
   </div>;
 }

@@ -460,7 +460,8 @@ fn focus_branch_cache_keeps_countries_branches_and_gaps_independent() {
     assert_eq!(projection.countries.len(), 2);
     let mut cache = crate::FocusCache::default();
     for tag in ["GER", "FRA", "GER", "FRA"] {
-        let history = cache.get(&replay, 1, tag, &cancel).unwrap();
+        let (history, progress_stopped) = cache.get(&replay, 1, tag, &cancel).unwrap();
+        assert_eq!(progress_stopped, None);
         assert_eq!(history, projection.countries[tag]);
         assert!(history.at(102).is_err());
         assert!(history.at(103).is_err());
@@ -471,6 +472,7 @@ fn focus_branch_cache_keeps_countries_branches_and_gaps_independent() {
         cache
             .get(&replay, 1, "FRA", &cancel)
             .unwrap()
+            .0
             .at(104)
             .unwrap()
             .completed[1]
@@ -481,6 +483,7 @@ fn focus_branch_cache_keeps_countries_branches_and_gaps_independent() {
         cache
             .get(&replay, 2, "GER", &cancel)
             .unwrap()
+            .0
             .at(100)
             .unwrap()
             .completed[0]
@@ -493,7 +496,7 @@ fn focus_branch_cache_keeps_countries_branches_and_gaps_independent() {
             .is_err()
     );
     assert_eq!(
-        cache.get(&replay, 1, "GER", &cancel).unwrap(),
+        cache.get(&replay, 1, "GER", &cancel).unwrap().0,
         projection.countries["GER"]
     );
 }
@@ -1004,5 +1007,69 @@ fn metadata_skips_an_unavailable_first_census_warns_on_bad_links_and_stops_when_
             .warnings
             .iter()
             .any(|warning| warning.contains("CountryLinks"))
+    );
+}
+
+#[test]
+fn focus_progress_runs_compress_equal_hours_and_never_bridge_gaps() {
+    let with_progress = |hour, progress| {
+        let mut frame = focus_countries_frame(1, hour, (9001, 7, &["a"]), &["f"]);
+        if let TableView::Complete(TableRows::Focus(rows)) =
+            &mut frame.tables[TableId::Focus.index()]
+        {
+            for row in rows.iter_mut() {
+                row.progress = progress;
+            }
+        }
+        frame
+    };
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                with_progress(100, 0),
+                with_progress(101, 0),
+                with_progress(102, 100_000),
+                with_progress(104, 100_000),
+            ],
+        )],
+    )
+    .unwrap();
+    let history = crate::focus_branch(&replay, 1, &AtomicBool::new(false))
+        .unwrap()
+        .countries["GER"]
+        .clone();
+    let runs: Vec<_> = history
+        .progress
+        .iter()
+        .map(|run| (run.first_hour, run.last_hour, run.progress_raw.as_str()))
+        .collect();
+    // Hour 103 is missing, so the equal value at 104 starts a new run.
+    assert_eq!(
+        runs,
+        [(100, 101, "0"), (102, 102, "100000"), (104, 104, "100000")]
+    );
+    // Two countries, so the budget holds two hours of runs. Past it, recording
+    // stops rather than failing the product: the order history is complete and
+    // the last kept run is never extended.
+    let run = std::mem::size_of::<crate::FocusProgress>() + 20;
+    let limited = crate::products::national_focus::focus_branch_within(
+        &replay,
+        1,
+        &AtomicBool::new(false),
+        4 * run,
+    )
+    .unwrap();
+    assert_eq!(limited.progress_stopped, Some(104));
+    let country = &limited.countries["GER"];
+    assert_eq!(country.segments, history.segments);
+    assert_eq!(
+        country
+            .progress
+            .iter()
+            .map(|run| (run.first_hour, run.last_hour))
+            .collect::<Vec<_>>(),
+        [(100, 101), (102, 102)]
     );
 }

@@ -1,5 +1,5 @@
 import type { ResearchEntry, ResearchHistory, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
-import { researchBreakdown, researchWork, type ResearchPeriod } from './researchBreakdown.ts';
+import { researchBreakdown, researchModifierParts, researchSplit, researchWork, type ResearchPeriod } from './researchBreakdown.ts';
 import { researchAt, researchRateAt } from './researchData.ts';
 
 export interface ResearchCredit {
@@ -140,6 +140,68 @@ export function researchJourney(slots: ResearchSlotHistory[], slot: ResearchSlot
         rateGain: work / 24n, creditGain } : null,
     complete: startKnown && creditsComplete && entry.outcome === 'completed' && !costChanged,
   };
+}
+
+/** How a technology's time came about, in fixed5 days:
+ * base + penalty - bonus - juggle - earlier - remaining = taken.
+ * `bonus` is time saved by research bonuses (negative when they slowed it),
+ * `juggle` is saved days credited by moving research between slots, `earlier`
+ * is progress made before its first witnessed assignment, `remaining` is work still
+ * to do (active research) and `paused` is time the technology sat in no slot. */
+export interface ResearchTimeSplit {
+  base: bigint; penalty: bigint; bonus: bigint; juggle: bigint; earlier: bigint; remaining: bigint; paused: bigint; taken: bigint;
+  /** `bonus` by modifier, largest effect first: days saved (negative when it slowed research). */
+  modifiers: ResearchModifierEffect[];
+  /** Part of `bonus` no modifier explains: the minimum-speed clamp when `floored`. */
+  other: bigint; floored: boolean;
+}
+export interface ResearchModifierEffect { key: string; kind: string; label: string; days: bigint }
+
+/** Null when a recording gap, missing modifiers, a changed cost or an
+ * unexplainable surplus prevents an honest split. Up to one day of surplus is
+ * the daily-update phase and is folded into the bonus figure. */
+export function researchTimeSplit(journey: ReturnType<typeof researchJourney>, active: boolean): ResearchTimeSplit | null {
+  const base = active ? journey.latestBase : journey.base;
+  if (base === null || base <= 0n || journey.costChanged || !journey.creditsComplete) return null;
+  let work = 0n, penalty = 0n, hours = 0, pausedHours = 0, floored = false;
+  const effects = new Map<string, ResearchModifierEffect>();
+  for (const period of journey.periods) {
+    if (period.paused) { pausedHours += period.endHour - period.firstHour; continue; }
+    if (!period.state) return null;
+    const split = researchSplit(period.state, period.firstHour, period.endHour);
+    const parts = researchModifierParts(period.state);
+    if (!split || !parts) return null;
+    work += split.work; penalty += split.penalty;
+    const span = period.endHour - period.firstHour;
+    hours += span;
+    floored ||= split.floored;
+    // Bonuses add to one another, so each saves exactly its own share: a
+    // modifier worth `raw` saves `raw` of a day for every day it is in effect.
+    for (const part of parts) {
+      const effect = effects.get(part.key) ?? { key: part.key, kind: part.kind, label: part.label, days: 0n };
+      effect.days += part.raw * BigInt(span);
+      effects.set(part.key, effect);
+    }
+  }
+  const done = active ? journey.observed : base;
+  if (done === null) return null;
+  const juggle = journey.credits.reduce((sum, credit) => sum + credit.work, 0n);
+  let earlier = done - work / 24n - juggle;
+  if (earlier > -100_000n && earlier < 100_000n) earlier = 0n;
+  // Earlier progress is only a cause when the start is not witnessed; after a
+  // witnessed start a surplus is unexplained, and nothing is shown for it.
+  if (earlier < 0n || (earlier > 0n && journey.startKnown)) return null;
+  const remaining = active && base > done ? base - done : 0n;
+  const taken = BigInt(hours) * 100_000n / 24n;
+  // The bonus closes the sum, so integer rounding never leaves a gap in the bar.
+  const bonus = base + penalty / 24n - juggle - earlier - remaining - taken;
+  const modifiers = [...effects.values()].map(effect => ({ ...effect, days: effect.days / 24n })).filter(effect => effect.days !== 0n)
+    .sort((a, b) => { const size = (days: bigint) => days < 0n ? -days : days;
+      return size(b.days) > size(a.days) ? 1 : size(b.days) < size(a.days) ? -1 : b.days > a.days ? 1 : b.days < a.days ? -1 : a.label.localeCompare(b.label); });
+  let other = bonus - modifiers.reduce((sum, effect) => sum + effect.days, 0n);
+  // Within a day of agreement is rounding and the daily-update phase, not a cause of its own.
+  if (!floored && other > -100_000n && other < 100_000n && modifiers.length) { modifiers[0].days += other; other = 0n; }
+  return { base, penalty: penalty / 24n, bonus, juggle, earlier, remaining, paused: BigInt(pausedHours) * 100_000n / 24n, taken, modifiers, other, floored };
 }
 
 /** Called only once per mounted completed explanation. Clip immutable source

@@ -6,6 +6,8 @@ import 'react-resizable/css/styles.css';
 import { Icon } from '../components/Icons';
 import type { MapOptions } from '../shell/api';
 import { createWidget, GRID_COLUMNS } from './model';
+import { resolveWidgetCampaign } from './campaigns';
+import { recordingName } from '../shell/api';
 import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { widgetDefinition } from './definitions';
 import type { WidgetRuntime } from './definitions';
@@ -17,7 +19,7 @@ interface Props {
   runtime: WidgetRuntime;
   editing: boolean;
   onLayouts: (layouts: GridLayouts) => void;
-  onApply: (widget: WidgetSpec) => void;
+  onApply: (widget: WidgetSpec, view?: boolean) => void;
   onRemove: (id: string) => void;
 }
 
@@ -34,7 +36,7 @@ function DashboardGrid({ template, runtime, editing, onLayouts, onApply, onRemov
   }, [onLayouts, runtime.maps]);
   return <div className={`dash-grid${editing ? ' is-editing' : ''}`} ref={containerRef}>
     {mounted && <Responsive<Breakpoint> width={width} layouts={template.layouts}
-      breakpoints={{ lg: 1280, md: 850, sm: 520, xs: 0 }} cols={GRID_COLUMNS} rowHeight={26} margin={[10, 10]} containerPadding={[0, 0]}
+      breakpoints={{ lg: 1280, md: 850, sm: 520, xs: 0 }} cols={GRID_COLUMNS} rowHeight={26} margin={[6, 6]} containerPadding={[0, 0]}
       dragConfig={{ enabled: editing, handle: '.dash-drag-grip', cancel: 'input,select,textarea,a' }}
       resizeConfig={{ enabled: editing, handles: ['se'] }} onLayoutChange={changed}
       onDrag={runtime.maps.schedule} onDragStop={runtime.maps.schedule} onResize={runtime.maps.schedule} onResizeStop={runtime.maps.schedule}>
@@ -67,18 +69,30 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   } : undefined;
   const missing = widget.trackIds.filter((id) => !runtime.tracks.some((track) => track.id === id));
   const HeaderControls = definition?.headerControls;
+  const canFollow = !!definition?.history && definition.timeModes.includes('follow') && definition.timeModes.includes('campaign');
+  const live = widget.time.mode === 'follow';
+  // Name the campaign only when several are open; one campaign needs no label.
+  const source = runtime.tracks.length > 1 && definition?.data !== false
+    ? runtime.tracks.find(track => track.id === resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId).trackIds[0])?.source : undefined;
   return <article ref={element} className={`dash-widget kind-${widget.kind}`} aria-label={widget.title}>
     <header className="dash-widget-header">
-      {editing && <span className="dash-drag-grip" data-tooltip="Drag to move this view" aria-hidden="true">⠿</span>}
-      <Icon name={definition?.icon ?? 'grid'} />
-      <div className="dash-widget-title"><h2 data-tooltip={widget.title}>{widget.title}<span ref={setHeaderSlot} /></h2>
-        {definition?.data !== false && <span>{widget.trackIds.map((id) => template.tracks.find((track) => track.id === id)?.label ?? 'Missing track').join(' + ')}</span>}</div>
+      {editing && <span className="dash-drag-grip" data-tooltip="Drag to move" aria-hidden="true"><Icon name="grip" /></span>}
+      <span className="dash-widget-icon" aria-hidden="true"><Icon name={definition?.icon ?? 'grid'} /></span>
+      <div className="dash-widget-title"><h2>{widget.title}<span className="dash-widget-summary" ref={setHeaderSlot} /></h2>
+        {source && <span className="dash-widget-subtitle">{recordingName(source.path).replace(/\.(?:battleplan|hoi4replay)$/i, '')}</span>}</div>
+      <div className="dash-widget-actions">
+      {canFollow && <button type="button" role="switch" aria-checked={live} className="live-toggle" aria-label={`${widget.title}: follow playback`}
+        data-tooltip={live ? 'Following the timeline. Switch off to see the whole campaign.' : 'Showing the whole campaign. Switch on to follow the timeline.'}
+        onClick={() => onApply({ ...widget, time: { mode: live ? 'campaign' : 'follow' } }, true)}>
+        <span className="live-toggle-track" aria-hidden="true"><span className="live-toggle-knob" /></span><span className="live-toggle-label">Live</span>
+      </button>}
       {HeaderControls
         ? <HeaderControls widget={widget} runtime={runtime} template={template} editing={editing} onApply={onApply} onRemove={() => onRemove(widget.id)} onReset={reset}
           mapOptions={mapOptions} onMapOptions={setMapOptions} diagnostics={editing ? diagnostics : []} />
         : <WidgetSettingsMenu diagnostics={editing ? diagnostics : []} widget={widget} template={template} runtime={runtime} onApply={onApply} onRemove={editing ? () => onRemove(widget.id) : undefined} onReset={reset} />}
+      </div>
     </header>
-    {missing.length > 0 && runtime.tracks.some((track) => widget.trackIds.includes(track.id)) && <div className="dash-inline-warning">{missing.map((id) => template.tracks.find((track) => track.id === id)?.label ?? id).join(', ')} unavailable</div>}
+    {missing.length > 0 && runtime.tracks.some((track) => widget.trackIds.includes(track.id)) && <div className="dash-inline-warning"><Icon name="alert" />{missing.map((id) => template.tracks.find((track) => track.id === id)?.label ?? id).join(', ')} unavailable</div>}
     <div className="dash-widget-content"><div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
       <WidgetBody widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} onDiagnostics={setDiagnostics} />
     </div></div>

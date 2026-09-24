@@ -9,8 +9,8 @@ import '../widgets/definitions.ts';
 
 // Synthetic kinds exercise the time model independently of the shipped widgets.
 registerWidgets([
-  { kind: 'current', version: 1, title: 'Test moment data', icon: 'grid', timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, minSize: { w: 2, h: 3 }, defaultSize: { w: 4, h: 6 } },
-  { kind: 'history', version: 1, title: 'Test history data', icon: 'grid', timeModes: ['follow', 'pin', 'range', 'campaign'], defaultTime: 'campaign', scope: 'history', data: true, minSize: { w: 2, h: 3 }, defaultSize: { w: 4, h: 6 } },
+  { kind: 'current', version: 1, title: 'Test moment data', icon: 'grid', timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false, minSize: { w: 2, h: 3 }, defaultSize: { w: 4, h: 6 } },
+  { kind: 'history', version: 1, title: 'Test history data', icon: 'grid', timeModes: ['follow', 'pin', 'range', 'campaign'], defaultTime: 'campaign', scope: 'history', data: true, history: true, minSize: { w: 2, h: 3 }, defaultSize: { w: 4, h: 6 } },
 ]);
 
 function country(id = '1', tag = 'GER'): CountryMetadata {

@@ -42,6 +42,7 @@ pub fn typescript_contract() -> String {
         FocusEntry::decl(),
         FocusOrder::decl(),
         FocusSegment::decl(),
+        FocusProgress::decl(),
         FocusHistory::decl(),
         ResearchCoverage::decl(),
         ResearchOutcome::decl(),

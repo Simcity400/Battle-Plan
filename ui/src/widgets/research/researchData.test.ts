@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { researchAt, researchColumns, researchDuration, researchEffects, researchFixed, researchRateAt, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
+import { researchAt, researchColumns, researchDuration, researchEffects, researchFixed, researchProgressAt, researchRateAt, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
 import { loadProduct } from '../../dashboard/products.ts';
 import type { ResearchEntry, ResearchHistory, ResearchReply } from '../../generated/dashboard';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
@@ -25,6 +25,19 @@ test('research slots stay sequential; only the new column receives a time-based 
   assert.equal(columns[2].slot.entries[1].token, 'G');
   // Completion dates differ: these second entries still use consecutive rows.
   assert.notEqual(columns[0].slot.entries[0].endedByHour, columns[1].slot.entries[0].endedByHour);
+});
+
+test('research progress is the recorded sample over its base cost, and absent outside samples', () => {
+  const slot = { ...history.slots[0], progress: [
+    { firstHour: 250, lastHour: 273, entryFirstObservedHour: 250, baseDaysRaw: '11000000', progressRaw: '2750000' },
+    { firstHour: 274, lastHour: 280, entryFirstObservedHour: 250, baseDaysRaw: '11000000', progressRaw: '12000000' },
+    { firstHour: 300, lastHour: 310, entryFirstObservedHour: 250, baseDaysRaw: null, progressRaw: '100' },
+  ] };
+  assert.equal(researchProgressAt(slot, 250, 260), 0.25);
+  assert.equal(researchProgressAt(slot, 250, 275), 1);
+  assert.equal(researchProgressAt(slot, 250, 290), null, 'no sample in a recording gap');
+  assert.equal(researchProgressAt(slot, 250, 305), null, 'unknown cost');
+  assert.equal(researchProgressAt(slot, 150, 260), null, 'another assignment');
 });
 
 test('rewind hides new slots, future assignments and future completion or switch outcomes', () => {
@@ -114,13 +127,14 @@ test('modifier playback uses the selected day, exact fixed point, and minimum sp
       components: [], totalBonusRaw: '20000', year: 1938, aheadFactorRaw: '200000', minimumSpeedRaw: '10000',
     } },
   };
-  assert.deepEqual(researchRateAt(state, hour), { rateRaw: '40000', penaltyRaw: '200000' });
+  assert.deepEqual(researchRateAt(state, hour), { rateRaw: '40000', penaltyRaw: '200000', floored: false });
   assert.deepEqual(researchRateAt(state, hour + 23), researchRateAt(state, hour));
   assert.ok(BigInt(researchRateAt(state, hour + 24)!.rateRaw) > 40000n);
-  assert.deepEqual(researchRateAt(state, hour + 8760), { rateRaw: '120000', penaltyRaw: '0' });
+  assert.deepEqual(researchRateAt(state, hour + 8760), { rateRaw: '120000', penaltyRaw: '0', floored: false });
   assert.equal(researchRateAt({ ...state, aheadReductionYearsRaw: '100000' }, hour)?.rateRaw, '120000');
   state.details.modifiers.totalBonusRaw = '-200000';
   assert.equal(researchRateAt(state, hour)?.rateRaw, '10000');
+  assert.equal(researchRateAt(state, hour)?.floored, true);
 });
 
 test('modifier changes survive history compression and rewind hides later values', () => {

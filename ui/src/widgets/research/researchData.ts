@@ -36,6 +36,17 @@ export function researchStateAt(slot: ResearchSlotHistory, hour: number): Resear
   } };
 }
 
+/** Recorded progress toward an assignment's current base cost at `hour`, as a
+ * 0-1 fraction. Null without a sample at that hour or a known positive cost;
+ * never carried across hours that were not recorded. */
+export function researchProgressAt(slot: ResearchSlotHistory, entryFirstObservedHour: number, hour: number): number | null {
+  const sample = slot.progress?.find(p => p.entryFirstObservedHour === entryFirstObservedHour && p.firstHour <= hour && hour <= p.lastHour);
+  if (!sample?.baseDaysRaw) return null;
+  const base = BigInt(sample.baseDaysRaw), done = BigInt(sample.progressRaw);
+  if (base <= 0n || done < 0n) return null;
+  return done >= base ? 1 : Number(done * 10_000n / base) / 10_000;
+}
+
 export function researchEffects(slot: ResearchSlotHistory, entry: ResearchEntry): ResearchSlotState[] {
   return (slot.states ?? []).filter(s => s.entryFirstObservedHour === entry.firstObservedHour && s.token === entry.token
     && s.firstHour <= entry.lastObservedHour && s.lastHour >= entry.firstObservedHour)
@@ -46,7 +57,7 @@ export function researchEffects(slot: ResearchSlotHistory, entry: ResearchEntry)
 }
 
 /** EC1810/ABE4C0 integer formula, evaluated at the selected hour. */
-export function researchRateAt(state: ResearchSlotState, hour: number): { rateRaw: string; penaltyRaw: string } | null {
+export function researchRateAt(state: ResearchSlotState, hour: number): { rateRaw: string; penaltyRaw: string; floored: boolean } | null {
   const modifiers = state.details?.modifiers;
   if (!modifiers || state.aheadReductionYearsRaw === null) return null;
   const reduction = BigInt(state.aheadReductionYearsRaw) * 365n;
@@ -56,7 +67,7 @@ export function researchRateAt(state: ResearchSlotState, hour: number): { rateRa
   if (100000n + penalty <= 0n) return null;
   const rate = (100000n + BigInt(modifiers.totalBonusRaw)) * 100000n / (100000n + penalty);
   const minimum = BigInt(modifiers.minimumSpeedRaw);
-  return { rateRaw: (rate > minimum ? rate : minimum).toString(), penaltyRaw: penalty.toString() };
+  return { rateRaw: (rate > minimum ? rate : minimum).toString(), penaltyRaw: penalty.toString(), floored: rate < minimum };
 }
 
 /** Format fixed5 operands without losing integer precision. */

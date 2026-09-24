@@ -49,7 +49,7 @@ From another terminal, [desktop_cdp.mjs](../../tools/desktop_cdp.mjs) inspects a
 
 ```powershell
 node tools/desktop_cdp.mjs captures\desktop-ui inspect
-node tools/desktop_cdp.mjs captures\desktop-ui click-selector '.view-tabs button:last-child'
+node tools/desktop_cdp.mjs captures\desktop-ui click-selector '#tab-settings'
 python tools/desktop_ui.py --session captures\desktop-ui list
 # Replace 12345 with the app HWND returned by list.
 python tools/desktop_ui.py --session captures\desktop-ui capture 12345 captures\desktop-ui\settings.png

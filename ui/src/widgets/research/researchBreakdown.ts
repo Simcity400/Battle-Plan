@@ -33,6 +33,61 @@ export function researchWork(state: ResearchSlotState, from: number, to: number)
   return work;
 }
 
+/** Split [from, to) into the research earned and the time the ahead-of-time
+ * penalty added or bonuses saved, all in fixed5 days × 24. At 1× the earned
+ * work would take `work`; the penalty alone would stretch it by `penalty`;
+ * bonuses bring it back to the hours actually spent:
+ * work + penalty - bonus = (to - from) × 1.00000. */
+export function researchSplit(state: ResearchSlotState, from: number, to: number): { work: bigint; penalty: bigint; bonus: bigint; floored: boolean } | null {
+  let work = 0n, penalty = 0n, bonus = 0n, floored = false;
+  let steps = 0;
+  for (let hour = from; hour < to;) {
+    if (++steps > 100_000) return null;
+    const nextDay = hour + 24 - ((hour - 43_800_000) % 24 + 24) % 24;
+    const rate = researchRateAt(state, hour);
+    if (!rate) return null;
+    const end = rate.penaltyRaw === '0' ? to : Math.min(to, nextDay);
+    floored ||= rate.floored;
+    const earned = BigInt(rate.rateRaw) * BigInt(end - hour);
+    const stretched = earned * (100_000n + BigInt(rate.penaltyRaw)) / 100_000n;
+    work += earned;
+    penalty += stretched - earned;
+    bonus += stretched - 100_000n * BigInt(end - hour);
+    hour = end;
+  }
+  return { work, penalty, bonus, floored };
+}
+
+export const MODIFIER_KINDS: Record<string, string> = {
+  country: 'research speed', category: 'category bonus', designTeam: 'design team', experience: 'experience',
+  license: 'licence', scientist: 'scientist', applied: 'research bonus', sharing: 'tech sharing',
+};
+const pretty = (token: string) => { const text = token.replace(/_/g, ' ').trim(); return text.charAt(0).toUpperCase() + text.slice(1); };
+
+export interface ResearchModifierPart { key: string; kind: string; label: string; raw: bigint }
+
+/** Every additive research modifier in effect for a state, down to its named
+ * sources. Parts sum to the total bonus: what a component's named sources do
+ * not account for (a base value, a clamp) remains as the component's own part.
+ * Scientist sources are efficiencies, not additive, so the scientist stays whole. */
+export function researchModifierParts(state: ResearchSlotState): ResearchModifierPart[] | null {
+  const modifiers = state.details?.modifiers;
+  if (!modifiers) return null;
+  const parts: ResearchModifierPart[] = [];
+  for (const component of modifiers.components) {
+    const kind = MODIFIER_KINDS[component.kind] ?? component.kind;
+    const sources = component.kind === 'scientist' ? []
+      : component.kind === 'applied' ? (state.details?.bonuses ?? []).filter(b => b.speedBonusRaw && b.speedBonusRaw !== '0')
+        .map(b => ({ id: `${b.id}`, label: b.name ?? (b.token ? pretty(b.token) : 'Research bonus'), raw: BigInt(b.speedBonusRaw!) }))
+        : component.sources.filter(s => s.raw !== '0')
+          .map((s, i) => ({ id: s.token ?? `${i}`, label: s.name ?? (s.token ? pretty(s.token) : pretty(kind)), raw: BigInt(s.raw) }));
+    for (const source of sources) parts.push({ key: `${component.kind}:${source.id}`, kind, label: source.label, raw: source.raw });
+    const rest = BigInt(component.raw) - sources.reduce((sum, s) => sum + s.raw, 0n);
+    if (rest !== 0n) parts.push({ key: `${component.kind}:`, kind, label: sources.length ? `Other ${kind}` : pretty(kind), raw: rest });
+  }
+  return parts;
+}
+
 /** Input must already be clipped by researchAt. No future samples or assumed
  * rates across missing hours enter the explanation. */
 export function researchBreakdown(slot: ResearchSlotHistory, entry: ResearchEntry) {
