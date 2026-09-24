@@ -195,8 +195,8 @@ fn river_vertex(
     out.tangent = uv_tangent.zw;
 
     out.world_uv = vec2<f32>(
-        (out.pre_pos_fade.x + 0.5) / MAP_SIZE_X,
-        (out.pre_pos_fade.z + 0.5 - MAP_SIZE_Y) / -MAP_SIZE_Y,
+        (out.pre_pos_fade.x + 0.5) / globals.map_size.x,
+        (out.pre_pos_fade.z + 0.5 - globals.map_size.y) / -globals.map_size.y,
     );
     return out;
 }

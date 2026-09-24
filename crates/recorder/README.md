@@ -24,6 +24,8 @@ Unsupported executable hashes and simultaneous game processes are refused. Recor
 
 The oracle compares the selected branch/hour with a fresh **text** save. Set `save_as_binary=no` in the chosen user directory; binary saves are refused. It reports differences, unavailable data and comparison limitations. A difference is never waived.
 
+To compare every Daily and FourHourly table, take the save at a full-refresh hour. A load is one, so there is no need to run 720 hours to a keyframe. With the recorder attached, load any save from the in-game menu. At the load hour, while still paused, make a fresh text save. Then step one hour so the sample posts, detach, and run the oracle on the new branch (`LoadSignal` in `inspect`) at that hour. Do not compare against the file you loaded: loading reruns the weather passes. [Reference 12](../../reference/12.md) records a run.
+
 Match the sampled instant, not just the displayed date. Game state can change after the hourly sample but before a same-hour save. Matching allocation counters does not prove that nothing changed. Joined comparisons must respect each input table's availability and sample origin; an old carried value is not a new hourly observation.
 
 ## Live checks and performance

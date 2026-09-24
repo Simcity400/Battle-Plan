@@ -131,7 +131,7 @@ struct Options {
     /// that country; `--fog off` is the game's `fow` console switch. See
     /// `map::perspective`.
     perspective: map::perspective::Choice,
-    camera: Option<Camera>,
+    camera: Option<map::camera::Placement>,
     size: [u32; 2],
     game_dir: Option<PathBuf>,
     user_dir: Option<PathBuf>,
@@ -419,16 +419,7 @@ impl Options {
                                     "camera requires finite world-x,world-z,height",
                                 ));
                             }
-                            if !(map::camera::MIN_HEIGHT..=map::camera::MAX_HEIGHT)
-                                .contains(&values[2])
-                            {
-                                return Err(invalid(format!(
-                                    "camera height must be between {} and {}, the engine's CAMERA_MIN_HEIGHT and CAMERA_MAX_HEIGHT",
-                                    map::camera::MIN_HEIGHT,
-                                    map::camera::MAX_HEIGHT
-                                )));
-                            }
-                            options.camera = Some(Camera {
+                            options.camera = Some(map::camera::Placement {
                                 center: [values[0], values[1]],
                                 height: values[2],
                             });
@@ -791,18 +782,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for warning in document.warnings.iter().chain(layers.warnings()) {
             eprintln!("Warning: {warning}");
         }
-        let camera = options.camera.unwrap_or_else(|| {
-            Camera::fit(
-                [document.map.width as f32, document.map.height as f32],
-                options.size,
-            )
-        });
+        let map_size = map::camera::MapSize::of(&document.map);
+        let defines = document.map_defines;
+        let camera = match options.camera {
+            None => Camera::fit(map_size, defines, options.size),
+            Some(placement) => {
+                let [min, max] = defines.heights;
+                if !(min..=max).contains(&placement.height) {
+                    return Err(invalid(format!(
+                        "camera height must be between the content's CAMERA_MIN_HEIGHT {min} \
+                         and CAMERA_MAX_HEIGHT {max}"
+                    ))
+                    .into());
+                }
+                placement.on(map_size, defines)
+            }
+        };
         let (unit_model_field, unit_report) =
             document.unit_model_field(&options.perspective, camera.height)?;
         // fog of war: the hour's `IntelMap` for the viewing country and the fog
         // switch. The camera decides `FOWFadeFactor`, so the report needs it.
         let intel_map = document.intel_map(&options.perspective)?;
-        println!("{}", intel_map.line(camera.height, options.perspective.fog));
+        println!(
+            "{}",
+            intel_map.line(&camera.defines, camera.height, options.perspective.fog)
+        );
         let unverified = document
             .warnings
             .iter()
@@ -1018,9 +1022,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "Shadows: cast-shadow chain {} at height {:.3} (cutoff {}), ShadowFadeFactor {:.4}",
             if report.shadows { "drawn" } else { "skipped" },
             camera.height,
-            map::frame::DRAW_SHADOWS_CUTOFF,
-            map::frame::shadow_fade_factor(camera.height),
+            camera.defines.shadows[0],
+            map::frame::shadow_fade_factor(&camera.defines, camera.height),
         );
+        // colour
+        if let Some(grading) = &report.grading {
+            println!("Grading: {grading}");
+        }
         // trees
         let season = document.tree_season();
         println!(
@@ -1785,7 +1793,7 @@ mod tests {
         .unwrap();
         assert_eq!(reference.center, [3010.0, 1568.0]);
         assert_eq!(reference.height, 310.178);
-        for bad in ["3010,1568", "3010,1568,10", "3010,1568,4000", "a,b,c"] {
+        for bad in ["3010,1568", "3010,1568,inf", "a,b,c"] {
             assert!(
                 parse(&[
                     "--dump",

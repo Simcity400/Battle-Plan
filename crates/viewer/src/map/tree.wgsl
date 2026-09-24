@@ -223,8 +223,8 @@ fn tree_vertex(
 /// main one by half a texel in x and by two units in z; both are the game's.
 fn tree_mask(world: vec3<f32>) -> f32 {
     let uv = vec2<f32>(
-        (world.x - 0.5) / MAP_SIZE_X,
-        (world.z + 2.0 - MAP_SIZE_Y) / -MAP_SIZE_Y,
+        (world.x - 0.5) / globals.map_size.x,
+        (world.z + 2.0 - globals.map_size.y) / -globals.map_size.y,
     );
     return textureSample(tree_mask_texture, linear_clamp, wrap_u(uv)).r;
 }
@@ -259,8 +259,8 @@ fn tree_fragment(input: TreeVarying) -> @location(0) vec4<f32> {
     // sends a wrap copy back onto the map it was copied from, which is what
     // keeps the clamped gradient-border samplers from smearing at the seam.
     let uv = wrap_u(vec2<f32>(
-        (input.world.x + 0.5) / MAP_SIZE_X,
-        (input.world.z + 0.5 - MAP_SIZE_Y) / -MAP_SIZE_Y,
+        (input.world.x + 0.5) / globals.map_size.x,
+        (input.world.z + 0.5 - globals.map_size.y) / -globals.map_size.y,
     ));
 
     var color = get_overlay(
@@ -276,7 +276,7 @@ fn tree_fragment(input: TreeVarying) -> @location(0) vec4<f32> {
     color = get_overlay(color, season_color_map, 0.25);
 
     let season_tree_fade = saturate(
-        saturate(input.world.z / MAP_SIZE_Y - TREE_SEASON_MIN) * TREE_SEASON_FADE_TWEAK,
+        saturate(input.world.z / globals.map_size.y - TREE_SEASON_MIN) * TREE_SEASON_FADE_TWEAK,
     );
     color += saturate(
         textureSample(season_map, linear_wrap, vec2<f32>(input.season_u, input.tint_uv.y)).rgb

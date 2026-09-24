@@ -200,9 +200,34 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(TerrainDefinitions, DefaultM
     if definitions.categories.is_empty() {
         return Err(invalid("no common/terrain file declares any category"));
     }
-    let default_map = parse_default_map(&layers.read("map/default.map")?)
-        .map_err(|error| invalid(format!("map/default.map: {error}")))?;
-    Ok((definitions, default_map))
+    Ok((definitions, read_default_map(layers)?))
+}
+
+impl DefaultMap {
+    /// The `map/` path `default.map` names for `key`, as the engine opens it.
+    pub fn file(&self, key: &str) -> io::Result<String> {
+        let name = match key {
+            "definitions" => Some(&self.definitions),
+            "provinces" => Some(&self.provinces),
+            "terrain" => Some(&self.terrain),
+            "rivers" => Some(&self.rivers),
+            "heightmap" => Some(&self.heightmap),
+            "tree_definition" => Some(&self.tree_definition),
+            _ => self
+                .other
+                .iter()
+                .find(|(other, _)| other == key)
+                .map(|(_, value)| value),
+        };
+        name.map(|name| format!("map/{name}"))
+            .ok_or_else(|| invalid(format!("map/default.map names no {key}")))
+    }
+}
+
+/// Reads and parses `map/default.map`.
+pub fn read_default_map(layers: &ResolvedLayers) -> io::Result<DefaultMap> {
+    parse_default_map(&layers.read("map/default.map")?)
+        .map_err(|error| invalid(format!("map/default.map: {error}")))
 }
 
 /// Decodes the bitmaps `map/default.map` names, plus `map/world_normal.bmp`.

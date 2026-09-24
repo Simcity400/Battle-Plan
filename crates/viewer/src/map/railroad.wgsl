@@ -101,8 +101,8 @@ fn rail_fragment(input: RailOut) -> @location(0) vec4<f32> {
     // sends a wrap copy back onto the map it was copied from, as the tree and
     // river ports do.
     let map_uv = wrap_u(vec2<f32>(
-        (pos.x + 0.5) / MAP_SIZE_X,
-        (pos.z + 0.5 - MAP_SIZE_Y) / -MAP_SIZE_Y,
+        (pos.x + 0.5) / globals.map_size.x,
+        (pos.z + 0.5 - globals.map_size.y) / -globals.map_size.y,
     ));
     let border = gradient_border_apply(
         color,

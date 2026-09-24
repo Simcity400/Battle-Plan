@@ -75,14 +75,14 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> WaterVertex {
     out.pos = vec3<f32>(x, WATER_HEIGHT, z);
     out.position = globals.frame.view_projection * vec4<f32>(out.pos, 1.0);
     out.screen_pos = out.position;
-    out.uv = vec2<f32>((x + 0.5) / MAP_SIZE_X, (z + 0.5 - MAP_SIZE_Y) / -MAP_SIZE_Y);
-    out.uv_ice = out.uv * vec2<f32>(MAP_SIZE_X, MAP_SIZE_Y) * 0.1;
+    out.uv = vec2<f32>((x + 0.5) / globals.map_size.x, (z + 0.5 - globals.map_size.y) / -globals.map_size.y);
+    out.uv_ice = out.uv * vec2<f32>(globals.map_size.x, globals.map_size.y) * 0.1;
     return out;
 }
 
 fn multi_sample_tex_x(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>) -> f32 {
-    let offset_x = -0.5 / MAP_SIZE_X;
-    let offset_y = -0.5 / MAP_SIZE_Y;
+    let offset_x = -0.5 / globals.map_size.x;
+    let offset_y = -0.5 / globals.map_size.y;
     var result = textureSample(tex, samp, uv).x;
     result += textureSample(tex, samp, uv + vec2<f32>(-offset_x, 0.0)).x;
     result += textureSample(tex, samp, uv + vec2<f32>(0.0, -offset_y)).x;
@@ -114,7 +114,7 @@ fn apply_ice(
 
     var fade = snow * 8.0 * noise * (1.0 - cam_distance(ICE_CAM_MIN, ICE_CAM_MAX));
     // `pos_xz.y` is world z: ice only exists north of 0.74 of the map height.
-    fade *= saturate(saturate((pos_xz.y / MAP_SIZE_Y) - 0.74) * 800.0);
+    fade *= saturate(saturate((pos_xz.y / globals.map_size.y) - 0.74) * 800.0);
     fade = saturate((fade - 0.3) * 10.0);
 
     return IceResult(

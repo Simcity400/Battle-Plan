@@ -3,7 +3,11 @@ use crate::{
     Options,
     document::{Document, InitialHour},
     hours,
-    map::{camera::Camera, frame::DayNight, scene::Scene},
+    map::{
+        camera::{Camera, MapSize},
+        frame::DayNight,
+        scene::Scene,
+    },
     // capture
     render,
 };
@@ -217,7 +221,7 @@ struct Capture {
     /// `--window-dump`: the pixel size and camera the frame is pinned to, so
     /// neither the panel layout nor the display's scale factor decides them. A
     /// `None` camera is the fit to that size, which is the dump's default too.
-    pinned: Option<([u32; 2], Option<Camera>)>,
+    pinned: Option<([u32; 2], Option<map::camera::Placement>)>,
     /// `--window-dump` closes the window once it has written its frame.
     exit: bool,
     time: Option<f32>,
@@ -278,7 +282,7 @@ pub struct Viewer {
     texture: Option<egui::TextureId>,
     generation: u64,
     map_error: Option<String>,
-    camera: Option<Camera>,
+    camera: Option<map::camera::Placement>,
     camera_manual: bool,
     playing: bool,
     speed: u32,
@@ -1768,17 +1772,25 @@ impl Viewer {
             fraction: document.hour_fraction,
         });
         let view = self.last_view.unwrap_or_else(|| {
-            let map_size = [document.map.width as f32, document.map.height as f32];
+            let map_size = MapSize::of(&document.map);
+            let defines = document.map_defines;
             let (viewport, camera) = match self.capture.as_ref().and_then(|capture| capture.pinned)
             {
                 Some((size, camera)) => {
-                    (size, camera.unwrap_or_else(|| Camera::fit(map_size, size)))
+                    let camera = camera.map_or_else(
+                        || Camera::fit(map_size, defines, size),
+                        |placement| placement.on(map_size, defines),
+                    );
+                    (size, camera)
                 }
                 None => {
                     let size = [1280, 720];
                     (
                         size,
-                        self.camera.unwrap_or_else(|| Camera::fit(map_size, size)),
+                        self.camera.map_or_else(
+                            || Camera::fit(map_size, defines, size),
+                            |placement| placement.on(map_size, defines),
+                        ),
                     )
                 }
             };
@@ -2362,13 +2374,16 @@ impl Viewer {
             ],
         };
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
-        let map_size = [document.map.width as f32, document.map.height as f32];
+        let map_size = MapSize::of(&document.map);
         if !self.camera_manual {
-            self.camera = Some(Camera::fit(map_size, pixels));
+            self.camera = None;
         }
-        let camera = self
-            .camera
-            .get_or_insert_with(|| Camera::fit(map_size, pixels));
+        let defines = document.map_defines;
+        let mut camera = self.camera.map_or_else(
+            || Camera::fit(map_size, defines, pixels),
+            |placement| placement.on(map_size, defines),
+        );
+        let camera = &mut camera;
         // Screen positions reach the camera in physical pixels, the same space
         // the render target and the projection use.
         let scale = ui.ctx().pixels_per_point();
@@ -2474,8 +2489,12 @@ impl Viewer {
                 camera.zoom((scroll * 0.002).exp(), physical(pointer), pixels);
             }
         }
+        self.camera = Some(camera.placement());
         let camera = match pinned {
-            Some((size, camera)) => camera.unwrap_or_else(|| Camera::fit(map_size, size)),
+            Some((size, camera)) => camera.map_or_else(
+                || Camera::fit(map_size, defines, size),
+                |placement| placement.on(map_size, defines),
+            ),
             None => *camera,
         };
         let scene = self.scene.as_mut().expect("created above");

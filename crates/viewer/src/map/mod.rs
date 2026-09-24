@@ -69,3 +69,6 @@ pub mod water;
 // weather
 pub mod weather;
 pub mod weather_effects;
+
+#[cfg(test)]
+mod shader_tests;

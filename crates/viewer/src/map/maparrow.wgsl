@@ -91,8 +91,8 @@ fn arrow_vertex(
     out.uv_head_variant = uv;
     // `MAP_POW2_*` are 1.0 on this profile (R1 section 3).
     out.uv_terrain = vec2<f32>(
-        (pos.x + 0.5) / MAP_SIZE_X,
-        (pos.z + 0.5 - MAP_SIZE_Y) / -MAP_SIZE_Y,
+        (pos.x + 0.5) / globals.map_size.x,
+        (pos.z + 0.5 - globals.map_size.y) / -globals.map_size.y,
     );
     return out;
 }

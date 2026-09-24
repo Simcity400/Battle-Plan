@@ -20,7 +20,7 @@ Read [AGENTS.md](../../AGENTS.md), then [cadence.rs](../replay/src/cadence.rs) a
 
 ## What to collect
 
-Collect the least data the viewer and dashboard need to display, so recording costs the game as little as possible. Record the value the game already stores for what is displayed. Capture inputs instead only when the game does not store the result (it computes it on demand), when the result depends on the viewing country or camera, or when it is much larger than its inputs. Every new table, field or cadence increase must serve something visible and be measured against its capture cost.
+Collect the least data the viewer and dashboard need to display, so recording costs the game as little as possible. Record the value the game already stores for what is displayed. Capture inputs instead only when the game does not store the result (it computes it on demand), when the result depends on the viewing country or camera, when it is text the game has already localised (display text follows the viewer's language, not the recording client's), or when it is much larger than its inputs. Every new table, field or cadence increase must serve something visible and be measured against its capture cost.
 
 ## How an hour is captured
 

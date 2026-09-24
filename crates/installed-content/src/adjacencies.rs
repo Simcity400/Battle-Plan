@@ -127,9 +127,9 @@ pub fn parse(input: &[u8]) -> io::Result<Vec<Adjacency>> {
     Ok(adjacencies)
 }
 
-/// Reads `map/adjacencies.csv` from the resolved layers.
+/// Reads the adjacencies file `map/default.map` names.
 pub fn read(layers: &crate::ResolvedLayers) -> io::Result<Vec<Adjacency>> {
-    parse(&layers.read("map/adjacencies.csv")?)
+    parse(&layers.read(&crate::terrain::read_default_map(layers)?.file("adjacencies")?)?)
 }
 
 #[cfg(test)]

@@ -24,6 +24,8 @@ In the desktop dashboard, `dashboard_maps.rs` owns map instances on the same gra
 
 Use the source map below for implementation and the existing [reference captures](../../reference/) for matched comparisons. Native evidence and remaining assumptions live beside each pass, not in a separate rendering diary.
 
+The map size is the content's provinces bitmap (`MAP_SIZE`), carried by `camera::MapSize` and the shader globals. The WGSL ports carry the shipped shaders' constants, so content that replaces a ported `gfx/FX` file is refused (`scene::PORTED_SHADERS`).
+
 Windowed playback and headless export use the same wgpu rendering path. Preserve the game's verified camera, asset selection, texture colour spaces, shader inputs, blend/depth states and draw order. Do not hide a missing rendering term with a fitted global brightness or colour correction.
 
 Recorded values remain exact. Between hourly samples, moving divisions may glide along their recorded routes using recorded remaining time; the warning area states this presentation exception. Do not interpolate other recorded data. Effects whose seeds, phase or runtime state were not recorded must remain explicitly identified as reconstructions, not exact observations.
@@ -38,7 +40,7 @@ Keep coordinate conversions with their caller: bitmap rows run downward, world Z
 
 | Area | Implementation and important distinction |
 |---|---|
-| Scene, camera and lighting | [scene.rs](src/map/scene.rs), [camera.rs](src/map/camera.rs), [frame.rs](src/map/frame.rs), [post.rs](src/map/post.rs). Simulation time, presentation clocks and post-processing inputs are distinct. |
+| Scene, camera and lighting | [scene.rs](src/map/scene.rs), [camera.rs](src/map/camera.rs), [frame.rs](src/map/frame.rs), [post.rs](src/map/post.rs) with its LUT blends in [post_luts.rs](src/map/post_luts.rs). Simulation time, presentation clocks and post-processing inputs are distinct; post operands come from the recorded content, never vanilla constants. |
 | Terrain, water and textures | [terrain.rs](src/map/terrain.rs), [water.wgsl](src/map/water.wgsl), [textures.rs](src/map/textures.rs). Keep native sampling, mip chains and per-resource colour spaces; see [asset contracts](../installed-content/README.md#asset-contracts). |
 | Borders, rivers and railways | [borders.rs](src/map/borders.rs), [gradient.rs](src/map/gradient.rs), [rivers.rs](src/map/rivers.rs), [railways.rs](src/map/railways.rs). Border strips, country-distance fields and route graphs are different inputs; do not tune one to hide errors in another. |
 | Country view and map fill | [perspective.rs](src/map/perspective.rs), [allegiance.rs](src/map/allegiance.rs), [political.rs](src/map/political.rs). Ownership, control, shared vision and fog are not interchangeable; visibility must match the viewing country. |

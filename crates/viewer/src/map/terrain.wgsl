@@ -624,8 +624,8 @@ struct TerrainVertex {
 /// `world y = heightmap byte * 0.1` (R1 section 1.3). The heightmap texture is
 /// stored with row 0 at the north edge, so a world `z` reads row `2047 - z`.
 fn terrain_height(x: f32, z: f32) -> f32 {
-    let column = i32(fmod_loop(x, MAP_SIZE_X));
-    let row = clamp(i32(MAP_SIZE_Y - 1.0 - z), 0, i32(MAP_SIZE_Y) - 1);
+    let column = i32(fmod_loop(x, globals.map_size.x));
+    let row = clamp(i32(globals.map_size.y - 1.0 - z), 0, i32(globals.map_size.y) - 1);
     return textureLoad(heightmap, vec2<i32>(column, row), 0).r * 255.0 * 0.1;
 }
 
@@ -648,8 +648,8 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> TerrainVertex {
     var out: TerrainVertex;
     out.prepos = vec3<f32>(x, terrain_height(x, z), z);
     // `pdxmap.shader:198-201`, with every `*_POW2_*` at 1.0.
-    out.uv = vec2<f32>((x + 0.5) / MAP_SIZE_X, (z + 0.5) / MAP_SIZE_Y);
-    out.uv2 = vec2<f32>((x + 0.5) / MAP_SIZE_X, (z + 0.5 - MAP_SIZE_Y) / -MAP_SIZE_Y);
+    out.uv = vec2<f32>((x + 0.5) / globals.map_size.x, (z + 0.5) / globals.map_size.y);
+    out.uv2 = vec2<f32>((x + 0.5) / globals.map_size.x, (z + 0.5 - globals.map_size.y) / -globals.map_size.y);
     out.position = globals.frame.view_projection * vec4<f32>(out.prepos, 1.0);
     return out;
 }
@@ -658,12 +658,12 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> TerrainVertex {
 fn terrain_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     // Native terrain also draws below water (frame33840 pixel histories).
     // The sea-bed material belongs to the separate WaterRefraction target.
-    let offsets = vec2<f32>(-0.5 / MAP_SIZE_X, -0.5 / MAP_SIZE_Y);
+    let offsets = vec2<f32>(-0.5 / globals.map_size.x, -0.5 / globals.map_size.y);
     let ids = textureSample(terrain_id_map, point_clamp, wrap_u(input.uv + offsets));
     let index = calculate_map_tex_index(ids);
 
     var tile_repeat = input.uv2 * TERRAIN_TILE_FREQ;
-    tile_repeat.x *= MAP_SIZE_X / MAP_SIZE_Y;
+    tile_repeat.x *= globals.map_size.x / globals.map_size.y;
 
     let lod = clamp(mipmap_level(tile_repeat) - 0.5, 0.0, 6.0);
     let mip_texels = pow(2.0, ATLAS_TEXEL_POW2_EXPONENT - lod);
@@ -692,8 +692,8 @@ fn terrain_main(input: TerrainVertex) -> @location(0) vec4<f32> {
         let normal_ru = textureSampleLevel(terrain_normal, linear_wrap, uv_z, lod);
 
         let frac_uv = fract(vec2<f32>(
-            input.uv.x * MAP_SIZE_X - 0.5,
-            input.uv.y * MAP_SIZE_Y - 0.5,
+            input.uv.x * globals.map_size.x - 0.5,
+            input.uv.y * globals.map_size.y - 0.5,
         ));
         diffuse = mix(
             mix(color_ru, color_lu, frac_uv.x),
@@ -843,7 +843,7 @@ fn underwater_main(input: TerrainVertex) -> @location(0) vec4<f32> {
     let diffuse = textureSample(
         underwater_terrain,
         linear_wrap,
-        input.uv2 * vec2<f32>(MAP_SIZE_X / 32.0, MAP_SIZE_Y / 32.0),
+        input.uv2 * vec2<f32>(globals.map_size.x / 32.0, globals.map_size.y / 32.0),
     ).rgb;
     let water_color_tint =
         textureSample(colormap_water, linear_wrap, input.uv2).rgb * WATER_COLOR_LIGHTNESS;

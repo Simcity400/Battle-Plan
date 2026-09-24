@@ -5,7 +5,7 @@ use std::io;
 use eframe::wgpu;
 
 use super::{
-    camera::{Camera, MAP_SIZE_Y},
+    camera::Camera,
     scene::{DEPTH_FORMAT, Targets, module, sampler_entry, texture_entry},
     shadow::BUFFER_FORMAT,
     textures::{Bound, Samplers},
@@ -52,9 +52,9 @@ impl Grid {
 /// `rect` is `(x0, z0, x1, z1)` in world units. The `z` range is clipped to the
 /// map, which has no terrain outside it; `x` is left alone because the map wraps
 /// and the shaders wrap their own lookups.
-pub fn grid(rect: [f32; 4], max_quads: u32) -> Grid {
+pub fn grid(rect: [f32; 4], map_height: f32, max_quads: u32) -> Grid {
     let z0 = rect[1].max(-MARGIN);
-    let z1 = rect[3].min(MAP_SIZE_Y - 1.0 + MARGIN).max(z0);
+    let z1 = rect[3].min(map_height - 1.0 + MARGIN).max(z0);
     let mut step = 1.0f32;
     loop {
         let origin = [(rect[0] / step).floor() * step, (z0 / step).floor() * step];
@@ -77,7 +77,7 @@ pub fn grid(rect: [f32; 4], max_quads: u32) -> Grid {
 /// The grid for one camera and viewport.
 pub fn grid_for(camera: Camera, viewport: [u32; 2]) -> Grid {
     match camera.visible_ground(viewport, MARGIN) {
-        Some(rect) => grid(rect, MAX_QUADS),
+        Some(rect) => grid(rect, camera.map.y(), MAX_QUADS),
         // A camera that cannot see the water plane cannot see the map either.
         None => Grid {
             origin: [0.0, 0.0],
@@ -187,10 +187,9 @@ impl TerrainPass {
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
                         blend: None,
-                        // The pixel shader's alpha is the city-light bloom mask.
-                        // `draw_postfx=no` means nothing consumes it (R1 4.1),
-                        // so the frame keeps the opaque alpha it was cleared to.
-                        write_mask: wgpu::ColorWrites::COLOR,
+                        // `WriteMask = "RED|GREEN|BLUE|ALPHA"`: the alpha is the
+                        // city-light emissive mask the bloom seed reads.
+                        write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
                 multiview_mask: None,
@@ -395,6 +394,8 @@ impl TerrainPass {
 mod tests {
     use super::*;
 
+    const H: f32 = 2048.0;
+
     /// World `(x, z)` of the last vertex the grid places.
     fn far_corner(grid: Grid) -> [f32; 2] {
         [
@@ -405,7 +406,7 @@ mod tests {
 
     #[test]
     fn the_grid_covers_the_rectangle_at_step_one_when_it_is_small() {
-        let grid = grid([100.4, 200.9, 140.0, 220.0], MAX_QUADS);
+        let grid = grid([100.4, 200.9, 140.0, 220.0], H, MAX_QUADS);
         assert_eq!(grid.step, 1.0);
         assert_eq!(grid.origin, [100.0, 200.0]);
         // 100..140 needs 41 columns, 200..220 needs 21 rows.
@@ -420,21 +421,21 @@ mod tests {
         // The full-map view at CAMERA_MAX_HEIGHT: about 4400 x 2475 units,
         // of which only the map's own 2048 rows plus the margin survive.
         let rect = [0.0, 0.0, 4400.0, 2475.0];
-        let coarse = grid(rect, MAX_QUADS);
+        let coarse = grid(rect, H, MAX_QUADS);
         assert!(coarse.quads() <= MAX_QUADS, "{coarse:?}");
         // Step 2 would be 2.27M quads and step 4 is 567_600, just inside.
         assert_eq!(coarse.step, 4.0);
         assert_eq!(coarse.quads(), 1100 * 516);
         // A four-times budget admits step 2, which is what makes the rule a
         // doubling against the budget and not a fixed choice.
-        assert_eq!(grid(rect, MAX_QUADS * 4).step, 2.0);
+        assert_eq!(grid(rect, H, MAX_QUADS * 4).step, 2.0);
         // The step never runs away, even on an impossible budget.
-        assert_eq!(grid(rect, 1).step, 256.0);
+        assert_eq!(grid(rect, H, 1).step, 256.0);
     }
 
     #[test]
     fn the_origin_stays_on_a_multiple_of_the_step() {
-        let grid = grid([-13.0, 7.0, 4400.0, 2475.0], MAX_QUADS);
+        let grid = grid([-13.0, 7.0, 4400.0, 2475.0], H, MAX_QUADS);
         assert_eq!(grid.origin[0] % grid.step, 0.0);
         assert_eq!(grid.origin[1] % grid.step, 0.0);
         assert!(grid.origin[0] <= -13.0 && grid.origin[1] <= 7.0);
@@ -442,11 +443,11 @@ mod tests {
 
     #[test]
     fn the_grid_is_clipped_to_the_map_in_z_but_not_in_x() {
-        let grid = grid([-400.0, -900.0, 200.0, 9000.0], MAX_QUADS);
+        let grid = grid([-400.0, -900.0, 200.0, 9000.0], H, MAX_QUADS);
         assert!(grid.origin[0] < 0.0, "x is never clipped: the map wraps");
         assert!(grid.origin[1] >= -MARGIN - grid.step);
         let top = far_corner(grid)[1];
-        assert!(top <= MAP_SIZE_Y - 1.0 + MARGIN + grid.step, "{top}");
+        assert!(top <= H - 1.0 + MARGIN + grid.step, "{top}");
     }
 
     #[test]
@@ -454,6 +455,8 @@ mod tests {
         let camera = Camera {
             center: [3010.0, 1568.0],
             height: 310.178,
+            map: crate::map::camera::MapSize::TEST,
+            defines: crate::map::camera::MapDefines::test(),
         };
         let grid = grid_for(camera, [2048, 1152]);
         assert_eq!(grid.step, 1.0);

@@ -1,34 +1,46 @@
-// `restorescene.shader`'s `Restore` effect, with the two `downsample*.shader`
-// stages that feed its `AverageLuminanceTexture`. `BLOOM` is not ported, so the
-// bloom add and the bright-pass half of `downsample.shader` are absent; every
-// other line is the game's.
+// `restorescene.shader`'s `RestoreBloom` effect, with the `downsample*.shader`
+// stages that feed its `AverageLuminanceTexture` and the `bloom.shader` blur
+// that feeds its `RestoreBloom` texture.
 //
 // This file is self-contained: it is compiled without `common.wgsl` ahead of it
 // because the post stage reads no frame constants.
 
 struct Post {
-    /// `HSV` from `map/seasons.txt`: hue shift in sixths, saturation and value
-    /// multipliers.
-    hsv: vec4<f32>,
-    /// `ColorBalance` from the same block.
-    color_balance: vec4<f32>,
-    /// `(MiddleGrey, hdr min, hdr max, night blend)`.
+    /// `(MiddleGrey, hdr min, hdr max, luminance adaptation blend)`.
     grade: vec4<f32>,
-    /// `(day LUT layer, night LUT layer, Levels min, Levels max)`.
-    luts: vec4<f32>,
-    /// `(luminance adaptation blend, unused, unused, unused)`.
-    misc: vec4<f32>,
+    /// `(gather width, gather height, inverse backing width, inverse backing height)`.
+    gather: vec4<f32>,
+    /// `(BrightThreshold, EmissiveBloomStrength, unused, unused)`.
+    bloom: vec4<f32>,
+}
+
+/// `bloom.shader`'s `ConstantBuffer(2, 39)`.
+struct Blur {
+    inv_size: vec2<f32>,
+    axis: f32,
+    weight0: f32,
+    weights: vec4<f32>,
+    offsets: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> post: Post;
 @group(0) @binding(1) var scene: texture_2d<f32>;
 @group(0) @binding(2) var luminance: texture_2d<f32>;
 @group(0) @binding(3) var previous_luminance: texture_2d<f32>;
-@group(0) @binding(4) var color_cube: texture_2d_array<f32>;
+@group(0) @binding(4) var color_cube: texture_2d<f32>;
 @group(0) @binding(5) var linear_clamp: sampler;
+@group(0) @binding(6) var<uniform> reduction_uv: vec4<f32>;
+@group(0) @binding(7) var bloom_texture: texture_2d<f32>;
+@group(0) @binding(8) var<uniform> blur: Blur;
 
 const LUMINANCE_VECTOR: vec3<f32> = vec3<f32>(0.2125, 0.7154, 0.0721);
 const CUBE_SIZE: f32 = 32.0;
+/// `LEVELS` in `restorescene.shader`'s `LevelValue`.
+const LEVELS: vec2<f32> = vec2<f32>(0.04, 0.80);
+/// `HSV` and `ColorBalance`: the render singleton's constants (`140ff3980`),
+/// never updated, so the date-driven `CSeasons` grades do not reach this pass.
+const HSV: vec3<f32> = vec3<f32>(0.0, 1.0, 1.0);
+const COLOR_BALANCE: vec3<f32> = vec3<f32>(1.0, 1.0, 1.0);
 
 struct FullScreen {
     @builtin(position) position: vec4<f32>,
@@ -42,7 +54,7 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> FullScreen {
     let x = f32((index << 1u) & 2u) * 2.0 - 1.0;
     let y = f32(index & 2u) * 2.0 - 1.0;
     out.position = vec4<f32>(x, y, 0.0, 1.0);
-    out.uv = vec2<f32>(x * 0.5 + 0.5, 0.5 - y * 0.5);
+    out.uv = vec2<f32>(x * 0.5 + 0.5, 0.5 - y * 0.5) * reduction_uv.xy;
     return out;
 }
 
@@ -56,38 +68,63 @@ fn copy_main(input: FullScreen) -> @location(0) vec4<f32> {
     return textureSampleLevel(scene, linear_clamp, input.uv, 0.0);
 }
 
-/// `downsample.shader`'s log-luminance term. The bright-pass that shares the
-/// pass in the game feeds bloom only, which this port does not draw.
+/// `downsample.shader`: the bright pass plus the emissive mask in RGB, log
+/// luminance in alpha. A bilinear tap at a half-size texel centre is the mean
+/// of the four scene texels under it.
 @fragment
-fn seed_main(input: FullScreen) -> @location(0) f32 {
-    // A bilinear tap at a half-resolution texel centre is the mean of the four
-    // scene texels under it, which is the `tex2Dlod0` the game takes.
-    let color = textureSampleLevel(scene, linear_clamp, input.uv, 0.0).rgb;
-    return log(max(0.0, dot(color, LUMINANCE_VECTOR)) + 0.0001);
+fn seed_main(input: FullScreen) -> @location(0) vec4<f32> {
+    let color = textureSampleLevel(scene, linear_clamp, input.uv, 0.0);
+    var bright = max(0.0, max(max(color.r, color.g), color.b) - post.bloom.x);
+    bright = bright / (0.5 + bright);
+    bright = bright + color.a * post.bloom.y;
+    let log_luminance = log(max(0.0, dot(color.rgb, LUMINANCE_VECTOR)) + 0.0001);
+    return vec4<f32>(color.rgb * bright, log_luminance);
 }
 
-/// One step of `downsample_luminance.shader`'s `LuminanceGather`: the mean of
-/// the source level. The game gathers the whole level in one pass; a mip chain
-/// of two-by-two means reaches the same average and costs a bounded loop.
+/// `LuminanceDownsample`: one bilinear tap with the native `UVScale` inside a
+/// shrinking viewport; it still sees the whole fixed backing texture. The first
+/// reads the seed's alpha (`LUMINANCE_SAMPLE_ALPHA`).
+@fragment
+fn reduce_seed_main(input: FullScreen) -> @location(0) f32 {
+    return textureSampleLevel(luminance, linear_clamp, input.uv, 0.0).a;
+}
+
 @fragment
 fn reduce_main(input: FullScreen) -> @location(0) f32 {
-    let size = vec2<i32>(textureDimensions(luminance, 0));
-    let base = vec2<i32>(input.position.xy) * 2;
-    let last = size - vec2<i32>(1);
-    var total = 0.0;
-    for (var y = 0; y < 2; y = y + 1) {
-        for (var x = 0; x < 2; x = x + 1) {
-            let at = clamp(base + vec2<i32>(x, y), vec2<i32>(0), last);
-            total = total + textureLoad(luminance, at, 0).r;
-        }
+    return textureSampleLevel(luminance, linear_clamp, input.uv, 0.0).r;
+}
+
+/// `bloom.shader`: a centre tap and four linearly filtered pairs along one axis.
+@fragment
+fn blur_main(input: FullScreen) -> @location(0) vec4<f32> {
+    let step = blur.inv_size * vec2<f32>(blur.axis, 1.0 - blur.axis);
+    var color = textureSampleLevel(luminance, linear_clamp, input.uv, 0.0).rgb * blur.weight0;
+    for (var k = 0; k < 4; k = k + 1) {
+        let offset = step * blur.offsets[k];
+        color = color + blur.weights[k] * (
+            textureSampleLevel(luminance, linear_clamp, input.uv + offset, 0.0).rgb
+            + textureSampleLevel(luminance, linear_clamp, input.uv - offset, 0.0).rgb);
     }
-    return total * 0.25;
+    return vec4<f32>(color, 1.0);
 }
 
 /// `clamp(exp(vSum), MinHdr, MaxHdr)` and `CalculateAdaptedLuminance`.
 @fragment
 fn adapt_main(input: FullScreen) -> @location(0) f32 {
-    let mean = textureLoad(luminance, vec2<i32>(0, 0), 0).r;
+    // `LuminanceGather`: sum the last active rectangle in row-major order.
+    // Repeated float UV addition, backing stride and the final float division
+    // are intentional; another rounded mip reduction is not the same operation.
+    var sum = 0.0;
+    var v = post.gather.w * 0.5;
+    for (var y = 0u; y < u32(post.gather.y); y = y + 1u) {
+        var u = post.gather.z * 0.5;
+        for (var x = 0u; x < u32(post.gather.x); x = x + 1u) {
+            sum = sum + textureSampleLevel(luminance, linear_clamp, vec2<f32>(u, v), 0.0).r;
+            u = u + post.gather.z;
+        }
+        v = v + post.gather.w;
+    }
+    let mean = sum / (post.gather.x * post.gather.y);
     // HLSL `clamp` is `min(max(x, lo), hi)`, and the `green_night` volume ships
     // `hdr_min_adjustment 0.8` above `hdr_max_adjustment 0.6`, so the order
     // matters: written out rather than left to WGSL's `clamp`, which does not
@@ -96,12 +133,12 @@ fn adapt_main(input: FullScreen) -> @location(0) f32 {
     let previous = textureLoad(previous_luminance, vec2<i32>(0, 0), 0).r;
     // `vLast + (vCurrent - vLast) * (1 - exp(-tau * dt))`, with the blend
     // supplied by the caller: 1 for a headless frame and a settled camera.
-    return previous + (current - previous) * post.misc.x;
+    return previous + (current - previous) * post.grade.w;
 }
 
 /// `SampleColorCube`: a 32-cubed LUT unwrapped along x into 1024x32, bilinear
 /// within a slice and hand-blended across the two blue slices.
-fn sample_color_cube(color: vec3<f32>, layer: i32) -> vec3<f32> {
+fn sample_color_cube(color: vec3<f32>) -> vec3<f32> {
     let scale = (CUBE_SIZE - 1.0) / CUBE_SIZE;
     let offset = 0.5 / CUBE_SIZE;
 
@@ -112,8 +149,8 @@ fn sample_color_cube(color: vec3<f32>, layer: i32) -> vec3<f32> {
     let x_offset1 = z_floor / CUBE_SIZE;
     let x_offset2 = min(CUBE_SIZE - 1.0, z_floor + 1.0) / CUBE_SIZE;
 
-    let color1 = textureSampleLevel(color_cube, linear_clamp, vec2<f32>(x + x_offset1, y), layer, 0.0).rgb;
-    let color2 = textureSampleLevel(color_cube, linear_clamp, vec2<f32>(x + x_offset2, y), layer, 0.0).rgb;
+    let color1 = textureSampleLevel(color_cube, linear_clamp, vec2<f32>(x + x_offset1, y), 0.0).rgb;
+    let color2 = textureSampleLevel(color_cube, linear_clamp, vec2<f32>(x + x_offset2, y), 0.0).rgb;
     return mix(color1, color2, scale * color.b * CUBE_SIZE - z_floor);
 }
 
@@ -174,6 +211,8 @@ fn uncharted2(x: vec3<f32>) -> vec3<f32> {
 @fragment
 fn grade_main(input: FullScreen) -> @location(0) vec4<f32> {
     var color = textureSampleLevel(scene, linear_clamp, input.uv, 0.0).rgb;
+    // `BloomToScreenScale` is (1, 1): the seed covers the whole scene.
+    color = textureSampleLevel(bloom_texture, linear_clamp, input.uv, 0.0).rgb + color;
 
     // `Exposure`, the `ADJUSTED_EXPOSURE` branch.
     let average = textureLoad(previous_luminance, vec2<i32>(0, 0), 0).r;
@@ -184,19 +223,16 @@ fn grade_main(input: FullScreen) -> @location(0) vec4<f32> {
     color = pow(uncharted2(color) * white_scale, vec3<f32>(1.0 / 2.2));
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
 
-    // `RestoreScene`, the `COLOR_LUT` branch. The engine cross-fades its LUTs
-    // into one cube with `lut_blender.shader` before the frame; lerping the two
-    // samples here is the same lerp one stage later.
-    let day = sample_color_cube(color, i32(post.luts.x));
-    let night = sample_color_cube(color, i32(post.luts.y));
-    color = mix(day, night, post.grade.w);
+    // `lut_blender.shader` already composed and stored the selected LUT in
+    // native UNORM8 targets, including each intermediate quantization.
+    color = sample_color_cube(color);
 
     var hsv = rgb_to_hsv(color);
-    hsv = vec3<f32>(hsv.x + post.hsv.x, hsv.y * post.hsv.y, hsv.z * post.hsv.z);
+    hsv = vec3<f32>(hsv.x + HSV.x, hsv.y * HSV.y, hsv.z * HSV.z);
     hsv.x = hsv.x - 6.0 * floor(hsv.x / 6.0);
     color = hsv_to_rgb_post(hsv);
 
-    color = clamp(color * post.color_balance.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
-    color = levels(color, post.luts.z, post.luts.w);
+    color = clamp(color * COLOR_BALANCE, vec3<f32>(0.0), vec3<f32>(1.0));
+    color = levels(color, LEVELS.x, LEVELS.y);
     return vec4<f32>(color, 1.0);
 }

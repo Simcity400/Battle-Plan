@@ -361,6 +361,8 @@ pub struct DumpReport {
     /// Whether the frame ran the cast-shadow chain, which it does below
     /// `DRAW_SHADOWS_CUTOFF` and not above it (`map::shadow`).
     pub shadows: bool,
+    /// The post grade, when the frame was graded.
+    pub grading: Option<String>,
 }
 
 /// Renders one frame headlessly through the same [`Scene`] the window uses.
@@ -562,6 +564,7 @@ pub fn dump_png(
             demilitarized_edges: scene.demilitarized_edges(),
             // shadows
             shadows: scene.shadows(),
+            grading: scene.grading(),
         })
     })
 }

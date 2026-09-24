@@ -10,9 +10,6 @@
 // This file is concatenated ahead of `terrain.wgsl` and `water.wgsl`.
 
 // ---------------------------------------------------------------- constants.fxh
-const MAP_SIZE_X: f32 = 5632.0;
-const MAP_SIZE_Y: f32 = 2048.0;
-
 const SPECULAR_MULTIPLIER: f32 = 1.0;
 const MAP_SPECULAR_WIDTH: f32 = 15.0;
 
@@ -152,6 +149,9 @@ struct Globals {
     /// frame takes the same one. See `map::shadow`.
     shadow_matrix: mat4x4<f32>,
     light_grid: vec4<f32>,
+    /// `(MAP_SIZE_X, MAP_SIZE_Y, 0, 0)`: the provinces bitmap's size, which
+    /// the engine injects as shader defines.
+    map_size: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -227,7 +227,7 @@ fn cam_distance(low: f32, high: f32) -> f32 {
 /// Sampling the whole-map data textures that index on world `xz` directly, so
 /// their first row is world `z = 0` (R1 section 6.1).
 fn map_uv_bottom_up(world: vec3<f32>) -> vec2<f32> {
-    return vec2<f32>((world.x + 0.5) / MAP_SIZE_X, (world.z + 0.5) / MAP_SIZE_Y);
+    return vec2<f32>((world.x + 0.5) / globals.map_size.x, (world.z + 0.5) / globals.map_size.y);
 }
 
 /// The clamped samplers (`TerrainIDMap`, the two gradient channels) would smear
@@ -242,10 +242,10 @@ fn wrap_u(uv: vec2<f32>) -> vec2<f32> {
 // ------------------------------------------------------------------ day/night
 fn calc_globe_normal(world_xz: vec2<f32>) -> vec3<f32> {
     let x = fmod_loop(
-        (world_xz.x - GMT_OFFSET) / MAP_SIZE_X + globals.frame.day_night_hour_sun_dir.x,
+        (world_xz.x - GMT_OFFSET) / globals.map_size.x + globals.frame.day_night_hour_sun_dir.x,
         1.0,
     );
-    var y = world_xz.y / MAP_SIZE_Y;
+    var y = world_xz.y / globals.map_size.y;
     y = SOUTH_POLE_OFFSET + (NORTH_POLE_OFFSET - SOUTH_POLE_OFFSET) * y;
     y = -cos(y * 3.1415);
     let xz_len = 1.0 - abs(y);
@@ -493,8 +493,8 @@ fn get_intel_factor(world: vec3<f32>) -> f32 {
 /// a world image with its first row at the north edge, unlike the intel map.
 fn get_extra_fog_factor(world: vec3<f32>) -> f32 {
     let uv = vec2<f32>(
-        (world.x + 0.5) / MAP_SIZE_X,
-        (world.z + 0.5 - MAP_SIZE_Y) / -MAP_SIZE_Y,
+        (world.x + 0.5) / globals.map_size.x,
+        (world.z + 0.5 - globals.map_size.y) / -globals.map_size.y,
     );
     return textureSampleLevel(fow_extra, fow_sampler, uv, 0.0).g * 2.0 - 1.0;
 }
@@ -856,18 +856,18 @@ fn calculate_sun_direction_from(
     var source = mix(sun_pos, moon_pos, selected);
     var second_source = mix(second_sun_pos, second_moon_pos, selected);
 
-    if world_pos.x - source.x > MAP_SIZE_X * 0.5 {
-        source.x += MAP_SIZE_X;
-    } else if world_pos.x - source.x < -MAP_SIZE_X * 0.5 {
-        source.x -= MAP_SIZE_X;
+    if world_pos.x - source.x > globals.map_size.x * 0.5 {
+        source.x += globals.map_size.x;
+    } else if world_pos.x - source.x < -globals.map_size.x * 0.5 {
+        source.x -= globals.map_size.x;
     }
-    if world_pos.x - second_source.x > MAP_SIZE_X * 0.5 {
-        second_source.x += MAP_SIZE_X;
-    } else if world_pos.x - second_source.x < -MAP_SIZE_X * 0.5 {
-        second_source.x -= MAP_SIZE_X;
+    if world_pos.x - second_source.x > globals.map_size.x * 0.5 {
+        second_source.x += globals.map_size.x;
+    } else if world_pos.x - second_source.x < -globals.map_size.x * 0.5 {
+        second_source.x -= globals.map_size.x;
     }
 
-    var lerp_factor = abs(world_pos.x - source.x) / (MAP_SIZE_X * 0.5);
+    var lerp_factor = abs(world_pos.x - source.x) / (globals.map_size.x * 0.5);
     lerp_factor = smoothstep(0.5, 1.0, lerp_factor);
     source = mix(source, second_source, lerp_factor);
     return normalize(world_pos - source);
@@ -1010,8 +1010,8 @@ fn gradient_border_multisample_alpha(
     samp: sampler,
     uv: vec2<f32>,
 ) -> vec4<f32> {
-    let offset_x = -0.5 / MAP_SIZE_X;
-    let offset_y = -0.5 / MAP_SIZE_Y;
+    let offset_x = -0.5 / globals.map_size.x;
+    let offset_y = -0.5 / globals.map_size.y;
     var result = first;
     result += textureSample(tex, samp, uv + vec2<f32>(-offset_x, 0.0));
     result += textureSample(tex, samp, uv + vec2<f32>(0.0, -offset_y));

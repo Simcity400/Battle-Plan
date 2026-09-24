@@ -371,9 +371,8 @@ fn mesh_fragment(input: MeshOut) -> @location(0) vec4<f32> {
     // `DayNight` is `DayNightWithBlend` at a blend of 1
     // (`standardfuncsgfx.fxh:397-400`).
     color = day_night_with_blend(color, globe_normal, 1.0);
-    // The returned alpha is the emissive mask the engine's bloom reads, floored
-    // by `MinMeshAlpha`; this pass writes colour only, so it never reaches a
-    // target, but the value is kept as the shader computes it.
+    // The returned alpha is the emissive mask the bloom seed reads, floored by
+    // `MinMeshAlpha`. `TRAIN` materials draw RGB only, so theirs is unused.
     // pdxmesh.shader TRAIN: white RGB, independent of diffuse alpha.
     // Zero-alpha cars outside the route are omitted by TrainPlan::field.
     // Whether the engine fogs a train before this branch is UNVERIFIED; the

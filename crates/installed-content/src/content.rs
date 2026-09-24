@@ -546,6 +546,32 @@ impl ResolvedLayers {
         self.effective.values().map(|file| file.path.as_str())
     }
 
+    /// Every distinct covered path under `prefix` that a visible layer lists,
+    /// with its own case, as a PhysFS enumeration of the merged tree lists it:
+    /// names that differ only in case stay separate entries, and each reads
+    /// through [`ResolvedLayers::read`]. A `replace_path` hides the layers
+    /// below it.
+    pub fn listed_paths(&self, prefix: &str) -> BTreeSet<String> {
+        let prefix = prefix.to_ascii_lowercase();
+        let mut listed = BTreeSet::new();
+        let mut hidden: Vec<String> = Vec::new();
+        for layer in self.layers.iter().rev() {
+            for path in layer.files.keys() {
+                let lower = path.to_ascii_lowercase();
+                if lower.starts_with(&prefix) && !hidden.iter().any(|root| below(&lower, root)) {
+                    listed.insert(path.clone());
+                }
+            }
+            hidden.extend(
+                layer
+                    .replace_paths
+                    .iter()
+                    .map(|path| path.to_ascii_lowercase()),
+            );
+        }
+        listed
+    }
+
     /// Load-order position of the layer an effective covered path comes from.
     pub(crate) fn layer_index(&self, relative: &str) -> Option<usize> {
         self.effective
@@ -622,7 +648,9 @@ impl ResolvedLayers {
                 None => return Err(io::Error::new(io::ErrorKind::NotFound, relative)),
             }
         }
-        let found = self.scan_uncovered(&relative)?;
+        let found = self
+            .scan_uncovered(&relative)?
+            .map(|(_, hit, bytes)| (hit, bytes));
         self.uncovered_memo
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -642,13 +670,17 @@ impl ResolvedLayers {
     /// exactly: folder misses fall through with a case-insensitive retry,
     /// archive lookup is exact, hard errors abort, and `replace_path` stops
     /// the scan.
-    fn scan_uncovered(&self, relative: &str) -> io::Result<Option<(UncoveredHit, Vec<u8>)>> {
+    fn scan_uncovered(&self, relative: &str) -> io::Result<Option<(usize, UncoveredHit, Vec<u8>)>> {
         let lower = relative.to_ascii_lowercase();
         for (index, layer) in self.layers.iter().enumerate().rev() {
             match &layer.source {
                 LayerSource::Folder(root) => match fs::read(root.join(relative)) {
                     Ok(bytes) => {
-                        return Ok(Some((UncoveredHit::Folder(root.join(relative)), bytes)));
+                        return Ok(Some((
+                            index,
+                            UncoveredHit::Folder(root.join(relative)),
+                            bytes,
+                        )));
                     }
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {
                         // Native Windows folder lookup ignores case; keep that
@@ -656,7 +688,7 @@ impl ResolvedLayers {
                         // whatever case the calling parser carries.
                         if let Some(path) = folded_path(root, relative)? {
                             let bytes = fs::read(&path)?;
-                            return Ok(Some((UncoveredHit::Folder(path), bytes)));
+                            return Ok(Some((index, UncoveredHit::Folder(path), bytes)));
                         }
                     }
                     Err(error) => return Err(error),
@@ -668,6 +700,7 @@ impl ResolvedLayers {
                         let mut bytes = Vec::new();
                         entry.read_to_end(&mut bytes)?;
                         return Ok(Some((
+                            index,
                             UncoveredHit::Archive {
                                 layer: index,
                                 member: relative.to_owned(),
@@ -686,6 +719,16 @@ impl ResolvedLayers {
             }
         }
         Ok(None)
+    }
+
+    /// Whether an uncovered path resolves from the base game layer, with no
+    /// DLC, mod, `replace_path` or cosmetic overlay in its place.
+    pub fn uncovered_from_base(&self, relative: &str) -> io::Result<bool> {
+        let relative = normalize_relative(relative)?;
+        if visual::read(&self.visual, &relative)?.is_some() {
+            return Ok(false);
+        }
+        Ok(matches!(self.scan_uncovered(&relative)?, Some((0, _, _))))
     }
 
     /// Reads a memoized hit. `Ok(None)` means the hit is stale and the caller
@@ -1656,6 +1699,55 @@ mod tests {
     }
 
     #[test]
+    fn listed_paths_keep_case_variants_and_honour_replace_path() {
+        let layer = |id: &str, replace: &[&str], files: &[&str]| {
+            let mut layer = folder_layer(
+                id,
+                Path::new(id),
+                replace.iter().map(|p| p.to_string()).collect(),
+            );
+            for path in files {
+                layer.files.insert(
+                    path.to_string(),
+                    Member {
+                        archive_index: None,
+                        size: 0,
+                    },
+                );
+            }
+            layer
+        };
+        let layers = ResolvedLayers {
+            layers: vec![
+                layer(
+                    "base",
+                    &[],
+                    &["common/defines/00_defines.lua", "common/defines/sub/a.lua"],
+                ),
+                layer(
+                    "mod",
+                    &["common/defines/sub"],
+                    &[
+                        "common/defines/00_Defines.lua",
+                        "common/defines/00_defines.lua",
+                    ],
+                ),
+            ],
+            ..ResolvedLayers::default()
+        };
+        assert_eq!(
+            layers
+                .listed_paths("common/defines/")
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [
+                "common/defines/00_Defines.lua",
+                "common/defines/00_defines.lua"
+            ]
+        );
+    }
+
+    #[test]
     fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
         let root = std::env::temp_dir().join(format!(
             "hoi4_installed_content_uncovered_{}_{:?}",
@@ -1687,8 +1779,10 @@ mod tests {
             visual: Vec::new(),
         };
         assert_eq!(layers.read_uncovered("gfx/fonts/hoi.fnt").unwrap(), b"over");
+        assert!(!layers.uncovered_from_base("gfx/fonts/hoi.fnt").unwrap());
         layers.layers.pop();
         assert_eq!(layers.read_uncovered("gfx/fonts/hoi.fnt").unwrap(), b"base");
+        assert!(layers.uncovered_from_base("gfx/fonts/hoi.fnt").unwrap());
 
         // A replacing layer hides the layers below it even when it has no file.
         let replacing = ResolvedLayers {
@@ -1707,6 +1801,7 @@ mod tests {
                 .kind(),
             io::ErrorKind::NotFound
         );
+        assert!(!replacing.uncovered_from_base("gfx/fonts/hoi.fnt").unwrap());
 
         // Covered paths go through the verifying reader, and unsafe paths fail.
         assert_eq!(

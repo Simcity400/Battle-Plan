@@ -1460,7 +1460,14 @@ mod tests {
 
     fn test_view() -> View {
         View {
-            camera: Camera::fit([100.0, 100.0], [100, 100]),
+            camera: Camera::fit(
+                crate::map::camera::MapSize {
+                    width: 100,
+                    height: 100,
+                },
+                crate::map::camera::MapDefines::test(),
+                [100, 100],
+            ),
             viewport: [100, 100],
             states: false,
         }

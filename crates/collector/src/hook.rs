@@ -6,7 +6,10 @@
 use retour::RawDetour;
 use std::{ffi::c_void, io, mem::size_of, ops::Range, ptr};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_NO_MORE_FILES, GetLastError, HANDLE, INVALID_HANDLE_VALUE},
+    Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, GetLastError, HANDLE,
+        INVALID_HANDLE_VALUE,
+    },
     System::{
         Diagnostics::{
             Debug::{CONTEXT, CONTEXT_CONTROL_AMD64, FlushInstructionCache, GetThreadContext},
@@ -245,13 +248,16 @@ impl Threads {
                             entry.th32ThreadID,
                         )
                     };
-                    if handle.is_null() {
+                    if !handle.is_null() {
+                        result.threads.push(Thread {
+                            handle,
+                            suspended: false,
+                        });
+                    } else if unsafe { GetLastError() } != ERROR_INVALID_PARAMETER {
                         return Err(io::Error::last_os_error().to_string());
                     }
-                    result.threads.push(Thread {
-                        handle,
-                        suspended: false,
-                    });
+                    // ERROR_INVALID_PARAMETER: the thread exited after the
+                    // snapshot, so it cannot be executing the patched range.
                 }
                 found = unsafe { Thread32Next(snapshot, &mut entry) };
             }
