@@ -64,10 +64,41 @@ pub fn scalar<'a>(items: &'a [Item], key: &str) -> io::Result<&'a str> {
         .and_then(|item| item.value.scalar_str())
         .ok_or_else(|| io::Error::other(format!("Missing {key} in game settings")))
 }
+/// The game's interface language from `settings.txt` (`language="l_english"`),
+/// as the bare name localisation files use after `l_`.
+pub fn language(items: &[Item]) -> io::Result<String> {
+    scalar(items, "language")?
+        .strip_prefix("l_")
+        .filter(|name| {
+            !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
+        .map(str::to_owned)
+        .ok_or_else(|| io::Error::other("Unsupported language in game settings"))
+}
 pub fn toggle(items: &[Item], key: &str) -> io::Result<bool> {
     match scalar(items, key)? {
         "yes" => Ok(true),
         "no" => Ok(false),
         _ => Err(io::Error::other(format!("Invalid {key} in game settings"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_is_the_bare_name_and_refuses_other_forms() {
+        let language = |text: &str| language(&parser::parse(text.as_bytes()).unwrap().items);
+        assert_eq!(language(r#"language="l_english""#).unwrap(), "english");
+        assert_eq!(language("language=l_braz_por").unwrap(), "braz_por");
+        for bad in [
+            r#"language="english""#,
+            r#"language="l_""#,
+            r#"language="l_../x""#,
+            "",
+        ] {
+            assert!(language(bad).is_err(), "{bad}");
+        }
     }
 }

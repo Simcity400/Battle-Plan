@@ -73,8 +73,6 @@ use crate::{
 pub struct View {
     pub camera: Camera,
     pub viewport: [u32; 2],
-    /// Whether the state name layer is placed as well as the country one.
-    pub states: bool,
 }
 
 /// What the window wants built.
@@ -998,7 +996,11 @@ impl Coordinator {
             view: want.view,
         };
         if self.strategic.is_none() {
-            match political::strategic_layer(&self.content.map, &self.content.strategic_regions) {
+            match political::strategic_layer(
+                &self.content.map,
+                &self.content.strategic_regions,
+                &self.content.map_defines.gradient_field,
+            ) {
                 Ok(plane) => self.strategic = Some(Arc::new(plane)),
                 Err(error) => pending.error = Some(format!("strategic regions: {error}")),
             }
@@ -1073,7 +1075,12 @@ impl Coordinator {
                         let political = match near.iter().find(|near| near.key == key) {
                             Some(same) => Arc::clone(same),
                             None => {
-                                let layers = political::build(&view.map, view.frame, &strategic)?;
+                                let layers = political::build(
+                                    &view.map,
+                                    view.frame,
+                                    &strategic,
+                                    &view.map_defines.gradient_field,
+                                )?;
                                 let rows_from = near
                                     .iter()
                                     .filter_map(|near| {
@@ -1128,11 +1135,7 @@ impl Coordinator {
                 }),
             );
         }
-        let states = want.view.states;
-        submit(
-            "names",
-            Box::new(move |view| Part::Names(view.place_names(states))),
-        );
+        submit("names", Box::new(|view| Part::Names(view.place_names())));
         let (camera, viewport) = (want.view.camera, want.view.viewport);
         let overlay_perspective = want.perspective.clone();
         submit(
@@ -1500,7 +1503,6 @@ mod tests {
                 [100, 100],
             ),
             viewport: [100, 100],
-            states: false,
         }
     }
 

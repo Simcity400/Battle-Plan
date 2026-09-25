@@ -6,7 +6,7 @@ import type { DashboardClient, ProductRequest } from '../../dashboard/client';
 import type { FocusReply } from '../../generated/dashboard';
 
 const request = focusRequest('source', 'v1', { branchId: '1', tag: 'GER' });
-const first = { countryName: 'Germany', completed: [{ ordinal: 0, token: 'one', completedByHour: null }], current: 'two', continuous: null, paused: false };
+const first = { completed: [{ ordinal: 0, token: 'one', completedByHour: null }], current: 'two', continuous: null, paused: false };
 const reply: FocusReply = { history: { segments: [
   { firstHour: 100, lastHour: 123, order: first },
   { firstHour: 125, lastHour: 200, order: { ...first, completed: [...first.completed, { ordinal: 1, token: 'two', completedByHour: 125 }], current: null } },

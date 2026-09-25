@@ -1452,7 +1452,6 @@ mod tests {
             id: 11,
             canonical_slot: 7,
             tag: b"AAA".to_vec(),
-            name: Vec::new(),
             political_power_raw: None,
             command_power_raw: 0,
             stability_raw: 0,

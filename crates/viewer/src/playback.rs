@@ -470,7 +470,6 @@ mod tests {
                         id: 1,
                         canonical_slot: 1,
                         tag: b"GER".to_vec(),
-                        name: b"Germany".to_vec(),
                         political_power_raw: Some(i64::MAX - i64::from(hour)),
                         command_power_raw: 100_001,
                         stability_raw: 70_000,

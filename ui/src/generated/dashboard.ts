@@ -32,7 +32,12 @@ export type CountryMetadata = {
 /**
  * Canonical country slot, resolved through that hour's CountryLinks.
  */
-id: string, tag: string, name: string, observedBranchId: string, observedHour: number, };
+id: string, tag: string,
+/**
+ * The display name in the user's game language, or the tag when the game
+ * folders are not chosen or the name cannot be resolved.
+ */
+name: string, observedBranchId: string, observedHour: number, };
 export type Artwork = { token: string, name: string | null, description: string | null, baseDurationDays: number | null,
 /**
  * A PNG data URL of the first authored sprite frame.
@@ -45,7 +50,7 @@ export type FocusEntry = { ordinal: number, token: string,
  * an upper bound, not an invented timestamp for pre-recording completions.
  */
 completedByHour: number | null, };
-export type FocusOrder = { countryName: string, completed: Array<FocusEntry>, current: string | null, continuous: string | null, paused: boolean, };
+export type FocusOrder = { completed: Array<FocusEntry>, current: string | null, continuous: string | null, paused: boolean, };
 export type FocusSegment = { firstHour: number, lastHour: number, order: FocusOrder, };
 export type FocusProgress = { firstHour: number, lastHour: number,
 /**

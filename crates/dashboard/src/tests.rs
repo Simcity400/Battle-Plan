@@ -643,7 +643,6 @@ fn ownership_frame(branch: u64, hour: i32, owner: u32) -> DecodedFrame {
                 id,
                 canonical_slot: slot,
                 tag: tag.to_vec(),
-                name: tag.to_vec(),
                 ..CountryRow::default()
             });
         }
@@ -685,7 +684,7 @@ fn land_owners_include_transient_and_other_branch_owners_but_not_controllers() {
         ],
     )
     .unwrap();
-    let result = crate::land_owners(&replay, &AtomicBool::new(false)).unwrap();
+    let result = crate::land_owners(&replay, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(
         result
             .countries
@@ -709,6 +708,34 @@ fn land_owners_include_transient_and_other_branch_owners_but_not_controllers() {
             .observed_branch_id,
         "2"
     );
+}
+
+#[test]
+fn land_owners_name_countries_in_the_given_language_and_fall_back_to_tags() {
+    let mut frame = ownership_frame(1, 100, 44);
+    frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![
+            replay::rows::CountryAppearanceRow {
+                country: 44,
+                ..Default::default()
+            },
+        ]));
+    frame.tables[TableId::Politics.index()] =
+        TableView::Complete(TableRows::Politics(vec![replay::rows::PoliticsRow {
+            country: 44,
+            ..Default::default()
+        }]));
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+    let localisation: installed_content::localisation::Localisation =
+        [("FRA".to_owned(), "France".to_owned())]
+            .into_iter()
+            .collect();
+    let result = crate::land_owners(&replay, Some(&localisation), &AtomicBool::new(false)).unwrap();
+    assert_eq!(result.countries[0].name, "France");
+    let untranslated = installed_content::localisation::Localisation::default();
+    let result = crate::land_owners(&replay, Some(&untranslated), &AtomicBool::new(false)).unwrap();
+    assert_eq!(result.countries[0].name, "FRA");
+    assert!(result.warnings.iter().any(|w| w.contains("show their tag")));
 }
 
 #[test]
@@ -747,7 +774,7 @@ fn land_owners_report_dangling_owners_and_missing_country_identity() {
             &[records(1, vec![ownership_frame(1, 100, 11), frame])],
         )
         .unwrap();
-        let result = crate::land_owners(&replay, &AtomicBool::new(false)).unwrap();
+        let result = crate::land_owners(&replay, None, &AtomicBool::new(false)).unwrap();
         assert_eq!(
             result
                 .countries
@@ -764,7 +791,7 @@ fn land_owners_report_dangling_owners_and_missing_country_identity() {
         &[records(1, vec![ownership_frame(1, 100, 0)])],
     )
     .unwrap();
-    let result = crate::land_owners(&replay, &AtomicBool::new(false)).unwrap();
+    let result = crate::land_owners(&replay, None, &AtomicBool::new(false)).unwrap();
     assert!(result.countries.is_empty());
     assert!(result.warnings.is_empty());
 }
@@ -793,7 +820,7 @@ fn land_owners_keep_partial_positive_evidence_and_do_not_reuse_lost_baselines() 
         frame.tables[TableId::States.index()] = TableUpdate::Unchanged { baseline: 99 };
     }
     let replay = Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
-    let result = crate::land_owners(&replay, &AtomicBool::new(false)).unwrap();
+    let result = crate::land_owners(&replay, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(
         result
             .countries
@@ -813,7 +840,7 @@ fn land_owner_scan_honors_cancellation_and_block_budget() {
     )
     .unwrap();
     assert_eq!(
-        crate::land_owners(&replay, &AtomicBool::new(true))
+        crate::land_owners(&replay, None, &AtomicBool::new(true))
             .unwrap_err()
             .kind(),
         std::io::ErrorKind::Interrupted
@@ -821,7 +848,7 @@ fn land_owner_scan_honors_cancellation_and_block_budget() {
     // The container refuses an oversized block before decompressing it; the
     // product reports the gap instead of trusting a partial catalogue.
     replay.index[0].raw_length = replay::container::MAX_BLOCK_RAW_BYTES as u64 + 1;
-    let owners = crate::land_owners(&replay, &AtomicBool::new(false)).unwrap();
+    let owners = crate::land_owners(&replay, None, &AtomicBool::new(false)).unwrap();
     assert!(owners.countries.is_empty());
     assert!(!owners.warnings.is_empty());
 }
@@ -865,7 +892,6 @@ fn source(branch: u64, hour: i32, power: Option<i64>) -> DecodedFrame {
             id: 9001,
             canonical_slot: 7,
             tag: b"GER".to_vec(),
-            name: b"Germany".to_vec(),
             political_power_raw: power,
             command_power_raw: i64::MAX,
             stability_raw: i64::MIN,
@@ -963,6 +989,50 @@ fn fixture_research_inputs(frame: &mut DecodedFrame) {
     );
     frame.tables[TableId::ResearchAppliedBonuses.index()] =
         TableView::Complete(TableRows::ResearchAppliedBonuses(vec![]));
+}
+
+#[test]
+fn the_catalogue_names_countries_when_content_is_known_and_shows_tags_otherwise() {
+    let mut frame = source(1, 100, Some(1));
+    frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![
+            replay::rows::CountryAppearanceRow {
+                country: 9001,
+                ..Default::default()
+            },
+        ]));
+    frame.tables[TableId::Politics.index()] =
+        TableView::Complete(TableRows::Politics(vec![replay::rows::PoliticsRow {
+            country: 9001,
+            ..Default::default()
+        }]));
+    let replay =
+        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap());
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "source-1".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        replay,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let localisation: installed_content::localisation::Localisation =
+        [("GER".to_owned(), "German Reich".to_owned())]
+            .into_iter()
+            .collect();
+    let named = source.named_metadata(Ok(Arc::new(localisation)));
+    assert_eq!(named.countries[0].name, "German Reich");
+    source.name_countries(None);
+    let tagged = source.metadata();
+    assert_eq!(tagged.countries[0].name, "GER");
+    assert!(
+        tagged
+            .warnings
+            .iter()
+            .any(|w| w.contains("until the game folders"))
+    );
 }
 
 #[test]
@@ -1081,7 +1151,7 @@ fn scale_tag(index: u32) -> Vec<u8> {
     vec![digit(62 * 62), digit(62), digit(1)]
 }
 
-/// Every province its own country: `count` countries with realistic names,
+/// Every province its own country: `count` countries,
 /// each owning one state.
 fn scale_frame(branch: u64, hour: i32, count: u32) -> DecodedFrame {
     let mut frame = source(branch, hour, Some(1));
@@ -1091,7 +1161,6 @@ fn scale_frame(branch: u64, hour: i32, count: u32) -> DecodedFrame {
                 id: 100_000 + index,
                 canonical_slot: index,
                 tag: scale_tag(index),
-                name: format!("Free Province of Westmarch-{index}").into_bytes(),
                 ..CountryRow::default()
             })
             .collect(),
@@ -1169,7 +1238,7 @@ fn land_owners_list_every_country_once_across_branches() {
         ],
     )
     .unwrap();
-    let result = crate::land_owners(&replay, &AtomicBool::new(false)).unwrap();
+    let result = crate::land_owners(&replay, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(result.countries.len(), COUNTRIES as usize);
     assert!(result.warnings.is_empty());
     // Sorted by tag, each witnessed at its first hour on the lowest branch.
@@ -1232,10 +1301,6 @@ fn focus_budget_is_per_requested_country_not_per_recording() {
         assert_eq!(progress_stopped, None);
         assert_eq!(history.segments.len(), 21);
         assert_eq!(history.at(120).unwrap().completed[0].token, "focus_20");
-        assert_eq!(
-            history.at(100).unwrap().country_name,
-            format!("Free Province of Westmarch-{index}")
-        );
     }
     // The same recording scanned for every country at once exceeds the scan
     // budget, which is why a request never scans other countries.

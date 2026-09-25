@@ -302,6 +302,7 @@ impl Assets {
         defines: &Defines,
         declarations: &BTreeMap<String, gfx::SpriteType>,
         small: &Arc<FlagAtlas>,
+        language: &str,
         images: &mut Vec<dds::Texture>,
         lazy: &Arc<LazyTextures>,
     ) -> io::Result<Self> {
@@ -594,7 +595,7 @@ impl Assets {
             .map(|name| {
                 Ok((
                     name.clone(),
-                    text::load(layers, &definitions, &name, images)?,
+                    text::load(layers, &definitions, &name, language, images)?,
                 ))
             })
             .collect::<io::Result<_>>()?;

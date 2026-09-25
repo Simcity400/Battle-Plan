@@ -11,7 +11,14 @@ use std::{
 use installed_content::{ResolveOptions, content::ResolvedContent};
 use replay::container::Replay;
 
-use crate::{ReplayMetadata, metadata};
+use crate::{
+    ReplayMetadata,
+    content::{ContentKey, content_key, name_localisation},
+    metadata::{self, warn},
+    products::ContentOptions,
+};
+use installed_content::{country_names::CountryNames, localisation::Localisation};
+use replay::container::SeekResult;
 
 /// Identity of an opened recording revision inside the running service.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -27,6 +34,8 @@ pub struct Source {
     path: PathBuf,
     replay: Arc<Replay>,
     metadata: ReplayMetadata,
+    /// The metadata with country names resolved for the last folders it was asked for.
+    named: Mutex<Option<(Option<ContentKey>, ReplayMetadata)>>,
     content: Mutex<Option<(ResolveOptions, Arc<ResolvedContent>)>>,
     state: Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
 }
@@ -53,6 +62,7 @@ impl Source {
             path,
             replay,
             metadata,
+            named: Mutex::new(None),
             content: Mutex::new(None),
             state: Mutex::new(HashMap::new()),
         })
@@ -70,9 +80,69 @@ impl Source {
         Arc::clone(&self.replay)
     }
 
-    /// The initial observed catalogue, not a census of every campaign hour.
-    pub fn metadata(&self) -> &ReplayMetadata {
-        &self.metadata
+    /// The initial observed catalogue, not a census of every campaign hour, with
+    /// country names once [`Self::name_countries`] has run and tags before.
+    pub fn metadata(&self) -> ReplayMetadata {
+        let named = self.named.lock().unwrap_or_else(|error| error.into_inner());
+        named
+            .as_ref()
+            .map_or_else(|| self.metadata.clone(), |(_, metadata)| metadata.clone())
+    }
+
+    /// Resolves the catalogue's names in the user's game language at each
+    /// country's observed hour; without content they stay tags, with a warning.
+    pub fn name_countries(&self, content: Option<&ContentOptions>) {
+        let key = content_key(content);
+        let mut named = self.named.lock().unwrap_or_else(|error| error.into_inner());
+        if named.as_ref().is_some_and(|(cached, _)| *cached == key) {
+            return;
+        }
+        let metadata = self.named_metadata(name_localisation(self, content));
+        *named = Some((key, metadata));
+    }
+
+    /// The catalogue named against `localisation`, or tagged with its warning.
+    pub(crate) fn named_metadata(
+        &self,
+        localisation: Result<Arc<Localisation>, String>,
+    ) -> ReplayMetadata {
+        let mut metadata = self.metadata.clone();
+        match localisation {
+            Err(reason) => warn(&mut metadata.warnings, reason),
+            Ok(localisation) => {
+                let mut unnamed = 0;
+                let mut frames = std::collections::BTreeMap::new();
+                for country in &mut metadata.countries {
+                    let at = (country.observed_branch_id.clone(), country.observed_hour);
+                    let frame = frames.entry(at).or_insert_with(|| {
+                        let branch = country.observed_branch_id.parse().ok()?;
+                        match self.replay.seek(branch, country.observed_hour).ok()? {
+                            SeekResult::Frame(frame) => {
+                                Some(CountryNames::read(&frame, &localisation))
+                            }
+                            SeekResult::Gap { .. } => None,
+                        }
+                    });
+                    let name = frame
+                        .as_ref()
+                        .zip(country.id.parse::<u32>().ok())
+                        .and_then(|(names, slot)| names.name(slot).ok());
+                    match name {
+                        Some(name) => country.name = metadata::short_text(&name, 512),
+                        None => unnamed += 1,
+                    }
+                }
+                if unnamed > 0 {
+                    warn(
+                        &mut metadata.warnings,
+                        format!(
+                            "{unnamed} country names could not be resolved from the recorded content and show their tag."
+                        ),
+                    );
+                }
+            }
+        }
+        metadata
     }
 
     /// The recording's verified game content for the configured folders,

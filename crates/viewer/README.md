@@ -32,7 +32,7 @@ Recorded values remain exact. Between hourly samples, moving divisions may glide
 
 Show gaps, unavailable tables, wrong-viewpoint inputs and unsupported content honestly. A carried background sample does not become fresh because the map renders another hour. New visible features may require new recorded operands; do not fabricate them in the renderer.
 
-The main map is an HDR scene. World-space country/state names draw before post-processing; screen labels and counters are output overlays. Water samples a separate single-sample underwater target and blends over ordinary terrain. Preserve the target formats and pass/depth order in [scene.rs](src/map/scene.rs): changing a transparent pass can alter later layers even when its geometry is unchanged.
+The main map is an HDR scene. World-space country names draw before post-processing; screen labels and counters are output overlays. Water samples a separate single-sample underwater target and blends over ordinary terrain. Preserve the target formats and pass/depth order in [scene.rs](src/map/scene.rs): changing a transparent pass can alter later layers even when its geometry is unchanged.
 
 Keep coordinate conversions with their caller: bitmap rows run downward, world Z uses `height - 1 - row`, and height sampling has caller-specific half-texel offsets, clamping and rounding. Preserve native traversal and tie order rather than replacing them with an apparently equivalent sort or sampler.
 
@@ -44,7 +44,7 @@ Keep coordinate conversions with their caller: bitmap rows run downward, world Z
 | Terrain, water and textures | [terrain.rs](src/map/terrain.rs), [water.wgsl](src/map/water.wgsl), [textures.rs](src/map/textures.rs). Keep native sampling, mip chains and per-resource colour spaces; see [asset contracts](../installed-content/README.md#asset-contracts). |
 | Borders, rivers and railways | [borders.rs](src/map/borders.rs), [gradient.rs](src/map/gradient.rs), [rivers.rs](src/map/rivers.rs), [railways.rs](src/map/railways.rs). Border strips, country-distance fields and route graphs are different inputs; do not tune one to hide errors in another. |
 | Country view and map fill | [perspective.rs](src/map/perspective.rs), [allegiance.rs](src/map/allegiance.rs), [political.rs](src/map/political.rs). Ownership, control, shared vision and fog are not interchangeable; visibility must match the viewing country. |
-| Names and icons | [names.rs](src/map/names.rs), [name_pass.rs](src/map/name_pass.rs), [text.rs](src/map/text.rs), [sprites.rs](src/map/sprites.rs). Use authored glyphs and sprite frames; distinguish world geometry from device-pixel UI. |
+| Names and icons | [names.rs](src/map/names.rs), [name_pass.rs](src/map/name_pass.rs), [text.rs](src/map/text.rs), [sprites.rs](src/map/sprites.rs). Country names are rebuilt from recorded operands in the user's game language by `installed_content::country_names`, which the dashboard shares; political colour is the recorded `CountryAppearance` colour plus the subject rule. Use authored glyphs and sprite frames; distinguish world geometry from device-pixel UI. |
 | Counter grouping and status | [counters.rs](src/map/counters.rs), [counter_order.rs](src/map/counter_order.rs), [counter_groups.rs](src/map/counter_groups.rs), [counter_status.rs](src/map/counter_status.rs). Native first-fit membership depends on candidate, representative and recorded order, not a country/handle sort. |
 | Movement, orders and units | [counter_move.rs](src/map/counter_move.rs), [orders.rs](src/map/orders.rs), [unit_models.rs](src/map/unit_models.rs), [trains.rs](src/map/trains.rs), [aircraft.rs](src/map/aircraft.rs). Share movement geometry between counters and figures; preserve route and admission rules. |
 | Trees, buildings and models | [trees.rs](src/map/trees.rs), [sprawl.rs](src/map/sprawl.rs), [map_buildings.rs](src/map/map_buildings.rs), [models.rs](src/map/models.rs). Preserve authored/generated geometry and shader variants. Ordinary map meshes do not inherit terrain's gradient borders or occupation stripes. |
@@ -55,6 +55,8 @@ Keep coordinate conversions with their caller: bitmap rows run downward, world Z
 
 A replay can preserve exact simulation values without preserving the native rendered instant. Water/global clocks, camera fades, overlap/stencil producers, particle populations and previous renderer state can require inputs that an hourly sample lacks. A seed alone does not recover their update history. Do not replace these omissions with guessed visibility, fabricated data or fitted colours.
 
+
+Map text uses the configured user folder's game language (`settings.txt`), not the recording's.
 
 Check the relevant source notes and recording format before treating an old investigation as an open bug or a completed feature. A newer viewer cannot add absent fields to an old recording. Geometry agreement, shader agreement on identical inputs, screenshot similarity and gameplay performance are separate claims.
 

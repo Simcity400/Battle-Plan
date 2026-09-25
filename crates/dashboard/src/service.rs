@@ -517,11 +517,13 @@ impl Inner {
         if job.request.cancelled() {
             return;
         }
-        let result = self.open(
-            Path::new(&job.path),
-            Some(&job.revision),
-            &job.request.cancelled,
-        );
+        let result = self
+            .open(
+                Path::new(&job.path),
+                Some(&job.revision),
+                &job.request.cancelled,
+            )
+            .inspect(|source| source.name_countries(self.content().as_ref()));
         let mut pending = self
             .pending
             .lock()
@@ -541,7 +543,7 @@ impl Inner {
                         id: id.clone(),
                         path: source.path().to_string_lossy().into_owned(),
                         revision: source.key().revision.clone(),
-                        metadata: source.metadata().clone(),
+                        metadata: source.metadata(),
                     };
                     let json = bounded_json(&reply, &job.request.cancelled);
                     match json {
@@ -1345,7 +1347,7 @@ mod tests {
             id: "lease-1".into(),
             path: "memory.battleplan".into(),
             revision: source.key().revision.clone(),
-            metadata: source.metadata().clone(),
+            metadata: source.metadata(),
         };
         {
             let mut pending = service.inner.pending.lock().unwrap();

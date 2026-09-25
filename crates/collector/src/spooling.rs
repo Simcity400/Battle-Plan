@@ -2049,7 +2049,6 @@ fn decoded_with_costs(
                     country.id == previous.id
                         && country.canonical_slot == previous.canonical_slot
                         && country.tag.as_bytes() == previous.tag
-                        && country.name.as_bytes() == previous.name
                         && country.political_power_raw == previous.political_power_raw
                         && country.command_power_raw == previous.command_power_raw
                         && country.stability_raw == previous.stability_raw
@@ -2060,7 +2059,6 @@ fn decoded_with_costs(
                     id: country.id,
                     canonical_slot: country.canonical_slot,
                     tag: country.tag.as_bytes().to_vec(),
-                    name: country.name.as_bytes().to_vec(),
                     political_power_raw: country.political_power_raw,
                     command_power_raw: country.command_power_raw,
                     stability_raw: country.stability_raw,
@@ -3155,7 +3153,6 @@ mod tests {
             id: 7,
             canonical_slot: 1,
             tag: text(b"GER"),
-            name: text(&[0xff, b'A']),
             political_power_raw: None,
             command_power_raw: i64::MIN,
             stability_raw: 100_001,
@@ -3209,7 +3206,6 @@ mod tests {
                 id: 7,
                 canonical_slot: 1,
                 tag: b"GER".to_vec(),
-                name: vec![0xff, b'A'],
                 political_power_raw: None,
                 command_power_raw: i64::MIN,
                 stability_raw: 100_001,

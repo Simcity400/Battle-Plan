@@ -1,4 +1,4 @@
-//! Current country color bits and exact cosmetic tag bytes, sampled hourly.
+//! Current country colour bits, cosmetic tag and name operands, sampled hourly.
 use crate::{sampling::qpc, spooling::table, table_capture::CaptureRows};
 use engine::{Memory, ccountry, walk::Outcome};
 use replay::{
@@ -52,7 +52,14 @@ impl Captured {
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
-        self.rows.outcome = ccountry::walk_appearance(memory, base, state, &mut self.rows.rows);
+        self.rows.outcome = match ccountry::dynamic_boundary(memory, base) {
+            Some(boundary) => {
+                ccountry::walk_appearance(memory, base, state, boundary, &mut self.rows.rows)
+            }
+            None => Outcome::Unavailable {
+                reason: "country tag database unreadable",
+            },
+        };
         [qpc().saturating_sub(begin).max(0) as u64]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -70,6 +77,9 @@ impl Captured {
                 blue: r.rgba[2],
                 alpha: r.rgba[3],
                 cosmetic_tag: r.cosmetic_tag.as_bytes().to_vec(),
+                name_tag: r.name_tag.as_bytes().to_vec(),
+                leader_ideology: r.leader_ideology.as_bytes().to_vec(),
+                overlord: r.overlord,
             },
         )]
     }

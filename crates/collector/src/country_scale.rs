@@ -140,6 +140,8 @@ mod tests {
     const TABLE: usize = 0x20_0000;
     const LINKS: usize = 0x30_0000;
     const TAGS: usize = 0x40_0000;
+    const DATABASE: usize = 0x50_0000;
+    const DIPLOMACY: usize = 0x60_0000;
     const OBJECTS: usize = 0x100_0000;
     const OBJECT: usize = 0x2000;
     const INTEL_TABLES: usize = 0x5000_0000;
@@ -168,6 +170,21 @@ mod tests {
             let singleton = BASE + gs::SINGLETON_RVA;
             if (singleton..singleton + 8).contains(&address) {
                 return word(singleton, STATE as u64);
+            }
+            // Naming operands: no dynamic countries, one shared diplomacy.
+            let database = BASE + engine::ccountry_database::SINGLETON_RVA;
+            if (database..database + 8).contains(&address) {
+                return word(database, DATABASE as u64);
+            }
+            let boundary = DATABASE + engine::ccountry_database::DYNAMIC_TAG_BOUNDARY;
+            if (boundary..boundary + 4).contains(&address) {
+                return word(boundary, slots);
+            }
+            if (DIPLOMACY..DIPLOMACY + 8).contains(&address) {
+                return word(
+                    DIPLOMACY,
+                    (BASE + engine::cdiplomacy_status::VTABLE_RVA) as u64,
+                );
             }
             for (field, pointer) in [
                 (gs::COUNTRIES, TABLE),
@@ -198,6 +215,11 @@ mod tests {
                     }
                     o if (capacity..capacity + 8).contains(&o) => {
                         word(object + capacity, msvc_string::INLINE_CAPACITY)
+                    }
+                    o if (ccountry::DIPLOMACY_STATUS..ccountry::DIPLOMACY_STATUS + 8)
+                        .contains(&o) =>
+                    {
+                        word(object + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64)
                     }
                     o if self.intel
                         && (ccountry::INTEL_TABLE..ccountry::INTEL_TABLE + 8).contains(&o) =>

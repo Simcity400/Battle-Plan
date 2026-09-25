@@ -1858,7 +1858,6 @@ mod tests {
                         id: 7,
                         canonical_slot: 1,
                         tag: b"GER".to_vec(),
-                        name: b"Germany".to_vec(),
                         political_power_raw: Some(-9_007_199_254_740_993),
                         command_power_raw: 1,
                         stability_raw: 100_001,
@@ -2120,7 +2119,6 @@ mod tests {
                 TableRows::Campaign(rows) => rows[0].id.clear(),
                 TableRows::Countries(rows) => {
                     let row = &mut rows[0];
-                    row.name.clear();
                     row.tag.clear();
                     row.political_power_raw = None;
                 }
@@ -2167,7 +2165,6 @@ mod tests {
             .unwrap()
             .complete::<tables::Countries>()
             .unwrap()[0];
-        let name = country.name.as_ptr();
         let tag = country.tag.as_ptr();
         let mut next = source(1, 101);
         change_country(&mut next, 2);
@@ -2191,7 +2188,6 @@ mod tests {
             .complete::<tables::Countries>()
             .unwrap()[0];
         assert_eq!(country.command_power_raw, 2);
-        assert_eq!(country.name.as_ptr(), name);
         assert_eq!(country.tag.as_ptr(), tag);
 
         let mut unchanged = source(1, 102);

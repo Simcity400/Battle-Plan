@@ -321,10 +321,7 @@ pub struct Viewer {
     unit_capacity: Option<(replay::BranchId, i32, u64)>,
     // names
     placements: Option<Placements>,
-    placements_at: Option<(replay::BranchId, i32, bool)>,
-    /// A placement of the hour on screen for a changed state-layer flag,
-    /// running off the UI thread while the current one keeps drawing.
-    names_job: Option<NamesJob>,
+    placements_at: Option<(replay::BranchId, i32)>,
     /// `None` until the first frame seeds it settled at that frame's own camera
     /// height; see [`Viewer::map`].
     fade: Option<LayerFade>,
@@ -575,7 +572,6 @@ impl Viewer {
             // names
             placements: None,
             placements_at: None,
-            names_job: None,
             fade: None,
             last_frame: Instant::now(),
             label_report: LabelReport::default(),
@@ -1349,7 +1345,6 @@ impl Viewer {
         // names
         self.placements = None;
         self.placements_at = None;
-        self.names_job = None;
         self.fade = None;
         // counters
         self.overlay = None;
@@ -1802,11 +1797,7 @@ impl Viewer {
                     )
                 }
             };
-            hours::View {
-                camera,
-                viewport,
-                states: LayerFade::wants_states(camera.height),
-            }
+            hours::View { camera, viewport }
         });
         // Playing, the builders reach far enough ahead to stay in front of the
         // clock; paused, a step either way is already built.
@@ -2130,7 +2121,7 @@ impl Viewer {
         scene.set_fog_of_war(&state.queue, &intel.texels, intel.fog)?;
         laps.lap("fog_upload");
         dropper.drop_later(self.placements.replace(names));
-        self.placements_at = Some((branch, hour, view.states));
+        self.placements_at = Some((branch, hour));
         dropper.drop_later(self.prepared_overlay.replace(overlay));
         self.overlay_at = Some((
             branch,
@@ -2349,6 +2340,12 @@ impl Viewer {
         warnings.extend(document.warnings.iter().cloned());
         warnings.extend(self.combat.warnings());
         warnings.extend(shown.political_warnings.iter().cloned());
+        // Names and labels are drawn later in the frame; their gaps show from
+        // the last drawn frame, which is this hour's after the first repaint.
+        if let Some(placements) = &self.placements {
+            warnings.extend(placements.warnings.iter().cloned());
+        }
+        warnings.extend(self.label_report.warnings());
         if !self.dashboard_map && self.embedded.is_none() {
             egui::ScrollArea::vertical()
                 .id_salt("warnings")
@@ -2574,54 +2571,23 @@ impl Viewer {
         self.last_frame = Instant::now();
         let fade = self
             .fade
-            .get_or_insert_with(|| LayerFade::instant(camera.height))
-            .step(camera.height, delta);
+            .get_or_insert_with(|| LayerFade::instant(camera))
+            .step(camera, delta);
         self.fade = Some(fade);
-        let states = LayerFade::wants_states(camera.height) || fade.state > 0.0;
         laps.lap("panel_camera_units");
         let now = document.hour().map_err(|error| error.to_string())?;
         self.last_view = Some(hours::View {
             camera,
             viewport: pixels,
-            states,
         });
-        let names_key = (document.playback.branch(), document.playback.hour(), states);
+        let names_key = (document.playback.branch(), document.playback.hour());
         if self.placements_at != Some(names_key) {
-            let same_hour = self
-                .placements_at
-                .is_some_and(|(branch, hour, _)| (branch, hour) == (names_key.0, names_key.1));
-            match &document.playback.current() {
-                // Only the state layer changed: place it on a worker and keep
-                // drawing the hour's country layer until it arrives, so the
-                // cutoff never stalls the frame on a whole-map placement.
-                crate::playback::Current::Frame(frame) if same_hour => {
-                    if self
-                        .names_job
-                        .as_ref()
-                        .is_none_or(|job| job.key != names_key)
-                    {
-                        self.names_job = Some(NamesJob::spawn(
-                            names_key,
-                            Arc::clone(&document.content),
-                            Arc::clone(frame),
-                            ui.ctx().clone(),
-                        ));
-                    }
+            match now.place_names() {
+                Ok(placements) => {
+                    self.placements = Some(placements);
+                    self.placements_at = Some(names_key);
                 }
-                _ => match now.place_names(states) {
-                    Ok(placements) => {
-                        self.placements = Some(placements);
-                        self.placements_at = Some(names_key);
-                        self.names_job = None;
-                    }
-                    Err(error) => return Err(error.to_string()),
-                },
-            }
-            if let Some(job) = self.names_job.take_if(|job| job.key == names_key)
-                && let Some(result) = job.poll(&mut self.names_job)
-            {
-                self.placements = Some(result.map_err(|error| error.to_string())?);
-                self.placements_at = Some(names_key);
+                Err(error) => return Err(error.to_string()),
             }
         }
         laps.lap("names");
@@ -2744,7 +2710,7 @@ impl Viewer {
                     // names
                     overlay: Overlay {
                         names: self.placements.as_ref(),
-                        layer_alpha: fade.as_array(),
+                        layer_alpha: fade.0,
                         sprites: Some(label_batch),
                     },
                     // trees
@@ -3219,43 +3185,6 @@ fn filter_tags<'a>(tags: &'a [String], filter: &str) -> Vec<&'a str> {
         .map(String::as_str)
         .filter(|tag| filter.is_empty() || tag.to_ascii_uppercase().contains(&filter))
         .collect()
-}
-
-/// One off-thread name placement for the hour on screen.
-struct NamesJob {
-    key: (replay::BranchId, i32, bool),
-    result: mpsc::Receiver<std::io::Result<Placements>>,
-}
-
-impl NamesJob {
-    fn spawn(
-        key: (replay::BranchId, i32, bool),
-        content: Arc<crate::document::Content>,
-        frame: Arc<replay::frame::DecodedFrame>,
-        ctx: egui::Context,
-    ) -> Self {
-        let (send, result) = mpsc::channel();
-        std::thread::spawn(move || {
-            let placed = crate::document::Hour::new(&content, &frame, 0.0).place_names(key.2);
-            let _ = send.send(placed);
-            ctx.request_repaint();
-        });
-        Self { key, result }
-    }
-
-    /// The finished placement, or puts the job back into `slot` to wait.
-    fn poll(self, slot: &mut Option<Self>) -> Option<std::io::Result<Placements>> {
-        match self.result.try_recv() {
-            Ok(result) => Some(result),
-            Err(mpsc::TryRecvError::Empty) => {
-                *slot = Some(self);
-                None
-            }
-            Err(mpsc::TryRecvError::Disconnected) => Some(Err(std::io::Error::other(
-                "the name placement worker stopped",
-            ))),
-        }
-    }
 }
 
 #[cfg(test)]

@@ -524,7 +524,6 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         } else {
             b"TAG".to_vec()
         },
-        name: vec![0xff, id as u8, 0, b'N'],
         political_power_raw: optional_scalar(0),
         command_power_raw: -((index / 7) as i64) * 100_000,
         stability_raw: 78_901,
@@ -1243,7 +1242,6 @@ fn assert_aliases(frame: &DecodedFrame) {
         })
         .unwrap();
     assert_eq!((country.id, country.canonical_slot), (7, 1));
-    assert_eq!(country.name, [0xff, 7, 0, b'N']);
     assert_ne!(province.owner, country.id);
 }
 

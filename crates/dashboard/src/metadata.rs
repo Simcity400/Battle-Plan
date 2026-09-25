@@ -223,7 +223,8 @@ impl Catalogue {
         self.rows.entry(slot).or_insert_with(|| CountryMetadata {
             id: slot.to_string(),
             tag: short_text(&String::from_utf8_lossy(&row.tag), 512),
-            name: short_text(&String::from_utf8_lossy(&row.name), 512),
+            // Named by `Source::name_countries` once game content is known.
+            name: short_text(&String::from_utf8_lossy(&row.tag), 512),
             observed_branch_id: branch.to_string(),
             observed_hour: hour,
         });

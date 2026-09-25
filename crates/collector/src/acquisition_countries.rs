@@ -122,22 +122,14 @@ mod tests {
             &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
         );
         put(&mut bytes, COUNTRY + ccountry::ID, &7_u32.to_le_bytes());
-        for (address, text) in [
-            (TAGS + 7 * msvc_string::STRIDE, b"D01".as_slice()),
-            (COUNTRY + ccountry::NAME, b"N\xff\0ative".as_slice()),
-        ] {
-            put(&mut bytes, address, text);
-            put(
-                &mut bytes,
-                address + msvc_string::LENGTH,
-                &(text.len() as u64).to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                address + msvc_string::CAPACITY,
-                &msvc_string::INLINE_CAPACITY.to_le_bytes(),
-            );
-        }
+        let tag = TAGS + 7 * msvc_string::STRIDE;
+        put(&mut bytes, tag, b"D01");
+        put(&mut bytes, tag + msvc_string::LENGTH, &3_u64.to_le_bytes());
+        put(
+            &mut bytes,
+            tag + msvc_string::CAPACITY,
+            &msvc_string::INLINE_CAPACITY.to_le_bytes(),
+        );
         for (offset, value) in [
             (ccountry::COMMAND_POWER, 4_294_967_297_i64),
             (ccountry::STABILITY, 4_294_967_298),
@@ -312,7 +304,6 @@ mod tests {
                     assert_eq!(report.links.result, Outcome::Rows { len: 3 });
                     assert_eq!(rows[0].id, 7);
                     assert_eq!(rows[0].canonical_slot, 1);
-                    assert_eq!(rows[0].name.as_bytes(), b"N\xff\0ative");
                     assert_eq!(
                         actual
                             .calls

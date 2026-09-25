@@ -1306,7 +1306,8 @@ mod tests {
             counters::BASE_PRIORITY,
             counters::COUNTER_PRIORITY,
             counters::COMBAT_PRIORITY,
-            labels::PRIORITY,
+            labels::LabelDefines::test().priority[0],
+            labels::LabelDefines::test().priority[1],
             raids::PRIORITY,
         ]
         .into_iter()

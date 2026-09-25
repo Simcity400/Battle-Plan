@@ -403,11 +403,13 @@ pub fn choices(frame: &DecodedFrame) -> io::Result<Vec<FlagChoice>> {
         .collect();
     let appearances: BTreeMap<_, _> = rows::<tables::CountryAppearance>(frame)?
         .iter()
-        .filter(|r| !r.cosmetic_tag.is_empty())
         .map(|r| {
             (
                 r.country,
-                String::from_utf8_lossy(&r.cosmetic_tag).into_owned(),
+                (
+                    String::from_utf8_lossy(&r.cosmetic_tag).into_owned(),
+                    String::from_utf8_lossy(&r.name_tag).into_owned(),
+                ),
             )
         })
         .collect();
@@ -415,9 +417,14 @@ pub fn choices(frame: &DecodedFrame) -> io::Result<Vec<FlagChoice>> {
         .into_iter()
         .filter_map(|(raw, slot)| {
             let tag = countries.get(&slot)?;
-            let candidates = flag_candidates(
+            let (cosmetic, original) = appearances
+                .get(&raw)
+                .map(|(cosmetic, original)| (cosmetic.as_str(), original.as_str()))
+                .unwrap_or_default();
+            let candidates = installed_content::country_names::flag_keys(
                 tag,
-                appearances.get(&raw).map(String::as_str),
+                original,
+                cosmetic,
                 politics.get(&raw).map(|party| party.as_str()),
             );
             Some(FlagChoice {
@@ -427,19 +434,6 @@ pub fn choices(frame: &DecodedFrame) -> io::Result<Vec<FlagChoice>> {
             })
         })
         .collect())
-}
-
-fn flag_candidates(tag: &str, cosmetic: Option<&str>, ideology: Option<&str>) -> Vec<String> {
-    let base = cosmetic.filter(|value| !value.is_empty()).unwrap_or(tag);
-    let mut candidates = Vec::new();
-    if let Some(ideology) = ideology {
-        candidates.push(format!("{base}_{ideology}"));
-    }
-    candidates.push(base.to_owned());
-    if base != tag {
-        candidates.push(tag.to_owned());
-    }
-    candidates
 }
 
 pub struct FlagContext {
@@ -585,19 +579,6 @@ impl FlagContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mod_cosmetic_and_ideology_keys_precede_the_recorded_base_tag() {
-        assert_eq!(
-            flag_candidates("Z01", Some("MOD_REPUBLIC"), Some("custom_ideology")),
-            ["MOD_REPUBLIC_custom_ideology", "MOD_REPUBLIC", "Z01"]
-        );
-        assert_eq!(
-            flag_candidates("Z01", None, Some("custom_ideology")),
-            ["Z01_custom_ideology", "Z01"]
-        );
-        assert_eq!(flag_candidates("Z01", Some(""), None), ["Z01"]);
-    }
 
     #[test]
     fn shield_keeps_flag_colour_takes_mask_alpha_and_blends_the_overlay() {

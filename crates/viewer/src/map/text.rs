@@ -38,51 +38,52 @@ use super::names::{GlyphBox, GlyphMetrics};
 
 /// `interface/core.gfx:1678-1688`: the map-name font, `gfx/fonts/hoi_mapfont4`.
 pub const MAP_FONT: &str = "tahoma_60";
-/// `core.gfx:1232-1247`: the victory-point and capital label font.
-pub const LABEL_FONT: &str = "hoi_20bs";
 /// `core.gfx:870-875`: `gfx/fonts/garamond_14`, the unit-counter count font.
 pub const COUNTER_FONT: &str = "Main_14";
 /// `core.gfx:1093-1111`: the base and wing count font.
 pub const BASE_FONT: &str = "hoi_16mbs";
 
-/// The language the viewer resolves localisation in.
-///
-/// The replay records no language setting, so the reference profile's English
-/// is used. [`installed_content::localisation::read`] takes the bare name, which is
-/// what a file's `l_english:` header carries after its `l_` prefix.
-pub const LANGUAGE: &str = "english";
-
-/// The same language as a `bitmapfont_override` block spells it.
-pub const FONT_LANGUAGE: &str = "l_english";
-
 /// The `§` a colour run opens with, and `§!` closes with.
 const COLOR_CODE: char = '\u{a7}';
 
-/// One loaded bitmap font: its metrics, its page textures and its colour.
+/// One loaded bitmap font: its files, their page textures and its colour.
 pub struct Font {
     /// The `interface/*.gfx` name, such as `hoi_20bs`.
     pub name: String,
-    /// The stem the `.fnt` was loaded from, for reporting.
+    /// The stem the first `.fnt` was loaded from, for reporting.
     pub stem: String,
+    /// The `fontfiles` in priority order; a glyph comes from the first that has it.
+    faces: Vec<Face>,
+    /// The definition's `color`, straight RGBA; white when it declares none.
+    color: [f32; 4],
+}
+
+/// One `.fnt` of a font's file chain.
+struct Face {
     font: BitmapFont,
     /// Page texture ids, in `.fnt` page order; see [`super::sprites::MapIcons`].
     pages: Vec<usize>,
     /// Atlas size the `.fnt` declares, which its glyph boxes are measured in.
     atlas: [f32; 2],
-    /// The definition's `color`, straight RGBA; white when it declares none.
-    color: [f32; 4],
 }
 
 impl Font {
-    /// The page texture id a glyph of `ch` is drawn from.
-    pub fn page_of(&self, ch: char) -> Option<usize> {
-        let glyph = self.font.glyphs.get(&(ch as u32))?;
-        self.pages.get(glyph.page as usize).copied()
+    /// The face that draws `ch`.
+    fn face(&self, ch: char) -> Option<(&Face, &installed_content::fonts::Glyph)> {
+        self.faces
+            .iter()
+            .find_map(|face| Some((face, face.font.glyphs.get(&(ch as u32))?)))
     }
 
-    /// The first page texture id; every shipped map font has exactly one page.
-    pub fn first_page(&self) -> Option<usize> {
-        self.pages.first().copied()
+    /// The first file's metrics, which the line layout uses.
+    fn primary(&self) -> &BitmapFont {
+        &self.faces[0].font
+    }
+
+    /// The page texture id a glyph of `ch` is drawn from.
+    pub fn page_of(&self, ch: char) -> Option<usize> {
+        let (face, glyph) = self.face(ch)?;
+        face.pages.get(glyph.page as usize).copied()
     }
 
     /// The definition's colour as straight RGBA in 0..1.
@@ -90,53 +91,51 @@ impl Font {
         self.color
     }
 
-    /// The `.fnt` `lineHeight`.
+    /// The first `.fnt`'s `lineHeight`.
     pub fn line_height(&self) -> f32 {
-        self.font.line_height as f32
+        self.primary().line_height as f32
     }
 
     /// Page count, for reporting.
     pub fn page_count(&self) -> usize {
-        self.pages.len()
+        self.faces.iter().map(|face| face.pages.len()).sum()
     }
 
     /// Glyph count, for reporting.
     pub fn glyph_count(&self) -> usize {
-        self.font.glyphs.len()
+        self.faces.iter().map(|face| face.font.glyphs.len()).sum()
     }
 
     /// One line naming the font and the `.fnt` header it was loaded from.
     pub fn summary(&self) -> String {
         format!(
-            "{} ({}): lineHeight {}, base {}, {} glyphs on {} page(s)",
+            "{} ({}): lineHeight {}, base {}, {} glyphs on {} page(s) in {} file(s)",
             self.name,
             self.stem,
             self.line_height(),
             GlyphMetrics::base(self),
             self.glyph_count(),
-            self.page_count()
+            self.page_count(),
+            self.faces.len()
         )
     }
 }
 
 impl GlyphMetrics for Font {
     fn advance(&self, ch: char) -> Option<f32> {
-        self.font
-            .glyphs
-            .get(&(ch as u32))
-            .map(|glyph| glyph.xadvance as f32)
+        self.face(ch).map(|(_, glyph)| glyph.xadvance as f32)
     }
 
     fn line_height(&self) -> f32 {
-        self.font.line_height as f32
+        self.primary().line_height as f32
     }
 
     fn base(&self) -> f32 {
-        self.font.base as f32
+        self.primary().base as f32
     }
 
     fn glyph(&self, ch: char) -> Option<GlyphBox> {
-        let glyph = self.font.glyphs.get(&(ch as u32))?;
+        let (face, glyph) = self.face(ch)?;
         Some(GlyphBox {
             width: glyph.width as f32,
             height: glyph.height as f32,
@@ -144,18 +143,17 @@ impl GlyphMetrics for Font {
             yoffset: glyph.yoffset as f32,
             xadvance: glyph.xadvance as f32,
             uv: [
-                glyph.x as f32 / self.atlas[0],
-                glyph.y as f32 / self.atlas[1],
-                (glyph.x + glyph.width) as f32 / self.atlas[0],
-                (glyph.y + glyph.height) as f32 / self.atlas[1],
+                glyph.x as f32 / face.atlas[0],
+                glyph.y as f32 / face.atlas[1],
+                (glyph.x + glyph.width) as f32 / face.atlas[0],
+                (glyph.y + glyph.height) as f32 / face.atlas[1],
             ],
         })
     }
 
     fn kerning(&self, a: char, b: char) -> f32 {
-        self.font
-            .kernings
-            .get(&(a as u32, b as u32))
+        self.face(a)
+            .and_then(|(face, _)| face.font.kernings.get(&(a as u32, b as u32)))
             .map_or(0.0, |amount| *amount as f32)
     }
 }
@@ -168,47 +166,56 @@ pub fn load(
     layers: &ResolvedLayers,
     definitions: &BTreeMap<String, FontDefinition>,
     name: &str,
+    language: &str,
     images: &mut Vec<dds::Texture>,
 ) -> io::Result<Font> {
     let definition = definitions
         .get(name)
         .ok_or_else(|| invalid(format!("interface/*.gfx declares no bitmapfont {name:?}")))?;
-    // `files_for` picks the language override; English keeps the base chain.
-    let stem = definition
-        .files_for(FONT_LANGUAGE)
-        .first()
-        .cloned()
-        .ok_or_else(|| invalid(format!("bitmapfont {name:?} names no font file")))?;
-    let loaded = fonts::load_font_file(layers, &stem)?;
-    if loaded.font.glyphs.is_empty() {
-        return Err(invalid(format!("{stem}.fnt declares no characters")));
+    // `files_for` picks the `bitmapfont_override` for the reader's language;
+    // every listed file is loaded and a glyph comes from the first that has it.
+    let stems = definition.files_for(&format!("l_{language}"));
+    if stems.is_empty() {
+        return Err(invalid(format!("bitmapfont {name:?} names no font file")));
     }
-    let mut pages = Vec::with_capacity(loaded.pages.len());
-    for page in &loaded.pages {
-        pages.push(images.len());
-        images.push(page.texture.clone());
+    let mut faces = Vec::with_capacity(stems.len());
+    let mut first_stem = None;
+    for stem in &stems {
+        let loaded = fonts::load_font_file(layers, stem)?;
+        if loaded.font.glyphs.is_empty() {
+            return Err(invalid(format!("{stem}.fnt declares no characters")));
+        }
+        let mut pages = Vec::with_capacity(loaded.pages.len());
+        for page in &loaded.pages {
+            pages.push(images.len());
+            images.push(page.texture.clone());
+        }
+        let atlas = [
+            nonzero(
+                loaded.font.scale.0,
+                loaded.pages.first().map(|p| p.texture.width),
+            ),
+            nonzero(
+                loaded.font.scale.1,
+                loaded.pages.first().map(|p| p.texture.height),
+            ),
+        ];
+        first_stem.get_or_insert(loaded.stem);
+        faces.push(Face {
+            font: loaded.font,
+            pages,
+            atlas,
+        });
     }
     let color = definition
         .color
         .as_ref()
         .and_then(fonts::FontColor::rgba)
         .map_or([1.0; 4], |rgba| rgba.map(|channel| channel as f32 / 255.0));
-    let atlas = [
-        nonzero(
-            loaded.font.scale.0,
-            loaded.pages.first().map(|p| p.texture.width),
-        ),
-        nonzero(
-            loaded.font.scale.1,
-            loaded.pages.first().map(|p| p.texture.height),
-        ),
-    ];
     Ok(Font {
         name: name.to_owned(),
-        stem: loaded.stem,
-        font: loaded.font,
-        pages,
-        atlas,
+        stem: first_stem.unwrap_or_default(),
+        faces,
         color,
     })
 }
@@ -235,14 +242,19 @@ pub struct Fonts {
 }
 
 impl Fonts {
-    /// Loads all four, appending their pages to `images`.
-    pub fn load(layers: &ResolvedLayers, images: &mut Vec<dds::Texture>) -> io::Result<Self> {
+    /// Loads all four for `language`, appending their pages to `images`.
+    pub fn load(
+        layers: &ResolvedLayers,
+        language: &str,
+        label_font: &str,
+        images: &mut Vec<dds::Texture>,
+    ) -> io::Result<Self> {
         let definitions = fonts::read_definitions(layers)?;
         Ok(Self {
-            map: load(layers, &definitions, MAP_FONT, images)?,
-            label: load(layers, &definitions, LABEL_FONT, images)?,
-            counter: load(layers, &definitions, COUNTER_FONT, images)?,
-            base: load(layers, &definitions, BASE_FONT, images)?,
+            map: load(layers, &definitions, MAP_FONT, language, images)?,
+            label: load(layers, &definitions, label_font, language, images)?,
+            counter: load(layers, &definitions, COUNTER_FONT, language, images)?,
+            base: load(layers, &definitions, BASE_FONT, language, images)?,
         })
     }
 
@@ -446,23 +458,49 @@ mod tests {
         Font {
             name: "test".into(),
             stem: "test".into(),
-            font: BitmapFont {
-                face: "test".into(),
-                size: 20,
-                unicode: true,
-                line_height: 20,
-                base: 16,
-                scale: (64, 32),
-                page_count: 1,
-                pages: vec!["test_0.dds".into()],
-                glyphs,
-                kernings: [(('A' as u32, 'B' as u32), -2)].into_iter().collect(),
-                unparsed_lines: Vec::new(),
-            },
-            pages: vec![7],
-            atlas: [64.0, 32.0],
+            faces: vec![Face {
+                font: BitmapFont {
+                    face: "test".into(),
+                    size: 20,
+                    unicode: true,
+                    line_height: 20,
+                    base: 16,
+                    scale: (64, 32),
+                    page_count: 1,
+                    pages: vec!["test_0.dds".into()],
+                    glyphs,
+                    kernings: [(('A' as u32, 'B' as u32), -2)].into_iter().collect(),
+                    unparsed_lines: Vec::new(),
+                },
+                pages: vec![7],
+                atlas: [64.0, 32.0],
+            }],
             color: [1.0, 1.0, 1.0, 1.0],
         }
+    }
+
+    #[test]
+    fn a_later_font_file_supplies_the_glyphs_the_first_lacks() {
+        let mut font = font();
+        let mut fallback = font.faces[0].font.clone();
+        fallback.glyphs = [(
+            'Z' as u32,
+            Glyph {
+                xadvance: 6,
+                page: 0,
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect();
+        font.faces.push(Face {
+            font: fallback,
+            pages: vec![9],
+            atlas: [64.0, 32.0],
+        });
+        assert_eq!(measure(&font, "AZB"), 26.0);
+        assert_eq!(font.page_of('Z'), Some(9));
+        assert_eq!(font.page_of('A'), Some(7));
     }
 
     #[test]

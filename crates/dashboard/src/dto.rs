@@ -52,6 +52,8 @@ pub struct CountryMetadata {
     /// Canonical country slot, resolved through that hour's CountryLinks.
     pub id: String,
     pub tag: String,
+    /// The display name in the user's game language, or the tag when the game
+    /// folders are not chosen or the name cannot be resolved.
     pub name: String,
     pub observed_branch_id: String,
     pub observed_hour: i32,
@@ -90,7 +92,6 @@ pub struct FocusEntry {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FocusOrder {
-    pub country_name: String,
     pub completed: Vec<FocusEntry>,
     pub current: Option<String>,
     pub continuous: Option<String>,

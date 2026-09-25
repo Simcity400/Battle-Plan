@@ -31,9 +31,6 @@ use super::{
     textures::{Bound, ColorSpace, upload},
 };
 
-/// `interface/mapicons.gfx:290-295`: the VP and capital strip, 20 frames.
-pub const VICTORY_POINT_STRIP: &str = "GFX_onmap_victorypoints_strip";
-
 /// One frame-animated sprite: a horizontal strip of equal-width frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpriteSheet {
@@ -101,11 +98,14 @@ impl MapIcons {
     pub fn load(
         layers: &ResolvedLayers,
         defines: &installed_content::defines::Defines,
+        language: &str,
     ) -> io::Result<Self> {
         let mut images = Vec::new();
-        let fonts = text::Fonts::load(layers, &mut images)?;
+        // The label sprite and font are the ones `mapicons.gui` names.
+        let labels = super::labels::LabelLayout::read(layers)?;
+        let fonts = text::Fonts::load(layers, language, &labels.font, &mut images)?;
         let sprites = gfx::sprites(layers)?;
-        let victory_points = load_sheet(layers, &sprites, VICTORY_POINT_STRIP, &mut images)?;
+        let victory_points = load_sheet(layers, &sprites, &labels.sprite, &mut images)?;
         // Flag and portrait reads happen after this load returns, so the lazy
         // stores keep their own handle on the layers.
         let shared = Arc::new(layers.clone());
@@ -117,6 +117,7 @@ impl MapIcons {
             defines,
             &sprites,
             &counters.flags,
+            language,
             &mut images,
             &lazy,
         )?;

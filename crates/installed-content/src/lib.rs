@@ -5,6 +5,7 @@ pub mod ambient;
 pub mod buildings;
 pub mod cities;
 pub mod content;
+pub mod country_names;
 pub mod defines;
 mod fields;
 pub mod flags;

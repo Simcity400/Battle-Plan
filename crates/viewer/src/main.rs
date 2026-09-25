@@ -746,8 +746,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // political fill
         // Layer 1, the strategic regions, is static content; the dump builds it once here.
-        let strategic = political::strategic_layer(&document.map, &document.strategic_regions)?;
-        let mut layers = political::build(&document.map, document.frame()?, &strategic)?;
+        let field = &document.map_defines.gradient_field;
+        let strategic =
+            political::strategic_layer(&document.map, &document.strategic_regions, field)?;
+        let mut layers = political::build(&document.map, document.frame()?, &strategic, field)?;
         if options.debug_borders || options.layers.gradient {
             // The engine's `debug_borders` removes both the gradient fill and the border strips.
             // Channel 2's green is each layer's transparency, the factor the whole
@@ -819,17 +821,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .collect::<Vec<_>>()
             .join("; ");
         let hour = document.playback.hour();
-        // names: a headless render has no frame history, so the layer
-        // cross-fade jumps straight to its settled value (R2 section 4.5) and
-        // the state layer is only placed when that value is nonzero.
-        let fade = LayerFade::instant(camera.height);
-        let placements = document.place_names(LayerFade::wants_states(camera.height))?;
+        // names: a headless render has no frame history, so the fade jumps
+        // straight to its settled value (R2 section 4.5).
+        let fade = LayerFade::instant(camera);
+        let placements = document.place_names()?;
         for warning in &placements.warnings {
             eprintln!("Warning: {warning}");
         }
         // counters: bases, labels, counters and combats in priority order.
         let (mut label_batch, label_report, counter_report, raid_report) =
             document.overlay_batch(camera, options.size, &options.perspective, omitted)?;
+        for warning in label_report.warnings() {
+            eprintln!("Warning: {warning}");
+        }
         if let Some(path) = &options.counters_json {
             let census = document
                 .icons
@@ -940,7 +944,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 no_trees: options.no_trees,
                 overlay: Overlay {
                     names: (!omitted.labels).then_some(&placements),
-                    layer_alpha: fade.as_array(),
+                    layer_alpha: fade.0,
                     sprites: Some(&label_batch),
                 },
                 // trees
@@ -1210,11 +1214,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("Localisation: {} keys", document.names.localisation.len());
         println!(
-            "Names: {} country areas, {} state areas, {} glyph vertices at layer alpha {:?};              province graph {} edges; {} icon pages",
+            "Names: {} country areas, {} glyph vertices at layer alpha {}; province graph {} edges; {} icon pages",
             placements.country.len(),
-            placements.state.len(),
             report.overlay.0,
-            fade.as_array(),
+            fade.0,
             document.names.graph.edge_count(),
             report.icon_pages
         );
@@ -1228,9 +1231,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("  {}", name.summary());
         }
         println!(
-            "Labels: {} icons, {} texts in {} quads; allegiance measured against {}",
+            "Labels: {} icons, {} texts ({} scripted names refused) in {} quads; allegiance measured against {}",
             label_report.icons,
             label_report.texts,
+            label_report.refused_names,
             report.overlay.1,
             label_report
                 .perspective

@@ -91,7 +91,8 @@ impl Context {
                 (BTreeMap::new(), None, equipment)
             }
         };
-        let localisation = installed_content::localisation::read(&content.layers, "english")?;
+        let localisation =
+            installed_content::localisation::read(&content.layers, &content::language(&options)?)?;
         let sprites = installed_content::gfx::read(&content.layers)?;
         for (label, count) in [
             ("unparsed localisation lines", localisation.unparsed.len()),

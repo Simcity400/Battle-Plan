@@ -63,6 +63,7 @@ fn countries(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
     );
     report.compared("CountryAppearance", rows.len());
     report.limitation("the save carries cosmetic_tag but has no counterpart for current primary RGBA; all four raw f32 bit patterns, including alpha, remain independently unverified", "CountryAppearance raw RGBA");
+    report.limitation("name_tag, leader_ideology and overlord are census only; the viewer's resolved names need a matched-hour screenshot", "CountryAppearance name operands");
     Ok(())
 }
 

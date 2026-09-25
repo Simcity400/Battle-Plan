@@ -303,7 +303,6 @@ pub(crate) fn focus_branch_within(
                     // Compare borrowed rows first: unchanged hours allocate no focus strings.
                     if same_identity
                         && previous.last_hour.checked_add(1) == Some(frame.hour)
-                        && order.country_name.as_bytes() == country.name
                         && order.current.as_ref().map(|s| s.as_bytes()) == current
                         && order.continuous.as_ref().map(|s| s.as_bytes()) == continuous
                         && order.paused == (focus.paused != 0)
@@ -319,7 +318,6 @@ pub(crate) fn focus_branch_within(
                     }
                 }
                 let mut order = FocusOrder {
-                    country_name: String::from_utf8_lossy(&country.name).into_owned(),
                     completed: ordered(rows, focus.completed_count)?,
                     current: current.map(|s| String::from_utf8_lossy(s).into_owned()),
                     continuous: continuous.map(|s| String::from_utf8_lossy(s).into_owned()),
@@ -330,7 +328,6 @@ pub(crate) fn focus_branch_within(
                 }
                 result.retained_bytes += 256
                     + tag.len()
-                    + order.country_name.len()
                     + order.current.as_ref().map_or(0, String::len)
                     + order.continuous.as_ref().map_or(0, String::len)
                     + order
